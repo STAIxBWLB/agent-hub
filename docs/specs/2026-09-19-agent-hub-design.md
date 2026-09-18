@@ -47,6 +47,22 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
   until v0.3.0. Standalone `switchyard-server` proxies `/v1/chat/completions`,
   `/v1/messages`, `/v1/responses` and forwards to any `base_url` upstream. Stability:
   libsy Beta, server Demo ("not for production"), pre-1.0.
+- Shared memory (verified 2026-09-19): claude-mem 13.25.1 keeps one store
+  (`~/.claude-mem/claude-mem.db`, worker `127.0.0.1:37701`, loopback, no auth) already
+  written by three platforms (`sdk_sessions.platform_source`: claude 1211, kimi 55,
+  codex 41). Observations carry `project` (git-root basename), `agent_type`, `agent_id`,
+  `metadata`. Kimi is captured by the `dot ai memory` transcript bridge (LaunchAgent
+  watching `~/.kimi-code/sessions/**/wire.jsonl`); an ACP-driven `kimi acp` session was
+  captured the same way. Worker HTTP API: `POST /api/sessions/init
+  {contentSessionId, project, prompt, platformSource}`, `POST /api/sessions/observations
+  {contentSessionId, platformSource, tool_name, tool_input, tool_response, cwd, agentId,
+  agentType, tool_use_id}`, `POST /api/sessions/summarize`, `POST /api/sessions/session-end`,
+  `GET /api/context/inject?projects=<chain>[&platformSource=]`, `POST /api/memory/save
+  {text, title, project, metadata}`, `GET /api/search`, `GET /api/timeline`, `/api/corpus/*`.
+  Each agent's SessionStart hook injects with its own `platformSource`, so today storage
+  is shared but recall is siloed per platform (work project: 6.9 KB all platforms vs
+  2.7 KB kimi-only). The Codex claude-mem plugin was reinstalled on 2026-09-19
+  (`codex plugin add claude-mem@claude-mem-local`).
 - Workspace decisions inherited (`internal gateway plan`):
   no OmniRoute daemon on the Mac; subscription OAuths (Claude Max, ChatGPT, Kimi plan)
   are never pooled through a gateway; local models are for bulk and low-stakes work;
@@ -76,6 +92,11 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
    unless `--unattended`; ports bind loopback only; Kimi ACP permission requests are
    relayed to the hub console.
 9. Single machine, one hub daemon per project directory. Cross-machine broker is out.
+10. Shared memory reuses claude-mem as the single store; the hub never runs its own
+    memory database. Native capture stays where it exists (Claude hooks, Codex plugin,
+    Kimi transcript bridge); the hub captures only the local worker and adds
+    cross-platform recall, task-scoped briefs and explicit shared notes. The bus still
+    passes messages, never transcripts.
 
 ## Design
 
@@ -229,6 +250,47 @@ inside a peer.
   when the window resets (`hub_ack_resume` for Claude, `turn/start` for Codex,
   `session/prompt` for Kimi). Idempotent per pending record.
 
+### Shared memory (claude-mem)
+
+- Capture. Claude: native plugin hooks. Codex: claude-mem Codex plugin. Kimi: `dot ai
+  memory` transcript bridge (covers ACP sessions, verified). Local worker: the hub acts
+  as the hook client: `sessions/init` on worker start (`platformSource: "agent-hub"`,
+  `agentId: "local"`, `project` = git-root basename of the hub cwd), one
+  `sessions/observations` per tool call (mirrors `CLAUDE_MEM_SKIP_TOOLS` and the
+  secrets denylist), `sessions/summarize` on task done, `session-end` on stop. Fail-open:
+  a down worker never blocks a turn; events are dropped with one log line.
+- Session-start cross recall. On each peer session start the hub fetches
+  `context/inject?projects=<chain>` without `platformSource` (all platforms), trims to
+  `memory.inject_tokens` (default 2000), and injects it: Kimi as the first prompt block,
+  local worker as system context, Claude and Codex as one "peer context" notice
+  (channel push / `developerInstructions`) since their own hooks already inject their
+  own platform's context. Never re-injected within a session.
+- Task brief on handoff. When a task is assigned, escalated or reassigned by the budget
+  relay, the hub runs `search(query = title + refs.paths, project, limit 10)` and
+  `timeline(anchor = top hit)`, and attaches a brief of at most `memory.brief_items`
+  (default 8) lines `#id time type title` plus one facts line to the task envelope.
+  The receiver calls `get_observations([ids])` only for the ones it needs (layered
+  workflow). Per peer, the hub keeps a `seen_ids` set for the session so a brief never
+  repeats an observation already delivered to that peer.
+- Explicit shared notes. Tool `hub_remember(text, title?, tags?)` on every adapter and
+  in the console (`hub remember`) posts `memory/save` with
+  `metadata: {peer, task, kind: decision | finding | contract}`. The hub auto-saves task
+  board transitions (proposed, accepted, done, review verdict) and checkpoint summaries
+  as `decision` notes so handoff history is recallable next session.
+- Budget relay. Before pausing a peer the hub calls `sessions/summarize` for its content
+  session and includes that summary plus the open-task briefs in the receiving peer's
+  first prompt; `.agenthub/checkpoint.md` remains as the file fallback.
+- Efficiency rules. Index first (`search`), then `timeline`, then details; injection
+  and briefs are token-capped; project chain filtering only; tool_input containing
+  denylisted paths is never posted; no transcript or full observation bodies cross the
+  bus.
+- Config: `memory.enabled` (default true when the worker answers `/api/health`),
+  `memory.worker_url` (default from `~/.claude-mem/settings.json`
+  `CLAUDE_MEM_WORKER_PORT`), `memory.inject_tokens`, `memory.brief_items`,
+  `memory.platform_source` (default `agent-hub`).
+- Prerequisites: claude-mem worker running; Codex claude-mem plugin installed; `dot ai
+  memory status` green for kimi. `hub doctor` reports all three.
+
 ### Safety
 
 - Untrusted framing on all cross-peer text; standing instruction once per session.
@@ -265,6 +327,7 @@ New repo layout:
 src/hub/            daemon, bus, peer-registry, state-machines, board, budget, router
 src/adapters/       claude-channel.ts, codex-appserver.ts, acp.ts, local-worker.ts
 src/switchyard/     config generator, sidecar lifecycle, health
+src/memory/         claude-mem worker client, capture for the local worker, recall (inject, brief), remember
 src/cli/            up, claude, codex, kimi, local, say, tail, board, route, budget, status, logs, kill, init
 plugins/agent-hub/  .claude-plugin/plugin.json, .mcp.json, server bundle, hooks (SessionStart health, Stop announce)
 .claude-plugin/marketplace.json
@@ -293,6 +356,20 @@ CLAUDE.md, REVIEW.md
    `implement` task to `local`, and resumes Codex after the mocked reset.
 9. `scripts/check.sh` exits 0; live smoke checklist recorded in `docs/smoke.md`.
 10. Default launches keep permission prompts; `--unattended` prints the warning.
+11. A local-worker task produces observations in claude-mem with
+    `platform_source = agent-hub` and `agent_id = local`; `search` from any peer finds
+    them without a `platformSource` filter.
+12. Starting `hub kimi` after a Claude session in the same project injects a context
+    block that includes at least one Claude-platform observation, capped at
+    `memory.inject_tokens`; starting a second Kimi session does not re-inject it.
+13. Assigning a task whose title matches an earlier observation attaches a brief with
+    that observation id; reassigning the same task to the same peer does not repeat
+    ids already delivered.
+14. `hub_remember` from Codex creates a `memory/save` note whose metadata carries
+    `peer = codex` and the task id; the budget-relay resume prompt for the receiving
+    peer contains the paused peer's session summary.
+15. With the claude-mem worker stopped, every acceptance criterion 1 to 10 still passes
+    and `hub doctor` reports memory as unavailable.
 
 ## Tasks
 
@@ -304,27 +381,32 @@ M1 messaging core and three adapters
 - [ ] ACP adapter: spawn `kimi acp`, session lifecycle, prompt, chunk aggregation
 - [ ] CLI `up/claude/codex/kimi/say/tail/status/logs/kill`, `hub init` marker blocks
 - [ ] Fakes plus unit and integration tests; live trio chat smoke
+- [ ] claude-mem worker client (`src/memory/`), `hub doctor` memory check, fake worker for tests
 
 M2 coordination
 - [ ] Priority tiers and status batching, marker parsing
 - [ ] Codex `turn/steer` for important while busy; Kimi busy queue and drain
 - [ ] Paused and offline queues, idempotent delivery, drop rules
+- [ ] Session-start cross-platform recall (inject without platformSource, token cap, once per session)
 
 M3 local worker and routing L2/L3
 - [ ] Local worker agent loop with cwd-scoped tools and secrets denylist
 - [ ] OmniRoute client with per-peer tokens and Cloudflare Access headers
 - [ ] Switchyard sidecar: config generation, lifecycle, health, fallback to fixed model
 - [ ] `hub local`, smoke through OmniRoute with provider header check
+- [ ] Local worker capture into claude-mem (`sessions/init`, `observations`, `summarize`, `session-end`, skip list)
 
 M4 task board, roles, routing L1
 - [ ] sqlite board, `hub_task_*` and `hub_review` tools on all adapters
 - [ ] Role contract injection per native surface
 - [ ] `routing.toml` loader, signals (PII, context length, quota), `hub route explain`
 - [ ] Review handoff and task-level escalation
+- [ ] Task brief on handoff (search + timeline, `seen_ids`), `hub_remember` tool and console command, auto-saved board transitions
 
 M5 budget relay
 - [ ] Quota sources (Codex native, Claude probe, Kimi tokens), gate, pause, checkpoint
 - [ ] Reassignment to local, resume paths per peer, idempotency
+- [ ] `sessions/summarize` on pause; summary plus open-task briefs in the resume prompt
 
 M6 internal inference, packaging
 - [ ] Status digests and triage through `sy/fast`
@@ -339,6 +421,8 @@ M6 internal inference, packaging
 - Switchyard `auto` route until v0.3.0 ships.
 - Running Claude Code itself on a local model (depends on the Anthropic-to-chat
   translation check in the OmniRoute plan v1, Phase 0).
+- A hub-owned memory store, cmem.ai cloud sync, automatic corpus building (a project
+  corpus for `hub ask` is an optional M6 item), and any change to the vault LEARN loop.
 
 ## Risks
 
@@ -350,3 +434,4 @@ M6 internal inference, packaging
 | Local worker executes untrusted room text | Untrusted framing, cwd scope, denylist, no `--unattended` by default |
 | Steering a Codex turn changes its plan mid-flight | Only `important` steers; default tier is `status` |
 | Kimi ACP has no quota API | Token-based soft limit only; documented |
+| claude-mem worker API is internal and unversioned for third-party clients | Client isolated in `src/memory/`, pinned to a plugin version range, fail-open everywhere, contract test against a fake worker plus one live smoke |
