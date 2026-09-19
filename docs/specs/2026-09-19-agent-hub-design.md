@@ -1,6 +1,6 @@
 # agent-hub design spec
 
-Date: 2026-09-19. Status: M1 to M4 merged (PR #2, #4, #6, #7, #9); M5 implemented on `feat/m5-budget-relay` (phase spec: issue #10); M6 not started.
+Date: 2026-09-19. Status: M1 to M5 merged; M6 implemented on `feat/m6-packaging-inference` (phase spec: issue #2 of the public repository). Version 0.1.0.
 Owner: Young Joon Lee. Repo: STAIxBWLB/agent-hub.
 
 Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) or
@@ -236,7 +236,8 @@ peer. Peer ids claimed over the control WS must not be `user` or a hub-managed a
   Claude plugin has a tools-only mode (`AGENTHUB_MODE=tools`, control WS role `tools`: acts for
   a peer, never a delivery target). Kimi gets it through ACP `session/new` `mcpServers`
   (verified live), Codex through `-c mcp_servers.agent-hub.*` on the app-server the hub
-  spawns (verified to reach `ready`; `approval_mode = "approve"` per tool is inferred), `local`
+  spawns (verified live with a real Codex turn: tools called without an approval prompt under
+  `approval_mode = "approve"`), `local`
   natively. This replaces Codex `dynamicTools`: no rewriting of proxied TUI traffic.
 - Role contract: Claude in the plugin `instructions`, Codex, Kimi and `local` with the
   standing instruction of their first delivery, all of them in the `AGENT_HUB` marker
@@ -513,7 +514,7 @@ M2 coordination
 - [x] Codex `turn/steer` for important while busy (plain busy queue and drain for every peer shipped in M1: without it a second Kimi prompt fails with `turn.agent_busy`)
 - [x] Paused and offline queues, idempotent delivery, drop rules
 - [x] Session-start cross-platform recall (token cap, once per peer per hub run)
-- [ ] Live `turn/steer` against real Codex (blocked by the account usage limit on 2026-09-19)
+- [x] Live `turn/steer` against real Codex (2026-09-19, after the weekly window reset)
 
 M3 local worker and routing L2/L3
 - [x] Local worker agent loop with cwd-scoped tools, secrets denylist, approvals and seatbelt sandbox
@@ -528,7 +529,8 @@ M4 task board, roles, routing L1
 - [x] `routing.toml` loader, signals (PII, context length, quota), `ahub route explain`
 - [x] Review handoff and task-level escalation
 - [x] Task brief on handoff (search + timeline, `seen_ids`), `hub_remember` tool and console command, auto-saved board transitions
-- [ ] Live: Codex calling a hub tool in a real turn (MCP startup verified; a turn needs account quota), Claude plugin tools in a real session
+- [x] Live: Codex calling hub tools in a real turn (2026-09-19)
+- [ ] Live: Claude plugin task tools and digests in a real interactive session
 
 M5 budget relay
 - [x] Quota sources (Codex native, Claude status line, Kimi tokens, manual), gate, pause, checkpoint
@@ -537,9 +539,18 @@ M5 budget relay
 - [ ] Live: the Claude status line tee in an interactive session; a real pause driven by Codex's own numbers with a TUI attached
 
 M6 internal inference, packaging
-- [ ] Status digests and triage through `sy/fast`
-- [ ] Bundles for plugin and CLI, marketplace manifest, brew or npm distribution
-- [ ] docs: quickstart, smoke checklist, security notes
+- [x] Status digests and triage through `sy/fast` (amended: optional and fail-open with a backoff. Only plain status
+      chatter over a threshold is condensed, into one item from `digest` that keeps every sender, envelope id and the
+      highest hop; important, task, review, budget, preface and private items are never touched. A task proposed
+      without a class is labelled from the closed class list, a PII task only when the gateway is on campus. The
+      model's output is capped text framed as untrusted or a validated enum, never a route, peer id or instruction.)
+- [x] Packaging (amended: no compiled binary, because the daemon re-spawns itself and five places resolve assets
+      relative to the source tree; the package ships the tree and installs from GitHub with Bun, verified:
+      `bun add -g github:STAIxBWLB/agent-hub`. `package.json` is the one version, stamped into the plugin manifest
+      and the MCP server and checked by the gate. `ahub setup` installs or updates the Claude plugin from the
+      package after asking. CI runs the gate on Ubuntu and macOS; a `v*` tag matching `package.json` cuts a release.
+      npm publish and brew are follow-ups.)
+- [x] docs: `docs/quickstart.md`, `docs/security.md`, `docs/smoke.md`, `CONTRIBUTING.md`, `CHANGELOG.md`
 
 ## Out of scope
 

@@ -2,7 +2,10 @@
   "name": "agent-hub",
   "version": "0.1.0",
   "description": "Channel between Claude Code and the agent-hub daemon: peer messages from Codex, Kimi and the local worker arrive as channel events; hub_send replies.",
-  "author": { "name": "Young Joon Lee", "email": "yj.lee@chu.ac.kr" },
+  "author": {
+    "name": "Young Joon Lee",
+    "email": "yj.lee@chu.ac.kr"
+  },
   "repository": "https://github.com/STAIxBWLB/agent-hub",
   "license": "MIT"
 }

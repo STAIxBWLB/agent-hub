@@ -17,6 +17,7 @@ import { statSync } from "node:fs";
 import type { BusEvent } from "./bus.ts";
 import { DEFAULT_ROLES, roleContract, TASK_TOOLS } from "./hub-tools.ts";
 import { Tasks } from "./tasks.ts";
+import { DEFAULT_INFERENCE, DIGEST, Inference, type InferenceConfig } from "./inference.ts";
 import { currentRouting } from "./routing.ts";
 import { Bus } from "./bus.ts";
 import { PROTOCOL, stateDirFor } from "./control-client.ts";
@@ -35,6 +36,7 @@ export interface HubConfig {
   memory: { enabled: boolean; worker_url?: string; inject_tokens: number; brief_items: number };
   roles: Record<string, string[]>;
   budget: BudgetConfig;
+  inference: InferenceConfig;
   omniroute: OmniRouteConfig;
   local: { deny: string[]; bash_network: boolean; max_steps: number; read_allow: string[] };
 }
@@ -48,6 +50,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   memory: { enabled: true, inject_tokens: 2000, brief_items: 8 },
   roles: DEFAULT_ROLES,
   budget: DEFAULT_BUDGET,
+  inference: DEFAULT_INFERENCE,
   omniroute: DEFAULT_OMNIROUTE,
   local: { deny: [], bash_network: false, max_steps: 30, read_allow: [] },
 };
@@ -55,7 +58,7 @@ export const DEFAULT_CONFIG: HubConfig = {
 export { stateDirFor };
 
 /** Ids an external process may not claim: the console user and the adapters the daemon runs itself. */
-const RESERVED_IDS = new Set([USER, "codex", "kimi", "local", "hub"]);
+const RESERVED_IDS = new Set([USER, "codex", "kimi", "local", "hub", DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
 export function loadConfig(cwd: string): HubConfig {
@@ -67,6 +70,7 @@ export function loadConfig(cwd: string): HubConfig {
       memory: { ...DEFAULT_CONFIG.memory, ...file.memory },
       roles: { ...DEFAULT_CONFIG.roles, ...file.roles },
       budget: { ...DEFAULT_CONFIG.budget, ...file.budget },
+      inference: { ...DEFAULT_CONFIG.inference, ...file.inference },
       omniroute: { ...DEFAULT_CONFIG.omniroute, ...file.omniroute },
       local: { ...DEFAULT_CONFIG.local, ...file.local },
     };
@@ -131,7 +135,9 @@ export async function startDaemon(opts: DaemonOptions) {
   // The file is written only after the port is bound: a second daemon that loses the bind must not clobber it.
   const token = randomBytes(24).toString("hex");
 
-  const bus = new Bus({ batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap });
+  // The hub's own model calls (digest condensation, task triage) are wired below, once the gateway client exists.
+  let inference: Inference | undefined;
+  const bus = new Bus({ batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs) });
   const memory = new MemoryClient(config.memory.worker_url ?? workerUrl(), 2000, log);
   const chain = projectChain(opts.cwd);
   const recalled = new Set<PeerId>(); // once per peer per hub run, however often the peer's session restarts
@@ -149,6 +155,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const omni = new OmniRoute(config.omniroute, log);
   let sidecar: Sidecar | undefined; // L2, started by the first hub-owned model call, stopped with the hub
   let sidecarRouting = "";
+  inference = new Inference(config.inference, { omni, sidecar: () => sidecar, route: "sy/fast", fixedModel: () => currentRouting(opts.cwd, log).local.fixed_model, log });
 
   const consoles = new Set<Sock>();
   /** A line for the human: hub.log and every open `ahub tail`. */
@@ -165,6 +172,7 @@ export async function startDaemon(opts: DaemonOptions) {
     project: chain.at(-1)!,
     ...(config.memory.enabled ? { memory, briefs: new Briefs(memory, chain.at(-1)!, config.memory.brief_items) } : {}),
     notify,
+    triage: { classify: (title, detail) => inference?.triage(title, detail) ?? Promise.resolve(undefined), onCampus: async () => !(await omni.offCampus()) },
   });
   // ---- budget relay -------------------------------------------------------------------------------------------
   const manualPaused = new Set<PeerId>(); // `ahub pause`: the coordinator never lifts these

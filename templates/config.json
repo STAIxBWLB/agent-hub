@@ -13,6 +13,7 @@
     "local": ["implementer", "verifier"]
   },
   "budget": { "gate": 0.9, "stale_min": 30, "poll_min": 10, "checkpoint_timeout_s": 90, "kimi_tokens_5h": 0 },
+  "inference": { "enabled": true, "digest_min_items": 5, "digest_min_chars": 8000, "triage": true },
   "omniroute": {
     "urls": [],
     "access_hosts": [],
