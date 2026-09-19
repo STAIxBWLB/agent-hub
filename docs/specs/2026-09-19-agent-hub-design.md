@@ -584,7 +584,7 @@ M6 internal inference, packaging
 
 ## Out of scope
 
-- Cross-machine broker or rooms, web UI, Windows.
+- Cross-machine broker or rooms, Windows. The web UI was outside the original six milestones; issue #6 adds the local dashboard described below.
 - OmniRoute daemon on the Mac; pooling subscription OAuth through any gateway.
 - Gemini CLI and OpenCode adapters beyond the ACP fallback note.
 - Switchyard `auto` route until v0.3.0 ships.
@@ -604,3 +604,24 @@ M6 internal inference, packaging
 | Steering a Codex turn changes its plan mid-flight | Only `important` steers; default tier is `status` |
 | Kimi ACP has no quota API | Token-based soft limit only; documented |
 | claude-mem worker API is internal and unversioned for third-party clients | Client isolated in `src/memory/`, pinned to a plugin version range, fail-open everywhere, contract test against a fake worker plus one live smoke |
+
+
+## Post-milestone amendment: local dashboard (issue #6)
+
+Owner instruction to implement issue #6 approves its local, read-mostly dashboard.
+The session/origin model is defined in `docs/security.md`, written before the code.
+`ahub ui` lazily opens an ephemeral loopback listener and exchanges a single-use
+fragment ticket for an HttpOnly, SameSite=Strict browser session. The control link
+retains its blanket Origin refusal. The browser receives no control token.
+
+One static HTML file, without a build step or runtime dependency, polls public
+snapshots once per second. The latest 200 redacted bus events are retained only
+once the listener starts. The API exposes only permission answers, peer
+pause/resume, console messages, task proposal and assignment. All task changes
+use `Tasks`; budget pauses keep the terminal's override requirement.
+
+Local-worker permission titles may contain PII file contents or commands, so the
+page shows a terminal-only stub and offers denial only. Allowing those requests
+requires reading `ahub tail` and answering with `ahub permit`. Other agent
+approvals offer their original options. Task refs/history and checkpoint summaries
+are omitted from browser snapshots. Private envelope bodies retain the tail stub.

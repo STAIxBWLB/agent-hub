@@ -40,6 +40,7 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub ask [--remember] <question...>   answer from the task board, shared memory and this run's log, with the ids it rests on
   ahub route explain <id>       why a task went where it went
   ahub route explain --class <c> <title...>   what would happen to such a task now
+  ahub ui [--no-open]           open the local dashboard (or print its one-time link)
   ahub tail                     live stream of messages, states and permission requests
   ahub permit <id> <option>     answer a permission request shown by tail ("deny" cancels)
   ahub status | logs [-f] | doctor | kill`;
@@ -116,6 +117,19 @@ const commands: Record<string, () => Promise<void> | void> = {
   help: () => console.log(USAGE),
   "--version": () => console.log(VERSION),
   version: () => console.log(VERSION),
+
+  ui: async () => {
+    if (args.some((arg) => arg !== "--no-open")) fail("usage: ahub ui [--no-open]");
+    const hub = await connect();
+    const res = await hub.request({ t: "ui" }, 10_000);
+    hub.close();
+    if (!res.ok) fail(res.error);
+    if (args.includes("--no-open")) return console.log(res.url);
+    const opener = process.platform === "darwin" ? "open" : "xdg-open";
+    const opened = spawnSync(opener, [res.url], { stdio: "ignore", timeout: 10_000 });
+    if (opened.error || opened.status !== 0) console.log(`Open this one-time link within 60 seconds:\n${res.url}`);
+    else console.log("Dashboard opened. The session expires in one hour; run ahub ui to reopen it.");
+  },
 
   setup: async () => {
     const root = join(import.meta.dir, "..", "..");

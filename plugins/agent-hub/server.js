@@ -15538,7 +15538,7 @@ import { join } from "path";
 function stateDirFor(cwd) {
   return process.env.AGENTHUB_STATE_DIR ?? join(cwd, ".agenthub", "state");
 }
-var PROTOCOL = 5;
+var PROTOCOL = 6;
 function readControl(stateDir) {
   try {
     const status = JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8"));
