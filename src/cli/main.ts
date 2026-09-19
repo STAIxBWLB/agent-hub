@@ -37,6 +37,7 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub task assign <id> <peer>  give a task to a peer yourself
   ahub review <id> approved|changes_requested [note...]
   ahub remember <text...>       save a note to the memory all agents share
+  ahub ask [--remember] <question...>   answer from the task board, shared memory and this run's log, with the ids it rests on
   ahub route explain <id>       why a task went where it went
   ahub route explain --class <c> <title...>   what would happen to such a task now
   ahub tail                     live stream of messages, states and permission requests
@@ -317,6 +318,24 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   remember: async () => console.log(await taskOp("hub_remember", { text: args.join(" ") })),
+
+  ask: async () => {
+    const remember = args.includes("--remember");
+    const question = args.filter((a) => a !== "--remember").join(" ");
+    if (!question.trim()) fail("usage: ahub ask [--remember] <question...>");
+    const hub = await connect();
+    const res = await hub.request({ t: "ask", question, remember });
+    hub.close();
+    if (!res.ok) fail(res.error);
+    console.log(res.answer ?? `(${res.note})`);
+    // "Nothing found" means the list did not answer the question: printing it anyway would only look like an answer.
+    if (res.evidence.length && !String(res.answer ?? "").startsWith("Nothing found")) {
+      console.log("\nEvidence:");
+      for (const e of res.evidence as { id: string; text: string }[]) console.log(`  ${e.id.padEnd(12)} ${e.text.slice(0, 150)}`);
+    }
+    if (res.pii) console.log("\n(the evidence includes a PII task: shown here only, not saved anywhere)");
+    if (res.saved) console.log(`\n${res.saved}`);
+  },
 
   route: async () => {
     if (args[0] !== "explain") fail("usage: ahub route explain <id> | --class <class> <title...>");

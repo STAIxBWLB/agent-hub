@@ -18,6 +18,7 @@ import type { BusEvent } from "./bus.ts";
 import { DEFAULT_ROLES, roleContract, TASK_TOOLS } from "./hub-tools.ts";
 import { Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, type InferenceConfig } from "./inference.ts";
+import { ask } from "./ask.ts";
 import { currentRouting } from "./routing.ts";
 import { Bus } from "./bus.ts";
 import { PROTOCOL, stateDirFor } from "./control-client.ts";
@@ -541,6 +542,26 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         return void reply({ t: msg.t, ok: true, state: bus.stateOf(id) });
       }
+      case "ask":
+        // Console only: the evidence may hold PII task text (on campus), and the answer is for the person at the terminal.
+        if (c.role !== "console") return;
+        ask(String(msg.question ?? ""), {
+          board,
+          isPii: (t) => tasks.isPii(t),
+          onCampus: async () => !(await omni.offCampus()),
+          ...(config.memory.enabled ? { memory } : {}),
+          project: chain.at(-1)!,
+          logFile,
+          ...(inference ? { inference } : {}),
+        })
+          .then(async (res) => {
+            let saved: string | undefined;
+            if (msg.remember && res.answer && !res.pii) saved = await tasks.remember(USER, { text: `Q: ${String(msg.question).slice(0, 300)}\nA: ${res.answer}`, title: `ahub ask: ${String(msg.question).slice(0, 80)}`, kind: "finding" });
+            else if (msg.remember) saved = res.pii ? "not saved: the evidence includes a PII task" : "not saved: there was no answer to save";
+            reply({ t: "ask", ok: true, ...res, ...(saved ? { saved } : {}) });
+          })
+          .catch((e: Error) => reply({ t: "ask", ok: false, error: e.message }));
+        return;
       case "budget":
         if (c.role !== "console") return;
         if (msg.resume) {

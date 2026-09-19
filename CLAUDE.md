@@ -29,6 +29,7 @@ Run this before reporting any task complete, and paste the output. A failing tes
 
 - `src/hub/`: envelope, markers and digest rendering, bus (fan-out, hop cap, dedupe, one queue per peer delivered as a digest when ready, steer, cap, pause, preface), `BasePeer` state machine with the inactivity watchdog, daemon (control WS, state dir), control client, port registry.
 - `src/adapters/`: one file per native surface. `claude-channel.ts` runs inside Claude Code as the plugin's MCP server and talks to the daemon over the control WS; `codex-appserver.ts` and `acp.ts` run inside the daemon.
+- `src/hub/ask.ts` (`ahub ask`: evidence from board, memory and log, then an evidence-only answer that must cite ids).
 - `src/hub/inference.ts` (the hub's own model calls: digest condensation, task triage), `src/version.ts` (the one version, from `package.json`), `src/cli/setup.ts`.
 - `src/hub/budget.ts` (quota readings, pause records in `hub.db`, resume), `src/cli/statusline-tee.ts` (Claude's quota source).
 - `src/hub/board.ts` (sqlite), `src/hub/routing.ts` (`routing.toml`, `assign()`), `src/hub/tasks.ts` (the flow), `src/hub/hub-tools.ts` (tool and role definitions, read by the MCP server and the local worker alike), `src/memory/brief.ts`.

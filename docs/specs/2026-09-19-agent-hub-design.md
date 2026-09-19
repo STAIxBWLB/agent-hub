@@ -408,6 +408,14 @@ inside a peer.
   and briefs are token-capped; project chain filtering only; tool_input containing
   denylisted paths is never posted; no transcript or full observation bodies cross the
   bus.
+- `ahub ask` (added after 0.1.0). Retrieval first, model second, read-only. Evidence is gathered from the task
+  board, claude-mem (index search plus the timeline around the top hit) and this run's hub log, capped at 6000
+  characters; the hub's model (`sy/fast`) answers from that list only and has to cite its ids, and an answer that
+  cites nothing from the list is dropped. No evidence means no model call; no model means the evidence is the result.
+  PII tasks are evidence only when the model is reached on campus, the result is then marked and never saved;
+  `--remember` saves an answer as a `finding` note. Console only. claude-mem's corpus endpoints were checked
+  (verified 2026-09-19: `GET /api/corpus` lists none, and a corpus has to be built and primed with a model session
+  of its own), so search plus timeline stays the retrieval path and the hub still owns no store.
 - Config: `memory.enabled` (default true when the worker answers `/api/health`),
   `memory.worker_url` (default from `~/.claude-mem/settings.json`
   `CLAUDE_MEM_WORKER_PORT`), `memory.inject_tokens`, `memory.brief_items`,

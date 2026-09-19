@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `ahub ask`: answers from the task board, shared memory and the hub log, evidence first; the answer has to cite the ids it rests on.
+
 ## 0.1.0
 
 First public release.
