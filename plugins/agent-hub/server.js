@@ -15598,6 +15598,50 @@ class ControlClient {
     this.ws.close();
   }
 }
+// package.json
+var package_default = {
+  name: "agent-hub",
+  version: "0.1.0",
+  description: "Native multi-agent hub: Claude Code, Codex, Kimi Code and a local worker as peers in one project",
+  license: "MIT",
+  private: true,
+  type: "module",
+  bin: {
+    ahub: "src/cli/main.ts",
+    "agent-hub": "src/cli/main.ts"
+  },
+  scripts: {
+    check: "scripts/check.sh",
+    build: "bun scripts/build.mjs",
+    test: "bun test"
+  },
+  engines: {
+    bun: ">=1.3.0"
+  },
+  devDependencies: {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@types/bun": "^1.3.0",
+    typescript: "^5.8.0"
+  },
+  files: [
+    "src",
+    "plugins",
+    "templates",
+    "scripts/build.mjs",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "docs"
+  ],
+  repository: {
+    type: "git",
+    url: "git+https://github.com/STAIxBWLB/agent-hub.git"
+  },
+  homepage: "https://github.com/STAIxBWLB/agent-hub"
+};
+
+// src/version.ts
+var VERSION = package_default.version;
 
 // src/hub/hub-tools.ts
 var str = { type: "string" };
@@ -15614,7 +15658,7 @@ var tool = (name, description, properties, required2 = []) => ({
   inputSchema: { type: "object", properties, required: required2, additionalProperties: false }
 });
 var TASK_TOOLS = [
-  tool("hub_task_propose", "Put a piece of work on the shared task board. The hub assigns an owner by class (routing.toml) unless you name one. Classes: plan, implement, bulk_edit, test, review, summarize, triage.", { title: str, class: { type: "string", enum: ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] }, detail: str, refs, owner: { type: "string", description: "peer id; omit to let the ahub route it" } }, ["title", "class"]),
+  tool("hub_task_propose", "Put a piece of work on the shared task board. The hub assigns an owner by class (routing.toml) unless you name one. Classes: plan, implement, bulk_edit, test, review, summarize, triage. Name the class when you know it; without one the hub tries to pick it.", { title: str, class: { type: "string", enum: ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] }, detail: str, refs, owner: { type: "string", description: "peer id; omit to let the hub route it" } }, ["title"]),
   tool("hub_task_accept", "Take a task that was assigned to you.", { id }, ["id"]),
   tool("hub_task_decline", "Pass on a task assigned to you; the hub offers it to the next peer.", { id, reason: str }, ["id"]),
   tool("hub_task_done", "Mark your task finished. It goes to its reviewer with your summary and refs.", { id, summary: str, refs }, ["id", "summary"]),
@@ -15683,7 +15727,7 @@ var TOOLS_INSTRUCTIONS = ["agent-hub task tools for this project. Messages from 
 `);
 var log = (line) => console.error(`[agent-hub] ${line}`);
 var text = (s) => ({ content: [{ type: "text", text: s }] });
-var server = new Server({ name: "agent-hub", version: "0.1.0" }, toolsOnly ? { capabilities: { tools: {} }, instructions: TOOLS_INSTRUCTIONS } : { capabilities: { experimental: { "claude/channel": {} }, tools: {} }, instructions: INSTRUCTIONS });
+var server = new Server({ name: "agent-hub", version: VERSION }, toolsOnly ? { capabilities: { tools: {} }, instructions: TOOLS_INSTRUCTIONS } : { capabilities: { experimental: { "claude/channel": {} }, tools: {} }, instructions: INSTRUCTIONS });
 var inbox = [];
 var hub;
 async function push(envs) {

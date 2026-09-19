@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { init, upsertBlock } from "../src/cli/init.ts";
 import { buildLaunch, CLAUDE_CHANNEL, statusLineSettings, UNATTENDED_WARNING } from "../src/cli/launch.ts";
 import { allocatePorts } from "../src/hub/ports.ts";
+import { pluginVersion, setupPlan } from "../src/cli/setup.ts";
+import { VERSION } from "../src/version.ts";
 
 test("ahub init is idempotent and keeps text outside the markers", () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
@@ -65,4 +67,24 @@ test("ahub claude injects the tee through --settings, wraps the user's command, 
   const own = buildLaunch("claude", ["--settings", "{}"], { unattended: false, statusLine: tee });
   expect(own.args.filter((a) => a === "--settings")).toHaveLength(1);
   expect(own.warning).toContain("status line tee is off");
+});
+
+test("one version: package.json, the plugin manifest, the CLI and the MCP server agree", async () => {
+  const pkg = JSON.parse(readFileSync("package.json", "utf8")).version;
+  expect(VERSION).toBe(pkg);
+  expect(JSON.parse(readFileSync("plugins/agent-hub/.claude-plugin/plugin.json", "utf8")).version).toBe(pkg);
+  expect(Bun.spawnSync(["bun", "src/cli/main.ts", "--version"]).stdout.toString().trim()).toBe(pkg);
+  expect(readFileSync("plugins/agent-hub/server.js", "utf8")).toContain(`version: "${pkg}"`); // stamped into the bundle
+});
+
+test("ahub setup plans only what is missing, and updates a plugin that is older than the hub", () => {
+  const root = "/opt/pkgs/agent-hub";
+  const listed = (v: string) => `Installed plugins:\n\n  \u276f agent-hub@agent-hub\n    Version: ${v}\n    Scope: user\n`;
+  expect(pluginVersion("Installed plugins:\n  other@x\n    Version: 9")).toBeUndefined();
+  expect(pluginVersion(listed("0.0.9"))).toBe("0.0.9");
+  expect(setupPlan("", "", root).map((s) => s.argv.slice(2).join(" "))).toEqual([`marketplace add ${root}`, "install agent-hub@agent-hub"]);
+  expect(setupPlan(listed("0.0.9"), `agent-hub  ${root}`, root).map((s) => s.argv.slice(2).join(" "))).toEqual(["update agent-hub@agent-hub"]);
+  expect(setupPlan(listed(VERSION), `agent-hub  ${root}`, root)).toEqual([]);
+  // a marketplace of the same name that points at another checkout is replaced, not left to shadow this package
+  expect(setupPlan(listed(VERSION), "agent-hub  /somewhere/else", root).map((s) => s.argv[3])).toEqual(["remove", "add"]);
 });

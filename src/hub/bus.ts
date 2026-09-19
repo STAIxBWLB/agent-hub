@@ -14,6 +14,8 @@ export interface BusOptions {
   /** How long a status envelope may wait for company before it is delivered on its own. */
   batchMs: number;
   queueCap: number;
+  /** Optional: rewrite a delivery before it goes out (M6 digest condensation). Must return its input on any failure. */
+  condense?: (envs: Envelope[]) => Promise<Envelope[]>;
 }
 export const DEFAULT_BUS: BusOptions = { retryMs: 1000, batchMax: 3, batchMs: 15_000, queueCap: 200 };
 
@@ -167,7 +169,10 @@ export class Bus {
         const batch = this.take(id, queue);
         const delivery = preface ? [preface, ...batch] : batch;
         try {
-          await peer.deliver(delivery);
+          // What goes out may be condensed; what comes back on failure is always the originals.
+          const out = this.opts.condense ? await this.opts.condense(delivery).catch(() => delivery) : delivery;
+          if (this.stateOf(id) !== "idle") throw new Error("peer went away while the delivery was prepared");
+          await peer.deliver(out);
         } catch {
           this.failed(id, delivery);
           break;

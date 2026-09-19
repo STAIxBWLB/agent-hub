@@ -325,6 +325,29 @@ test("budget pause: open work goes to local first through the constraints, revie
   expect(Object.values(peers).filter((p) => p.id !== "local").flatMap((p) => p.got).some((e) => e.body.includes("900101"))).toBe(false);
 });
 
+test("triage: a task without a class gets one from the hub's model, recorded in its history; PII goes to the model only on campus", async () => {
+  const base = await setup();
+  const asked: string[] = [];
+  let onCampus = true;
+  const tasks = new Tasks({
+    board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: () => {},
+    triage: { classify: async (title) => (asked.push(title), title.includes("unclear") ? undefined : "bulk_edit"), onCampus: async () => onCampus },
+  });
+  const t = await tasks.propose("claude", { title: "rename foo to bar everywhere" });
+  expect(t).toMatchObject({ class: "bulk_edit", owner: "local" });
+  expect(t.history.map((h) => h.event)).toContain("triaged");
+  expect((await tasks.propose("claude", { title: "explicit", class: "test" })).class).toBe("test");
+  expect(asked).toEqual(["rename foo to bar everywhere"]); // a named class is never second-guessed
+  await expect(tasks.propose("claude", { title: "unclear thing" })).rejects.toThrow(/class is required/);
+
+  onCampus = false;
+  await expect(tasks.propose("claude", { title: "update the record of 900101-1234567" })).rejects.toThrow(/class is required/);
+  expect(asked.some((a) => a.includes("900101"))).toBe(false); // its text never went to a model across Cloudflare
+  onCampus = true;
+  expect((await tasks.propose("claude", { title: "update the record of 900101-1234567" })).owner).toBe("local");
+  await expect(base.tasks.propose("claude", { title: "no triage configured" })).rejects.toThrow(/class is required/);
+});
+
 test("route explain runs the assignment code: same owner, skipped candidates named", async () => {
   const { tasks, peers } = await setup();
   peers.codex!.set("offline");

@@ -7,6 +7,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ControlClient, stateDirFor } from "../hub/control-client.ts";
+import { VERSION } from "../version.ts";
 import { DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS } from "../hub/hub-tools.ts";
 import { frame, replyParent, sanitize, type Envelope } from "../hub/envelope.ts";
 
@@ -42,7 +43,7 @@ const log = (line: string) => console.error(`[agent-hub] ${line}`);
 const text = (s: string) => ({ content: [{ type: "text" as const, text: s }] });
 
 const server = new Server(
-  { name: "agent-hub", version: "0.1.0" },
+  { name: "agent-hub", version: VERSION },
   toolsOnly ? { capabilities: { tools: {} }, instructions: TOOLS_INSTRUCTIONS } : { capabilities: { experimental: { "claude/channel": {} }, tools: {} }, instructions: INSTRUCTIONS },
 );
 
