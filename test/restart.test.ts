@@ -86,8 +86,13 @@ test("recovery RPC is console-only, fences sends, commits, restores and releases
   expect((await consoleOne.request({ t: "recovery", op: "inspect", expectedInstanceId: "instance-1" })).ok).toBe(true);
   expect((await consoleOne.request({ t: "recovery", op: "prepare", operationId: "op-1", expectedInstanceId: "instance-1" })).recovery.phase).toBe("prepared");
   expect((await consoleOne.request({ t: "send", body: "held" })).ok).toBe(false);
+  peer.close();
+  for (let n = 0; n < 100 && first.bus.peers.get("claude-2")?.state !== "offline"; n++) await Bun.sleep(5);
+  expect(first.bus.peers.get("claude-2")?.state).toBe("offline");
+  await consoleOne.request({ t: "recovery", op: "prepare", operationId: "op-1", expectedInstanceId: "instance-1" });
   const committed = await consoleOne.request({ t: "recovery", op: "commit", operationId: "op-1", expectedInstanceId: "instance-1" });
   expect(committed.committed).toBe(true);
+  expect(readRestartSnapshot(stateDir, { projectRoot: options.cwd, projectId: "project-1", operationId: "op-1" })?.peers[0]?.state).toBe("idle");
   await first.stopped;
   consoleOne.close();
   peer.close();

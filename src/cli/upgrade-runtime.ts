@@ -178,6 +178,13 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         }
         const idle = await waitForIdle(binding, 600_000, terminalOptions(run));
         if (!idle.satisfied) throw new Error(`${binding.peer}: terminal is not verified idle; source retained`);
+        const source = await inspectRecovery(planned.project);
+        if (source.instanceId !== planned.source.instanceId || source.recovery?.operationId !== op.id || !source.recovery.ready) {
+          throw new Error("source preparation expired or changed while waiting for the terminal; no terminal was closed");
+        }
+        // Refresh the same prepared lease immediately before the terminal effect. Preserve
+        // the original peer roster, including any terminal already closed in this operation.
+        await control(planned.project, "prepare", op.id, planned.source.instanceId!);
         progress.terminals[key] = "pending"; save();
         const result = await closeTerminal(binding, 0, terminalOptions(run));
         if (result.manualRequired) throw new Error(`${binding.peer}: terminal close not verified; manual-required`);

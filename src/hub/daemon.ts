@@ -745,7 +745,7 @@ export async function startDaemon(opts: DaemonOptions) {
       await bus.fenceRecovery();
       const blocked = [...bus.peers].filter(([, peer]) => peer.state === "busy").map(([id]) => id);
       if (!blocked.length && permissions.size === 0 && recoveryReady()) {
-        recoveryPeerSnapshot = Object.values(recoveryPeers());
+        recoveryPeerSnapshot ??= Object.values(recoveryPeers());
         recoveryPhase = "prepared";
       }
       writeStatus();
