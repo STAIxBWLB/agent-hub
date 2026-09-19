@@ -118,3 +118,63 @@ Needs a model gateway in `omniroute.urls` (for the owner: the campus gateway ove
 | 2026-09-19 | Dedicated inference key `agent-hub-local` issued on the gateway (`omniroute api api-keys`, admin context), stored at `~/.agenthub/omniroute-agent-hub-local.key` (0600), `.agenthub/config.json` points `omniroute.api_key_file` at it | pass: `GET /models` 200, chat completion "pong" via DeepSeek-V4-Flash, `ahub doctor` key present; `AGENTHUB_SWITCHYARD_BIN=$HOME/.cargo/bin/switchyard-server` exported in `~/.config/shell/30-ai.sh` (checked: not in `~/.zshrc`; visible in a login shell), doctor finds switchyard 0.2.0 there |
 | 2026-09-19 | Gateway choice with both candidates reachable | found: `ahub doctor` picked the off-campus URL while the internal URL was up (sequential probing, a stalled first request, and a non-5xx answer counting as healthy). Fixed: concurrent probes, list order decides, only 2xx is healthy. After the fix the dedicated key answered "pong" through the internal URL in 324 ms, `provider vllm` |
 | 2026-09-19 | `ahub setup` after the M5/M6 commits | pass: `ahub doctor` flagged the morning's plugin as stale (same version, bundle differs), `ahub setup --yes` uninstalled and reinstalled `agent-hub@agent-hub 0.1.0`, doctor then shows `claude plugin ok` |
+
+## Issue #7 verification ledger (2026-09-19)
+
+This ledger supersedes the unchecked issue description. A pass applies only to
+its stated observation; scripted app-server clients do not count as a real TUI.
+Blocked legs remain live-verification work, not passing tests.
+
+The agent-session probes used an isolated temporary git project, the installed
+`@staix/agent-hub 0.3.0`, Claude Code 2.1.278 and Kimi 2.0.1. The Switchyard
+probe used a separate temporary directory and the checkout's Sidecar/OmniRoute
+helpers. Commands in the agent-session project explicitly unset `AGENTHUB_STATE_DIR`: a shell launched inside a hub
+session inherits the parent hub's state directory, regardless of its cwd.
+No production task or source file was used as a test target.
+
+| Leg | Result | Evidence and remaining boundary |
+| --- | --- | --- |
+| Actual Claude plugin store setup | pass | `ahub setup --yes` completed against the existing user store; doctor read back `agent-hub@agent-hub 0.3.0` with a matching bundle. No plugin change was necessary. |
+| Claude channel, batched digest and explicit reply parent | pass | A real `ahub claude` PTY session received `ISSUE7-DIGEST-A` and `ISSUE7-DIGEST-B` in one channel item with `source="hub-digest"`, `sources="user"`. Its transcript contains actual `hub_send` calls with each input's `reply_to`; daemon log recorded both replies at `hop=1`. |
+| Kimi real permission allow | pass | Bash requested approval `f7ee4fcc` at 12:43:20 UTC; `ahub permit f7ee4fcc approve_once` released it, and the actual file contained `permission-shell-ok`. The earlier Write tool did not request approval and was not counted. |
+| Kimi real permission timeout | pass | A second Bash request, `371ff686`, arrived at 12:43:47.928 UTC and was left unanswered with the default 120-second timeout. Kimi reported cancellation at 12:45:52.459 UTC, returned idle, did not retry, and `permission-timeout.txt` did not exist. |
+| Switchyard two-target routing and escalation | pass (model selection and escalation) | Real Switchyard 0.2.0 selected GLM for the initial `sy/coding` request and DeepSeek after a synthetic critical tool-result fixture. In one `sy/review` session with `confirmations=2`, selection was GLM, GLM, then DeepSeek after two trouble-history submissions. Evidence came from `x-model-router-selected-model`; real router, classifier and targets were used. |
+| Claude task proposal and review tools | pass | The actual plugin `hub_task_propose` created scratch task #1, `ISSUE7-REVIEW-FLOW`, at 12:44:20 UTC, attributed to `claude`. The first assignment remained empty because the Codex peer had been detached; proposal success is separate from handoff success. Claude subsequently issued two actual `hub_review` calls with `changes_requested` at 12:47:50 and 12:47:59 UTC. |
+| Real Codex TUI queue and MCP tools | pass | With Codex 0.155.1 TUI attached, a typed user turn ran `sleep 30`; the status message showed `busy queued 1`, appeared in the transcript only after the user turn completed, and invoked the actual `hub_task_list` before replying `QUEUE-DELIVERED`. |
+| Real Codex TUI steer | pass | In a second typed user turn, the TUI prompt explicitly authorized a console marker update while `sleep 20` ran. An important message arrived at 12:48:15 UTC; queue remained 0; the same turn ended at 12:48:39 UTC with `STEER-VERIFIED` at hop 1. The first probe delivered its steer but the model retained the original user instruction, so that attempt was not counted as behavioral success. |
+| Unassisted Claude proposal -> Codex completion -> Claude review and escalation | fail, [#11](https://github.com/STAIxBWLB/agent-hub/issues/11) | Task #1 was delivered to Codex at 12:47:05 UTC; it replied `Task #1 noted; no action taken on the hub reference message.` and left the task proposed. Generated instructions classify every hub item as reference-only memory. After a corrective user prompt in the TUI, board history recorded Codex accepted/done, Claude changes_requested, Codex done, Claude changes_requested, and hub escalation to Kimi. Kimi then accepted/done through its real tools, and Claude approved the task. That assisted success does not erase the default-flow failure. |
+| Off-campus Cloudflare Access headers | blocked, [#12](https://github.com/STAIxBWLB/agent-hub/issues/12) | Internal gateway reachable; both Access credential-file settings empty; unauthenticated public models probe HTTP 403. Needs authorized Access credentials and an off-campus network. VPN was not disconnected. |
+| Natural Codex budget pause with TUI attached | blocked, [#12](https://github.com/STAIxBWLB/agent-hub/issues/12) | Actual TUI-connected weekly reading was approximately 12%, below the gate. No manual budget reading was injected. Needs a naturally near-limit account; parser and manual-injection tests are not this live leg. |
+
+### Environment findings
+
+The first scratch Codex TUI resolved a different installed executable than the
+interactive shell's `codex --version`: the Homebrew-prefix binary was 0.146.0,
+whereas the fnm-prefix binary was 0.155.1. The old TUI rendered but its first
+model turn failed with HTTP 400, requiring a newer Codex version. That attempt
+is not a successful model turn. Pinning `codex_bin` in the scratch configuration
+to the verified executable avoids PATH-dependent selection for both the TUI
+and app-server; no global installation or user configuration was changed.
+
+The first isolated Switchyard run returned five HTTP 502 responses with
+`invalid upstream JSON`; direct calls to both models succeeded. One fresh
+sidecar repeat completed all five routing selections above. The transient 502
+is not explained by this verification. GLM's bodies were empty at the probe's
+192-token limit, so the pass establishes model selection and escalation, not
+answer quality. Both temporary sidecars were stopped and generated configs
+removed.
+
+### Verification gate
+
+`scripts/check.sh` completed successfully on this checkout:
+
+```text
+156 pass
+0 fail
+1014 expect() calls
+Ran 156 tests across 16 files.
+check: OK
+```
+
+This gate covers type checking, bundle freshness, package contents and tests;
+it does not replace the live outcomes or unblock #11 and #12.
