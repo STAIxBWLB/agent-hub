@@ -67,11 +67,11 @@ export class Tasks {
   }
 
   async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; refs?: TaskRefs; owner?: PeerId }): Promise<Task> {
-    const title = String(input.title ?? "").trim();
+    const title = String(input.title ?? "").trim().slice(0, 300); // callers are models: a title is a line, not a document
     if (!title) throw new Error("title is required");
     const given = input.class === undefined || input.class === "" ? undefined : input.class;
     if (given !== undefined && !CLASSES.includes(given as TaskClass)) throw new Error(`class must be one of ${CLASSES.join(", ")}`);
-    const text = { title, detail: String(input.detail ?? ""), refs: cleanRefs(input.refs) };
+    const text = { title, detail: String(input.detail ?? "").slice(0, 8000), refs: cleanRefs(input.refs) };
     const signals = detectSignals(text, this.d.routing(), this.d.cwd);
     let cls = given as TaskClass | undefined;
     let triaged = false;

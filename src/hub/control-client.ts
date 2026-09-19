@@ -5,8 +5,8 @@ export function stateDirFor(cwd: string): string {
   return process.env.AGENTHUB_STATE_DIR ?? join(cwd, ".agenthub", "state");
 }
 
-/** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages; 4 = budget messages and `hub_checkpoint`. The plugin is installed apart from the daemon, so they can drift. */
-export const PROTOCOL = 4;
+/** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages; 4 = budget messages and `hub_checkpoint`; 5 = `ask`. The plugin is installed apart from the daemon, so they can drift. */
+export const PROTOCOL = 5;
 
 export interface Hello {
   /** `tools`: acts for `peer` (task tools, hub_send) without being a delivery target: the MCP server Kimi and Codex run. */
@@ -58,10 +58,12 @@ export class ControlClient {
     });
   }
 
-  request(msg: Record<string, unknown>): Promise<any> {
+  /** `timeoutMs`: for calls a person waits on. The hub has its own budget; this one only makes sure the CLI never hangs. */
+  request(msg: Record<string, unknown>, timeoutMs?: number): Promise<any> {
     const rid = this.nextRid++;
     return new Promise((resolve) => {
-      this.pending.set(rid, resolve);
+      const timer = timeoutMs ? setTimeout(() => (this.pending.delete(rid), resolve({ ok: false, error: `no answer from the hub within ${Math.round(timeoutMs / 1000)} s` })), timeoutMs) : undefined;
+      this.pending.set(rid, (reply) => (clearTimeout(timer), resolve(reply)));
       this.ws.send(JSON.stringify({ ...msg, rid }));
     });
   }

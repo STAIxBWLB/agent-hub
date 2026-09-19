@@ -438,6 +438,38 @@ test("budget relay end to end: checkpoint, pause, task to local with the summary
   kimiTools.close();
 });
 
+test("ahub ask over the control link: console only, evidence from the board, --remember saves a note but never one that rests on a PII task", async () => {
+  const mem = startFakeMemWorker();
+  const model = startFakeModelServer({ key: "k", script: (b) => ({ content: JSON.parse(String(b.messages[1]!.content)).evidence.some((e: any) => e.id === "task #2") ? "Two tasks are open [task #1] [task #2]." : "One task is open [task #1]." }) });
+  cleanup.push(mem.stop, model.stop);
+  process.env.OMNIROUTE_API_KEY = "k";
+  cleanup.push(() => delete process.env.OMNIROUTE_API_KEY);
+  const { stateDir, console_ } = await hub({ modelUrl: model.url, memoryUrl: mem.url });
+  await console_.request({ t: "task", op: "hub_task_propose", args: { title: "write the release notes", class: "summarize" } });
+
+  const res = await console_.request({ t: "ask", question: "what is open?", remember: true });
+  expect(res).toMatchObject({ ok: true, found: true, answer: "One task is open [task #1].", pii: false, saved: "saved to shared memory as a model-written answer" });
+  expect(res.evidence[0]).toMatchObject({ id: "task #1", kind: "task" });
+  // saved as what it is: the hub's model wrote it, the user only asked
+  const note = mem.calls.filter((c) => c.path === "/api/memory/save").at(-1)!.body as any;
+  expect(note.metadata).toMatchObject({ peer: "hub", asked_by: "user", source: "ahub ask" });
+  expect(note.title).toStartWith("ahub ask (model answer)");
+
+  await console_.request({ t: "task", op: "hub_task_propose", args: { title: "fix the entry for 900101-1234567", class: "implement" } });
+  const saves = mem.calls.filter((c) => c.path === "/api/memory/save").length;
+  const withPii = await console_.request({ t: "ask", question: "what is open?", remember: true });
+  expect(withPii).toMatchObject({ pii: true, saved: "not saved: PII is involved" });
+  expect(mem.calls.filter((c) => c.path === "/api/memory/save")).toHaveLength(saves);
+  expect(JSON.stringify(mem.calls.map((c) => c.body ?? c.query))).not.toContain("900101");
+
+  // a peer-side client gets no answer at all
+  const asKimi = await ControlClient.connect(stateDir, { role: "tools", peer: "kimi" });
+  expect(await asKimi.request({ t: "ask", question: "what is open?" })).toMatchObject({ ok: false, error: "ask is a console command" });
+  // and a message this hub does not know is answered, not left hanging (a newer CLI against an older hub)
+  expect(await asKimi.request({ t: "from-the-future" })).toMatchObject({ ok: false });
+  asKimi.close();
+});
+
 test("kill removes pid, status and token", async () => {
   const { stateDir, daemon, console_ } = await hub();
   console_.send({ t: "kill" });

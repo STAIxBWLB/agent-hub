@@ -408,6 +408,19 @@ inside a peer.
   and briefs are token-capped; project chain filtering only; tool_input containing
   denylisted paths is never posted; no transcript or full observation bodies cross the
   bus.
+- `ahub ask` (added after 0.1.0). Retrieval first, model second, read-only. Evidence is gathered from the task
+  board, claude-mem (index search plus the timeline around the top hit) and this run's hub log, capped at 6000
+  characters; the hub's model (`sy/fast`) answers from that list only and has to cite its ids, and an answer that
+  cites nothing from the list is dropped. No evidence means no model call; no model means the evidence is the result.
+  Every row is capped and rows that match the question lead, so one long row cannot empty the list. Every cited id
+  has to be in the list: one invented id drops the answer. PII task text is evidence only when an on-campus model is
+  positively confirmed (a gateway answered, it is not behind Access, and no sidecar points off campus); otherwise
+  the row stays as a `[pii]` stub so counts are right. A question that itself carries PII skips the memory worker.
+  Such results are marked and never saved. `--remember` saves a real answer as a model-written note attributed to
+  the hub, under a title later asks exclude from their evidence; "nothing found" is never saved. The call is
+  interactive: its own 45 s clock, outside the backoff that protects deliveries. Console only. claude-mem's corpus endpoints were checked
+  (verified 2026-09-19: `GET /api/corpus` lists none, and a corpus has to be built and primed with a model session
+  of its own), so search plus timeline stays the retrieval path and the hub still owns no store.
 - Config: `memory.enabled` (default true when the worker answers `/api/health`),
   `memory.worker_url` (default from `~/.claude-mem/settings.json`
   `CLAUDE_MEM_WORKER_PORT`), `memory.inject_tokens`, `memory.brief_items`,
