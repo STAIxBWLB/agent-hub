@@ -236,7 +236,8 @@ peer. Peer ids claimed over the control WS must not be `user` or a hub-managed a
   Claude plugin has a tools-only mode (`AGENTHUB_MODE=tools`, control WS role `tools`: acts for
   a peer, never a delivery target). Kimi gets it through ACP `session/new` `mcpServers`
   (verified live), Codex through `-c mcp_servers.agent-hub.*` on the app-server the hub
-  spawns (verified to reach `ready`; `approval_mode = "approve"` per tool is inferred), `local`
+  spawns (verified live with a real Codex turn: tools called without an approval prompt under
+  `approval_mode = "approve"`), `local`
   natively. This replaces Codex `dynamicTools`: no rewriting of proxied TUI traffic.
 - Role contract: Claude in the plugin `instructions`, Codex, Kimi and `local` with the
   standing instruction of their first delivery, all of them in the `AGENT_HUB` marker
@@ -513,7 +514,7 @@ M2 coordination
 - [x] Codex `turn/steer` for important while busy (plain busy queue and drain for every peer shipped in M1: without it a second Kimi prompt fails with `turn.agent_busy`)
 - [x] Paused and offline queues, idempotent delivery, drop rules
 - [x] Session-start cross-platform recall (token cap, once per peer per hub run)
-- [ ] Live `turn/steer` against real Codex (blocked by the account usage limit on 2026-09-19)
+- [x] Live `turn/steer` against real Codex (2026-09-19, after the weekly window reset)
 
 M3 local worker and routing L2/L3
 - [x] Local worker agent loop with cwd-scoped tools, secrets denylist, approvals and seatbelt sandbox
@@ -528,7 +529,8 @@ M4 task board, roles, routing L1
 - [x] `routing.toml` loader, signals (PII, context length, quota), `ahub route explain`
 - [x] Review handoff and task-level escalation
 - [x] Task brief on handoff (search + timeline, `seen_ids`), `hub_remember` tool and console command, auto-saved board transitions
-- [ ] Live: Codex calling a hub tool in a real turn (MCP startup verified; a turn needs account quota), Claude plugin tools in a real session
+- [x] Live: Codex calling hub tools in a real turn (2026-09-19)
+- [ ] Live: Claude plugin task tools and digests in a real interactive session
 
 M5 budget relay
 - [x] Quota sources (Codex native, Claude status line, Kimi tokens, manual), gate, pause, checkpoint
