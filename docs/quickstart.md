@@ -7,17 +7,17 @@ agent-hub lets the coding agents on one machine work as peers in one project dir
 Needs [Bun](https://bun.sh) 1.3 or newer and macOS (Linux works without the `local` worker's `bash` and `git` tools, which need the macOS sandbox).
 
 Node alone is not supported. Keep `bun` on PATH even if you install with npm.
-The registry package uses the `staix` organization scope. After the first npm release:
+The registry package uses the `staix` organization scope. Install from npm:
 
 ```bash
 bun add -g @staix/agent-hub                 # installs `ahub` (also as `agent-hub`)
 ahub setup                                # installs the Claude Code channel plugin from this package, then runs doctor
 ```
 
-Until the first npm release, or for a pinned GitHub release:
+Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.1.0
+bun add -g github:STAIxBWLB/agent-hub#v0.2.0
 ahub setup
 ```
 
