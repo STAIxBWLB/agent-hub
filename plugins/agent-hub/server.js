@@ -15624,10 +15624,12 @@ var package_default = {
     typescript: "^5.8.0"
   },
   files: [
+    ".claude-plugin",
     "src",
     "plugins",
     "templates",
-    "scripts/build.mjs",
+    "scripts",
+    "tsconfig.json",
     "README.md",
     "LICENSE",
     "CHANGELOG.md",

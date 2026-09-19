@@ -97,6 +97,24 @@ test("text that tries to steer the summarizer can only ever produce capped, fram
   expect(await noTriage.inference.triage("t", "")).toBeUndefined();
 });
 
+test("an unreachable gateway backs off too, and the clock covers the probe, not only the model call", async () => {
+  process.env.OMNIROUTE_API_KEY = "k";
+  const lines: string[] = [];
+  const dead = new Inference(DEFAULT_INFERENCE, { omni: new OmniRoute({ urls: ["http://127.0.0.1:9/v1"], access_hosts: [] }), sidecar: () => undefined, route: "sy/fast", fixedModel: () => "m", log: (l) => lines.push(l) });
+  const envs = chatter(7);
+  expect(await dead.condense(envs)).toBe(envs);
+  const t0 = Date.now();
+  expect(await dead.condense(envs)).toBe(envs); // backed off: no second probe
+  expect(Date.now() - t0).toBeLessThan(50);
+  expect(lines).toHaveLength(1);
+
+  const hanging = { base: () => new Promise<string>(() => {}), chat: async () => ({ message: { role: "assistant", content: "x" } }) } as unknown as OmniRoute;
+  const stuck = new Inference(DEFAULT_INFERENCE, { omni: hanging, sidecar: () => undefined, route: "sy/fast", fixedModel: () => "m", log: () => {}, timeoutMs: 60 });
+  const t1 = Date.now();
+  expect(await stuck.condense(envs)).toBe(envs);
+  expect(Date.now() - t1).toBeLessThan(400);
+});
+
 test("in the bus: the peer gets the condensed delivery, and a failed delivery puts the originals back", async () => {
   class Peer extends BasePeer {
     got: Envelope[][] = [];
@@ -111,6 +129,32 @@ test("in the bus: the peer gets the condensed delivery, and a failed delivery pu
     async stop() {}
   }
   const bus = new Bus({ batchMs: 0, retryMs: 10_000, batchMax: 100, condense: async (envs) => (envs.length > 2 ? [newEnvelope(DIGEST, `condensed ${envs.length}`)] : envs) });
+  // while the delivery is being prepared the peer gets busy (the user typed into it): nothing was attempted, nothing is counted
+  {
+    const racing = new Peer("codex");
+    let release = () => {};
+    const slowBus = new Bus({ batchMs: 0, batchMax: 100, condense: (envs) => new Promise((r) => (release = () => r(envs))) });
+    slowBus.add(racing);
+    await racing.start();
+    const events: string[] = [];
+    slowBus.tap((e) => events.push(e.t));
+    slowBus.pause("codex");
+    for (const e of chatter(3, "claude")) slowBus.publish(e);
+    slowBus.resume("codex");
+    await Bun.sleep(5);
+    (racing as any).setState("busy");
+    release();
+    await Bun.sleep(5);
+    expect(racing.got).toHaveLength(0);
+    expect(slowBus.queued("codex")).toBe(3); // back at the head of the queue
+    (racing as any).setState("idle");
+    await Bun.sleep(5);
+    release();
+    await Bun.sleep(5);
+    // delivered together: had the collision counted as a failed attempt, they would now go out one by one
+    expect(racing.got.map((b) => b.length)).toEqual([3]);
+    expect(events).not.toContain("undeliverable");
+  }
   const kimi = new Peer("claude"); // the chatter comes from codex and kimi, and nobody receives their own messages
   bus.add(kimi);
   await kimi.start();
@@ -126,4 +170,28 @@ test("in the bus: the peer gets the condensed delivery, and a failed delivery pu
   bus.resume("claude");
   await Bun.sleep(20);
   expect(kimi.got.flat().map((e) => e.body)).toEqual(originals.map((e) => e.body)); // retried one by one after a failure, never condensed again
+
+  // a digest is resolvable like any envelope (Claude's reply_to), an important item skips the model, and an adapter
+  // that fails after it took the delivery gets the originals put back, not the digest
+  const more = chatter(4);
+  bus.pause("claude");
+  for (const e of more) bus.publish(e);
+  bus.resume("claude");
+  await Bun.sleep(20);
+  const digest = kimi.got.at(-1)![0]!;
+  expect(digest.from).toBe(DIGEST);
+  expect(bus.get(digest.id)).toBe(digest);
+  kimi.onFailed!(kimi.got.at(-1)!);
+  expect(bus.queued("claude")).toBe(4);
+  // an important envelope is why the queue became ready: the delivery it is in goes out as it is, no model call first
+  const fresh = new Bus({ batchMs: 0, batchMax: 100, condense: async (envs) => (envs.length > 2 ? [newEnvelope(DIGEST, "condensed")] : envs) });
+  const reader = new Peer("claude");
+  fresh.add(reader);
+  await reader.start();
+  fresh.pause("claude");
+  fresh.publish(newEnvelope("codex", "urgent", { priority: "important" }));
+  for (const e of chatter(3)) fresh.publish(e);
+  fresh.resume("claude");
+  await Bun.sleep(20);
+  expect(reader.got.map((batch) => batch.map((e) => e.from === DIGEST))).toEqual([[false, false, false, false]]);
 });

@@ -39,6 +39,8 @@ export class Bus {
   private readonly seen = new Map<string, Envelope>();
   private readonly taps = new Set<(e: BusEvent) => void>();
   private readonly withdrawn = new Set<string>();
+  /** What each peer was last handed, next to what it stands for: an adapter that reports a failure later hands back the former. */
+  private readonly lastDelivery = new Map<PeerId, { out: Envelope[]; originals: Envelope[] }>();
   private readonly attempts = new Map<string, number>(); // `${peer}:${envelope id}` -> failed deliveries
 
   constructor(opts: Partial<BusOptions> = {}) {
@@ -52,7 +54,12 @@ export class Bus {
       const { priority, body } = parseMarker(text);
       if (body) this.publish(newEnvelope(peer.id, body, { priority, ...opts }));
     };
-    peer.onFailed = (envs) => this.failed(peer.id, envs);
+    peer.onFailed = (envs) => {
+      // The adapter got the condensed list; what has to come back is what that list replaced.
+      const last = this.lastDelivery.get(peer.id);
+      const same = !!last && envs.length === last.out.length && envs.every((e, i) => e.id === last.out[i]!.id);
+      this.failed(peer.id, same ? last.originals : envs);
+    };
     peer.onState = () => {
       this.emit({ t: "state", peer: peer.id, state: this.stateOf(peer.id) });
       void this.drain(peer.id);
@@ -168,10 +175,21 @@ export class Bus {
         this.prefaces.delete(id);
         const batch = this.take(id, queue);
         const delivery = preface ? [preface, ...batch] : batch;
+        // What goes out may be condensed; what comes back on failure is always the originals. An important envelope
+        // is why the queue became ready, so it never waits on a model call.
+        const mayCondense = this.opts.condense && !delivery.some((e) => e.priority === "important");
+        const out = mayCondense ? await this.opts.condense!(delivery).catch(() => delivery) : delivery;
+        if (mayCondense && this.stateOf(id) !== "idle") {
+          // The peer got busy while the delivery was prepared. Nothing was attempted: back to the head of the queue,
+          // without counting against the envelopes.
+          if (preface) this.prefaces.set(id, preface);
+          queue.unshift(...batch.filter((e) => !this.withdrawn.has(e.id)));
+          break;
+        }
+        // A reply may name any item of `out` as its parent (Claude's reply_to): the digest has to be resolvable too.
+        for (const e of out) if (!this.seen.has(e.id)) this.seen.set(e.id, e);
+        this.lastDelivery.set(id, { out, originals: delivery });
         try {
-          // What goes out may be condensed; what comes back on failure is always the originals.
-          const out = this.opts.condense ? await this.opts.condense(delivery).catch(() => delivery) : delivery;
-          if (this.stateOf(id) !== "idle") throw new Error("peer went away while the delivery was prepared");
           await peer.deliver(out);
         } catch {
           this.failed(id, delivery);

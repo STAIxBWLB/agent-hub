@@ -46,20 +46,34 @@ export class Inference {
   async complete(system: string, user: string, maxTokens: number): Promise<string | undefined> {
     if (!this.cfg.enabled || Date.now() < this.offUntil) return undefined;
     const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), this.d.timeoutMs ?? TIMEOUT_MS);
+    const limit = this.d.timeoutMs ?? TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // One clock over everything, the gateway probe and the sidecar start included, not only the model call.
+    const timeout = new Promise<"timeout">((resolve) => (timer = setTimeout(() => (abort.abort(), resolve("timeout")), limit)));
+    const result = await Promise.race([this.run(system, user, maxTokens, abort.signal), timeout]);
+    clearTimeout(timer);
+    if (result === "timeout") return this.backOff(`no answer within ${limit / 1000} s`);
+    return result;
+  }
+
+  private backOff(why: string): undefined {
+    this.offUntil = Date.now() + BACKOFF_MS; // do not make every delivery wait out the timeout while the model is down
+    this.d.log(`inference: off for ${BACKOFF_MS / 60_000} min (${why.slice(0, 120)})`);
+    return undefined;
+  }
+
+  private async run(system: string, user: string, maxTokens: number, signal: AbortSignal): Promise<string | undefined> {
     try {
-      if (!(await this.d.omni.base())) return undefined; // no gateway configured or reachable: not an error
+      // No gateway configured is the normal state of a fresh install; one that is configured but unreachable costs a
+      // probe every time, so both back off.
+      if (!(await this.d.omni.base())) return this.backOff("no gateway configured or reachable");
       const messages = [{ role: "system" as const, content: system }, { role: "user" as const, content: user }];
       const via = await this.d.sidecar()?.endpoint();
       const body = via ? { model: this.d.route, messages, max_tokens: maxTokens } : { model: this.d.fixedModel(), messages, max_tokens: maxTokens };
-      const res = await this.d.omni.chat(body, { signal: abort.signal, ...(via ? { via } : {}) });
+      const res = await this.d.omni.chat(body, { signal, ...(via ? { via } : {}) });
       return res.message.content?.trim() || undefined;
     } catch (e) {
-      this.offUntil = Date.now() + BACKOFF_MS; // do not make every delivery wait out the timeout while the model is down
-      this.d.log(`inference: off for ${BACKOFF_MS / 60_000} min (${(e as Error).message.slice(0, 120)})`);
-      return undefined;
-    } finally {
-      clearTimeout(timer);
+      return signal.aborted ? undefined : this.backOff((e as Error).message);
     }
   }
 

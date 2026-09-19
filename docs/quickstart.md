@@ -50,7 +50,7 @@ or set `OMNIROUTE_API_KEY`. Name the model in `.agenthub/routing.toml` (`[local]
 | Command | What for |
 | --- | --- |
 | `ahub say [@peer] <text>` | talk; start with `[STATUS]` to let it batch, `[FYI]` for the record only |
-| `ahub task propose [<class>] <title>` | put work on the board; the hub picks an owner and a reviewer |
+| `ahub task propose [--class <c>] <title>` | put work on the board; the hub picks an owner and a reviewer, and the class if you name none |
 | `ahub board` | who has what; `ahub task show <id>` for one task |
 | `ahub status` | peers, queues, pauses; `ahub budget` for quota windows |
 | `ahub kill` | stop the daemon and everything it started |
