@@ -101,3 +101,21 @@ test("PII tasks are evidence only when the model is on campus, and then the resu
   expect(here.pii).toBe(true);
   expect((await gather("what is open?", on.deps)).evidence.find((e) => e.id === "task #2")!.text).toContain("900101-1234567");
 });
+
+test("grouped citations count; a question that carries PII skips the memory worker and an off-campus model", async () => {
+  const grouped = setup(() => ({ content: "Codex has it and the design was decided earlier [task #1, #65001]." }));
+  expect((await ask("sidecar status?", grouped.deps)).answer).toContain("[task #1, #65001]");
+
+  const isPii = (q: string) => /\d{6}-\d{7}/.test(q);
+  const onCampus = setup(() => ({ content: "It is on the board [task #2]." }), { onCampus: true });
+  const here = await ask("who handles 900101-1234567?", { ...onCampus.deps, questionIsPii: isPii });
+  expect(here).toMatchObject({ pii: true, answer: "It is on the board [task #2]." });
+  expect(onCampus.mem.calls).toHaveLength(0); // the question never reached the memory worker
+
+  const offCampus = setup(() => ({ content: "should not be asked" }), { onCampus: false });
+  const away = await ask("who handles 900101-1234567?", { ...offCampus.deps, questionIsPii: isPii });
+  expect(away.answer).toBeUndefined();
+  expect(away.note).toContain("off campus");
+  expect(offCampus.model!.requests).toHaveLength(0);
+  expect(offCampus.mem.calls).toHaveLength(0);
+});

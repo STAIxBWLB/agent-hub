@@ -19,7 +19,7 @@ import { DEFAULT_ROLES, roleContract, TASK_TOOLS } from "./hub-tools.ts";
 import { Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, type InferenceConfig } from "./inference.ts";
 import { ask } from "./ask.ts";
-import { currentRouting } from "./routing.ts";
+import { currentRouting, detectSignals } from "./routing.ts";
 import { Bus } from "./bus.ts";
 import { PROTOCOL, stateDirFor } from "./control-client.ts";
 import { newEnvelope, parseMarker, USER, type Envelope, type PeerId } from "./envelope.ts";
@@ -549,6 +549,7 @@ export async function startDaemon(opts: DaemonOptions) {
           board,
           isPii: (t) => tasks.isPii(t),
           onCampus: async () => !(await omni.offCampus()),
+          questionIsPii: (q) => currentRouting(opts.cwd, log).constraints.pii === "local_only" && detectSignals({ title: q, detail: "", refs: {} }, currentRouting(opts.cwd, log), opts.cwd).includes("pii"),
           ...(config.memory.enabled ? { memory } : {}),
           project: chain.at(-1)!,
           logFile,
