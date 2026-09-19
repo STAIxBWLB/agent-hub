@@ -202,6 +202,10 @@ instruction was entered into the Codex TUI. Real board history for
 - 12:55:41: Claude requested the second revision; the hub automatically moved
   ownership to Kimi, retaining Claude as reviewer.
 - 12:55:45: Codex acknowledged the handoff and stopped work.
+- 12:56:58: Kimi submitted the same file value through its real task tool after
+  normal console permission approval. No corrective prompt was sent to Kimi.
+- 12:57:04: Claude approved the task. Board readback was `approved`, owner Kimi,
+  reviewer Claude; `smoke.txt` still contained its original one-line value.
 
 This closes the default acceptance/review/escalation failure found in the
 0.3.0 issue #7 run. The earlier failure is retained above as historical evidence.
