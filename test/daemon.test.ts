@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
@@ -248,6 +248,46 @@ test("an outdated plugin is refused loudly instead of silently dropping digests;
   const res = await console_.request({ t: "send", body: "[FYI] note" });
   expect(res).toMatchObject({ ok: true, recorded: true, targets: [] });
 });
+
+test("a second session attached as the same peer wins and the replaced one stays detached", async () => {
+  const { stateDir, daemon, events } = await hub();
+  const first = await fakeClaude(stateDir);
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "first attach");
+  await fakeClaude(stateDir);
+  await until(() => events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline").length === 1, "replacement");
+  await Bun.sleep(2500); // past the replaced side's first retry (1 s)
+  expect(events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline")).toHaveLength(1);
+  expect(daemon.bus.peers.get("claude")?.state).toBe("idle");
+  const res: any = await first.client.callTool({ name: "hub_send", arguments: { text: "x" } });
+  expect(res.content[0].text).toStartWith('another session attached to the hub as "claude"');
+}, 15_000);
+
+test("the channel server exits when its host goes away and does not retry a hub that refused its wire version", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
+  let hellos = 0;
+  const fake = Bun.serve({
+    port: 0,
+    fetch: (req, srv) => (srv.upgrade(req) ? undefined : new Response("no", { status: 400 })),
+    websocket: { message: (ws) => (hellos++, ws.close(4426, "wire version mismatch")) },
+  });
+  cleanup.push(() => void fake.stop(true)); // awaiting it hangs while a closed upgrade is pending
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: fake.port }));
+  writeFileSync(join(stateDir, "control-token"), "t");
+
+  const { client } = await fakeClaude(stateDir);
+  await until(() => hellos === 1, "first hello");
+  await Bun.sleep(2500);
+  expect(hellos).toBe(1);
+  const res: any = await client.callTool({ name: "hub_send", arguments: { text: "x" } });
+  expect(res.content[0].text).toContain("wire version mismatch");
+
+  const proc = Bun.spawn(["bun", join(ROOT, "plugins/agent-hub/server.js")], { env: { ...process.env, AGENTHUB_STATE_DIR: stateDir }, stdin: "pipe", stdout: "ignore", stderr: "ignore" });
+  cleanup.push(() => proc.kill());
+  await Bun.sleep(300);
+  proc.stdin.end();
+  const exited = await Promise.race([proc.exited, Bun.sleep(3000).then(() => "still running")]);
+  expect(exited).toBe(0);
+}, 15_000);
 
 test("two starts of the same peer at once share one adapter", async () => {
   const mem = startFakeMemWorker({ claude: ["1 line"] });

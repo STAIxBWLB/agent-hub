@@ -15566,12 +15566,12 @@ class ControlClient {
       const ws = new WebSocket(control.url);
       const client = new ControlClient(ws);
       ws.onerror = () => reject(new Error(`cannot reach hub at ${control.url}`));
-      ws.onclose = () => {
-        reject(new Error("hub closed the connection (stale token?)"));
+      ws.onclose = (ev) => {
+        reject(Object.assign(new Error(`hub closed the connection: ${ev.reason || "stale token?"}`), { code: ev.code }));
         for (const done of client.pending.values())
           done({ ok: false, error: "hub connection closed" });
         client.pending.clear();
-        client.onClose();
+        client.onClose(ev.code, ev.reason);
       };
       ws.onmessage = (ev) => {
         const msg = JSON.parse(String(ev.data));
@@ -15713,6 +15713,13 @@ function roles() {
   }
 }
 var MAX_RECONNECT_DELAY_MS = 30000;
+var TERMINAL_CLOSES = {
+  4000: `another session attached to the hub as "${peerId}"; this one is detached (restart it to take the peer back)`,
+  4401: "the hub refused the control token",
+  4403: `the hub refused the peer id "${peerId}" (reserved or malformed)`,
+  4409: `the peer id "${peerId}" is taken by a hub-managed adapter`,
+  4426: "wire version mismatch with the running hub: update the agent-hub plugin (ahub setup) and restart this session"
+};
 var INBOX_CAP = 200;
 var INSTRUCTIONS = [
   "agent-hub connects you to other coding agents working in this project (for example codex, kimi, local) and to the hub console user.",
@@ -15734,6 +15741,8 @@ var text = (s) => ({ content: [{ type: "text", text: s }] });
 var server = new Server({ name: "agent-hub", version: VERSION }, toolsOnly ? { capabilities: { tools: {} }, instructions: TOOLS_INSTRUCTIONS } : { capabilities: { experimental: { "claude/channel": {} }, tools: {} }, instructions: INSTRUCTIONS });
 var inbox = [];
 var hub;
+var detached;
+var offline = () => detached ?? "hub is not running for this project (start it with: ahub up).";
 async function push(envs) {
   const parent = replyParent(envs);
   const single = envs.length === 1;
@@ -15761,18 +15770,24 @@ ${sanitize(e.body)}`).join(`
 }
 async function connectLoop() {
   for (let attempt = 0;; attempt++) {
+    let code;
     try {
       const client = await ControlClient.connect(stateDir, { role: toolsOnly ? "tools" : "peer", peer: peerId });
       client.onPush = (msg) => msg.t === "deliver" && void push(msg.envs ?? [msg.env]);
       hub = client;
       attempt = -1;
       log(`connected to hub as "${peerId}"`);
-      await new Promise((r) => client.onClose = r);
+      code = await new Promise((r) => client.onClose = r);
       hub = undefined;
       log("hub connection lost");
     } catch (e) {
+      code = e.code;
       if (attempt === 0)
         log(e.message);
+    }
+    if (code !== undefined && TERMINAL_CLOSES[code]) {
+      detached = TERMINAL_CLOSES[code];
+      return log(`stopped reconnecting: ${detached}`);
     }
     await new Promise((r) => setTimeout(r, Math.min(1000 * 2 ** Math.max(attempt, 0), MAX_RECONNECT_DELAY_MS)));
   }
@@ -15814,7 +15829,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (name === "hub_send") {
     const { text: body, to, reply_to } = args ?? {};
     if (!hub)
-      return text("hub is not running for this project (start it with: ahub up). Message not sent.");
+      return text(`${offline()} Message not sent.`);
     const res = await hub.request({ t: "send", body, to, reply_to });
     if (!res.ok)
       return text(`not sent: ${res.error}`);
@@ -15824,11 +15839,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
   if (TASK_TOOL_NAMES.has(name)) {
     if (!hub)
-      return text("hub is not running for this project (start it with: ahub up).");
+      return text(offline());
     const res = await hub.request({ t: "task", op: name, args: args ?? {} });
     return text(res.ok ? res.text : `error: ${res.error}`);
   }
   return text(`unknown tool ${name}`);
 });
 await server.connect(new StdioServerTransport);
+process.stdin.on("end", () => process.exit(0));
+process.stdin.on("close", () => process.exit(0));
 connectLoop();

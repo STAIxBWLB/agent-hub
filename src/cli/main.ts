@@ -388,7 +388,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const hub = await connect().catch(() => undefined);
     if (hub) {
       hub.send({ t: "kill" });
-      await new Promise<void>((r) => (hub.onClose = r));
+      await new Promise<void>((r) => (hub.onClose = () => r()));
       return console.log("hub stopped");
     }
     const pidFile = join(stateDir, "hub.pid");
