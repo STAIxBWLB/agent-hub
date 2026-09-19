@@ -22,12 +22,26 @@ Verified locally on 2026-09-19 with Bun 1.3.14, using an actual `npm pack` tarba
   `CLAUDE_CONFIG_DIR`; `claude plugin list --json` reports the expected version,
   and its cached `server.js` matches the packaged bundle byte for byte.
 - Node invocation of the JavaScript bin exits 1 with one Bun-required line.
-- The release workflow's tag guard accepts the current version and rejects a
-  mismatched tag. Publication was not attempted.
+- The v0.4.0 release workflow accepted the matching tag, passed its gate with
+  197 tests passing, 3 skipped and 0 failures, published `@staix/agent-hub@0.4.0`
+  to npm with provenance, and created the GitHub Release ([workflow run](https://github.com/STAIxBWLB/agent-hub/actions/runs/35448132456)).
 
-Still pending: the first approved npm release, registry provenance readback, and
-installation by registry name on a clean machine. The local tarball check does
-not establish those results or an interactive Claude channel session.
+Still pending: registry metadata/provenance readback and installation by registry
+name on a clean machine. The local tarball check and release log do not establish
+those results or an interactive Claude channel session from the registry package.
+
+## Issue #15 batching fixture
+
+The failed v0.3.1 release attempt was a test scheduling race, not a production
+delivery defect. The daemon test used a 30 ms batch window while sending the two
+status messages through sequential WebSocket request round trips. Under CI
+scheduling, the second request could be accepted after the first status envelope's
+timer fired, producing two valid status deliveries and `channel.length === 3`.
+
+The test now pauses the recipient before those requests, resumes it after both are
+accepted, and keeps the original digest and FYI assertions. This synchronizes the
+fixture without changing production batching semantics, increasing sleeps or
+weakening expectations.
 
 ## M1: trio chat
 

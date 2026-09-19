@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+- Synchronize the daemon digest integration fixture without changing batching semantics or weakening digest/FYI assertions (#15).
+- Reconcile completed live smoke and npm publication evidence; infrastructure-dependent checks remain tracked in #12.
+
 ## 0.4.0
 
 - Independent repository and worktree hubs with canonical project selection, `--project <path|id>`, `projects`, and `status --all` (#19).
