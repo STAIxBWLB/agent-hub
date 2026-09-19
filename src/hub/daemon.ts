@@ -1,5 +1,5 @@
-import { randomBytes, randomUUID } from "node:crypto";
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { AcpPeer, type PermissionRequest } from "../adapters/acp.ts";
@@ -28,6 +28,7 @@ import { BasePeer, DEFAULT_WATCHDOG_MS } from "./peers.ts";
 import { MemoryClient, workerUrl } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { projectChain, recallFor } from "../memory/recall.ts";
+import { archiveRestartSnapshot, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 
 export interface HubConfig {
   watchdog_ms: number;
@@ -134,6 +135,10 @@ class WsPeer extends BasePeer {
   async stop(): Promise<void> {
     this.sock?.close();
   }
+
+  recoveryMetadata(): Record<string, unknown> {
+    return { launch: { kind: "claude-channel", peer: this.id } };
+  }
 }
 
 export async function startDaemon(opts: DaemonOptions) {
@@ -181,6 +186,43 @@ export async function startDaemon(opts: DaemonOptions) {
   // The hub's own model calls (digest condensation, task triage) are wired below, once the gateway client exists.
   let inference: Inference | undefined;
   const bus = new Bus({ batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs) });
+  const manualPaused = new Set<PeerId>(); // `ahub pause`: recovery never lifts these
+  let recoveryOperationId: string | undefined;
+  let recoveryPhase: RecoveryPhase | undefined;
+  let recoveryCommitted = false;
+  let recoveryPeerSnapshot: RestartPeerSnapshot[] | undefined;
+  let recoveryLeaseTimer: ReturnType<typeof setTimeout> | undefined;
+  const recoveryActive = () => !!recoveryOperationId && recoveryPhase !== "released";
+  const recoveryOperation = process.env.AGENTHUB_RECOVERY_OPERATION;
+  const restartFilePresent = existsSync(restartPath(opts.stateDir));
+  const restored = recoveryOperation
+    ? readRestartSnapshot(opts.stateDir, { projectRoot: opts.cwd, projectId, operationId: recoveryOperation })
+    : undefined;
+  if ((restartFilePresent && !restored) || (recoveryOperation && !restored)) throw new Error("restart state is unreadable, missing, or does not match this project and recovery operation");
+  if (restored) {
+    bus.restore(restored.bus);
+    for (const peer of restored.manualPaused) { manualPaused.add(peer); bus.pause(peer); }
+    recoveryOperationId = restored.operationId;
+    recoveryPhase = "restored";
+    recoveryPeerSnapshot = restored.peers;
+    bus.setRecoveryHold(true);
+  }
+  const recoveryPeerAllowed = (id: PeerId) => !recoveryActive() || !recoveryPeerSnapshot || recoveryPeerSnapshot.some((peer) => peer.id === id);
+  const armRecoveryLease = () => {
+    clearTimeout(recoveryLeaseTimer);
+    recoveryLeaseTimer = setTimeout(() => {
+      if (!recoveryOperationId || recoveryCommitted || (recoveryPhase !== "preparing" && recoveryPhase !== "prepared")) return;
+      log(`recovery lease expired for ${recoveryOperationId}; hold aborted`);
+      recoveryOperationId = undefined;
+      recoveryPhase = undefined;
+      recoveryPeerSnapshot = undefined;
+      bus.setRecoveryHold(false);
+      budget.setRecoveryHold(false);
+      removeRestartSnapshot(opts.stateDir);
+      writeStatus();
+    }, 10 * 60_000);
+    recoveryLeaseTimer.unref?.();
+  };
   const memory = new MemoryClient(config.memory.worker_url ?? workerUrl(), 2000, log);
   const chain = projectChain(opts.cwd);
   const recalled = new Set<PeerId>(); // once per peer per hub run, however often the peer's session restarts
@@ -227,7 +269,6 @@ export async function startDaemon(opts: DaemonOptions) {
     triage: { classify: (title, detail) => inference?.triage(title, detail) ?? Promise.resolve(undefined), onCampus: () => onCampus() },
   });
   // ---- budget relay -------------------------------------------------------------------------------------------
-  const manualPaused = new Set<PeerId>(); // `ahub pause`: the coordinator never lifts these
   const checkpointWaits = new Map<PeerId, (summary: string | undefined) => void>();
   const PLATFORM: Record<PeerId, string> = { claude: "claude", codex: "codex", kimi: "kimi" };
   const budget = new Budget(join(opts.stateDir, "hub.db"), config.budget, {
@@ -270,6 +311,7 @@ export async function startDaemon(opts: DaemonOptions) {
     },
     notify: (line) => notify(line),
   });
+  budget.setRecoveryHold(recoveryActive());
   const kimiTokens: { at: number; n: number }[] = [];
   startupCleanup.push(() => budget.close());
   let kimiSessionTotal = 0;
@@ -363,12 +405,61 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     throw new Error(`unknown task operation ${op}`);
   }
+  function recoveryTaskPreface(peer: PeerId): void {
+    if (recoveryPhase !== "restored") return;
+    const open = board.list().filter((task) => (task.owner === peer || task.reviewer === peer) && !["approved"].includes(task.state));
+    if (!open.length) return;
+    const lines = open.map((task) => {
+      const view = tasks.publicView(task) as { title?: unknown; detail?: unknown; state?: unknown; owner?: unknown; reviewer?: unknown };
+      return `#${task.id} ${String(view.title ?? "[private]")} (${task.state}, owner ${task.owner ?? "none"}, reviewer ${task.reviewer ?? "none"})${view.detail && view.detail !== "[pii]" ? `\n${String(view.detail).slice(0, 1000)}` : ""}`;
+    });
+    bus.preface(peer, `Controlled restart restored your open task context. Check the board before acting:\n${lines.join("\n\n")}`);
+  }
   const permissions = new Map<string, { push: string; done: (optionId: string | undefined) => void }>();
   let stopping = false;
 
   const pausedNote = (id: PeerId) => {
     const r = budget.record(id); // one read per peer: status.json is rewritten on every bus event
     return r ? { paused: `budget: ${r.reason}, resets ${new Date(r.resetsAt).toLocaleTimeString()}` } : {};
+  };
+  const recoveryReady = () => {
+    if (!recoveryActive() || permissions.size !== 0 || starting.size !== 0 || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy")) return false;
+    if (!recoveryPeerSnapshot) return true;
+    const current = recoveryPeers();
+    return recoveryPeerSnapshot.every((saved) => {
+      const now = current[saved.id];
+      if (!now) return true; // a detached peer is checked by the coordinator before terminal close
+      if (saved.threadId && now.threadId && saved.threadId !== now.threadId) return false;
+      if (saved.sessionId && now.sessionId && saved.sessionId !== now.sessionId) return false;
+      return true;
+    });
+  };
+  const claudeSessionId = () => {
+    try {
+      const value = JSON.parse(readFileSync(join(opts.stateDir, "claude-session.json"), "utf8"));
+      if (value.instanceId !== instanceId) return undefined;
+      try {
+        const records = JSON.parse(readFileSync(join(opts.stateDir, "terminal-recovery.json"), "utf8"));
+        const current = Array.isArray(records) ? records.find((row) => row?.peer === "claude" && row?.projectRoot === opts.cwd && row?.instanceId === instanceId) : undefined;
+        if (current?.launchId && value.launchId !== current.launchId) return undefined;
+      } catch { /* no managed terminal record: the instance fence is still enforced */ }
+      return typeof value.sessionId === "string" && value.sessionId ? value.sessionId : undefined;
+    } catch { return undefined; }
+  };
+  const recoveryPeers = (): Record<string, RestartPeerSnapshot> => Object.fromEntries([...bus.peers].map(([id, peer]) => {
+    const metadata = peer.recoveryMetadata?.() ?? {};
+    const row: RestartPeerSnapshot = { id, state: peer.state, queueIds: bus.queueIds(id), ...(metadata.launch ? { launch: metadata.launch as Record<string, unknown> } : {}) };
+    if (typeof metadata.threadId === "string") row.threadId = metadata.threadId;
+    const sessionId = id === "claude" ? claudeSessionId() : metadata.sessionId;
+    if (typeof sessionId === "string" && sessionId) row.sessionId = sessionId;
+    return [id, row];
+  }));
+  const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  const integrity = () => {
+    const queues = Object.fromEntries(Object.keys(bus.snapshot().queues).sort().map((id) => [id, bus.queueIds(id)]));
+    const boardState = board.list().sort((a, b) => a.id - b.id);
+    const budgetState = budget.persistedPauseDigestRows().sort((a, b) => a.peer.localeCompare(b.peer));
+    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState) };
   };
   const status = () => ({
     projectId,
@@ -386,6 +477,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
     tasks: board.counts(),
+    ...(recoveryOperationId ? { recovery: { operationId: recoveryOperationId, phase: recoveryPhase, ready: recoveryReady() } } : {}),
   });
   const writeStatus = () => {
     const file = join(opts.stateDir, "status.json"); // clients parse this on every connect: replace it atomically
@@ -447,6 +539,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const cmd = args.model ? [bin!, "--model", args.model, ...rest] : config.kimi_cmd;
       const kimi = new AcpPeer("kimi", {
         cmd,
+        ...(args.model ? { launchModel: args.model } : {}),
         cwd: opts.cwd,
         watchdogMs: config.watchdog_ms,
         onPermission,
@@ -455,6 +548,7 @@ export async function startDaemon(opts: DaemonOptions) {
         mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("kimi")).map(([name, value]) => ({ name, value })) }],
         preamble: roleContract("kimi", config.roles),
       });
+      recoveryTaskPreface("kimi");
       await ensurePreface("kimi");
       bus.add(kimi);
       await kimi.start();
@@ -480,6 +574,7 @@ export async function startDaemon(opts: DaemonOptions) {
         watchdogMs: config.watchdog_ms,
         log,
       });
+      recoveryTaskPreface("codex");
       await ensurePreface("codex");
       bus.add(codex);
       await codex.start();
@@ -526,6 +621,7 @@ export async function startDaemon(opts: DaemonOptions) {
         maxSteps: config.local.max_steps,
         log,
       });
+      recoveryTaskPreface("local");
       await ensurePreface("local");
       bus.add(local);
       await local.start();
@@ -611,6 +707,122 @@ export async function startDaemon(opts: DaemonOptions) {
     }
   }
 
+  const recoveryView = () => ({
+    operationId: recoveryOperationId,
+    phase: recoveryPhase,
+    ready: recoveryReady(),
+    pendingApprovals: permissions.size,
+    capabilities: { controlledRestart: true, snapshotSchemaVersion: 1, maxLeaseMs: 10 * 60_000 },
+    blockers: [
+      ...(starting.size ? ["peer startup in progress"] : []),
+      ...(!budget.recoverySettled ? ["budget transition in progress"] : []),
+      ...([...bus.peers].filter(([, peer]) => peer.state === "busy").map(([id]) => `${id} is busy`)),
+      ...(permissions.size ? ["pending approvals"] : []),
+    ],
+    integrity: { current: integrity(), ...(restored?.integrity ? { expected: restored.integrity } : {}) },
+    peers: Object.fromEntries([...(recoveryPeerSnapshot ?? []), ...Object.values(recoveryPeers()).filter((peer) => !(recoveryPeerSnapshot ?? []).some((saved) => saved.id === peer.id))].map((peer) => {
+      const now = recoveryPeers()[peer.id];
+      if (recoveryPhase === "restored" || recoveryPhase === "released") return [peer.id, now ?? { id: peer.id, state: "offline", queueIds: bus.queueIds(peer.id) }];
+      return [peer.id, now ? { ...peer, ...now, queueIds: now.queueIds } : peer];
+    })),
+  });
+  const recoveryError = (error: string) => ({ t: "recovery", ok: false, error });
+  async function recoveryOp(msg: any): Promise<Record<string, unknown>> {
+    if (typeof msg.op !== "string" || !["inspect", "prepare", "commit", "abort", "release"].includes(msg.op)) return recoveryError("unknown recovery operation");
+    if (typeof msg.expectedInstanceId !== "string" || msg.expectedInstanceId !== instanceId) return recoveryError("expected daemon instance does not match");
+    if (msg.op === "inspect" && msg.operationId === undefined) return { t: "recovery", ok: true, recovery: recoveryView() };
+    if (typeof msg.operationId !== "string" || msg.operationId.length < 1 || msg.operationId.length > 128) return recoveryError("operationId is required");
+    const op = msg.operationId as string;
+    if (msg.op === "prepare") {
+      if (recoveryCommitted) return recoveryError("recovery commit is already in progress");
+      if (recoveryPhase === "released" && recoveryOperationId !== op) {
+        recoveryOperationId = undefined;
+        recoveryPhase = undefined;
+        recoveryPeerSnapshot = undefined;
+      }
+      if (recoveryOperationId && recoveryOperationId !== op) return recoveryError("another recovery operation is active");
+      recoveryOperationId = op;
+      if (!recoveryPhase) recoveryPhase = "preparing";
+      armRecoveryLease();
+      recoveryPeerSnapshot ??= Object.values(recoveryPeers());
+      budget.setRecoveryHold(true);
+      bus.setRecoveryHold(true);
+      await bus.fenceRecovery();
+      const blocked = [...bus.peers].filter(([, peer]) => peer.state === "busy").map(([id]) => id);
+      if (!blocked.length && permissions.size === 0 && recoveryReady()) {
+        recoveryPeerSnapshot ??= Object.values(recoveryPeers());
+        recoveryPhase = "prepared";
+      }
+      writeStatus();
+      return { t: "recovery", ok: true, recovery: { ...recoveryView(), ...(blocked.length ? { blockedPeers: blocked } : {}), ...(permissions.size ? { blocked: "pending approvals" } : {}) } };
+    }
+    if (!recoveryOperationId || recoveryOperationId !== op) return msg.op === "inspect"
+      ? { t: "recovery", ok: true, recovery: recoveryView() }
+      : recoveryError("operation does not match this daemon");
+    if (msg.op === "inspect") return { t: "recovery", ok: true, recovery: recoveryView() };
+    if (msg.op === "abort") {
+      if (recoveryCommitted) return recoveryError("a committed recovery cannot be aborted");
+      if (recoveryPhase === "released") return { t: "recovery", ok: true, recovery: recoveryView() };
+      recoveryOperationId = undefined;
+      recoveryPhase = undefined;
+      recoveryPeerSnapshot = undefined;
+      clearTimeout(recoveryLeaseTimer);
+      bus.setRecoveryHold(false);
+      budget.setRecoveryHold(false);
+      writeStatus();
+      return { t: "recovery", ok: true, aborted: true, recovery: recoveryView() };
+    }
+    if (msg.op === "commit") {
+      if ((recoveryPhase !== "prepared" && recoveryPhase !== "preparing") || !recoveryReady()) return recoveryError("recovery is not ready; inspect until peers are idle and approvals are complete");
+      recoveryPhase = "prepared";
+      recoveryPeerSnapshot ??= Object.values(recoveryPeers());
+      const currentPeers = recoveryPeers();
+      const peers = (recoveryPeerSnapshot ?? Object.values(currentPeers)).map((saved) => ({
+        ...saved,
+        queueIds: bus.queueIds(saved.id),
+      }));
+      const snapshot: RestartSnapshot = {
+        schemaVersion: 1,
+        projectRoot: opts.cwd,
+        projectId,
+        sourceInstanceId: instanceId,
+        operationId: op,
+        committedAt: Date.now(),
+        bus: bus.snapshot(),
+        manualPaused: [...manualPaused],
+        peers,
+        integrity: integrity(),
+      };
+      try { writeRestartSnapshot(opts.stateDir, snapshot); } catch { return recoveryError("could not persist restart state"); }
+      recoveryCommitted = true;
+      clearTimeout(recoveryLeaseTimer);
+      writeStatus();
+      // Keep phase prepared in status until the replacement daemon reports restored.
+      setTimeout(() => void stop().catch((error) => log(`recovery shutdown incomplete: ${(error as Error).message}`)), 0);
+      return { t: "recovery", ok: true, committed: true, recovery: { ...recoveryView(), phase: "prepared" } };
+    }
+    if (msg.op === "release") {
+      if (recoveryPhase === "released") return { t: "recovery", ok: true, released: true, recovery: recoveryView() };
+      if (recoveryPhase !== "restored") return recoveryError("recovery is not restored");
+      await bus.fenceRecovery();
+      const current = recoveryPeers();
+      const missing = (recoveryPeerSnapshot ?? []).filter((saved) => saved.state !== "offline" && !manualPaused.has(saved.id) && !budget.record(saved.id) && (!current[saved.id] || current[saved.id]!.state === "offline"));
+      if (missing.length) return recoveryError(`required peers are not attached: ${missing.map((peer) => peer.id).join(", ")}`);
+      if (!recoveryReady()) return recoveryError("required peers or approvals are not ready");
+      if (!restored?.integrity || JSON.stringify(restored.integrity) !== JSON.stringify(integrity())) {
+        return recoveryError("queue, pause, task board or budget integrity changed during recovery");
+      }
+      archiveRestartSnapshot(opts.stateDir, op);
+      recoveryPhase = "released";
+      clearTimeout(recoveryLeaseTimer);
+      bus.setRecoveryHold(false);
+      budget.setRecoveryHold(false);
+      writeStatus();
+      return { t: "recovery", ok: true, released: true, recovery: recoveryView() };
+    }
+    return recoveryError("unknown recovery operation");
+  }
+
   function onMessage(sock: Sock, msg: any): void {
     const c = sock.data;
     const reply = (body: Record<string, unknown>) => { if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ rid: msg.rid, ...body })); };
@@ -635,6 +847,7 @@ export async function startDaemon(opts: DaemonOptions) {
       } else {
         c.peer = String(msg.peer ?? "claude");
         if (!PEER_ID.test(c.peer) || RESERVED_IDS.has(c.peer)) return sock.close(4403, "peer id is reserved or malformed");
+        if (!recoveryPeerAllowed(c.peer)) return sock.close(4403, "peer id is not part of the recovery roster");
         let peer = bus.peers.get(c.peer);
         if (!peer) bus.add((peer = new WsPeer(c.peer)));
         if (!(peer instanceof WsPeer)) return sock.close(4409, "peer id is taken by a hub-managed adapter");
@@ -648,7 +861,12 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (stopping && msg.t !== "status" && msg.t !== "kill") return void reply({ ok: false, error: "hub is stopping" });
     switch (msg.t) {
+      case "recovery":
+        if (c.role !== "console") return void reply(recoveryError("recovery is a console command"));
+        void recoveryOp(msg).then(reply, () => reply(recoveryError("recovery operation failed")));
+        return;
       case "send": {
+        if (recoveryActive()) return void reply({ t: "sent", ok: false, error: "recovery is holding new deliveries" });
         // A human at the console should not wait out the batch window; agents default to status.
         const { priority, body } = parseMarker(String(msg.body ?? ""), c.peer ? "status" : "important");
         if (!body) return void reply({ t: "sent", ok: false, error: "empty body" });
@@ -681,12 +899,15 @@ export async function startDaemon(opts: DaemonOptions) {
         return void reply(uiSnapshot(msg.after ?? 0));
       case "ui_action":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_action is a console command" });
+        if (recoveryActive()) return void reply({ ok: false, error: "recovery is holding mutations" });
         if (msg.instanceId !== instanceId) return void reply({ ok: false, error: "hub restarted; refresh before acting" });
         if (!msg.action || typeof msg.action !== "object" || Array.isArray(msg.action)) return void reply({ ok: false, error: "invalid dashboard action" });
         void uiAction(msg.action).then((result) => reply(result as Record<string, unknown>), () => reply({ ok: false, error: "dashboard action failed; check its inputs" }));
         return;
       case "start":
         if (c.role !== "console") return;
+        if (recoveryActive() && !(recoveryPhase === "restored" && msg.operationId === recoveryOperationId)) return void reply({ t: "started", ok: false, error: "recovery is holding mutations" });
+        if (recoveryActive() && !recoveryPeerAllowed(String(msg.peer))) return void reply({ t: "started", ok: false, error: "peer is not part of the recovery roster" });
         startPeer(String(msg.peer), msg.args ?? {})
           .catch((e: Error) => ({ ok: false, error: e.message }))
           .then((r) => {
@@ -695,6 +916,7 @@ export async function startDaemon(opts: DaemonOptions) {
           });
         return;
       case "task":
+        if (recoveryActive() && recoveryPhase !== "preparing" && String(msg.op) !== "hub_checkpoint") return void reply({ t: "task", ok: false, error: "recovery is holding mutations" });
         taskOp(c.peer ?? USER, String(msg.op), msg.args ?? {}).then(
           (text) => reply({ t: "task", ok: true, text }),
           (e: Error) => reply({ t: "task", ok: false, error: e.message }),
@@ -703,6 +925,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "pause":
       case "resume": {
         if (c.role !== "console") return;
+        if (recoveryActive()) return void reply({ t: msg.t, ok: false, error: "recovery is holding mutations" });
         return void reply({ t: msg.t, ...holdPeer(msg.t, String(msg.peer)) });
       }
       case "ask":
@@ -741,6 +964,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return;
       case "budget":
         if (c.role !== "console") return;
+        if (recoveryActive()) return void reply({ t: "budget", ok: false, error: "recovery is holding mutations" });
         if (msg.resume) {
           if (!budget.override(String(msg.resume))) return void reply({ t: "budget", ok: false, error: `${msg.resume} is not paused by the budget coordinator` });
         } else if (msg.set) {

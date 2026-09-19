@@ -1,5 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { AcpPeer, type AcpOptions } from "../src/adapters/acp.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
@@ -73,6 +75,25 @@ test("a command that cannot be spawned rejects start instead of crashing the pro
   peer = new AcpPeer("kimi", { cmd: ["/nonexistent/agent-hub-no-such-binary"], cwd: process.cwd() });
   await expect(peer.start()).rejects.toThrow(/spawn failed/);
   expect(peer.state).toBe("offline");
+});
+
+test("ACP child drops recovery authority while retaining account and state environment", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-acp-env-"));
+  const record = join(dir, "env.json");
+  const env = { ...process.env, FAKE_ACP_ENV_RECORD: record, AGENTHUB_RECOVERY_OPERATION: "operation-secret", CODEX_HOME: "/account/codex", CLAUDE_CONFIG_DIR: "/account/claude", AGENTHUB_STATE_DIR: "/project/state" };
+  const child = new AcpPeer("kimi", { cmd: FAKE, cwd: process.cwd(), env });
+  try {
+    await child.start();
+    for (let i = 0; i < 100 && !existsSync(record); i++) await Bun.sleep(10);
+    const observed = JSON.parse(readFileSync(record, "utf8"));
+    expect(observed.recovery).toBeUndefined();
+    expect(observed.codex).toBe("/account/codex");
+    expect(observed.claude).toBe("/account/claude");
+    expect(observed.state).toBe("/project/state");
+  } finally {
+    await child.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("watchdog: the cancelled prompt reports late and must not disturb the turn that followed it", async () => {

@@ -76,6 +76,9 @@ export class Budget {
   /** `ahub budget resume`: the owner overrode a pause; readings over the gate are ignored for that peer until then. */
   private readonly ignoreUntil = new Map<PeerId, number>();
   private closed = false;
+  private recoveryHeld = false;
+  private deferred = false;
+  private readonly deferredHard = new Set<PeerId>();
 
   constructor(
     dbPath: string,
@@ -88,9 +91,31 @@ export class Budget {
       reason TEXT NOT NULL, summary TEXT, handed_off INTEGER NOT NULL DEFAULT 0, moved TEXT NOT NULL DEFAULT '[]')`);
   }
 
+  /** Freeze pause/resume and handoff transitions while a controlled restart is fenced. Readings continue to update. */
+  setRecoveryHold(held: boolean): void {
+    this.recoveryHeld = held;
+    if (!held && this.deferred && !this.closed) {
+      this.deferred = false;
+      this.tick();
+      for (const peer of this.readings.keys()) {
+        const hard = this.deferredHard.delete(peer);
+        void this.evaluate(peer, hard).catch((e: Error) => this.closed || this.hooks.notify(`budget: evaluating ${peer} failed: ${e.message}`));
+      }
+    }
+  }
+
+  get recoverySettled(): boolean {
+    return this.pausing.size === 0 && this.handingOff.size === 0;
+  }
+
   record(peer: PeerId): PauseRecord | undefined {
     const r = this.db.query("SELECT * FROM budget_pauses WHERE peer = ?").get(peer) as Record<string, any> | null;
     return r ? { peer: r.peer, since: r.since, resetsAt: r.resets_at, reason: r.reason, summary: r.summary, handedOff: !!r.handed_off, moved: JSON.parse(r.moved) } : undefined;
+  }
+
+  /** Recovery integrity input: persisted pause records only, excluding live usage readings and private summaries. */
+  persistedPauseDigestRows(): { peer: PeerId; since: number; resetsAt: number; reason: string }[] {
+    return this.records().map(({ peer, since, resetsAt, reason }) => ({ peer, since, resetsAt, reason }));
   }
 
   private records(): PauseRecord[] {
@@ -122,6 +147,7 @@ export class Budget {
     const mine = this.readings.get(peer) ?? new Map<string, Reading>();
     this.readings.set(peer, mine);
     for (const w of windows) mine.set(w.id, { ...w, used: Math.max(0, Math.min(1, w.used)), at });
+    if (this.recoveryHeld) { this.deferred = true; if (hard) this.deferredHard.add(peer); return; }
     this.evaluate(peer, hard).catch((e: Error) => this.closed || this.hooks.notify(`budget: evaluating ${peer} failed: ${e.message}`));
   }
 
@@ -141,6 +167,7 @@ export class Budget {
   }
 
   private async evaluate(peer: PeerId, hard: boolean): Promise<void> {
+    if (this.recoveryHeld) { this.deferred = true; if (hard) this.deferredHard.add(peer); return; }
     const fresh = this.fresh(peer);
     const over = fresh.filter((r) => r.used >= this.cfg.gate);
     const open = this.record(peer);
@@ -160,6 +187,7 @@ export class Budget {
       const reason = `${worst.id} window at ${Math.round(worst.used * 100)}% (${worst.source})`;
       // Checkpoint first, pause second: a paused peer receives nothing, and a turn in flight is never cut by the coordinator.
       const summary = hard ? undefined : await this.hooks.requestCheckpoint(peer).catch(() => undefined);
+      if (this.recoveryHeld) { this.deferred = true; return; }
       if (this.closed) return; // the hub is shutting down: nothing is recorded, the next run sees the reading again
       this.db.query("INSERT OR REPLACE INTO budget_pauses (peer, since, resets_at, reason, summary) VALUES (?, ?, ?, ?, ?)").run(peer, this.now(), resetsAt, reason, summary ?? null);
       this.hooks.pause(peer);
@@ -171,10 +199,12 @@ export class Budget {
   }
 
   private async finishHandoff(peer: PeerId, summary: string | undefined): Promise<void> {
-    if (this.closed || this.handingOff.has(peer) || !this.hooks.canHandOff(peer)) return; // retried by the next tick
+    if (this.closed || this.recoveryHeld) { this.deferred = true; return; }
+    if (this.handingOff.has(peer) || !this.hooks.canHandOff(peer)) return; // retried by the next tick
     this.handingOff.add(peer);
     try {
       await this.handOff(peer, summary);
+      if (this.recoveryHeld) { this.deferred = true; return; }
     } finally {
       this.handingOff.delete(peer);
     }
@@ -202,6 +232,7 @@ export class Budget {
 
   /** Called on a timer. Resumes every peer whose window has reset. */
   tick(): void {
+    if (this.recoveryHeld) { this.deferred = true; return; }
     for (const r of this.records()) {
       if (this.now() >= r.resetsAt + 60_000) {
         if (this.hooks.attached(r.peer)) this.resume(r.peer, "the window has reset"); // else: wait, the notice needs somebody to receive it

@@ -68,6 +68,10 @@ export class LocalPeer extends BasePeer {
     this.sandboxProfile = profile(opts.cwd, opts.tools.bashNetwork ?? false, opts.tools.readAllow, opts.tools.deny);
   }
 
+  recoveryMetadata(): Record<string, unknown> {
+    return { launch: { kind: "local", cwd: this.opts.cwd, model: this.opts.fixedModel, ...(this.opts.route ? { route: this.opts.route } : {}) }, sessionId: this.sessionId };
+  }
+
   async start(): Promise<void> {
     this.opts.capture?.init(this.sessionId, "agent-hub local worker session");
     this.setState("idle");
