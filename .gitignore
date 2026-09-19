@@ -7,3 +7,5 @@ dist/
 .agenthub/state/
 .agenthub/*.db*
 .agenthub/checkpoint.md
+# this checkout's own hub config: personal paths (key file, Access files)
+.agenthub/config.json

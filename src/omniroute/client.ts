@@ -70,25 +70,29 @@ export class OmniRoute {
   }
 
   /**
-   * First candidate that answers `GET <base>/models` within 2 s with anything below 500. Health paths differ per
-   * gateway (OmniRoute 3.8.50 has /healthz and /api/health, no /health), the models route is what every
-   * OpenAI-compatible server has. Cached until a call fails at the network level.
+   * The most preferred candidate that answers `GET <base>/models` with 2xx within 4 s (401 counts only when no key is
+   * configured). Health paths differ per gateway (OmniRoute 3.8.50 has /healthz and /api/health, no /health); the
+   * models route is what every OpenAI-compatible server has. Candidates are probed at the same time and picked in
+   * list order: probing one after the other let a stalled first request over an idle WARP tunnel hand the choice to
+   * the off-campus URL (seen live), and a 403 from Cloudflare Access must not pass for healthy.
+   * Cached until a call fails at the network level.
    */
   async base(): Promise<string | undefined> {
     if (this.live) return this.live;
-    const candidates = process.env.AGENTHUB_OMNIROUTE_URL ? [process.env.AGENTHUB_OMNIROUTE_URL] : this.cfg.urls;
-    // Two passes: the first request after an idle WARP tunnel can stall past the timeout (seen live) and succeed a second later.
-    for (const url of [...candidates, ...candidates]) {
-      const key = this.apiKey();
-      const headers = { ...(key ? { authorization: `Bearer ${key}` } : {}), ...this.accessHeaders(url) };
-      const ok = await fetch(`${url.replace(/\/$/, "")}/models`, { headers, signal: AbortSignal.timeout(2000) }).then(
-        (r) => r.status < 500,
-        () => false,
-      );
-      if (ok) {
-        this.log(`omniroute: using ${new URL(url).host}`);
-        return (this.live = url.replace(/\/$/, ""));
-      }
+    const candidates = (process.env.AGENTHUB_OMNIROUTE_URL ? [process.env.AGENTHUB_OMNIROUTE_URL] : this.cfg.urls).map((u) => u.replace(/\/$/, ""));
+    const key = this.apiKey();
+    const results = await Promise.all(
+      candidates.map((url) =>
+        fetch(`${url}/models`, { headers: { ...(key ? { authorization: `Bearer ${key}` } : {}), ...this.accessHeaders(url) }, signal: AbortSignal.timeout(4000) }).then(
+          (r) => r.ok || (!key && r.status === 401),
+          () => false,
+        ),
+      ),
+    );
+    const url = candidates[results.indexOf(true)];
+    if (url) {
+      this.log(`omniroute: using ${new URL(url).host}`);
+      return (this.live = url);
     }
     this.log(`omniroute: no candidate is healthy (${candidates.map((u) => new URL(u).host).join(", ")})`);
     return undefined;

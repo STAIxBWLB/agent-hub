@@ -282,13 +282,15 @@ worker calls `fixed_model` on OmniRoute directly. Until the DGX serves GLM-5.3-F
 shipped routes are `passthrough` to DeepSeek-V4-Flash; the `stage_router` and escalation
 blocks ship commented out and validate against the real binary.
 
-L3, OmniRoute (amended in M3): candidates are probed in order (internal over WARP, then
-`https://gateway.example.edu/v1`) with `GET <base>/models`, anything below 500 within 2 s counts;
+L3, OmniRoute (amended in M3): candidates (internal over WARP, then `https://gateway.example.edu/v1`)
+are probed at the same time with `GET <base>/models`; the most preferred one that answers 2xx
+within 4 s wins (a Cloudflare Access 403 is not healthy);
 OmniRoute 3.8.50 has `/healthz` and `/api/health` but no `/health` (verified). Key from
 `OMNIROUTE_API_KEY` or `omniroute.api_key_file`; the two Cloudflare Access headers, read from
 files, go only to hosts in `omniroute.access_hosts`. `omniroute tokens create` issues CLI
-access tokens, not confirmed as inference credentials, so per-peer usage separation waits
-for a dedicated inference key from the DGX dashboard; only the config path changes then.
+access tokens, not inference credentials. Inference keys come from `omniroute api api-keys`
+(admin context): the owner issued `agent-hub-local` on 2026-09-19 and `omniroute.api_key_file`
+points at it, so the dashboard separates the hub's usage.
 
 `hub route explain <task>` prints the signals, the chosen peer, the route id and the
 reason. Verification failure (tests fail, review `changes_requested` twice) escalates

@@ -32,6 +32,18 @@ test("the first healthy candidate wins; key comes from the file; provider header
   expect(lines.join("\n")).not.toContain("sk-file-key");
 });
 
+test("preference order wins even when the preferred candidate answers last; an Access-style 403 is not healthy", async () => {
+  const slowPreferred = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async (req) => (new URL(req.url).pathname === "/v1/models" ? (await Bun.sleep(300), Response.json({ data: [] })) : Response.json({ choices: [{ message: { role: "assistant", content: "from preferred" } }] })) });
+  const fastFallback = startFakeModelServer();
+  const forbidden = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("access denied", { status: 403 }) });
+  cleanup.push(() => slowPreferred.stop(true), fastFallback.stop, () => forbidden.stop(true));
+  process.env.OMNIROUTE_API_KEY = "k";
+  const preferred = `http://127.0.0.1:${slowPreferred.port}/v1`;
+  expect(await new OmniRoute({ urls: [preferred, fastFallback.url], access_hosts: [] }).base()).toBe(preferred);
+  expect(await new OmniRoute({ urls: [`http://127.0.0.1:${forbidden.port}/v1`, fastFallback.url], access_hosts: [] }).base()).toBe(fastFallback.url);
+  expect(await new OmniRoute({ urls: [`http://127.0.0.1:${forbidden.port}/v1`], access_hosts: [] }).base()).toBeUndefined();
+});
+
 test("env key beats the file; a wrong key fails without echoing it; no key is an error before any request", async () => {
   const up = startFakeModelServer({ key: "sk-env" });
   cleanup.push(up.stop);
