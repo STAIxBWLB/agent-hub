@@ -4,7 +4,7 @@ Native multi-agent hub for one developer's machine: Claude Code, Codex, Kimi Cod
 hub-owned local-LLM worker collaborate as peers in independent project directories, with
 task-aware model routing (Switchyard) in front of a self-hosted gateway (OmniRoute).
 
-Status: 0.4.0 development branch (not yet published); latest release: 0.3.2. All six milestones of the design spec are implemented; the [smoke checklist](docs/smoke.md)
+Status: 0.4.0. All six milestones of the design spec are implemented; the [smoke checklist](docs/smoke.md)
 says what has and has not been verified against real agents.
 
 ## Start here
@@ -22,7 +22,7 @@ cd <your project> && ahub init && ahub up && ahub tail
 Or install the same version from GitHub:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.3.2 && ahub setup
+bun add -g github:STAIxBWLB/agent-hub#v0.4.0 && ahub setup
 ```
 
 The installed commands remain `ahub` and `agent-hub`.
@@ -73,7 +73,7 @@ No dashboard port is opened until requested. See [the session security model](do
 
 ## Multiple projects and worktrees
 
-The development version adds one independent hub per repository or Git worktree.
+Version 0.4.0 adds one independent hub per repository or Git worktree.
 Subdirectory commands resolve to that project; symlink aliases resolve to the same
 hub. Explicit selection works from any directory:
 
