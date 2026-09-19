@@ -58,10 +58,12 @@ export class ControlClient {
     });
   }
 
-  request(msg: Record<string, unknown>): Promise<any> {
+  /** `timeoutMs`: for calls a person waits on. The hub has its own budget; this one only makes sure the CLI never hangs. */
+  request(msg: Record<string, unknown>, timeoutMs?: number): Promise<any> {
     const rid = this.nextRid++;
     return new Promise((resolve) => {
-      this.pending.set(rid, resolve);
+      const timer = timeoutMs ? setTimeout(() => (this.pending.delete(rid), resolve({ ok: false, error: `no answer from the hub within ${Math.round(timeoutMs / 1000)} s` })), timeoutMs) : undefined;
+      this.pending.set(rid, (reply) => (clearTimeout(timer), resolve(reply)));
       this.ws.send(JSON.stringify({ ...msg, rid }));
     });
   }

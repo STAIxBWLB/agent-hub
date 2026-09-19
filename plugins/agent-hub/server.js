@@ -15584,10 +15584,11 @@ class ControlClient {
       ws.onopen = () => void client.request({ t: "hello", v: PROTOCOL, token: control.token, ...hello }).then(() => resolve(client));
     });
   }
-  request(msg) {
+  request(msg, timeoutMs) {
     const rid = this.nextRid++;
     return new Promise((resolve) => {
-      this.pending.set(rid, resolve);
+      const timer = timeoutMs ? setTimeout(() => (this.pending.delete(rid), resolve({ ok: false, error: `no answer from the hub within ${Math.round(timeoutMs / 1000)} s` })), timeoutMs) : undefined;
+      this.pending.set(rid, (reply) => (clearTimeout(timer), resolve(reply)));
       this.ws.send(JSON.stringify({ ...msg, rid }));
     });
   }

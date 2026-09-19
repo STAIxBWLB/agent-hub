@@ -324,7 +324,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const question = args.filter((a) => a !== "--remember").join(" ");
     if (!question.trim()) fail("usage: ahub ask [--remember] <question...>");
     const hub = await connect();
-    const res = await hub.request({ t: "ask", question, remember });
+    const res = await hub.request({ t: "ask", question, remember }, 75_000); // above the hub's own budget (probe + 45 s model call)
     hub.close();
     if (!res.ok) fail(res.error);
     console.log(res.answer ?? `(${res.note})`);

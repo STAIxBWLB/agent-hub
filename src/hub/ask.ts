@@ -5,7 +5,7 @@ import type { Board, Task } from "./board.ts";
 import type { Inference } from "./inference.ts";
 
 export interface Evidence {
-  /** what the answer cites: `task #3`, `#65001`, `log 09-19 14:02:11` */
+  /** what the answer cites: `task #3`, `#65001`, `log 09-19 14:02:11.532` */
   id: string;
   kind: "task" | "memory" | "log";
   text: string;
@@ -19,8 +19,8 @@ export interface AskDeps {
    * Asked only when something PII is involved.
    */
   onCampus: () => Promise<boolean>;
-  /** Does the question itself carry PII (the routing policy's patterns)? Then it goes to no service but an on-campus model. */
-  questionIsPii?: (question: string) => boolean;
+  /** Does this text carry PII (the routing policy's patterns)? Applied to the question and to every log line. */
+  isPiiText?: (text: string) => boolean;
   memory?: MemoryClient;
   project: string;
   logFile: string;
@@ -45,6 +45,8 @@ const EVIDENCE_CHARS = 6000;
 const ITEM_CHARS = 300;
 const MAX_TASKS = 25;
 const LOG_TAIL_BYTES = 256 * 1024;
+/** The first line a hub run writes to its log. daemon.ts uses the same constant, so the two cannot drift apart. */
+export const RUN_START = "ahub up pid=";
 const STOP = new Set(["what", "which", "when", "where", "with", "have", "that", "this", "from", "they", "them", "there", "about", "does", "were", "been", "task", "tasks", "who's", "whom", "into", "over"]);
 
 /** ASCII words of four letters or more that are not question filler, and any non-ASCII word of two or more (Korean nouns are short). */
@@ -63,7 +65,7 @@ function thisRunsLog(file: string): string[] {
     const buf = Buffer.alloc(len);
     readSync(fd, buf, 0, len, size - len);
     const lines = buf.toString("utf8").split("\n").slice(size > len ? 1 : 0);
-    const start = lines.findLastIndex((l) => l.includes(" hub up pid="));
+    const start = lines.findLastIndex((l) => l.includes(RUN_START)); // what startDaemon logs first
     return lines.slice(Math.max(start, 0)).filter(Boolean);
   } catch {
     return [];
@@ -73,15 +75,18 @@ function thisRunsLog(file: string): string[] {
 }
 
 /** Evidence first: the board, shared memory (index search plus the neighbourhood of the top hit), this run's log. Read-only. */
-export async function gather(question: string, d: AskDeps): Promise<{ evidence: Evidence[]; pii: boolean }> {
+export async function gather(question: string, d: AskDeps): Promise<{ evidence: Evidence[]; pii: boolean; onCampus: boolean | undefined }> {
   const keys = keywords(question);
   const hit = (s: string) => keys.filter((k) => s.toLowerCase().includes(k)).length;
-  const piiQuestion = d.questionIsPii?.(question) ?? false;
+  const piiQuestion = d.isPiiText?.(question) ?? false;
+  // One probe per ask, and only when PII decides something: it can cost seconds.
+  let campus: boolean | undefined;
+  const onCampus = async () => (campus ??= await d.onCampus().catch(() => false));
 
   // Matching tasks first, then the most recently touched; PII rows keep their place with a stub, so counts stay right.
   const tasks = d.board.list().sort((a, b) => hit(b.title) - hit(a.title) || b.updated - a.updated).slice(0, MAX_TASKS);
   const anyPii = tasks.some((t) => d.isPii(t));
-  const showPii = anyPii ? await d.onCampus().catch(() => false) : false; // the probe costs seconds: only when it decides something
+  const showPii = anyPii ? await onCampus() : false;
   let piiShown = false;
   const taskRows: Evidence[] = tasks.map((t) => {
     const secret = d.isPii(t);
@@ -93,10 +98,15 @@ export async function gather(question: string, d: AskDeps): Promise<{ evidence: 
 
   // A question that carries PII is not sent to the memory worker, whose observer is a cloud model.
   const memoryRows = d.memory && !piiQuestion ? related(d.memory, d.project, question, 2).catch(() => []) : Promise.resolve([]);
-  const logRows: Evidence[] = thisRunsLog(d.logFile)
-    .filter((l) => hit(l) > 0)
-    .slice(-12)
-    .map((l) => ({ id: `log ${l.slice(5, 10)} ${l.slice(11, 19)}`, kind: "log" as const, text: l.slice(25, 25 + ITEM_CHARS) }));
+  // The log carries message bodies and is written by agents too: a line with PII in it is treated like a PII task row.
+  const matching = thisRunsLog(d.logFile).filter((l) => hit(l) > 0).slice(-12);
+  const logHasPii = matching.some((l) => d.isPiiText?.(l));
+  const showLogPii = logHasPii ? await onCampus() : false;
+  if (logHasPii && showLogPii) piiShown = true;
+  const logRows: Evidence[] = matching
+    .filter((l) => showLogPii || !d.isPiiText?.(l))
+    // ids carry the milliseconds: two lines in the same second are two pieces of evidence
+    .map((l) => ({ id: `log ${l.slice(5, 10)} ${l.slice(11, 23)}`, kind: "log" as const, text: l.slice(25, 25 + ITEM_CHARS) }));
   const memory: Evidence[] = (await memoryRows)
     .filter((r) => !r.title.startsWith(ASK_NOTE_TITLE))
     .map((r) => ({ id: `#${r.id}`, kind: "memory" as const, text: `${r.time} ${r.type} ${r.title}`.slice(0, ITEM_CHARS) }));
@@ -105,15 +115,15 @@ export async function gather(question: string, d: AskDeps): Promise<{ evidence: 
   const evidence: Evidence[] = [];
   let size = 0;
   for (const e of [...taskRows, ...memory, ...logRows]) {
-    if (evidence.some((x) => x.id === e.id)) continue; // two log lines in one second: the first stands for both
+    if (evidence.some((x) => x.id === e.id)) continue;
     if (size + e.text.length + e.id.length > EVIDENCE_CHARS) continue;
     size += e.text.length + e.id.length;
     evidence.push(e);
   }
-  return { evidence, pii: piiQuestion || (piiShown && evidence.some((e) => e.kind === "task")) };
+  return { evidence, pii: piiQuestion || piiShown, onCampus: campus };
 }
 
-const ID = /^(task #\d+|#\d+|log \d\d-\d\d \d\d:\d\d:\d\d)$/;
+const ID = /^(task #\d+|#\d+|log \d\d-\d\d \d\d:\d\d:\d\d\.\d{3})$/;
 
 /** Every id the answer cites, grouped brackets included: `[#1, #2, task #3]`. */
 export function citedIds(answer: string): string[] {
@@ -127,9 +137,9 @@ export function citedIds(answer: string): string[] {
 export async function ask(question: string, d: AskDeps): Promise<AskResult> {
   const q = question.trim();
   if (!q) throw new Error("usage: ahub ask <question>");
-  const { evidence, pii } = await gather(q, d);
+  const { evidence, pii, onCampus } = await gather(q, d);
   if (!evidence.length) return { found: false, answer: NOTHING, evidence, pii };
-  if (pii && !(await d.onCampus().catch(() => false))) {
+  if (pii && !(onCampus ?? (await d.onCampus().catch(() => false)))) {
     return { found: false, evidence, pii, note: "PII is involved and no on-campus model is confirmed reachable: the evidence is listed, unanswered" };
   }
   const raw = await d.inference?.complete(
@@ -142,7 +152,8 @@ export async function ask(question: string, d: AskDeps): Promise<AskResult> {
   );
   if (!raw) return { found: false, evidence, pii, note: "no model reachable: the evidence is listed, unanswered" };
   const answer = raw.slice(0, 2000);
-  if (answer.includes(NOTHING.slice(0, 24))) return { found: false, answer: NOTHING, evidence, pii };
+  // Only as the whole reply: "Nothing found in the hub log about X, but [task #3] shows ..." is an answer.
+  if (answer.replace(/[\s.]+$/, "") === NOTHING.replace(/\.$/, "")) return { found: false, answer: NOTHING, evidence, pii };
   const known = new Set(evidence.map((e) => e.id));
   const cited = citedIds(answer);
   if (!cited.length) return { found: false, evidence, pii, note: "the model's answer cited nothing from the evidence, so it was dropped" };

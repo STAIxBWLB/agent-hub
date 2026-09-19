@@ -18,7 +18,7 @@ import type { BusEvent } from "./bus.ts";
 import { DEFAULT_ROLES, roleContract, TASK_TOOLS } from "./hub-tools.ts";
 import { Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, type InferenceConfig } from "./inference.ts";
-import { ask, ASK_NOTE_TITLE } from "./ask.ts";
+import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, detectSignals } from "./routing.ts";
 import { Bus } from "./bus.ts";
 import { PROTOCOL, stateDirFor } from "./control-client.ts";
@@ -348,7 +348,9 @@ export async function startDaemon(opts: DaemonOptions) {
     // The title is written by an agent and read by the person approving it: escape sequences and carriage returns
     // could repaint the terminal line, so everything but newline and tab is made visible.
     const title = req.title.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
-    log(`permission ${id} ${req.peer}: ${title.slice(0, 300)}`);
+    // The title can quote what a PII turn is about to write. It is for the person approving, on the console; the log
+    // (which `ahub ask` reads as evidence) only records that a request was made.
+    log(`permission ${id} requested by ${req.peer} (${title.length} chars, shown on the console)`);
     const push = JSON.stringify({ t: "permission", id, ...req, title });
     for (const c of consoles) if (c.data.tail) c.send(push);
     return new Promise((resolve) => {
@@ -554,7 +556,7 @@ export async function startDaemon(opts: DaemonOptions) {
           board,
           isPii: (t) => tasks.isPii(t),
           onCampus,
-          questionIsPii: (q) => currentRouting(opts.cwd, log).constraints.pii === "local_only" && detectSignals({ title: q, detail: "", refs: {} }, currentRouting(opts.cwd, log), opts.cwd).includes("pii"),
+          isPiiText: (q) => currentRouting(opts.cwd, log).constraints.pii === "local_only" && detectSignals({ title: q, detail: "", refs: {} }, currentRouting(opts.cwd, log), opts.cwd).includes("pii"),
           ...(config.memory.enabled ? { memory } : {}),
           project: chain.at(-1)!,
           logFile,
@@ -651,6 +653,6 @@ export async function startDaemon(opts: DaemonOptions) {
   budget.restore(); // pauses recorded by an earlier hub run stay in force; unfinished handoffs wait for peers to attach
   writeFileSync(join(opts.stateDir, "hub.pid"), `${process.pid}\n`);
   writeStatus();
-  log(`ahub up pid=${process.pid} control=127.0.0.1:${server.port} cwd=${opts.cwd}`);
+  log(`${RUN_START}${process.pid} control=127.0.0.1:${server.port} cwd=${opts.cwd}`);
   return { bus, token, port: server.port as number, stop, stopped: new Promise<void>((r) => (onStop = r)) };
 }

@@ -24,7 +24,7 @@ function setup(script?: Script, opts: { onCampus?: boolean; memory?: boolean } =
   board.update(1, "codex", "accepted", { state: "in_progress" });
   board.propose("user", { title: "fix the record of 900101-1234567", class: "implement", signals: ["pii"] });
   const logFile = join(dir, "hub.log");
-  writeFileSync(logFile, "2026-09-18T09:00:00.000Z switchyard: yesterday's run, must not be evidence\n2026-09-19T09:59:00.000Z hub up pid=1 control=127.0.0.1:4600 cwd=/p\n2026-09-19T10:00:00.000Z switchyard: off, falling back to fixed_model on OmniRoute (exited with code 1)\n2026-09-19T10:00:05.000Z state kimi -> idle\n");
+  writeFileSync(logFile, "2026-09-18T09:00:00.000Z switchyard: yesterday's run, must not be evidence\n2026-09-19T09:59:00.000Z ahub up pid=1 control=127.0.0.1:4600 cwd=/p\n2026-09-19T10:00:00.000Z switchyard: off, falling back to fixed_model on OmniRoute (exited with code 1)\n2026-09-19T10:00:05.000Z state kimi -> idle\n");
   const mem = startFakeMemWorker({ claude: ["65001 10:00a decision switchyard sidecar fallback design"] });
   cleanup.push(mem.stop);
   let model: ReturnType<typeof startFakeModelServer> | undefined;
@@ -51,7 +51,7 @@ test("evidence comes from the board, shared memory and the log, and the answer r
   const { deps, model } = setup(() => ({ content: "Codex is hardening the sidecar [task #1]; the fallback design was decided earlier [#65001]." }));
   const res = await ask("what is happening with the switchyard sidecar?", deps);
   expect(res.answer).toContain("[task #1]");
-  expect(res.evidence.map((e) => e.id)).toEqual(expect.arrayContaining(["task #1", "#65001", "#65002", "log 09-19 10:00:00"]));
+  expect(res.evidence.map((e) => e.id)).toEqual(expect.arrayContaining(["task #1", "#65001", "#65002", "log 09-19 10:00:00.000"]));
   expect(res.found).toBe(true);
   expect(res.evidence.some((e) => e.text.includes("yesterday"))).toBe(false); // only this run's part of the append-only log
   const sent = JSON.parse(model!.requests[0]!.body.messages[1].content);
@@ -86,7 +86,7 @@ test("an answer has to cite the evidence: no citation, a made-up citation or an 
   }
   const steered = setup(() => ({ content: NOTHING }));
   expect(await ask("status of the sidecar?", steered.deps)).toMatchObject({ answer: NOTHING, found: false });
-  expect(citedIds("a [task #1, #65001] b [see docs] c [log 09-19 10:00:00]")).toEqual(["task #1", "#65001", "log 09-19 10:00:00"]);
+  expect(citedIds("a [task #1, #65001] b [see docs] c [log 09-19 10:00:00.000]")).toEqual(["task #1", "#65001", "log 09-19 10:00:00.000"]);
 
   const empty = setup(() => ({ content: "should never be asked" }), { memory: false });
   const dir = mkdtempSync(join(tmpdir(), "agenthub-empty-"));
@@ -117,12 +117,12 @@ test("grouped citations count; a question that carries PII skips the memory work
 
   const isPii = (q: string) => /\d{6}-\d{7}/.test(q);
   const onCampus = setup(() => ({ content: "It is on the board [task #2]." }), { onCampus: true });
-  const here = await ask("who handles 900101-1234567?", { ...onCampus.deps, questionIsPii: isPii });
+  const here = await ask("who handles 900101-1234567?", { ...onCampus.deps, isPiiText: isPii });
   expect(here).toMatchObject({ pii: true, answer: "It is on the board [task #2]." });
   expect(onCampus.mem.calls).toHaveLength(0); // the question never reached the memory worker
 
   const offCampus = setup(() => ({ content: "should not be asked" }), { onCampus: false });
-  const away = await ask("who handles 900101-1234567?", { ...offCampus.deps, questionIsPii: isPii });
+  const away = await ask("who handles 900101-1234567?", { ...offCampus.deps, isPiiText: isPii });
   expect(away.answer).toBeUndefined();
   expect(away.note).toContain("no on-campus model");
   expect(offCampus.model!.requests).toHaveLength(0);
@@ -149,4 +149,24 @@ test("the on-campus probe runs only when PII is involved", async () => {
   expect(probes).toBe(0);
   await gather("sidecar", { ...plain.deps, onCampus: async () => (probes++, true) });
   expect(probes).toBe(1);
+});
+
+test("found by a second reviewer (Kimi, through the hub): run marker, PII in log lines, 'nothing found' inside a real answer, same-second lines", async () => {
+  const { deps } = setup(undefined);
+  // the marker is what the daemon really writes ("ahub up pid="), so an earlier run's lines are not evidence
+  const earlier = await gather("yesterday's switchyard run", deps);
+  expect(earlier.evidence.some((e) => e.text.includes("yesterday"))).toBe(false);
+
+  // a log line that carries PII is handled like a PII task row: absent off campus, marked on campus
+  writeFileSync(deps.logFile, "2026-09-19T09:59:00.000Z ahub up pid=1\n2026-09-19T10:00:01.111Z msg local -> user: parser fixed for 900101-1234567\n2026-09-19T10:00:01.222Z msg kimi -> *: parser tests pass\n");
+  const isPiiText = (t: string) => /\d{6}-\d{7}/.test(t);
+  const off = await gather("parser", { ...deps, isPiiText, onCampus: async () => false });
+  expect(JSON.stringify(off.evidence)).not.toContain("900101");
+  expect(off.evidence.filter((e) => e.kind === "log").map((e) => e.id)).toEqual(["log 09-19 10:00:01.222"]);
+  const on = await gather("parser", { ...deps, isPiiText, onCampus: async () => true });
+  expect(on.pii).toBe(true);
+  expect(on.evidence.filter((e) => e.kind === "log")).toHaveLength(2); // same second, two ids
+
+  const mixed = setup(() => ({ content: "Nothing found in the hub log about a deploy, but the sidecar work is open [task #1]." }));
+  expect(await ask("deploy?", mixed.deps)).toMatchObject({ found: true });
 });
