@@ -4,7 +4,7 @@ Native multi-agent hub for one developer's machine: Claude Code, Codex, Kimi Cod
 hub-owned local-LLM worker collaborate as peers in independent project directories, with
 task-aware model routing (Switchyard) in front of a self-hosted gateway (OmniRoute).
 
-Status: 0.5.0 (unreleased). All six milestones of the design spec are implemented; the [smoke checklist](docs/smoke.md)
+Status: 0.5.0. All six milestones of the design spec are implemented; the [smoke checklist](docs/smoke.md)
 says what has and has not been verified against real agents.
 
 Version 0.5.0 adds [controlled upgrade and session recovery](docs/specs/2026-09-20-upgrade-recovery-design.md).
