@@ -23,3 +23,14 @@ agent-hub connects agents that can each run commands. This page says what the hu
 ## Reporting
 
 Please report vulnerabilities privately through GitHub's "Report a vulnerability" on this repository rather than in a public issue.
+
+## Local dashboard sessions (issue #6)
+
+- `ahub ui` uses the authenticated console control connection to start an ephemeral HTTP listener on `127.0.0.1`. No UI listener exists before that command. The control and Codex proxy ports continue to refuse every `Origin` header.
+- The daemon issues a cryptographically random, single-use bootstrap ticket valid for 60 seconds. The CLI opens the dashboard with that ticket in the URL fragment, never a query string or the control token. The static page removes the fragment immediately and exchanges it with a same-origin POST. Tickets are consumed once; expired tickets cannot create sessions.
+- The exchange creates a separate random session, valid for one hour without renewal, in an `HttpOnly; SameSite=Strict; Path=/` cookie named for this listener's port. Sessions and tickets live only in memory and die with the daemon. HTTP is loopback-only; the cookie is not a substitute for the origin checks.
+- Every request must have the exact listener Host. Every data or action request, including the ticket exchange and snapshot polling, must be POST with the exact listener Origin and JSON content type. Foreign and missing origins, missing or expired sessions, oversized bodies and unknown actions are rejected. There is no CORS support. The only unauthenticated GET is the fixed, data-free HTML shell. No files or paths are served dynamically.
+- Responses are non-cacheable, cannot be framed, suppress referrers, and use a content security policy restricting scripts/styles to the shipped inline content and connections to this origin. Browser text is rendered with textContent, never interpreted as HTML.
+- The browser receives a bounded redacted event stream, peer states and queue counts, public task views, budget windows and pending approvals. Private envelope bodies and PII task text never cross this endpoint. Local-worker approval titles can contain PII, so their details remain terminal-only; the dashboard identifies the request and directs the operator to `ahub tail` before allowing it. Budget checkpoint summaries are also omitted.
+- The closed action list is permission response, peer pause/resume, console message, task proposal and task assignment. These use the existing daemon/task paths and budget pause rules. There is no generic control proxy, task-detail read, shell, file access, configuration edit, budget override, peer launch or daemon shutdown API.
+- The listener stops with the daemon. Expired sessions must be reopened with `ahub ui`; the page does not silently obtain new credentials.

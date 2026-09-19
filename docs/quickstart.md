@@ -67,3 +67,25 @@ or set `OMNIROUTE_API_KEY`. Name the model in `.agenthub/routing.toml` (`[local]
 | `ahub kill` | stop the daemon and everything it started |
 
 More: `ahub help`. How it is built and why: [`docs/specs/2026-09-19-agent-hub-design.md`](specs/2026-09-19-agent-hub-design.md). What it protects and what it does not: [`docs/security.md`](security.md).
+
+## Browser dashboard
+
+After `ahub up`, run `ahub ui` to open the local dashboard. It refreshes the
+conversation stream, peer queues, task board, budget windows and approvals every
+second. No build step, web server command or browser extension is needed.
+
+Use the page to pause/resume a peer, send a console message, propose/assign tasks,
+and allow/deny agent permission requests. Local-worker requests show no tool
+contents: inspect them with `ahub tail`, then use `ahub permit <id> <option>` to
+allow. They can be denied on the page. PII task details remain available only via
+`ahub task show <id>` in the terminal.
+
+`ahub ui --no-open` prints a one-time link instead of launching a browser. Open it
+within 60 seconds. A session expires after one hour; run `ahub ui` again. Restarting
+the daemon invalidates all links and sessions. The UI listener is started only on
+request, binds loopback and stops with the daemon. Remote access is not supported.
+
+The stream retains the latest 200 events since the dashboard listener was started;
+it does not load historical logs. An unopened dashboard has no listener or event
+buffer. A paused budget window cannot be overridden on the page; the CLI's
+`ahub budget resume <peer>` remains the explicit override.

@@ -21,6 +21,7 @@ import { DEFAULT_INFERENCE, DIGEST, Inference, type InferenceConfig } from "./in
 import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, detectSignals } from "./routing.ts";
 import { Bus } from "./bus.ts";
+import { startDashboard } from "./ui.ts";
 import { PROTOCOL, stateDirFor } from "./control-client.ts";
 import { newEnvelope, parseMarker, USER, type Envelope, type PeerId } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS } from "./peers.ts";
@@ -163,6 +164,9 @@ export async function startDaemon(opts: DaemonOptions) {
   let sidecarRouting = "";
   inference = new Inference(config.inference, { omni, sidecar: () => sidecar, route: "sy/fast", fixedModel: () => currentRouting(opts.cwd, log).local.fixed_model, log });
 
+  let dashboard: ReturnType<typeof startDashboard> | undefined;
+  const uiEvents: { seq: number; event: BusEvent }[] = [];
+  let uiSequence = 0;
   const consoles = new Set<Sock>();
   /** A line for the human: hub.log and every open `ahub tail`. */
   const notify = (line: string) => {
@@ -259,7 +263,13 @@ export async function startDaemon(opts: DaemonOptions) {
   for (const i of intervals) i.unref?.();
 
   /** What the console stream and the log may show: a private envelope (PII task) keeps its body to its recipients. */
-  const redact = (e: BusEvent): BusEvent => ("env" in e && e.env.private ? { ...e, env: { ...e.env, body: `[private${e.env.refs?.task ? `: task #${e.env.refs.task}, see ahub task show ${e.env.refs.task}` : ""}]` } } : e);
+  const redact = (e: BusEvent): BusEvent => {
+    if (!("env" in e) || !e.env.private) return e;
+    const { refs, ...env } = e.env;
+    // Private task refs can quote names in paths/branches too. Only the numeric task link is public.
+    const task = refs?.task && /^[0-9]+$/.test(refs.task) ? refs.task : undefined;
+    return { ...e, env: { ...env, ...(task ? { refs: { task } } : {}), body: `[private${task ? `: task #${task}, see ahub task show ${task}` : ""}]` } };
+  };
   const SERVER_JS = join(import.meta.dir, "..", "..", "plugins", "agent-hub", "server.js");
   const toolEnv = (peer: PeerId) => ({ AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: opts.stateDir });
 
@@ -320,6 +330,7 @@ export async function startDaemon(opts: DaemonOptions) {
     pid: process.pid,
     cwd: opts.cwd,
     controlPort: server.port,
+    ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
       [...bus.peers].map(([id, p]) => [id, { state: bus.stateOf(id), queued: bus.queued(id), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}) }]),
@@ -335,6 +346,10 @@ export async function startDaemon(opts: DaemonOptions) {
 
   bus.tap((e) => {
     e = redact(e);
+    if (dashboard) {
+      uiEvents.push({ seq: ++uiSequence, event: e });
+      if (uiEvents.length > 200) uiEvents.shift();
+    }
     if (e.t === "state") log(`state ${e.peer} -> ${e.state}`);
     else if (e.t === "undeliverable") log(`UNDELIVERABLE to ${e.peer} after retries: ${e.env.id} from ${e.env.from}`);
     else if (e.t === "overflow") log(`OVERFLOW ${e.peer}: dropped ${e.env.id} from ${e.env.from}`);
@@ -470,6 +485,81 @@ export async function startDaemon(opts: DaemonOptions) {
     return { ok: false, error: `unknown peer "${peer}"` };
   }
 
+  function holdPeer(action: "pause" | "resume", id: string) {
+    if (!bus.peers.has(id)) return { ok: false, error: `unknown peer: ${id}` };
+    if (action === "pause") {
+      manualPaused.add(id);
+      bus.pause(id);
+    } else {
+      if (budget.record(id)) return { ok: false, error: `${id} is paused by the budget coordinator until its window resets (ahub budget); to override: ahub budget resume ${id}` };
+      manualPaused.delete(id);
+      bus.resume(id);
+    }
+    return { ok: true, state: bus.stateOf(id) };
+  }
+
+  function uiSnapshot(after: number) {
+    return {
+      ok: true,
+      status: { peers: status().peers },
+      tasks: board.list().map((task) => {
+        const view = tasks.publicView(task);
+        // Refs and history can themselves quote private text. The dashboard needs neither.
+        return { id: task.id, title: view.title, detail: view.detail, class: task.class, state: task.state, owner: task.owner, reviewer: task.reviewer };
+      }),
+      budget: budget.status(),
+      permissions: [...permissions.values()].map(({ push }) => {
+        const req = JSON.parse(push);
+        // Local tool titles quote file contents and commands, including those of PII turns.
+        return req.peer === "local"
+          ? { id: req.id, peer: req.peer, title: "Private tool details: review with ahub tail and answer with ahub permit", terminalOnly: true,
+              options: req.options.filter((o: { kind: string }) => o.kind === "reject_once").map((o: { optionId: string; kind: string }) => ({ ...o, name: "Deny" })) }
+          : req;
+      }),
+      events: uiEvents.filter((e) => e.seq > after),
+      cursor: uiSequence,
+    };
+  }
+
+  async function uiAction(a: Record<string, unknown>): Promise<unknown> {
+    const bad = { ok: false, error: "invalid or unavailable dashboard action" };
+    const text = (key: string, max: number) => typeof a[key] === "string" && (a[key] as string).length <= max;
+    const peer = () => text("peer", 32) && PEER_ID.test(a.peer as string);
+    const taskId = () => typeof a.id === "number" && Number.isSafeInteger(a.id) && a.id > 0;
+    switch (a.action) {
+      case "pause":
+      case "resume":
+        return peer() ? holdPeer(a.action, a.peer as string) : bad;
+      case "permit": {
+        if (!text("id", 64) || !text("option", 128)) return bad;
+        const pending = permissions.get(a.id as string);
+        if (!pending) return { ok: false, error: "permission expired or already answered" };
+        const req = JSON.parse(pending.push);
+        const option = req.options.find((o: { optionId: string }) => o.optionId === a.option);
+        if (!option || (req.peer === "local" && option.kind !== "reject_once")) return bad;
+        pending.done(option.optionId);
+        return { ok: true };
+      }
+      case "send": {
+        if (!text("body", 8000)) return bad;
+        if (a.to !== undefined && (!Array.isArray(a.to) || a.to.length > 32 || a.to.some((id) => typeof id !== "string" || !PEER_ID.test(id) || !bus.peers.has(id)))) return bad;
+        const { body, priority } = parseMarker(a.body as string, "important");
+        if (!body) return bad;
+        bus.publish(newEnvelope(USER, body, { priority, ...(Array.isArray(a.to) && a.to.length ? { to: a.to as string[] } : {}) }));
+        return { ok: true };
+      }
+      case "propose": {
+        if (!text("title", 300) || (a.detail !== undefined && !text("detail", 8000)) || (a.class !== undefined && !text("class", 32)) || (a.owner !== undefined && !(typeof a.owner === "string" && PEER_ID.test(a.owner)))) return bad;
+        const result = await taskOp(USER, "hub_task_propose", { title: a.title, detail: a.detail, class: a.class, owner: a.owner });
+        return { ok: true, text: result };
+      }
+      case "assign":
+        return taskId() && peer() ? { ok: true, text: await taskOp(USER, "task_assign", { id: a.id, peer: a.peer }) } : bad;
+      default:
+        return bad;
+    }
+  }
+
   function onMessage(sock: Sock, msg: any): void {
     const c = sock.data;
     const reply = (body: Record<string, unknown>) => sock.send(JSON.stringify({ rid: msg.rid, ...body }));
@@ -517,6 +607,15 @@ export async function startDaemon(opts: DaemonOptions) {
         c.tail = bus.tap((e) => sock.send(JSON.stringify({ t: "event", e: redact(e) })));
         for (const p of permissions.values()) sock.send(p.push);
         return;
+      case "ui":
+        if (c.role !== "console") return void reply({ t: "ui", ok: false, error: "ui is a console command" });
+        try {
+          dashboard ??= startDashboard({ snapshot: uiSnapshot, action: uiAction });
+          writeStatus();
+          return void reply({ t: "ui", ok: true, url: dashboard.issue() });
+        } catch {
+          return void reply({ t: "ui", ok: false, error: "could not start the dashboard" });
+        }
       case "status":
         return void reply({ t: "status", status: status() });
       case "start":
@@ -537,17 +636,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "pause":
       case "resume": {
         if (c.role !== "console") return;
-        const id = String(msg.peer);
-        if (!bus.peers.has(id)) return void reply({ t: msg.t, ok: false, error: `unknown peer: ${id}` });
-        if (msg.t === "pause") {
-          manualPaused.add(id);
-          bus.pause(id);
-        } else {
-          if (budget.record(id)) return void reply({ t: msg.t, ok: false, error: `${id} is paused by the budget coordinator until its window resets (ahub budget); to override: ahub budget resume ${id}` });
-          manualPaused.delete(id);
-          bus.resume(id);
-        }
-        return void reply({ t: msg.t, ok: true, state: bus.stateOf(id) });
+        return void reply({ t: msg.t, ...holdPeer(msg.t, String(msg.peer)) });
       }
       case "ask":
         // Console only: the evidence may hold PII task text (on campus), and the answer is for the person at the terminal.
@@ -610,7 +699,7 @@ export async function startDaemon(opts: DaemonOptions) {
     hostname: "127.0.0.1",
     port: opts.controlPort,
     fetch(req, srv) {
-      if (req.headers.get("origin")) return new Response("forbidden", { status: 403 });
+      if (req.headers.has("origin")) return new Response("forbidden", { status: 403 });
       if (new URL(req.url).pathname === "/healthz") return new Response("ok");
       return srv.upgrade(req, { data: { authed: false } }) ? undefined : new Response("agent-hub control");
     },
@@ -635,6 +724,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (stopping) return;
     stopping = true;
     log("hub stopping");
+    dashboard?.stop();
+    for (const p of permissions.values()) p.done(undefined);
     await Promise.allSettled([...bus.peers.values()].map((p) => p.stop()));
     sidecar?.stop();
     for (const i of intervals) clearInterval(i);

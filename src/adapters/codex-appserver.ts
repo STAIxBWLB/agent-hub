@@ -72,7 +72,7 @@ export class CodexPeer extends BasePeer {
       port: this.opts.proxyPort,
       fetch: (req, server) => {
         // Browsers always send Origin on WebSocket upgrades; the TUI never does.
-        if (req.headers.get("origin")) return new Response("forbidden", { status: 403 });
+        if (req.headers.has("origin")) return new Response("forbidden", { status: 403 });
         if (server.upgrade(req, { data: {} as Link })) return undefined;
         return new Response("agent-hub codex proxy");
       },

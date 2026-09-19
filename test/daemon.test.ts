@@ -47,6 +47,19 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?:
   return { stateDir, daemon, console_, events, pushes };
 }
 
+async function dashboardClient(console_: ControlClient) {
+  const opened = await console_.request({ t: "ui" });
+  expect(opened.ok).toBe(true);
+  const url = new URL(opened.url);
+  const origin = url.origin;
+  const headers: Record<string, string> = { origin, "content-type": "application/json" };
+  const session = await fetch(`${origin}/session`, { method: "POST", headers, body: JSON.stringify({ ticket: url.hash.slice(1) }) });
+  expect(session.status).toBe(200);
+  headers.cookie = session.headers.get("set-cookie")!.split(";")[0]!;
+  const post = async (path: string, body: unknown = {}) => (await fetch(`${origin}/${path}`, { method: "POST", headers, body: JSON.stringify(body) })).json() as Promise<any>;
+  return { origin, post };
+}
+
 /** A fake Claude Code: an MCP client that spawns the channel server and records channel pushes. */
 async function fakeClaude(stateDir: string) {
   const client = new Client({ name: "fake-claude", version: "0" }, { capabilities: {} });
@@ -169,6 +182,7 @@ test("a tail opened after a permission request still sees it", async () => {
 
 test("console messages go out at once, agent status is batched into one digest notification, fyi reaches nobody", async () => {
   const { stateDir, daemon, console_, events } = await hub();
+  const ui = await dashboardClient(console_);
   const { channel } = await fakeClaude(stateDir);
   const other = await ControlClient.connect(stateDir, { role: "peer", peer: "claude-2" });
   await until(() => daemon.bus.peers.get("claude")?.state === "idle" && daemon.bus.peers.get("claude-2")?.state === "idle", "attach");
@@ -365,16 +379,19 @@ test("a PII task shows nowhere but the local console's task view: not on ahub ta
   process.env.OMNIROUTE_API_KEY = "k";
   cleanup.push(() => delete process.env.OMNIROUTE_API_KEY);
   const { stateDir, daemon, console_, events, pushes } = await hub({ modelUrl: model.url, memoryUrl: mem.url });
+  const ui = await dashboardClient(console_);
   const { channel } = await fakeClaude(stateDir);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
   await console_.request({ t: "start", peer: "local", args: { model: "vllm/x" } });
 
-  const res = await console_.request({ t: "task", op: "hub_task_propose", args: { title: "fix the entry for 900101-1234567", class: "implement" } });
+  const res = await console_.request({ t: "task", op: "hub_task_propose", args: { title: "fix the entry for 900101-1234567", class: "implement", refs: { paths: ["900101-private.txt"], branch: "900101-private" } } });
   expect(res.text).toBe("task #1: proposed, owner local, reviewer user");
   await until(() => events.some((e) => e.t === "envelope" && e.env.from === "local"), "local answer");
   await Bun.sleep(80);
 
-  const everything = JSON.stringify(events) + JSON.stringify(pushes) + JSON.stringify(channel) + readFileSync(join(stateDir, "hub.log"), "utf8");
+  const uiOutput = JSON.stringify(await ui.post("snapshot"));
+  expect(uiOutput).toContain("[pii]");
+  const everything = uiOutput + JSON.stringify(events) + JSON.stringify(pushes) + JSON.stringify(channel) + readFileSync(join(stateDir, "hub.log"), "utf8");
   expect(everything).not.toContain("900101");
   expect(everything).toContain("[private: task #1, see ahub task show 1]");
   expect(events.filter((e) => e.t === "envelope" && e.env.from === "local").every((e) => e.env.body.includes("task #1"))).toBe(true); // the answer's stub names the task
@@ -427,6 +444,9 @@ test("budget relay end to end: checkpoint, pause, task to local with the summary
   const refused = await console_.request({ t: "resume", peer: "kimi" }); // ahub resume does not override the coordinator
   expect(refused).toMatchObject({ ok: false });
   expect(refused.error).toContain("ahub budget resume kimi");
+  const ui = await dashboardClient(console_);
+  expect(await ui.post("action", { action: "resume", peer: "kimi" })).toMatchObject({ ok: false });
+  expect((await ui.post("snapshot")).budget.kimi.paused.reason).toContain("95%");
 
   await console_.request({ t: "pause", peer: "kimi" }); // the user also pauses it by hand
   await console_.request({ t: "budget", set: { peer: "kimi", used: 0.2 } }); // the mocked reset
@@ -455,7 +475,7 @@ test("ahub ask over the control link: console only, evidence from the board, --r
   expect(note.metadata).toMatchObject({ peer: "hub", asked_by: "user", source: "ahub ask" });
   expect(note.title).toStartWith("ahub ask (model answer)");
 
-  await console_.request({ t: "task", op: "hub_task_propose", args: { title: "fix the entry for 900101-1234567", class: "implement" } });
+  await console_.request({ t: "task", op: "hub_task_propose", args: { title: "fix the entry for 900101-1234567", class: "implement", refs: { paths: ["900101-private.txt"], branch: "900101-private" } } });
   const saves = mem.calls.filter((c) => c.path === "/api/memory/save").length;
   const withPii = await console_.request({ t: "ask", question: "what is open?", remember: true });
   expect(withPii).toMatchObject({ pii: true, saved: "not saved: PII is involved" });
@@ -476,4 +496,90 @@ test("kill removes pid, status and token", async () => {
   await daemon.stopped;
   expect(() => statSync(join(stateDir, "hub.pid"))).toThrow();
   expect(() => statSync(join(stateDir, "control-token"))).toThrow();
+});
+
+
+test("dashboard is lazy, console-only, closes with daemon and keeps the control origin ban", async () => {
+  const { daemon, console_, stateDir } = await hub();
+  expect((await console_.request({ t: "status" })).status.uiOrigin).toBeUndefined();
+  const peer = await ControlClient.connect(stateDir, { role: "tools", peer: "claude" });
+  expect(await peer.request({ t: "ui" })).toMatchObject({ ok: false });
+  peer.close();
+  expect((await console_.request({ t: "status" })).status.uiOrigin).toBeUndefined();
+  const cli = Bun.spawn([process.execPath, join(ROOT, "src/cli/main.js"), "ui", "--no-open"], { cwd: ROOT, env: { ...process.env, AGENTHUB_STATE_DIR: stateDir }, stdout: "pipe", stderr: "pipe" });
+  const link = (await new Response(cli.stdout).text()).trim();
+  expect(await cli.exited).toBe(0);
+  expect(new URL(link).hash).toMatch(/^#[a-f0-9]{64}$/);
+  expect(link).not.toContain(daemon.token);
+  const ui = await dashboardClient(console_);
+  expect(new URL(link).origin).toBe(ui.origin);
+  expect((await console_.request({ t: "status" })).status.uiOrigin).toBe(ui.origin);
+  for (const origin of [ui.origin, "https://evil.example", "null", ""]) {
+    expect((await fetch(`http://127.0.0.1:${daemon.port}/healthz`, { headers: { origin } })).status).toBe(403);
+  }
+  const shell = await (await fetch(ui.origin)).text();
+  expect(shell).not.toContain(daemon.token);
+  expect(JSON.stringify(await ui.post("snapshot"))).not.toContain(daemon.token);
+  await daemon.stop();
+  await expect(fetch(ui.origin)).rejects.toThrow();
+});
+
+test("dashboard snapshots, allow/deny approvals, task actions, pauses and restricted actions work end to end", async () => {
+  const { console_, pushes, events, stateDir } = await hub();
+  const ui = await dashboardClient(console_);
+  const claude = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" });
+  cleanup.push(() => claude.close());
+  await console_.request({ t: "start", peer: "kimi" });
+  expect((await ui.post("snapshot")).status.peers.kimi).toMatchObject({ state: "idle", queued: 0 });
+  for (const option of ["yes", "no"]) {
+    pushes.length = 0;
+    expect(await ui.post("action", { action: "send", to: ["kimi"], body: "PERMISSION" })).toMatchObject({ ok: true });
+    await until(() => pushes.some((p) => p.t === "permission"));
+    const pending = (await ui.post("snapshot")).permissions[0];
+    expect(pending.title).toBe("write file");
+    expect(await ui.post("action", { action: "permit", id: pending.id, option: "made-up" })).toMatchObject({ ok: false });
+    expect(await ui.post("action", { action: "permit", id: pending.id, option })).toMatchObject({ ok: true });
+    await until(() => events.some((e) => e.t === "envelope" && e.env.body.endsWith(`permission=${option}`)));
+    expect(await ui.post("action", { action: "permit", id: pending.id, option })).toMatchObject({ ok: false });
+    expect((await ui.post("snapshot")).permissions).toHaveLength(0);
+  }
+  expect(await ui.post("action", { action: "pause", peer: "kimi" })).toMatchObject({ ok: true });
+  expect(await ui.post("action", { action: "send", body: "queued message", to: ["kimi"] })).toMatchObject({ ok: true });
+  expect((await ui.post("snapshot")).status.peers.kimi).toMatchObject({ state: "paused", queued: 1 });
+  expect(await ui.post("action", { action: "resume", peer: "kimi" })).toMatchObject({ ok: true });
+  expect(await ui.post("action", { action: "propose", title: "Dashboard task", class: "implement" })).toMatchObject({ ok: true });
+  expect(await ui.post("action", { action: "assign", id: 1, peer: "kimi" })).toMatchObject({ ok: true });
+  expect((await ui.post("snapshot")).tasks[0]).toMatchObject({ title: "Dashboard task", owner: "kimi" });
+  await console_.request({ t: "budget", set: { peer: "kimi", used: 0.25, resetsInMs: 30_000 } });
+  expect((await ui.post("snapshot")).budget.kimi.windows[0].used).toBe(0.25);
+  const snap = await ui.post("snapshot");
+  expect(snap.events.length).toBeGreaterThan(0);
+  expect((await ui.post("snapshot", { after: snap.cursor })).events).toHaveLength(0);
+  for (const action of ["task_show", "task", "ask", "kill", "start", "budget", "hub_remember", "shell"]) {
+    expect(await ui.post("action", { action, id: 1, body: "bad" })).toMatchObject({ ok: false });
+  }
+});
+
+
+test("dashboard hides local permission contents, refuses allow and can deny", async () => {
+  const privateValue = "900101-1234567";
+  const model = startFakeModelServer({ key: "k", script: (body) => body.messages.some((m) => m.role === "tool")
+    ? { content: "write refused" }
+    : { tool_calls: [toolCall("write", { path: "dashboard-denied-test.txt", content: privateValue })] } });
+  cleanup.push(model.stop);
+  process.env.OMNIROUTE_API_KEY = "k";
+  cleanup.push(() => delete process.env.OMNIROUTE_API_KEY);
+  const { console_, pushes } = await hub({ modelUrl: model.url });
+  const ui = await dashboardClient(console_);
+  await console_.request({ t: "start", peer: "local", args: { model: "vllm/test" } });
+  await console_.request({ t: "send", to: ["local"], body: "write a file" });
+  await until(() => pushes.some((p) => p.t === "permission"));
+  expect(pushes.find((p) => p.t === "permission").title).toContain(privateValue);
+  const snapshot = await ui.post("snapshot");
+  expect(JSON.stringify(snapshot)).not.toContain(privateValue);
+  const pending = snapshot.permissions[0];
+  expect(pending.terminalOnly).toBe(true);
+  expect(pending.options.map((o: any) => o.optionId)).toEqual(["deny"]);
+  expect(await ui.post("action", { action: "permit", id: pending.id, option: "allow" })).toMatchObject({ ok: false });
+  expect(await ui.post("action", { action: "permit", id: pending.id, option: "deny" })).toMatchObject({ ok: true });
 });

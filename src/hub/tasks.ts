@@ -59,7 +59,7 @@ export class Tasks {
   /** A task as a cloud peer may see it. */
   publicView(task: Task): Record<string, unknown> {
     const { title, detail, history, ...rest } = task;
-    return this.isPii(task) ? { ...rest, title: "[pii]", detail: "[pii]" } : { ...rest, title, detail, history: history.slice(-5) };
+    return this.isPii(task) ? { ...rest, refs: {}, title: "[pii]", detail: "[pii]" } : { ...rest, title, detail, history: history.slice(-5) };
   }
 
   private states(): Record<PeerId, PeerState> {
