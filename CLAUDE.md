@@ -86,4 +86,5 @@ Run this before reporting any task complete, and paste the output. A failing tes
 - State files that clients read (`status.json`, `control-token`) are written after the port is bound, and `status.json` via temp file + rename.
 - Every body that is rendered next to a hub-written header goes through `sanitize()`; otherwise an agent can forge a `[agent-hub message from "user"` line inside its own message.
 - Both loopback servers refuse requests that carry an `Origin` header and the control WS requires the token: any web page can open a WebSocket to 127.0.0.1.
+- The channel's reconnect loop stops on closes a retry cannot fix (`TERMINAL_CLOSES` in `claude-channel.ts`); a new daemon close code that means "do not come back" belongs there, or two clients fight over it forever.
 - `plugins/agent-hub/server.js` is generated but committed (the marketplace copies only the plugin dir). Do not edit it by hand.

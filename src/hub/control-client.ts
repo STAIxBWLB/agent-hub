@@ -30,7 +30,8 @@ export class ControlClient {
   private nextRid = 1;
   private readonly pending = new Map<number, (msg: any) => void>();
   onPush: (msg: any) => void = () => {};
-  onClose: () => void = () => {};
+  /** `code`/`reason`: what the hub closed with, e.g. 4000 when another client attached as the same peer. */
+  onClose: (code: number, reason: string) => void = () => {};
 
   private constructor(private readonly ws: WebSocket) {}
 
@@ -41,11 +42,12 @@ export class ControlClient {
       const ws = new WebSocket(control.url);
       const client = new ControlClient(ws);
       ws.onerror = () => reject(new Error(`cannot reach hub at ${control.url}`));
-      ws.onclose = () => {
-        reject(new Error("hub closed the connection (stale token?)"));
+      ws.onclose = (ev) => {
+        // A refused hello carries its reason (bad token, wire version, peer id); say that, not a guess.
+        reject(Object.assign(new Error(`hub closed the connection: ${ev.reason || "stale token?"}`), { code: ev.code }));
         for (const done of client.pending.values()) done({ ok: false, error: "hub connection closed" });
         client.pending.clear();
-        client.onClose();
+        client.onClose(ev.code, ev.reason);
       };
       ws.onmessage = (ev) => {
         const msg = JSON.parse(String(ev.data));

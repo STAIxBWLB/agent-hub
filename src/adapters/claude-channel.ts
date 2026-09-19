@@ -24,6 +24,14 @@ function roles(): Record<string, string[]> {
   }
 }
 const MAX_RECONNECT_DELAY_MS = 30_000;
+/** Close codes a retry cannot fix: another session took this peer id (4000), bad token, reserved or taken id, wire version. */
+const TERMINAL_CLOSES: Record<number, string> = {
+  4000: `another session attached to the hub as "${peerId}"; this one is detached (restart it to take the peer back)`,
+  4401: "the hub refused the control token",
+  4403: `the hub refused the peer id "${peerId}" (reserved or malformed)`,
+  4409: `the peer id "${peerId}" is taken by a hub-managed adapter`,
+  4426: "wire version mismatch with the running hub: update the agent-hub plugin (ahub setup) and restart this session",
+};
 const INBOX_CAP = 200;
 
 const INSTRUCTIONS = [
@@ -50,6 +58,8 @@ const server = new Server(
 
 const inbox: string[] = []; // pushes that failed; drained by hub_inbox
 let hub: ControlClient | undefined;
+let detached: string | undefined; // why this server stopped reconnecting; tool calls report it
+const offline = () => detached ?? "hub is not running for this project (start it with: ahub up).";
 
 /** One delivery = one notification, because every notification can cost Claude a turn. */
 async function push(envs: Envelope[]): Promise<void> {
@@ -75,17 +85,24 @@ async function push(envs: Envelope[]): Promise<void> {
 
 async function connectLoop(): Promise<void> {
   for (let attempt = 0; ; attempt++) {
+    let code: number | undefined;
     try {
       const client = await ControlClient.connect(stateDir, { role: toolsOnly ? "tools" : "peer", peer: peerId });
       client.onPush = (msg) => msg.t === "deliver" && void push(msg.envs ?? [msg.env]); // `env`: a daemon older than wire version 2
       hub = client;
       attempt = -1;
       log(`connected to hub as "${peerId}"`);
-      await new Promise<void>((r) => (client.onClose = r));
+      code = await new Promise<number>((r) => (client.onClose = r));
       hub = undefined;
       log("hub connection lost");
     } catch (e) {
+      code = (e as { code?: number }).code;
       if (attempt === 0) log((e as Error).message);
+    }
+    // Retrying these only fights another session or hammers a hub that will refuse again.
+    if (code !== undefined && TERMINAL_CLOSES[code]) {
+      detached = TERMINAL_CLOSES[code];
+      return log(`stopped reconnecting: ${detached}`);
     }
     await new Promise((r) => setTimeout(r, Math.min(1000 * 2 ** Math.max(attempt, 0), MAX_RECONNECT_DELAY_MS)));
   }
@@ -129,14 +146,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
   if (name === "hub_send") {
     const { text: body, to, reply_to } = (args ?? {}) as { text?: string; to?: string[]; reply_to?: string };
-    if (!hub) return text("hub is not running for this project (start it with: ahub up). Message not sent.");
+    if (!hub) return text(`${offline()} Message not sent.`);
     const res = await hub.request({ t: "send", body, to, reply_to });
     if (!res.ok) return text(`not sent: ${res.error}`);
     if (res.recorded) return text("recorded only ([FYI]): it is on the hub console and log, and no peer spent a turn on it");
     return text(`sent to: ${res.targets.join(", ") || "(no other peers attached)"}`);
   }
   if (TASK_TOOL_NAMES.has(name)) {
-    if (!hub) return text("hub is not running for this project (start it with: ahub up).");
+    if (!hub) return text(offline());
     const res = await hub.request({ t: "task", op: name, args: args ?? {} });
     return text(res.ok ? res.text : `error: ${res.error}`);
   }
@@ -144,4 +161,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 });
 
 await server.connect(new StdioServerTransport());
+// The host (Claude Code, Codex, Kimi) talks over stdin; once it is gone nothing can use this server, and a leftover would keep reconnecting.
+process.stdin.on("end", () => process.exit(0));
+process.stdin.on("close", () => process.exit(0));
 void connectLoop();

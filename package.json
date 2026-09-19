@@ -1,6 +1,6 @@
 {
   "name": "@staix/agent-hub",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Native multi-agent hub: Claude Code, Codex, Kimi Code and a local worker as peers in one project",
   "license": "MIT",
   "type": "module",

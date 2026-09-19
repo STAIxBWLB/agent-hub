@@ -107,7 +107,13 @@ type Sock = ServerWebSocket<Client>;
 /** A peer that lives in another process and attaches over the control WS (the Claude channel plugin). */
 class WsPeer extends BasePeer {
   private sock: Sock | undefined;
+  private claimed: Sock | undefined;
+  /** Called at hello, before the async preface: the newest hello wins even if an older one's recall finishes last. */
+  claim(sock: Sock): void {
+    this.claimed = sock;
+  }
   attach(sock: Sock): void {
+    if (sock !== this.claimed) return void sock.close(4000, "replaced"); // a newer session said hello meanwhile
     this.sock?.close(4000, "replaced");
     this.sock = sock;
     this.setState("idle");
@@ -584,6 +590,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!peer) bus.add((peer = new WsPeer(c.peer)));
         if (!(peer instanceof WsPeer)) return sock.close(4409, "peer id is taken by a hub-managed adapter");
         const ws = peer;
+        ws.claim(sock);
         void ensurePreface(c.peer).finally(() => {
           if (sock.readyState === WebSocket.OPEN) ws.attach(sock);
         });
