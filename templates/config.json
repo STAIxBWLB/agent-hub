@@ -1,0 +1,5 @@
+{
+  "watchdog_ms": 300000,
+  "kimi_cmd": ["kimi", "acp"],
+  "codex_bin": "codex"
+}

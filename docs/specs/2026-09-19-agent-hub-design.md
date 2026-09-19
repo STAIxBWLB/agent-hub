@@ -1,6 +1,6 @@
 # agent-hub design spec
 
-Date: 2026-09-19. Status: approved design, implementation not started.
+Date: 2026-09-19. Status: M1 implemented on `feat/m1-messaging-core`; M2 to M6 not started.
 Owner: Young Joon Lee. Repo: STAIxBWLB/agent-hub (private).
 
 Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) or
@@ -90,7 +90,9 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
    reset for judgment-heavy classes. Task-level escalation on verification failure.
 8. Safety defaults: cross-peer text is framed as untrusted; permission prompts stay on
    unless `--unattended`; ports bind loopback only; Kimi ACP permission requests are
-   relayed to the hub console.
+   relayed to the hub console. Loopback is not enough on its own (any web page can open a
+   WebSocket to 127.0.0.1), so the control WS requires a per-run token and both hub
+   servers refuse requests that carry an `Origin` header (amended in M1).
 9. Single machine, one hub daemon per project directory. Cross-machine broker is out.
 10. Shared memory reuses claude-mem as the single store; the hub never runs its own
     memory database. Native capture stays where it exists (Claude hooks, Codex plugin,
@@ -121,24 +123,34 @@ hub CLI / console ── control WS 127.0.0.1:<ctl> ─────────�
   the daemon over the control WS with backoff. Exposes tools `hub_send`, `hub_inbox`
   (fallback drain), `hub_task_*`, `hub_review`, `hub_checkpoint`, `hub_ack_resume`.
 - Codex adapter: spawns `codex app-server --listen ws://127.0.0.1:<port>`, runs a
-  transparent proxy the TUI attaches to (`--enable tui_app_server --remote`), intercepts
-  `item/agentMessage` completions, injects via `turn/start` when idle and `turn/steer`
+  transparent proxy the TUI attaches to (`--enable tui_app_server --remote`). The proxy never
+  runs its own handshake: it learns the thread id from the TUI's `thread/start` /
+  `thread/resume` responses and sends hub requests with negative JSON-RPC ids whose
+  responses are swallowed. It shares one message per turn, the last `agentMessage` whose
+  `phase` is not `commentary` (0.154.0 items carry `text` and `phase`, verified), emitted on
+  `turn/completed`; injects via `turn/start` when idle and `turn/steer`
   for `important` messages while busy, registers hub tools through `dynamicTools` on
   `thread/start` and answers `item/tool/call`. Per-turn inactivity watchdog.
 - Kimi adapter (ACP client): spawns `kimi acp`, `initialize`, `session/new` (or
   `session/load` for resume), injects via `session/prompt`, collects
   `agent_message_chunk` into one outbound message per turn, tracks busy from the
   in-flight prompt, queues on `turn.agent_busy`. Relays `session/request_permission`
-  to the console. Reusable for `opencode acp`.
+  to the console (`hub tail` shows the request, `hub permit <id> <option>` answers, 120 s of
+  silence cancels; `hub up --unattended` auto-selects the agent's `allow_once` option). The
+  watchdog sends `session/cancel` before forcing idle. `--model` maps to `kimi --model <alias> acp`
+  (verified flag). Reusable for `opencode acp`.
 - Local worker: agent loop over an OpenAI-compatible client (AI SDK
   `@ai-sdk/openai-compatible`, inferred) with tools `read`, `write`, `edit`, `bash`,
   `git`, `hub_send`, `hub_task_*`. cwd-scoped, denylist for secrets paths. Model comes
   from router L1 as a Switchyard route id or a fixed OmniRoute model id.
-- Console: `hub tail` (live stream), `hub say [@peer] <text>`, `hub board`,
+- Console: `hub tail` (live stream), `hub say [@peer] <text>`, `hub permit`, `hub doctor`, `hub board`,
   `hub route explain <task>`, `hub budget`, `hub status`, `hub logs`, `hub kill`.
 - Launchers: `hub up`, `hub claude [--safe|--unattended] [--via dgx]`,
   `hub codex [--new] [--profile dgx]`, `hub kimi [--model <alias>]`, `hub local`.
   Launchers inject only the flags the hub owns and refuse user-supplied duplicates.
+  M1 accepts `--safe` and `--new` as explicit spellings of the default; `--via` and
+  `--profile dgx` arrive with M3. Peers are registered lazily, on first attach, so a peer
+  that is never launched accumulates no queue.
 
 ### Message model
 
@@ -154,7 +166,10 @@ interface Envelope {
 }
 ```
 
-- Never delivered back to `from`; `hop` capped at 3.
+- Never delivered back to `from`; `hop` capped at 3. A message produced by a turn the hub
+  injected inherits that envelope's `trace` with `hop + 1` (Claude passes `reply_to` on
+  `hub_send`); a turn the user started begins a fresh trace at hop 0. Envelopes over the
+  cap are dropped for peers but still shown on the console.
 - `important`: deliver now (steer for Codex). `status`: batch per recipient (default 3
   items or 15 s) into one digest. `fyi`: board only. Markers `[IMPORTANT]`, `[STATUS]`,
   `[FYI]` in agent text set priority; default `status`.
@@ -171,8 +186,12 @@ interface Envelope {
 | paused | budget gate or user `hub pause` | queue, reassign open tasks |
 | offline | adapter disconnected | queue (bounded 200), drop `fyi` |
 
-Inactivity watchdog per busy turn (default 300 s) forces `idle`. Queues are drained in
-order on `idle`. Delivery is at-least-once with idempotency by `id`.
+Inactivity watchdog per busy turn (default 300 s) forces `idle` after cancelling the silent
+turn (`session/cancel` for ACP, `turn/interrupt` for Codex); a late result of the cancelled
+turn is discarded. Queues are drained in order on `idle`. Delivery is at-least-once with
+idempotency by `id`: a failed delivery returns to the queue head and is retried after 1 s, and
+after 3 failures it is reported as undeliverable on the console so one envelope cannot block a
+peer. Peer ids claimed over the control WS must not be `user` or a hub-managed adapter id.
 
 ### Task board and roles
 
@@ -295,7 +314,8 @@ inside a peer.
 
 - Untrusted framing on all cross-peer text; standing instruction once per session.
 - `hub claude` and `hub codex` keep normal permission prompts. `--unattended` opts into
-  `--dangerously-skip-permissions` and `--yolo` and prints a warning.
+  `--dangerously-skip-permissions` (Claude) and `--dangerously-bypass-approvals-and-sandbox`
+  (Codex 0.154.0 documents this flag, not `--yolo`) and prints a warning.
 - Kimi and local tools: cwd-scoped, secrets denylist (`.maru/secrets`, `.env*`, keys).
 - Loopback binds only; ports per project from a registry (base 4600, stride 10).
 - No subscription OAuth through any gateway.
@@ -303,8 +323,8 @@ inside a peer.
 ### Configuration and state
 
 - `.agenthub/config.json` (roles, ports, filter tiers, watchdog), `.agenthub/routing.toml`.
-- `.agenthub/state/` gitignored: `hub.pid`, `status.json`, `hub.db` (tasks, messages,
-  budget), `hub.log`, `switchyard.toml`, `checkpoint.md`.
+- `.agenthub/state/` gitignored: `hub.pid`, `status.json`, `control-token` (0600, per run),
+  `hub.db` (tasks, messages, budget; from M4), `hub.log`, `switchyard.toml`, `checkpoint.md`.
 - Env: `AGENTHUB_STATE_DIR`, `AGENTHUB_OMNIROUTE_URL`, `OMNIROUTE_API_KEY`,
   `AGENTHUB_SWITCHYARD_BIN`, `AGENTHUB_UNATTENDED`.
 
@@ -374,18 +394,19 @@ CLAUDE.md, REVIEW.md
 ## Tasks
 
 M1 messaging core and three adapters
-- [ ] Repo scaffold: Bun, TS strict, `scripts/check.sh`, `CLAUDE.md`, `REVIEW.md`, labels
-- [ ] Bus, envelope, peer registry, state machines, control WS, state dir, port registry
-- [ ] Claude channel plugin: capability, push, `hub_send`, `hub_inbox`, reconnect
-- [ ] Codex adapter: spawn, proxy, agentMessage intercept, `turn/start`, watchdog
-- [ ] ACP adapter: spawn `kimi acp`, session lifecycle, prompt, chunk aggregation
-- [ ] CLI `up/claude/codex/kimi/say/tail/status/logs/kill`, `hub init` marker blocks
-- [ ] Fakes plus unit and integration tests; live trio chat smoke
-- [ ] claude-mem worker client (`src/memory/`), `hub doctor` memory check, fake worker for tests
+- [x] Repo scaffold: Bun, TS strict, `scripts/check.sh`, `CLAUDE.md`, `REVIEW.md`, labels
+- [x] Bus, envelope, peer registry, state machines, control WS, state dir, port registry
+- [x] Claude channel plugin: capability, push, `hub_send`, `hub_inbox`, reconnect
+- [x] Codex adapter: spawn, proxy, agentMessage intercept, `turn/start`, watchdog
+- [x] ACP adapter: spawn `kimi acp`, session lifecycle, prompt, chunk aggregation
+- [x] CLI `up/claude/codex/kimi/say/tail/status/logs/kill`, `hub init` marker blocks
+- [x] Fakes plus unit and integration tests
+- [ ] Live trio chat smoke (`docs/smoke.md`): Kimi leg passed; Codex reply leg blocked by the account usage limit on 2026-09-19; Claude leg needs an interactive session
+- [x] claude-mem worker client (`src/memory/`), `hub doctor` memory check, fake worker for tests
 
 M2 coordination
 - [ ] Priority tiers and status batching, marker parsing
-- [ ] Codex `turn/steer` for important while busy; Kimi busy queue and drain
+- [ ] Codex `turn/steer` for important while busy (plain busy queue and drain for every peer shipped in M1: without it a second Kimi prompt fails with `turn.agent_busy`)
 - [ ] Paused and offline queues, idempotent delivery, drop rules
 - [ ] Session-start cross-platform recall (inject without platformSource, token cap, once per session)
 

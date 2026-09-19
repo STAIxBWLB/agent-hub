@@ -1,0 +1,98 @@
+import { afterEach, expect, test } from "bun:test";
+import { join } from "node:path";
+import { AcpPeer, type AcpOptions } from "../src/adapters/acp.ts";
+import { Bus } from "../src/hub/bus.ts";
+import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
+
+const FAKE = ["bun", join(import.meta.dir, "fakes/acp-server.ts")];
+let peer: AcpPeer | undefined;
+afterEach(() => peer?.stop());
+
+async function setup(extra: Partial<AcpOptions> = {}) {
+  const bus = new Bus();
+  const said: Envelope[] = [];
+  bus.tap((e) => e.t === "envelope" && e.env.from === "kimi" && said.push(e.env));
+  peer = new AcpPeer("kimi", { cmd: FAKE, cwd: process.cwd(), ...extra });
+  bus.add(peer);
+  await peer.start();
+  return { bus, said };
+}
+const until = async (cond: () => boolean) => {
+  for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 10));
+  expect(cond()).toBe(true);
+};
+
+test("prompt round trip: chunks are aggregated into one reply that inherits the trace", async () => {
+  const { bus, said } = await setup();
+  const env = newEnvelope("user", "ping", { to: ["kimi"] });
+  bus.publish(env);
+  await until(() => said.length === 1);
+  expect(said[0]!.body).toBe("echo: ping");
+  expect(said[0]!.trace).toBe(env.trace);
+  expect(said[0]!.hop).toBe(1);
+  expect(peer!.state).toBe("idle");
+});
+
+test("messages arriving mid-prompt are queued and drained in order, never lost", async () => {
+  const { bus, said } = await setup();
+  for (const body of ["one", "two", "three"]) bus.publish(newEnvelope("user", body, { to: ["kimi"] }));
+  expect(peer!.state).toBe("busy");
+  expect(bus.queued("kimi")).toBe(2);
+  await until(() => said.length === 3);
+  expect(said.map((e) => e.body)).toEqual(["echo: one", "echo: two", "echo: three"]);
+});
+
+test("permission requests are relayed; no handler means cancelled", async () => {
+  const asked: string[] = [];
+  const { bus, said } = await setup({
+    onPermission: async (req) => {
+      asked.push(`${req.peer}:${req.title}`);
+      return "yes";
+    },
+  });
+  bus.publish(newEnvelope("user", "PERMISSION", { to: ["kimi"] }));
+  await until(() => said.length === 1);
+  expect(asked).toEqual(["kimi:write file"]);
+  expect(said[0]!.body).toBe("echo: PERMISSION permission=yes");
+
+  await peer!.stop();
+  const second = await setup();
+  second.bus.publish(newEnvelope("user", "PERMISSION", { to: ["kimi"] }));
+  await until(() => second.said.length === 1);
+  expect(second.said[0]!.body).toEndWith("permission=cancelled");
+});
+
+test("a dead child goes offline", async () => {
+  await setup();
+  await peer!.stop();
+  await until(() => peer!.state === "offline");
+});
+
+test("a command that cannot be spawned rejects start instead of crashing the process", async () => {
+  peer = new AcpPeer("kimi", { cmd: ["/nonexistent/agent-hub-no-such-binary"], cwd: process.cwd() });
+  await expect(peer.start()).rejects.toThrow(/spawn failed/);
+  expect(peer.state).toBe("offline");
+});
+
+test("watchdog: the cancelled prompt reports late and must not disturb the turn that followed it", async () => {
+  const { bus, said } = await setup({ watchdogMs: 60 });
+  bus.publish(newEnvelope("user", "SLOW", { to: ["kimi"] }));
+  bus.publish(newEnvelope("user", "after", { to: ["kimi"] }));
+  await until(() => said.length === 1);
+  await new Promise((r) => setTimeout(r, 80));
+  expect(said.map((e) => e.body)).toEqual(["echo: after"]); // nothing attributed to SLOW
+  expect(peer!.state).toBe("idle");
+});
+
+test("a prompt the agent rejects is retried, then reported undeliverable instead of blocking the queue", async () => {
+  const bus = new Bus(10);
+  const events: string[] = [];
+  bus.tap((e) => events.push(e.t === "envelope" ? `msg:${e.env.from}:${e.env.body}` : e.t));
+  peer = new AcpPeer("kimi", { cmd: FAKE, cwd: process.cwd() });
+  bus.add(peer);
+  await peer.start();
+  bus.publish(newEnvelope("user", "BROKEN", { to: ["kimi"] }));
+  bus.publish(newEnvelope("user", "fine", { to: ["kimi"] }));
+  await until(() => events.includes("msg:kimi:echo: fine"));
+  expect(events.filter((e) => e === "undeliverable")).toHaveLength(1);
+});

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agent-hub": {
+      "command": "bun",
+      "args": ["run", "${CLAUDE_PLUGIN_ROOT}/server.js"]
+    }
+  }
+}

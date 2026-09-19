@@ -1,0 +1,12 @@
+{
+  "name": "agent-hub",
+  "owner": { "name": "Young Joon Lee" },
+  "plugins": [
+    {
+      "name": "agent-hub",
+      "source": "./plugins/agent-hub",
+      "description": "Claude Code channel for the agent-hub multi-agent daemon",
+      "category": "development"
+    }
+  ]
+}
