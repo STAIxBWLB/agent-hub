@@ -1,6 +1,17 @@
 import type { ChildProcess } from "node:child_process";
 
 /**
+ * Recovery authority belongs to the short-lived ahub wrapper/launcher. Native
+ * agents and their long-lived children must never inherit it, or their later
+ * lifecycle calls could bypass the machine recovery lock.
+ */
+export function childEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...source };
+  delete env.AGENTHUB_RECOVERY_OPERATION;
+  return env;
+}
+
+/**
  * Stop a child owned by this hub and confirm that it exited. A timeout is an
  * incomplete shutdown, even after SIGKILL, because callers must not reuse a
  * port or claim ownership while the old process may still be alive.

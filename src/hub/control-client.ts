@@ -7,7 +7,7 @@ export function stateDirFor(cwd: string): string {
 }
 
 /** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages; 4 = budget messages and `hub_checkpoint`; 5 = `ask`; 6 = console-only `ui` session bootstrap. The plugin is installed apart from the daemon, so they can drift. */
-export const PROTOCOL = 7; // project/instance identity and console-only dashboard forwarding
+export const PROTOCOL = 8; // controlled daemon restart/recovery RPC and project/instance identity
 
 export interface Hello {
   /** `tools`: acts for `peer` (task tools, hub_send) without being a delivery target: the MCP server Kimi and Codex run. */

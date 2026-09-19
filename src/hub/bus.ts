@@ -17,6 +17,17 @@ export interface BusOptions {
   /** Optional: rewrite a delivery before it goes out (M6 digest condensation). Must return its input on any failure. */
   condense?: (envs: Envelope[]) => Promise<Envelope[]>;
 }
+
+/** Serializable delivery state used by the controlled restart coordinator. Bodies stay in the private daemon file. */
+export interface BusSnapshot {
+  schemaVersion: 1;
+  queues: Record<string, Envelope[]>;
+  prefaces: Record<string, Envelope>;
+  seen: Envelope[];
+  attempts: Record<string, number>;
+  withdrawn: string[];
+}
+
 export const DEFAULT_BUS: BusOptions = { retryMs: 1000, batchMax: 3, batchMs: 15_000, queueCap: 200 };
 
 const SEEN_CAP = 2048;
@@ -42,6 +53,9 @@ export class Bus {
   /** What each peer was last handed, next to what it stands for: an adapter that reports a failure later hands back the former. */
   private readonly lastDelivery = new Map<PeerId, { out: Envelope[]; originals: Envelope[] }>();
   private readonly attempts = new Map<string, number>(); // `${peer}:${envelope id}` -> failed deliveries
+  private recoveryHeld = false;
+  private steering = 0;
+  private condensing = 0;
 
   constructor(opts: Partial<BusOptions> = {}) {
     this.opts = { ...DEFAULT_BUS, ...opts };
@@ -64,6 +78,57 @@ export class Bus {
       this.emit({ t: "state", peer: peer.id, state: this.stateOf(peer.id) });
       void this.drain(peer.id);
     };
+  }
+
+  /** Stop new deliveries while a coordinator takes a stable snapshot. Existing adapter turns are left alone. */
+  setRecoveryHold(held: boolean): void {
+    this.recoveryHeld = held;
+    if (!held) for (const id of this.peers.keys()) void this.drain(id);
+  }
+
+  get isRecoveryHeld(): boolean {
+    return this.recoveryHeld;
+  }
+
+  /** Wait until a hold has fenced condensation, steering and queue drains already in flight. */
+  async fenceRecovery(): Promise<void> {
+    this.recoveryHeld = true;
+    while (this.draining.size || this.steering || this.condensing) await Bun.sleep(0);
+  }
+
+  /** A bounded, JSON-safe representation of queued work and retry/dedupe state. */
+  snapshot(): BusSnapshot {
+    return {
+      schemaVersion: 1,
+      queues: Object.fromEntries([...this.queues].map(([id, queue]) => [id, queue.map((e) => ({ ...e, ...(e.to ? { to: [...e.to] } : {}) }))])),
+      prefaces: Object.fromEntries([...this.prefaces].map(([id, e]) => [id, { ...e, ...(e.to ? { to: [...e.to] } : {}) }])),
+      seen: [...this.seen.values()].map((e) => ({ ...e, ...(e.to ? { to: [...e.to] } : {}) })),
+      attempts: Object.fromEntries(this.attempts),
+      withdrawn: [...this.withdrawn],
+    };
+  }
+
+  /** Restore state before peers attach. Queues remain held until the coordinator calls setRecoveryHold(false). */
+  restore(snapshot: BusSnapshot): void {
+    if (snapshot.schemaVersion !== 1) throw new Error("unsupported bus recovery snapshot");
+    this.queues.clear();
+    for (const [id, queue] of Object.entries(snapshot.queues ?? {})) this.queues.set(id, queue.map((e) => ({ ...e, ...(e.to ? { to: [...e.to] } : {}) })));
+    this.prefaces.clear();
+    for (const [id, e] of Object.entries(snapshot.prefaces ?? {})) this.prefaces.set(id, { ...e, ...(e.to ? { to: [...e.to] } : {}) });
+    this.seen.clear();
+    for (const e of snapshot.seen ?? []) this.seen.set(e.id, { ...e, ...(e.to ? { to: [...e.to] } : {}) });
+    this.attempts.clear();
+    for (const [key, n] of Object.entries(snapshot.attempts ?? {})) if (Number.isInteger(n) && n > 0) this.attempts.set(key, n);
+    this.withdrawn.clear();
+    for (const id of snapshot.withdrawn ?? []) this.withdrawn.add(id);
+  }
+
+  queueIds(id: PeerId): string[] {
+    return (this.queues.get(id) ?? []).map((e) => e.id);
+  }
+
+  attemptState(): Record<string, number> {
+    return Object.fromEntries(this.attempts);
   }
 
   tap(fn: (e: BusEvent) => void): () => void {
@@ -90,6 +155,13 @@ export class Bus {
 
   /** Context the hub wants the peer to see once: it rides in front of the next delivery instead of costing a turn of its own. */
   preface(id: PeerId, body: string): void {
+    const existing = this.prefaces.get(id);
+    if (existing) {
+      // Recovery and session recall may both contribute context. Keep the original id/hop so a queued
+      // preface remains deduplicated and append the new, separately generated context.
+      this.prefaces.set(id, { ...existing, body: `${existing.body}\n\n${body}` });
+      return;
+    }
     this.prefaces.set(id, newEnvelope(HUB, body, { to: [id], kind: "presence" }));
   }
 
@@ -107,9 +179,10 @@ export class Bus {
     const targets = (env.to ?? [...this.peers.keys()]).filter((id) => id !== env.from && this.peers.has(id));
     for (const id of targets) {
       const peer = this.peers.get(id)!;
-      if (env.priority === "important" && peer.steer && this.stateOf(id) === "busy") {
+      if (!this.recoveryHeld && env.priority === "important" && peer.steer && this.stateOf(id) === "busy") {
         // Not queued while the steer is in flight, or an idle transition would deliver it a second time.
-        peer.steer([env]).catch(() => this.enqueue(id, env, true));
+        this.steering++;
+        peer.steer([env]).catch(() => this.enqueue(id, env, true)).finally(() => { this.steering--; });
       } else this.enqueue(id, env);
     }
     return targets;
@@ -165,7 +238,7 @@ export class Bus {
     try {
       const peer = this.peers.get(id)!;
       const queue = this.queues.get(id)!;
-      while (queue.length && this.stateOf(id) === "idle") {
+      while (!this.recoveryHeld && queue.length && this.stateOf(id) === "idle") {
         const wait = this.wait(queue);
         if (wait > 0) {
           this.arm(id, wait);
@@ -178,8 +251,10 @@ export class Bus {
         // What goes out may be condensed; what comes back on failure is always the originals. An important envelope
         // is why the queue became ready, so it never waits on a model call.
         const mayCondense = this.opts.condense && !delivery.some((e) => e.priority === "important");
+        this.condensing += mayCondense ? 1 : 0;
         const out = mayCondense ? await this.opts.condense!(delivery).catch(() => delivery) : delivery;
-        if (mayCondense && this.stateOf(id) !== "idle") {
+        this.condensing -= mayCondense ? 1 : 0;
+        if (this.recoveryHeld || (mayCondense && this.stateOf(id) !== "idle")) {
           // The peer got busy while the delivery was prepared. Nothing was attempted: back to the head of the queue,
           // without counting against the envelopes.
           if (preface) this.prefaces.set(id, preface);

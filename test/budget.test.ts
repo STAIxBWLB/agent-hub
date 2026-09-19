@@ -175,6 +175,52 @@ test("the pause survives a hub restart, and a handoff that was cut short is fini
   expect(second.log).toContain("resume codex");
 });
 
+test("recovery hold defers new pauses and expiry transitions until release", async () => {
+  const first = setup();
+  first.budget.report("codex", [{ id: "5h", used: 0.95, resetsAt: first.clock.now + MIN, source: "t" }]);
+  await first.settle();
+  first.budget.close();
+
+  const second = setup({}, first.db);
+  second.budget.setRecoveryHold(true);
+  second.budget.restore();
+  second.clock.now += 2 * MIN;
+  second.budget.tick();
+  await second.settle();
+  expect(second.budget.record("codex")).toBeDefined();
+  expect(second.log.filter((line) => line.startsWith("resume"))).toEqual([]);
+  second.budget.setRecoveryHold(false);
+  await second.settle();
+  expect(second.budget.record("codex")).toBeUndefined();
+  expect(second.log.filter((line) => line.startsWith("resume"))).toEqual(["resume codex"]);
+});
+
+test("recovery waits for an in-flight checkpoint and preserves hard-limit semantics", async () => {
+  let finish = (_summary: string | undefined) => {};
+  let blocked = true;
+  const first = setup({ requestCheckpoint: () => blocked ? new Promise((resolve) => { finish = resolve; }) : Promise.resolve("after recovery") });
+  first.budget.report("codex", [{ id: "5h", used: 0.95, resetsAt: first.clock.now + MIN, source: "t" }]);
+  await first.settle();
+  first.budget.setRecoveryHold(true);
+  finish("late checkpoint");
+  await first.settle();
+  expect(first.budget.recoverySettled).toBe(true);
+  expect(first.budget.record("codex")).toBeUndefined();
+  blocked = false;
+  first.budget.setRecoveryHold(false);
+  await first.settle();
+  expect(first.budget.record("codex")).toBeDefined();
+  first.budget.close();
+
+  const second = setup();
+  second.budget.setRecoveryHold(true);
+  second.budget.report("codex", [{ id: "5h", used: 1, resetsAt: second.clock.now + MIN, source: "hard" }], true);
+  second.budget.setRecoveryHold(false);
+  await second.settle();
+  expect(second.log.filter((line) => line.startsWith("checkpoint?"))).toEqual([]);
+  expect(second.budget.record("codex")).toBeDefined();
+});
+
 test("window parsers: Codex rateLimits and Claude status line", () => {
   expect(codexWindows({ primary: { usedPercent: 91, windowDurationMins: 300, resetsAt: 1_800_000_000 }, secondary: { usedPercent: 40, windowDurationMins: 10_080 } })).toEqual([
     { id: "5h", used: 0.91, resetsAt: 1_800_000_000_000, windowMins: 300, source: "codex rateLimits" },

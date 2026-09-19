@@ -15615,7 +15615,7 @@ function projectContext(cwd, env = process.env) {
 function stateDirFor(cwd) {
   return projectContext(cwd).stateDir;
 }
-var PROTOCOL = 7;
+var PROTOCOL = 8;
 function readControl(stateDir) {
   try {
     const status = JSON.parse(readFileSync2(join2(stateDir, "status.json"), "utf8"));
@@ -15724,7 +15724,7 @@ class ControlClient {
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
-  version: "0.4.1",
+  version: "0.5.0",
   description: "Native multi-agent hub: Claude Code, Codex, Kimi Code and a local worker as peers in one project",
   license: "MIT",
   type: "module",

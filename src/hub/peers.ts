@@ -15,6 +15,8 @@ export interface PeerAdapter {
   onState?: (state: PeerState) => void;
   /** Set by the bus. A delivery that had resolved turned out not to reach the agent: put it back. */
   onFailed?: (envs: Envelope[]) => void;
+  /** Safe restart metadata only: ids and launch parameters, never prompt/message text. */
+  recoveryMetadata?(): Record<string, unknown>;
 }
 
 export const DEFAULT_WATCHDOG_MS = 300_000;
