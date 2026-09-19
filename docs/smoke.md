@@ -320,3 +320,12 @@ parallel registration/startup, cross-token refusal, stale instances, incomplete
 shutdown, occupied ports, worktree aliases and manager crash recovery. Simultaneous
 live provider-account sessions were not launched in this smoke; npm publication
 and upgrading existing user sessions are separate release actions.
+
+## Pi empty-session handover (0.6.1)
+
+Verified with installed Pi 0.85.1 and the authenticated MLX relay on 2026-09-20:
+
+- An explicitly selected session ID survived empty headless-to-native-TUI handover before its transcript existed.
+- A managed `read` tool call through `mlx/fast` returned the fixture marker and caused Pi to persist its transcript.
+- Headless RPC then resumed the exact session ID and persisted file.
+- Disposable Pi processes exited after the test. This check did not restart hwp-cli or prove the agent-hub production cutover.

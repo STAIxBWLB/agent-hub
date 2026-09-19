@@ -558,7 +558,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     const existing = bus.peers.get(peer);
     if (peer === "pi" && existing instanceof PiPeer) {
-      const saved = existing.recoveryMetadata();
+      let saved = existing.recoveryMetadata();
       const launch = saved.launch as Record<string, unknown>;
       if ((args.sessionId && saved.sessionId && args.sessionId !== saved.sessionId) || (args.sessionFile && saved.sessionFile && args.sessionFile !== saved.sessionFile)) return { ok: false, error: "Pi already owns a different session; refusing to replace its identity" };
       const mode = args.mode ?? "headless";
@@ -566,17 +566,20 @@ export async function startDaemon(opts: DaemonOptions) {
       const unclaimed = existing.state === "offline" && !saved.sessionId && !saved.sessionFile;
       if (changesOwner && (existing.state === "busy" || (existing.state !== "offline" && !existing.recoveryReady))) return { ok: false, error: "Pi is busy; wait for agent_settled before changing mode/backend" };
       if (unclaimed) {
+        if (!args.sessionId && !args.sessionFile) args = { ...args, ...existing.pendingResume };
         // Revoke the previous launch bridge before issuing another launch. A late
         // process from the abandoned CLI cannot claim the replacement owner.
         await existing.stop();
       } else if (changesOwner) {
-        if (!saved.sessionId || !saved.sessionFile) return { ok: false, error: "Pi session identity is not ready for handover" };
-        args = { ...args, backend: args.backend ?? launch.backend as "auto" | "dgx" | "mlx", model: args.model ?? (args.backend === undefined && typeof launch.model === "string" ? launch.model : undefined), sessionId: String(saved.sessionId), sessionFile: String(saved.sessionFile) };
+        saved = await existing.captureResume();
+        if (!saved.sessionId) return { ok: false, error: "Pi session identity is not ready for handover" };
+        args = { ...args, backend: args.backend ?? launch.backend as "auto" | "dgx" | "mlx", model: args.model ?? (args.backend === undefined && typeof launch.model === "string" ? launch.model : undefined), sessionId: String(saved.sessionId), sessionFile: typeof saved.sessionFile === "string" ? saved.sessionFile : undefined };
         await existing.stop();
       } else if (existing.state !== "offline") {
         return mode === "tui" ? { ok: false, error: "Pi already owns a native terminal; use that terminal or switch to headless first" } : { ok: true, already: true };
-      } else if (saved.sessionId && saved.sessionFile) {
-        args = { ...args, backend: args.backend ?? launch.backend as "auto" | "dgx" | "mlx", model: args.model ?? (args.backend === undefined && typeof launch.model === "string" ? launch.model : undefined), sessionId: String(saved.sessionId), sessionFile: String(saved.sessionFile) };
+      } else if (saved.sessionId) {
+        saved = await existing.captureResume();
+        args = { ...args, backend: args.backend ?? launch.backend as "auto" | "dgx" | "mlx", model: args.model ?? (args.backend === undefined && typeof launch.model === "string" ? launch.model : undefined), sessionId: String(saved.sessionId), sessionFile: typeof saved.sessionFile === "string" ? saved.sessionFile : undefined };
       }
     }
     if (existing && existing.state !== "offline") {
@@ -847,6 +850,12 @@ export async function startDaemon(opts: DaemonOptions) {
   async function recoveryOp(msg: any): Promise<Record<string, unknown>> {
     if (typeof msg.op !== "string" || !["inspect", "prepare", "commit", "abort", "release"].includes(msg.op)) return recoveryError("unknown recovery operation");
     if (typeof msg.expectedInstanceId !== "string" || msg.expectedInstanceId !== instanceId) return recoveryError("expected daemon instance does not match");
+    if (msg.op === "inspect" || msg.op === "prepare" || msg.op === "commit") {
+      const pi = bus.peers.get("pi");
+      if (pi instanceof PiPeer && pi.state === "idle") {
+        try { await pi.captureResume(); } catch (error) { return recoveryError((error as Error).message); }
+      }
+    }
     if (msg.op === "inspect" && msg.operationId === undefined) return { t: "recovery", ok: true, recovery: recoveryView() };
     if (typeof msg.operationId !== "string" || msg.operationId.length < 1 || msg.operationId.length > 128) return recoveryError("operationId is required");
     const op = msg.operationId as string;

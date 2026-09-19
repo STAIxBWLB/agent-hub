@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1
+
+- Preserve Pi session identity when handing an empty native session between headless and TUI modes (#27).
+- Keep recovery metadata and native terminal restoration bound to the verified project session.
+
 ## 0.6.0
 
 - Pi peer with managed local model routing, RPC and native terminal integration (#25).

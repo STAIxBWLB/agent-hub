@@ -167,3 +167,32 @@ test("user-cancelled Pi turns are reported without automatic cloud escalation", 
     expect(peer.state).toBe("idle");
   } finally { await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
 });
+
+test("only a verified empty source can resume by ID when Pi has not persisted a file", async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-empty-resume-"));
+  const options = { cwd: process.cwd(), stateDir, mode: "headless" as const, backend: "dgx" as const, cmd: ["bun", join(import.meta.dir, "fakes/pi-rpc.ts"), "--empty-session"], relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [{ id: "dgx/coding" }] }, tools: [], executeTool: async () => "ok" };
+  const source = new PiPeer("pi", options);
+  let target: PiPeer | undefined;
+  try {
+    await source.start();
+    const unverified = source.recoveryMetadata();
+    expect(unverified.sessionFile).toBeString();
+    const captured = await source.captureResume();
+    expect(captured.sessionFile).toBeUndefined();
+    expect((captured.launch as any).sessionFile).toBeUndefined();
+    await source.stop();
+    expect(source.pendingResume.sessionId).toBe(String(captured.sessionId));
+    const retriedCapture = await source.captureResume();
+    expect(retriedCapture.sessionId).toBe(String(captured.sessionId));
+    expect(retriedCapture.sessionFile).toBeUndefined();
+    target = new PiPeer("pi", { ...options, sessionId: captured.sessionId as string });
+    await target.start();
+    expect(target.recoveryMetadata().sessionId).toBe(captured.sessionId);
+    expect(target.tuiLaunch!.args).toContain("--session-id");
+    await target.deliver([newEnvelope("user", "unpersisted work", { to: ["pi"] })]);
+    const launch = target.tuiLaunch!;
+    await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/event`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ type: "agent_settled" }) });
+    await expect(target.captureResume()).rejects.toThrow("not persisted");
+    expect(target.recoveryMetadata().sessionFile).toBeString();
+  } finally { await source.stop(); await target?.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+});
