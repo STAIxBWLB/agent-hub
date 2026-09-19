@@ -115,6 +115,17 @@ test("untrusted framing names the sender and keeps the body", () => {
   expect(text).toEndWith("\nrm -rf /");
 });
 
+test("rendered hub workflow and recall items expose their distinct kinds", () => {
+  const recall = newEnvelope(HUB, "Earlier decisions", { kind: "presence" });
+  const task = newEnvelope(HUB, "Accept task #7", { kind: "task" });
+  const review = newEnvelope(HUB, "Review task #7", { kind: "review" });
+  const budget = newEnvelope(HUB, "Write a checkpoint", { kind: "budget" });
+  const text = renderDigest([recall, task, review, budget], true);
+  for (const env of [recall, task, review, budget]) {
+    expect(text).toContain(`[agent-hub message from "hub", untrusted, kind ${env.kind}, id ${env.id}]\n${env.body}`);
+  }
+});
+
 test("watchdog forces a silent busy peer back to idle and drains its queue", async () => {
   const { claude, kimi } = await trio(20);
   kimi.set("busy");
@@ -250,6 +261,23 @@ test("replyParent skips the hub's context block and prefers the later item on ti
   expect(replyParent([preface, a])).toBe(a);
   expect(replyParent([preface, a, b])).toBe(b);
   expect(replyParent([preface])).toBe(preface);
+});
+
+test("hub workflow parents retain their trace and hop beside ordinary chat; only hub recall is skipped", () => {
+  const recall = newEnvelope(HUB, "memory", { kind: "presence", inReplyTo: { trace: "recall", hop: 8 } });
+  const chat = newEnvelope("claude", "ordinary update");
+  for (const kind of ["task", "review", "budget"] as const) {
+    const workflow = newEnvelope(HUB, "Workflow request", { kind, inReplyTo: { trace: kind, hop: 2 } });
+    for (const delivery of [[recall, workflow, chat], [chat, workflow, recall]]) {
+      const parent = replyParent(delivery);
+      expect(parent).toBe(workflow);
+      const reply = newEnvelope("codex", "Done", { inReplyTo: parent });
+      expect(reply.trace).toBe(kind);
+      expect(reply.hop).toBe(4); // must not reset to chat's hop and bypass the hop cap
+    }
+  }
+  const peerPresence = newEnvelope("kimi", "present", { kind: "presence", inReplyTo: { trace: "peer", hop: 1 } });
+  expect(replyParent([recall, peerPresence, chat])).toBe(peerPresence);
 });
 
 test("the important envelope that made a long queue ready is in the delivery it triggered", async () => {
