@@ -88,7 +88,7 @@ export class CodexPeer extends BasePeer {
     this.server?.stop(true);
     const proc = this.proc;
     if (proc && proc.exitCode === null) {
-      // Wait for the port to be released: `hub codex` may restart the adapter right away.
+      // Wait for the port to be released: `ahub codex` may restart the adapter right away.
       const exited = new Promise((r) => proc.once("exit", r));
       proc.kill();
       await Promise.race([exited, Bun.sleep(3000)]);

@@ -57,7 +57,7 @@ export class LocalPeer extends BasePeer {
   private turn = 0; // generation guard, as in acp.ts: a turn aborted by the watchdog must not touch the next one
   private abort: AbortController | undefined;
   private readonly sandboxProfile: string; // built once: profile() spawns git and must stay off the per-call path
-  /** What served the last call, for `hub status`. */
+  /** What served the last call, for `ahub status`. */
   lastServedBy = "";
 
   constructor(
@@ -91,7 +91,7 @@ export class LocalPeer extends BasePeer {
     const progress = { sideEffects: 0, last: "" };
     const policy = this.opts.turnPolicy?.(envs);
     // A PII turn speaks to the console user only, and privately: its answer must not be broadcast to cloud-hosted peers.
-    // The task id travels with it, so the board can keep the text (`hub task show`) while tail and log show a stub.
+    // The task id travels with it, so the board can keep the text (`ahub task show`) while tail and log show a stub.
     const reply: EnvelopeOpts = { inReplyTo: replyParent(envs), ...(policy?.pii ? { to: [USER], private: true, priority: "important" as const, ...(policy.task ? { refs: { task: policy.task } } : {}) } : {}) };
     this.run(envs, turn, msgs, progress, policy, reply)
       .then((answer) => {
@@ -133,7 +133,7 @@ export class LocalPeer extends BasePeer {
     // claude-mem's observer is a cloud model: nothing of a PII turn is captured.
     const capture = policy?.pii ? undefined : this.opts.capture;
     if (policy?.pii && (await this.opts.omni.offCampus())) {
-      return "Refused: this is a PII task and the only reachable gateway is off campus (Cloudflare Access). Connect WARP and assign it again.";
+      return "Refused: this is a PII task and the only reachable gateway is off campus (Cloudflare Access). Connect the VPN and assign it again.";
     }
     const ctx: ToolContext = {
       cwd: this.opts.cwd,

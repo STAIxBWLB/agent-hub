@@ -36,7 +36,7 @@ export class ControlClient {
 
   static connect(stateDir: string, hello: Hello): Promise<ControlClient> {
     const control = readControl(stateDir);
-    if (!control) return Promise.reject(new Error(`no hub running for ${stateDir} (run: hub up)`));
+    if (!control) return Promise.reject(new Error(`no hub running for ${stateDir} (run: ahub up)`));
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(control.url);
       const client = new ControlClient(ws);

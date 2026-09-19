@@ -23,7 +23,7 @@ export function allocatePorts(projectDir: string, registry = join(homedir(), ".a
   const base = Math.max(BASE_PORT - STRIDE, ...Object.values(map)) + STRIDE;
   map[projectDir] = base;
   mkdirSync(dirname(registry), { recursive: true });
-  // ponytail: no file lock; two first-time `hub up` in different projects at the same instant could collide.
+  // ponytail: no file lock; two first-time `ahub up` in different projects at the same instant could collide.
   writeFileSync(registry, `${JSON.stringify(map, null, 2)}\n`);
   return base;
 }

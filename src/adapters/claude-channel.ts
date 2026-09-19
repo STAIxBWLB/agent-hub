@@ -127,14 +127,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
   if (name === "hub_send") {
     const { text: body, to, reply_to } = (args ?? {}) as { text?: string; to?: string[]; reply_to?: string };
-    if (!hub) return text("hub is not running for this project (start it with: hub up). Message not sent.");
+    if (!hub) return text("hub is not running for this project (start it with: ahub up). Message not sent.");
     const res = await hub.request({ t: "send", body, to, reply_to });
     if (!res.ok) return text(`not sent: ${res.error}`);
     if (res.recorded) return text("recorded only ([FYI]): it is on the hub console and log, and no peer spent a turn on it");
     return text(`sent to: ${res.targets.join(", ") || "(no other peers attached)"}`);
   }
   if (TASK_TOOL_NAMES.has(name)) {
-    if (!hub) return text("hub is not running for this project (start it with: hub up).");
+    if (!hub) return text("hub is not running for this project (start it with: ahub up).");
     const res = await hub.request({ t: "task", op: name, args: args ?? {} });
     return text(res.ok ? res.text : `error: ${res.error}`);
   }

@@ -93,18 +93,18 @@ test("assignment: preference order, idle before busy, paused/offline/detached sk
 
   writeFileSync(join(dir, "big.txt"), "x".repeat(400_000));
   expect(detectSignals({ title: "t", detail: "", refs: { paths: ["big.txt"] } }, routing, dir)).toEqual(["long_context"]);
-  expect(detectSignals({ title: "mail kim@example.ac.kr", detail: "", refs: {} }, routing, dir)).toEqual(["pii"]);
+  expect(detectSignals({ title: "record of 900101-1234567", detail: "", refs: {} }, routing, dir)).toEqual(["pii"]);
   expect(detectSignals({ title: "plain", detail: "", refs: { paths: ["missing.txt"] } }, routing, dir)).toEqual([]);
 });
 
 test("propose -> assigned by class -> accept -> done -> review envelope -> approved; only the owner and the reviewer may act", async () => {
   const { tasks, peers, board, saves } = await setup();
-  const t = await tasks.propose("claude", { title: "add --json to hub status", class: "implement", refs: { paths: ["src/cli/main.ts"] } });
+  const t = await tasks.propose("claude", { title: "add --json to ahub status", class: "implement", refs: { paths: ["src/cli/main.ts"] } });
   await tick();
   expect(t).toMatchObject({ owner: "codex", reviewer: "claude", state: "proposed" });
   const offer = peers.codex!.got.at(-1)!;
   expect(offer).toMatchObject({ from: HUB, kind: "task", priority: "important", refs: { task: "1" } });
-  expect(offer.body).toContain("Task #1 [implement] add --json to hub status");
+  expect(offer.body).toContain("Task #1 [implement] add --json to ahub status");
   expect(peers.kimi!.got).toHaveLength(0);
 
   expect(() => tasks.accept("kimi", 1)).toThrow(/only its owner \(codex\)/);
@@ -197,7 +197,7 @@ test("decline moves on; nobody left keeps it proposed with a notice; the console
   expect(board.get(1)!.owner).toBe("kimi");
   const after = await tasks.decline("kimi", 1, "no capacity");
   expect(after).toMatchObject({ owner: null, state: "proposed" });
-  expect(notices.at(-1)).toContain("hub task assign 1");
+  expect(notices.at(-1)).toContain("ahub task assign 1");
   expect((await tasks.assignTo(1, "codex")).owner).toBe("codex");
   expect((await tasks.assignTo(1, "ghost")).owner).toBe("codex"); // a failed console assign leaves the task where it was
   tasks.accept("codex", 1);
@@ -223,14 +223,14 @@ test("a PII task stays on-prem: local only, private envelopes, console review, r
   tasks.accept("local", 1);
   await tasks.done("local", 1, "record updated for 900101-1234567");
   expect(board.get(1)!.state).toBe("in_review");
-  expect(notices.at(-1)).toContain("hub review 1");
+  expect(notices.at(-1)).toContain("ahub review 1");
   await tasks.review("user", 1, "approved");
   await expect(tasks.remember("local", { text: "note", task: 1 })).rejects.toThrow(/PII task are not saved/);
   expect(mem.calls).toHaveLength(0); // no search, no timeline, no save
 
-  // what the worker says about it is private on the bus, so the board keeps it for `hub task show`
-  bus.publish({ ...peers.local!.got[0]!, id: "answer-1", from: "local", to: ["user"], body: "Refused: connect WARP for 900101-1234567" });
-  expect(board.get(1)!.history.at(-1)).toMatchObject({ by: "local", event: "answer", note: "Refused: connect WARP for 900101-1234567" });
+  // what the worker says about it is private on the bus, so the board keeps it for `ahub task show`
+  bus.publish({ ...peers.local!.got[0]!, id: "answer-1", from: "local", to: ["user"], body: "Refused: connect the VPN for 900101-1234567" });
+  expect(board.get(1)!.history.at(-1)).toMatchObject({ by: "local", event: "answer", note: "Refused: connect the VPN for 900101-1234567" });
 
   // a digest that mixes a PII task with an ordinary one is a PII turn as a whole, whichever comes first
   await tasks.propose("claude", { title: "ordinary bulk edit", class: "bulk_edit" });
@@ -278,7 +278,7 @@ test("budget pause: open work goes to local first through the constraints, revie
   const { tasks, peers, board, bus } = await setup();
   await tasks.propose("claude", { title: "implement parser", class: "implement" }); // #1 -> codex
   await tasks.propose("user", { title: "plan the release", class: "plan", owner: "codex" }); // #2 -> codex, local not allowed
-  await tasks.propose("claude", { title: "note for kim@example.ac.kr", class: "implement" }); // #3 pii -> local
+  await tasks.propose("claude", { title: "note for 900101-1234567", class: "implement" }); // #3 pii -> local
   await tasks.propose("user", { title: "kimi's change", class: "implement", owner: "kimi" }); // #4, reviewer claude
   tasks.accept("codex", 1);
   tasks.accept("kimi", 4);
@@ -322,7 +322,7 @@ test("budget pause: open work goes to local first through the constraints, revie
   await tick();
   expect(board.get(3)!.owner).toBeNull(); // only local may hold it
   expect(JSON.stringify(Object.values(peers).flatMap((p) => p.got))).not.toContain("SECRET-HANDOFF-TEXT-for-pii");
-  expect(Object.values(peers).filter((p) => p.id !== "local").flatMap((p) => p.got).some((e) => e.body.includes("kim@example"))).toBe(false);
+  expect(Object.values(peers).filter((p) => p.id !== "local").flatMap((p) => p.got).some((e) => e.body.includes("900101"))).toBe(false);
 });
 
 test("route explain runs the assignment code: same owner, skipped candidates named", async () => {

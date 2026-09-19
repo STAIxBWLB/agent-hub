@@ -38,7 +38,7 @@ function cleanRefs(input: unknown): TaskRefs {
 export class Tasks {
   constructor(private readonly d: TasksDeps) {
     // What the on-prem worker says about a PII task is private on the bus (console tail and log show a stub), so the
-    // board keeps the text: `hub task show <id>` is where the console user reads it, a refusal included.
+    // board keeps the text: `ahub task show <id>` is where the console user reads it, a refusal included.
     d.bus.tap((e) => {
       if (e.t !== "envelope" || !e.env.private || e.env.from === HUB || !e.env.refs?.task) return;
       try {
@@ -91,7 +91,7 @@ export class Tasks {
   private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; clearOnFail?: boolean; exclude?: PeerId[]; context?: string } = {}): Promise<Task> {
     const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}) });
     if (!a.owner) {
-      this.d.notify(`task ${this.publicTitle(task)}: no peer can take it (${a.trace.filter((l) => l.includes("skipped")).length} skipped); assign with: hub task assign ${task.id} <peer>`);
+      this.d.notify(`task ${this.publicTitle(task)}: no peer can take it (${a.trace.filter((l) => l.includes("skipped")).length} skipped); assign with: ahub task assign ${task.id} <peer>`);
       // Only a decline takes the task away from its owner; a failed console assign or escalation leaves it where it was.
       return opts.clearOnFail && task.owner ? this.d.board.update(task.id, by, "unassigned", { owner: null }) : task;
     }
@@ -155,7 +155,7 @@ export class Tasks {
     const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", refs: cleanRefs(refs) }, summary);
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`);
     if (!reviewer) this.d.notify(`task ${this.publicTitle(next)} done by ${by}, no reviewer: approved`);
-    else if (reviewer === USER) this.d.notify(`task ${this.publicTitle(next)} done by ${by}: review it with hub task show ${next.id}, then hub review ${next.id} approved|changes_requested [note]`);
+    else if (reviewer === USER) this.d.notify(`task ${this.publicTitle(next)} done by ${by}: review it with ahub task show ${next.id}, then ahub review ${next.id} approved|changes_requested [note]`);
     else this.sendReview(next, reviewer);
     return next;
   }
@@ -235,7 +235,7 @@ export class Tasks {
         const next = this.d.board.update(task.id, HUB, "reviewer changed", { reviewer }, `budget pause of ${peer}`);
         moved.push({ id: task.id, title: this.publicTitle(task), to: reviewer, role: "reviewer" });
         if (next.state === "in_review" && reviewer && reviewer !== USER) this.sendReview(next, reviewer, `(${peer} was reviewing this and is paused for quota.)`);
-        else if (next.state === "in_review" && !reviewer) this.d.notify(`task ${this.publicTitle(next)}: its reviewer ${peer} is paused and nobody else can review; use hub review ${next.id}`);
+        else if (next.state === "in_review" && !reviewer) this.d.notify(`task ${this.publicTitle(next)}: its reviewer ${peer} is paused and nobody else can review; use ahub review ${next.id}`);
       }
     }
     return moved;

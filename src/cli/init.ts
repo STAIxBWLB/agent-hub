@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const TEMPLATES = join(import.meta.dir, "..", "..", "templates");
-const BEGIN = "<!-- AGENT_HUB:BEGIN (managed by `hub init`, edits inside are overwritten) -->";
+const BEGIN = "<!-- AGENT_HUB:BEGIN (managed by `ahub init`, edits inside are overwritten) -->";
 const END = "<!-- AGENT_HUB:END -->";
 
 /** Insert or replace the managed block. Idempotent: text outside the markers is never touched. */

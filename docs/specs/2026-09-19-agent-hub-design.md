@@ -1,7 +1,7 @@
 # agent-hub design spec
 
 Date: 2026-09-19. Status: M1 to M4 merged (PR #2, #4, #6, #7, #9); M5 implemented on `feat/m5-budget-relay` (phase spec: issue #10); M6 not started.
-Owner: Young Joon Lee. Repo: STAIxBWLB/agent-hub (private).
+Owner: Young Joon Lee. Repo: STAIxBWLB/agent-hub.
 
 Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) or
 **inferred** (from docs or schema, not yet exercised).
@@ -17,7 +17,7 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
   v1 pair is two-party by construction (single Claude seat, `source: "claude" | "codex"`),
   its v3 rooms carry signals only, and a third agent can only join through the room
   broker. A room MCP adapter for Kimi was built and verified end to end
-  (`a private memo`). Decision: do not fork; reuse its
+  (kept as a private memo). Decision: do not fork; reuse its
   protocol ideas (agentMessage-only forwarding, marker tiers, busy guard, turn watchdog).
 - Native control surfaces, all verified on 2026-09-19:
   - Claude Code 2.1.277: channels. MCP server declares
@@ -37,10 +37,10 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
     `agent_thought_chunk`, `usage_update`), `session/cancel` (`stopReason: cancelled`),
     `session/load`. A second `session/prompt` during a turn fails with
     `turn.agent_busy`. Hooks exist (Stop, SessionStart, UserPromptSubmit, PreToolUse).
-- Local serving (verified): OmniRoute 3.8.50 on the campus DGX node `http://gateway.internal:20128`
-  (WARP), `/v1/models` answers 401 without a key, Anthropic and Responses surfaces exist.
-  vLLM serves `deepseek-ai/DeepSeek-V4-Flash-0731`; GLM-5.3-Flash on the DGX and
-  Qwen3.8-27B are planned (`internal deployment plan`).
+- Local serving (verified): OmniRoute 3.8.50 on a campus DGX H100 node, reachable on the
+  internal network (VPN), `/v1/models` answers 401 without a key, Anthropic and Responses surfaces exist.
+  vLLM serves `deepseek-ai/DeepSeek-V4-Flash-0731`; GLM-5.3-Flash and
+  Qwen3.8-27B are planned (internal deployment plan).
   OpenCode 1.18.31 already has a `dgx-dsv4f` provider for this gateway.
 - Routing policy engine: NVIDIA-NeMo/Switchyard v0.2.0 (Apache-2.0). Route types
   `llm_classifier`, `stage_router`, `escalation_router`; `auto` needs a source build
@@ -63,10 +63,10 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
   is shared but recall is siloed per platform (work project: 6.9 KB all platforms vs
   2.7 KB kimi-only). The Codex claude-mem plugin was reinstalled on 2026-09-19
   (`codex plugin add claude-mem@claude-mem-local`).
-- Workspace decisions inherited (`internal gateway plan`):
+- Decisions inherited from the owner's infrastructure plan:
   no OmniRoute daemon on the Mac; subscription OAuths (Claude Max, ChatGPT, Kimi plan)
   are never pooled through a gateway; local models are for bulk and low-stakes work;
-  PII never leaves the campus network (`internal routing criteria`).
+  PII never leaves the campus network (internal routing criteria).
 
 ## Decisions
 
@@ -75,7 +75,7 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
    app-server, ACP) and one hub-native worker. Four default peers: `claude`, `codex`,
    `kimi`, `local`.
 3. Kimi runs headless under ACP; the user talks to it through the hub console
-   (`hub say @kimi ...`, `hub tail`). No Kimi TUI in the loop.
+   (`ahub say @kimi ...`, `ahub tail`). No Kimi TUI in the loop.
 4. Local peer is a hub-native agent loop (model call + tools), not OpenCode. Reason:
    per-call model selection needs the hub to own the call. OpenCode ACP is kept as an
    optional fallback runtime behind the same adapter interface.
@@ -106,17 +106,17 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
 
 ```
 Claude Code TUI ── MCP stdio ── plugins/agent-hub (channel server) ──┐
-Codex TUI ──── --remote ws://127.0.0.1:<proxy> ── app-server proxy ──┤ hub daemon (Bun)
+Codex TUI ──── --remote ws://127.0.0.1:<proxy> ── app-server proxy ──┤ ahub daemon (Bun)
 kimi acp (child, stdio) ── ACP client adapter ────────────────────────┤ bus · board · budget
 local worker (in-process agent loop) ─────────────────────────────────┤ router L1
 hub CLI / console ── control WS 127.0.0.1:<ctl> ──────────────────────┘
                                    │ model calls
                      switchyard-server sidecar (127.0.0.1, session-scoped)  L2
                                    │ base_url
-                     OmniRoute the DGX :20128 (WARP) / https://gateway.example.edu      L3
+                     OmniRoute: internal URL (VPN) / Access-protected public URL    L3
 ```
 
-- `hub daemon`: owns the message bus, peer registry and state machines, task board,
+- `ahub daemon`: owns the message bus, peer registry and state machines, task board,
   budget coordinator, router L1, and the Codex proxy, ACP child and local worker. Survives
   Claude Code restarts. State in `.agenthub/state/` (pid, status.json, sqlite, logs).
 - `plugins/agent-hub`: Claude Code plugin. Its MCP server is the channel; it reconnects to
@@ -135,8 +135,8 @@ hub CLI / console ── control WS 127.0.0.1:<ctl> ─────────�
   `session/load` for resume), injects via `session/prompt`, collects
   `agent_message_chunk` into one outbound message per turn, tracks busy from the
   in-flight prompt, queues on `turn.agent_busy`. Relays `session/request_permission`
-  to the console (`hub tail` shows the request, `hub permit <id> <option>` answers, 120 s of
-  silence cancels; `hub up --unattended` auto-selects the agent's `allow_once` option). The
+  to the console (`ahub tail` shows the request, `ahub permit <id> <option>` answers, 120 s of
+  silence cancels; `ahub up --unattended` auto-selects the agent's `allow_once` option). The
   watchdog sends `session/cancel` before forcing idle. `--model` maps to `kimi --model <alias> acp`
   (verified flag). Reusable for `opencode acp`.
 - Local worker (amended in M3): a hub-native tool-calling loop over non-streaming
@@ -152,10 +152,10 @@ hub CLI / console ── control WS 127.0.0.1:<ctl> ─────────�
   `local.bash_network`, scrubbed environment; without seatbelt there is no `bash`. 30 steps per
   turn, `reasoning_content` is never stored or shared. Model comes from `routing.toml`:
   a Switchyard route id, or `fixed_model` straight to OmniRoute.
-- Console: `hub tail` (live stream), `hub say [@peer] <text>`, `hub permit`, `hub doctor`, `hub board`,
-  `hub route explain <task>`, `hub budget`, `hub status`, `hub logs`, `hub kill`.
-- Launchers: `hub up`, `hub claude [--safe|--unattended] [--via dgx]`,
-  `hub codex [--new] [--profile dgx]`, `hub kimi [--model <alias>]`, `hub local`.
+- Console: `ahub tail` (live stream), `ahub say [@peer] <text>`, `ahub permit`, `ahub doctor`, `ahub board`,
+  `ahub route explain <task>`, `ahub budget`, `ahub status`, `ahub logs`, `ahub kill`.
+- Launchers: `ahub up`, `ahub claude [--safe|--unattended] [--via dgx]`,
+  `ahub codex [--new] [--profile dgx]`, `ahub kimi [--model <alias>]`, `ahub local`.
   Launchers inject only the flags the hub owns and refuse user-supplied duplicates.
   M1 accepts `--safe` and `--new` as explicit spellings of the default; `--via` and
   `--profile dgx` arrive with M3. Peers are registered lazily, on first attach, so a peer
@@ -189,9 +189,9 @@ interface Envelope {
   the digest; an envelope that failed before is retried alone. The control WS hello carries a
   wire version (2 since digests): a plugin bundle older than the daemon is refused with close
   code 4426 rather than dropping digests silently.
-- Markers `[IMPORTANT]`, `[STATUS]`, `[FYI]` at the start of agent text, `hub_send` or `hub say`
+- Markers `[IMPORTANT]`, `[STATUS]`, `[FYI]` at the start of agent text, `hub_send` or `ahub say`
   set the priority and are stripped. Default `status` for agents, `important` for the console
-  user (a human typing `hub say` should not wait out the batch window).
+  user (a human typing `ahub say` should not wait out the batch window).
 - Every inbound cross-peer body is wrapped as untrusted (Claude: `<channel>` tag with
   `meta.source=<peer>`; Codex and Kimi: a fixed prefix line plus a standing instruction
   injected once per session).
@@ -202,7 +202,7 @@ interface Envelope {
 | --- | --- | --- |
 | idle | turn completed / prompt returned | inject now |
 | busy | turn started / prompt in flight | Claude: push (Claude Code queues); Codex: steer if important else queue; Kimi/local: queue |
-| paused | budget gate (M5) or user `hub pause` / `hub resume`; a bus-level flag over the adapter state | queue, never steer; reassign open tasks (M5) |
+| paused | budget gate (M5) or user `ahub pause` / `ahub resume`; a bus-level flag over the adapter state | queue, never steer; reassign open tasks (M5) |
 | offline | adapter disconnected | queue |
 
 Every queue is bounded (`queue_cap`, default 200): on overflow the oldest non-`important`
@@ -217,7 +217,7 @@ peer. Peer ids claimed over the control WS must not be `user` or a hub-managed a
 
 ### Task board and roles
 
-- sqlite table `tasks` (`bun:sqlite`, `.agenthub/state/hub.db`, survives `hub kill`): `id, title,
+- sqlite table `tasks` (`bun:sqlite`, `.agenthub/state/hub.db`, survives `ahub kill`): `id, title,
   detail, class, owner, reviewer, state, refs, signals, rejections, history`.
 - `class`: `plan | implement | bulk_edit | test | review | summarize | triage`.
 - `state` (amended in M4): `proposed -> in_progress -> in_review -> approved | changes_requested`,
@@ -230,7 +230,7 @@ peer. Peer ids claimed over the control WS must not be `user` or a hub-managed a
   `review` envelope with summary and refs to the reviewer, or approves directly when there
   is none; `hub_review` returns the verdict. `changes_requested` reopens as `in_progress`; two
   in a row escalate the task to the next attached peer in `escalate_to`, with its review
-  notes (`hub task escalate` does it by hand). Only the owner, the reviewer or the console
+  notes (`ahub task escalate` does it by hand). Only the owner, the reviewer or the console
   user may act on a task.
 - Tools on every peer (amended in M4): one implementation. The bundled MCP server of the
   Claude plugin has a tools-only mode (`AGENTHUB_MODE=tools`, control WS role `tools`: acts for
@@ -244,7 +244,7 @@ peer. Peer ids claimed over the control WS must not be `user` or a hub-managed a
   injection is dropped for the same reason as `dynamicTools`.
 - PII (amended in M4): a task matching `signals.pii_patterns` is owned by `local` or by
   nobody; its envelopes are `private` (console tail and `hub.log` print a stub), lists show
-  `[pii]` to everyone but `local`, `hub task show` is the one place the console reads it; the
+  `[pii]` to everyone but `local`, `ahub task show` is the one place the console reads it; the
   reviewer is the console user; `local` answers such a turn to the console only, keeps it out
   of its history, refuses it when the only gateway is off campus (Cloudflare Access), and
   nothing reaches claude-mem (no brief, no note, no capture), because claude-mem's observer is
@@ -256,7 +256,7 @@ L1, hub policy, `.agenthub/routing.toml`, hot-reloaded:
 
 ```toml
 [signals]
-pii_patterns = ["\\b\\d{6}-\\d{7}\\b", "@example\\.ac\\.kr"]   # PII => local_only
+pii_patterns = ["\\b\\d{6}-\\d{7}\\b"]                    # PII => local_only; add your own
 long_context_tokens = 120000
 
 [classes.implement]
@@ -297,11 +297,12 @@ as `model`; the chosen target returns in `x-model-router-selected-model`; tool c
 through. The config goes through `--dry-run` first. The sidecar starts on the first
 hub-owned model call and stops with the hub. A missing binary, a rejected config, failed
 health, an exit or a failed call turns L2 off for the hub run with one log line and the
-worker calls `fixed_model` on OmniRoute directly. Until the DGX serves GLM-5.3-Flash the
+worker calls `fixed_model` on OmniRoute directly. Until a second model (GLM-5.3-Flash) is served the
 shipped routes are `passthrough` to DeepSeek-V4-Flash; the `stage_router` and escalation
 blocks ship commented out and validate against the real binary.
 
-L3, OmniRoute (amended in M3): candidates (internal over WARP, then `https://gateway.example.edu/v1`)
+L3, OmniRoute (amended in M3): candidates from `omniroute.urls` (for the owner: the internal
+URL over VPN, then a public URL behind Cloudflare Access; the tool ships with none)
 are probed at the same time with `GET <base>/models`; the most preferred one that answers 2xx
 within 4 s wins (a Cloudflare Access 403 is not healthy);
 OmniRoute 3.8.50 has `/healthz` and `/api/health` but no `/health` (verified). Key from
@@ -313,7 +314,7 @@ points at it, so the dashboard separates the hub's usage.
 
 Assignment is a pure function of `routing.toml`, the task's signals and the peers' bus states
 (idle before busy, paused, offline and detached skipped, `local_allowed`, `long_context =
-"skip_local"`, `pii = "local_only"`); `hub route explain <id | --class <c> <title>>` runs the
+"skip_local"`, `pii = "local_only"`); `ahub route explain <id | --class <c> <title>>` runs the
 same function and prints its trace: signals, every candidate with the reason it was kept
 or skipped, owner, reviewer and route. `local` uses the class's `route` / `fixed_model` for a
 task turn and `[local]` otherwise. Verification failure (tests fail, review `changes_requested` twice) escalates
@@ -328,14 +329,18 @@ inside a peer.
   answered `primary {usedPercent: 100, windowDurationMins: 10080, resetsAt}`). Claude: no
   OAuth probe. Claude Code passes `rate_limits.five_hour` / `seven_day` (`used_percentage`,
   `resets_at`) to the status line command (verified in the input this Mac's HUD script
-  reads); `hub claude` puts a tee in front of the user's status line command through
+  reads); `ahub claude` puts a tee in front of the user's status line command through
   `--settings` for that session, records the limits in `.agenthub/state/claude-usage.json`
   and runs the original command unchanged. `~/.claude/settings.json` is never edited; a
-  user-supplied `--settings` wins and turns the tee off. The `--settings` injection itself
-  is not yet verified in an interactive session. Kimi: `usage_update` tokens over a rolling
-  5 h against `budget.kimi_tokens_5h` (off by default; the payload shape is inferred, none
-  was emitted in a short live turn). `hub budget set` feeds a reading by hand. `local` has
-  no quota and is never paused.
+  user-supplied `--settings` wins and turns the tee off. The `--settings` injection is
+  verified live (2026-09-19: `claude-usage.json` appears within seconds, the wrapped HUD
+  renders unchanged, `ahub budget` shows both windows). Kimi: `usage_update` tokens over a
+  rolling 5 h against `budget.kimi_tokens_5h` (off by default). Verified live on kimi
+  2.0.1: one update per turn, payload `{"sessionUpdate":"usage_update","used":<tokens>,
+  "size":<context window>}`; `used` is the session's context occupancy against `size`
+  (1M), not billed quota; the parser matches it through the `used` fallback and it grows
+  monotonically within a session (a compaction reads as a new session). `ahub budget set`
+  feeds a reading by hand. `local` has no quota and is never paused.
 - Gate at `budget.gate` (default 0.9) on any fresh window; readings older than
   `budget.stale_min` are ignored. Checkpoint first, pause second: the peer gets one
   important envelope asking it to write `.agenthub/checkpoint.md` and call `hub_checkpoint`,
@@ -349,8 +354,8 @@ inside a peer.
   with one important envelope from the hub listing what moved; this replaces the per-peer
   resume calls and the `hub_ack_resume` tool; the notice is queued before the peer is
   released, so it leads the first delivery. Moved tasks stay with their new owners. A manual
-  `hub pause` is never lifted by the coordinator; `hub resume` does not override a budget
-  pause, `hub budget resume <peer>` does, and the coordinator then leaves that peer alone
+  `ahub pause` is never lifted by the coordinator; `ahub resume` does not override a budget
+  pause, `ahub budget resume <peer>` does, and the coordinator then leaves that peer alone
   until the window that paused it has reset. A handoff waits until another peer is attached
   (right after a restart nobody is), readings keep their own timestamp, and a window whose
   reset time has passed no longer counts. A peer whose window reset while the hub was down is
@@ -388,7 +393,7 @@ inside a peer.
   workflow). Per peer, the hub keeps a `seen_ids` set for the session so a brief never
   repeats an observation already delivered to that peer.
 - Explicit shared notes. Tool `hub_remember(text, title?, tags?)` on every adapter and
-  in the console (`hub remember`) posts `memory/save` with
+  in the console (`ahub remember`) posts `memory/save` with
   `metadata: {peer, task, kind: decision | finding | contract}` (payload verified live). The
   hub auto-saves the transitions that carry content, `done`, the review verdict and
   escalation (amended in M4: `proposed` and `accepted` would add two empty memories per
@@ -407,15 +412,15 @@ inside a peer.
   `CLAUDE_MEM_WORKER_PORT`), `memory.inject_tokens`, `memory.brief_items`,
   `memory.platform_source` (default `agent-hub`).
 - Prerequisites: claude-mem worker running; Codex claude-mem plugin installed; `dot ai
-  memory status` green for kimi. `hub doctor` reports all three.
+  memory status` green for kimi. `ahub doctor` reports all three.
 
 ### Safety
 
 - Untrusted framing on all cross-peer text; standing instruction once per session.
-- `hub claude` and `hub codex` keep normal permission prompts. `--unattended` opts into
+- `ahub claude` and `ahub codex` keep normal permission prompts. `--unattended` opts into
   `--dangerously-skip-permissions` (Claude) and `--dangerously-bypass-approvals-and-sandbox`
   (Codex 0.154.0 documents this flag, not `--yolo`) and prints a warning.
-- Kimi and local tools: cwd-scoped, secrets denylist (`.maru/secrets`, `.env*`, keys).
+- Kimi and local tools: cwd-scoped, secrets denylist (a secrets directory, `.env*`, keys).
 - Loopback binds only; ports per project from a registry (base 4600, stride 10).
 - No subscription OAuth through any gateway.
 
@@ -458,7 +463,7 @@ CLAUDE.md, REVIEW.md
 
 ## Acceptance criteria
 
-1. `hub up && hub claude && hub codex --new && hub kimi` in one project: a message from
+1. `ahub up && ahub claude && ahub codex --new && ahub kimi` in one project: a message from
    any peer reaches the other three within 2 s when idle, with untrusted framing.
 2. A message sent while Codex is mid-turn arrives as `turn/steer` if `important`, else
    after `turn/completed`; while Kimi is mid-prompt it is queued and drained on
@@ -466,8 +471,8 @@ CLAUDE.md, REVIEW.md
 3. `[STATUS]` messages from one peer are batched into one digest per recipient.
 4. A task proposed by Claude, accepted by Codex, marked done, is auto-routed to the
    reviewer; `changes_requested` twice escalates per `routing.toml`.
-5. `hub local` completes a `bulk_edit` task; OmniRoute log shows the request with the
-   per-peer token and `x-omniroute-provider: vllm`; `hub route explain` shows the
+5. `ahub local` completes a `bulk_edit` task; OmniRoute log shows the request with the
+   per-peer token and `x-omniroute-provider: vllm`; `ahub route explain` shows the
    chosen route.
 6. With Switchyard absent, the local worker still works via `fixed_model`.
 7. A PII-flagged task never leaves the `local` peer (test with a fake pattern).
@@ -478,7 +483,7 @@ CLAUDE.md, REVIEW.md
 11. A local-worker task produces observations in claude-mem with
     `platform_source = agent-hub` and `agent_id = local`; `search` from any peer finds
     them without a `platformSource` filter.
-12. Starting `hub kimi` after a Claude session in the same project injects a context
+12. Starting `ahub kimi` after a Claude session in the same project injects a context
     block that includes at least one Claude-platform observation, capped at
     `memory.inject_tokens`; starting a second Kimi session does not re-inject it.
 13. Assigning a task whose title matches an earlier observation attaches a brief with
@@ -488,7 +493,7 @@ CLAUDE.md, REVIEW.md
     `peer = codex` and the task id; the budget-relay resume prompt for the receiving
     peer contains the paused peer's session summary.
 15. With the claude-mem worker stopped, every acceptance criterion 1 to 10 still passes
-    and `hub doctor` reports memory as unavailable.
+    and `ahub doctor` reports memory as unavailable.
 
 ## Tasks
 
@@ -498,10 +503,10 @@ M1 messaging core and three adapters
 - [x] Claude channel plugin: capability, push, `hub_send`, `hub_inbox`, reconnect
 - [x] Codex adapter: spawn, proxy, agentMessage intercept, `turn/start`, watchdog
 - [x] ACP adapter: spawn `kimi acp`, session lifecycle, prompt, chunk aggregation
-- [x] CLI `up/claude/codex/kimi/say/tail/status/logs/kill`, `hub init` marker blocks
+- [x] CLI `up/claude/codex/kimi/say/tail/status/logs/kill`, `ahub init` marker blocks
 - [x] Fakes plus unit and integration tests
 - [ ] Live trio chat smoke (`docs/smoke.md`): Kimi leg passed; Codex reply leg blocked by the account usage limit on 2026-09-19; Claude leg needs an interactive session
-- [x] claude-mem worker client (`src/memory/`), `hub doctor` memory check, fake worker for tests
+- [x] claude-mem worker client (`src/memory/`), `ahub doctor` memory check, fake worker for tests
 
 M2 coordination
 - [x] Priority tiers and status batching, marker parsing
@@ -514,13 +519,13 @@ M3 local worker and routing L2/L3
 - [x] Local worker agent loop with cwd-scoped tools, secrets denylist, approvals and seatbelt sandbox
 - [x] OmniRoute client with Cloudflare Access headers (per-peer inference key: pending an owner-issued key)
 - [x] Switchyard sidecar: config generation, lifecycle, health, fallback to fixed model
-- [x] `hub local`, smoke through OmniRoute with provider header check, and through the real sidecar
+- [x] `ahub local`, smoke through OmniRoute with provider header check, and through the real sidecar
 - [x] Local worker capture into claude-mem (`sessions/init`, `observations`, `summarize`, `session-end`, skip list)
 
 M4 task board, roles, routing L1
 - [x] sqlite board, `hub_task_*` and `hub_review` tools on all adapters
 - [x] Role contract injection per native surface
-- [x] `routing.toml` loader, signals (PII, context length, quota), `hub route explain`
+- [x] `routing.toml` loader, signals (PII, context length, quota), `ahub route explain`
 - [x] Review handoff and task-level escalation
 - [x] Task brief on handoff (search + timeline, `seen_ids`), `hub_remember` tool and console command, auto-saved board transitions
 - [ ] Live: Codex calling a hub tool in a real turn (MCP startup verified; a turn needs account quota), Claude plugin tools in a real session
@@ -545,7 +550,7 @@ M6 internal inference, packaging
 - Running Claude Code itself on a local model (depends on the Anthropic-to-chat
   translation check in the OmniRoute plan v1, Phase 0).
 - A hub-owned memory store, cmem.ai cloud sync, automatic corpus building (a project
-  corpus for `hub ask` is an optional M6 item), and any change to the vault LEARN loop.
+  corpus for `ahub ask` is an optional M6 item), and any change to the vault LEARN loop.
 
 ## Risks
 

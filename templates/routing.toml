@@ -17,7 +17,7 @@ target = "dsv4f"
 type = "passthrough"
 target = "dsv4f"
 
-# When the DGX serves GLM-5.3-Flash, replace sy/coding with the two-tier route and add the review escalation:
+# With a second model served (here GLM-5.3-Flash), replace sy/coding with the two-tier route and add the review escalation:
 #
 # [targets.glm53f]
 # id = "vllm/zai-org/GLM-5.3-Flash"
@@ -44,7 +44,7 @@ target = "dsv4f"
 # task to the next attached peer in `escalate_to`.
 
 [signals]
-pii_patterns = ["\\b\\d{6}-\\d{7}\\b", "@example\\.ac\\.kr"]   # resident registration numbers, campus mail addresses
+pii_patterns = ["\\b\\d{6}-\\d{7}\\b"]   # Korean resident registration numbers; add your own, e.g. "@your-org\\.example" for staff mail addresses
 long_context_tokens = 120000
 
 [constraints]

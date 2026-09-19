@@ -42,7 +42,7 @@ export const DEFAULT_BUDGET: BudgetConfig = { gate: 0.9, stale_min: 30, poll_min
 
 export interface BudgetHooks {
   pause(peer: PeerId): void;
-  /** Must leave a manual `hub pause` in place. */
+  /** Must leave a manual `ahub pause` in place. */
   resume(peer: PeerId): void;
   /** Ask the peer to checkpoint; resolves with its summary, or undefined on timeout or when it cannot run a turn. */
   requestCheckpoint(peer: PeerId): Promise<string | undefined>;
@@ -65,7 +65,7 @@ const EXEMPT = new Set<PeerId>(["local", "user", "hub"]);
 
 /**
  * Budget relay. Readings come from the adapters (Codex rate limits, Claude's status line, Kimi tokens) or from
- * `hub budget set`. Over the gate: checkpoint first, pause second, hand the open work over, and resume when the window
+ * `ahub budget set`. Over the gate: checkpoint first, pause second, hand the open work over, and resume when the window
  * resets. One open record per peer, kept in hub.db, so repeated readings do nothing and a restart keeps the pause.
  */
 export class Budget {
@@ -73,7 +73,7 @@ export class Budget {
   private readonly readings = new Map<PeerId, Map<string, Reading>>();
   private readonly pausing = new Set<PeerId>();
   private readonly handingOff = new Set<PeerId>();
-  /** `hub budget resume`: the owner overrode a pause; readings over the gate are ignored for that peer until then. */
+  /** `ahub budget resume`: the owner overrode a pause; readings over the gate are ignored for that peer until then. */
   private readonly ignoreUntil = new Map<PeerId, number>();
   private closed = false;
 

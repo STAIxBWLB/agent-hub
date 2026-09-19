@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Claude Code pipes a JSON document to its status line command on every render, and that document carries
-// `rate_limits` (five_hour, seven_day: used_percentage, resets_at). `hub claude` puts this script in front of the
+// `rate_limits` (five_hour, seven_day: used_percentage, resets_at). `ahub claude` puts this script in front of the
 // user's own status line command: it records the limits for the hub's budget coordinator and then runs the original
 // command with the same input, so the status line looks exactly as before. It must never fail the render.
 import { spawnSync } from "node:child_process";

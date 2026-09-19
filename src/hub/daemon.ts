@@ -151,7 +151,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let sidecarRouting = "";
 
   const consoles = new Set<Sock>();
-  /** A line for the human: hub.log and every open `hub tail`. */
+  /** A line for the human: hub.log and every open `ahub tail`. */
   const notify = (line: string) => {
     log(line);
     for (const c of consoles) if (c.data.tail) c.send(JSON.stringify({ t: "notice", line }));
@@ -167,7 +167,7 @@ export async function startDaemon(opts: DaemonOptions) {
     notify,
   });
   // ---- budget relay -------------------------------------------------------------------------------------------
-  const manualPaused = new Set<PeerId>(); // `hub pause`: the coordinator never lifts these
+  const manualPaused = new Set<PeerId>(); // `ahub pause`: the coordinator never lifts these
   const checkpointWaits = new Map<PeerId, (summary: string | undefined) => void>();
   const PLATFORM: Record<PeerId, string> = { claude: "claude", codex: "codex", kimi: "kimi" };
   const budget = new Budget(join(opts.stateDir, "hub.db"), config.budget, {
@@ -224,7 +224,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const used = kimiTokens.reduce((s, t) => s + t.n, 0) / config.budget.kimi_tokens_5h;
     budget.report("kimi", [{ id: "tokens", used, resetsAt: kimiTokens[0]!.at + 5 * 3_600_000, source: "kimi usage_update (soft limit)" }]);
   };
-  // Claude's numbers arrive through the status line tee `hub claude` installs (src/cli/statusline-tee.ts).
+  // Claude's numbers arrive through the status line tee `ahub claude` installs (src/cli/statusline-tee.ts).
   let claudeUsageSeen = 0;
   const intervals = [
     setInterval(() => budget.tick(), 30_000),
@@ -245,7 +245,7 @@ export async function startDaemon(opts: DaemonOptions) {
   for (const i of intervals) i.unref?.();
 
   /** What the console stream and the log may show: a private envelope (PII task) keeps its body to its recipients. */
-  const redact = (e: BusEvent): BusEvent => ("env" in e && e.env.private ? { ...e, env: { ...e.env, body: `[private${e.env.refs?.task ? `: task #${e.env.refs.task}, see hub task show ${e.env.refs.task}` : ""}]` } } : e);
+  const redact = (e: BusEvent): BusEvent => ("env" in e && e.env.private ? { ...e, env: { ...e.env, body: `[private${e.env.refs?.task ? `: task #${e.env.refs.task}, see ahub task show ${e.env.refs.task}` : ""}]` } } : e);
   const SERVER_JS = join(import.meta.dir, "..", "..", "plugins", "agent-hub", "server.js");
   const toolEnv = (peer: PeerId) => ({ AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: opts.stateDir });
 
@@ -256,7 +256,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (piiTurn && (op === "hub_remember" || op === "hub_task_propose")) throw new Error(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // Lists are redacted for everyone but the on-prem worker, and only when it calls from inside this process: over the
     // control WS anyone holding the token can claim to be "local". A board on a shared screen is a leak too, so the
-    // console reads a PII task's text deliberately, with `hub task show <id>`.
+    // console reads a PII task's text deliberately, with `ahub task show <id>`.
     const onPrem = inProcess && by === "local";
     const line = (t: { id: number; state: string; owner: PeerId | null; reviewer: PeerId | null }) => `task #${t.id}: ${t.state}, owner ${t.owner ?? "none"}, reviewer ${t.reviewer ?? "none"}`;
     switch (op) {
@@ -344,11 +344,11 @@ export async function startDaemon(opts: DaemonOptions) {
         permissions.delete(id);
         resolve(optionId);
       };
-      permissions.set(id, { push, done }); // kept so a `hub tail` opened later still sees it
+      permissions.set(id, { push, done }); // kept so a `ahub tail` opened later still sees it
     });
   }
 
-  // One start per peer at a time: a second `hub codex` must not tear down an adapter that is still coming up.
+  // One start per peer at a time: a second `ahub codex` must not tear down an adapter that is still coming up.
   const starting = new Map<string, Promise<Record<string, unknown>>>();
   function startPeer(peer: string, args: { model?: string; route?: string }): Promise<Record<string, unknown>> {
     const running = starting.get(peer) ?? startPeerOnce(peer, args).finally(() => starting.delete(peer));
@@ -527,7 +527,7 @@ export async function startDaemon(opts: DaemonOptions) {
           manualPaused.add(id);
           bus.pause(id);
         } else {
-          if (budget.record(id)) return void reply({ t: msg.t, ok: false, error: `${id} is paused by the budget coordinator until its window resets (hub budget); to override: hub budget resume ${id}` });
+          if (budget.record(id)) return void reply({ t: msg.t, ok: false, error: `${id} is paused by the budget coordinator until its window resets (ahub budget); to override: ahub budget resume ${id}` });
           manualPaused.delete(id);
           bus.resume(id);
         }
@@ -541,7 +541,7 @@ export async function startDaemon(opts: DaemonOptions) {
           const used = Number(msg.set.used);
           if (!bus.peers.has(String(msg.set.peer)) && !budget.record(String(msg.set.peer))) return void reply({ t: "budget", ok: false, error: `unknown peer: ${msg.set.peer}` });
           if (!(used >= 0 && used <= 1)) return void reply({ t: "budget", ok: false, error: "used must be between 0 and 1" });
-          budget.report(String(msg.set.peer), [{ id: msg.set.window === "week" ? "week" : "5h", used, ...(msg.set.resetsInMs ? { resetsAt: Date.now() + Number(msg.set.resetsInMs) } : {}), source: "hub budget set" }]);
+          budget.report(String(msg.set.peer), [{ id: msg.set.window === "week" ? "week" : "5h", used, ...(msg.set.resetsInMs ? { resetsAt: Date.now() + Number(msg.set.resetsInMs) } : {}), source: "ahub budget set" }]);
         }
         return void reply({ t: "budget", ok: true, budget: budget.status(), gate: config.budget.gate });
       case "permit":
@@ -600,6 +600,6 @@ export async function startDaemon(opts: DaemonOptions) {
   budget.restore(); // pauses recorded by an earlier hub run stay in force; unfinished handoffs wait for peers to attach
   writeFileSync(join(opts.stateDir, "hub.pid"), `${process.pid}\n`);
   writeStatus();
-  log(`hub up pid=${process.pid} control=127.0.0.1:${server.port} cwd=${opts.cwd}`);
+  log(`ahub up pid=${process.pid} control=127.0.0.1:${server.port} cwd=${opts.cwd}`);
   return { bus, token, port: server.port as number, stop, stopped: new Promise<void>((r) => (onStop = r)) };
 }

@@ -266,7 +266,7 @@ test("session-start recall rides on the first delivery, is capped, and is not re
   expect(mem.calls.filter((c) => c.path === "/api/context/inject")).toHaveLength(1);
 });
 
-test("hub local: a fourth peer on the hub-owned model path; writes wait for hub permit; status names what served the call", async () => {
+test("ahub local: a fourth peer on the hub-owned model path; writes wait for ahub permit; status names what served the call", async () => {
   const model = startFakeModelServer({
     key: "sk-daemon-test",
     script: (body) =>
@@ -350,7 +350,7 @@ test("task tools from every surface: Claude plugin, a tools-role client acting f
   c2.close();
 });
 
-test("a PII task shows nowhere but the local console's task view: not on hub tail, not in hub.log, not to cloud peers", async () => {
+test("a PII task shows nowhere but the local console's task view: not on ahub tail, not in hub.log, not to cloud peers", async () => {
   // the worker tries to save a note and to spin off a task mid-turn: both would carry the PII out
   const model = startFakeModelServer({
     key: "k",
@@ -376,7 +376,7 @@ test("a PII task shows nowhere but the local console's task view: not on hub tai
 
   const everything = JSON.stringify(events) + JSON.stringify(pushes) + JSON.stringify(channel) + readFileSync(join(stateDir, "hub.log"), "utf8");
   expect(everything).not.toContain("900101");
-  expect(everything).toContain("[private: task #1, see hub task show 1]");
+  expect(everything).toContain("[private: task #1, see ahub task show 1]");
   expect(events.filter((e) => e.t === "envelope" && e.env.from === "local").every((e) => e.env.body.includes("task #1"))).toBe(true); // the answer's stub names the task
   expect((await console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text).toContain('"event": "answer"'); // and the board kept its text
   expect(channel).toHaveLength(0); // claude heard nothing about it
@@ -424,9 +424,9 @@ test("budget relay end to end: checkpoint, pause, task to local with the summary
   const shown = await console_.request({ t: "budget" });
   expect(shown.budget.kimi.paused.reason).toContain("95%");
   expect((await console_.request({ t: "status" })).status.peers.kimi.paused).toContain("budget: 5h window at 95%");
-  const refused = await console_.request({ t: "resume", peer: "kimi" }); // hub resume does not override the coordinator
+  const refused = await console_.request({ t: "resume", peer: "kimi" }); // ahub resume does not override the coordinator
   expect(refused).toMatchObject({ ok: false });
-  expect(refused.error).toContain("hub budget resume kimi");
+  expect(refused.error).toContain("ahub budget resume kimi");
 
   await console_.request({ t: "pause", peer: "kimi" }); // the user also pauses it by hand
   await console_.request({ t: "budget", set: { peer: "kimi", used: 0.2 } }); // the mocked reset

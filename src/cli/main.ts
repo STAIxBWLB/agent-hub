@@ -13,30 +13,30 @@ import { buildLaunch, UNATTENDED_WARNING } from "./launch.ts";
 
 const USAGE = `agent-hub: Claude Code, Codex and Kimi as peers in one project directory
 
-  hub init                     write .agenthub/config.json and the CLAUDE.md / AGENTS.md marker blocks
-  hub up [--unattended]        start the daemon for this directory
-  hub claude [args...]         launch Claude Code with the hub channel   [--unattended]
-  hub codex [args...]          start the Codex adapter and attach the TUI [--unattended]
-  hub kimi [--model <alias>]   start Kimi headless under ACP
-  hub local [--route <id> | --model <id>]
+  ahub init                     write .agenthub/config.json and the CLAUDE.md / AGENTS.md marker blocks
+  ahub up [--unattended]        start the daemon for this directory
+  ahub claude [args...]         launch Claude Code with the hub channel   [--unattended]
+  ahub codex [args...]          start the Codex adapter and attach the TUI [--unattended]
+  ahub kimi [--model <alias>]   start Kimi headless under ACP
+  ahub local [--route <id> | --model <id>]
                                start the hub-native worker on the self-hosted models (routing.toml)
-  hub say [@peer ...] <text>   send as the console user (no @peer = broadcast); delivered at once,
+  ahub say [@peer ...] <text>   send as the console user (no @peer = broadcast); delivered at once,
                                start the text with [STATUS] to let it batch or [FYI] for the record only
-  hub pause|resume <peer>      hold a peer's deliveries in its queue / release them
-  hub budget                   quota windows per peer, and who is paused until when
-  hub budget set <peer> <0..1> [--resets-in 30m] [--window 5h|week]   feed a reading by hand (also: test the relay)
-  hub budget resume <peer>     override a budget pause; readings are ignored for that peer until the window resets
-  hub board [state]            the task board
-  hub task propose <class> <title...> [--owner <peer>] [--path <p>]... [--detail <text>]
-  hub task show|escalate <id>  full task with history (PII text included) / hand it to the next peer in escalate_to
-  hub task assign <id> <peer>  give a task to a peer yourself
-  hub review <id> approved|changes_requested [note...]
-  hub remember <text...>       save a note to the memory all agents share
-  hub route explain <id>       why a task went where it went
-  hub route explain --class <c> <title...>   what would happen to such a task now
-  hub tail                     live stream of messages, states and permission requests
-  hub permit <id> <option>     answer a permission request shown by tail ("deny" cancels)
-  hub status | logs [-f] | doctor | kill`;
+  ahub pause|resume <peer>      hold a peer's deliveries in its queue / release them
+  ahub budget                   quota windows per peer, and who is paused until when
+  ahub budget set <peer> <0..1> [--resets-in 30m] [--window 5h|week]   feed a reading by hand (also: test the relay)
+  ahub budget resume <peer>     override a budget pause; readings are ignored for that peer until the window resets
+  ahub board [state]            the task board
+  ahub task propose <class> <title...> [--owner <peer>] [--path <p>]... [--detail <text>]
+  ahub task show|escalate <id>  full task with history (PII text included) / hand it to the next peer in escalate_to
+  ahub task assign <id> <peer>  give a task to a peer yourself
+  ahub review <id> approved|changes_requested [note...]
+  ahub remember <text...>       save a note to the memory all agents share
+  ahub route explain <id>       why a task went where it went
+  ahub route explain --class <c> <title...>   what would happen to such a task now
+  ahub tail                     live stream of messages, states and permission requests
+  ahub permit <id> <option>     answer a permission request shown by tail ("deny" cancels)
+  ahub status | logs [-f] | doctor | kill`;
 
 const cwd = process.cwd();
 const stateDir = stateDirFor(cwd);
@@ -58,7 +58,7 @@ function exec(bin: string, argv: string[]): never {
 }
 
 function fail(message: string): never {
-  console.error(`hub: ${message}`);
+  console.error(`ahub: ${message}`);
   process.exit(1);
 }
 
@@ -114,7 +114,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     console.log(changed.length ? changed.map((p) => `wrote ${p}`).join("\n") : "already up to date");
   },
 
-  // Internal: the detached daemon process started by `hub up`.
+  // Internal: the detached daemon process started by `ahub up`.
   daemon: async () => {
     // Long-lived process: one bad adapter callback must not take every peer down. stderr is hub.log.
     process.on("unhandledRejection", (e) => console.error(`${new Date().toISOString()} unhandled rejection:`, e));
@@ -147,7 +147,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       env: { ...process.env, AGENTHUB_STATE_DIR: stateDir },
     }).unref();
     for (let i = 0; i < 50; i++) {
-      if (await healthy()) return console.log(`hub up (${readControl(stateDir)!.url}), state in ${stateDir}`);
+      if (await healthy()) return console.log(`ahub up (${readControl(stateDir)!.url}), state in ${stateDir}`);
       await Bun.sleep(100);
     }
     fail(`daemon did not start; see ${join(stateDir, "hub.log")}`);
@@ -187,7 +187,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const res = await hub.request({ t: "start", peer: "kimi", args: { model } });
     hub.close();
     if (!res.ok) fail(res.error);
-    console.log(res.already ? "kimi is already attached" : 'kimi attached (headless). Talk to it with: hub say @kimi "..."');
+    console.log(res.already ? "kimi is already attached" : 'kimi attached (headless). Talk to it with: ahub say @kimi "..."');
   },
 
   local: async () => {
@@ -196,7 +196,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const res = await hub.request({ t: "start", peer: "local", args: { route: opt("--route"), model: opt("--model") } });
     hub.close();
     if (!res.ok) fail(res.error);
-    console.log(res.already ? "local is already attached" : `local attached on ${res.model}. Give it work with: hub say @local "..."`);
+    console.log(res.already ? "local is already attached" : `local attached on ${res.model}. Give it work with: ahub say @local "..."`);
   },
 
   say: async () => {
@@ -218,7 +218,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       else if (msg.t === "notice") console.log(`  * ${msg.line}`);
       else if (msg.t === "permission") {
         const options = msg.options.map((o: any) => `${o.optionId} (${o.name})`).join(", ");
-        console.log(`  ? ${msg.peer} asks permission: ${String(msg.title).replace(/\n/g, "\n      | ")}\n    answer with: hub permit ${msg.id} <${options}> | deny`);
+        console.log(`  ? ${msg.peer} asks permission: ${String(msg.title).replace(/\n/g, "\n      | ")}\n    answer with: ahub permit ${msg.id} <${options}> | deny`);
       }
     };
     hub.onClose = () => process.exit(0);
@@ -230,7 +230,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const hub = await connect();
     let set: Record<string, unknown> | undefined;
     if (args[0] === "resume") {
-      if (!args[1]) fail("usage: hub budget resume <peer>");
+      if (!args[1]) fail("usage: ahub budget resume <peer>");
       const res = await hub.request({ t: "budget", resume: args[1] });
       hub.close();
       if (!res.ok) fail(res.error);
@@ -239,7 +239,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (args[0] === "set") {
       const flags = takeFlags(args.slice(1), ["--resets-in", "--window"], []);
       const [peer, used] = flags.rest;
-      if (!peer || used === undefined) fail("usage: hub budget set <peer> <0..1> [--resets-in 30m] [--window 5h|week]");
+      if (!peer || used === undefined) fail("usage: ahub budget set <peer> <0..1> [--resets-in 30m] [--window 5h|week]");
       const m = /^(\d+)(s|m|h)$/.exec(flags.one["--resets-in"] ?? "");
       if (flags.one["--resets-in"] && !m) fail("--resets-in takes a duration like 90s, 30m or 5h");
       set = { peer, used: Number(used), window: flags.one["--window"], ...(m ? { resetsInMs: Number(m[1]) * { s: 1000, m: 60_000, h: 3_600_000 }[m[2] as "s" | "m" | "h"] } : {}) };
@@ -248,7 +248,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     hub.close();
     if (!res.ok) fail(res.error);
     const peers = Object.entries(res.budget as Record<string, any>);
-    if (!peers.length) return console.log(`no quota readings yet (gate ${res.gate}). Sources: Codex rate limits, Claude's status line (hub claude), hub budget set.`);
+    if (!peers.length) return console.log(`no quota readings yet (gate ${res.gate}). Sources: Codex rate limits, Claude's status line (ahub claude), ahub budget set.`);
     const left = (at: number) => { const s = Math.max(0, Math.round((at - Date.now()) / 1000)); return s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`; };
     for (const [peer, b] of peers) {
       console.log(`${peer}${b.paused ? `  PAUSED: ${b.paused.reason}, resumes in ${left(b.paused.resetsAt)}` : ""}`);
@@ -259,7 +259,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   board: async () => {
     const tasks = JSON.parse(await taskOp("hub_task_list", args[0] ? { state: args[0] } : {})) as any[];
     if (!tasks.length) return console.log("no tasks");
-    for (const t of tasks) console.log(`#${String(t.id).padEnd(4)} ${t.state.padEnd(18)} ${t.class.padEnd(10)} ${(t.owner ?? "-").padEnd(8)} review:${(t.reviewer ?? "-").padEnd(8)} ${t.title}${t.signals.includes("pii") ? `  (hub task show ${t.id})` : ""}`);
+    for (const t of tasks) console.log(`#${String(t.id).padEnd(4)} ${t.state.padEnd(18)} ${t.class.padEnd(10)} ${(t.owner ?? "-").padEnd(8)} review:${(t.reviewer ?? "-").padEnd(8)} ${t.title}${t.signals.includes("pii") ? `  (ahub task show ${t.id})` : ""}`);
   },
 
   task: async () => {
@@ -267,21 +267,21 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (sub === "show") return console.log(await taskOp("task_show", { id: rest[0] }));
     if (sub === "escalate") return console.log(await taskOp("task_escalate", { id: rest[0] }));
     if (sub === "assign") return console.log(await taskOp("task_assign", { id: rest[0], peer: rest[1] }));
-    if (sub !== "propose" || rest.length < 2) fail("usage: hub task propose <class> <title...> | show <id> | assign <id> <peer> | escalate <id>");
+    if (sub !== "propose" || rest.length < 2) fail("usage: ahub task propose <class> <title...> | show <id> | assign <id> <peer> | escalate <id>");
     const flags = takeFlags(rest.slice(1), ["--owner", "--detail"], ["--path"]);
     console.log(await taskOp("hub_task_propose", { class: rest[0], title: flags.rest.join(" "), owner: flags.one["--owner"], detail: flags.one["--detail"], ...(flags.many["--path"]?.length ? { refs: { paths: flags.many["--path"] } } : {}) }));
   },
 
   review: async () => {
     const [id, verdict, ...note] = args;
-    if (!id || !verdict) fail("usage: hub review <id> approved|changes_requested [note...]");
+    if (!id || !verdict) fail("usage: ahub review <id> approved|changes_requested [note...]");
     console.log(await taskOp("hub_review", { id: Number(id), verdict, note: note.join(" ") }));
   },
 
   remember: async () => console.log(await taskOp("hub_remember", { text: args.join(" ") })),
 
   route: async () => {
-    if (args[0] !== "explain") fail("usage: hub route explain <id> | --class <class> <title...>");
+    if (args[0] !== "explain") fail("usage: ahub route explain <id> | --class <class> <title...>");
     const flags = takeFlags(args.slice(1), ["--class"], []);
     console.log(await taskOp("route_explain", flags.one["--class"] ? { class: flags.one["--class"], title: flags.rest.join(" ") } : { id: flags.rest[0] }));
   },
@@ -291,7 +291,7 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   permit: async () => {
     const [id, option] = args;
-    if (!id || !option) fail("usage: hub permit <id> <option|deny>");
+    if (!id || !option) fail("usage: ahub permit <id> <option|deny>");
     const hub = await connect();
     hub.send({ t: "permit", id, ...(option === "deny" ? {} : { option }) });
     await hub.request({ t: "status" }); // flush before closing
@@ -307,8 +307,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     for (const [id, p] of peers) console.log(`  ${id.padEnd(8)} ${p.state.padEnd(8)} queued ${p.queued}${(p as any).paused ? `  (${(p as any).paused})` : ""}${(p as any).servedBy ? `  last call: ${(p as any).servedBy}` : ""}`);
     if (status.switchyard) console.log(`  switchyard: ${status.switchyard}`);
     const counts = Object.entries(status.tasks ?? {}).map(([s, n]) => `${n} ${s}`).join(", ");
-    if (counts) console.log(`  tasks: ${counts} (hub board)`);
-    if (!peers.length) console.log("  no peers attached yet (hub claude | hub codex | hub kimi)");
+    if (counts) console.log(`  tasks: ${counts} (ahub board)`);
+    if (!peers.length) console.log("  no peers attached yet (ahub claude | ahub codex | ahub kimi)");
   },
 
   logs: () => exec("tail", [args.includes("-f") ? "-f" : "-n100", join(stateDir, "hub.log")]),
@@ -325,7 +325,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     // The pid file may be stale and the pid reused: signal it only if it still is a hub daemon.
     const pid = Number(readFileSync(pidFile, "utf8"));
     const owner = spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" }).stdout ?? "";
-    if (/main\.ts daemon|hub daemon/.test(owner)) {
+    if (/main\.ts daemon|ahub daemon/.test(owner)) {
       process.kill(pid, "SIGTERM");
       return console.log("hub signalled");
     }
@@ -346,17 +346,17 @@ const commands: Record<string, () => Promise<void> | void> = {
       row(!!v, bin, v ?? "not found on PATH");
     }
     const up = await healthy();
-    row(up, "hub daemon", up ? readControl(stateDir)!.url : "not running (hub up)");
+    row(up, "ahub daemon", up ? readControl(stateDir)!.url : "not running (ahub up)");
     const plugins = spawnSync("claude", ["plugin", "list"], { encoding: "utf8" }).stdout ?? "";
     row(plugins.includes("agent-hub@agent-hub"), "claude plugin", plugins.includes("agent-hub@agent-hub") ? "agent-hub@agent-hub installed" : "missing: see docs/smoke.md, Install");
 
     const config = loadConfig(cwd);
     const omni = new OmniRoute(config.omniroute);
     const gateway = await omni.base();
-    row(!!gateway, "omniroute", gateway ? `${new URL(gateway).host} healthy` : "no candidate reachable (WARP off?); hub local cannot run");
+    row(!!gateway, "omniroute", gateway ? `${new URL(gateway).host} healthy` : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? "no candidate reachable (VPN off?); ahub local cannot run" : "not configured: set omniroute.urls in .agenthub/config.json (any OpenAI-compatible gateway); ahub local cannot run");
     row(!!omni.apiKey(), "omniroute key", omni.apiKey() ? "present" : "missing: set OMNIROUTE_API_KEY or omniroute.api_key_file in .agenthub/config.json");
     const sy = spawnSync(process.env.AGENTHUB_SWITCHYARD_BIN ?? "switchyard-server", ["--version"], { encoding: "utf8" });
-    row(sy.status === 0 ? true : undefined, "switchyard", sy.status === 0 ? sy.stdout.trim() : "not installed: hub local uses fixed_model on OmniRoute (cargo install --locked switchyard-server)");
+    row(sy.status === 0 ? true : undefined, "switchyard", sy.status === 0 ? sy.stdout.trim() : "not installed: ahub local uses fixed_model on OmniRoute (cargo install --locked switchyard-server)");
 
     const memory = new MemoryClient();
     const mem = await memory.health();

@@ -50,7 +50,7 @@ export function buildLaunch(
     // `--settings` takes one value, so a user-supplied one wins and Claude has no quota source for that session.
     const own = passthrough.some((a) => a === "--settings" || a.startsWith("--settings="));
     const tee = ctx.statusLine && !own ? ["--settings", statusLineSettings(ctx.statusLine)] : [];
-    const notes = [unattended ? UNATTENDED_WARNING : "", ctx.statusLine && own ? "note: you passed --settings, so the hub's status line tee is off and the budget coordinator cannot see Claude's quota (hub budget set claude <0..1> still works)." : ""].filter(Boolean);
+    const notes = [unattended ? UNATTENDED_WARNING : "", ctx.statusLine && own ? "note: you passed --settings, so the hub's status line tee is off and the budget coordinator cannot see Claude's quota (ahub budget set claude <0..1> still works)." : ""].filter(Boolean);
     return {
       cmd: "claude",
       args: ["--dangerously-load-development-channels", CLAUDE_CHANNEL, ...(unattended ? ["--dangerously-skip-permissions"] : []), ...tee, ...passthrough],

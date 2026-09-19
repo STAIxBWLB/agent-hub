@@ -112,7 +112,7 @@ test("a leftover reading is not fresh: old timestamps and windows that have rese
   expect(later.budget.record("codex")).toBeUndefined();
 });
 
-test("override: hub budget resume lifts the pause and the same window cannot pause the peer again; the resume notice is queued before the peer is released", async () => {
+test("override: ahub budget resume lifts the pause and the same window cannot pause the peer again; the resume notice is queued before the peer is released", async () => {
   const order: string[] = [];
   const { budget, clock, settle } = setup({ resume: () => order.push("resume"), resumed: () => order.push("notice") });
   budget.report("claude", [{ id: "5h", used: 0.95, resetsAt: clock.now + 60 * MIN, source: "status line" }]);

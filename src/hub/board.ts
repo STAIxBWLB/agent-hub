@@ -45,7 +45,7 @@ const MOVES: Record<TaskState, TaskState[]> = {
 
 const JSON_COLS = ["refs", "signals", "history"] as const;
 
-/** Task board in `.agenthub/state/hub.db`. It outlives the hub process: `hub kill` leaves the file. */
+/** Task board in `.agenthub/state/hub.db`. It outlives the hub process: `ahub kill` leaves the file. */
 export class Board {
   private readonly db: Database;
 

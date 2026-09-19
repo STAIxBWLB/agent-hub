@@ -6,7 +6,7 @@ import { init, upsertBlock } from "../src/cli/init.ts";
 import { buildLaunch, CLAUDE_CHANNEL, statusLineSettings, UNATTENDED_WARNING } from "../src/cli/launch.ts";
 import { allocatePorts } from "../src/hub/ports.ts";
 
-test("hub init is idempotent and keeps text outside the markers", () => {
+test("ahub init is idempotent and keeps text outside the markers", () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
   writeFileSync(join(dir, "CLAUDE.md"), "# Mine\n\nkeep me\n");
   expect(init(dir).map((p) => p.slice(dir.length + 1)).sort()).toEqual([".agenthub/config.json", ".agenthub/routing.toml", ".gitignore", "AGENTS.md", "CLAUDE.md"]);
@@ -54,7 +54,7 @@ test("status line tee: records rate_limits, runs the wrapped command with the sa
   expect(run(input, "").stdout.toString()).toBe("agent-hub  5h 91%  wk -\n"); // no status line to wrap: a line of its own, not a blank one
 });
 
-test("hub claude injects the tee through --settings, wraps the user's command, and steps aside for a user --settings", () => {
+test("ahub claude injects the tee through --settings, wraps the user's command, and steps aside for a user --settings", () => {
   const tee = { script: "/repo/src/cli/statusline-tee.ts", stateDir: "/p/.agenthub/state", original: { command: "~/.claude/it's-hud.py # dot-hud", refreshInterval: 5 } };
   const settings = JSON.parse(statusLineSettings(tee));
   expect(settings.statusLine).toMatchObject({ type: "command", refreshInterval: 5 });

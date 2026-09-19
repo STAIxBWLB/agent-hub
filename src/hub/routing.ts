@@ -106,7 +106,7 @@ export interface Assignment {
 }
 
 /**
- * L1. A pure function of policy, task and peer states, so `hub route explain` runs exactly what assignment runs and
+ * L1. A pure function of policy, task and peer states, so `ahub route explain` runs exactly what assignment runs and
  * prints its trace. `states`: effective bus states of attached peers (a peer that is not in the map is not attached).
  */
 export function assign(
@@ -143,11 +143,11 @@ export function assign(
   // Never the task's current owner by default: a decline or an escalation has to reach the next peer in the list.
   const wanted = opts.candidates ?? policy?.peers ?? [];
   const owner = pick(wanted, "owner");
-  trace.push(owner ? `owner: ${owner}` : "owner: none available, task stays proposed (hub task assign <id> <peer>)");
+  trace.push(owner ? `owner: ${owner}` : "owner: none available, task stays proposed (ahub task assign <id> <peer>)");
 
   let reviewer: PeerId | undefined;
   if (task.class !== "review") {
-    if (pii) trace.push("reviewer: user (pii: no second on-prem peer; hub review <id> <verdict>)");
+    if (pii) trace.push("reviewer: user (pii: no second on-prem peer; ahub review <id> <verdict>)");
     else {
       reviewer = pick(routing.classes.review?.peers ?? [], "reviewer", owner ?? opts.notReviewer);
       trace.push(reviewer ? `reviewer: ${reviewer}` : "reviewer: none, done will approve directly");

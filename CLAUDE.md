@@ -34,7 +34,7 @@ Run this before reporting any task complete, and paste the output. A failing tes
 - `src/adapters/local-worker.ts` + `src/local/` (tools, path guard, seatbelt runner): the hub-native peer. `src/omniroute/`: the only place that reads the gateway key and Access headers. `src/switchyard/`: config generator and session-scoped sidecar. `src/hub/routing.ts`: `routing.toml`.
 - `src/memory/`: claude-mem worker client, session-start recall, and capture for the local worker. Fail-open everywhere; the hub never owns a memory database.
 - `src/cli/`: `main.ts` (commands), `launch.ts` (hub-owned flags), `init.ts` (marker blocks).
-- `plugins/agent-hub/`: plugin manifest, `.mcp.json` and the committed bundle. `templates/`: what `hub init` writes.
+- `plugins/agent-hub/`: plugin manifest, `.mcp.json` and the committed bundle. `templates/`: what `ahub init` writes.
 - `test/fakes/`: fake ACP agent, fake Codex app-server, fake claude-mem worker. No mocking library.
 
 ## Things the agent gets wrong
@@ -48,13 +48,13 @@ Run this before reporting any task complete, and paste the output. A failing tes
 - `replyParent()` decides what a reply answers (highest hop, never the `hub` preface). Use it for deliveries and steers alike, or the hop cap can be reset.
 - Nothing the local worker executes may run outside `sandboxedExec`; a new tool that spawns a process goes through it, and a tool that touches a path goes through `guardPath`.
 - The sandbox denies home reads by default (toolchain dirs, the project and its real git dir excepted) and all network, loopback included: claude-mem and the Codex app-server listen on loopback without auth. Tests that bind a local port therefore fail when the worker runs them; that is the intended trade-off, `local.bash_network` is the switch.
-- Every task change goes through `Tasks` (`src/hub/tasks.ts`); adapters, tools and the CLI never touch the board. Assignment stays a pure function so `hub route explain` cannot drift from what assignment does.
+- Every task change goes through `Tasks` (`src/hub/tasks.ts`); adapters, tools and the CLI never touch the board. Assignment stays a pure function so `ahub route explain` cannot drift from what assignment does.
 - PII: redaction happens where the envelope (`private: true`) and the public view are built, never at call sites. Anything new that shows task text (a log line, a notice, a tool result, a memory call) uses `publicTitle` / `publicView`, and nothing about a PII task is sent to claude-mem: its observer is a cloud model.
 - Budget: checkpoint first, pause second (a paused peer receives nothing). A handoff that fails is left unmarked so the next tick or hub run retries it; never record it as done.
 - A handoff needs somebody to hand over to: `canHandOff` is false right after a restart, when no peer is attached yet, and the handoff waits for a later tick instead of stripping tasks of their owner.
 - A reading has its own timestamp. Numbers that arrive through a file (`claude-usage.json`) carry the file's `at`; a window whose `resetsAt` has passed says nothing any more.
 - On resume the notice is published before the peer is released, so it leads the first delivery.
-- The coordinator only lifts its own pauses: `manualPaused` in the daemon keeps a `hub pause` in place, and `hub resume` refuses while a budget record is open.
+- The coordinator only lifts its own pauses: `manualPaused` in the daemon keeps a `ahub pause` in place, and `ahub resume` refuses while a budget record is open.
 - The status line tee must never fail or slow the render: no throw, original command run with the same stdin, 5 s cap.
 - The hub itself sends envelopes (`from: hub`, kinds `task` and `review`). Code that special-cases hub envelopes keys on `kind`, not on the sender: only `kind: presence` is the recall preface.
 - Tool callers are models: MCP `inputSchema` is not enforced on the way in. Normalize at the boundary (`cleanRefs`) before anything reaches the board, and never throw after a board write.
@@ -70,7 +70,7 @@ Run this before reporting any task complete, and paste the output. A failing tes
 - Secrets stay inside `OmniRoute`: never put the key or Access values in a log line, an error message, a return value or the generated Switchyard file (the key goes by env var name).
 - Switchyard's docs drift from the released binary. Any change to `switchyardToml` is checked with the real `switchyard-server --dry-run`, not only the stand-in in `test/fakes/`.
 - A child process gets a scrubbed environment, so test knobs for fakes travel in a wrapper script, not in `process.env`.
-- Work that must survive `hub kill` (claude-mem `session-end`) is awaited in `stop()`; fire-and-forget dies with the process.
+- Work that must survive `ahub kill` (claude-mem `session-end`) is awaited in `stop()`; fire-and-forget dies with the process.
 - A peer must set `busy` synchronously inside `deliver()`, otherwise the bus drains the next envelope into a running turn (Kimi answers `turn.agent_busy`).
 - A watchdog-cancelled turn still reports later. Anything a turn does on completion must check it is still the current turn (`turn` generation in `acp.ts`, `activeTurns` in `codex-appserver.ts`).
 - State files that clients read (`status.json`, `control-token`) are written after the port is bound, and `status.json` via temp file + rename.

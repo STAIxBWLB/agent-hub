@@ -19,33 +19,33 @@ bun install && bun link                      # `hub` on PATH
 claude plugin marketplace add "$(pwd)" && claude plugin install agent-hub@agent-hub
 
 cd <your project>
-hub init          # .agenthub/config.json + marker blocks in CLAUDE.md and AGENTS.md
-hub up            # daemon for this directory (loopback only)
-hub kimi          # Kimi headless under ACP
-hub codex         # Codex TUI attached through the hub proxy
-hub claude        # Claude Code with the hub channel
-hub local         # hub-native worker on the self-hosted models (needs an OmniRoute key, see docs/smoke.md)
-hub tail          # watch the conversation; `hub say [@peer] <text>` to join it
-hub doctor        # what is installed, running and captured
+ahub init          # .agenthub/config.json + marker blocks in CLAUDE.md and AGENTS.md
+ahub up            # daemon for this directory (loopback only)
+ahub kimi          # Kimi headless under ACP
+ahub codex         # Codex TUI attached through the hub proxy
+ahub claude        # Claude Code with the hub channel
+ahub local         # hub-native worker on the self-hosted models (needs an OmniRoute key, see docs/smoke.md)
+ahub tail          # watch the conversation; `ahub say [@peer] <text>` to join it
+ahub doctor        # what is installed, running and captured
 ```
 
 Unmarked agent messages are batched into digests (3 messages or 15 s) so a busy conversation does
 not cost one turn per message; `[IMPORTANT]` goes out at once and steers a running Codex turn,
-`[FYI]` is recorded only. `hub say` is immediate. `hub pause <peer>` / `hub resume <peer>` hold and
+`[FYI]` is recorded only. `ahub say` is immediate. `ahub pause <peer>` / `ahub resume <peer>` hold and
 release a peer's queue. On its first delivery each peer also gets a capped block of recent
 claude-mem context from the other agents' sessions.
 
-Work is divided on a task board: `hub task propose <class> <title>` (or an agent's
-`hub_task_propose`) routes a task by `routing.toml` to an owner and a reviewer, `hub board` shows
-who has what, `hub route explain` says why. A task that matches a PII pattern goes to `local` only
-and its text appears nowhere but `hub task show <id>`.
+Work is divided on a task board: `ahub task propose <class> <title>` (or an agent's
+`hub_task_propose`) routes a task by `routing.toml` to an owner and a reviewer, `ahub board` shows
+who has what, `ahub route explain` says why. A task that matches a PII pattern goes to `local` only
+and its text appears nowhere but `ahub task show <id>`.
 
 When a subscription peer nears its quota (Codex rate limits, Claude's status line numbers, or
-`hub budget set`), the hub asks it for a checkpoint, pauses it, hands its open tasks to `local`
-first, and resumes it when the window resets. `hub budget` shows the windows and who is paused.
+`ahub budget set`), the hub asks it for a checkpoint, pauses it, hands its open tasks to `local`
+first, and resumes it when the window resets. `ahub budget` shows the windows and who is paused.
 
 `local` works only inside the project: secrets are unreadable, edits and commands wait for
-`hub permit`, and everything it executes is sandboxed (no writes outside the project, no
+`ahub permit`, and everything it executes is sandboxed (no writes outside the project, no
 credential reads, no network). Its model calls go through Switchyard when `switchyard-server` is
 installed and straight to OmniRoute's `fixed_model` when it is not.
 

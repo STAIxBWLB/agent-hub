@@ -10,10 +10,8 @@ export interface OmniRouteConfig {
   cf_client_id_file?: string;
   cf_client_secret_file?: string;
 }
-export const DEFAULT_OMNIROUTE: OmniRouteConfig = {
-  urls: ["http://gateway.internal:20128/v1", "https://gateway.example.edu/v1"],
-  access_hosts: ["gateway.example.edu"],
-};
+/** No gateway by default: `omniroute.urls` in `.agenthub/config.json` (or AGENTHUB_OMNIROUTE_URL) names yours. */
+export const DEFAULT_OMNIROUTE: OmniRouteConfig = { urls: [], access_hosts: [] };
 
 export interface ToolCall {
   id: string;
@@ -79,7 +77,7 @@ export class OmniRoute {
    * The most preferred candidate that answers `GET <base>/models` with 2xx within 4 s (401 counts only when no key is
    * configured). Health paths differ per gateway (OmniRoute 3.8.50 has /healthz and /api/health, no /health); the
    * models route is what every OpenAI-compatible server has. Candidates are probed at the same time and picked in
-   * list order: probing one after the other let a stalled first request over an idle WARP tunnel hand the choice to
+   * list order: probing one after the other let a stalled first request over an idle VPN tunnel hand the choice to
    * the off-campus URL (seen live), and a 403 from Cloudflare Access must not pass for healthy.
    * Cached until a call fails at the network level.
    */
@@ -87,26 +85,30 @@ export class OmniRoute {
     if (this.live) return this.live;
     const candidates = (process.env.AGENTHUB_OMNIROUTE_URL ? [process.env.AGENTHUB_OMNIROUTE_URL] : this.cfg.urls).map((u) => u.replace(/\/$/, ""));
     const key = this.apiKey();
-    const results = await Promise.all(
-      candidates.map((url) =>
-        fetch(`${url}/models`, { headers: { ...(key ? { authorization: `Bearer ${key}` } : {}), ...this.accessHeaders(url) }, signal: AbortSignal.timeout(4000) }).then(
-          (r) => r.ok || (!key && r.status === 401),
-          () => false,
+    const round = () =>
+      Promise.all(
+        candidates.map((url) =>
+          fetch(`${url}/models`, { headers: { ...(key ? { authorization: `Bearer ${key}` } : {}), ...this.accessHeaders(url) }, signal: AbortSignal.timeout(4000) }).then(
+            (r) => r.ok || (!key && r.status === 401),
+            () => false,
+          ),
         ),
-      ),
-    );
+      );
+    let results = await round();
+    // The first request over an idle VPN tunnel can stall past the timeout and work a second later (seen live, twice).
+    if (candidates.length && !results.includes(true)) results = await round();
     const url = candidates[results.indexOf(true)];
     if (url) {
       this.log(`omniroute: using ${new URL(url).host}`);
       return (this.live = url);
     }
-    this.log(`omniroute: no candidate is healthy (${candidates.map((u) => new URL(u).host).join(", ")})`);
+    this.log(candidates.length ? `omniroute: no candidate is healthy (${candidates.map((u) => new URL(u).host).join(", ")})` : "omniroute: no gateway configured (omniroute.urls in .agenthub/config.json, or AGENTHUB_OMNIROUTE_URL)");
     return undefined;
   }
 
   async chat(body: { model: string; messages: ChatMessage[]; tools?: unknown[] }, opts: ChatOptions = {}): Promise<ChatResult> {
     const base = opts.via ?? (await this.base());
-    if (!base) throw new Error("no OmniRoute endpoint is reachable (WARP off? see hub doctor)");
+    if (!base) throw new Error("no model gateway is configured or reachable (omniroute.urls in .agenthub/config.json; see ahub doctor)");
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (opts.via) {
       if (opts.sessionId) headers["x-switchyard-session-id"] = opts.sessionId;
@@ -124,7 +126,7 @@ export class OmniRoute {
         ...(opts.signal ? { signal: opts.signal } : {}),
       });
     } catch (e) {
-      if (!opts.via) this.live = undefined; // probe again next time: WARP may have dropped
+      if (!opts.via) this.live = undefined; // probe again next time: the VPN may have dropped
       throw e;
     }
     if (!res.ok) throw new Error(`model call failed: HTTP ${res.status} ${(await res.text()).slice(0, 300)}`);

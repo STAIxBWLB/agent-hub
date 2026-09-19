@@ -5,7 +5,7 @@
   "license": "MIT",
   "private": true,
   "type": "module",
-  "bin": { "hub": "src/cli/main.ts" },
+  "bin": { "ahub": "src/cli/main.ts", "agent-hub": "src/cli/main.ts" },
   "scripts": {
     "check": "scripts/check.sh",
     "build": "bun scripts/build.mjs",

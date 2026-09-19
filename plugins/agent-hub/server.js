@@ -15561,7 +15561,7 @@ class ControlClient {
   static connect(stateDir, hello) {
     const control = readControl(stateDir);
     if (!control)
-      return Promise.reject(new Error(`no hub running for ${stateDir} (run: hub up)`));
+      return Promise.reject(new Error(`no hub running for ${stateDir} (run: ahub up)`));
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(control.url);
       const client = new ControlClient(ws);
@@ -15614,7 +15614,7 @@ var tool = (name, description, properties, required2 = []) => ({
   inputSchema: { type: "object", properties, required: required2, additionalProperties: false }
 });
 var TASK_TOOLS = [
-  tool("hub_task_propose", "Put a piece of work on the shared task board. The hub assigns an owner by class (routing.toml) unless you name one. Classes: plan, implement, bulk_edit, test, review, summarize, triage.", { title: str, class: { type: "string", enum: ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] }, detail: str, refs, owner: { type: "string", description: "peer id; omit to let the hub route it" } }, ["title", "class"]),
+  tool("hub_task_propose", "Put a piece of work on the shared task board. The hub assigns an owner by class (routing.toml) unless you name one. Classes: plan, implement, bulk_edit, test, review, summarize, triage.", { title: str, class: { type: "string", enum: ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] }, detail: str, refs, owner: { type: "string", description: "peer id; omit to let the ahub route it" } }, ["title", "class"]),
   tool("hub_task_accept", "Take a task that was assigned to you.", { id }, ["id"]),
   tool("hub_task_decline", "Pass on a task assigned to you; the hub offers it to the next peer.", { id, reason: str }, ["id"]),
   tool("hub_task_done", "Mark your task finished. It goes to its reviewer with your summary and refs.", { id, summary: str, refs }, ["id", "summary"]),
@@ -15766,7 +15766,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   if (name === "hub_send") {
     const { text: body, to, reply_to } = args ?? {};
     if (!hub)
-      return text("hub is not running for this project (start it with: hub up). Message not sent.");
+      return text("hub is not running for this project (start it with: ahub up). Message not sent.");
     const res = await hub.request({ t: "send", body, to, reply_to });
     if (!res.ok)
       return text(`not sent: ${res.error}`);
@@ -15776,7 +15776,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   }
   if (TASK_TOOL_NAMES.has(name)) {
     if (!hub)
-      return text("hub is not running for this project (start it with: hub up).");
+      return text("hub is not running for this project (start it with: ahub up).");
     const res = await hub.request({ t: "task", op: name, args: args ?? {} });
     return text(res.ok ? res.text : `error: ${res.error}`);
   }
