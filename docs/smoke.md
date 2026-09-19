@@ -34,6 +34,15 @@ In the project directory, one terminal each:
 3. With Codex mid-turn on a long prompt typed in its TUI: `hub say @codex "[IMPORTANT] stop and summarize"`. The running turn changes course (steer) instead of a new turn starting afterwards; `hub status` never shows it queued. `hub say @codex "[STATUS] later"` during the same turn stays queued until the turn ends.
 4. Two agents chatting without markers: their replies reach the third agent as digests, not one turn per message.
 
+## M3: local worker
+
+Needs WARP (or the Access files for `gateway.example.edu`) and a key: `OMNIROUTE_API_KEY`, or `omniroute.api_key_file` in `.agenthub/config.json`.
+
+1. `hub doctor`: `omniroute` healthy, `omniroute key` present, `switchyard` installed or not.
+2. In a scratch git repo: `hub up`, `hub local`, `hub tail`, then `hub say @local "fix the typos in <file>, run git diff --stat and report"`. `hub tail` shows a permission request for the edit; `hub permit <id> allow`. The file changes, the answer is a short conclusion, `hub status` shows `last call: omniroute <model> (provider vllm)`.
+3. Same with `AGENTHUB_SWITCHYARD_BIN` (or `switchyard-server` on PATH) set before `hub up`: `hub status` shows `last call: switchyard sy/coding -> <model>` and `switchyard: 127.0.0.1:<port>`; `lsof -nP -iTCP -sTCP:LISTEN | grep switchy` shows loopback only; `.agenthub/state/switchyard.toml` is mode 600 and holds no key; after `hub kill` the file and the process are gone.
+4. claude-mem: `sqlite3 -readonly ~/.claude-mem/claude-mem.db "select agent_id, agent_type, project, title from observations order by id desc limit 3"` shows `local | local-worker` rows a minute or two later (claude-mem's observer runs asynchronously).
+
 ## Record
 
 | Date | Leg | Result |
@@ -43,5 +52,11 @@ In the project directory, one terminal each:
 | 2026-09-19 | Codex adapter: `bun scripts/smoke-codex.ts` (codex-cli 0.154.0) | partial: real thread adopted, `turn/start` accepted, `turn/started` and `turn/completed` tracked, peer returned to idle. The turn itself failed with `usageLimitExceeded` on the account, so the reply leg is not verified live |
 | 2026-09-19 | M2 step 1 with Kimi 0.43.1 | pass: three paused messages delivered as one prompt; Kimi counted 4 items including the `hub` memory block (6037 chars, cap 2000 tokens) |
 | | M2 step 3, `turn/steer` against real Codex | not run: account usage limit; verified against the fake app-server only |
+| 2026-09-19 | M3 step 2, direct path (OmniRoute 3.8.50, DeepSeek-V4-Flash, WARP) | pass: attended edit via `hub permit`, sandboxed `git diff --stat`, conclusion in about 5 s, `provider vllm` recorded; with no Switchyard installed the hub said so once and used `fixed_model` |
+| 2026-09-19 | M3 step 3, real `switchyard-server` 0.2.0 (`cargo install`) | pass after two config fixes found by `--dry-run` (`timeout_ms` rejected, escalation table required): tool-using turn through `sy/coding`, selected model recorded, bound to 127.0.0.1 only, config 0600 without secrets, file and process gone after `hub kill` |
+| 2026-09-19 | M3 step 4, claude-mem 13.25.1 | pass: session `platform_source = agent-hub`, observation 65484 `agent_id = local`, `agent_type = local-worker`. Found live: `summarize` with `agentId` is skipped as subagent context, and an unawaited `session-end` never left the process; both fixed |
+| 2026-09-19 | M3 regression after review fixes, attended, through the real sidecar | pass: the approval shows the edit's old and new text; one stalled first probe over WARP was seen once (both candidates timed out, fine a second later), now retried and no longer turns L2 off |
+| | M3 off-campus path (`gateway.example.edu` with Access headers) | not run live (on WARP today); header selection covered by tests |
+| | Two-target `stage_router` / escalation routing | not run live: only DeepSeek-V4-Flash is served; both shapes validate against the real binary's `--dry-run` |
 | | Codex TUI through `hub codex` | not run |
 | | Claude through `hub claude` (steps 4 to 6) | not run: needs an interactive Claude Code session |

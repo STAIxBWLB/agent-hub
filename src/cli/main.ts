@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { ControlClient, readControl } from "../hub/control-client.ts";
 import { loadConfig, startDaemon, stateDirFor } from "../hub/daemon.ts";
 import type { BusEvent } from "../hub/bus.ts";
-import { allocatePorts, CODEX_APP, CODEX_PROXY, CONTROL } from "../hub/ports.ts";
+import { allocatePorts, CODEX_APP, CODEX_PROXY, CONTROL, SWITCHYARD } from "../hub/ports.ts";
+import { OmniRoute } from "../omniroute/client.ts";
 import { MemoryClient } from "../memory/client.ts";
 import { init } from "./init.ts";
 import { buildLaunch, UNATTENDED_WARNING } from "./launch.ts";
@@ -17,6 +18,8 @@ const USAGE = `agent-hub: Claude Code, Codex and Kimi as peers in one project di
   hub claude [args...]         launch Claude Code with the hub channel   [--unattended]
   hub codex [args...]          start the Codex adapter and attach the TUI [--unattended]
   hub kimi [--model <alias>]   start Kimi headless under ACP
+  hub local [--route <id> | --model <id>]
+                               start the hub-native worker on the self-hosted models (routing.toml)
   hub say [@peer ...] <text>   send as the console user (no @peer = broadcast); delivered at once,
                                start the text with [STATUS] to let it batch or [FYI] for the record only
   hub pause|resume <peer>      hold a peer's deliveries in its queue / release them
@@ -87,6 +90,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       controlPort: base + CONTROL,
       codexAppPort: base + CODEX_APP,
       codexProxyPort: base + CODEX_PROXY,
+      switchyardPort: base + SWITCHYARD,
       unattended: unattendedEnv || args.includes("--unattended"),
     });
     for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => void daemon.stop());
@@ -140,6 +144,15 @@ const commands: Record<string, () => Promise<void> | void> = {
     console.log(res.already ? "kimi is already attached" : 'kimi attached (headless). Talk to it with: hub say @kimi "..."');
   },
 
+  local: async () => {
+    const opt = (flag: string) => (args.includes(flag) ? args[args.indexOf(flag) + 1] ?? fail(`${flag} needs a value`) : undefined);
+    const hub = await connect();
+    const res = await hub.request({ t: "start", peer: "local", args: { route: opt("--route"), model: opt("--model") } });
+    hub.close();
+    if (!res.ok) fail(res.error);
+    console.log(res.already ? "local is already attached" : `local attached on ${res.model}. Give it work with: hub say @local "..."`);
+  },
+
   say: async () => {
     const lead = args.findIndex((a) => !/^@[a-z][a-z0-9-]*$/.test(a)); // only leading @tokens are recipients
     const to = args.slice(0, lead === -1 ? args.length : lead).map((a) => a.slice(1));
@@ -158,7 +171,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (msg.t === "event") console.log(render(msg.e));
       else if (msg.t === "permission") {
         const options = msg.options.map((o: any) => `${o.optionId} (${o.name})`).join(", ");
-        console.log(`  ? ${msg.peer} asks permission: ${msg.title}\n    answer with: hub permit ${msg.id} <${options}> | deny`);
+        console.log(`  ? ${msg.peer} asks permission: ${String(msg.title).replace(/\n/g, "\n      | ")}\n    answer with: hub permit ${msg.id} <${options}> | deny`);
       }
     };
     hub.onClose = () => process.exit(0);
@@ -184,7 +197,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     hub.close();
     console.log(`hub pid ${status.pid}, control 127.0.0.1:${status.controlPort}, ${status.cwd}`);
     const peers = Object.entries(status.peers as Record<string, { state: string; queued: number }>);
-    for (const [id, p] of peers) console.log(`  ${id.padEnd(8)} ${p.state.padEnd(8)} queued ${p.queued}`);
+    for (const [id, p] of peers) console.log(`  ${id.padEnd(8)} ${p.state.padEnd(8)} queued ${p.queued}${(p as any).servedBy ? `  last call: ${(p as any).servedBy}` : ""}`);
+    if (status.switchyard) console.log(`  switchyard: ${status.switchyard}`);
     if (!peers.length) console.log("  no peers attached yet (hub claude | hub codex | hub kimi)");
   },
 
@@ -226,6 +240,14 @@ const commands: Record<string, () => Promise<void> | void> = {
     row(up, "hub daemon", up ? readControl(stateDir)!.url : "not running (hub up)");
     const plugins = spawnSync("claude", ["plugin", "list"], { encoding: "utf8" }).stdout ?? "";
     row(plugins.includes("agent-hub@agent-hub"), "claude plugin", plugins.includes("agent-hub@agent-hub") ? "agent-hub@agent-hub installed" : "missing: see docs/smoke.md, Install");
+
+    const config = loadConfig(cwd);
+    const omni = new OmniRoute(config.omniroute);
+    const gateway = await omni.base();
+    row(!!gateway, "omniroute", gateway ? `${new URL(gateway).host} healthy` : "no candidate reachable (WARP off?); hub local cannot run");
+    row(!!omni.apiKey(), "omniroute key", omni.apiKey() ? "present" : "missing: set OMNIROUTE_API_KEY or omniroute.api_key_file in .agenthub/config.json");
+    const sy = spawnSync(process.env.AGENTHUB_SWITCHYARD_BIN ?? "switchyard-server", ["--version"], { encoding: "utf8" });
+    row(sy.status === 0 ? true : undefined, "switchyard", sy.status === 0 ? sy.stdout.trim() : "not installed: hub local uses fixed_model on OmniRoute (cargo install --locked switchyard-server)");
 
     const memory = new MemoryClient();
     const mem = await memory.health();

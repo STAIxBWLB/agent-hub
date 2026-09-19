@@ -8,6 +8,7 @@ export const STRIDE = 10;
 export const CONTROL = 0;
 export const CODEX_APP = 1;
 export const CODEX_PROXY = 2;
+export const SWITCHYARD = 3;
 
 /** One stride of loopback ports per project directory, remembered in ~/.agenthub/ports.json. */
 export function allocatePorts(projectDir: string, registry = join(homedir(), ".agenthub", "ports.json")): number {

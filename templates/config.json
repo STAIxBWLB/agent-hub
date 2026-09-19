@@ -5,5 +5,13 @@
   "batch_max": 3,
   "batch_ms": 15000,
   "queue_cap": 200,
-  "memory": { "enabled": true, "inject_tokens": 2000 }
+  "memory": { "enabled": true, "inject_tokens": 2000 },
+  "omniroute": {
+    "urls": ["http://gateway.internal:20128/v1", "https://gateway.example.edu/v1"],
+    "access_hosts": ["gateway.example.edu"],
+    "api_key_file": "",
+    "cf_client_id_file": "",
+    "cf_client_secret_file": ""
+  },
+  "local": { "deny": [], "bash_network": false, "max_steps": 30, "read_allow": [] }
 }

@@ -27,6 +27,9 @@ export function init(cwd: string): string[] {
   const config = join(cwd, ".agenthub", "config.json");
   if (!existsSync(config)) write(config, readFileSync(join(TEMPLATES, "config.json"), "utf8"));
 
+  const routing = join(cwd, ".agenthub", "routing.toml");
+  if (!existsSync(routing)) write(routing, readFileSync(join(TEMPLATES, "routing.toml"), "utf8"));
+
   for (const [file, template] of [["CLAUDE.md", "CLAUDE.block.md"], ["AGENTS.md", "AGENTS.block.md"]] as const) {
     const path = join(cwd, file);
     const existing = existsSync(path) ? readFileSync(path, "utf8") : "";

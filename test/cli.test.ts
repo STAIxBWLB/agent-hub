@@ -9,7 +9,7 @@ import { allocatePorts } from "../src/hub/ports.ts";
 test("hub init is idempotent and keeps text outside the markers", () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
   writeFileSync(join(dir, "CLAUDE.md"), "# Mine\n\nkeep me\n");
-  expect(init(dir).map((p) => p.slice(dir.length + 1)).sort()).toEqual([".agenthub/config.json", ".gitignore", "AGENTS.md", "CLAUDE.md"]);
+  expect(init(dir).map((p) => p.slice(dir.length + 1)).sort()).toEqual([".agenthub/config.json", ".agenthub/routing.toml", ".gitignore", "AGENTS.md", "CLAUDE.md"]);
   const first = readFileSync(join(dir, "CLAUDE.md"), "utf8");
   expect(first).toStartWith("# Mine\n\nkeep me\n\n<!-- AGENT_HUB:BEGIN");
   expect(init(dir)).toEqual([]);

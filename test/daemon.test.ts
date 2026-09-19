@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
+import { startFakeModelServer, toolCall } from "./fakes/model-server.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const cleanup: (() => unknown)[] = [];
@@ -18,8 +19,8 @@ const until = async (cond: () => boolean, what = "condition") => {
   if (!cond()) throw new Error(`timed out waiting for ${what}`);
 };
 
-async function hub(extra: { unattended?: boolean; memoryUrl?: string } = {}) {
-  const { memoryUrl, ...rest } = extra;
+async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string } = {}) {
+  const { memoryUrl, modelUrl, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
     cwd: ROOT,
@@ -31,6 +32,7 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string } = {}) {
       ...DEFAULT_CONFIG,
       kimi_cmd: ["bun", join(ROOT, "test/fakes/acp-server.ts")],
       batch_ms: 30,
+      ...(modelUrl ? { omniroute: { urls: [modelUrl], access_hosts: [] } } : {}),
       memory: memoryUrl ? { enabled: true, worker_url: memoryUrl, inject_tokens: 40 } : { ...DEFAULT_CONFIG.memory, enabled: false },
     },
     permissionTimeoutMs: 200,
@@ -262,6 +264,33 @@ test("session-start recall rides on the first delivery, is capped, and is not re
   await until(() => replies().length === 2, "second session reply");
   expect(replies()[1]).toBe("echo: again");
   expect(mem.calls.filter((c) => c.path === "/api/context/inject")).toHaveLength(1);
+});
+
+test("hub local: a fourth peer on the hub-owned model path; writes wait for hub permit; status names what served the call", async () => {
+  const model = startFakeModelServer({
+    key: "sk-daemon-test",
+    script: (body) =>
+      body.messages.some((m) => m.role === "tool")
+        ? { content: `result: ${body.messages.at(-1)?.content}` }
+        : { tool_calls: [toolCall("write", { path: ".agenthub/state/scratch-from-test.txt", content: "x" })] },
+  });
+  cleanup.push(model.stop);
+  process.env.OMNIROUTE_API_KEY = "sk-daemon-test";
+  cleanup.push(() => delete process.env.OMNIROUTE_API_KEY);
+  const { console_, events, pushes } = await hub({ modelUrl: model.url });
+
+  const started = await console_.request({ t: "start", peer: "local", args: { model: "vllm/pinned" } });
+  expect(started).toMatchObject({ ok: true, model: "vllm/pinned" });
+  expect((await console_.request({ t: "start", peer: "local", args: { route: "sy/nope" } })).already).toBe(true);
+
+  await console_.request({ t: "send", body: "write the file", to: ["local"] });
+  await until(() => events.some((e) => e.t === "envelope" && e.env.from === "local"), "local answer");
+  // the write targeted the hub's own state dir: refused by the path guard before any permission was asked
+  expect(events.find((e) => e.t === "envelope" && e.env.from === "local").env.body).toMatch(/result: error: .*denylist/);
+  expect(pushes.filter((p) => p.t === "permission")).toHaveLength(0);
+  const status = (await console_.request({ t: "status" })).status;
+  expect(status.peers.local).toMatchObject({ state: "idle", servedBy: "omniroute vllm/pinned (provider vllm)" });
+  expect(model.requests[0]!.body.model).toBe("vllm/pinned");
 });
 
 test("kill removes pid, status and token", async () => {

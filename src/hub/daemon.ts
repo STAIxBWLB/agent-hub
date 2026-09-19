@@ -4,6 +4,11 @@ import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { AcpPeer, type PermissionRequest } from "../adapters/acp.ts";
 import { CodexPeer } from "../adapters/codex-appserver.ts";
+import { LocalPeer } from "../adapters/local-worker.ts";
+import { Capture, skipTools } from "../memory/capture.ts";
+import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
+import { Sidecar } from "../switchyard/sidecar.ts";
+import { loadRouting } from "./routing.ts";
 import { Bus } from "./bus.ts";
 import { PROTOCOL, stateDirFor } from "./control-client.ts";
 import { newEnvelope, parseMarker, USER, type Envelope, type PeerId } from "./envelope.ts";
@@ -19,6 +24,8 @@ export interface HubConfig {
   batch_ms: number;
   queue_cap: number;
   memory: { enabled: boolean; worker_url?: string; inject_tokens: number };
+  omniroute: OmniRouteConfig;
+  local: { deny: string[]; bash_network: boolean; max_steps: number; read_allow: string[] };
 }
 export const DEFAULT_CONFIG: HubConfig = {
   watchdog_ms: DEFAULT_WATCHDOG_MS,
@@ -28,6 +35,8 @@ export const DEFAULT_CONFIG: HubConfig = {
   batch_ms: 15_000,
   queue_cap: 200,
   memory: { enabled: true, inject_tokens: 2000 },
+  omniroute: DEFAULT_OMNIROUTE,
+  local: { deny: [], bash_network: false, max_steps: 30, read_allow: [] },
 };
 
 export { stateDirFor };
@@ -39,7 +48,13 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 export function loadConfig(cwd: string): HubConfig {
   try {
     const file = JSON.parse(readFileSync(join(cwd, ".agenthub", "config.json"), "utf8"));
-    return { ...DEFAULT_CONFIG, ...file, memory: { ...DEFAULT_CONFIG.memory, ...file.memory } };
+    return {
+      ...DEFAULT_CONFIG,
+      ...file,
+      memory: { ...DEFAULT_CONFIG.memory, ...file.memory },
+      omniroute: { ...DEFAULT_CONFIG.omniroute, ...file.omniroute },
+      local: { ...DEFAULT_CONFIG.local, ...file.local },
+    };
   } catch {
     return DEFAULT_CONFIG;
   }
@@ -51,6 +66,9 @@ export interface DaemonOptions {
   controlPort: number;
   codexAppPort: number;
   codexProxyPort: number;
+  /** 0 disables the Switchyard sidecar. */
+  switchyardPort?: number;
+  switchyardBin?: string;
   config?: HubConfig;
   /** Auto-approve ACP permission requests with the agent's allow_once option. */
   unattended?: boolean;
@@ -113,6 +131,10 @@ export async function startDaemon(opts: DaemonOptions) {
     log(`recall ${peer}: ${block.length} chars`);
   }
 
+  const omni = new OmniRoute(config.omniroute, log);
+  let sidecar: Sidecar | undefined; // L2, started by the first hub-owned model call, stopped with the hub
+  let sidecarRouting = "";
+
   const consoles = new Set<Sock>();
   const permissions = new Map<string, { push: string; done: (optionId: string | undefined) => void }>();
   let stopping = false;
@@ -122,7 +144,10 @@ export async function startDaemon(opts: DaemonOptions) {
     cwd: opts.cwd,
     controlPort: server.port,
     codexProxyPort: opts.codexProxyPort,
-    peers: Object.fromEntries([...bus.peers.keys()].map((id) => [id, { state: bus.stateOf(id), queued: bus.queued(id) }])),
+    peers: Object.fromEntries(
+      [...bus.peers].map(([id, p]) => [id, { state: bus.stateOf(id), queued: bus.queued(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}) }]),
+    ),
+    ...(sidecar ? { switchyard: sidecar.status } : {}),
   });
   const writeStatus = () => {
     const file = join(opts.stateDir, "status.json"); // clients parse this on every connect: replace it atomically
@@ -141,8 +166,11 @@ export async function startDaemon(opts: DaemonOptions) {
   async function onPermission(req: PermissionRequest): Promise<string | undefined> {
     if (opts.unattended) return req.options.find((o) => o.kind === "allow_once")?.optionId;
     const id = randomUUID().slice(0, 8);
-    log(`permission ${id} ${req.peer}: ${req.title}`);
-    const push = JSON.stringify({ t: "permission", id, ...req });
+    // The title is written by an agent and read by the person approving it: escape sequences and carriage returns
+    // could repaint the terminal line, so everything but newline and tab is made visible.
+    const title = req.title.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
+    log(`permission ${id} ${req.peer}: ${title.slice(0, 300)}`);
+    const push = JSON.stringify({ t: "permission", id, ...req, title });
     for (const c of consoles) if (c.data.tail) c.send(push);
     return new Promise((resolve) => {
       const timer = setTimeout(() => done(undefined), opts.permissionTimeoutMs ?? 120_000);
@@ -157,13 +185,13 @@ export async function startDaemon(opts: DaemonOptions) {
 
   // One start per peer at a time: a second `hub codex` must not tear down an adapter that is still coming up.
   const starting = new Map<string, Promise<Record<string, unknown>>>();
-  function startPeer(peer: string, args: { model?: string }): Promise<Record<string, unknown>> {
+  function startPeer(peer: string, args: { model?: string; route?: string }): Promise<Record<string, unknown>> {
     const running = starting.get(peer) ?? startPeerOnce(peer, args).finally(() => starting.delete(peer));
     starting.set(peer, running);
     return running;
   }
 
-  async function startPeerOnce(peer: string, args: { model?: string }): Promise<Record<string, unknown>> {
+  async function startPeerOnce(peer: string, args: { model?: string; route?: string }): Promise<Record<string, unknown>> {
     const existing = bus.peers.get(peer);
     if (existing && existing.state !== "offline") {
       return { ok: true, already: true, ...(existing instanceof CodexPeer ? { proxyUrl: existing.proxyUrl } : {}) };
@@ -191,6 +219,49 @@ export async function startDaemon(opts: DaemonOptions) {
       bus.add(codex);
       await codex.start();
       return { ok: true, proxyUrl: codex.proxyUrl };
+    }
+    if (peer === "local") {
+      const routing = loadRouting(opts.cwd);
+      // `--model` pins a model on OmniRoute and skips L2; `--route` picks another Switchyard route.
+      const route = args.model ? undefined : (args.route ?? routing.local.route);
+      if (route && !routing.routes[route]) return { ok: false, error: `routing.toml has no route "${route}"` };
+      // The sidecar serves the routes it was generated from: a changed routing.toml needs a new one.
+      const routingKey = JSON.stringify([routing.targets, routing.routes]);
+      if (sidecar && routingKey !== sidecarRouting) {
+        sidecar.stop();
+        sidecar = undefined;
+      }
+      if (route && opts.switchyardPort) {
+        sidecarRouting = routingKey;
+        sidecar ??= new Sidecar({ routing, omni, stateDir: opts.stateDir, port: opts.switchyardPort, log, ...(opts.switchyardBin ? { bin: opts.switchyardBin } : {}) });
+      }
+      const capture = config.memory.enabled
+        ? new Capture(memory, { project: chain.at(-1)!, cwd: opts.cwd, skip: skipTools(), deny: config.local.deny })
+        : undefined;
+      const permit = (title: string) =>
+        onPermission({
+          peer: "local",
+          title,
+          options: [
+            { optionId: "allow", name: "Allow", kind: "allow_once" },
+            { optionId: "deny", name: "Deny", kind: "reject_once" },
+          ],
+        }).then((picked) => picked === "allow");
+      const local = new LocalPeer("local", {
+        cwd: opts.cwd,
+        omni,
+        ...(sidecar && route ? { sidecar, route } : {}),
+        fixedModel: args.model ?? routing.local.fixed_model,
+        tools: { deny: config.local.deny, bashNetwork: config.local.bash_network, readAllow: config.local.read_allow, permit },
+        ...(capture ? { capture } : {}),
+        watchdogMs: config.watchdog_ms,
+        maxSteps: config.local.max_steps,
+        log,
+      });
+      await ensurePreface("local");
+      bus.add(local);
+      await local.start();
+      return { ok: true, model: route ? `${route} (fallback ${routing.local.fixed_model})` : (args.model ?? routing.local.fixed_model) };
     }
     return { ok: false, error: `unknown peer "${peer}"` };
   }
@@ -297,6 +368,7 @@ export async function startDaemon(opts: DaemonOptions) {
     stopping = true;
     log("hub stopping");
     await Promise.allSettled([...bus.peers.values()].map((p) => p.stop()));
+    sidecar?.stop();
     server.stop(true);
     for (const f of ["hub.pid", "status.json", "control-token"]) rmSync(join(opts.stateDir, f), { force: true });
     onStop?.();

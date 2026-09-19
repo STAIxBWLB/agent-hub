@@ -18,6 +18,10 @@ export function startFakeMemWorker(observations: Record<string, string[]> = {}) 
         if (!lines.length || chain.includes("nonexistent")) return new Response(STATUS_PAGE);
         return new Response(`# [${chain.at(-1)}] recent context\nLegend: ...\nStats: ...\n\n### Sep 19, 2026\n${lines.join("\n")}\n`);
       }
+      if (url.pathname === "/api/sessions/summarize" && (calls.at(-1)!.body as any)?.agentId) {
+        return Response.json({ status: "skipped", reason: "subagent_context" }); // what worker 13.25.1 does
+      }
+      if (req.method === "POST" && url.pathname.startsWith("/api/sessions/")) return Response.json({ status: "queued" });
       return new Response("not found", { status: 404 });
     },
   });

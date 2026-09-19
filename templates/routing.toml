@@ -1,0 +1,40 @@
+# agent-hub routing. M3 reads [local], [targets.*] and [routes.*]; M4 adds [classes.*], [signals], [constraints].
+# [targets.*] and [routes.*] use Switchyard's own table shapes (v0.2.0 toml_schema): the hub copies them into the
+# sidecar config and adds the gateway client, so anything Switchyard accepts can be written here.
+
+[local]
+route = "sy/coding"                                        # Switchyard route the local worker asks for
+fixed_model = "vllm/deepseek-ai/DeepSeek-V4-Flash-0731"    # straight to OmniRoute when the sidecar is absent or unhealthy
+
+[targets.dsv4f]
+id = "vllm/deepseek-ai/DeepSeek-V4-Flash-0731"
+
+[routes."sy/coding"]
+type = "passthrough"
+target = "dsv4f"
+
+[routes."sy/fast"]
+type = "passthrough"
+target = "dsv4f"
+
+# When the DGX serves GLM-5.3-Flash, replace sy/coding with the two-tier route and add the review escalation:
+#
+# [targets.glm53f]
+# id = "vllm/zai-org/GLM-5.3-Flash"
+#
+# [routes."sy/coding"]
+# type = "stage_router"
+# efficient_target = "glm53f"
+# capable_target = "dsv4f"
+# picker = "efficient_first"
+# confidence_threshold = 0.5
+#
+# [routes."sy/review"]
+# type = "llm_classifier"
+# mode = "escalation"
+# classifier_target = "glm53f"
+# weak_target = "glm53f"
+# strong_target = "dsv4f"
+#
+# [routes."sy/review".escalation]      # required by the 0.2.0 binary for mode = "escalation"
+# confirmations = 2
