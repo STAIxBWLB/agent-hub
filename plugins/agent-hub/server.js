@@ -15601,15 +15601,14 @@ class ControlClient {
 }
 // package.json
 var package_default = {
-  name: "agent-hub",
-  version: "0.1.0",
+  name: "@staix/agent-hub",
+  version: "0.2.0",
   description: "Native multi-agent hub: Claude Code, Codex, Kimi Code and a local worker as peers in one project",
   license: "MIT",
-  private: true,
   type: "module",
   bin: {
-    ahub: "src/cli/main.ts",
-    "agent-hub": "src/cli/main.ts"
+    ahub: "src/cli/main.js",
+    "agent-hub": "src/cli/main.js"
   },
   scripts: {
     check: "scripts/check.sh",
@@ -15629,18 +15628,18 @@ var package_default = {
     "src",
     "plugins",
     "templates",
-    "scripts",
-    "tsconfig.json",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md",
-    "docs"
+    "CHANGELOG.md"
   ],
   repository: {
     type: "git",
     url: "git+https://github.com/STAIxBWLB/agent-hub.git"
   },
-  homepage: "https://github.com/STAIxBWLB/agent-hub"
+  homepage: "https://github.com/STAIxBWLB/agent-hub",
+  publishConfig: {
+    access: "public"
+  }
 };
 
 // src/version.ts

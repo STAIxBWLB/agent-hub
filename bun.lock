@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "agent-hub",
+      "name": "@staix/agent-hub",
       "devDependencies": {
         "@modelcontextprotocol/sdk": "^1.27.1",
         "@types/bun": "^1.3.0",

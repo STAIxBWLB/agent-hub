@@ -8,13 +8,13 @@ Bun + TypeScript daemon that lets Claude Code, Codex, Kimi Code (and later a loc
 - Test: `bun test` (one file: `bun test test/bus.test.ts`)
 - Typecheck: `bun x tsc --noEmit`
 - Rebuild the plugin bundle after touching `src/adapters/claude-channel.ts` or anything it imports, and after changing `version` in `package.json`: `bun run build` (it also stamps the plugin manifest)
-- Run from source: `bun src/cli/main.ts <command>` (`hub` once linked with `bun link`)
+- Run from source: `bun src/cli/main.js <command>` (`ahub` once linked with `bun link`)
 
 ## Verifying your work
 
 Run this before reporting any task complete, and paste the output. A failing test is fixed in the code, never by editing the test.
 
-- `scripts/check.sh` (healthy output ends with `check: OK`; it runs typecheck, the bundle freshness check and all tests)
+- `scripts/check.sh` (healthy output ends with `check: OK`; it runs typecheck, the bundle freshness check, npm tarball contents and all tests)
 - Live legs that need real accounts are manual: `docs/smoke.md`, plus `bun scripts/smoke-acp.ts` and `bun scripts/smoke-codex.ts`.
 
 ## Conventions
