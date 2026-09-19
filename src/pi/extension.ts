@@ -14,6 +14,8 @@ const models = (() => {
 })();
 let pollStarted = false;
 let toolSteps = 0;
+let lastActivity = 0;
+let forcedFailure = "";
 const maxSteps = Number(process.env.AGENTHUB_PI_MAX_STEPS ?? 30);
 let shutdown: (() => void) | undefined;
 let runtimeCtx: any;
@@ -65,17 +67,26 @@ export default function(pi: ExtensionAPI): void {
     modelRegistry = ctx.modelRegistry;
     shutdown = ctx.shutdown;
     const state = ctx.sessionManager.getHeader();
-    const claimed = await post("/event", { type: "session_start", ownerToken, pid: process.pid, signature: processSignature(), sessionId: state?.id, sessionFile: ctx.sessionManager.getSessionFile() });
-    if (claimed?.ok === false) { ctx.shutdown?.(); return; }
+    try {
+      const claimed = await post("/event", { type: "session_start", ownerToken, pid: process.pid, signature: processSignature(), sessionId: state?.id, sessionFile: ctx.sessionManager.getSessionFile() });
+      if (claimed?.ok === false) { ctx.shutdown?.(); return; }
+    } catch (error) { ctx.shutdown?.(); throw error; }
     if (!pollStarted) { pollStarted = true; void poll(pi); }
   });
   pi.on("agent_end", async (event: any) => {
     const message = (event as any).messages?.slice().reverse().find((m: any) => m?.role === "assistant");
     const text = message?.content?.filter((c: any) => c?.type === "text").map((c: any) => c.text).join("")?.trim();
-    const failed = message?.stopReason === "error" || message?.stopReason === "aborted";
-    if (text || failed) await post("/event", { type: "agent_end", ...(text ? { text } : {}), ...(failed ? { failed: true, error: message?.errorMessage ?? message?.stopReason } : {}) });
+    const failed = !!forcedFailure || message?.stopReason === "error";
+    const cancelled = !forcedFailure && message?.stopReason === "aborted";
+    await post("/event", { type: "agent_end", text: text ?? "", failed, cancelled, ...(failed ? { error: forcedFailure || message?.errorMessage || message?.stopReason } : {}) });
   });
-  pi.on("agent_start", async () => { toolSteps = 0; await post("/event", { type: "agent_start" }); });
+  pi.on("message_update", async () => {
+    const now = Date.now();
+    if (now - lastActivity < 1000) return;
+    lastActivity = now;
+    try { await post("/event", { type: "activity" }); } catch { /* shutdown owns bridge cleanup */ }
+  });
+  pi.on("agent_start", async () => { toolSteps = 0; forcedFailure = ""; await post("/event", { type: "agent_start" }); });
   pi.on("model_select", async (_event: any, ctx: any) => { if (ctx.model?.provider && ctx.model.provider !== "agent-hub-local") ctx.shutdown?.(); });
   pi.on("before_agent_start", async (event: any, ctx: any) => {
     if (ctx.model?.provider && ctx.model.provider !== "agent-hub-local") { ctx.abort?.(); return { systemPrompt: event.systemPrompt }; }
@@ -101,7 +112,7 @@ export default function(pi: ExtensionAPI): void {
   for (const raw of (() => { try { return JSON.parse(process.env.AGENTHUB_PI_TOOLS ?? "[]") as any[]; } catch { return []; } })()) {
     if (!raw || typeof raw.name !== "string" || !raw.parameters) continue;
     pi.registerTool({ name: raw.name, label: raw.name, description: raw.description ?? raw.name, parameters: raw.parameters, async execute(toolCallId: string, params: unknown) {
-      if (toolSteps++ >= maxSteps) { const reason = `Pi tool step limit ${maxSteps} reached`; await post("/event", { type: "agent_end", failed: true, error: reason }); runtimeCtx?.abort?.(); return { content: [{ type: "text", text: `error: ${reason}` }], details: {}, isError: true }; }
+      if (toolSteps++ >= maxSteps) { const reason = `Pi tool step limit ${maxSteps} reached`; forcedFailure = reason; await post("/event", { type: "agent_end", failed: true, error: reason }); runtimeCtx?.abort?.(); return { content: [{ type: "text", text: `error: ${reason}` }], details: {}, isError: true }; }
       const result = await post("/tool", { name: raw.name, args: params, toolCallId });
       return { content: [{ type: "text", text: String(result.text ?? result) }], details: {} };
     } });

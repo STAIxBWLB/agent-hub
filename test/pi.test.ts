@@ -90,3 +90,80 @@ test("Pi resume refuses a session outside its managed directory or from another 
     await second.stop();
   } finally { rmSync(stateDir, { recursive: true, force: true }); }
 });
+
+for (const stopImmediately of [false, true]) test(`Pi native owner death without shutdown can be recovered (${stopImmediately ? "stop" : "monitor"})`, async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-dead-owner-"));
+  const owner = Bun.spawn(["sleep", "30"]);
+  const peer = new PiPeer("pi", { cwd: process.cwd(), stateDir, mode: "tui", backend: "mlx", relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [{ id: "mlx/fast" }] }, tools: [], executeTool: async () => "ok" });
+  try {
+    await peer.start();
+    const launch = peer.tuiLaunch!;
+    const claimed = await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/event`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: owner.pid, signature: currentSignature(owner.pid), sessionId: "dead-owner-session", sessionFile: "/tmp/dead-owner.jsonl" }) });
+    expect(claimed.status).toBe(200);
+    owner.kill("SIGTERM"); await owner.exited;
+    if (!stopImmediately) {
+      for (let i = 0; i < 100 && peer.state !== "offline"; i++) await Bun.sleep(20);
+      expect(peer.state).toBe("offline");
+      expect(peer.recoveryReady).toBe(true);
+      expect(peer.recoveryMetadata().sessionId).toBe("dead-owner-session");
+    }
+    const at = performance.now();
+    await peer.stop();
+    expect(performance.now() - at).toBeLessThan(1000);
+    expect(peer.state).toBe("offline");
+  } finally { if (owner.exitCode === null) { owner.kill(); await owner.exited; } await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+});
+
+test("an authenticated long-running tool keeps the Pi watchdog alive", async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-tool-watchdog-"));
+  const peer = new PiPeer("pi", { cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx", watchdogMs: 200, cmd: ["bun", join(import.meta.dir, "fakes/pi-rpc.ts")], relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [{ id: "dgx/coding" }] }, tools: [], executeTool: async () => { await Bun.sleep(650); return "long tool completed"; } });
+  const failures: string[] = [];
+  peer.onMessage = (text) => failures.push(text);
+  try {
+    await peer.start();
+    await peer.deliver([newEnvelope("user", "run a tool", { to: ["pi"] })]);
+    const launch = peer.tuiLaunch!;
+    const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
+    const url = launch.env.AGENTHUB_PI_BRIDGE_URL!;
+    const result = await fetch(`${url}/tool`, { method: "POST", headers, body: JSON.stringify({ name: "bash", args: {}, toolCallId: "long-tool" }) });
+    expect((await result.json() as any).text).toBe("long tool completed");
+    expect(peer.state).toBe("busy");
+    expect(failures).toEqual([]);
+    await fetch(`${url}/event`, { method: "POST", headers, body: JSON.stringify({ type: "agent_settled" }) });
+    expect(peer.state).toBe("idle");
+  } finally { await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+});
+
+test("a successful Pi retry clears its provisional agent_end failure", async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-retry-"));
+  const failures: string[] = [], messages: string[] = [];
+  const peer = new PiPeer("pi", { cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx", cmd: ["bun", join(import.meta.dir, "fakes/pi-rpc.ts")], relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [{ id: "dgx/coding" }] }, tools: [], executeTool: async () => "ok", onTurnFailure: async (_envs, why) => { failures.push(why); } });
+  peer.onMessage = (text) => messages.push(text);
+  try {
+    await peer.start(); await peer.deliver([newEnvelope("user", "retry fixture", { to: ["pi"] })]);
+    const launch = peer.tuiLaunch!;
+    const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
+    for (const event of [{ type: "agent_end", failed: true, error: "transient upstream failure" }, { type: "agent_end", failed: false, text: "recovered" }, { type: "agent_settled" }]) {
+      await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/event`, { method: "POST", headers, body: JSON.stringify(event) });
+    }
+    expect(failures).toEqual([]);
+    expect(messages).toEqual(["recovered"]);
+    expect(peer.state).toBe("idle");
+  } finally { await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+});
+
+test("user-cancelled Pi turns are reported without automatic cloud escalation", async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-cancel-"));
+  const failures: string[] = [], messages: string[] = [];
+  const peer = new PiPeer("pi", { cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx", cmd: ["bun", join(import.meta.dir, "fakes/pi-rpc.ts")], relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [{ id: "dgx/coding" }] }, tools: [], executeTool: async () => "ok", onTurnFailure: async (_envs, why) => { failures.push(why); } });
+  peer.onMessage = (text) => messages.push(text);
+  try {
+    await peer.start(); await peer.deliver([newEnvelope("user", "cancel fixture", { to: ["pi"] })]);
+    const launch = peer.tuiLaunch!;
+    const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
+    for (const event of [{ type: "agent_end", cancelled: true }, { type: "agent_settled" }]) await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/event`, { method: "POST", headers, body: JSON.stringify(event) });
+    expect(failures).toEqual([]);
+    expect(messages[0]).toContain("cancelled");
+    expect(peer.state).toBe("idle");
+  } finally { await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+});

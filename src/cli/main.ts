@@ -2,7 +2,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { ControlClient, readControl } from "../hub/control-client.ts";
 import { loadConfig } from "../hub/daemon.ts";
 import { projectContext } from "../hub/project.ts";
@@ -425,11 +425,13 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   models: async () => {
     const action = args[0] ?? "status";
-    const runtimeDir = join(homedir(), ".agenthub", "runtimes", "mlx");
-    const modelPath = join(homedir(), ".agenthub", "models", "qwen3-8b-mlx");
-    if (action === "status") return console.log(JSON.stringify(await inspectMlx({ runtimeDir, modelPath }), null, 2));
-    if (action === "start") { const handle = await ensureMlx({ runtimeDir, modelPath }); return console.log(JSON.stringify(handle.status(), null, 2)); }
-    if (action === "stop") { await stopMlx({ runtimeDir, modelPath }); return console.log("MLX stopped"); }
+    const configured = loadConfig(cwd).mlx;
+    const runtimeDir = configured.runtimeDir ? resolve(cwd, configured.runtimeDir) : join(homedir(), ".agenthub", "runtimes", "mlx");
+    const modelPath = configured.modelPath ? resolve(cwd, configured.modelPath) : join(homedir(), ".agenthub", "models", "qwen3-8b-mlx");
+    const mlxOptions = { ...configured, runtimeDir, modelPath };
+    if (action === "status") return console.log(JSON.stringify(await inspectMlx(mlxOptions), null, 2));
+    if (action === "start") { const handle = await ensureMlx(mlxOptions); return console.log(JSON.stringify(handle.status(), null, 2)); }
+    if (action === "stop") { await stopMlx(mlxOptions); return console.log("MLX stopped"); }
     if (action !== "setup") fail("usage: ahub models setup|status|start|stop");
     const python = join(runtimeDir, "bin", "python");
     const run = (argv: string[]) => { const result = spawnSync(argv[0]!, argv.slice(1), { cwd, stdio: "inherit" }); if (result.status !== 0) fail(`models setup failed: ${argv.join(" ")}`); };
@@ -617,7 +619,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     row(!!omni.apiKey(), "omniroute key", omni.apiKey() ? "present" : "missing: set OMNIROUTE_API_KEY or omniroute.api_key_file in .agenthub/config.json");
     const sy = spawnSync(process.env.AGENTHUB_SWITCHYARD_BIN ?? "switchyard-server", ["--version"], { encoding: "utf8" });
     row(sy.status === 0 ? true : undefined, "switchyard", sy.status === 0 ? sy.stdout.trim() : "not installed: ahub local uses fixed_model on OmniRoute (cargo install --locked switchyard-server)");
-    const mlx = await inspectMlx();
+    const mlxConfig = loadConfig(cwd).mlx;
+    const mlx = await inspectMlx({ ...mlxConfig, runtimeDir: mlxConfig.runtimeDir ? resolve(cwd, mlxConfig.runtimeDir) : undefined, modelPath: mlxConfig.modelPath ? resolve(cwd, mlxConfig.modelPath) : undefined });
     row(mlx.state === "ready" || mlx.state === "stopped", "pi mlx", `${mlx.state}${mlx.model ? ` (${mlx.model})` : ""}${mlx.lastError ? `: ${mlx.lastError}` : ""}`);
 
     const memory = new MemoryClient();

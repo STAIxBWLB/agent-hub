@@ -111,3 +111,16 @@ test("generation slots fail closed when a live owner cannot be authenticated", a
   await expect(handle.acquire()).rejects.toThrow("owner cannot be authenticated");
   rmSync(runtimeDir, { recursive: true, force: true });
 });
+
+test("an absent optional MLX executable rejects without an unhandled child error", () => {
+  const runtimeDir = mkdtempSync(join(tmpdir(), "agenthub-mlx-absent-"));
+  cleanup.push(() => rmSync(runtimeDir, { recursive: true, force: true }));
+  const code = `import { ensureMlx } from ${JSON.stringify(join(import.meta.dir, "../src/models/mlx.ts"))};
+    try { await ensureMlx(${JSON.stringify({ runtimeDir, modelPath: join(runtimeDir, "model"), bin: join(runtimeDir, "absent") })}); throw new Error("unexpected startup"); }
+    catch (error) { if (error.message === "unexpected startup") throw error; }
+    await Bun.sleep(50); console.log("caller survived");`;
+  const result = Bun.spawnSync([process.execPath, "-e", code], { stdout: "pipe", stderr: "pipe" });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toContain("caller survived");
+  expect(result.stderr.toString()).not.toContain("ENOENT");
+});

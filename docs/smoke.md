@@ -6,7 +6,7 @@
 
 Verified on 2026-09-20 on Apple Silicon with installed Pi 0.85.1:
 
-- `scripts/check.sh`: 272 tests passed, 0 failed, 1511 assertions; typecheck,
+- `scripts/check.sh`: 280 tests passed, 0 failed, 1549 assertions; typecheck,
   plugin freshness and npm package contents also passed.
 - A disposable project ran the real hub daemon and Pi headless peer. Pi called
   the managed `read` tool and returned an exact marker from a project file,

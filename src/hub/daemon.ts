@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { AcpPeer, type PermissionRequest } from "../adapters/acp.ts";
 import { CodexPeer } from "../adapters/codex-appserver.ts";
@@ -78,6 +78,9 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 export function loadConfig(cwd: string): HubConfig {
   try {
     const file = JSON.parse(readFileSync(join(cwd, ".agenthub", "config.json"), "utf8"));
+    const mlx = { ...DEFAULT_CONFIG.mlx, ...file.mlx };
+    if (typeof mlx.runtimeDir === "string") mlx.runtimeDir = resolve(cwd, mlx.runtimeDir);
+    if (typeof mlx.modelPath === "string") mlx.modelPath = resolve(cwd, mlx.modelPath);
     return {
       ...DEFAULT_CONFIG,
       ...file,
@@ -88,7 +91,7 @@ export function loadConfig(cwd: string): HubConfig {
       omniroute: { ...DEFAULT_CONFIG.omniroute, ...file.omniroute },
       local: { ...DEFAULT_CONFIG.local, ...file.local },
       pi: { ...DEFAULT_CONFIG.pi, ...file.pi },
-      mlx: { ...DEFAULT_CONFIG.mlx, ...file.mlx },
+      mlx,
     };
   } catch {
     return DEFAULT_CONFIG;
@@ -559,17 +562,21 @@ export async function startDaemon(opts: DaemonOptions) {
       const launch = saved.launch as Record<string, unknown>;
       if ((args.sessionId && saved.sessionId && args.sessionId !== saved.sessionId) || (args.sessionFile && saved.sessionFile && args.sessionFile !== saved.sessionFile)) return { ok: false, error: "Pi already owns a different session; refusing to replace its identity" };
       const mode = args.mode ?? "headless";
-      if (launch.mode !== mode && existing.state === "busy") return { ok: false, error: "Pi is busy; wait for agent_settled before changing mode" };
-      if (launch.mode !== mode) {
+      const changesOwner = launch.mode !== mode || (args.backend !== undefined && args.backend !== launch.backend) || (args.model !== undefined && args.model !== launch.model) || (args.backend !== undefined && args.model === undefined && launch.model !== undefined);
+      const unclaimed = existing.state === "offline" && !saved.sessionId && !saved.sessionFile;
+      if (changesOwner && (existing.state === "busy" || (existing.state !== "offline" && !existing.recoveryReady))) return { ok: false, error: "Pi is busy; wait for agent_settled before changing mode/backend" };
+      if (unclaimed) {
+        // Revoke the previous launch bridge before issuing another launch. A late
+        // process from the abandoned CLI cannot claim the replacement owner.
+        await existing.stop();
+      } else if (changesOwner) {
         if (!saved.sessionId || !saved.sessionFile) return { ok: false, error: "Pi session identity is not ready for handover" };
-        args = { ...args, backend: args.backend ?? launch.backend as "auto" | "dgx" | "mlx", model: args.model ?? (typeof launch.model === "string" ? launch.model : undefined), sessionId: String(saved.sessionId), sessionFile: String(saved.sessionFile) };
+        args = { ...args, backend: args.backend ?? launch.backend as "auto" | "dgx" | "mlx", model: args.model ?? (args.backend === undefined && typeof launch.model === "string" ? launch.model : undefined), sessionId: String(saved.sessionId), sessionFile: String(saved.sessionFile) };
         await existing.stop();
       } else if (existing.state !== "offline") {
         return mode === "tui" ? { ok: false, error: "Pi already owns a native terminal; use that terminal or switch to headless first" } : { ok: true, already: true };
       } else if (saved.sessionId && saved.sessionFile) {
-        args = { ...args, backend: args.backend ?? launch.backend as "auto" | "dgx" | "mlx", model: args.model ?? (typeof launch.model === "string" ? launch.model : undefined), sessionId: String(saved.sessionId), sessionFile: String(saved.sessionFile) };
-      } else if (mode === "tui") {
-        return { ok: false, error: "Pi native terminal launch is pending; use the original launch" };
+        args = { ...args, backend: args.backend ?? launch.backend as "auto" | "dgx" | "mlx", model: args.model ?? (args.backend === undefined && typeof launch.model === "string" ? launch.model : undefined), sessionId: String(saved.sessionId), sessionFile: String(saved.sessionFile) };
       }
     }
     if (existing && existing.state !== "offline") {

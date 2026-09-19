@@ -61,7 +61,6 @@ interface ProcessSignature {
 
 const DEFAULT_RUNTIME_DIR = join(homedir(), ".agenthub", "runtimes", "mlx");
 const DEFAULT_MODEL_PATH = join(homedir(), ".agenthub", "models", "qwen3-8b-mlx");
-const DEFAULT_BIN = join(DEFAULT_RUNTIME_DIR, "bin", "mlx_lm.server");
 const OWNER_FILE = "owner.json";
 const GENERATION_DB = "generation-slots.db";
 
@@ -326,7 +325,7 @@ export async function inspectMlx(options: MlxOptions = {}): Promise<MlxStatus> {
 export async function ensureMlx(options: MlxOptions = {}): Promise<MlxHandle> {
   const runtimeDir = options.runtimeDir ?? DEFAULT_RUNTIME_DIR;
   const modelPath = options.modelPath ?? DEFAULT_MODEL_PATH;
-  const bin = options.bin ?? DEFAULT_BIN;
+  const bin = options.bin ?? join(runtimeDir, "bin", "mlx_lm.server");
   const host = options.host ?? "127.0.0.1";
   const maxInputTokens = options.maxInputTokens ?? 16_000;
   const maxConcurrency = options.maxConcurrency ?? 1;
@@ -358,6 +357,7 @@ export async function ensureMlx(options: MlxOptions = {}): Promise<MlxHandle> {
   mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
   const releaseStartLock = acquireStartLock(runtimeDir, readInfo);
   let child: ChildProcess | undefined;
+  let startupError: Error | undefined;
   try {
     const port = await freePort(host, options.port);
     const token = randomUUID();
@@ -371,6 +371,7 @@ export async function ensureMlx(options: MlxOptions = {}): Promise<MlxHandle> {
         detached: true,
         stdio: ["ignore", logFd, logFd],
       });
+      child.once?.("error", (error) => { startupError = error; });
     } finally { closeSync(logFd); }
     if (!child.pid) throw new Error("MLX process did not provide a PID");
     const signature = readInfo(child.pid);
@@ -379,6 +380,8 @@ export async function ensureMlx(options: MlxOptions = {}): Promise<MlxHandle> {
     writeOwner(runtimeDir, owner);
     const url = `http://${host}:${port}/v1`;
     for (let i = 0; i < 100; i++) {
+      if (startupError) throw startupError;
+      if (child.exitCode != null || child.signalCode != null) throw new Error("MLX exited before becoming healthy; inspect mlx.log");
       if (await health(url, AbortSignal.timeout(500))) {
         child.unref?.();
         let active = 0;

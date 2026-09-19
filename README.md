@@ -89,7 +89,8 @@ Pi connects to an authenticated relay with model aliases `dgx/coding`,
 Its managed tools use the existing path guards, shell sandbox and terminal
 approval flow. Keep `ahub tail` open to approve write/edit/shell operations.
 Tool-call receipts survive daemon restart; an interrupted operation with an
-unknown outcome must be reconciled before repeating it.
+unknown outcome must be reconciled before repeating it. Cancelling a Pi turn
+does not automatically hand its task to a cloud peer.
 
 MLX uses a pinned Qwen3 8B 4-bit model, a 16K input budget and one generation
 at a time. `ahub models stop` stops only the runtime whose process identity

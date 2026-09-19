@@ -47,6 +47,10 @@ test("enabled Pi starts headless, duplicate start is idempotent, and handover pr
   for (let i = 0; i < 100 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(10);
   expect(daemon.bus.stateOf("pi")).toBe("idle");
   expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).already).toBe(true);
+  const originalSession = daemon.bus.peers.get("pi")!.recoveryMetadata!().sessionId;
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless", backend: "mlx" } })).ok).toBe(true);
+  expect(daemon.bus.peers.get("pi")!.recoveryMetadata!().sessionId).toBe(originalSession);
+  expect((daemon.bus.peers.get("pi")!.recoveryMetadata!().launch as any).backend).toBe("mlx");
   const tui = await console_.request({ t: "start", peer: "pi", args: { mode: "tui", backend: "dgx" } });
   if (!tui.ok) throw new Error(String(tui.error));
   expect(tui.ok).toBe(true);
@@ -72,4 +76,18 @@ test("Pi tools use hub path guards and approval denial, with persisted call rece
   expect((await call("write", { path: "output.txt", content: "denied" }, "write1")).text).toContain("did not approve");
   expect(existsSync(join(stateDir, "output.txt"))).toBe(false);
   expect((await call("write", { path: "different.txt", content: "denied" }, "write1")).text).toContain("different arguments");
+});
+
+test("an unattached Pi TUI launch can be replaced without restarting the hub", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-pending-"));
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { console_ } = await hub(config);
+  const first = await console_.request({ t: "start", peer: "pi", args: { mode: "tui" } });
+  expect(first.ok).toBe(true);
+  const second = await console_.request({ t: "start", peer: "pi", args: { mode: "tui" } });
+  expect(second.ok).toBe(true);
+  expect(second.launch.env.AGENTHUB_PI_BRIDGE_TOKEN).not.toBe(first.launch.env.AGENTHUB_PI_BRIDGE_TOKEN);
+  const staleStatus = await fetch(`${first.launch.env.AGENTHUB_PI_BRIDGE_URL}/event`, { method: "POST", headers: { authorization: `Bearer ${first.launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ type: "agent_start" }), signal: AbortSignal.timeout(1000) }).then((r) => r.status).catch(() => 0);
+  expect(staleStatus).not.toBe(200);
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
 });

@@ -91,3 +91,4 @@ Run this before reporting any task complete, and paste the output. A failing tes
 - Adding a native peer requires testing the command emitted by the actual recovery driver, not only its inspection or launch helpers. Never let a generic non-Codex branch treat a new peer as Claude.
 - Cross-version recovery must use the authenticated source protocol for prepare/commit/abort and the target protocol after startup. Prove the transition against a real prior release before claiming compatibility.
 - Shared inference slots must recover after a hub process dies, without evicting a live owner. Cancellation has to reach slot acquisition from the relay caller, not just exist in the helper signature.
+- Native owner teardown must handle a lost shutdown acknowledgement using verified process identity. Pending launches must be revocable, and active tools/streaming output must count as watchdog activity.
