@@ -3,7 +3,7 @@ import type { MemoryClient } from "../memory/client.ts";
 import { CLASSES, type Board, type Task, type TaskClass, type TaskRefs } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
-import { assign, detectSignals, LOCAL, type Assignment, type Routing } from "./routing.ts";
+import { assign, detectSignals, LOCAL, PI, type Assignment, type Routing } from "./routing.ts";
 
 export interface TasksDeps {
   board: Board;
@@ -119,7 +119,7 @@ export class Tasks {
     const pii = this.isPii(task);
     const brief = pii ? undefined : await this.d.briefs?.forTask(task.owner!, task).catch(() => undefined);
     const rejected = task.history.filter((h) => h.event === "changes_requested").map((h) => `- ${h.by}: ${h.note ?? ""}`);
-    const facts = [`class ${task.class}`, task.refs.paths?.length ? `paths ${task.refs.paths.join(", ")}` : "", task.refs.branch ? `branch ${task.refs.branch}` : "", a.reviewer ? `reviewer ${a.reviewer}` : "no reviewer"].filter(Boolean).join("; ");
+    const facts = [`class ${task.class}`, a.owner === PI ? `backend pi/${a.piBackend ?? "dgx"}` : "", task.refs.paths?.length ? `paths ${task.refs.paths.join(", ")}` : "", task.refs.branch ? `branch ${task.refs.branch}` : "", a.reviewer ? `reviewer ${a.reviewer}` : "no reviewer"].filter(Boolean).join("; ");
     const body = [
       `Task #${task.id} [${task.class}] ${task.title}`,
       task.detail,
@@ -216,7 +216,7 @@ export class Tasks {
     const list = this.d.routing().classes[task.class]?.escalate_to ?? [];
     if (task.state === "changes_requested") task = this.d.board.update(task.id, HUB, "reopened", { state: "in_progress" });
     const from = task.owner;
-    const next = await this.assignOwner(task, by, { candidates: list, event: "escalated", note: `${why}; from ${from ?? "none"}` });
+    const next = await this.assignOwner(task, by, { candidates: list, event: "escalated", note: `${why}; from ${from ?? "none"}`, context: why });
     if (next.owner && next.owner !== from) {
       this.d.notify(`task ${this.publicTitle(next)} escalated from ${from} to ${next.owner} (${why})`);
       this.note(next, by, "decision", `Task #${next.id} escalated from ${from} to ${next.owner}: ${why}`);
@@ -239,7 +239,8 @@ export class Tasks {
     const routing = this.d.routing();
     for (const task of this.d.board.list()) {
       if (task.owner === peer && OPEN.includes(task.state)) {
-        const candidates = [LOCAL, ...(routing.classes[task.class]?.peers ?? []).filter((p) => p !== LOCAL)];
+        const pii = this.isPii(task);
+        const candidates = [pii ? LOCAL : PI, pii ? undefined : LOCAL, ...(routing.classes[task.class]?.peers ?? []).filter((p) => p !== LOCAL && p !== PI)].filter((p): p is PeerId => !!p);
         const back = task.state === "in_progress" ? this.d.board.update(task.id, HUB, "released", { state: "proposed" }, `budget pause of ${peer}`) : task;
         const next = await this.assignOwner(back, HUB, { candidates, exclude: [peer], event: "reassigned", note: `budget pause of ${peer}`, clearOnFail: true, ...(context ? { context } : {}) });
         moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner, role: "owner" });

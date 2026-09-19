@@ -138,6 +138,10 @@ function render(snapshot) {
       head.append(el('span', id, 'label'), el('span', peer.state, 'badge' + (peer.state === 'paused' ? ' warn' : '')));
       row.append(head, el('p', peer.queued + ' queued', 'meta'));
       if (peer.paused) row.append(el('p', peer.paused, 'meta'));
+      if (peer.requestedModel) row.append(el('p', 'Requested: ' + peer.requestedModel, 'meta'));
+      for (const backend of peer.backends || []) {
+        if (backend.requestedModel) row.append(el('p', backend.kind.toUpperCase() + ': ' + (backend.actualModel || 'model not reported') + ' (' + backend.state + ')', 'meta'));
+      }
       const paused = peer.state === 'paused' || peer.paused;
       row.append(button(paused ? 'Resume' : 'Pause', {action:paused ? 'resume' : 'pause', peer:id})); target.append(row);
     }

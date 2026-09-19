@@ -61,3 +61,25 @@ test("manifest identity mismatch refuses before opening a socket", async () => {
   const { stateDir } = await server("silent");
   await expect(ControlClient.connect(stateDir, { role: "console", projectId: "wrong", projectRoot: ROOT }, 200)).rejects.toThrow(/does not match/);
 });
+
+test("matching source protocol can be selected explicitly for upgrade preflight", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "agent-hub-control-legacy-"));
+  const srv = Bun.serve<{ }>( {
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(_req, s) { return s.upgrade(_req, { data: {} }) ? undefined : new Response("no"); },
+    websocket: { message(ws, data) { const msg = JSON.parse(String(data)); ws.send(JSON.stringify({ rid: msg.rid, t: msg.t === "hello" ? "welcome" : "status", ok: true, protocol: 8, projectId: "p1", instanceId: "i1", cwd: ROOT })); } },
+  });
+  writeFileSync(join(stateDir, "control-token"), "legacy-token\n");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: srv.port, protocol: 8, projectId: "p1", instanceId: "i1", cwd: ROOT }));
+  cleanup.push(() => srv.stop(true));
+  await expect(ControlClient.connect(stateDir, { role: "console", projectRoot: ROOT }, 200)).rejects.toThrow(/wire version mismatch/);
+  const client = await ControlClient.connect(stateDir, { role: "console", projectRoot: ROOT }, 200, 8);
+  expect((await client.request({ t: "status" })).ok).toBe(true);
+  client.close();
+});
+
+test("source matching cannot downgrade to unsupported legacy protocols", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "agent-hub-control-unsupported-"));
+  await expect(ControlClient.connect(stateDir, { role: "console" }, 200, 5)).rejects.toThrow(/unsupported recovery source protocol/);
+});

@@ -6,8 +6,9 @@ import { inspectProject } from "../hub/lifecycle.ts";
 import type { Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
 import { packageDigest, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
-import { inspectTerminals, closeTerminal, createTerminal, waitForIdle, shellQuote, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
+import { inspectTerminals, closeTerminal, createTerminal, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
 import { planFingerprint, registeredProjects, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
+import { refreshManager } from "../hub/manager.ts";
 
 export const PACKAGE_ROOT = resolve(import.meta.dir, "../..");
 const orcaExecutable = () => process.env.ORCA_CLI_COMMAND || (process.env.ORCA_DEV_REPO_ROOT ? "orca-dev" : process.platform === "linux" && !process.env.ORCA_TERMINAL_HANDLE ? "orca-ide" : "orca");
@@ -19,8 +20,16 @@ function terminalOptions(run: RunCommand = runCommand): TerminalRecoveryOptions 
   } };
 }
 
-async function rpc(project: Project, message: Record<string, unknown>): Promise<any> {
-  const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: project.root, projectId: project.id });
+export function restoredTerminalArgv(entrypoint: string, projectRoot: string, binding: TerminalBinding): string[] {
+  if (binding.peer === "codex") return [process.execPath, entrypoint, "--project", projectRoot, "codex", "resume", binding.sessionId];
+  if (binding.peer === "claude") return [process.execPath, entrypoint, "--project", projectRoot, "claude", "--resume", binding.sessionId];
+  return [process.execPath, entrypoint, "--project", projectRoot, "pi", "--mode", "tui",
+    ...(binding.backend ? ["--backend", binding.backend] : []), ...(binding.model ? ["--model", binding.model] : []),
+    ...(binding.sessionFile ? ["--session-file", binding.sessionFile] : ["--session-id", binding.sessionId])];
+}
+
+async function rpc(project: Project, message: Record<string, unknown>, protocol = PROTOCOL): Promise<any> {
+  const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: project.root, projectId: project.id }, 30_000, protocol);
   try {
     const reply = await client.request(message, 30_000);
     if (reply.ok === false) throw new Error(reply.error ?? "recovery control request failed");
@@ -31,13 +40,20 @@ async function rpc(project: Project, message: Record<string, unknown>): Promise<
 export async function inspectRecovery(project: Project): Promise<Inspection> {
   const base = await inspectProject(project);
   const control = readControl(project.stateDir);
-  if (base.state !== "running") return {
+  const sourceProtocol = control?.protocol;
+  const legacySupported = sourceProtocol === 8;
+  if (base.state !== "running" && !legacySupported) return {
     state: base.state, peers: [], blockers: base.state === "stopped" ? [] : [base.state === "incompatible" ? "manual-bootstrap-required: source lacks the recovery contract; use its matching CLI" : base.error ?? base.state],
     ...(control?.instanceId ? { instanceId: control.instanceId } : {}), ...(control?.protocol ? { protocol: control.protocol } : {}),
   };
-  const status = base.status;
+  let status = base.status;
+  if (!status && legacySupported) {
+    const readback = await rpc(project, { t: "status" }, sourceProtocol);
+    status = readback.status;
+  }
+  if (!status || !control) return { state: "unavailable", peers: [], blockers: ["authenticated source status unavailable"] };
   let response: any;
-  try { response = await rpc(project, { t: "recovery", op: "inspect", expectedInstanceId: status.instanceId }); }
+  try { response = await rpc(project, { t: "recovery", op: "inspect", expectedInstanceId: status.instanceId }, sourceProtocol ?? PROTOCOL); }
   catch {
     // A stop can complete between authenticated status and the second read. Never infer stopped
     // from a connection failure: the coordinator will inspect the ownership manifest again.
@@ -48,7 +64,8 @@ export async function inspectRecovery(project: Project): Promise<Inspection> {
   return { state: "running", instanceId: status.instanceId, version: status.version, protocol: status.protocol,
     recovery: { operationId: response.recovery?.operationId, phase: response.recovery?.phase, ready: response.recovery?.ready }, peers: peers.map((peer) => ({ id: peer.id, state: peer.state,
       ...(peer.threadId ? { threadId: peer.threadId } : {}), ...(peer.sessionId ? { sessionId: peer.sessionId } : {}),
-      ...(peer.launch ? { args: Object.fromEntries(Object.entries(peer.launch).filter(([k, v]) => ["model", "route"].includes(k) && typeof v === "string")) as Record<string, string> } : {}) })), blockers: [] };
+      ...(typeof (peer.sessionFile ?? peer.launch?.sessionFile) === "string" ? { sessionFile: peer.sessionFile ?? peer.launch.sessionFile } : {}),
+      ...(peer.launch ? { args: Object.fromEntries(Object.entries(peer.launch).filter(([k, v]) => ["model", "route", "sessionFile", "mode", "backend"].includes(k) && typeof v === "string")) as Record<string, string> } : {}) })), blockers: [] };
 }
 
 export async function makeUpgradePlan(kind: "restart" | "upgrade", version: string, selectedRoot?: string, run: RunCommand = runCommand): Promise<UpgradePlan> {
@@ -67,7 +84,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
   if (existsSync(managerFile)) {
     try {
       const manager = JSON.parse(readFileSync(managerFile, "utf8"));
-      if (manager.protocol !== PROTOCOL) body.blockers.push("manager requires manual bootstrap with its matching CLI before protocol-8 recovery");
+      if (![8, PROTOCOL].includes(manager.protocol)) body.blockers.push("manager requires manual bootstrap with its matching CLI before protocol-9 recovery");
     } catch { body.blockers.push("manager ownership manifest is unreadable"); }
   }
   for (const project of projects) {
@@ -77,16 +94,19 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
     catch { source = { state: "unavailable", peers: [], blockers: ["source recovery metadata could not be authenticated"] }; }
     if (source.state === "stopped" || source.state === "missing") continue;
     const blockers = [...source.blockers];
-    if (source.protocol !== PROTOCOL || source.state !== "running") blockers.push("manual-bootstrap-required: an authenticated recovery-capable source is required");
+    if (![8, PROTOCOL].includes(source.protocol ?? 0) || source.state !== "running") blockers.push("manual-bootstrap-required: an authenticated recovery-capable source is required");
     if (source.recovery?.operationId && source.recovery.phase !== "released") blockers.push(`existing recovery operation ${source.recovery.operationId} must be resolved first`);
-    const sessions: { codex?: string; claude?: string } = {};
+    const sessions: { codex?: string; claude?: string; pi?: SessionRef } = {};
     for (const peer of source.peers) {
       if (peer.state === "offline") continue;
       if (peer.id === "codex" || peer.id === "claude") {
         const session = peer.id === "codex" ? peer.threadId : peer.sessionId;
         if (!session) blockers.push(`${peer.id}: original conversation ID is unknown; manual-required`);
         else sessions[peer.id] = session;
-      } else if (peer.id !== "kimi" && peer.id !== "local") blockers.push(`${peer.id}: no automatic recovery adapter`);
+      } else if (peer.id === "pi" && peer.args?.mode === "tui") {
+        if (!peer.sessionId) blockers.push("pi: original session ID is unknown; manual-required");
+        else sessions.pi = { sessionId: peer.sessionId, ...(peer.sessionFile ? { sessionFile: peer.sessionFile } : {}), ...(peer.args.backend ? { backend: peer.args.backend } : {}), ...(peer.args.model ? { model: peer.args.model } : {}) };
+      } else if (peer.id !== "kimi" && peer.id !== "local" && peer.id !== "pi") blockers.push(`${peer.id}: no automatic recovery adapter`);
     }
     const terminals = await inspectTerminals(project.root, sessions, {
       ...terminalOptions(run), stateDir: project.stateDir, instanceId: source.instanceId,
@@ -147,7 +167,11 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
     if (result.code !== 0) throw new Error(`target command ${args[0]} failed; inspect recovery state before retrying`);
     return result;
   };
-  const control = (project: Project, op: string, id: string, instance: string) => rpc(project, { t: "recovery", op, operationId: id, expectedInstanceId: instance }).then(() => {});
+  const control = (project: Project, op: string, id: string, instance: string) => {
+    const sourceProtocol = readControl(project.stateDir)?.protocol;
+    const protocol = sourceProtocol === 8 ? 8 : PROTOCOL;
+    return rpc(project, { t: "recovery", op, operationId: id, expectedInstanceId: instance }, protocol).then(() => {});
+  };
   const revalidateTerminal = async (planned: PlannedProject, progress: ProjectProgress, saved: TerminalBinding, exact: boolean): Promise<TerminalBinding> => {
     const options = { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId };
     const found = await inspectTerminals(planned.project.root, { [saved.peer]: saved.sessionId }, options);
@@ -218,11 +242,16 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
       const live = await inspectRecovery(planned.project);
       if (live.instanceId !== progress.instanceId) throw new Error("target daemon changed before peer restore");
       if (group === "native") {
-        for (const peer of planned.source.peers.filter((p) => ["kimi", "local"].includes(p.id) && p.state !== "offline")) {
+        for (const peer of planned.source.peers.filter((p) => ["kimi", "local", "pi"].includes(p.id) && p.state !== "offline" && !(p.id === "pi" && p.args?.mode === "tui"))) {
           const current = live.peers.find((p) => p.id === peer.id);
           if (current && current.state !== "offline") continue;
           const args = [peer.id];
-          for (const key of ["model", "route"]) if (typeof peer.args?.[key] === "string") args.push(`--${key}`, peer.args[key]!);
+          for (const key of ["mode", "backend", "model", "route"]) if (typeof peer.args?.[key] === "string") args.push(`--${key}`, peer.args[key]!);
+          if (peer.id === "pi") {
+            const sessionFile = peer.sessionFile ?? peer.args?.sessionFile;
+            if (typeof sessionFile === "string") args.push("--session-file", sessionFile);
+            else if (peer.sessionId) args.push("--session-id", peer.sessionId);
+          }
           await command(op, args, planned.project);
         }
       }
@@ -243,8 +272,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           progress.terminals[key] = existing; save(); continue;
         }
         const entrypoint = join(op.targetRoot!, "src/cli/main.js");
-        const argv = [process.execPath, entrypoint, "--project", planned.project.root, original.peer,
-          ...(original.peer === "codex" ? ["resume", original.sessionId] : ["--resume", original.sessionId])];
+        const argv = restoredTerminalArgv(entrypoint, planned.project.root, original);
         const assignments = { ...original.launch.env, AGENTHUB_HOME: hubHome(), AGENTHUB_RECOVERY_OPERATION: op.id };
         const launch = { ...original.launch, packageEntrypoint: entrypoint, argv,
           command: ["env", ...Object.entries(assignments).map(([k, v]) => `${k}=${v}`), ...argv].map(shellQuote).join(" ") };
@@ -273,6 +301,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
       const readback = await run(["ahub", "--version"], { env: env(op) });
       if (readback.code !== 0 || readback.stdout.trim() !== op.plan.version) throw new Error("global CLI version was not verified");
     },
+    refreshManager: async (op) => { await refreshManager({ home: hubHome(), cli: join(op.targetRoot!, "src/cli/main.ts") }); },
     verify: async (planned, progress, op) => {
       const live = await inspectRecovery(planned.project);
       if (live.instanceId !== progress.instanceId || live.version !== op.plan.version || live.recovery?.operationId !== op.id) throw new Error("target identity verification failed");
@@ -281,6 +310,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         if (!peer || !["idle", "busy", "paused"].includes(peer.state)) throw new Error(`${old.id}: peer reattachment not verified`);
         if (old.id === "codex" && peer.threadId !== old.threadId) throw new Error("Codex resumed a different conversation");
         if (old.id === "claude" && peer.sessionId !== old.sessionId) throw new Error("Claude resumed a different conversation");
+        if (old.id === "pi" && (peer.sessionId !== old.sessionId || (old.sessionFile && peer.sessionFile !== old.sessionFile))) throw new Error("Pi resumed a different conversation");
       }
       for (const original of planned.terminals as TerminalBinding[]) {
         const saved = progress.terminals[`restored:${original.peer}`];
