@@ -4,7 +4,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ControlClient } from "../src/hub/control-client.ts";
+import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { HUB, newEnvelope } from "../src/hub/envelope.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
@@ -261,6 +261,39 @@ test("a second session attached as the same peer wins and the replaced one stays
   const res: any = await first.client.callTool({ name: "hub_send", arguments: { text: "x" } });
   expect(res.content[0].text).toStartWith('another session attached to the hub as "claude"');
 }, 15_000);
+
+test("the newest hello wins even when an older session's recall finishes last", async () => {
+  let injects = 0;
+  let slow = true; // only the older session's recall is slow
+  const slowMem = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(req) {
+      const path = new URL(req.url).pathname;
+      if (path === "/api/health") return Response.json({ status: "ok", version: "13.25.1" });
+      if (path === "/api/context/inject" && (injects++, slow)) await Bun.sleep(600);
+      return new Response("# claude-mem status\n\nThis project has no memory yet.\n");
+    },
+  });
+  cleanup.push(() => void slowMem.stop(true));
+  const { stateDir, daemon } = await hub({ memoryUrl: `http://127.0.0.1:${slowMem.port}` });
+  const token = readFileSync(join(stateDir, "control-token"), "utf8");
+  const open = (): Promise<{ ws: WebSocket; closed: Promise<number> }> =>
+    new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${daemon.port}`);
+      const closed = new Promise<number>((r) => (ws.onclose = (ev) => r(ev.code)));
+      ws.onopen = () => (ws.send(JSON.stringify({ t: "hello", v: PROTOCOL, token, role: "peer", peer: "claude", rid: 1 })), resolve({ ws, closed }));
+    });
+  const older = await open();
+  await until(() => injects > 0, "older recall started");
+  slow = false;
+  const newer = await open();
+  expect(await older.closed).toBe(4000);
+  await Bun.sleep(100);
+  expect(newer.ws.readyState).toBe(WebSocket.OPEN);
+  expect(daemon.bus.peers.get("claude")?.state).toBe("idle");
+  newer.ws.close();
+});
 
 test("the channel server exits when its host goes away and does not retry a hub that refused its wire version", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
