@@ -528,7 +528,7 @@ M1 messaging core and three adapters
 - [x] ACP adapter: spawn `kimi acp`, session lifecycle, prompt, chunk aggregation
 - [x] CLI `up/claude/codex/kimi/say/tail/status/logs/kill`, `ahub init` marker blocks
 - [x] Fakes plus unit and integration tests
-- [ ] Live trio chat smoke (`docs/smoke.md`): Kimi leg passed; Codex reply leg blocked by the account usage limit on 2026-09-19; Claude leg needs an interactive session
+- [x] Live trio chat smoke (`docs/smoke.md`): Kimi, Codex and Claude interactive legs passed on 2026-09-19; the later four-peer broadcast also passed
 - [x] claude-mem worker client (`src/memory/`), `ahub doctor` memory check, fake worker for tests
 
 M2 coordination
@@ -540,7 +540,7 @@ M2 coordination
 
 M3 local worker and routing L2/L3
 - [x] Local worker agent loop with cwd-scoped tools, secrets denylist, approvals and seatbelt sandbox
-- [x] OmniRoute client with Cloudflare Access headers (per-peer inference key: pending an owner-issued key)
+- [x] OmniRoute client with Cloudflare Access headers and the owner-issued inference key; the off-campus live path remains blocked in `docs/smoke.md` (#12)
 - [x] Switchyard sidecar: config generation, lifecycle, health, fallback to fixed model
 - [x] `ahub local`, smoke through OmniRoute with provider header check, and through the real sidecar
 - [x] Local worker capture into claude-mem (`sessions/init`, `observations`, `summarize`, `session-end`, skip list)
@@ -552,13 +552,14 @@ M4 task board, roles, routing L1
 - [x] Review handoff and task-level escalation
 - [x] Task brief on handoff (search + timeline, `seen_ids`), `hub_remember` tool and console command, auto-saved board transitions
 - [x] Live: Codex calling hub tools in a real turn (2026-09-19)
-- [ ] Live: Claude plugin task tools and digests in a real interactive session
+- [x] Live: Claude plugin task tools and digests in a real interactive session (`docs/smoke.md`, 2026-09-19)
 
 M5 budget relay
 - [x] Quota sources (Codex native, Claude status line, Kimi tokens, manual), gate, pause, checkpoint
 - [x] Reassignment to local, one resume envelope, idempotency and restart recovery
 - [x] Handoff context (checkpoint summary or memory block) plus task briefs in the task envelope
-- [ ] Live: the Claude status line tee in an interactive session; a real pause driven by Codex's own numbers with a TUI attached
+- [x] Live: the Claude status line tee in an interactive session (`docs/smoke.md`, 2026-09-19)
+- [ ] Live: a real pause driven by Codex's own numbers with a TUI attached; the natural near-limit prerequisite remains blocked by issue #12
 
 M6 internal inference, packaging
 - [x] Status digests and triage through `sy/fast` (amended: optional and fail-open with a backoff. Only plain status
@@ -571,7 +572,8 @@ M6 internal inference, packaging
       `bun add -g github:STAIxBWLB/agent-hub`. `package.json` is the one version, stamped into the plugin manifest
       and the MCP server and checked by the gate. `ahub setup` installs or updates the Claude plugin from the
       package after asking. CI runs the gate on Ubuntu and macOS; a `v*` tag matching `package.json` cuts a release.
-      npm publish and brew are follow-ups.)
+      v0.4.0 was published to npm with provenance; clean registry installation and provenance
+      readback remain smoke follow-ups, and brew remains out of scope.)
 - [x] docs: `docs/quickstart.md`, `docs/security.md`, `docs/smoke.md`, `CONTRIBUTING.md`, `CHANGELOG.md`
 
 ## npm distribution amendment (issue #4)
@@ -588,8 +590,9 @@ M6 internal inference, packaging
   publicly with provenance and `NPM_TOKEN`. The token belongs to an authorized
   organization member. Organization conversion and credential provisioning are
   owner operations; this implementation does not perform them.
-- First registry publication, provenance readback, and real Claude setup from the
-  registry installation must be verified after the next approved release tag.
+- The v0.4.0 release workflow completed registry publication with provenance.
+  Registry metadata/provenance readback and real Claude setup from a clean registry
+  installation remain to be verified.
 
 ## Out of scope
 
