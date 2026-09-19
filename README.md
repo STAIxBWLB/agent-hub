@@ -4,7 +4,7 @@ Native multi-agent hub for one developer's machine: Claude Code, Codex, Kimi Cod
 hub-owned local-LLM worker collaborate as peers in one project directory, with
 task-aware model routing (Switchyard) in front of a self-hosted gateway (OmniRoute).
 
-Status: 0.3.0. All six milestones of the design spec are implemented; the [smoke checklist](docs/smoke.md)
+Status: 0.3.1. All six milestones of the design spec are implemented; the [smoke checklist](docs/smoke.md)
 says what has and has not been verified against real agents.
 
 ## Start here
@@ -22,10 +22,14 @@ cd <your project> && ahub init && ahub up && ahub tail
 Or install the same version from GitHub:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.3.0 && ahub setup
+bun add -g github:STAIxBWLB/agent-hub#v0.3.1 && ahub setup
 ```
 
 The installed commands remain `ahub` and `agent-hub`.
+
+When upgrading an existing project, run `ahub init` to refresh its managed agent
+instructions and `ahub setup` to refresh the Claude plugin. Restart the daemon
+and agent sessions so both load the update.
 
 - [Quickstart](docs/quickstart.md): install, first session, the local worker, the commands of a working day
 - [Security notes](docs/security.md): what the hub defends and what it does not

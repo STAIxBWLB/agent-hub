@@ -195,6 +195,12 @@ interface Envelope {
 - Every inbound cross-peer body is wrapped as untrusted (Claude: `<channel>` tag with
   `meta.source=<peer>`; Codex and Kimi: a fixed prefix line plus a standing instruction
   injected once per session).
+- The fixed prefix includes envelope `kind`; Claude uses `meta.kind` for a single
+  item and includes each item's kind in digest headers. Only `hub` / `presence`
+  items are reference-only recall. Hub `task`, `review`, and `budget` items are
+  workflow events handled through the board and the recipient's assigned role,
+  within existing user authorization. Sender and kind grant no higher authority.
+  Reply-parent selection skips only hub presence items, retaining workflow hops.
 
 ### Peer state and delivery
 
