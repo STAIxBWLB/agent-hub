@@ -20,6 +20,7 @@ export interface PiOptions {
 }
 export interface PiTuiLaunch { cmd: string; args: string[]; env: NodeJS.ProcessEnv; }
 type RpcMessage = { type?: string; id?: string | number; command?: string; success?: boolean; data?: any; [key: string]: any };
+type VerifiedEmptyResume = { sessionId: string };
 function processSignature(pid: number): string | undefined { try { const result = Bun.spawnSync(["ps", "-p", String(pid), "-o", "lstart=,comm="], { stdout: "pipe", stderr: "pipe" }); if (result.exitCode !== 0) return undefined; const text = result.stdout.toString().trim(); return text ? new Bun.CryptoHasher("sha256").update(text).digest("hex") : undefined; } catch { return undefined; } }
 function ownerStillAlive(pid: number, signature: string | undefined): boolean { const current = processSignature(pid); if (current !== undefined) return current === signature; try { process.kill(pid, 0); return true; } catch { return false; } }
 
@@ -43,6 +44,10 @@ export class PiPeer extends BasePeer {
   private currentReply?: Envelope;
   private sessionId = "";
   private sessionFile = "";
+  private emptyResumeVerified = false;
+  private verifiedEmptyResume?: VerifiedEmptyResume;
+  private activityObserved = false;
+  private persistedOnce = false;
   private activeEnvs: Envelope[] = [];
   private activeTools = 0;
   private agentRunning = false;
@@ -64,15 +69,60 @@ export class PiPeer extends BasePeer {
 
   constructor(id: PeerId, private readonly opts: PiOptions) { super(id, opts.watchdogMs); }
   get tuiLaunch(): PiTuiLaunch | undefined { return this._tuiLaunch; }
+  get pendingResume(): { sessionId?: string; sessionFile?: string } {
+    if (this.canReuseVerifiedEmptyResume()) return { sessionId: this.verifiedEmptyResume!.sessionId };
+    return { sessionId: this.opts.sessionId, sessionFile: this.opts.sessionFile };
+  }
   get acceptingTools(): boolean { return !this.stopping; }
   /** Idle verified owners can be stopped; uncertain live owners and pending launches stay fenced. */
   get recoveryReady(): boolean {
     if (this.state === "busy" || this.starting || this.activeTools) return false;
-    if (this.opts.mode === "headless") return this.state === "idle" || !this.proc || this.proc.exitCode !== null;
+    if (this.sessionFile && !existsSync(this.sessionFile) && (this.activityObserved || this.persistedOnce)) return false;
+    if (this.opts.mode === "headless") return this.state === "idle" || !this.proc || this.proc.exitCode !== null || this.proc.signalCode !== null;
     if (this.state === "idle") return this.ownerClaimed && !!this.ownerPid && processSignature(this.ownerPid) === this.ownerSignature;
     return this.stopping && !this.ownerClaimed && (!this.ownerPid || !ownerStillAlive(this.ownerPid, this.ownerSignature));
   }
-  recoveryMetadata(): Record<string, unknown> { return { launch: { kind: "pi", cwd: this.opts.cwd, mode: this.opts.mode, backend: this.opts.backend, ...(this.opts.model ? { model: this.opts.model } : {}), ...(this.sessionFile ? { sessionFile: this.sessionFile } : {}) }, ...(this.sessionId ? { sessionId: this.sessionId } : {}), ...(this.sessionFile ? { sessionFile: this.sessionFile } : {}) }; }
+  recoveryMetadata(): Record<string, unknown> {
+    const exists = !!this.sessionFile && existsSync(this.sessionFile);
+    if (exists) { this.persistedOnce = true; this.verifiedEmptyResume = undefined; }
+    const empty = this.emptyResumeVerified && !this.activityObserved && !this.persistedOnce;
+    const file = this.sessionFile && (exists || !empty) ? this.sessionFile : undefined;
+    return { launch: { kind: "pi", cwd: this.opts.cwd, mode: this.opts.mode, backend: this.opts.backend, ...(this.opts.model ? { model: this.opts.model } : {}), ...(file ? { sessionFile: file } : {}) }, ...(this.sessionId ? { sessionId: this.sessionId } : {}), ...(file ? { sessionFile: file } : {}) };
+  }
+
+  /** Verify the live source before choosing ID-only restoration. Never infer emptiness from a missing file. */
+  async captureResume(): Promise<Record<string, unknown>> {
+    if (this.state === "offline") {
+      if (this.canReuseVerifiedEmptyResume()) return this.recoveryMetadata();
+      if (this.recoveryReady && this.sessionFile && existsSync(this.sessionFile)) return this.recoveryMetadata();
+      throw new Error("Pi source session is offline and has no verified persisted resume state");
+    }
+    this.emptyResumeVerified = false;
+    if (this.state !== "idle" || this.stopping || this.activeTools) throw new Error("Pi must settle before session capture");
+    if (this.sessionFile && existsSync(this.sessionFile)) return this.recoveryMetadata();
+    const snapshot = this.opts.mode === "headless"
+      ? (await this.waitRpc("get_state", 15_000)).data
+      : await this.sendTui({ type: "get_session_state" });
+    if (this.state !== "idle" || this.activeTools || snapshot?.sessionId !== this.sessionId || snapshot?.sessionFile !== this.sessionFile) throw new Error("Pi source session changed during capture");
+    const empty = this.opts.mode === "headless"
+      ? snapshot.messageCount === 0 && snapshot.pendingMessageCount === 0 && snapshot.isStreaming === false && snapshot.isCompacting !== true && !snapshot.sessionName
+      : snapshot.empty === true && snapshot.idle === true;
+    if (!empty || this.activityObserved || this.persistedOnce) throw new Error("Pi session history is not persisted; refusing to recreate it");
+    this.emptyResumeVerified = true;
+    const captured = this.recoveryMetadata();
+    if (typeof captured.sessionId === "string" && !captured.sessionFile) this.verifiedEmptyResume = { sessionId: captured.sessionId };
+    return captured;
+  }
+
+  private canReuseVerifiedEmptyResume(): boolean {
+    return !!this.verifiedEmptyResume && this.recoveryReady && !this.activityObserved && !this.persistedOnce && this.sessionId === this.verifiedEmptyResume.sessionId && (!this.sessionFile || !existsSync(this.sessionFile));
+  }
+
+  private noteActivity(): void {
+    this.activityObserved = true;
+    this.emptyResumeVerified = false;
+    this.verifiedEmptyResume = undefined;
+  }
 
   async start(): Promise<void> {
     if (this.starting) return this.starting;
@@ -112,6 +162,7 @@ export class PiPeer extends BasePeer {
       }
       if (url.pathname === "/tool") {
         if (this.stopping || this.state === "offline") return Response.json({ text: "error: Pi owner is stopped" }, { status: 409 });
+        this.noteActivity();
         this.activeTools++;
         if (this.state === "idle") this.setState("busy");
         if (this.state === "busy") this.touch();
@@ -148,6 +199,7 @@ export class PiPeer extends BasePeer {
       throw new Error("Pi get_state session identity does not match the requested recovery session");
     }
     this.sessionId = state.data.sessionId; this.sessionFile = state.data.sessionFile;
+    this.persistedOnce = existsSync(this.sessionFile);
     if ((this.opts.sessionId && this.sessionId !== this.opts.sessionId) || (this.opts.sessionFile && this.sessionFile !== this.opts.sessionFile)) throw new Error("Pi startup session identity mismatch");
     this.setState("idle");
   }
@@ -194,6 +246,7 @@ export class PiPeer extends BasePeer {
     try {
       const requested = await this.opts.selectModel?.(envs);
       if (requested) await this.setRequestedModel(requested);
+      this.noteActivity();
       attempted = true;
       if (this.opts.mode === "tui") await this.sendTui({ type: "prompt", message: renderDigest(envs, true) });
       else await this.sendRpc({ type: "prompt", message: renderDigest(envs, true) });
@@ -235,7 +288,7 @@ export class PiPeer extends BasePeer {
       this.startOwnerMonitor(); if (this.opts.mode === "tui") this.setState("idle");
     }
     if (event.type === "session_shutdown") { this.stopping = true; this.ownerClaimed = false; this.clearOwnerMonitor(); this.resolveTuiExit?.(); this.resolveTuiExit = undefined; this.setState("offline"); }
-    if (event.type === "agent_start") { this.agentRunning = true; this.setState("busy"); }
+    if (event.type === "agent_start") { this.noteActivity(); this.agentRunning = true; this.setState("busy"); }
     if (event.type === "activity" && this.state === "busy") this.touch();
     if (event.type === "agent_end") {
       this.settledText = typeof event.text === "string" ? event.text : "";

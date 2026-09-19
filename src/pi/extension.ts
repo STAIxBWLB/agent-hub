@@ -39,6 +39,15 @@ async function poll(pi: ExtensionAPI): Promise<void> {
       try {
         if (command.type === "prompt" || command.type === "steer") {
           pi.sendMessage({ customType: "agent-hub", content: String(command.message ?? ""), display: true }, { triggerTurn: command.type === "prompt", deliverAs: command.type === "steer" ? "steer" : "followUp" });
+        } else if (command.type === "get_session_state") {
+          const entries = runtimeCtx.sessionManager.getEntries();
+          await post("/ack", { id: command.id, ok: true, result: {
+            sessionId: runtimeCtx.sessionManager.getHeader()?.id,
+            sessionFile: runtimeCtx.sessionManager.getSessionFile(),
+            idle: runtimeCtx.isIdle() === true,
+            empty: entries.every((entry: any) => ["model_change", "thinking_level_change"].includes(entry.type)),
+          } });
+          continue;
         } else if (command.type === "set_model") {
           const model = modelRegistry?.find(String(command.provider), String(command.modelId));
           if (!model || !(await (pi as any).setModel?.(model))) throw new Error("Pi model is not available");
