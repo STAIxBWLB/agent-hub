@@ -75,7 +75,7 @@ export function registeredProjects(home = hubHome()): Project[] {
 
 export function planFingerprint(plan: Omit<UpgradePlan, "fingerprint">): string {
   const stable = { ...plan, projects: plan.projects.map((p) => ({ ...p, source: { ...p.source, recovery: undefined,
-    peers: p.source.peers.map(({ state: _state, ...peer }) => peer) } })) };
+    peers: p.source.peers.map(({ state, ...peer }) => ({ ...peer, active: state !== "offline" })) } })) };
   return createHash("sha256").update(JSON.stringify(stable)).digest("hex");
 }
 
@@ -143,6 +143,14 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     if (observed.recovery?.operationId !== id) throw new Error("daemon is not owned by this recovery operation");
     if (observed.version !== op.plan.version) throw new Error("target daemon version mismatch");
   };
+  const sourceRoster = (live: Inspection, planned: PlannedProject) => {
+    const expected = planned.source.peers.filter((p) => p.state !== "offline");
+    const active = live.peers.filter((p) => p.state !== "offline");
+    if (active.length !== expected.length || expected.some((peer) => {
+      const current = active.find((p) => p.id === peer.id);
+      return !current || current.threadId !== peer.threadId || current.sessionId !== peer.sessionId;
+    })) throw new Error("source conversation or active peer membership changed; make a new plan");
+  };
   try {
     op.phase = "running"; delete op.error; save();
     step("stage");
@@ -158,10 +166,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       if (live.state !== "running" || live.instanceId !== planned.source.instanceId || live.version !== planned.source.version) {
         throw new Error(`${planned.project.id}: source runtime changed; make a new plan`);
       }
-      for (const peer of planned.source.peers.filter((p) => p.state !== "offline")) {
-        const current = live.peers.find((p) => p.id === peer.id);
-        if (!current || current.threadId !== peer.threadId || current.sessionId !== peer.sessionId) throw new Error("source conversation changed; make a new plan");
-      }
+      sourceRoster(live, planned);
     }
     for (let i = 0; i < op.projects.length; i++) {
       const progress = op.projects[i]!, planned = op.plan.projects[i]!, project = planned.project;
@@ -174,7 +179,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
           const live = await driver.inspect(project);
           if (live.instanceId !== planned.source.instanceId) throw new Error("source daemon changed during preparation");
           if (live.recovery?.operationId !== id) throw new Error("preparation expired or belongs to another operation");
-          if (live.recovery.ready) break;
+          if (live.recovery.ready) { sourceRoster(live, planned); break; }
           if (driver.now() >= deadline) {
             await driver.abort(project, id, planned.source.instanceId!);
             throw new Error(`${project.id}: active turns or approvals did not finish; source runtime left running`);

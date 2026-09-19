@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { Server, ServerWebSocket } from "bun";
 import { renderDigest, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
-import { stopOwnedProcess } from "../hub/child-process.ts";
+import { childEnv, stopOwnedProcess } from "../hub/child-process.ts";
 
 export interface CodexOptions {
   /** Port the TUI attaches to: `codex --enable tui_app_server --remote ws://127.0.0.1:<proxyPort>`. */
@@ -21,6 +21,8 @@ export interface CodexOptions {
   /** How often to ask app-server for the rate limits while a TUI is attached. */
   usagePollMs?: number;
   cwd: string;
+  /** Optional launch environment; recovery authority is always removed before spawn. */
+  env?: NodeJS.ProcessEnv;
   watchdogMs?: number;
   log?: (line: string) => void;
 }
@@ -216,6 +218,7 @@ export class CodexPeer extends BasePeer {
     let gone = "";
     this.proc = spawn(this.opts.bin ?? "codex", ["app-server", "--listen", `ws://127.0.0.1:${port}`, ...(this.opts.extraArgs ?? [])], {
       cwd: this.opts.cwd,
+      env: childEnv({ ...process.env, ...(this.opts.env ?? {}) }),
       stdio: ["ignore", "ignore", "pipe"],
     });
     this.proc.stderr?.on("data", (d) => this.opts.log?.(`[${this.id}] ${String(d).trimEnd()}`));

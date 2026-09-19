@@ -105,6 +105,33 @@ test("read-only registry planning creates no directory or database", () => {
   expect(existsSync(missing)).toBe(false);
 });
 
+test("peer fingerprints preserve online membership while normalizing transient active states", () => {
+  const f = fixture();
+  const body = structuredClone(f.plan);
+  body.projects[0]!.source.peers = [{ id: "kimi", state: "idle", sessionId: "same-session" }];
+  const hash = () => { const { fingerprint: _ignored, ...plan } = body; return planFingerprint(plan); };
+  const online = hash();
+  body.projects[0]!.source.peers[0]!.state = "busy";
+  expect(hash()).toBe(online);
+  body.projects[0]!.source.peers[0]!.state = "paused";
+  expect(hash()).toBe(online);
+  body.projects[0]!.source.peers[0]!.state = "offline";
+  expect(hash()).not.toBe(online);
+});
+
+test("a peer going offline after confirmation blocks before any runtime is stopped", async () => {
+  const f = fixture();
+  f.plan.projects[0]!.source.peers = [{ id: "kimi", state: "idle", sessionId: "same-session" }];
+  f.states.get("alpha")!.peers = [{ id: "kimi", state: "offline", sessionId: "same-session" }];
+  const { fingerprint: _ignored, ...body } = f.plan;
+  f.plan.fingerprint = planFingerprint(body);
+  writeOperation(f.operation.id, f.operation, f.home);
+  const result = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(result.phase).toBe("blocked");
+  expect(result.error).toContain("active peer membership changed");
+  expect(f.calls).toEqual(["stage"]);
+});
+
 test("runner ownership prevents concurrent resume even with the same operation ID", () => {
   const f = fixture();
   const release = claimRunner(f.operation.id, f.home);

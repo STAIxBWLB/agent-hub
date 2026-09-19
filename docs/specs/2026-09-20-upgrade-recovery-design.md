@@ -41,6 +41,9 @@ and release. Mutations are pinned to the expected instance and operation. Prepar
 holds deliveries while current turns and approvals finish. A ten-minute source
 preparation timeout aborts the hold without stopping the source. The replacement
 remains held until explicit verified release.
+Budget expiry, pause and handoff transitions are held with message delivery;
+in-flight budget work must settle before commit. Deferred quota readings are
+evaluated after release or abort, preserving hard-limit semantics.
 
 Commit writes a private, atomic project snapshot of queued envelopes, IDs,
 parents/hops, retries, dedupe state, prefaces, manual pauses and peer descriptors.
@@ -57,6 +60,9 @@ claim. Lifecycle commands and the manager respect that lock. Package versions
 are staged in a retained directory, with exact registry integrity and local
 runtime digest checks. The coordinator runs from a preserved source tree so
 replacing the global executable cannot kill its own recovery logic.
+Recovery authority is removed from native agent and app-server child environments.
+The reviewed fingerprint retains active-versus-offline peer membership, while
+normalizing transient idle/busy/paused changes.
 
 Projects transition sequentially. Source terminal ownership and idle state are
 verified before closing only the captured terminals. New daemons restore with

@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { renderDigest, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
-import { stopOwnedProcess } from "../hub/child-process.ts";
+import { childEnv, stopOwnedProcess } from "../hub/child-process.ts";
 
 export interface PermissionOption {
   optionId: string;
@@ -21,6 +21,8 @@ export interface AcpOptions {
   /** Coordinator-visible selected model only; contains no prompts or command arguments. */
   launchModel?: string;
   cwd: string;
+  /** Optional launch environment; recovery authority is always removed before spawn. */
+  env?: NodeJS.ProcessEnv;
   watchdogMs?: number;
   /** ACP stdio MCP servers for the session (the hub's task tools). */
   mcpServers?: { name: string; command: string; args: string[]; env: { name: string; value: string }[] }[];
@@ -60,7 +62,7 @@ export class AcpPeer extends BasePeer {
 
   async start(): Promise<void> {
     const [bin, ...args] = this.opts.cmd;
-    const proc = spawn(bin!, args, { cwd: this.opts.cwd, stdio: ["pipe", "pipe", "pipe"] });
+    const proc = spawn(bin!, args, { cwd: this.opts.cwd, env: childEnv({ ...process.env, ...(this.opts.env ?? {}) }), stdio: ["pipe", "pipe", "pipe"] });
     this.proc = proc;
     proc.on("error", (e) => this.down(`spawn failed: ${e.message}`));
     proc.on("exit", (code) => this.down(`exited with code ${code}`));

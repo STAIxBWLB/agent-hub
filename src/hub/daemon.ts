@@ -217,6 +217,7 @@ export async function startDaemon(opts: DaemonOptions) {
       recoveryPhase = undefined;
       recoveryPeerSnapshot = undefined;
       bus.setRecoveryHold(false);
+      budget.setRecoveryHold(false);
       removeRestartSnapshot(opts.stateDir);
       writeStatus();
     }, 10 * 60_000);
@@ -310,6 +311,7 @@ export async function startDaemon(opts: DaemonOptions) {
     },
     notify: (line) => notify(line),
   });
+  budget.setRecoveryHold(recoveryActive());
   const kimiTokens: { at: number; n: number }[] = [];
   startupCleanup.push(() => budget.close());
   let kimiSessionTotal = 0;
@@ -421,7 +423,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return r ? { paused: `budget: ${r.reason}, resets ${new Date(r.resetsAt).toLocaleTimeString()}` } : {};
   };
   const recoveryReady = () => {
-    if (!recoveryActive() || permissions.size !== 0 || starting.size !== 0 || [...bus.peers.values()].some((peer) => peer.state === "busy")) return false;
+    if (!recoveryActive() || permissions.size !== 0 || starting.size !== 0 || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy")) return false;
     if (!recoveryPeerSnapshot) return true;
     const current = recoveryPeers();
     return recoveryPeerSnapshot.every((saved) => {
@@ -713,6 +715,7 @@ export async function startDaemon(opts: DaemonOptions) {
     capabilities: { controlledRestart: true, snapshotSchemaVersion: 1, maxLeaseMs: 10 * 60_000 },
     blockers: [
       ...(starting.size ? ["peer startup in progress"] : []),
+      ...(!budget.recoverySettled ? ["budget transition in progress"] : []),
       ...([...bus.peers].filter(([, peer]) => peer.state === "busy").map(([id]) => `${id} is busy`)),
       ...(permissions.size ? ["pending approvals"] : []),
     ],
@@ -742,6 +745,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!recoveryPhase) recoveryPhase = "preparing";
       armRecoveryLease();
       recoveryPeerSnapshot ??= Object.values(recoveryPeers());
+      budget.setRecoveryHold(true);
       bus.setRecoveryHold(true);
       await bus.fenceRecovery();
       const blocked = [...bus.peers].filter(([, peer]) => peer.state === "busy").map(([id]) => id);
@@ -764,6 +768,7 @@ export async function startDaemon(opts: DaemonOptions) {
       recoveryPeerSnapshot = undefined;
       clearTimeout(recoveryLeaseTimer);
       bus.setRecoveryHold(false);
+      budget.setRecoveryHold(false);
       writeStatus();
       return { t: "recovery", ok: true, aborted: true, recovery: recoveryView() };
     }
@@ -811,6 +816,7 @@ export async function startDaemon(opts: DaemonOptions) {
       recoveryPhase = "released";
       clearTimeout(recoveryLeaseTimer);
       bus.setRecoveryHold(false);
+      budget.setRecoveryHold(false);
       writeStatus();
       return { t: "recovery", ok: true, released: true, recovery: recoveryView() };
     }

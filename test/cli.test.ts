@@ -7,6 +7,7 @@ import { buildLaunch, CLAUDE_CHANNEL, statusLineSettings, UNATTENDED_WARNING } f
 import { allocatePorts } from "../src/hub/ports.ts";
 import { nextStep, parseList, pluginState } from "../src/cli/setup.ts";
 import { VERSION } from "../src/version.ts";
+import { childEnv } from "../src/hub/child-process.ts";
 
 test("ahub init is idempotent and keeps text outside the markers", () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
@@ -30,6 +31,14 @@ test("default launches keep permission prompts; --unattended opts out and warns"
   expect(loud.args).toContain("--dangerously-skip-permissions");
   expect(loud.warning).toBe(UNATTENDED_WARNING);
   expect(buildLaunch("codex", [], { unattended: true, proxyUrl: "ws://x" }).args).toContain("--dangerously-bypass-approvals-and-sandbox");
+});
+
+test("native launcher environment drops recovery authority but keeps profile and state paths", () => {
+  const env = childEnv({ AGENTHUB_RECOVERY_OPERATION: "operation-secret", CODEX_HOME: "/account/codex", CLAUDE_CONFIG_DIR: "/account/claude", AGENTHUB_STATE_DIR: "/project/state" });
+  expect(env.AGENTHUB_RECOVERY_OPERATION).toBeUndefined();
+  expect(env.CODEX_HOME).toBe("/account/codex");
+  expect(env.CLAUDE_CONFIG_DIR).toBe("/account/claude");
+  expect(env.AGENTHUB_STATE_DIR).toBe("/project/state");
 });
 
 test("launchers refuse user-supplied copies of hub-owned flags", () => {

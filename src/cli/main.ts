@@ -18,6 +18,7 @@ import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
 import { createInterface } from "node:readline/promises";
 import { assertLifecycleAvailable, readOperation } from "../hub/recovery-store.ts";
+import { childEnv } from "../hub/child-process.ts";
 import { abortRecovery, createOperation, publicOperation, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
 import { makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { recordTerminalLaunch } from "./terminal-recovery.ts";
@@ -102,7 +103,7 @@ async function healthy(): Promise<boolean> {
 }
 
 function exec(bin: string, argv: string[]): never {
-  const res = spawnSync(bin, argv, { cwd, stdio: "inherit", env: { ...process.env, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
+  const res = spawnSync(bin, argv, { cwd, stdio: "inherit", env: { ...childEnv(), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
   if (res.error) fail(`cannot run ${bin}: ${res.error.message}`);
   process.exit(res.status ?? 1);
 }
