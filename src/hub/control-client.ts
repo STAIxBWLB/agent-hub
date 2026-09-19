@@ -6,8 +6,8 @@ export function stateDirFor(cwd: string): string {
   return projectContext(cwd).stateDir;
 }
 
-/** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages; 4 = budget messages and `hub_checkpoint`; 5 = `ask`; 6 = console-only `ui` session bootstrap. The plugin is installed apart from the daemon, so they can drift. */
-export const PROTOCOL = 8; // controlled daemon restart/recovery RPC and project/instance identity
+/** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages; 4 = budget messages and `hub_checkpoint`; 5 = `ask`; 6 = console-only `ui` session bootstrap; 8 = controlled recovery; 9 = Pi bridge metadata. The plugin is installed apart from the daemon, so they can drift. */
+export const PROTOCOL = 9; // controlled restart/recovery plus the Pi bridge contract
 
 export interface Hello {
   /** `tools`: acts for `peer` (task tools, hub_send) without being a delivery target: the MCP server Kimi and Codex run. */
@@ -51,11 +51,13 @@ export class ControlClient {
 
   private constructor(private readonly ws: WebSocket) {}
 
-  static connect(stateDir: string, hello: Hello, timeoutMs = 3000): Promise<ControlClient> {
+  /** `protocol` is used only by the upgrade coordinator for an authenticated, explicitly supported source contract. */
+  static connect(stateDir: string, hello: Hello, timeoutMs = 3000, protocol = PROTOCOL): Promise<ControlClient> {
+    if (protocol !== 8 && protocol !== PROTOCOL) return Promise.reject(new Error(`unsupported recovery source protocol ${protocol}`));
     const control = readControl(stateDir);
     if (!control) return Promise.reject(new Error(`no hub running for ${stateDir} (run: ahub up)`));
-    if (control.protocol !== undefined && control.protocol !== PROTOCOL) {
-      return Promise.reject(Object.assign(new Error(`wire version mismatch: hub speaks ${control.protocol}, CLI speaks ${PROTOCOL}; stop it with its matching CLI, then upgrade and restart`), { code: 4426 }));
+    if (control.protocol !== undefined && control.protocol !== protocol) {
+      return Promise.reject(Object.assign(new Error(`wire version mismatch: hub speaks ${control.protocol}, CLI speaks ${protocol}; stop it with its matching CLI, then upgrade and restart`), { code: 4426 }));
     }
     if ((hello.projectId && hello.projectId !== control.projectId) ||
         (hello.instanceId && hello.instanceId !== control.instanceId) ||
@@ -87,7 +89,7 @@ export class ControlClient {
         client.pending.delete(msg.rid);
         done(msg);
       };
-      ws.onopen = () => void client.request({ t: "hello", v: PROTOCOL, token: control.token, ...hello, ...expected }, timeoutMs).then((reply) => {
+      ws.onopen = () => void client.request({ t: "hello", v: protocol, token: control.token, ...hello, ...expected }, timeoutMs).then((reply) => {
         if (reply.t !== "welcome" || reply.ok === false) return refuse(new Error(reply.error ?? "hub refused handshake"));
         if ((expected.projectId && reply.projectId !== expected.projectId) ||
             (expected.instanceId && reply.instanceId !== expected.instanceId) ||

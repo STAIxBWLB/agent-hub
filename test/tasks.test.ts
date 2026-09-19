@@ -72,8 +72,8 @@ test("assignment: preference order, idle before busy, paused/offline/detached sk
   const routing = loadRouting(dir);
   const all = { claude: "idle", codex: "idle", kimi: "idle", local: "idle" } as const;
   const task = (cls: any, signals: string[] = []) => ({ class: cls, signals });
-  expect(assign(task("implement"), all, routing)).toMatchObject({ owner: "codex", reviewer: "claude" });
-  expect(assign(task("implement"), { ...all, codex: "busy" }, routing).owner).toBe("kimi");
+  expect(assign(task("implement"), all, routing)).toMatchObject({ owner: "local", reviewer: "claude" });
+  expect(assign(task("implement"), { ...all, codex: "busy" }, routing).owner).toBe("local");
   expect(assign(task("implement"), { codex: "busy", claude: "idle" }, routing).owner).toBe("codex"); // busy beats nobody
   expect(assign(task("implement"), { ...all, codex: "paused", kimi: "offline" }, routing).owner).toBe("local");
   expect(assign(task("implement"), all, routing, { exclude: ["codex", "kimi"] }).owner).toBe("local");
@@ -81,7 +81,7 @@ test("assignment: preference order, idle before busy, paused/offline/detached sk
   expect(assign(task("implement"), all, routing, { candidates: ["ghost"] }).owner).toBeUndefined();
   expect(assign(task("review"), all, routing)).toMatchObject({ owner: "claude" });
   expect(assign(task("plan"), all, routing, { candidates: ["local"] }).owner).toBeUndefined(); // local_allowed = false
-  expect(assign(task("bulk_edit", ["long_context"]), all, routing).owner).toBe("kimi");
+  expect(assign(task("bulk_edit", ["long_context"]), all, routing).owner).toBe("kimi"); // long_context still skips local/Pi
   expect(assign(task("implement"), { codex: "idle", claude: "idle" }, routing).reviewer).toBe("claude");
   expect(assign(task("implement"), all, routing, { candidates: ["claude"] }).reviewer).toBe("codex"); // never reviews its own work
 
@@ -101,16 +101,16 @@ test("propose -> assigned by class -> accept -> done -> review envelope -> appro
   const { tasks, peers, board, saves } = await setup();
   const t = await tasks.propose("claude", { title: "add --json to ahub status", class: "implement", refs: { paths: ["src/cli/main.ts"] } });
   await tick();
-  expect(t).toMatchObject({ owner: "codex", reviewer: "claude", state: "proposed" });
-  const offer = peers.codex!.got.at(-1)!;
+  expect(t).toMatchObject({ owner: "local", reviewer: "claude", state: "proposed" });
+  const offer = peers.local!.got.at(-1)!;
   expect(offer).toMatchObject({ from: HUB, kind: "task", priority: "important", refs: { task: "1" } });
   expect(offer.body).toContain("Task #1 [implement] add --json to ahub status");
   expect(peers.kimi!.got).toHaveLength(0);
 
-  expect(() => tasks.accept("kimi", 1)).toThrow(/only its owner \(codex\)/);
-  tasks.accept("codex", 1);
+  expect(() => tasks.accept("kimi", 1)).toThrow(/only its owner \(local\)/);
+  tasks.accept("local", 1);
   await expect(tasks.review("claude", 1, "approved")).rejects.toThrow(/cannot move/);
-  await tasks.done("codex", 1, "flag added, tests pass", { commit: "abc123" });
+  await tasks.done("local", 1, "flag added, tests pass", { commit: "abc123" });
   await tick();
   const ask = peers.claude!.got.at(-1)!;
   expect(ask.kind).toBe("review");
@@ -119,41 +119,41 @@ test("propose -> assigned by class -> accept -> done -> review envelope -> appro
   await tasks.review("claude", 1, "approved", "clean");
   await tick();
   expect(board.get(1)!.state).toBe("approved");
-  expect(peers.codex!.got.at(-1)!.body).toContain("approved by claude");
+  expect(peers.local!.got.at(-1)!.body).toContain("approved by claude");
   // notes: done and the verdict, not proposed or accepted
   expect(saves().map((s) => s.metadata.kind)).toEqual(["finding", "decision"]);
-  expect(saves()[0].metadata).toMatchObject({ peer: "codex", task: 1 });
+  expect(saves()[0].metadata).toMatchObject({ peer: "local", task: 1 });
 });
 
 test("changes_requested twice escalates to the next attached peer in escalate_to, with the review notes", async () => {
   const { tasks, peers, board, notices } = await setup();
   await tasks.propose("claude", { title: "fix the parser", class: "implement" });
-  tasks.accept("codex", 1);
-  await tasks.done("codex", 1, "v1");
+  tasks.accept("local", 1);
+  await tasks.done("local", 1, "v1");
   const once = await tasks.review("claude", 1, "changes_requested", "edge case missing");
-  expect(once).toMatchObject({ state: "in_progress", owner: "codex", rejections: 1 });
-  await tasks.done("codex", 1, "v2");
+  expect(once).toMatchObject({ state: "in_progress", owner: "local", rejections: 1 });
+  await tasks.done("local", 1, "v2");
   const twice = await tasks.review("claude", 1, "changes_requested", "still wrong");
   await tick();
-  expect(twice).toMatchObject({ state: "in_progress", owner: "kimi", rejections: 0 });
-  expect(peers.kimi!.got.at(-1)!.body).toContain("edge case missing");
-  expect(peers.codex!.got.at(-1)!.body).toContain("moved to kimi");
-  expect(notices.some((n) => n.includes("escalated from codex to kimi"))).toBe(true);
+  expect(twice).toMatchObject({ state: "in_progress", owner: "codex", rejections: 0 });
+  expect(peers.codex!.got.at(-1)!.body).toContain("edge case missing");
+  expect(peers.local!.got.at(-1)!.body).toContain("moved to codex");
+  expect(notices.some((n) => n.includes("escalated from local to codex"))).toBe(true);
   expect(board.get(1)!.history.map((h) => h.event)).toContain("escalated");
 });
 
 test("a decline reaches the next peer in the class list; a task that is in review or approved cannot change hands", async () => {
   const { tasks, peers, board } = await setup();
   await tasks.propose("claude", { title: "implement the thing", class: "implement" });
-  expect(board.get(1)!.owner).toBe("codex");
-  const next = await tasks.decline("codex", 1, "busy with the release");
+  expect(board.get(1)!.owner).toBe("local");
+  const next = await tasks.decline("local", 1, "busy with the release");
   await tick();
-  expect(next).toMatchObject({ owner: "kimi", state: "proposed" });
-  expect(peers.kimi!.got.at(-1)!.body).toContain("Task #1");
-  expect(tasks.explain(1).join("\n")).toContain("owner candidate codex: skipped, excluded");
+  expect(next).toMatchObject({ owner: "codex", state: "proposed" });
+  expect(peers.codex!.got.at(-1)!.body).toContain("Task #1");
+  expect(tasks.explain(1).join("\n")).toContain("owner candidate local: skipped, excluded");
 
-  tasks.accept("kimi", 1);
-  await tasks.done("kimi", 1, "done", { paths: "src/thing.ts" } as any); // a model sent a string where the schema says array
+  tasks.accept("codex", 1);
+  await tasks.done("codex", 1, "done", { paths: "src/thing.ts" } as any); // a model sent a string where the schema says array
   await tick();
   expect(board.get(1)).toMatchObject({ state: "in_review", refs: { paths: ["src/thing.ts"] } });
   expect(peers.claude!.got.at(-1)!.body).toContain("paths src/thing.ts"); // the review still went out
@@ -162,18 +162,33 @@ test("a decline reaches the next peer in the class list; a task that is in revie
   }
 });
 
-test("a second rejection with nobody to escalate to still reaches the owner", async () => {
+test("a second rejection escalates to the next configured peer", async () => {
   const { tasks, peers, notices } = await setup();
-  await tasks.propose("claude", { title: "summarize the log", class: "summarize", owner: "kimi" }); // summarize has no escalate_to
+  await tasks.propose("claude", { title: "summarize the log", class: "summarize", owner: "kimi" });
   tasks.accept("kimi", 1);
   for (const note of ["too long", "still too long"]) {
     await tasks.done("kimi", 1, "v");
     await tasks.review("claude", 1, "changes_requested", note);
   }
   await tick();
-  expect(peers.kimi!.got.at(-1)!.body).toContain("requests changes again. still too long");
-  expect(notices.at(-1)).toContain("escalation found nobody");
-  expect((await tasks.done("kimi", 1, "v3")).state).toBe("in_review"); // and the task is not stuck
+  expect(peers.codex!.got.at(-1)!.body).toContain("Task #1");
+  expect(notices.at(-1)).toContain("escalated from kimi to codex");
+  expect((await tasks.done("codex", 1, "v3")).state).toBe("in_review"); // and the task is not stuck
+});
+
+test("a second rejection with no available escalation peer still reaches the owner", async () => {
+  const { tasks, peers, notices, board } = await setup(["claude", "kimi"]);
+  await tasks.propose("claude", { title: "summarize the log", class: "summarize", owner: "kimi" });
+  tasks.accept("kimi", 1);
+  for (const note of ["too long", "still too long"]) {
+    await tasks.done("kimi", 1, "v");
+    await tasks.review("claude", 1, "changes_requested", note);
+  }
+  await tick();
+  expect(board.get(1)!.owner).toBe("kimi");
+  expect(peers.kimi!.got.at(-1)!.body).toContain("still too long");
+  expect(notices.at(-1)).toContain("stays with kimi");
+  expect((await tasks.done("kimi", 1, "v3")).state).toBe("in_review");
 });
 
 test("routing.toml is re-read when it changes; a half-saved file keeps the last good policy", () => {
@@ -245,13 +260,13 @@ test("briefs: matching observations ride with the task; the same peer is not sho
   const { tasks, peers } = await setup(undefined, { claude: ["65001 10:00a decision switchyard sidecar fallback design"] });
   await tasks.propose("claude", { title: "harden the switchyard sidecar", class: "implement" });
   await tick();
-  const first = peers.codex!.got.at(-1)!.body;
+  const first = peers.local!.got.at(-1)!.body;
   expect(first).toContain("Memory brief");
   expect(first).toContain("#65001 10:00a decision switchyard sidecar fallback design");
   expect(first).toContain("#65002"); // the timeline neighbour
-  await tasks.assignTo(1, "codex");
+  await tasks.assignTo(1, "local");
   await tick();
-  expect(peers.codex!.got.at(-1)!.body).not.toContain("#65001");
+  expect(peers.local!.got.at(-1)!.body).not.toContain("#65001");
   await tasks.assignTo(1, "kimi");
   await tick();
   expect(peers.kimi!.got.at(-1)!.body).toContain("#65001"); // a different peer has not seen it
@@ -270,13 +285,13 @@ test("hub_remember carries peer, kind and task; with the worker down the board w
   expect(saves().at(-1)).toMatchObject({ text: "use bun:sqlite, not a server", project: "agent-hub", metadata: { peer: "codex", kind: "decision", task: 1 } });
   mem.stop();
   expect(await tasks.remember("codex", { text: "x" })).toBe("memory worker unavailable; nothing saved");
-  tasks.accept("codex", 1);
-  expect((await tasks.done("codex", 1, "done")).state).toBe("in_review");
+  tasks.accept("local", 1);
+  expect((await tasks.done("local", 1, "done")).state).toBe("in_review");
 });
 
 test("budget pause: open work goes to local first through the constraints, reviews move on, PII gets no handoff text", async () => {
   const { tasks, peers, board, bus } = await setup();
-  await tasks.propose("claude", { title: "implement parser", class: "implement" }); // #1 -> codex
+  await tasks.propose("claude", { title: "implement parser", class: "implement", owner: "codex" }); // #1 explicit cloud owner
   await tasks.propose("user", { title: "plan the release", class: "plan", owner: "codex" }); // #2 -> codex, local not allowed
   await tasks.propose("claude", { title: "note for 900101-1234567", class: "implement" }); // #3 pii -> local
   await tasks.propose("user", { title: "kimi's change", class: "implement", owner: "kimi" }); // #4, reviewer claude
@@ -353,7 +368,7 @@ test("route explain runs the assignment code: same owner, skipped candidates nam
   peers.codex!.set("offline");
   const lines = tasks.explain({ title: "rename things", class: "implement" });
   expect(lines.join("\n")).toContain("owner candidate codex: skipped, offline");
-  expect(lines).toContain("owner: kimi");
-  expect((await tasks.propose("claude", { title: "rename things", class: "implement" })).owner).toBe("kimi");
-  expect(tasks.explain(1)[0]).toContain("#1 rename things (proposed, owner kimi)");
+  expect(lines).toContain("owner: local");
+  expect((await tasks.propose("claude", { title: "rename things", class: "implement" })).owner).toBe("local");
+  expect(tasks.explain(1)[0]).toContain("#1 rename things (proposed, owner local)");
 });

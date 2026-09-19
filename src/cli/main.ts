@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { ControlClient, readControl } from "../hub/control-client.ts";
 import { loadConfig } from "../hub/daemon.ts";
@@ -22,6 +23,7 @@ import { childEnv } from "../hub/child-process.ts";
 import { abortRecovery, createOperation, publicOperation, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
 import { makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { recordTerminalLaunch } from "./terminal-recovery.ts";
+import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
 
 const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one project directory
 
@@ -40,6 +42,8 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub claude [args...]         launch Claude Code with the hub channel   [--unattended]
   ahub codex [args...]          start the Codex adapter and attach the TUI [--unattended]
   ahub kimi [--model <alias>]   start Kimi headless under ACP
+  ahub pi [--mode headless|tui] [--backend auto|dgx|mlx] [--session-id <id>] [--session-file <path>]  start Pi
+  ahub models setup|status|start|stop  manage the pinned local MLX runtime
   ahub local [--route <id> | --model <id>]
                                start the hub-native worker on the self-hosted models (routing.toml)
   ahub say [@peer ...] <text>   send as the console user (no @peer = broadcast); delivered at once,
@@ -106,6 +110,29 @@ function exec(bin: string, argv: string[]): never {
   const res = spawnSync(bin, argv, { cwd, stdio: "inherit", env: { ...childEnv(), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
   if (res.error) fail(`cannot run ${bin}: ${res.error.message}`);
   process.exit(res.status ?? 1);
+}
+
+function execWithEnv(bin: string, argv: string[], extra: NodeJS.ProcessEnv): never {
+  const env: NodeJS.ProcessEnv = { ...extra, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
+  delete env.AGENTHUB_RECOVERY_OPERATION;
+  delete env.AGENTHUB_UNATTENDED;
+  const res = spawnSync(bin, argv, { cwd, stdio: "inherit", env });
+  if (res.error) fail(`cannot run ${bin}: ${res.error.message}`);
+  process.exit(res.status ?? 1);
+}
+
+function piFlags(): { mode: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; model?: string; sessionId?: string; sessionFile?: string } {
+  for (const flag of ["--mode", "--backend", "--model", "--session-id", "--session-file"]) {
+    const index = args.indexOf(flag);
+    if (index >= 0 && (!args[index + 1] || args[index + 1]!.startsWith("--"))) fail(`${flag} needs a value`);
+  }
+  const mode = (args.includes("--mode") ? args[args.indexOf("--mode") + 1] : "headless") as string;
+  const backend = (args.includes("--backend") ? args[args.indexOf("--backend") + 1] : undefined) as string | undefined;
+  const model = args.includes("--model") ? args[args.indexOf("--model") + 1] : undefined;
+  const sessionId = args.includes("--session-id") ? args[args.indexOf("--session-id") + 1] : undefined;
+  const sessionFile = args.includes("--session-file") ? args[args.indexOf("--session-file") + 1] : undefined;
+  if (!["headless", "tui"].includes(mode) || (backend !== undefined && !["auto", "dgx", "mlx"].includes(backend)) || (sessionId && sessionFile)) fail("usage: ahub pi [--mode headless|tui] [--backend auto|dgx|mlx] [--model <alias>] [--session-id <id> | --session-file <path>]");
+  return { mode: mode as "headless" | "tui", ...(backend ? { backend: backend as "auto" | "dgx" | "mlx" } : {}), ...(model ? { model } : {}), ...(sessionId ? { sessionId } : {}), ...(sessionFile ? { sessionFile } : {}) };
 }
 
 async function projectRows() {
@@ -363,6 +390,25 @@ const commands: Record<string, () => Promise<void> | void> = {
     console.log(res.already ? "kimi is already attached" : 'kimi attached (headless). Talk to it with: ahub say @kimi "..."');
   },
 
+  pi: async () => {
+    const options = piFlags();
+    const hub = await connect();
+    const res = await hub.request({ t: "start", peer: "pi", args: options, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+    hub.close();
+    if (!res.ok) fail(res.error);
+    if (options.mode === "tui") {
+      const launch = res.launch;
+      if (!launch || typeof launch.cmd !== "string" || !Array.isArray(launch.args) || !launch.args.every((a: unknown) => typeof a === "string") || !launch.env || typeof launch.env !== "object") fail("Pi TUI launch metadata was not verified");
+      const launchEnv = { ...(launch.env as NodeJS.ProcessEnv) };
+      delete launchEnv.AGENTHUB_RECOVERY_OPERATION;
+      delete launchEnv.AGENTHUB_UNATTENDED;
+      const control = readControl(stateDir);
+      if (control?.instanceId) await recordTerminalLaunch("pi", cwd, stateDir, control.instanceId);
+      return execWithEnv(launch.cmd, launch.args, launchEnv);
+    }
+    console.log(res.already ? "pi is already attached" : 'pi attached (headless). Talk to it with: ahub say @pi "..."');
+  },
+
   local: async () => {
     const opt = (flag: string) => (args.includes(flag) ? args[args.indexOf(flag) + 1] ?? fail(`${flag} needs a value`) : undefined);
     const hub = await connect();
@@ -370,6 +416,22 @@ const commands: Record<string, () => Promise<void> | void> = {
     hub.close();
     if (!res.ok) fail(res.error);
     console.log(res.already ? "local is already attached" : `local attached on ${res.model}. Give it work with: ahub say @local "..."`);
+  },
+
+  models: async () => {
+    const action = args[0] ?? "status";
+    const runtimeDir = join(homedir(), ".agenthub", "runtimes", "mlx");
+    const modelPath = join(homedir(), ".agenthub", "models", "qwen3-8b-mlx");
+    if (action === "status") return console.log(JSON.stringify(await inspectMlx({ runtimeDir, modelPath }), null, 2));
+    if (action === "start") { const handle = await ensureMlx({ runtimeDir, modelPath }); return console.log(JSON.stringify(handle.status(), null, 2)); }
+    if (action === "stop") { await stopMlx({ runtimeDir, modelPath }); return console.log("MLX stopped"); }
+    if (action !== "setup") fail("usage: ahub models setup|status|start|stop");
+    const python = join(runtimeDir, "bin", "python");
+    const run = (argv: string[]) => { const result = spawnSync(argv[0]!, argv.slice(1), { cwd, stdio: "inherit" }); if (result.status !== 0) fail(`models setup failed: ${argv.join(" ")}`); };
+    if (!existsSync(python)) run(["uv", "venv", "--python", "3.12", runtimeDir]);
+    run(["uv", "pip", "install", "--python", python, "mlx-lm==0.31.3"]);
+    run([python, "-c", `from huggingface_hub import snapshot_download; snapshot_download(repo_id='Qwen/Qwen3-8B-MLX-4bit', revision='383413e909f3bc5303ce195ebbdf0339c5a1a2a3', local_dir=${JSON.stringify(modelPath)}, token=False)`]);
+    console.log(`MLX runtime and pinned model prepared at ${runtimeDir}`);
   },
 
   say: async () => {
@@ -503,6 +565,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     console.log(`hub pid ${status.pid}, control 127.0.0.1:${status.controlPort}, ${status.cwd}`);
     const peers = Object.entries(status.peers as Record<string, { state: string; queued: number }>);
     for (const [id, p] of peers) console.log(`  ${id.padEnd(8)} ${p.state.padEnd(8)} queued ${p.queued}${(p as any).paused ? `  (${(p as any).paused})` : ""}${(p as any).servedBy ? `  last call: ${(p as any).servedBy}` : ""}`);
+    const models = (status as any).models?.backends as any[] | undefined;
+    if (models?.length) for (const backend of models) console.log(`  model    ${backend.kind ?? "unknown"}/${backend.alias ?? "unknown"} ${backend.state ?? "unknown"} active ${backend.active ?? 0}${backend.requestedModel ? ` requested ${backend.requestedModel}` : ""}${backend.actualModel ? ` actual ${backend.actualModel}` : ""}${backend.provider ? ` provider ${backend.provider}` : ""}`);
     if (status.switchyard) console.log(`  switchyard: ${status.switchyard}`);
     const counts = Object.entries(status.tasks ?? {}).map(([s, n]) => `${n} ${s}`).join(", ");
     if (counts) console.log(`  tasks: ${counts} (ahub board)`);
@@ -548,6 +612,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     row(!!omni.apiKey(), "omniroute key", omni.apiKey() ? "present" : "missing: set OMNIROUTE_API_KEY or omniroute.api_key_file in .agenthub/config.json");
     const sy = spawnSync(process.env.AGENTHUB_SWITCHYARD_BIN ?? "switchyard-server", ["--version"], { encoding: "utf8" });
     row(sy.status === 0 ? true : undefined, "switchyard", sy.status === 0 ? sy.stdout.trim() : "not installed: ahub local uses fixed_model on OmniRoute (cargo install --locked switchyard-server)");
+    const mlx = await inspectMlx();
+    row(mlx.state === "ready" || mlx.state === "stopped", "pi mlx", `${mlx.state}${mlx.model ? ` (${mlx.model})` : ""}${mlx.lastError ? `: ${mlx.lastError}` : ""}`);
 
     const memory = new MemoryClient();
     const mem = await memory.health();

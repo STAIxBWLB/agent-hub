@@ -76,6 +76,17 @@ test("unknown ownership and wrong root are blockers before a mutation", async ()
   expect(stale.calls.some((argv) => argv[1] === "close")).toBe(false);
 });
 
+test("Pi terminal binding preserves session file and backend/model launch flags", async () => {
+  const piSession = "pi-session";
+  const piFile = "/tmp/pi-session.json";
+  const shown = terminal({ agentIdentity: "pi", sessionId: piSession, sessionFile: piFile });
+  const runner = async (argv: readonly string[]) => argv[1] === "show" ? { result: { terminal: shown } } : argv[1] === "list" ? { result: { terminals: [shown] } } : { result: {} };
+  const inspected = await inspectTerminals(root, { pi: { sessionId: piSession, sessionFile: piFile, backend: "dgx", model: "dgx/coding" } }, { runner, packageEntrypoint: "/pkg/main.js" });
+  expect(inspected.manualRequired).toBe(false);
+  expect(inspected.bindings[0]?.sessionFile).toBe(piFile);
+  expect(inspected.bindings[0]?.launch.argv).toEqual(expect.arrayContaining(["pi", "--mode", "tui", "--backend", "dgx", "--model", "dgx/coding", "--session-file", piFile]));
+});
+
 test("an unsatisfied bounded wait never closes the captured terminal", async () => {
   const binding: TerminalBinding = {
     peer: "codex",

@@ -1,10 +1,10 @@
 # agent-hub
 
-Native multi-agent hub for one developer's machine: Claude Code, Codex, Kimi Code and a
+Native multi-agent hub for one developer's machine: Claude Code, Codex, Kimi Code, Pi and a
 hub-owned local-LLM worker collaborate as peers in independent project directories, with
 task-aware model routing (Switchyard) in front of a self-hosted gateway (OmniRoute).
 
-Status: 0.5.0. All six milestones of the design spec are implemented; the [smoke checklist](docs/smoke.md)
+Status: 0.6.0. All six milestones of the design spec are implemented; the [smoke checklist](docs/smoke.md)
 says what has and has not been verified against real agents.
 
 Version 0.5.0 adds [controlled upgrade and session recovery](docs/specs/2026-09-20-upgrade-recovery-design.md).
@@ -29,7 +29,7 @@ cd <your project> && ahub init && ahub up && ahub tail
 Or install the same version from GitHub:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.5.0 && ahub setup
+bun add -g github:STAIxBWLB/agent-hub#v0.6.0 && ahub setup
 ```
 
 The installed commands remain `ahub` and `agent-hub`.
@@ -58,7 +58,49 @@ an N-peer message bus and attaches each agent through its native control surface
 | Claude Code | channel plugin push (`notifications/claude/channel`) | MCP tools | queued by Claude Code, grouped on next turn |
 | Codex | app-server `turn/start` (idle) / `turn/steer` (busy) | proxy intercepts `item/agentMessage` | steer or queue |
 | Kimi Code | ACP `session/prompt` | ACP `session/update` stream | queue (`turn.agent_busy`) |
+| Pi | RPC or managed native TUI extension | hub-approved tools | queued until `agent_settled` |
 | Local worker | hub-native agent loop | hub-native | hub-owned |
+
+## Pi with DGX and MLX
+
+Pi is optional. Install Pi separately and set `pi.enabled` to `true` in
+`.agenthub/config.json`. Set `pi.auto_start` to `true` to start its background
+peer with the hub. The project uses its existing OmniRoute connection for DGX;
+`pi.dgx_coding` and `pi.dgx_fast` select the gateway's configured model IDs.
+
+```bash
+ahub models setup       # dedicated Python 3.12 environment and pinned Qwen3 8B MLX weights
+ahub models start       # loopback-only Apple Silicon runtime
+ahub models status
+ahub pi --mode headless --backend auto
+ahub say @pi "Read the project and summarize the next small implementation task"
+ahub pi --mode tui     # switch the idle session to its native terminal
+```
+
+The default routing template assigns implementation, bulk edits and tests to
+DGX, and summaries/triage to MLX. Pi and the existing local worker take priority
+before cloud peers; planning and final review stay with Claude/Codex. Existing
+projects keep their routing file, so add `pi` to the relevant `peers` lists and
+set `pi_backend = "dgx"` or `"mlx"` for each class. PII tasks remain local-worker
+only. `--backend dgx` or `--backend mlx` explicitly pins a Pi session's backend.
+
+Pi connects to an authenticated relay with model aliases `dgx/coding`,
+`dgx/fast`, and `mlx/fast`; upstream gateway credentials stay in the hub.
+Its managed tools use the existing path guards, shell sandbox and terminal
+approval flow. Keep `ahub tail` open to approve write/edit/shell operations.
+Tool-call receipts survive daemon restart; an interrupted operation with an
+unknown outcome must be reconciled before repeating it.
+
+MLX uses a pinned Qwen3 8B 4-bit model, a 16K input budget and one generation
+at a time. `ahub models stop` stops only the runtime whose process identity
+matches its ownership record. Project hubs share the runtime; stopping a hub
+does not stop MLX. The relay can fall back from MLX to DGX before streaming
+starts. Inspect `ahub status` for requested routes and reported backend models.
+
+A project has one managed Pi session owner. Mode changes require the agent to
+settle and preserve the session file. Protocol 9 adds Pi recovery metadata;
+protocol-8 hubs can use controlled upgrade, while protocols 5-7 still require
+their matching CLI and an attended bootstrap.
 
 ## Runtime
 

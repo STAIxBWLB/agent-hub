@@ -23,7 +23,8 @@ export type CommandRunner = (argv: readonly string[]) => Promise<CommandResult>;
 /** Stable process identity hook. It returns a digest, never raw process metadata. */
 export type ProcessIdentity = (pid: number) => string | undefined | Promise<string | undefined>;
 
-export type TerminalPeer = "codex" | "claude";
+export type TerminalPeer = "codex" | "claude" | "pi";
+export interface SessionRef { sessionId: string; sessionFile?: string; backend?: string; model?: string; }
 
 export interface LaunchMetadata {
   /** Absolute entrypoint of the package which owns the resumed session. */
@@ -43,6 +44,9 @@ export interface TerminalBinding {
   worktreeId: string;
   projectRoot: string;
   sessionId: string;
+  sessionFile?: string;
+  backend?: string;
+  model?: string;
   launch: LaunchMetadata;
   /** Alias retained for callers that use the wire name. */
   launchMetadata: LaunchMetadata;
@@ -353,7 +357,7 @@ function identityFrom(terminal: Record<string, unknown>): TerminalPeer | undefin
   const session = object(terminal.session);
   const candidates = [terminal.agentIdentity, terminal.agent, wait.agentIdentity, wait.agent, session.agentIdentity, session.agent];
   for (const candidate of candidates) {
-    if (candidate === "codex" || candidate === "claude") return candidate;
+    if (candidate === "codex" || candidate === "claude" || candidate === "pi") return candidate;
   }
   return undefined;
 }
@@ -381,11 +385,13 @@ function requireAbsoluteEntrypoint(value: string): string {
   return value;
 }
 
-function launchFor(peer: TerminalPeer, projectRoot: string, sessionId: string, options: Required<TerminalRecoveryOptions>, source: Record<string, unknown>, recorded?: RecordedTerminalLaunch): LaunchMetadata {
+function launchFor(peer: TerminalPeer, projectRoot: string, sessionId: string, options: Required<TerminalRecoveryOptions>, source: Record<string, unknown>, recorded?: RecordedTerminalLaunch, ref?: SessionRef): LaunchMetadata {
   const packageEntrypoint = requireAbsoluteEntrypoint(options.packageEntrypoint);
   const argv = peer === "codex"
     ? ["bun", packageEntrypoint, "--project", projectRoot, "codex", "resume", sessionId]
-    : ["bun", packageEntrypoint, "--project", projectRoot, "claude", "--resume", sessionId];
+    : peer === "claude"
+      ? ["bun", packageEntrypoint, "--project", projectRoot, "claude", "--resume", sessionId]
+      : ["bun", packageEntrypoint, "--project", projectRoot, "pi", "--mode", "tui", ...(ref?.backend ? ["--backend", ref.backend] : []), ...(ref?.model ? ["--model", ref.model] : []), ...(ref?.sessionFile ? ["--session-file", ref.sessionFile] : ["--session-id", sessionId])];
   const env = { ...allowedEnv(source), ...(recorded?.env ?? {}) };
   const prefix = ALLOWED_ENV.filter((name) => env[name] !== undefined).map((name) => `${name}=${shellQuote(env[name]!)}`);
   const command = [...prefix, ...argv.map(shellQuote)].join(" ");
@@ -418,13 +424,13 @@ async function showBinding(binding: TerminalBinding, options: Required<TerminalR
  * Read Orca's authoritative terminal inventory and bind only exact agent/session identities.
  * Titles, previews, pty ids and process names are deliberately never used as identity.
  */
-export async function inspectTerminals(projectRoot: string, sessions: Partial<Record<TerminalPeer, string>>, options?: CommandRunner | TerminalRecoveryOptions): Promise<TerminalInspection> {
+export async function inspectTerminals(projectRoot: string, sessions: Partial<Record<TerminalPeer, string | SessionRef>>, options?: CommandRunner | TerminalRecoveryOptions): Promise<TerminalInspection> {
   const config = normalizeOptions(options);
   const records = await liveRecords(config.stateDir, projectRoot, config.instanceId, config.processIdentity);
   const blockers: RecoveryBlocker[] = [];
   const bindings: TerminalBinding[] = [];
   const byPeer: Partial<Record<TerminalPeer, TerminalBinding>> = {};
-  const requested = (Object.entries(sessions) as [TerminalPeer, string | undefined][]).filter((entry): entry is [TerminalPeer, string] => typeof entry[1] === "string" && entry[1].length > 0);
+  const requested = (Object.entries(sessions) as [TerminalPeer, string | SessionRef | undefined][]).map(([peer, value]) => [peer, typeof value === "string" ? { sessionId: value } : value] as const).filter((entry): entry is [TerminalPeer, SessionRef] => !!entry[1]?.sessionId);
   if (!requested.length) return { bindings, byPeer, blockers, manualRequired: false };
 
   let listed: Record<string, unknown>[];
@@ -435,7 +441,8 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
     return { bindings, byPeer, blockers: [commandBlocker], manualRequired: true };
   }
 
-  for (const [peer, sessionId] of requested) {
+  for (const [peer, ref] of requested) {
+    const sessionId = ref.sessionId;
     const candidates = listed.filter((terminal) => rootMatches(terminal.worktreePath ?? terminal.projectRoot, projectRoot));
     const peerCandidates: Record<string, unknown>[] = [];
     for (const listedTerminal of candidates) {
@@ -481,8 +488,9 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
       continue;
     }
     const recorded = records.find((item) => item.peer === peer && item.handle === handle && item.worktreeId === terminal.worktreeId && item.incarnationId === terminal.incarnationId);
-    const launch = launchFor(peer, projectRoot, sessionId, config, terminal, recorded);
-    const binding: TerminalBinding = { peer, handle, incarnationId, worktreeId, projectRoot, sessionId, launch, launchMetadata: launch };
+    const sessionFile = peer === "pi" ? nestedString(terminal, ["sessionFile", "sessionPath"]) ?? nestedString(object(terminal.session), ["file", "path"]) : undefined;
+    const launch = launchFor(peer, projectRoot, sessionId, config, terminal, recorded, { ...ref, ...(sessionFile ? { sessionFile } : {}) });
+    const binding: TerminalBinding = { peer, handle, incarnationId, worktreeId, projectRoot, sessionId, ...(sessionFile ? { sessionFile } : {}), ...(ref.backend ? { backend: ref.backend } : {}), ...(ref.model ? { model: ref.model } : {}), launch, launchMetadata: launch };
     bindings.push(binding);
     byPeer[peer] = binding;
   }

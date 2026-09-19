@@ -41,7 +41,7 @@ export const ROLE_TEXT: Record<string, string> = {
   reviewer: "reviewer: when asked to review, read the change itself, then hub_review with approved or changes_requested and a note that says what to fix.",
 };
 
-export const DEFAULT_ROLES: Record<string, string[]> = { claude: ["planner", "reviewer"], codex: ["implementer"], kimi: ["implementer", "verifier"], local: ["implementer", "verifier"] };
+export const DEFAULT_ROLES: Record<string, string[]> = { claude: ["planner", "reviewer"], codex: ["implementer"], kimi: ["implementer", "verifier"], local: ["implementer", "verifier"], pi: ["implementer", "verifier"] };
 
 export function roleContract(peer: string, roles: Record<string, string[]> = DEFAULT_ROLES): string {
   const mine = (roles[peer] ?? []).map((r) => ROLE_TEXT[r]).filter(Boolean);

@@ -2,6 +2,30 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## Pi local inference checks (issue #25, 0.6.0)
+
+Verified on 2026-09-20 on Apple Silicon with installed Pi 0.85.1:
+
+- `scripts/check.sh`: 265 tests passed, 0 failed, 1491 assertions; typecheck,
+  plugin freshness and npm package contents also passed.
+- A disposable project ran the real hub daemon and Pi headless peer. Pi called
+  the managed `read` tool and returned an exact marker from a project file,
+  once through DGX and once through MLX. Both returned to idle with zero queued
+  messages. The MLX result reported the configured Qwen3 8B model path.
+- Direct DGX relay streaming completed with `[DONE]`, `finish_reason: stop`,
+  and a reported DeepSeek V4 Flash model. Requested gateway aliases are not
+  treated as proof of the physical model.
+- A real PTY Pi TUI moved to headless RPC and back to TUI through an authenticated MLX relay (`mlx/fast`). All three modes invoked the managed read tool, and the same session ID/file was preserved. The model paraphrased final prose, so the tool callback was checked against the exact fixture text. Smoke-owned Pi processes exited after teardown.
+- Pi also reviewed the tool-call receipt implementation through DGX. Its
+  suggestions were checked against the code; shutdown fencing was fixed and
+  regression-tested. Model-generated review remains advisory.
+- `ahub models start` returned promptly while the owned MLX process remained
+  healthy; a subsequent status check returned the same PID. Project relay
+  teardown left the shared MLX runtime running.
+
+Production hub cutover is a separate operation. These checks do not claim that
+existing protocol-5/7 production sessions have been upgraded.
+
 ## Controlled recovery implementation checks (issue #21, 0.5.0 development)
 
 Verified on 2026-09-20, without upgrading the developer's running hubs:
