@@ -9,10 +9,23 @@ says what has and has not been verified against real agents.
 
 ## Start here
 
+Requires [Bun](https://bun.sh) >=1.3.0 on PATH; Node alone cannot run the CLI.
+The npm package is `@staix/agent-hub`, under the `staix` organization.
+
+After the first npm release:
+
 ```bash
-bun add -g github:STAIxBWLB/agent-hub && ahub setup
+bun add -g @staix/agent-hub && ahub setup
 cd <your project> && ahub init && ahub up && ahub tail
 ```
+
+Until that release, or to install a specific GitHub release:
+
+```bash
+bun add -g github:STAIxBWLB/agent-hub#v0.1.0 && ahub setup
+```
+
+The installed commands remain `ahub` and `agent-hub`.
 
 - [Quickstart](docs/quickstart.md): install, first session, the local worker, the commands of a working day
 - [Security notes](docs/security.md): what the hub defends and what it does not
