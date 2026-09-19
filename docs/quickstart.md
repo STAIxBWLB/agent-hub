@@ -89,3 +89,30 @@ The stream retains the latest 200 events since the dashboard listener was starte
 it does not load historical logs. An unopened dashboard has no listener or event
 buffer. A paused budget window cannot be overridden on the page; the CLI's
 `ahub budget resume <peer>` remains the explicit override.
+
+
+## Concurrent project development (0.4.0)
+
+Initialize and start each repository/worktree separately, or use the global
+`--project <path|id>` prefix. `ahub projects` lists registered roots and live
+status; `ahub status --all` includes peer/task summaries. Within a subdirectory,
+commands use the nearest project inside that Git working-tree boundary.
+
+Open `ahub ui --all` from any directory to manage all registered hubs. Use Start
+to launch an initialized project, Use to view a running project, and Stop to stop
+the selected hub. Stop confirmation names its root. Terminal agent launch is
+still `ahub --project <path> claude` or `ahub --project <path> codex`.
+
+The manager is independent: `ahub ui --all --stop` closes its browser sessions
+without stopping project hubs. One-time links and session expiry work the same
+way as the project-local dashboard. For headless environments use `--no-open`.
+
+Project data is retained after stopping and after `ahub projects remove <id>`.
+To use a custom runtime directory initially, set both `AGENTHUB_PROJECT_DIR` to
+the canonical project root and `AGENTHUB_STATE_DIR` to the desired directory;
+subsequent explicit project selection reads the registered location.
+
+For dashboard-started model workers, put gateway URLs and credential-file
+references in that project's config. The manager never copies another project's
+gateway override or unattended setting. Native memory and provider accounts keep
+their existing sharing rules; the dashboard marks shared native memory aliases.

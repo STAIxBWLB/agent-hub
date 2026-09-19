@@ -634,3 +634,15 @@ page shows a terminal-only stub and offers denial only. Allowing those requests
 requires reading `ahub tail` and answering with `ahub permit`. Other agent
 approvals offer their original options. Task refs/history and checkpoint summaries
 are omitted from browser snapshots. Private envelope bodies retain the tail stub.
+
+
+## Amendment: concurrent projects and unified dashboard (issue #19)
+
+The approved [multi-project specification](2026-09-19-multi-project-design.md)
+extends the single-machine model to simultaneous independent repository/worktree
+hubs. It replaces the unlocked JSON port registry with a transactional SQLite
+project registry and adds explicit project selection, authenticated instance
+ownership and a separate optional dashboard manager. Runtime data and routing
+remain per project. Native memory aliases remain compatible and shared.
+Control protocol 7 adds project/instance identity and console-only dashboard
+snapshot/action forwarding. Existing project-local UI security rules still apply.

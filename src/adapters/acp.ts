@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { renderDigest, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
+import { stopOwnedProcess } from "../hub/child-process.ts";
 
 export interface PermissionOption {
   optionId: string;
@@ -74,14 +75,17 @@ export class AcpPeer extends BasePeer {
     try {
       this.sessionId = (await Promise.race([handshake(), timeout])).sessionId;
     } catch (e) {
-      proc.kill();
+      await stopOwnedProcess(proc);
       throw e;
     }
     this.setState("idle");
   }
 
   async stop(): Promise<void> {
-    this.proc?.kill();
+    const proc = this.proc;
+    if (!proc || proc.exitCode !== null) return;
+    await stopOwnedProcess(proc);
+    if (this.proc === proc) this.proc = undefined;
   }
 
   /** Resolves once the prompt is in flight; the turn result arrives on its own. */

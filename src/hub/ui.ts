@@ -2,8 +2,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 export interface DashboardOptions {
-  snapshot: (after: number) => unknown;
-  action: (input: Record<string, unknown>) => Promise<unknown>;
+  snapshot: (after: number, input?: Record<string, unknown>) => unknown | Promise<unknown>;
+  action: (input: Record<string, unknown>) => unknown | Promise<unknown>;
+  projects?: () => unknown | Promise<unknown>;
+  selectedProjectId?: string;
   /** Injectable clock for expiry tests; production uses wall time. */
   now?: () => number;
 }
@@ -49,7 +51,7 @@ export function startDashboard(options: DashboardOptions) {
       if (req.method !== "POST") return reject(405, "POST required");
       if (requestOrigin !== origin) return reject(403, "origin required");
       if (req.headers.get("content-type")?.split(";")[0]?.trim() !== "application/json") return reject(415, "JSON required");
-      if (!["/session", "/snapshot", "/action"].includes(path)) return reject(404, "not found");
+      if (!["/session", "/projects", "/snapshot", "/action"].includes(path)) return reject(404, "not found");
       prune(tickets);
       prune(sessions);
       let cookie: string | undefined;
@@ -76,10 +78,33 @@ export function startDashboard(options: DashboardOptions) {
         sessions.set(session, now() + SESSION_MS);
         return json({ ok: true }, 200, { "Set-Cookie": `${cookieName}=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MS / 1000}` });
       }
+      if (path === "/projects") {
+        if (!options.projects) {
+          const result: Record<string, unknown> = { ok: true, mode: "project" };
+          if (options.selectedProjectId) result.selectedProjectId = options.selectedProjectId;
+          return json(result);
+        }
+        try {
+          return json(await options.projects());
+        } catch {
+          return reject(400, "project listing failed; check its inputs and the terminal");
+        }
+      }
       if (path === "/snapshot") {
         const after = input.after ?? 0;
         if (typeof after !== "number" || !Number.isSafeInteger(after) || after < 0) return reject(400, "invalid cursor");
-        return json(options.snapshot(after));
+        try {
+          const result = await options.snapshot(after, input);
+          if (!result || typeof result !== "object" || Array.isArray(result)) return json(result);
+          const response = { ...(result as Record<string, unknown>) };
+          if (typeof response.projectId === "string" && typeof input.projectId === "string" && response.projectId !== input.projectId) return reject(409, "snapshot project changed; refresh the dashboard");
+          if (typeof response.instanceId === "string" && typeof input.instanceId === "string" && response.instanceId !== input.instanceId) return reject(409, "snapshot instance changed; refresh the dashboard");
+          if (typeof input.projectId === "string" && response.projectId === undefined) response.projectId = input.projectId;
+          if (typeof input.instanceId === "string" && response.instanceId === undefined) response.instanceId = input.instanceId;
+          return json(response);
+        } catch {
+          return reject(400, "snapshot failed; check its inputs and the terminal");
+        }
       }
       try {
         return json(await options.action(input));

@@ -4,8 +4,10 @@ import { join } from "node:path";
 import type { Routing } from "../hub/routing.ts";
 import type { OmniRoute } from "../omniroute/client.ts";
 import { KEY_ENV, switchyardToml } from "./config.ts";
+import { stopOwnedProcess } from "../hub/child-process.ts";
 
 class GatewayDown extends Error {}
+
 
 export interface SidecarOptions {
   routing: Routing;
@@ -25,6 +27,9 @@ export interface SidecarOptions {
 export class Sidecar {
   private proc: ChildProcess | undefined;
   private starting: Promise<string | undefined> | undefined;
+  private generation = 0;
+  private stopped = false;
+  private stopping: Promise<void> | undefined;
   private off = "";
   /** The gateway URL the running sidecar was generated with; calls through it go there whatever the client probes later. */
   upstream: string | undefined;
@@ -37,7 +42,7 @@ export class Sidecar {
 
   /** Base URL to send chat calls to, or undefined when the hub should call OmniRoute directly. */
   endpoint(): Promise<string | undefined> {
-    if (this.off) return Promise.resolve(undefined);
+    if (this.off || this.stopped) return Promise.resolve(undefined);
     return (this.starting ??= this.start().catch((e: Error) => {
       // An unreachable gateway says nothing about Switchyard: this call goes direct, the next one tries the sidecar again.
       if (e instanceof GatewayDown) this.starting = undefined;
@@ -51,22 +56,34 @@ export class Sidecar {
     if (this.off) return;
     this.off = reason;
     this.opts.log(`switchyard: off, falling back to fixed_model on OmniRoute (${reason})`);
-    this.stop();
+    void this.stop().catch((e: Error) => this.opts.log(`switchyard: shutdown incomplete (${e.message})`));
   }
 
-  stop(): void {
-    this.proc?.kill();
-    this.proc = undefined;
+  async stop(): Promise<void> {
+    if (this.stopping) return this.stopping;
+    this.stopped = true;
+    ++this.generation;
+    const proc = this.proc;
+    // Preserve the historical synchronous file cleanup; the returned promise
+    // still represents the child process shutdown and must be awaited by the hub.
     rmSync(join(this.opts.stateDir, "switchyard.toml"), { force: true });
+    this.stopping = (async () => {
+      if (proc) await stopOwnedProcess(proc);
+      if (this.proc === proc) this.proc = undefined;
+    })();
+    return this.stopping;
   }
 
   private async start(): Promise<string | undefined> {
+    const generation = this.generation;
+    if (this.stopped) return undefined;
     const { routing, omni, stateDir, port, log } = this.opts;
     if (!Object.keys(routing.routes).length) throw new Error("routing.toml defines no routes");
     const bin = this.opts.bin ?? process.env.AGENTHUB_SWITCHYARD_BIN ?? "switchyard-server";
     const baseUrl = await omni.base();
     const key = omni.apiKey();
     if (!baseUrl || !key) throw new GatewayDown("no OmniRoute endpoint or key");
+    if (this.stopped || generation !== this.generation) return undefined;
     this.upstream = baseUrl;
 
     const file = join(stateDir, "switchyard.toml");
@@ -79,6 +96,11 @@ export class Sidecar {
 
     // Switchyard's default host is 0.0.0.0; the hub binds loopback only.
     const proc = spawn(bin, ["--config", file, "--host", "127.0.0.1", "--port", String(port)], { env, stdio: ["ignore", "ignore", "pipe"] });
+    if (this.stopped || generation !== this.generation) {
+      proc.kill("SIGTERM");
+      await stopOwnedProcess(proc);
+      return undefined;
+    }
     this.proc = proc;
     let exited = false;
     // Switchyard logs every request at INFO on stderr; only problems belong in hub.log.
@@ -91,12 +113,24 @@ export class Sidecar {
       if (this.proc === proc) this.disable(`exited with code ${code}`);
     });
     for (let i = 0; i < 100 && !exited; i++) {
+      if (this.stopped || generation !== this.generation) {
+        await stopOwnedProcess(proc);
+        if (this.proc === proc) this.proc = undefined;
+        return undefined;
+      }
       if (await fetch(`http://127.0.0.1:${port}/health`).then((r) => r.ok, () => false)) {
+        if (this.stopped || generation !== this.generation) {
+          await stopOwnedProcess(proc);
+          if (this.proc === proc) this.proc = undefined;
+          return undefined;
+        }
         log(`switchyard: up on 127.0.0.1:${port}, routes ${Object.keys(routing.routes).join(", ")}`);
         return `http://127.0.0.1:${port}/v1`;
       }
       await Bun.sleep(100);
     }
+    await stopOwnedProcess(proc);
+    if (this.proc === proc) this.proc = undefined;
     throw new Error(exited ? "exited during startup" : "not healthy within 10 s");
   }
 }

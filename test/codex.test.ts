@@ -166,3 +166,13 @@ test("browser origins are refused", async () => {
   const res = await fetch(peer.proxyUrl.replace("ws:", "http:"), { headers: { origin: "https://evil.example" } });
   expect(res.status).toBe(403);
 });
+
+test("only one TUI can claim a hub, even before the first thread starts", async () => {
+  const { peer, tui } = await setup();
+  const second = new WebSocket(peer.proxyUrl);
+  const closed = new Promise<CloseEvent>((resolve) => (second.onclose = resolve));
+  const event = await closed;
+  expect(event.code).toBe(1013);
+  expect(event.reason).toContain("already attached");
+  tui.close();
+});

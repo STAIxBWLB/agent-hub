@@ -11,14 +11,18 @@ import { VERSION } from "../version.ts";
 import { DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS } from "../hub/hub-tools.ts";
 import { frame, replyParent, sanitize, HUB_MESSAGE_INSTRUCTION, type Envelope } from "../hub/envelope.ts";
 
-const stateDir = stateDirFor(process.cwd());
+// A native session is pinned at launch. Unlike a new CLI invocation after `cd`,
+// its MCP server must not silently move to another hub (including while offline).
+// ControlClient verifies the manifest identity on every connection.
+const stateDir = process.env.AGENTHUB_STATE_DIR ?? stateDirFor(process.cwd());
+const projectRoot = process.env.AGENTHUB_PROJECT_DIR ?? process.cwd();
 const peerId = process.env.AGENTHUB_PEER_ID ?? "claude";
 /** tools mode: the same server, run by Kimi (ACP mcpServers) or Codex (mcp_servers override). Their messages arrive through their own adapters, so no channel here. */
 const toolsOnly = process.env.AGENTHUB_MODE === "tools";
 
 function roles(): Record<string, string[]> {
   try {
-    return { ...DEFAULT_ROLES, ...JSON.parse(readFileSync(join(process.cwd(), ".agenthub", "config.json"), "utf8")).roles };
+    return { ...DEFAULT_ROLES, ...JSON.parse(readFileSync(join(projectRoot, ".agenthub", "config.json"), "utf8")).roles };
   } catch {
     return DEFAULT_ROLES;
   }
@@ -28,6 +32,7 @@ const MAX_RECONNECT_DELAY_MS = 30_000;
 const TERMINAL_CLOSES: Record<number, string> = {
   4000: `another session attached to the hub as "${peerId}"; this one is detached (restart it to take the peer back)`,
   4401: "the hub refused the control token",
+  4404: "the hub belongs to a different project or instance; restart this session from the intended project",
   4403: `the hub refused the peer id "${peerId}" (reserved or malformed)`,
   4409: `the peer id "${peerId}" is taken by a hub-managed adapter`,
   4426: "wire version mismatch with the running hub: update the agent-hub plugin (ahub setup) and restart this session",
@@ -87,7 +92,8 @@ async function connectLoop(): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     let code: number | undefined;
     try {
-      const client = await ControlClient.connect(stateDir, { role: toolsOnly ? "tools" : "peer", peer: peerId });
+      const client = await ControlClient.connect(stateDir, { role: toolsOnly ? "tools" : "peer", peer: peerId,
+        ...(process.env.AGENTHUB_PROJECT_DIR ? { projectRoot } : {}) });
       client.onPush = (msg) => msg.t === "deliver" && void push(msg.envs ?? [msg.env]); // `env`: a daemon older than wire version 2
       hub = client;
       attempt = -1;

@@ -1,11 +1,14 @@
 #!/usr/bin/env bun
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ControlClient, readControl } from "../hub/control-client.ts";
-import { loadConfig, startDaemon, stateDirFor } from "../hub/daemon.ts";
+import { loadConfig } from "../hub/daemon.ts";
+import { projectContext } from "../hub/project.ts";
+import { Registry, type Project } from "../hub/registry.ts";
+import { inspectProject, startProject, stopProject, runProjectDaemon } from "../hub/lifecycle.ts";
+import { openManager, startManager, stopManager } from "../hub/manager.ts";
 import type { BusEvent } from "../hub/bus.ts";
-import { allocatePorts, CODEX_APP, CODEX_PROXY, CONTROL, SWITCHYARD } from "../hub/ports.ts";
 import { OmniRoute } from "../omniroute/client.ts";
 import { MemoryClient } from "../memory/client.ts";
 import { init } from "./init.ts";
@@ -17,6 +20,12 @@ import { createInterface } from "node:readline/promises";
 
 const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one project directory
 
+  ahub --project <path|id> <command>  select a repository or worktree explicitly
+  ahub projects [--json]         list registered projects and live status
+  ahub projects remove <id>      forget a stopped registration (keeps project files)
+  ahub status --all              show every registered project
+  ahub ui --all [--no-open]      open the unified project dashboard
+  ahub ui --all --stop           stop only the dashboard manager
   ahub setup [--yes]            install or update the Claude Code channel plugin from this package, then run doctor
   ahub init                     write .agenthub/config.json and the CLAUDE.md / AGENTS.md marker blocks
   ahub up [--unattended]        start the daemon for this directory
@@ -45,23 +54,67 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub permit <id> <option>     answer a permission request shown by tail ("deny" cancels)
   ahub status | logs [-f] | doctor | kill`;
 
-const cwd = process.cwd();
-const stateDir = stateDirFor(cwd);
+const argv = process.argv.slice(2);
+let selector: string | undefined;
+if (argv[0] === "--project") {
+  argv.shift();
+  selector = argv.shift();
+  if (!selector || selector.startsWith("--")) fail("--project needs a path or project ID");
+}
+const [cmd = "help", ...args] = argv;
+let selected: { root: string; stateDir: string };
+try {
+  if (selector) {
+    const registry = new Registry();
+    try {
+      const known = registry.get(selector);
+      const context = known ?? projectContext(selector, {});
+      const registered = known ?? registry.list().find((p) => p.root === context.root);
+      selected = registered ?? context;
+    } finally { registry.close(); }
+  } else selected = projectContext(process.cwd());
+} catch (error) { fail((error as Error).message); }
+const cwd = selected.root;
+const stateDir = selected.stateDir;
+try { process.chdir(cwd); } catch { fail(`project directory is unavailable: ${cwd}`); }
 const unattendedEnv = process.env.AGENTHUB_UNATTENDED === "1";
-const [cmd = "help", ...args] = process.argv.slice(2);
+const lifecycle = { inspectProject, startProject, stopProject };
+const connect = () => ControlClient.connect(stateDir, { role: "console", projectRoot: cwd });
 
-const connect = () => ControlClient.connect(stateDir, { role: "console" });
+function registeredProject(): Project {
+  const registry = new Registry();
+  try { return registry.register(cwd, stateDir); }
+  finally { registry.close(); }
+}
 
 async function healthy(): Promise<boolean> {
-  const control = readControl(stateDir);
-  if (!control) return false;
-  return fetch(control.url.replace("ws:", "http:") + "/healthz").then((r) => r.ok, () => false);
+  let hub: ControlClient | undefined;
+  try { hub = await connect(); const reply = await hub.request({ t: "status" }, 3000); return reply.status?.cwd === cwd; }
+  catch { return false; }
+  finally { hub?.close(); }
 }
 
 function exec(bin: string, argv: string[]): never {
-  const res = spawnSync(bin, argv, { stdio: "inherit", env: { ...process.env, AGENTHUB_STATE_DIR: stateDir } });
+  const res = spawnSync(bin, argv, { cwd, stdio: "inherit", env: { ...process.env, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
   if (res.error) fail(`cannot run ${bin}: ${res.error.message}`);
   process.exit(res.status ?? 1);
+}
+
+async function projectRows() {
+  const registry = new Registry();
+  try { return await Promise.all(registry.list().map(async (project) => ({ ...project, ...await inspectProject(project) }))); }
+  finally { registry.close(); }
+}
+
+async function printProjects(json = false) {
+  const rows = await projectRows();
+  if (json) return console.log(JSON.stringify(rows, null, 2));
+  for (const row of rows) {
+    console.log(`${row.id}  ${row.state.padEnd(12)} ${row.root}`);
+    if (row.status) console.log(`  peers ${Object.keys(row.status.peers ?? {}).length}, control ${row.status.controlPort}, tasks ${JSON.stringify(row.status.tasks ?? {})}`);
+    if (row.error) console.log(`  ${row.error}`);
+  }
+  if (!rows.length) console.log("No registered projects. Run ahub init in a project directory.");
 }
 
 function fail(message: string): never {
@@ -118,17 +171,46 @@ const commands: Record<string, () => Promise<void> | void> = {
   "--version": () => console.log(VERSION),
   version: () => console.log(VERSION),
 
+  projects: async () => {
+    if (args[0] === "remove") {
+      if (args.length !== 2) fail("usage: ahub projects remove <id>");
+      const registry = new Registry();
+      try { registry.remove(args[1]!); } finally { registry.close(); }
+      console.log("registration removed; project files were kept");
+      return;
+    }
+    if (args.some((arg) => arg !== "--json")) fail("usage: ahub projects [--json]");
+    await printProjects(args.includes("--json"));
+  },
+
   ui: async () => {
-    if (args.some((arg) => arg !== "--no-open")) fail("usage: ahub ui [--no-open]");
-    const hub = await connect();
-    const res = await hub.request({ t: "ui" }, 10_000);
-    hub.close();
-    if (!res.ok) fail(res.error);
-    if (args.includes("--no-open")) return console.log(res.url);
+    if (args.some((arg) => !["--no-open", "--all", "--stop"].includes(arg))) fail("usage: ahub ui [--all] [--no-open] | --all --stop");
+    if (args.includes("--stop")) {
+      if (!args.includes("--all") || args.includes("--no-open")) fail("usage: ahub ui --all --stop");
+      await stopManager();
+      return console.log("dashboard manager stopped; project hubs were kept running");
+    }
+    let url: string;
+    if (args.includes("--all")) url = await openManager();
+    else {
+      const hub = await connect();
+      try {
+        const res = await hub.request({ t: "ui" }, 10_000);
+        if (!res.ok) fail(res.error);
+        url = res.url;
+      } finally { hub.close(); }
+    }
+    if (args.includes("--no-open")) return console.log(url);
     const opener = process.platform === "darwin" ? "open" : "xdg-open";
-    const opened = spawnSync(opener, [res.url], { stdio: "ignore", timeout: 10_000 });
-    if (opened.error || opened.status !== 0) console.log(`Open this one-time link within 60 seconds:\n${res.url}`);
+    const opened = spawnSync(opener, [url], { stdio: "ignore", timeout: 10_000 });
+    if (opened.error || opened.status !== 0) console.log(`Open this one-time link within 60 seconds:\n${url}`);
     else console.log("Dashboard opened. The session expires in one hour; run ahub ui to reopen it.");
+  },
+
+  manager: async () => {
+    const manager = await startManager({ lifecycle });
+    for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => void manager.stop());
+    await manager.stopped;
   },
 
   setup: async () => {
@@ -158,46 +240,22 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   init: () => {
     const changed = init(cwd);
+    registeredProject();
     console.log(changed.length ? changed.map((p) => `wrote ${p}`).join("\n") : "already up to date");
   },
 
-  // Internal: the detached daemon process started by `ahub up`.
+  // Internal: the detached daemon process started by ahub up or the manager.
   daemon: async () => {
-    // Long-lived process: one bad adapter callback must not take every peer down. stderr is hub.log.
     process.on("unhandledRejection", (e) => console.error(`${new Date().toISOString()} unhandled rejection:`, e));
     process.on("uncaughtException", (e) => console.error(`${new Date().toISOString()} uncaught exception:`, e));
-    const base = allocatePorts(cwd);
-    const daemon = await startDaemon({
-      cwd,
-      stateDir,
-      controlPort: base + CONTROL,
-      codexAppPort: base + CODEX_APP,
-      codexProxyPort: base + CODEX_PROXY,
-      switchyardPort: base + SWITCHYARD,
-      unattended: unattendedEnv || args.includes("--unattended"),
-    });
-    for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => void daemon.stop());
-    await daemon.stopped;
-    process.exit(0);
+    await runProjectDaemon(registeredProject(), unattendedEnv || args.includes("--unattended"));
   },
 
   up: async () => {
-    if (await healthy()) return console.log("hub is already running");
     const unattended = unattendedEnv || args.includes("--unattended");
     if (unattended) console.error(UNATTENDED_WARNING);
-    mkdirSync(stateDir, { recursive: true });
-    const log = openSync(join(stateDir, "hub.log"), "a");
-    spawn(process.execPath, [import.meta.path, "daemon", ...(unattended ? ["--unattended"] : [])], {
-      cwd,
-      detached: true,
-      stdio: ["ignore", log, log],
-      env: { ...process.env, AGENTHUB_STATE_DIR: stateDir },
-    }).unref();
-    for (let i = 0; i < 50; i++) {
-      if (await healthy()) return console.log(`ahub up (${readControl(stateDir)!.url}), state in ${stateDir}`);
-      await Bun.sleep(100);
-    }
-    fail(`daemon did not start; see ${join(stateDir, "hub.log")}`);
+    const status = await startProject(registeredProject(), { unattended });
+    console.log(`ahub up (ws://127.0.0.1:${status.controlPort}), state in ${stateDir}`);
   },
 
   claude: () => {
@@ -370,6 +428,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   status: async () => {
+    if (args.includes("--all")) return printProjects(args.includes("--json"));
     const hub = await connect();
     const { status } = await hub.request({ t: "status" });
     hub.close();
@@ -385,23 +444,16 @@ const commands: Record<string, () => Promise<void> | void> = {
   logs: () => exec("tail", [args.includes("-f") ? "-f" : "-n100", join(stateDir, "hub.log")]),
 
   kill: async () => {
-    const hub = await connect().catch(() => undefined);
-    if (hub) {
-      hub.send({ t: "kill" });
-      await new Promise<void>((r) => (hub.onClose = () => r()));
-      return console.log("hub stopped");
+    const registry = new Registry();
+    let project: Project | undefined;
+    try { project = registry.list().find((p) => p.root === cwd && p.stateDir === stateDir); }
+    finally { registry.close(); }
+    if (!project) {
+      if (!readControl(stateDir) && !existsSync(join(stateDir, "hub.pid"))) return console.log("hub is not running");
+      fail("hub has no matching registration; use its matching CLI to stop it before upgrading");
     }
-    const pidFile = join(stateDir, "hub.pid");
-    if (!existsSync(pidFile)) return console.log("hub is not running");
-    // The pid file may be stale and the pid reused: signal it only if it still is a hub daemon.
-    const pid = Number(readFileSync(pidFile, "utf8"));
-    const owner = spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" }).stdout ?? "";
-    if (/main\.ts daemon|ahub daemon/.test(owner)) {
-      process.kill(pid, "SIGTERM");
-      return console.log("hub signalled");
-    }
-    for (const f of ["hub.pid", "status.json", "control-token"]) rmSync(join(stateDir, f), { force: true });
-    console.log("hub is not running (removed stale state files)");
+    await stopProject(project);
+    console.log("hub stopped");
   },
 
   doctor: async () => {

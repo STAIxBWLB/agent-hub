@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
+import { tmpdir } from "node:os";
 import { MemoryClient } from "../src/memory/client.ts";
 import { projectChain, recallFor, trimToTokens } from "../src/memory/recall.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
@@ -43,6 +46,25 @@ test("trim cuts at a line boundary; the project chain ends with this repo", () =
   // whatever the checkout directory is called (a CI workspace, a worktree, a renamed clone)
   const top = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { cwd: import.meta.dir }).stdout.toString().trim();
   expect(projectChain(import.meta.dir).at(-1)).toBe(top.split("/").at(-1)!);
+});
+
+test("worktrees use the native parent and parent/worktree aliases", () => {
+  const root = mkdtempSync(join(tmpdir(), "agent-hub-recall-"));
+  const worktree = join(root, "feature-checkout");
+  try {
+    const git = (args: string[]) => Bun.spawnSync(["git", ...args], { cwd: root }).exitCode;
+    expect(git(["init", "-q"])).toBe(0);
+    expect(git(["config", "user.email", "test@example.invalid"])).toBe(0);
+    expect(git(["config", "user.name", "agent-hub test"])).toBe(0);
+    writeFileSync(join(root, "README"), "initial\n");
+    expect(git(["add", "README"])).toBe(0);
+    expect(git(["commit", "-qm", "initial"])).toBe(0);
+    expect(Bun.spawnSync(["git", "worktree", "add", "-q", "-b", "feature-checkout", worktree], { cwd: root }).exitCode).toBe(0);
+    const parent = basename(root);
+    expect(projectChain(worktree)).toEqual([parent, `${parent}/${basename(worktree)}`]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("the token budget is split per platform so the first one cannot crowd out the rest", async () => {

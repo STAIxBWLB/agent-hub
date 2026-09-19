@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { Server, ServerWebSocket } from "bun";
 import { renderDigest, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
+import { stopOwnedProcess } from "../hub/child-process.ts";
 
 export interface CodexOptions {
   /** Port the TUI attaches to: `codex --enable tui_app_server --remote ws://127.0.0.1:<proxyPort>`. */
@@ -43,6 +44,8 @@ export class CodexPeer extends BasePeer {
   private proc: ChildProcess | undefined;
   private server: Server<Link> | undefined;
   private link: Link | undefined; // the connection that owns the current thread
+  /** Claimed as soon as a TUI WebSocket opens, before it can start a thread. */
+  private claimedTui: Link | undefined;
   private threadId = "";
   private readonly activeTurns = new Set<string>();
   private nextId = -1;
@@ -67,7 +70,8 @@ export class CodexPeer extends BasePeer {
 
   async start(): Promise<void> {
     const upstream = this.opts.upstreamUrl ?? (await this.spawnAppServer());
-    this.server = Bun.serve<Link>({
+    try {
+      this.server = Bun.serve<Link>({
       hostname: "127.0.0.1",
       port: this.opts.proxyPort,
       fetch: (req, server) => {
@@ -77,21 +81,40 @@ export class CodexPeer extends BasePeer {
         return new Response("agent-hub codex proxy");
       },
       websocket: {
-        open: (tui) => this.attach(tui, upstream),
-        message: (tui, data) => this.fromTui(tui.data, String(data)),
-        close: (tui) => this.detach(tui.data),
+        open: (tui) => {
+          if (this.claimedTui) {
+            tui.close(1013, "codex TUI already attached to this hub");
+            return;
+          }
+          this.attach(tui, upstream);
+        },
+        message: (tui, data) => {
+          if (tui.data?.up) this.fromTui(tui.data, String(data));
+        },
+        close: (tui) => {
+          // A rejected second attachment never passed through attach(), so it has no Link.
+          if (tui.data?.up) this.detach(tui.data);
+        },
       },
-    });
+      });
+    } catch (error) {
+      const proc = this.proc;
+      if (proc) {
+        await stopOwnedProcess(proc);
+        if (this.proc === proc) this.proc = undefined;
+      }
+      throw error;
+    }
   }
 
   async stop(): Promise<void> {
     this.server?.stop(true);
+    this.claimedTui?.tui.close(1001, "hub shutting down");
     const proc = this.proc;
     if (proc && proc.exitCode === null) {
       // Wait for the port to be released: `ahub codex` may restart the adapter right away.
-      const exited = new Promise((r) => proc.once("exit", r));
-      proc.kill();
-      await Promise.race([exited, Bun.sleep(3000)]);
+      await stopOwnedProcess(proc);
+      if (this.proc === proc) this.proc = undefined;
     }
     this.setState("offline");
   }
@@ -200,13 +223,16 @@ export class CodexPeer extends BasePeer {
       await Bun.sleep(100);
     }
     if (gone) throw new Error(gone);
-    this.proc.kill();
+    const proc = this.proc;
+    await stopOwnedProcess(proc);
+    if (this.proc === proc) this.proc = undefined;
     throw new Error("codex app-server did not become healthy within 10 s");
   }
 
   private attach(tui: ServerWebSocket<Link>, upstream: string): void {
     const up = new WebSocket(upstream);
     const link: Link = { tui, up, backlog: [], tracked: new Map() };
+    this.claimedTui = link;
     tui.data = link;
     up.onopen = () => {
       for (const frame of link.backlog.splice(0)) up.send(frame);
@@ -217,6 +243,7 @@ export class CodexPeer extends BasePeer {
 
   private detach(link: Link): void {
     link.up.close();
+    if (this.claimedTui === link) this.claimedTui = undefined;
     if (this.link !== link) return;
     clearInterval(this.usageTimer);
     this.link = undefined;
@@ -313,6 +340,7 @@ export class CodexPeer extends BasePeer {
     }
   }
 }
+
 
 function parse(raw: string): any {
   try {
