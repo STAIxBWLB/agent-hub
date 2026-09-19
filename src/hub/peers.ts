@@ -3,8 +3,10 @@ import type { Envelope, EnvelopeOpts, PeerId, PeerState } from "./envelope.ts";
 export interface PeerAdapter {
   readonly id: PeerId;
   readonly state: PeerState;
-  /** Inject now. Only called while `state === "idle"`. Rejecting puts the envelope back at the queue head. */
-  deliver(env: Envelope): Promise<void>;
+  /** Inject now, as one prompt. Only called while `state === "idle"`. Rejecting puts the envelopes back at the queue head. */
+  deliver(envs: Envelope[]): Promise<void>;
+  /** Optional: feed envelopes into the turn that is running now. Only called while `state === "busy"`. */
+  steer?(envs: Envelope[]): Promise<void>;
   start(): Promise<void>;
   stop(): Promise<void>;
   /** Set by the bus. The peer said something worth sharing. */
@@ -12,7 +14,7 @@ export interface PeerAdapter {
   /** Set by the bus. */
   onState?: (state: PeerState) => void;
   /** Set by the bus. A delivery that had resolved turned out not to reach the agent: put it back. */
-  onFailed?: (env: Envelope) => void;
+  onFailed?: (envs: Envelope[]) => void;
 }
 
 export const DEFAULT_WATCHDOG_MS = 300_000;
@@ -21,7 +23,7 @@ export const DEFAULT_WATCHDOG_MS = 300_000;
 export abstract class BasePeer implements PeerAdapter {
   onMessage?: (body: string, opts?: EnvelopeOpts) => void;
   onState?: (state: PeerState) => void;
-  onFailed?: (env: Envelope) => void;
+  onFailed?: (envs: Envelope[]) => void;
   private _state: PeerState = "offline";
   private timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -60,7 +62,7 @@ export abstract class BasePeer implements PeerAdapter {
     this.timer = undefined;
   }
 
-  abstract deliver(env: Envelope): Promise<void>;
+  abstract deliver(envs: Envelope[]): Promise<void>;
   abstract start(): Promise<void>;
   abstract stop(): Promise<void>;
 }

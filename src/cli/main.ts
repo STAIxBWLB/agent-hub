@@ -17,7 +17,9 @@ const USAGE = `agent-hub: Claude Code, Codex and Kimi as peers in one project di
   hub claude [args...]         launch Claude Code with the hub channel   [--unattended]
   hub codex [args...]          start the Codex adapter and attach the TUI [--unattended]
   hub kimi [--model <alias>]   start Kimi headless under ACP
-  hub say [@peer ...] <text>   send as the console user (no @peer = broadcast)
+  hub say [@peer ...] <text>   send as the console user (no @peer = broadcast); delivered at once,
+                               start the text with [STATUS] to let it batch or [FYI] for the record only
+  hub pause|resume <peer>      hold a peer's deliveries in its queue / release them
   hub tail                     live stream of messages, states and permission requests
   hub permit <id> <option>     answer a permission request shown by tail ("deny" cancels)
   hub status | logs [-f] | doctor | kill`;
@@ -49,9 +51,20 @@ function fail(message: string): never {
 function render(e: BusEvent): string {
   if (e.t === "state") return `  . ${e.peer} is ${e.state}`;
   if (e.t === "undeliverable") return `  ! gave up delivering ${e.env.id} (from ${e.env.from}) to ${e.peer}`;
+  if (e.t === "overflow") return `  ! ${e.peer}'s queue is full: dropped ${e.env.id} (from ${e.env.from})`;
   const { env } = e;
-  const head = `${env.from} -> ${env.to?.join(",") ?? "*"}${e.dropped ? " [dropped: hop limit]" : ""}`;
+  const note = e.dropped === "hop" ? " [not delivered: hop limit]" : e.dropped === "fyi" ? " [fyi: record only]" : "";
+  const head = `${env.from} -> ${env.to?.join(",") ?? "*"}${env.priority === "important" ? " !" : ""}${note}`;
   return `${new Date(env.ts).toLocaleTimeString()} ${head}\n${env.body.replace(/^/gm, "    ")}`;
+}
+
+async function hold(t: "pause" | "resume"): Promise<void> {
+  if (!args[0]) fail(`usage: hub ${t} <peer>`);
+  const hub = await connect();
+  const res = await hub.request({ t, peer: args[0] });
+  hub.close();
+  if (!res.ok) fail(res.error);
+  console.log(`${args[0]} is ${res.state}`);
 }
 
 const commands: Record<string, () => Promise<void> | void> = {
@@ -135,6 +148,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const res = await hub.request({ t: "send", body, to });
     hub.close();
     if (!res.ok) fail(res.error);
+    if (res.recorded) return console.log("recorded only ([FYI]); no peer was interrupted");
     console.log(res.targets.length ? `queued for: ${res.targets.join(", ")}` : "no peers attached; nothing delivered");
   },
 
@@ -151,6 +165,9 @@ const commands: Record<string, () => Promise<void> | void> = {
     hub.send({ t: "tail" });
     await new Promise(() => {});
   },
+
+  pause: () => hold("pause"),
+  resume: () => hold("resume"),
 
   permit: async () => {
     const [id, option] = args;

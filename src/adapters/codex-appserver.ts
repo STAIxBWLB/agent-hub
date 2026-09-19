@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Server, ServerWebSocket } from "bun";
-import { framed, type Envelope, type PeerId } from "../hub/envelope.ts";
+import { renderDigest, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
 
 export interface CodexOptions {
@@ -43,6 +43,7 @@ export class CodexPeer extends BasePeer {
   private lastAnswer = "";
   private readonly deltas = new Map<string, string[]>();
   private primed = false;
+  private readonly steers = new Set<number>(); // request ids of turn/steer calls app-server has not answered yet
 
   constructor(
     id: PeerId,
@@ -87,19 +88,19 @@ export class CodexPeer extends BasePeer {
   }
 
   /** Resolves when app-server accepts the turn. Only called while idle, i.e. a thread exists and no turn runs. */
-  deliver(env: Envelope): Promise<void> {
+  deliver(envs: Envelope[]): Promise<void> {
     const link = this.link;
     if (this.state !== "idle" || !link || link.up.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error(`${this.id} is not injectable`));
     }
-    const text = framed(env, this.primed);
+    const text = renderDigest(envs, this.primed);
     const id = this.nextId--;
     this.setState("busy"); // claim the turn now so the bus stops draining
     return new Promise<void>((resolve, reject) => {
       this.pending.set(id, {
         resolve: () => {
           this.primed = true;
-          this.injected = env;
+          this.injected = replyParent(envs);
           resolve();
         },
         reject: (e) => {
@@ -113,6 +114,34 @@ export class CodexPeer extends BasePeer {
     });
   }
 
+  /** `important` while a turn runs: feed it into that turn. Rejects when there is no steerable turn or app-server refuses. */
+  steer(envs: Envelope[]): Promise<void> {
+    const link = this.link;
+    const expectedTurnId = [...this.activeTurns].reverse().find((t) => !t.startsWith("unknown:"));
+    if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId) {
+      return Promise.reject(new Error(`${this.id} has no steerable turn`));
+    }
+    const id = this.nextId--;
+    this.steers.add(id);
+    return new Promise<void>((resolve, reject) => {
+      this.pending.set(id, {
+        resolve: () => {
+          this.steers.delete(id);
+          this.primed = true;
+          // The turn now answers these too; the highest hop wins so a steer cannot reset the hop cap.
+          this.injected = replyParent(this.injected ? [this.injected, ...envs] : envs);
+          resolve();
+        },
+        reject: (e) => {
+          this.steers.delete(id);
+          reject(e);
+        },
+      });
+      const input = [{ type: "text", text: renderDigest(envs, this.primed) }];
+      link.up.send(JSON.stringify({ method: "turn/steer", id, params: { threadId: this.threadId, expectedTurnId, input } }));
+    });
+  }
+
   /** A silent turn is interrupted before the peer is declared idle, or the next turn/start would land inside it. */
   protected override onWatchdog(): void {
     for (const turnId of this.activeTurns) {
@@ -122,7 +151,17 @@ export class CodexPeer extends BasePeer {
     this.activeTurns.clear();
     this.injected = undefined;
     this.lastAnswer = "";
+    this.abandonSteers("turn went silent");
     super.onWatchdog();
+  }
+
+  /** A steer nobody answered must not vanish: rejecting it sends the envelope back to the queue. */
+  private abandonSteers(reason: string): void {
+    for (const id of this.steers) {
+      const p = this.pending.get(id);
+      this.pending.delete(id);
+      p?.reject(new Error(`steer unanswered: ${reason}`));
+    }
   }
 
   private async spawnAppServer(): Promise<string> {
@@ -231,6 +270,7 @@ export class CodexPeer extends BasePeer {
         this.opts.log?.(`[${this.id}] turn failed: ${params.turn.error?.message ?? "unknown error"}`);
       }
       if (this.activeTurns.size) return;
+      this.abandonSteers("turn completed");
       const inReplyTo = this.injected;
       this.injected = undefined;
       this.deltas.clear();

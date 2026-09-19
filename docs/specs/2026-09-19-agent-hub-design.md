@@ -1,6 +1,6 @@
 # agent-hub design spec
 
-Date: 2026-09-19. Status: M1 implemented on `feat/m1-messaging-core`; M2 to M6 not started.
+Date: 2026-09-19. Status: M1 merged (PR #2); M2 implemented on `feat/m2-coordination` (phase spec: issue #3); M3 to M6 not started.
 Owner: Young Joon Lee. Repo: STAIxBWLB/agent-hub (private).
 
 Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) or
@@ -170,9 +170,19 @@ interface Envelope {
   injected inherits that envelope's `trace` with `hop + 1` (Claude passes `reply_to` on
   `hub_send`); a turn the user started begins a fresh trace at hop 0. Envelopes over the
   cap are dropped for peers but still shown on the console.
-- `important`: deliver now (steer for Codex). `status`: batch per recipient (default 3
-  items or 15 s) into one digest. `fyi`: board only. Markers `[IMPORTANT]`, `[STATUS]`,
-  `[FYI]` in agent text set priority; default `status`.
+- One queue rule per peer (amended in M2): the whole queue goes out as one delivery, a single
+  envelope or a digest of up to 10, when the peer is idle and the queue holds an `important`
+  envelope, or `batch_max` (3) envelopes, or its oldest one has waited `batch_ms` (15 s).
+  `important` to a busy Codex is steered instead. `fyi` is never delivered to a peer: console
+  and log now, the task board from M4. A digest is one prompt (Codex, Kimi) or one channel
+  notification (`meta.source = hub-digest`, senders in `meta.sources`); its reply answers the
+  highest-hop item, so neither a digest nor a steer can reset the hop cap. Important items lead
+  the digest; an envelope that failed before is retried alone. The control WS hello carries a
+  wire version (2 since digests): a plugin bundle older than the daemon is refused with close
+  code 4426 rather than dropping digests silently.
+- Markers `[IMPORTANT]`, `[STATUS]`, `[FYI]` at the start of agent text, `hub_send` or `hub say`
+  set the priority and are stripped. Default `status` for agents, `important` for the console
+  user (a human typing `hub say` should not wait out the batch window).
 - Every inbound cross-peer body is wrapped as untrusted (Claude: `<channel>` tag with
   `meta.source=<peer>`; Codex and Kimi: a fixed prefix line plus a standing instruction
   injected once per session).
@@ -183,8 +193,11 @@ interface Envelope {
 | --- | --- | --- |
 | idle | turn completed / prompt returned | inject now |
 | busy | turn started / prompt in flight | Claude: push (Claude Code queues); Codex: steer if important else queue; Kimi/local: queue |
-| paused | budget gate or user `hub pause` | queue, reassign open tasks |
-| offline | adapter disconnected | queue (bounded 200), drop `fyi` |
+| paused | budget gate (M5) or user `hub pause` / `hub resume`; a bus-level flag over the adapter state | queue, never steer; reassign open tasks (M5) |
+| offline | adapter disconnected | queue |
+
+Every queue is bounded (`queue_cap`, default 200): on overflow the oldest non-`important`
+envelope is dropped and reported on the console.
 
 Inactivity watchdog per busy turn (default 300 s) forces `idle` after cancelling the silent
 turn (`session/cancel` for ACP, `turn/interrupt` for Codex); a late result of the cancelled
@@ -278,12 +291,17 @@ inside a peer.
   `sessions/observations` per tool call (mirrors `CLAUDE_MEM_SKIP_TOOLS` and the
   secrets denylist), `sessions/summarize` on task done, `session-end` on stop. Fail-open:
   a down worker never blocks a turn; events are dropped with one log line.
-- Session-start cross recall. On each peer session start the hub fetches
-  `context/inject?projects=<chain>` without `platformSource` (all platforms), trims to
-  `memory.inject_tokens` (default 2000), and injects it: Kimi as the first prompt block,
-  local worker as system context, Claude and Codex as one "peer context" notice
-  (channel push / `developerInstructions`) since their own hooks already inject their
-  own platform's context. Never re-injected within a session.
+- Session-start cross recall (amended in M2). Before a peer can receive anything the hub
+  fetches `context/inject?projects=<chain>` (chain = git superprojects down to this repo,
+  comma-separated, primary last; verified) and trims it to `memory.inject_tokens` (default
+  2000, counted as 3 characters per token, cut at a line boundary). Kimi and the local worker
+  get all platforms in one call. Claude and Codex already get their own platform from their
+  own hooks, so they get one filtered call per other platform, legend stripped, the token
+  budget split evenly between the platforms that returned something. The block is
+  not a message of its own, which would cost a turn just to be acknowledged: it rides as the
+  first item (`from: hub`) of the peer's first delivery. Once per peer per hub run, so a
+  restarted peer session does not get it again. A `# claude-mem status` page (unknown project,
+  empty filter; verified) or a down worker means no block.
 - Task brief on handoff. When a task is assigned, escalated or reassigned by the budget
   relay, the hub runs `search(query = title + refs.paths, project, limit 10)` and
   `timeline(anchor = top hit)`, and attaches a brief of at most `memory.brief_items`
@@ -405,10 +423,11 @@ M1 messaging core and three adapters
 - [x] claude-mem worker client (`src/memory/`), `hub doctor` memory check, fake worker for tests
 
 M2 coordination
-- [ ] Priority tiers and status batching, marker parsing
-- [ ] Codex `turn/steer` for important while busy (plain busy queue and drain for every peer shipped in M1: without it a second Kimi prompt fails with `turn.agent_busy`)
-- [ ] Paused and offline queues, idempotent delivery, drop rules
-- [ ] Session-start cross-platform recall (inject without platformSource, token cap, once per session)
+- [x] Priority tiers and status batching, marker parsing
+- [x] Codex `turn/steer` for important while busy (plain busy queue and drain for every peer shipped in M1: without it a second Kimi prompt fails with `turn.agent_busy`)
+- [x] Paused and offline queues, idempotent delivery, drop rules
+- [x] Session-start cross-platform recall (token cap, once per peer per hub run)
+- [ ] Live `turn/steer` against real Codex (blocked by the account usage limit on 2026-09-19)
 
 M3 local worker and routing L2/L3
 - [ ] Local worker agent loop with cwd-scoped tools and secrets denylist

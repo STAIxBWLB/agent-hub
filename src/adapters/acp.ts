@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import { framed, type Envelope, type PeerId } from "../hub/envelope.ts";
+import { renderDigest, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
 
 export interface PermissionOption {
@@ -79,22 +79,22 @@ export class AcpPeer extends BasePeer {
   }
 
   /** Resolves once the prompt is in flight; the turn result arrives on its own. */
-  async deliver(env: Envelope): Promise<void> {
+  async deliver(envs: Envelope[]): Promise<void> {
     if (this.state !== "idle") throw new Error(`${this.id} is ${this.state}`);
     const turn = ++this.turn;
     this.chunks = [];
     this.setState("busy");
     // session/prompt answers only when the turn ends, so deliver resolves now and failures come back through onFailed.
-    this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: framed(env, this.primed) }] })
+    this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: renderDigest(envs, this.primed) }] })
       .then(() => {
         this.primed = true;
         if (turn !== this.turn) return; // superseded: these chunks belong to a later turn
         const body = this.chunks.join("").trim();
-        if (body) this.onMessage?.(body, { inReplyTo: env });
+        if (body) this.onMessage?.(body, { inReplyTo: replyParent(envs) });
       })
       .catch((e: Error) => {
         this.opts.log?.(`[${this.id}] prompt failed: ${e.message}`);
-        this.onFailed?.(env);
+        this.onFailed?.(envs);
       })
       .finally(() => {
         if (turn === this.turn && this.state === "busy") this.setState("idle");

@@ -4,8 +4,9 @@ Native multi-agent hub for one developer's machine: Claude Code, Codex, Kimi Cod
 hub-owned local-LLM worker collaborate as peers in one project directory, with
 task-aware model routing (Switchyard) in front of a self-hosted gateway (OmniRoute).
 
-Status: M1 (messaging core and the Claude, Codex and Kimi adapters) is implemented; the local
-worker, routing, task board and budget relay (M2 to M6) are not. Design spec and milestone
+Status: M1 (messaging core and the Claude, Codex and Kimi adapters) and M2 (priority tiers,
+digests, Codex steer, queue bounds, session-start recall) are implemented; the local worker,
+routing, task board and budget relay (M3 to M6) are not. Design spec and milestone
 checklist: [`docs/specs/2026-09-19-agent-hub-design.md`](docs/specs/2026-09-19-agent-hub-design.md).
 
 ## Quickstart
@@ -23,6 +24,12 @@ hub claude        # Claude Code with the hub channel
 hub tail          # watch the conversation; `hub say [@peer] <text>` to join it
 hub doctor        # what is installed, running and captured
 ```
+
+Unmarked agent messages are batched into digests (3 messages or 15 s) so a busy conversation does
+not cost one turn per message; `[IMPORTANT]` goes out at once and steers a running Codex turn,
+`[FYI]` is recorded only. `hub say` is immediate. `hub pause <peer>` / `hub resume <peer>` hold and
+release a peer's queue. On its first delivery each peer also gets a capped block of recent
+claude-mem context from the other agents' sessions.
 
 Permission prompts stay on by default. `--unattended` turns them off and says so.
 Live verification steps and their results: [`docs/smoke.md`](docs/smoke.md).

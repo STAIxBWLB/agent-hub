@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const cleanup: (() => unknown)[] = [];
@@ -17,7 +18,8 @@ const until = async (cond: () => boolean, what = "condition") => {
   if (!cond()) throw new Error(`timed out waiting for ${what}`);
 };
 
-async function hub(extra: { unattended?: boolean } = {}) {
+async function hub(extra: { unattended?: boolean; memoryUrl?: string } = {}) {
+  const { memoryUrl, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
     cwd: ROOT,
@@ -25,9 +27,14 @@ async function hub(extra: { unattended?: boolean } = {}) {
     controlPort: 0,
     codexAppPort: 0,
     codexProxyPort: 0,
-    config: { ...DEFAULT_CONFIG, kimi_cmd: ["bun", join(ROOT, "test/fakes/acp-server.ts")] },
+    config: {
+      ...DEFAULT_CONFIG,
+      kimi_cmd: ["bun", join(ROOT, "test/fakes/acp-server.ts")],
+      batch_ms: 30,
+      memory: memoryUrl ? { enabled: true, worker_url: memoryUrl, inject_tokens: 40 } : { ...DEFAULT_CONFIG.memory, enabled: false },
+    },
     permissionTimeoutMs: 200,
-    ...extra,
+    ...rest,
   });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console" });
@@ -156,6 +163,105 @@ test("a tail opened after a permission request still sees it", async () => {
   late.send({ t: "permit", id: asks[0].id, option: "yes" });
   await until(() => events.some((e) => e.t === "envelope" && e.env.body.endsWith("permission=yes")), "permitted reply");
   late.close();
+});
+
+test("console messages go out at once, agent status is batched into one digest notification, fyi reaches nobody", async () => {
+  const { stateDir, daemon, console_, events } = await hub();
+  const { channel } = await fakeClaude(stateDir);
+  const other = await ControlClient.connect(stateDir, { role: "peer", peer: "claude-2" });
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle" && daemon.bus.peers.get("claude-2")?.state === "idle", "attach");
+
+  await console_.request({ t: "send", body: "now", to: ["claude"] });
+  await until(() => channel.length === 1, "immediate console message");
+  expect(channel[0].params.meta.priority).toBe("important");
+
+  await other.request({ t: "send", body: "[FYI] for the record" });
+  await other.request({ t: "send", body: "one" });
+  await other.request({ t: "send", body: "[STATUS] two" });
+  await until(() => channel.length === 2, "digest");
+  await Bun.sleep(60);
+  expect(channel).toHaveLength(2); // one notification for both, none for the fyi
+  expect(channel[1].params.meta.source).toBe("hub-digest");
+  expect(channel[1].params.meta.sources).toBe("claude-2");
+  expect(channel[1].params.content).toContain("--- from claude-2");
+  expect(channel[1].params.content).toContain("one");
+  expect(channel[1].params.content).toContain("two");
+  expect(events.some((e) => e.t === "envelope" && e.dropped === "fyi")).toBe(true);
+  other.close();
+});
+
+test("an outdated plugin is refused loudly instead of silently dropping digests; fyi sends say so", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  const token = readFileSync(join(stateDir, "control-token"), "utf8");
+  const old = new WebSocket(`ws://127.0.0.1:${daemon.port}`);
+  const code = await new Promise<number>((resolve) => {
+    old.onopen = () => old.send(JSON.stringify({ t: "hello", token, role: "peer", peer: "claude" })); // no `v`
+    old.onclose = (ev) => resolve(ev.code);
+  });
+  expect(code).toBe(4426);
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("wire version 1");
+
+  const res = await console_.request({ t: "send", body: "[FYI] note" });
+  expect(res).toMatchObject({ ok: true, recorded: true, targets: [] });
+});
+
+test("two starts of the same peer at once share one adapter", async () => {
+  const mem = startFakeMemWorker({ claude: ["1 line"] });
+  cleanup.push(mem.stop);
+  const { console_ } = await hub({ memoryUrl: mem.url });
+  const [a, b] = await Promise.all([console_.request({ t: "start", peer: "kimi" }), console_.request({ t: "start", peer: "kimi" })]);
+  expect([a.ok, b.ok]).toEqual([true, true]);
+  expect(mem.calls.filter((c) => c.path === "/api/context/inject")).toHaveLength(1);
+  expect((await console_.request({ t: "status" })).status.peers.kimi.state).toBe("idle");
+});
+
+test("pause and resume from the console", async () => {
+  const { console_, events } = await hub();
+  await console_.request({ t: "start", peer: "kimi" });
+  expect((await console_.request({ t: "pause", peer: "kimi" })).state).toBe("paused");
+  expect((await console_.request({ t: "pause", peer: "ghost" })).ok).toBe(false);
+  await console_.request({ t: "send", body: "held one", to: ["kimi"] });
+  await console_.request({ t: "send", body: "held two", to: ["kimi"] });
+  await Bun.sleep(80);
+  const status = (await console_.request({ t: "status" })).status.peers.kimi;
+  expect(status).toEqual({ state: "paused", queued: 2 });
+  await console_.request({ t: "resume", peer: "kimi" });
+  await until(() => events.some((e) => e.t === "envelope" && e.env.from === "kimi"), "digest reply");
+  expect(events.find((e) => e.t === "envelope" && e.env.from === "kimi").env.body).toBe("echo: held two (2 items)");
+});
+
+test("session-start recall rides on the first delivery, is capped, and is not repeated when the peer restarts", async () => {
+  const mem = startFakeMemWorker({
+    claude: ["65001 10:00a decision Claude chose the proxy design"],
+    kimi: Array.from({ length: 30 }, (_, i) => `6600${i} 10:0${i % 10}a change kimi filler line number ${i}`),
+  });
+  cleanup.push(mem.stop);
+  const { daemon, console_, events } = await hub({ memoryUrl: mem.url });
+  const replies = () => events.filter((e) => e.t === "envelope" && e.env.from === "kimi").map((e) => e.env.body);
+
+  await console_.request({ t: "start", peer: "kimi" });
+  const inject = mem.calls.filter((c) => c.path === "/api/context/inject");
+  expect(inject).toHaveLength(1);
+  expect(inject[0]!.query).not.toContain("platformSource"); // kimi gets every platform
+
+  let delivered = "";
+  const kimi = daemon.bus.peers.get("kimi")!;
+  const deliver = kimi.deliver.bind(kimi);
+  kimi.deliver = (envs) => ((delivered = envs.map((e) => `${e.from}:${e.body}`).join("\n")), deliver(envs));
+  await console_.request({ t: "send", body: "hello", to: ["kimi"] });
+  await until(() => replies().length === 1, "first reply");
+  expect(replies()[0]).toBe("echo: hello (2 items) +memory");
+  expect(delivered).toContain("Claude chose the proxy design");
+  expect(delivered).toContain("(trimmed)");
+  expect(delivered.length).toBeLessThan(600); // 40 tokens * 3 chars + header + the message
+
+  await kimi.stop();
+  await until(() => daemon.bus.stateOf("kimi") === "offline", "kimi down");
+  await console_.request({ t: "start", peer: "kimi" });
+  await console_.request({ t: "send", body: "again", to: ["kimi"] });
+  await until(() => replies().length === 2, "second session reply");
+  expect(replies()[1]).toBe("echo: again");
+  expect(mem.calls.filter((c) => c.path === "/api/context/inject")).toHaveLength(1);
 });
 
 test("kill removes pid, status and token", async () => {

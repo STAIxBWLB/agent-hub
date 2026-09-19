@@ -5,16 +5,30 @@ import type { ServerWebSocket } from "bun";
 import { AcpPeer, type PermissionRequest } from "../adapters/acp.ts";
 import { CodexPeer } from "../adapters/codex-appserver.ts";
 import { Bus } from "./bus.ts";
-import { stateDirFor } from "./control-client.ts";
-import { newEnvelope, USER, type Envelope, type PeerId } from "./envelope.ts";
+import { PROTOCOL, stateDirFor } from "./control-client.ts";
+import { newEnvelope, parseMarker, USER, type Envelope, type PeerId } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS } from "./peers.ts";
+import { MemoryClient, workerUrl } from "../memory/client.ts";
+import { projectChain, recallFor } from "../memory/recall.ts";
 
 export interface HubConfig {
   watchdog_ms: number;
   kimi_cmd: string[];
   codex_bin: string;
+  batch_max: number;
+  batch_ms: number;
+  queue_cap: number;
+  memory: { enabled: boolean; worker_url?: string; inject_tokens: number };
 }
-export const DEFAULT_CONFIG: HubConfig = { watchdog_ms: DEFAULT_WATCHDOG_MS, kimi_cmd: ["kimi", "acp"], codex_bin: "codex" };
+export const DEFAULT_CONFIG: HubConfig = {
+  watchdog_ms: DEFAULT_WATCHDOG_MS,
+  kimi_cmd: ["kimi", "acp"],
+  codex_bin: "codex",
+  batch_max: 3,
+  batch_ms: 15_000,
+  queue_cap: 200,
+  memory: { enabled: true, inject_tokens: 2000 },
+};
 
 export { stateDirFor };
 
@@ -24,7 +38,8 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
 export function loadConfig(cwd: string): HubConfig {
   try {
-    return { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(join(cwd, ".agenthub", "config.json"), "utf8")) };
+    const file = JSON.parse(readFileSync(join(cwd, ".agenthub", "config.json"), "utf8"));
+    return { ...DEFAULT_CONFIG, ...file, memory: { ...DEFAULT_CONFIG.memory, ...file.memory } };
   } catch {
     return DEFAULT_CONFIG;
   }
@@ -63,9 +78,9 @@ class WsPeer extends BasePeer {
     this.sock = undefined;
     this.setState("offline");
   }
-  async deliver(env: Envelope): Promise<void> {
+  async deliver(envs: Envelope[]): Promise<void> {
     if (!this.sock) throw new Error(`${this.id} is offline`);
-    this.sock.send(JSON.stringify({ t: "deliver", env }));
+    this.sock.send(JSON.stringify({ t: "deliver", envs }));
   }
   async start(): Promise<void> {}
   async stop(): Promise<void> {
@@ -83,7 +98,21 @@ export async function startDaemon(opts: DaemonOptions) {
   // The file is written only after the port is bound: a second daemon that loses the bind must not clobber it.
   const token = randomBytes(24).toString("hex");
 
-  const bus = new Bus();
+  const bus = new Bus({ batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap });
+  const memory = new MemoryClient(config.memory.worker_url ?? workerUrl(), 2000, log);
+  const chain = projectChain(opts.cwd);
+  const recalled = new Set<PeerId>(); // once per peer per hub run, however often the peer's session restarts
+
+  /** Session-start cross-platform recall. Awaited before the peer can receive anything, so it rides on the first delivery. Fail-open. */
+  async function ensurePreface(peer: PeerId): Promise<void> {
+    if (!config.memory.enabled || recalled.has(peer)) return;
+    const block = await recallFor(peer, memory, chain, config.memory.inject_tokens);
+    if (!block || recalled.has(peer)) return; // nothing yet (worker down, no memory): the peer's next session tries again
+    recalled.add(peer);
+    bus.preface(peer, block);
+    log(`recall ${peer}: ${block.length} chars`);
+  }
+
   const consoles = new Set<Sock>();
   const permissions = new Map<string, { push: string; done: (optionId: string | undefined) => void }>();
   let stopping = false;
@@ -93,7 +122,7 @@ export async function startDaemon(opts: DaemonOptions) {
     cwd: opts.cwd,
     controlPort: server.port,
     codexProxyPort: opts.codexProxyPort,
-    peers: Object.fromEntries([...bus.peers].map(([id, p]) => [id, { state: p.state, queued: bus.queued(id) }])),
+    peers: Object.fromEntries([...bus.peers.keys()].map((id) => [id, { state: bus.stateOf(id), queued: bus.queued(id) }])),
   });
   const writeStatus = () => {
     const file = join(opts.stateDir, "status.json"); // clients parse this on every connect: replace it atomically
@@ -104,7 +133,8 @@ export async function startDaemon(opts: DaemonOptions) {
   bus.tap((e) => {
     if (e.t === "state") log(`state ${e.peer} -> ${e.state}`);
     else if (e.t === "undeliverable") log(`UNDELIVERABLE to ${e.peer} after retries: ${e.env.id} from ${e.env.from}`);
-    else log(`msg ${e.env.from} -> ${e.env.to?.join(",") ?? "*"} hop=${e.env.hop}${e.dropped ? " DROPPED(hop)" : ""}: ${e.env.body.slice(0, 200)}`);
+    else if (e.t === "overflow") log(`OVERFLOW ${e.peer}: dropped ${e.env.id} from ${e.env.from}`);
+    else log(`msg ${e.env.from} -> ${e.env.to?.join(",") ?? "*"} ${e.env.priority} hop=${e.env.hop}${e.dropped ? ` NOT DELIVERED(${e.dropped})` : ""}: ${e.env.body.slice(0, 200)}`);
     if (!stopping) writeStatus();
   });
 
@@ -125,7 +155,15 @@ export async function startDaemon(opts: DaemonOptions) {
     });
   }
 
-  async function startPeer(peer: string, args: { model?: string }): Promise<Record<string, unknown>> {
+  // One start per peer at a time: a second `hub codex` must not tear down an adapter that is still coming up.
+  const starting = new Map<string, Promise<Record<string, unknown>>>();
+  function startPeer(peer: string, args: { model?: string }): Promise<Record<string, unknown>> {
+    const running = starting.get(peer) ?? startPeerOnce(peer, args).finally(() => starting.delete(peer));
+    starting.set(peer, running);
+    return running;
+  }
+
+  async function startPeerOnce(peer: string, args: { model?: string }): Promise<Record<string, unknown>> {
     const existing = bus.peers.get(peer);
     if (existing && existing.state !== "offline") {
       return { ok: true, already: true, ...(existing instanceof CodexPeer ? { proxyUrl: existing.proxyUrl } : {}) };
@@ -135,6 +173,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const [bin, ...rest] = config.kimi_cmd;
       const cmd = args.model ? [bin!, "--model", args.model, ...rest] : config.kimi_cmd;
       const kimi = new AcpPeer("kimi", { cmd, cwd: opts.cwd, watchdogMs: config.watchdog_ms, onPermission, log });
+      await ensurePreface("kimi");
       bus.add(kimi);
       await kimi.start();
       return { ok: true };
@@ -148,6 +187,7 @@ export async function startDaemon(opts: DaemonOptions) {
         watchdogMs: config.watchdog_ms,
         log,
       });
+      await ensurePreface("codex");
       bus.add(codex);
       await codex.start();
       return { ok: true, proxyUrl: codex.proxyUrl };
@@ -160,6 +200,11 @@ export async function startDaemon(opts: DaemonOptions) {
     const reply = (body: Record<string, unknown>) => sock.send(JSON.stringify({ rid: msg.rid, ...body }));
     if (!c.authed) {
       if (msg.t !== "hello" || msg.token !== token) return sock.close(4401, "bad token");
+      if (msg.v !== PROTOCOL) {
+        // An outdated plugin would drop every digest without a trace. Refuse it loudly instead.
+        log(`refused ${msg.role} ${msg.peer ?? ""}: wire version ${msg.v ?? 1}, hub speaks ${PROTOCOL} (claude plugin update agent-hub@agent-hub)`);
+        return sock.close(4426, `wire version mismatch: hub speaks ${PROTOCOL}; update the agent-hub plugin`);
+      }
       c.authed = true;
       c.role = msg.role === "peer" ? "peer" : "console";
       if (c.role === "console") consoles.add(sock);
@@ -169,20 +214,24 @@ export async function startDaemon(opts: DaemonOptions) {
         let peer = bus.peers.get(c.peer);
         if (!peer) bus.add((peer = new WsPeer(c.peer)));
         if (!(peer instanceof WsPeer)) return sock.close(4409, "peer id is taken by a hub-managed adapter");
-        peer.attach(sock);
+        const ws = peer;
+        void ensurePreface(c.peer).finally(() => {
+          if (sock.readyState === WebSocket.OPEN) ws.attach(sock);
+        });
       }
       return void reply({ t: "welcome" });
     }
     switch (msg.t) {
       case "send": {
-        const body = String(msg.body ?? "").trim();
+        // A human at the console should not wait out the batch window; agents default to status.
+        const { priority, body } = parseMarker(String(msg.body ?? ""), c.peer ? "status" : "important");
         if (!body) return void reply({ t: "sent", ok: false, error: "empty body" });
         const to: PeerId[] | undefined = Array.isArray(msg.to) && msg.to.length ? msg.to.map(String) : undefined;
         const unknown = to?.filter((id) => !bus.peers.has(id)) ?? [];
         if (unknown.length) return void reply({ t: "sent", ok: false, error: `unknown peer: ${unknown.join(", ")}` });
         const inReplyTo = msg.reply_to ? bus.get(String(msg.reply_to)) : undefined;
-        const targets = bus.publish(newEnvelope(c.peer ?? USER, body, { ...(to ? { to } : {}), ...(inReplyTo ? { inReplyTo } : {}) }));
-        return void reply({ t: "sent", ok: true, targets });
+        const targets = bus.publish(newEnvelope(c.peer ?? USER, body, { priority, ...(to ? { to } : {}), ...(inReplyTo ? { inReplyTo } : {}) }));
+        return void reply({ t: "sent", ok: true, targets, recorded: priority === "fyi" });
       }
       case "tail":
         if (c.role !== "console" || c.tail) return;
@@ -200,6 +249,15 @@ export async function startDaemon(opts: DaemonOptions) {
             reply({ t: "started", ...r });
           });
         return;
+      case "pause":
+      case "resume": {
+        if (c.role !== "console") return;
+        const id = String(msg.peer);
+        if (!bus.peers.has(id)) return void reply({ t: msg.t, ok: false, error: `unknown peer: ${id}` });
+        if (msg.t === "pause") bus.pause(id);
+        else bus.resume(id);
+        return void reply({ t: msg.t, ok: true, state: bus.stateOf(id) });
+      }
       case "permit":
         if (c.role === "console") permissions.get(String(msg.id))?.done(msg.option ? String(msg.option) : undefined);
         return;

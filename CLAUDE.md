@@ -27,9 +27,9 @@ Run this before reporting any task complete, and paste the output. A failing tes
 
 ## Architecture
 
-- `src/hub/`: envelope and untrusted framing, bus (fan-out, hop cap, dedupe, per-peer FIFO), `BasePeer` state machine with the inactivity watchdog, daemon (control WS, state dir), control client, port registry.
+- `src/hub/`: envelope, markers and digest rendering, bus (fan-out, hop cap, dedupe, one queue per peer delivered as a digest when ready, steer, cap, pause, preface), `BasePeer` state machine with the inactivity watchdog, daemon (control WS, state dir), control client, port registry.
 - `src/adapters/`: one file per native surface. `claude-channel.ts` runs inside Claude Code as the plugin's MCP server and talks to the daemon over the control WS; `codex-appserver.ts` and `acp.ts` run inside the daemon.
-- `src/memory/`: claude-mem worker client. Fail-open everywhere; the hub never owns a memory database.
+- `src/memory/`: claude-mem worker client and session-start recall. Fail-open everywhere; the hub never owns a memory database.
 - `src/cli/`: `main.ts` (commands), `launch.ts` (hub-owned flags), `init.ts` (marker blocks).
 - `plugins/agent-hub/`: plugin manifest, `.mcp.json` and the committed bundle. `templates/`: what `hub init` writes.
 - `test/fakes/`: fake ACP agent, fake Codex app-server, fake claude-mem worker. No mocking library.
@@ -38,8 +38,14 @@ Run this before reporting any task complete, and paste the output. A failing tes
 
 - Codex: the adapter never sends its own `initialize`. It is a proxy; hub requests use negative ids and their responses must not reach the TUI.
 - Codex 0.154.0 `agentMessage` items carry `text` and `phase` (not `content[]`); only the last non-`commentary` message of a turn is shared.
+- Tests that are not about batching build the bus with `batchMs: 0`; with the default 15 s window a lone status envelope looks like a lost message.
+- A failed digest is retried one envelope at a time, so a poison envelope cannot take its neighbours down with it.
+- An `important` envelope being steered is not in the queue while the steer is in flight; queue it first and an idle transition delivers it twice.
+- The plugin bundle is installed apart from the daemon. Any change to a control WS message shape bumps `PROTOCOL` in `control-client.ts`.
+- `replyParent()` decides what a reply answers (highest hop, never the `hub` preface). Use it for deliveries and steers alike, or the hop cap can be reset.
 - A peer must set `busy` synchronously inside `deliver()`, otherwise the bus drains the next envelope into a running turn (Kimi answers `turn.agent_busy`).
 - A watchdog-cancelled turn still reports later. Anything a turn does on completion must check it is still the current turn (`turn` generation in `acp.ts`, `activeTurns` in `codex-appserver.ts`).
 - State files that clients read (`status.json`, `control-token`) are written after the port is bound, and `status.json` via temp file + rename.
+- Every body that is rendered next to a hub-written header goes through `sanitize()`; otherwise an agent can forge a `[agent-hub message from "user"` line inside its own message.
 - Both loopback servers refuse requests that carry an `Origin` header and the control WS requires the token: any web page can open a WebSocket to 127.0.0.1.
 - `plugins/agent-hub/server.js` is generated but committed (the marketplace copies only the plugin dir). Do not edit it by hand.

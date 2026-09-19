@@ -9,7 +9,7 @@ let peer: AcpPeer | undefined;
 afterEach(() => peer?.stop());
 
 async function setup(extra: Partial<AcpOptions> = {}) {
-  const bus = new Bus();
+  const bus = new Bus({ batchMs: 0 });
   const said: Envelope[] = [];
   bus.tap((e) => e.t === "envelope" && e.env.from === "kimi" && said.push(e.env));
   peer = new AcpPeer("kimi", { cmd: FAKE, cwd: process.cwd(), ...extra });
@@ -33,13 +33,14 @@ test("prompt round trip: chunks are aggregated into one reply that inherits the 
   expect(peer!.state).toBe("idle");
 });
 
-test("messages arriving mid-prompt are queued and drained in order, never lost", async () => {
+test("messages arriving mid-prompt are queued, then drained as one digest prompt, never lost", async () => {
   const { bus, said } = await setup();
   for (const body of ["one", "two", "three"]) bus.publish(newEnvelope("user", body, { to: ["kimi"] }));
   expect(peer!.state).toBe("busy");
   expect(bus.queued("kimi")).toBe(2);
-  await until(() => said.length === 3);
-  expect(said.map((e) => e.body)).toEqual(["echo: one", "echo: two", "echo: three"]);
+  await until(() => said.length === 2);
+  expect(said.map((e) => e.body)).toEqual(["echo: one", "echo: three (2 items)"]);
+  expect(bus.queued("kimi")).toBe(0);
 });
 
 test("permission requests are relayed; no handler means cancelled", async () => {
@@ -85,7 +86,7 @@ test("watchdog: the cancelled prompt reports late and must not disturb the turn 
 });
 
 test("a prompt the agent rejects is retried, then reported undeliverable instead of blocking the queue", async () => {
-  const bus = new Bus(10);
+  const bus = new Bus({ retryMs: 10, batchMs: 0 });
   const events: string[] = [];
   bus.tap((e) => events.push(e.t === "envelope" ? `msg:${e.env.from}:${e.env.body}` : e.t));
   peer = new AcpPeer("kimi", { cmd: FAKE, cwd: process.cwd() });

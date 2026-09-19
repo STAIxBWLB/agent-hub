@@ -13,9 +13,9 @@ const until = async (cond: () => boolean) => {
   expect(cond()).toBe(true);
 };
 
-async function setup() {
-  const fake = startFakeAppServer();
-  const bus = new Bus();
+async function setup(turnMs?: number) {
+  const fake = startFakeAppServer(turnMs);
+  const bus = new Bus({ batchMs: 0 });
   const said: Envelope[] = [];
   bus.tap((e) => e.t === "envelope" && e.env.from === "codex" && said.push(e.env));
   const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: fake.url, cwd: process.cwd() });
@@ -73,6 +73,57 @@ test("a turn typed in the TUI makes the peer busy; hub messages queue until turn
   expect(said[0]!.body).toBe("echo: user typed");
   expect(said[0]!.hop).toBe(0); // the user started that turn, not the hub
   expect(said[1]!.body).toBe("echo: queued one");
+});
+
+test("important while a turn runs goes in as turn/steer with the running turn's id; status waits for turn/completed", async () => {
+  const { bus, peer, said, tui, seen } = await setup(150);
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => peer.state === "idle");
+  tui.send(JSON.stringify({ id: 3, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: "long job" }] } }));
+  await until(() => peer.state === "busy");
+
+  const urgent = newEnvelope("claude", "wrong branch", { priority: "important", inReplyTo: { trace: "t", hop: 1 } });
+  bus.publish(urgent);
+  bus.publish(newEnvelope("kimi", "minor note"));
+  expect(bus.queued("codex")).toBe(1); // only the status one waits
+
+  await until(() => said.length === 2);
+  expect(said[0]!.body).toBe("echo: long job +steered: wrong branch");
+  expect(said[0]!.trace).toBe("t"); // the user's turn now also answers the hub
+  expect(said[0]!.hop).toBe(urgent.hop + 1);
+  expect(said[1]!.body).toBe("echo: minor note");
+  expect(seen.some((m) => typeof m.id === "number" && m.id < 0)).toBe(false);
+});
+
+test("a steered high-hop message cannot reset the hop cap, and an unanswered steer comes back to the queue", async () => {
+  const { bus, peer, said, tui } = await setup(150);
+  const dropped: Envelope[] = [];
+  bus.tap((e) => e.t === "envelope" && e.dropped === "hop" && dropped.push(e.env));
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => peer.state === "idle");
+
+  bus.publish(newEnvelope("claude", "start", { priority: "important" })); // hub-started turn, hop 0
+  await until(() => peer.state === "busy");
+  await Bun.sleep(40); // let turn/started announce the turn id
+  bus.publish(newEnvelope("kimi", "ping", { priority: "important", inReplyTo: { trace: "loop", hop: 2 } })); // hop 3
+  bus.publish(newEnvelope("kimi", "SILENT", { priority: "important" })); // app-server never answers this steer
+  await until(() => dropped.length === 1);
+  expect(dropped[0]!.body).toBe("echo: start +steered: ping");
+  expect(dropped[0]!.hop).toBe(4);
+
+  await until(() => said.length === 2); // the abandoned steer was re-queued and got a turn of its own
+  expect(said[1]!.body).toBe("echo: SILENT");
+});
+
+test("a refused steer is not lost: it is delivered when the peer goes idle", async () => {
+  const { bus, peer, said, tui } = await setup();
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => peer.state === "idle");
+  // busy because the hub claimed the turn, but app-server has not announced a turn id yet: nothing to steer
+  bus.publish(newEnvelope("claude", "first"));
+  bus.publish(newEnvelope("claude", "urgent", { priority: "important" }));
+  await until(() => said.length === 2);
+  expect(said.map((e) => e.body)).toEqual(["echo: first", "echo: urgent"]);
 });
 
 test("TUI detach takes the peer offline and keeps queued messages", async () => {

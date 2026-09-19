@@ -28,6 +28,16 @@ export class MemoryClient {
   ) {}
 
   async request<T = unknown>(method: "GET" | "POST", path: string, body?: unknown): Promise<T | undefined> {
+    return this.call(method, path, body, (res) => res.json() as Promise<T>);
+  }
+
+  /** Recent-context block (text/plain markdown). `chain`: project names, the primary one last. No `platformSource` = all platforms. */
+  contextInject(chain: string[], platformSource?: string): Promise<string | undefined> {
+    const query = `projects=${encodeURIComponent(chain.join(","))}${platformSource ? `&platformSource=${encodeURIComponent(platformSource)}` : ""}`;
+    return this.call("GET", `/api/context/inject?${query}`, undefined, (res) => res.text());
+  }
+
+  private async call<T>(method: "GET" | "POST", path: string, body: unknown, read: (res: Response) => Promise<T>): Promise<T | undefined> {
     try {
       const res = await fetch(`${this.url}${path}`, {
         method,
@@ -35,7 +45,7 @@ export class MemoryClient {
         ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return (await res.json()) as T;
+      return await read(res);
     } catch (e) {
       this.log(`memory ${method} ${path} dropped: ${(e as Error).message}`);
       return undefined;

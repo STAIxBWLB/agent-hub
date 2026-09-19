@@ -1,5 +1,9 @@
 {
   "watchdog_ms": 300000,
   "kimi_cmd": ["kimi", "acp"],
-  "codex_bin": "codex"
+  "codex_bin": "codex",
+  "batch_max": 3,
+  "batch_ms": 15000,
+  "queue_cap": 200,
+  "memory": { "enabled": true, "inject_tokens": 2000 }
 }

@@ -5,6 +5,9 @@ export function stateDirFor(cwd: string): string {
   return process.env.AGENTHUB_STATE_DIR ?? join(cwd, ".agenthub", "state");
 }
 
+/** Control WS wire version. 2 = `deliver` carries `envs` (digests). The plugin is installed apart from the daemon, so they can drift. */
+export const PROTOCOL = 2;
+
 export interface Hello {
   role: "peer" | "console";
   peer?: string;
@@ -50,7 +53,7 @@ export class ControlClient {
         client.pending.delete(msg.rid);
         done(msg);
       };
-      ws.onopen = () => void client.request({ t: "hello", token: control.token, ...hello }).then(() => resolve(client));
+      ws.onopen = () => void client.request({ t: "hello", v: PROTOCOL, token: control.token, ...hello }).then(() => resolve(client));
     });
   }
 
