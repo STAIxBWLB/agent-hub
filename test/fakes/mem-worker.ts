@@ -18,6 +18,16 @@ export function startFakeMemWorker(observations: Record<string, string[]> = {}) 
         if (!lines.length || chain.includes("nonexistent")) return new Response(STATUS_PAGE);
         return new Response(`# [${chain.at(-1)}] recent context\nLegend: ...\nStats: ...\n\n### Sep 19, 2026\n${lines.join("\n")}\n`);
       }
+      if (url.pathname === "/api/search") {
+        const q = (url.searchParams.get("query") ?? "").toLowerCase();
+        const rows = Object.values(observations).flat().filter((line) => q.split(/\s+/).some((w) => w.length > 3 && line.toLowerCase().includes(w)));
+        return Response.json({ content: [{ type: "text", text: `Found ${rows.length} result(s)\n\n| ID | Time | T | Title | Read |\n|----|------|---|-------|------|\n${rows.map((r) => { const [id, time, type, ...title] = r.split(" "); return `| #${id} | ${time} | ${type} | ${title.join(" ")} | ~100 |`; }).join("\n")}\n` }] });
+      }
+      if (url.pathname === "/api/timeline") {
+        const anchor = url.searchParams.get("anchor");
+        return Response.json({ content: [{ type: "text", text: `# Timeline around anchor: ${anchor}\n| ID | Time | T | Title | Tokens |\n|----|------|---|-------|--------|\n| #${anchor} | 10:00a | decision | anchor row <- **ANCHOR** | ~80 |\n| #${Number(anchor) + 1} | 10:01a | change | neighbour of ${anchor} | ~50 |\n` }] });
+      }
+      if (url.pathname === "/api/memory/save") return Response.json({ status: "saved", id: calls.length });
       if (url.pathname === "/api/sessions/summarize" && (calls.at(-1)!.body as any)?.agentId) {
         return Response.json({ status: "skipped", reason: "subagent_context" }); // what worker 13.25.1 does
       }

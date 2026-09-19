@@ -187,7 +187,8 @@ export class Bus {
   /** At-least-once: back to the queue head and retried after a pause; given up after MAX_ATTEMPTS so one poison envelope cannot block the peer. */
   private failed(id: PeerId, envs: Envelope[]): void {
     const keep = envs.filter((env) => {
-      if (env.from === HUB) {
+      // Only the recall block is a preface. The hub also sends task and review envelopes, and those are retried like any other.
+      if (env.from === HUB && env.kind === "presence") {
         this.prefaces.set(id, env); // rides again on the next delivery, without counting as a failed envelope
         return false;
       }

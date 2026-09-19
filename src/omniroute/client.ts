@@ -61,6 +61,12 @@ export class OmniRoute {
     return process.env.OMNIROUTE_API_KEY?.trim() || readSecret(this.cfg.api_key_file);
   }
 
+  /** True when the live gateway is reached through Cloudflare Access, i.e. the traffic leaves the campus network. */
+  async offCampus(): Promise<boolean> {
+    const base = await this.base();
+    return !!base && this.cfg.access_hosts.includes(new URL(base).hostname);
+  }
+
   /** Cloudflare Access headers, only for hosts that sit behind Access. */
   accessHeaders(url: string): Record<string, string> {
     if (!this.cfg.access_hosts.includes(new URL(url).hostname)) return {};

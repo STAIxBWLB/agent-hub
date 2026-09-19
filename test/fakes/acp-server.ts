@@ -67,7 +67,10 @@ async function prompt(id: number, text: string) {
 createInterface({ input: process.stdin }).on("line", (line) => {
   const msg = JSON.parse(line);
   if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1 } });
-  else if (msg.method === "session/new") send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s1" } });
+  else if (msg.method === "session/new") {
+    if (process.env.FAKE_ACP_RECORD) Bun.write(process.env.FAKE_ACP_RECORD, JSON.stringify(msg.params));
+    send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s1" } });
+  }
   else if (msg.method === "session/cancel") cancel?.();
   else if (msg.method === "session/prompt") void prompt(msg.id, msg.params.prompt[0].text);
   else if (msg.id !== undefined && !msg.method) waiting.get(msg.id)?.(msg.result);

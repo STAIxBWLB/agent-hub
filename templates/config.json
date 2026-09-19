@@ -5,7 +5,13 @@
   "batch_max": 3,
   "batch_ms": 15000,
   "queue_cap": 200,
-  "memory": { "enabled": true, "inject_tokens": 2000 },
+  "memory": { "enabled": true, "inject_tokens": 2000, "brief_items": 8 },
+  "roles": {
+    "claude": ["planner", "reviewer"],
+    "codex": ["implementer"],
+    "kimi": ["implementer", "verifier"],
+    "local": ["implementer", "verifier"]
+  },
   "omniroute": {
     "urls": ["http://gateway.internal:20128/v1", "https://gateway.example.edu/v1"],
     "access_hosts": ["gateway.example.edu"],

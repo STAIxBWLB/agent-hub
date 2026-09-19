@@ -33,7 +33,7 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?:
       kimi_cmd: ["bun", join(ROOT, "test/fakes/acp-server.ts")],
       batch_ms: 30,
       ...(modelUrl ? { omniroute: { urls: [modelUrl], access_hosts: [] } } : {}),
-      memory: memoryUrl ? { enabled: true, worker_url: memoryUrl, inject_tokens: 40 } : { ...DEFAULT_CONFIG.memory, enabled: false },
+      memory: memoryUrl ? { enabled: true, worker_url: memoryUrl, inject_tokens: 40, brief_items: 8 } : { ...DEFAULT_CONFIG.memory, enabled: false },
     },
     permissionTimeoutMs: 200,
     ...rest,
@@ -84,7 +84,7 @@ test("claude channel: declares the capability, receives pushes with meta.source,
   const { stateDir, daemon, console_, events } = await hub();
   const { client, channel } = await fakeClaude(stateDir);
   expect(client.getServerCapabilities()?.experimental).toHaveProperty("claude/channel");
-  expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["hub_send", "hub_inbox"]);
+  expect((await client.listTools()).tools.map((t) => t.name).slice(0, 2)).toEqual(["hub_send", "hub_inbox"]); // the task tools follow (M4)
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
 
   const sent = await console_.request({ t: "send", body: "hello claude" });
@@ -291,6 +291,107 @@ test("hub local: a fourth peer on the hub-owned model path; writes wait for hub 
   const status = (await console_.request({ t: "status" })).status;
   expect(status.peers.local).toMatchObject({ state: "idle", servedBy: "omniroute vllm/pinned (provider vllm)" });
   expect(model.requests[0]!.body.model).toBe("vllm/pinned");
+});
+
+test("task tools from every surface: Claude plugin, a tools-role client acting for kimi, the console; roles reach the instructions; the board survives a restart", async () => {
+  const record = join(mkdtempSync(join(tmpdir(), "agenthub-rec-")), "session-new.json");
+  process.env.FAKE_ACP_RECORD = record;
+  cleanup.push(() => delete process.env.FAKE_ACP_RECORD);
+  const first = await hub();
+  const { client } = await fakeClaude(first.stateDir);
+  await until(() => first.daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
+  await first.console_.request({ t: "start", peer: "kimi" });
+
+  // Kimi is handed the hub's MCP server in tools mode through ACP session/new
+  const sessionNew = JSON.parse(readFileSync(record, "utf8"));
+  expect(sessionNew.mcpServers[0]).toMatchObject({ name: "agent-hub", command: "bun" });
+  expect(sessionNew.mcpServers[0].env).toContainEqual({ name: "AGENTHUB_MODE", value: "tools" });
+  expect(sessionNew.mcpServers[0].env).toContainEqual({ name: "AGENTHUB_PEER_ID", value: "kimi" });
+
+  const names = (await client.listTools()).tools.map((t) => t.name);
+  expect(names).toEqual(expect.arrayContaining(["hub_send", "hub_inbox", "hub_task_propose", "hub_task_done", "hub_review", "hub_remember"]));
+  expect(client.getInstructions()).toContain("planner: break work into tasks");
+
+  const proposed: any = await client.callTool({ name: "hub_task_propose", arguments: { title: "write the smoke doc", class: "test" } });
+  expect(proposed.content[0].text).toBe("task #1: proposed, owner kimi, reviewer claude");
+
+  // the same bundle in tools mode, as Kimi or Codex would run it
+  const kimiTools = new Client({ name: "fake-kimi-mcp", version: "0" }, { capabilities: {} });
+  await kimiTools.connect(new StdioClientTransport({ command: "bun", args: [join(ROOT, "plugins/agent-hub/server.js")], env: { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: first.stateDir, AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: "kimi" }, stderr: "ignore" }));
+  cleanup.push(() => kimiTools.close());
+  expect(kimiTools.getServerCapabilities()?.experimental).toBeUndefined(); // no channel in tools mode
+  expect((await kimiTools.listTools()).tools.map((t) => t.name)).not.toContain("hub_inbox");
+  expect(kimiTools.getInstructions()).toContain("verifier: run the checks");
+  const call = async (name: string, args: unknown) => ((await kimiTools.callTool({ name, arguments: args as any })) as any).content[0].text as string;
+  for (let i = 0; i < 50 && (await call("hub_task_list", {})).startsWith("hub is not running"); i++) await Bun.sleep(50);
+  expect(await call("hub_task_accept", { id: 1 })).toBe("task #1: in_progress, owner kimi, reviewer claude"); // attributed to kimi
+  expect(await call("hub_review", { id: 1, verdict: "approved" })).toMatch(/^error: .*only its reviewer \(claude\)/);
+  expect(await call("hub_task_done", { id: 1, summary: "doc written" })).toContain("in_review");
+  expect(first.daemon.bus.peers.has("kimi")).toBe(true);
+  expect([...first.daemon.bus.peers.keys()].sort()).toEqual(["claude", "kimi"]); // the tools client is not a delivery target
+
+  const verdict: any = await client.callTool({ name: "hub_review", arguments: { id: 1, verdict: "approved", note: "fine" } });
+  expect(verdict.content[0].text).toContain("approved");
+  expect((await first.console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text).toContain('"event": "approved"');
+  expect((await first.console_.request({ t: "status" })).status.tasks).toEqual({ approved: 1 });
+  const peerOnly: any = await client.callTool({ name: "hub_task_list", arguments: {} });
+  expect(JSON.parse(peerOnly.content[0].text)).toHaveLength(1);
+  const denied = await ControlClient.connect(first.stateDir, { role: "tools", peer: "kimi" });
+  expect(await denied.request({ t: "task", op: "task_assign", args: { id: 1, peer: "kimi" } })).toMatchObject({ ok: false, error: "task_assign is a console command" });
+  denied.close();
+
+  // a second hub on the same state dir sees the board
+  const stateDir = first.stateDir;
+  await first.daemon.stop();
+  const again = await startDaemon({ cwd: ROOT, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } });
+  cleanup.push(() => again.stop());
+  const c2 = await ControlClient.connect(stateDir, { role: "console" });
+  expect(JSON.parse((await c2.request({ t: "task", op: "hub_task_list", args: {} })).text)[0]).toMatchObject({ id: 1, state: "approved" });
+  c2.close();
+});
+
+test("a PII task shows nowhere but the local console's task view: not on hub tail, not in hub.log, not to cloud peers", async () => {
+  // the worker tries to save a note and to spin off a task mid-turn: both would carry the PII out
+  const model = startFakeModelServer({
+    key: "k",
+    script: (body) => {
+      const tools = body.messages.filter((m) => m.role === "tool");
+      if (tools.length === 0) return { tool_calls: [toolCall("hub_remember", { text: "follow-up for 900101-1234567 decided" }), toolCall("hub_task_propose", { title: "call the patient back", class: "implement" })] };
+      return { content: `updated the record of 900101-1234567; tools said: ${tools.map((t) => t.content).join(" | ")}` };
+    },
+  });
+  const mem = startFakeMemWorker();
+  cleanup.push(model.stop, mem.stop);
+  process.env.OMNIROUTE_API_KEY = "k";
+  cleanup.push(() => delete process.env.OMNIROUTE_API_KEY);
+  const { stateDir, daemon, console_, events, pushes } = await hub({ modelUrl: model.url, memoryUrl: mem.url });
+  const { channel } = await fakeClaude(stateDir);
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
+  await console_.request({ t: "start", peer: "local", args: { model: "vllm/x" } });
+
+  const res = await console_.request({ t: "task", op: "hub_task_propose", args: { title: "fix the entry for 900101-1234567", class: "implement" } });
+  expect(res.text).toBe("task #1: proposed, owner local, reviewer user");
+  await until(() => events.some((e) => e.t === "envelope" && e.env.from === "local"), "local answer");
+  await Bun.sleep(80);
+
+  const everything = JSON.stringify(events) + JSON.stringify(pushes) + JSON.stringify(channel) + readFileSync(join(stateDir, "hub.log"), "utf8");
+  expect(everything).not.toContain("900101");
+  expect(everything).toContain("[private: task #1, see hub task show 1]");
+  expect(events.filter((e) => e.t === "envelope" && e.env.from === "local").every((e) => e.env.body.includes("task #1"))).toBe(true); // the answer's stub names the task
+  expect((await console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text).toContain('"event": "answer"'); // and the board kept its text
+  expect(channel).toHaveLength(0); // claude heard nothing about it
+  const shown = (await console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text;
+  expect(shown).toContain("hub_remember is not available while working on a PII task");
+  expect(shown).toContain("hub_task_propose is not available while working on a PII task");
+  expect(JSON.stringify(mem.calls.map((c) => c.body ?? c.query))).not.toContain("900101"); // nothing of it reached claude-mem
+  expect((await console_.request({ t: "status" })).status.tasks).toEqual({ proposed: 1 }); // and no second task was created
+  expect(JSON.stringify(model.requests[0]!.body)).toContain("900101-1234567"); // the on-prem model got the real text
+  expect((await console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text).toContain("900101-1234567");
+  expect((await console_.request({ t: "task", op: "hub_task_list", args: {} })).text).not.toContain("900101"); // the board itself stays redacted
+
+  const asClaude = await ControlClient.connect(stateDir, { role: "tools", peer: "claude" });
+  expect((await asClaude.request({ t: "task", op: "hub_task_list", args: {} })).text).not.toContain("900101");
+  asClaude.close();
 });
 
 test("kill removes pid, status and token", async () => {

@@ -43,6 +43,14 @@ Needs WARP (or the Access files for `gateway.example.edu`) and a key: `OMNIROUTE
 3. Same with `AGENTHUB_SWITCHYARD_BIN` (or `switchyard-server` on PATH) set before `hub up`: `hub status` shows `last call: switchyard sy/coding -> <model>` and `switchyard: 127.0.0.1:<port>`; `lsof -nP -iTCP -sTCP:LISTEN | grep switchy` shows loopback only; `.agenthub/state/switchyard.toml` is mode 600 and holds no key; after `hub kill` the file and the process are gone.
 4. claude-mem: `sqlite3 -readonly ~/.claude-mem/claude-mem.db "select agent_id, agent_type, project, title from observations order by id desc limit 3"` shows `local | local-worker` rows a minute or two later (claude-mem's observer runs asynchronously).
 
+## M4: task board
+
+1. `hub up`, `hub kimi`, `hub local`, `hub tail`. `hub route explain --class bulk_edit "fix typos"` prints candidates, owner and reviewer.
+2. `hub task propose bulk_edit "Fix the spelling mistakes in words.ts" --path words.ts`: `local` accepts, edits, calls `hub_task_done`; `hub board` shows it `approved` (no reviewer attached) or `in_review`.
+3. `hub task propose test "Check that words.ts contains ..."`: Kimi takes it and reports through the hub's MCP tools (`hub task show <id>` history: `kimi accepted`, `kimi done`).
+4. PII: propose a task whose title matches `signals.pii_patterns`. Owner `local`, reviewer `user`; `grep <value> .agenthub/state/hub.log` and the `hub tail` output find nothing; `hub board` shows `[pii]`; `hub task show <id>` shows the text; `hub review <id> approved` closes it; claude-mem has no row with the value.
+5. With Claude and Codex attached: a task proposed by Claude, done by Codex, reaches Claude as a review; two `changes_requested` move it to the next peer in `escalate_to`.
+
 ## Record
 
 | Date | Leg | Result |
@@ -56,6 +64,10 @@ Needs WARP (or the Access files for `gateway.example.edu`) and a key: `OMNIROUTE
 | 2026-09-19 | M3 step 3, real `switchyard-server` 0.2.0 (`cargo install`) | pass after two config fixes found by `--dry-run` (`timeout_ms` rejected, escalation table required): tool-using turn through `sy/coding`, selected model recorded, bound to 127.0.0.1 only, config 0600 without secrets, file and process gone after `hub kill` |
 | 2026-09-19 | M3 step 4, claude-mem 13.25.1 | pass: session `platform_source = agent-hub`, observation 65484 `agent_id = local`, `agent_type = local-worker`. Found live: `summarize` with `agentId` is skipped as subagent context, and an unawaited `session-end` never left the process; both fixed |
 | 2026-09-19 | M3 regression after review fixes, attended, through the real sidecar | pass: the approval shows the edit's old and new text; one stalled first probe over WARP was seen once (both candidates timed out, fine a second later), now retried and no longer turns L2 off |
+| 2026-09-19 | M4 steps 1 to 3 (real DeepSeek-V4-Flash `local`, Kimi 0.43.1) | pass: explain trace printed; `local` took a `bulk_edit` task from the board, fixed the file and closed it with its native task tools; Kimi accepted and closed a `test` task through the hub's MCP server given to it in ACP `session/new`, calls attributed to `kimi`; claude-mem notes 65768 and 65771 carry `{peer, task, kind}` |
+| 2026-09-19 | M4 step 4, PII | pass: owner `local`, reviewer `user`, file edited, 0 hits for the value in `hub tail` and `hub.log`, 0 rows and 0 pending messages with it in claude-mem, console review closed it |
+| 2026-09-19 | Codex MCP override | partial: `codex app-server -c mcp_servers.agent-hub.*` starts the hub's MCP server and reports `ready` (no model quota needed); a real Codex turn calling a hub tool is not verified |
+| | M4 step 5 (review handoff and escalation with Claude and Codex live) | not run: needs interactive Claude and Codex sessions; covered by tests against fakes |
 | | M3 off-campus path (`gateway.example.edu` with Access headers) | not run live (on WARP today); header selection covered by tests |
 | | Two-target `stage_router` / escalation routing | not run live: only DeepSeek-V4-Flash is served; both shapes validate against the real binary's `--dry-run` |
 | | Codex TUI through `hub codex` | not run |

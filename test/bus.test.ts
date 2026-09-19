@@ -277,3 +277,17 @@ test("an envelope that failed before never rides in a digest again, even behind 
   await tick();
   expect(kimi.batches.map((b) => b.map((e) => e.body))).toEqual([["X"], ["A"], ["B"]]);
 });
+
+test("a hub task envelope whose delivery fails is retried like any other; only the recall block is a preface", async () => {
+  const { bus, kimi } = await trio();
+  bus.preface("kimi", "memory block");
+  kimi.failNext = true;
+  bus.publish(newEnvelope(HUB, "Task #1 [implement] do it", { to: ["kimi"], kind: "task", priority: "important" }));
+  bus.publish(newEnvelope(HUB, "Review task #2", { to: ["kimi"], kind: "review", priority: "important" }));
+  await new Promise((r) => setTimeout(r, 60)); // the retry timer, no further traffic
+  const bodies = kimi.got.map((e) => e.body);
+  expect(bodies).toContain("Task #1 [implement] do it");
+  expect(bodies).toContain("Review task #2");
+  expect(bodies.filter((b) => b === "memory block")).toHaveLength(1);
+  expect(bus.queued("kimi")).toBe(0);
+});

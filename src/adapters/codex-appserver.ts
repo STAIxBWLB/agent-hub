@@ -11,6 +11,10 @@ export interface CodexOptions {
   /** Attach to an already running app-server instead of spawning one (tests). */
   upstreamUrl?: string;
   bin?: string;
+  /** Extra `codex app-server` arguments: the `-c mcp_servers.agent-hub.*` overrides that give Codex the hub's task tools. */
+  extraArgs?: string[];
+  /** Appended to the standing instruction of the first delivery (role contract). */
+  preamble?: string;
   cwd: string;
   watchdogMs?: number;
   log?: (line: string) => void;
@@ -93,7 +97,7 @@ export class CodexPeer extends BasePeer {
     if (this.state !== "idle" || !link || link.up.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error(`${this.id} is not injectable`));
     }
-    const text = renderDigest(envs, this.primed);
+    const text = this.render(envs);
     const id = this.nextId--;
     this.setState("busy"); // claim the turn now so the bus stops draining
     return new Promise<void>((resolve, reject) => {
@@ -112,6 +116,10 @@ export class CodexPeer extends BasePeer {
         JSON.stringify({ method: "turn/start", id, params: { threadId: this.threadId, input: [{ type: "text", text }] } }),
       );
     });
+  }
+
+  private render(envs: Envelope[]): string {
+    return this.primed || !this.opts.preamble ? renderDigest(envs, this.primed) : `${this.opts.preamble}\n\n${renderDigest(envs, false)}`;
   }
 
   /** `important` while a turn runs: feed it into that turn. Rejects when there is no steerable turn or app-server refuses. */
@@ -137,7 +145,7 @@ export class CodexPeer extends BasePeer {
           reject(e);
         },
       });
-      const input = [{ type: "text", text: renderDigest(envs, this.primed) }];
+      const input = [{ type: "text", text: this.render(envs) }];
       link.up.send(JSON.stringify({ method: "turn/steer", id, params: { threadId: this.threadId, expectedTurnId, input } }));
     });
   }
@@ -171,7 +179,7 @@ export class CodexPeer extends BasePeer {
       throw new Error(`port ${port} already answers /healthz: an app-server the hub does not own is running (orphan from a crashed hub?)`);
     }
     let gone = "";
-    this.proc = spawn(this.opts.bin ?? "codex", ["app-server", "--listen", `ws://127.0.0.1:${port}`], {
+    this.proc = spawn(this.opts.bin ?? "codex", ["app-server", "--listen", `ws://127.0.0.1:${port}`, ...(this.opts.extraArgs ?? [])], {
       cwd: this.opts.cwd,
       stdio: ["ignore", "ignore", "pipe"],
     });

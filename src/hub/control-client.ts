@@ -5,11 +5,12 @@ export function stateDirFor(cwd: string): string {
   return process.env.AGENTHUB_STATE_DIR ?? join(cwd, ".agenthub", "state");
 }
 
-/** Control WS wire version. 2 = `deliver` carries `envs` (digests). The plugin is installed apart from the daemon, so they can drift. */
-export const PROTOCOL = 2;
+/** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages. The plugin is installed apart from the daemon, so they can drift. */
+export const PROTOCOL = 3;
 
 export interface Hello {
-  role: "peer" | "console";
+  /** `tools`: acts for `peer` (task tools, hub_send) without being a delivery target: the MCP server Kimi and Codex run. */
+  role: "peer" | "console" | "tools";
   peer?: string;
 }
 

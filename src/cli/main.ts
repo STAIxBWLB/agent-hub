@@ -23,6 +23,14 @@ const USAGE = `agent-hub: Claude Code, Codex and Kimi as peers in one project di
   hub say [@peer ...] <text>   send as the console user (no @peer = broadcast); delivered at once,
                                start the text with [STATUS] to let it batch or [FYI] for the record only
   hub pause|resume <peer>      hold a peer's deliveries in its queue / release them
+  hub board [state]            the task board
+  hub task propose <class> <title...> [--owner <peer>] [--path <p>]... [--detail <text>]
+  hub task show|escalate <id>  full task with history (PII text included) / hand it to the next peer in escalate_to
+  hub task assign <id> <peer>  give a task to a peer yourself
+  hub review <id> approved|changes_requested [note...]
+  hub remember <text...>       save a note to the memory all agents share
+  hub route explain <id>       why a task went where it went
+  hub route explain --class <c> <title...>   what would happen to such a task now
   hub tail                     live stream of messages, states and permission requests
   hub permit <id> <option>     answer a permission request shown by tail ("deny" cancels)
   hub status | logs [-f] | doctor | kill`;
@@ -54,11 +62,36 @@ function fail(message: string): never {
 function render(e: BusEvent): string {
   if (e.t === "state") return `  . ${e.peer} is ${e.state}`;
   if (e.t === "undeliverable") return `  ! gave up delivering ${e.env.id} (from ${e.env.from}) to ${e.peer}`;
+  if (e.t === "envelope" && e.env.from === "hub" && e.env.kind !== "chat") {
+    return `${new Date(e.env.ts).toLocaleTimeString()} hub -> ${e.env.to?.join(",")} [${e.env.kind}${e.env.refs?.task ? ` #${e.env.refs.task}` : ""}]\n${e.env.body.split("\n")[0]!.replace(/^/, "    ")}`;
+  }
   if (e.t === "overflow") return `  ! ${e.peer}'s queue is full: dropped ${e.env.id} (from ${e.env.from})`;
   const { env } = e;
   const note = e.dropped === "hop" ? " [not delivered: hop limit]" : e.dropped === "fyi" ? " [fyi: record only]" : "";
   const head = `${env.from} -> ${env.to?.join(",") ?? "*"}${env.priority === "important" ? " !" : ""}${note}`;
   return `${new Date(env.ts).toLocaleTimeString()} ${head}\n${env.body.replace(/^/gm, "    ")}`;
+}
+
+async function taskOp(op: string, a: Record<string, unknown>): Promise<string> {
+  const hub = await connect();
+  const res = await hub.request({ t: "task", op, args: a });
+  hub.close();
+  if (!res.ok) fail(res.error);
+  return res.text;
+}
+
+/** `--flag value` pairs pulled out of an argument list; the rest keeps its order. */
+function takeFlags(argv: string[], single: string[], repeated: string[]) {
+  const one: Record<string, string> = {};
+  const many: Record<string, string[]> = {};
+  const rest: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (single.includes(a)) one[a] = argv[++i] ?? fail(`${a} needs a value`);
+    else if (repeated.includes(a)) (many[a] ??= []).push(argv[++i] ?? fail(`${a} needs a value`));
+    else rest.push(a);
+  }
+  return { one, many, rest };
 }
 
 async function hold(t: "pause" | "resume"): Promise<void> {
@@ -169,6 +202,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const hub = await connect();
     hub.onPush = (msg) => {
       if (msg.t === "event") console.log(render(msg.e));
+      else if (msg.t === "notice") console.log(`  * ${msg.line}`);
       else if (msg.t === "permission") {
         const options = msg.options.map((o: any) => `${o.optionId} (${o.name})`).join(", ");
         console.log(`  ? ${msg.peer} asks permission: ${String(msg.title).replace(/\n/g, "\n      | ")}\n    answer with: hub permit ${msg.id} <${options}> | deny`);
@@ -177,6 +211,36 @@ const commands: Record<string, () => Promise<void> | void> = {
     hub.onClose = () => process.exit(0);
     hub.send({ t: "tail" });
     await new Promise(() => {});
+  },
+
+  board: async () => {
+    const tasks = JSON.parse(await taskOp("hub_task_list", args[0] ? { state: args[0] } : {})) as any[];
+    if (!tasks.length) return console.log("no tasks");
+    for (const t of tasks) console.log(`#${String(t.id).padEnd(4)} ${t.state.padEnd(18)} ${t.class.padEnd(10)} ${(t.owner ?? "-").padEnd(8)} review:${(t.reviewer ?? "-").padEnd(8)} ${t.title}${t.signals.includes("pii") ? `  (hub task show ${t.id})` : ""}`);
+  },
+
+  task: async () => {
+    const [sub, ...rest] = args;
+    if (sub === "show") return console.log(await taskOp("task_show", { id: rest[0] }));
+    if (sub === "escalate") return console.log(await taskOp("task_escalate", { id: rest[0] }));
+    if (sub === "assign") return console.log(await taskOp("task_assign", { id: rest[0], peer: rest[1] }));
+    if (sub !== "propose" || rest.length < 2) fail("usage: hub task propose <class> <title...> | show <id> | assign <id> <peer> | escalate <id>");
+    const flags = takeFlags(rest.slice(1), ["--owner", "--detail"], ["--path"]);
+    console.log(await taskOp("hub_task_propose", { class: rest[0], title: flags.rest.join(" "), owner: flags.one["--owner"], detail: flags.one["--detail"], ...(flags.many["--path"]?.length ? { refs: { paths: flags.many["--path"] } } : {}) }));
+  },
+
+  review: async () => {
+    const [id, verdict, ...note] = args;
+    if (!id || !verdict) fail("usage: hub review <id> approved|changes_requested [note...]");
+    console.log(await taskOp("hub_review", { id: Number(id), verdict, note: note.join(" ") }));
+  },
+
+  remember: async () => console.log(await taskOp("hub_remember", { text: args.join(" ") })),
+
+  route: async () => {
+    if (args[0] !== "explain") fail("usage: hub route explain <id> | --class <class> <title...>");
+    const flags = takeFlags(args.slice(1), ["--class"], []);
+    console.log(await taskOp("route_explain", flags.one["--class"] ? { class: flags.one["--class"], title: flags.rest.join(" ") } : { id: flags.rest[0] }));
   },
 
   pause: () => hold("pause"),
@@ -199,6 +263,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     const peers = Object.entries(status.peers as Record<string, { state: string; queued: number }>);
     for (const [id, p] of peers) console.log(`  ${id.padEnd(8)} ${p.state.padEnd(8)} queued ${p.queued}${(p as any).servedBy ? `  last call: ${(p as any).servedBy}` : ""}`);
     if (status.switchyard) console.log(`  switchyard: ${status.switchyard}`);
+    const counts = Object.entries(status.tasks ?? {}).map(([s, n]) => `${n} ${s}`).join(", ");
+    if (counts) console.log(`  tasks: ${counts} (hub board)`);
     if (!peers.length) console.log("  no peers attached yet (hub claude | hub codex | hub kimi)");
   },
 

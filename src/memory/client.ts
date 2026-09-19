@@ -37,6 +37,21 @@ export class MemoryClient {
     return this.call("GET", `/api/context/inject?${query}`, undefined, (res) => res.text());
   }
 
+  /** Index search. The worker answers in MCP shape, `{content: [{type: "text", text: <markdown table>}]}`; this returns the text. */
+  async search(query: string, project: string, limit = 10): Promise<string | undefined> {
+    const q = `query=${encodeURIComponent(query)}&project=${encodeURIComponent(project)}&limit=${limit}`;
+    return mcpText(await this.request("GET", `/api/search?${q}`));
+  }
+
+  async timeline(anchor: number, project: string, before = 3, after = 3): Promise<string | undefined> {
+    return mcpText(await this.request("GET", `/api/timeline?anchor=${anchor}&project=${encodeURIComponent(project)}&depth_before=${before}&depth_after=${after}`));
+  }
+
+  /** An explicit shared note. `metadata` carries who said it and about which task. */
+  save(note: { text: string; title?: string; project: string; metadata: Record<string, unknown> }): Promise<unknown> {
+    return this.request("POST", "/api/memory/save", note);
+  }
+
   private async call<T>(method: "GET" | "POST", path: string, body: unknown, read: (res: Response) => Promise<T>): Promise<T | undefined> {
     try {
       const res = await fetch(`${this.url}${path}`, {
@@ -56,4 +71,9 @@ export class MemoryClient {
     const h = await this.request<{ status?: string; version?: string }>("GET", "/api/health");
     return h?.status === "ok" ? { ok: true, ...(h.version ? { version: h.version } : {}) } : { ok: false };
   }
+}
+
+function mcpText(res: unknown): string | undefined {
+  const content = (res as { content?: { type: string; text?: string }[] } | undefined)?.content;
+  return content?.find((c) => c.type === "text")?.text;
 }

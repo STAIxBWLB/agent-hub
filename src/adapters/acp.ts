@@ -19,6 +19,10 @@ export interface AcpOptions {
   cmd: string[];
   cwd: string;
   watchdogMs?: number;
+  /** ACP stdio MCP servers for the session (the hub's task tools). */
+  mcpServers?: { name: string; command: string; args: string[]; env: { name: string; value: string }[] }[];
+  /** Appended to the standing instruction of the first delivery (role contract). */
+  preamble?: string;
   /** Resolve with an optionId, or undefined to cancel. Absent = every request is cancelled. */
   onPermission?: (req: PermissionRequest) => Promise<string | undefined>;
   log?: (line: string) => void;
@@ -60,7 +64,7 @@ export class AcpPeer extends BasePeer {
         protocolVersion: 1,
         clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
       });
-      return this.request("session/new", { cwd: this.opts.cwd, mcpServers: [] });
+      return this.request("session/new", { cwd: this.opts.cwd, mcpServers: this.opts.mcpServers ?? [] });
     };
     const timeout = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error(`${this.id} did not complete the ACP handshake within ${HANDSHAKE_MS / 1000} s`)), HANDSHAKE_MS).unref();
@@ -85,7 +89,7 @@ export class AcpPeer extends BasePeer {
     this.chunks = [];
     this.setState("busy");
     // session/prompt answers only when the turn ends, so deliver resolves now and failures come back through onFailed.
-    this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: renderDigest(envs, this.primed) }] })
+    this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: this.primed || !this.opts.preamble ? renderDigest(envs, this.primed) : `${this.opts.preamble}\n\n${renderDigest(envs, false)}` }] })
       .then(() => {
         this.primed = true;
         if (turn !== this.turn) return; // superseded: these chunks belong to a later turn

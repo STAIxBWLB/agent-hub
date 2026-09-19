@@ -8,7 +8,12 @@ import { LocalPeer } from "../adapters/local-worker.ts";
 import { Capture, skipTools } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
 import { Sidecar } from "../switchyard/sidecar.ts";
-import { loadRouting } from "./routing.ts";
+import { Briefs } from "../memory/brief.ts";
+import { Board, type TaskClass } from "./board.ts";
+import type { BusEvent } from "./bus.ts";
+import { DEFAULT_ROLES, roleContract, TASK_TOOLS } from "./hub-tools.ts";
+import { Tasks } from "./tasks.ts";
+import { currentRouting } from "./routing.ts";
 import { Bus } from "./bus.ts";
 import { PROTOCOL, stateDirFor } from "./control-client.ts";
 import { newEnvelope, parseMarker, USER, type Envelope, type PeerId } from "./envelope.ts";
@@ -23,7 +28,8 @@ export interface HubConfig {
   batch_max: number;
   batch_ms: number;
   queue_cap: number;
-  memory: { enabled: boolean; worker_url?: string; inject_tokens: number };
+  memory: { enabled: boolean; worker_url?: string; inject_tokens: number; brief_items: number };
+  roles: Record<string, string[]>;
   omniroute: OmniRouteConfig;
   local: { deny: string[]; bash_network: boolean; max_steps: number; read_allow: string[] };
 }
@@ -34,7 +40,8 @@ export const DEFAULT_CONFIG: HubConfig = {
   batch_max: 3,
   batch_ms: 15_000,
   queue_cap: 200,
-  memory: { enabled: true, inject_tokens: 2000 },
+  memory: { enabled: true, inject_tokens: 2000, brief_items: 8 },
+  roles: DEFAULT_ROLES,
   omniroute: DEFAULT_OMNIROUTE,
   local: { deny: [], bash_network: false, max_steps: 30, read_allow: [] },
 };
@@ -52,6 +59,7 @@ export function loadConfig(cwd: string): HubConfig {
       ...DEFAULT_CONFIG,
       ...file,
       memory: { ...DEFAULT_CONFIG.memory, ...file.memory },
+      roles: { ...DEFAULT_CONFIG.roles, ...file.roles },
       omniroute: { ...DEFAULT_CONFIG.omniroute, ...file.omniroute },
       local: { ...DEFAULT_CONFIG.local, ...file.local },
     };
@@ -77,7 +85,7 @@ export interface DaemonOptions {
 
 interface Client {
   authed: boolean;
-  role?: "peer" | "console";
+  role?: "peer" | "console" | "tools";
   peer?: PeerId;
   tail?: () => void;
 }
@@ -136,6 +144,65 @@ export async function startDaemon(opts: DaemonOptions) {
   let sidecarRouting = "";
 
   const consoles = new Set<Sock>();
+  /** A line for the human: hub.log and every open `hub tail`. */
+  const notify = (line: string) => {
+    log(line);
+    for (const c of consoles) if (c.data.tail) c.send(JSON.stringify({ t: "notice", line }));
+  };
+  const board = new Board(join(opts.stateDir, "hub.db"));
+  const tasks = new Tasks({
+    board,
+    bus,
+    routing: () => currentRouting(opts.cwd, log), // routing.toml is edited while the hub runs: re-read on change, last good parse kept
+    cwd: opts.cwd,
+    project: chain.at(-1)!,
+    ...(config.memory.enabled ? { memory, briefs: new Briefs(memory, chain.at(-1)!, config.memory.brief_items) } : {}),
+    notify,
+  });
+  /** What the console stream and the log may show: a private envelope (PII task) keeps its body to its recipients. */
+  const redact = (e: BusEvent): BusEvent => ("env" in e && e.env.private ? { ...e, env: { ...e.env, body: `[private${e.env.refs?.task ? `: task #${e.env.refs.task}, see hub task show ${e.env.refs.task}` : ""}]` } } : e);
+  const SERVER_JS = join(import.meta.dir, "..", "..", "plugins", "agent-hub", "server.js");
+  const toolEnv = (peer: PeerId) => ({ AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: opts.stateDir });
+
+  /** One entry point for the task tools, whoever calls them: MCP clients, the local worker, the console. */
+  async function taskOp(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
+    // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
+    // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
+    if (piiTurn && (op === "hub_remember" || op === "hub_task_propose")) throw new Error(`${op} is not available while working on a PII task: its text must not leave this machine`);
+    // Lists are redacted for everyone but the on-prem worker, and only when it calls from inside this process: over the
+    // control WS anyone holding the token can claim to be "local". A board on a shared screen is a leak too, so the
+    // console reads a PII task's text deliberately, with `hub task show <id>`.
+    const onPrem = inProcess && by === "local";
+    const line = (t: { id: number; state: string; owner: PeerId | null; reviewer: PeerId | null }) => `task #${t.id}: ${t.state}, owner ${t.owner ?? "none"}, reviewer ${t.reviewer ?? "none"}`;
+    switch (op) {
+      case "hub_task_propose":
+        return line(await tasks.propose(by, a));
+      case "hub_task_accept":
+        return line(tasks.accept(by, a.id));
+      case "hub_task_decline":
+        return line(await tasks.decline(by, a.id, a.reason));
+      case "hub_task_done":
+        return line(await tasks.done(by, a.id, a.summary, a.refs));
+      case "hub_review":
+        return line(await tasks.review(by, a.id, a.verdict, a.note));
+      case "hub_remember":
+        return tasks.remember(by, a);
+      case "hub_task_list":
+        return JSON.stringify(board.list(a.state).map((t) => (onPrem ? t : tasks.publicView(t))).map(({ history: _h, ...t }) => t));
+    }
+    if (by !== USER) throw new Error(`${op} is a console command`);
+    switch (op) {
+      case "task_show":
+        return JSON.stringify(board.get(Number(a.id)) ?? `no task #${a.id}`, null, 2);
+      case "task_assign":
+        return line(await tasks.assignTo(a.id, String(a.peer)));
+      case "task_escalate":
+        return line(await tasks.escalate(USER, a.id));
+      case "route_explain":
+        return tasks.explain(a.id !== undefined ? Number(a.id) : { title: String(a.title ?? ""), class: a.class as TaskClass }).join("\n");
+    }
+    throw new Error(`unknown task operation ${op}`);
+  }
   const permissions = new Map<string, { push: string; done: (optionId: string | undefined) => void }>();
   let stopping = false;
 
@@ -148,6 +215,7 @@ export async function startDaemon(opts: DaemonOptions) {
       [...bus.peers].map(([id, p]) => [id, { state: bus.stateOf(id), queued: bus.queued(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}) }]),
     ),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
+    tasks: board.counts(),
   });
   const writeStatus = () => {
     const file = join(opts.stateDir, "status.json"); // clients parse this on every connect: replace it atomically
@@ -156,6 +224,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
 
   bus.tap((e) => {
+    e = redact(e);
     if (e.t === "state") log(`state ${e.peer} -> ${e.state}`);
     else if (e.t === "undeliverable") log(`UNDELIVERABLE to ${e.peer} after retries: ${e.env.id} from ${e.env.from}`);
     else if (e.t === "overflow") log(`OVERFLOW ${e.peer}: dropped ${e.env.id} from ${e.env.from}`);
@@ -200,7 +269,15 @@ export async function startDaemon(opts: DaemonOptions) {
     if (peer === "kimi") {
       const [bin, ...rest] = config.kimi_cmd;
       const cmd = args.model ? [bin!, "--model", args.model, ...rest] : config.kimi_cmd;
-      const kimi = new AcpPeer("kimi", { cmd, cwd: opts.cwd, watchdogMs: config.watchdog_ms, onPermission, log });
+      const kimi = new AcpPeer("kimi", {
+        cmd,
+        cwd: opts.cwd,
+        watchdogMs: config.watchdog_ms,
+        onPermission,
+        log,
+        mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("kimi")).map(([name, value]) => ({ name, value })) }],
+        preamble: roleContract("kimi", config.roles),
+      });
       await ensurePreface("kimi");
       bus.add(kimi);
       await kimi.start();
@@ -211,6 +288,15 @@ export async function startDaemon(opts: DaemonOptions) {
         appPort: opts.codexAppPort,
         proxyPort: opts.codexProxyPort,
         bin: config.codex_bin,
+        // The hub spawns this app-server, so it can give Codex the task tools without touching ~/.codex/config.toml
+        // (verified: app-server honours -c mcp_servers.* and the server reaches "ready").
+        extraArgs: [
+          ["command", '"bun"'],
+          ["args", JSON.stringify(["run", SERVER_JS])],
+          ["env", `{${Object.entries(toolEnv("codex")).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")}}`],
+          ...["hub_send", ...TASK_TOOLS.map((t) => t.name)].map((name) => [`tools.${name}.approval_mode`, '"approve"']),
+        ].flatMap(([k, v]) => ["-c", `mcp_servers.agent-hub.${k}=${v}`]),
+        preamble: roleContract("codex", config.roles),
         cwd: opts.cwd,
         watchdogMs: config.watchdog_ms,
         log,
@@ -221,7 +307,7 @@ export async function startDaemon(opts: DaemonOptions) {
       return { ok: true, proxyUrl: codex.proxyUrl };
     }
     if (peer === "local") {
-      const routing = loadRouting(opts.cwd);
+      const routing = currentRouting(opts.cwd, log);
       // `--model` pins a model on OmniRoute and skips L2; `--route` picks another Switchyard route.
       const route = args.model ? undefined : (args.route ?? routing.local.route);
       if (route && !routing.routes[route]) return { ok: false, error: `routing.toml has no route "${route}"` };
@@ -254,6 +340,9 @@ export async function startDaemon(opts: DaemonOptions) {
         fixedModel: args.model ?? routing.local.fixed_model,
         tools: { deny: config.local.deny, bashNetwork: config.local.bash_network, readAllow: config.local.read_allow, permit },
         ...(capture ? { capture } : {}),
+        taskTool: (name, a, turn) => taskOp("local", name, a, true, turn.pii),
+        turnPolicy: (envs) => tasks.turnPolicy(envs),
+        preamble: roleContract("local", config.roles),
         watchdogMs: config.watchdog_ms,
         maxSteps: config.local.max_steps,
         log,
@@ -277,9 +366,13 @@ export async function startDaemon(opts: DaemonOptions) {
         return sock.close(4426, `wire version mismatch: hub speaks ${PROTOCOL}; update the agent-hub plugin`);
       }
       c.authed = true;
-      c.role = msg.role === "peer" ? "peer" : "console";
+      c.role = msg.role === "peer" || msg.role === "tools" ? msg.role : "console";
       if (c.role === "console") consoles.add(sock);
-      else {
+      else if (c.role === "tools") {
+        // Acts for a peer the hub manages itself (kimi, codex): may send and use the board as that peer, is never a delivery target.
+        c.peer = String(msg.peer ?? "");
+        if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === "hub") return sock.close(4403, "peer id is reserved or malformed");
+      } else {
         c.peer = String(msg.peer ?? "claude");
         if (!PEER_ID.test(c.peer) || RESERVED_IDS.has(c.peer)) return sock.close(4403, "peer id is reserved or malformed");
         let peer = bus.peers.get(c.peer);
@@ -306,7 +399,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "tail":
         if (c.role !== "console" || c.tail) return;
-        c.tail = bus.tap((e) => sock.send(JSON.stringify({ t: "event", e })));
+        c.tail = bus.tap((e) => sock.send(JSON.stringify({ t: "event", e: redact(e) })));
         for (const p of permissions.values()) sock.send(p.push);
         return;
       case "status":
@@ -319,6 +412,12 @@ export async function startDaemon(opts: DaemonOptions) {
             if (!r.ok) log(`start ${msg.peer} failed: ${r.error}`);
             reply({ t: "started", ...r });
           });
+        return;
+      case "task":
+        taskOp(c.peer ?? USER, String(msg.op), msg.args ?? {}).then(
+          (text) => reply({ t: "task", ok: true, text }),
+          (e: Error) => reply({ t: "task", ok: false, error: e.message }),
+        );
         return;
       case "pause":
       case "resume": {
@@ -369,6 +468,7 @@ export async function startDaemon(opts: DaemonOptions) {
     log("hub stopping");
     await Promise.allSettled([...bus.peers.values()].map((p) => p.stop()));
     sidecar?.stop();
+    board.close();
     server.stop(true);
     for (const f of ["hub.pid", "status.json", "control-token"]) rmSync(join(opts.stateDir, f), { force: true });
     onStop?.();

@@ -154,6 +154,66 @@ test("a long turn elides its oldest tool outputs instead of outgrowing the conte
   expect(last.filter((m) => m.role === "tool")).toHaveLength(9); // structure intact
 });
 
+test("task turns: the class route and model, native task tools, and a PII turn that answers the console only and leaves no trace", async () => {
+  const mem = startFakeMemWorker();
+  cleanup.push(mem.stop);
+  const toolCalls: string[] = [];
+  const ctx = await setup(
+    (body) => {
+      const last = String(body.messages.at(-1)?.content);
+      if (body.messages.at(-1)?.role === "tool") return { content: `tool said: ${last}` };
+      if (last.includes("use the board")) return { tool_calls: [toolCall("hub_task_accept", { id: 7 })] };
+      return { content: `model=${body.model} saw=${body.messages.filter((m) => m.role === "user").length} users` };
+    },
+    {
+      capture: new Capture(new MemoryClient(mem.url), { project: "p", cwd: "/p" }),
+      taskTool: async (name, a, turn) => (toolCalls.push(`${name}:${JSON.stringify(a)}:pii=${turn.pii}`), "task #7: in_progress"),
+      turnPolicy: (envs) => (envs[0]!.refs?.task === "7" ? { fixedModel: "vllm/class-model", pii: false } : envs[0]!.refs?.task === "8" ? { pii: true, task: "8" } : undefined),
+      preamble: "Your roles: implementer",
+    },
+  );
+  const tapped: Envelope[] = [];
+  ctx.bus.tap((e) => e.t === "envelope" && e.env.from === "local" && tapped.push(e.env));
+
+  ctx.bus.publish(newEnvelope("hub", "use the board", { to: ["local"], kind: "task", priority: "important", refs: { task: "7" } }));
+  await until(() => tapped.length === 1, "task turn");
+  expect(toolCalls).toEqual(['hub_task_accept:{"id":7}:pii=false']); // the turn's PII flag travels with every task tool call
+  expect(tapped[0]!.body).toBe("tool said: task #7: in_progress");
+  expect(ctx.model.requests[0]!.body.model).toBe("vllm/class-model"); // the class's model, not the worker default
+  expect(ctx.model.requests[0]!.body.tools.map((t: any) => t.function.name)).toContain("hub_task_propose");
+  expect(ctx.model.requests[0]!.body.messages[0].content).toContain("Your roles: implementer");
+
+  const posts = () => mem.calls.filter((c) => c.path.includes("/observations")).length;
+  const before = posts();
+  ctx.bus.publish(newEnvelope("hub", "patient 900101-1234567", { to: ["local"], kind: "task", priority: "important", private: true, refs: { task: "8" } }));
+  await until(() => tapped.length === 2, "pii turn");
+  expect(tapped[1]).toMatchObject({ to: ["user"], private: true, refs: { task: "8" } });
+  expect(posts()).toBe(before);
+
+  ctx.bus.publish(newEnvelope("user", "plain question", { priority: "important" }));
+  await until(() => tapped.length === 3, "turn after pii");
+  expect(tapped[2]!.body).toBe("model=vllm/fixed saw=2 users"); // the task turn and this one: the PII turn is not in the history
+  expect(JSON.stringify(ctx.model.requests.at(-1)!.body)).not.toContain("900101");
+});
+
+test("a PII turn is refused when the only gateway is off campus", async () => {
+  const model = startFakeModelServer({ key: "k" });
+  cleanup.push(model.stop);
+  process.env.OMNIROUTE_API_KEY = "k";
+  const omni = new OmniRoute({ urls: [model.url], access_hosts: ["127.0.0.1"] });
+  const peer = new LocalPeer("local", { cwd: mkdtempSync(join(tmpdir(), "agenthub-")), omni, fixedModel: "m", tools: { deny: [], permit: async () => true }, turnPolicy: () => ({ pii: true }) });
+  const bus = new Bus({ batchMs: 0 });
+  const said: Envelope[] = [];
+  bus.tap((e) => e.t === "envelope" && e.env.from === "local" && said.push(e.env));
+  bus.add(peer);
+  await peer.start();
+  cleanup.push(() => peer.stop());
+  bus.publish(newEnvelope("hub", "pii work", { to: ["local"], priority: "important", private: true }));
+  await until(() => said.length === 1, "refusal");
+  expect(said[0]!.body).toStartWith("Refused: this is a PII task");
+  expect(model.requests).toHaveLength(0); // nothing was sent through Cloudflare
+});
+
 test("unreachable gateway: the envelope is retried and then reported undeliverable, the peer stays usable", async () => {
   const { bus, model, events, peer } = await setup(() => ({ content: "never" }));
   model.stop();

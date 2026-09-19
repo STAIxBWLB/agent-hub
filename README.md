@@ -5,9 +5,11 @@ hub-owned local-LLM worker collaborate as peers in one project directory, with
 task-aware model routing (Switchyard) in front of a self-hosted gateway (OmniRoute).
 
 Status: M1 (messaging core and the Claude, Codex and Kimi adapters), M2 (priority tiers,
-digests, Codex steer, queue bounds, session-start recall) and M3 (the hub-native `local` worker on
-self-hosted models, OmniRoute client, Switchyard sidecar, claude-mem capture) are implemented;
-the task board, routing policy and budget relay (M4 to M6) are not. Design spec and milestone
+digests, Codex steer, queue bounds, session-start recall) M3 (the hub-native `local` worker on
+self-hosted models, OmniRoute client, Switchyard sidecar, claude-mem capture) and M4 (task board,
+role contracts, routing policy with an enforced on-prem path for PII, review handoff and
+escalation, task briefs and shared notes) are implemented; the budget relay and packaging (M5, M6)
+are not. Design spec and milestone
 checklist: [`docs/specs/2026-09-19-agent-hub-design.md`](docs/specs/2026-09-19-agent-hub-design.md).
 
 ## Quickstart
@@ -32,6 +34,11 @@ not cost one turn per message; `[IMPORTANT]` goes out at once and steers a runni
 `[FYI]` is recorded only. `hub say` is immediate. `hub pause <peer>` / `hub resume <peer>` hold and
 release a peer's queue. On its first delivery each peer also gets a capped block of recent
 claude-mem context from the other agents' sessions.
+
+Work is divided on a task board: `hub task propose <class> <title>` (or an agent's
+`hub_task_propose`) routes a task by `routing.toml` to an owner and a reviewer, `hub board` shows
+who has what, `hub route explain` says why. A task that matches a PII pattern goes to `local` only
+and its text appears nowhere but `hub task show <id>`.
 
 `local` works only inside the project: secrets are unreadable, edits and commands wait for
 `hub permit`, and everything it executes is sandboxed (no writes outside the project, no

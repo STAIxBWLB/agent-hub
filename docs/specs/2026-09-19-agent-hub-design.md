@@ -1,6 +1,6 @@
 # agent-hub design spec
 
-Date: 2026-09-19. Status: M1 and M2 merged (PR #2, PR #4); M3 implemented on `feat/m3-local-worker` (phase spec: issue #5); M4 to M6 not started.
+Date: 2026-09-19. Status: M1 to M3 merged (PR #2, #4, #6, #7); M4 implemented on `feat/m4-task-board` (phase spec: issue #8); M5 and M6 not started.
 Owner: Young Joon Lee. Repo: STAIxBWLB/agent-hub (private).
 
 Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) or
@@ -217,19 +217,38 @@ peer. Peer ids claimed over the control WS must not be `user` or a hub-managed a
 
 ### Task board and roles
 
-- sqlite table `tasks`: `id, title, class, owner, reviewer, state, refs, signals, history`.
+- sqlite table `tasks` (`bun:sqlite`, `.agenthub/state/hub.db`, survives `hub kill`): `id, title,
+  detail, class, owner, reviewer, state, refs, signals, rejections, history`.
 - `class`: `plan | implement | bulk_edit | test | review | summarize | triage`.
-- `state`: `proposed -> accepted -> in_progress -> done -> in_review -> approved | changes_requested`.
+- `state` (amended in M4): `proposed -> in_progress -> in_review -> approved | changes_requested`,
+  `changes_requested -> in_progress`. `accept` and `done` are transitions recorded in `history`,
+  not states: they carried no behaviour. A verdict is only accepted on a task in review.
 - Roles in `.agenthub/config.json`; default `claude: [planner, reviewer]`,
   `codex: [implementer]`, `kimi: [implementer, verifier]`, `local: [implementer, verifier]`.
-- Flow: proposer creates a card (`hub_task_propose`), owner accepts, `done` triggers a
-  `review` envelope to the reviewer with refs, reviewer verdict returns to owner.
-  `changes_requested` reopens as `in_progress`; two consecutive rejections trigger
-  task-level escalation (see routing).
-- Role contract is injected natively: Claude plugin `instructions` plus an `AGENT_HUB`
-  marker block in `CLAUDE.md`; Codex `developerInstructions` on `thread/start` plus
-  `AGENTS.md`; Kimi and local: first prompt of the session plus `AGENTS.md`. `hub init`
-  writes the marker blocks idempotently.
+- Flow: `hub_task_propose` creates a card and the hub assigns owner and reviewer (L1);
+  the owner accepts or declines (decline moves to the next candidate); `hub_task_done` sends a
+  `review` envelope with summary and refs to the reviewer, or approves directly when there
+  is none; `hub_review` returns the verdict. `changes_requested` reopens as `in_progress`; two
+  in a row escalate the task to the next attached peer in `escalate_to`, with its review
+  notes (`hub task escalate` does it by hand). Only the owner, the reviewer or the console
+  user may act on a task.
+- Tools on every peer (amended in M4): one implementation. The bundled MCP server of the
+  Claude plugin has a tools-only mode (`AGENTHUB_MODE=tools`, control WS role `tools`: acts for
+  a peer, never a delivery target). Kimi gets it through ACP `session/new` `mcpServers`
+  (verified live), Codex through `-c mcp_servers.agent-hub.*` on the app-server the hub
+  spawns (verified to reach `ready`; `approval_mode = "approve"` per tool is inferred), `local`
+  natively. This replaces Codex `dynamicTools`: no rewriting of proxied TUI traffic.
+- Role contract: Claude in the plugin `instructions`, Codex, Kimi and `local` with the
+  standing instruction of their first delivery, all of them in the `AGENT_HUB` marker
+  blocks; `roles` in `.agenthub/config.json` is the source. Codex `developerInstructions`
+  injection is dropped for the same reason as `dynamicTools`.
+- PII (amended in M4): a task matching `signals.pii_patterns` is owned by `local` or by
+  nobody; its envelopes are `private` (console tail and `hub.log` print a stub), lists show
+  `[pii]` to everyone but `local`, `hub task show` is the one place the console reads it; the
+  reviewer is the console user; `local` answers such a turn to the console only, keeps it out
+  of its history, refuses it when the only gateway is off campus (Cloudflare Access), and
+  nothing reaches claude-mem (no brief, no note, no capture), because claude-mem's observer is
+  a cloud model (verified: `/api/health` reports `ai.provider: claude`).
 
 ### Routing (three layers)
 
@@ -292,8 +311,12 @@ access tokens, not inference credentials. Inference keys come from `omniroute ap
 (admin context): the owner issued `agent-hub-local` on 2026-09-19 and `omniroute.api_key_file`
 points at it, so the dashboard separates the hub's usage.
 
-`hub route explain <task>` prints the signals, the chosen peer, the route id and the
-reason. Verification failure (tests fail, review `changes_requested` twice) escalates
+Assignment is a pure function of `routing.toml`, the task's signals and the peers' bus states
+(idle before busy, paused, offline and detached skipped, `local_allowed`, `long_context =
+"skip_local"`, `pii = "local_only"`); `hub route explain <id | --class <c> <title>>` runs the
+same function and prints its trace: signals, every candidate with the reason it was kept
+or skipped, owner, reviewer and route. `local` uses the class's `route` / `fixed_model` for a
+task turn and `[local]` otherwise. Verification failure (tests fail, review `changes_requested` twice) escalates
 the task to the next peer in `escalate_to`; Switchyard handles per-call escalation
 inside a peer.
 
@@ -340,9 +363,10 @@ inside a peer.
   repeats an observation already delivered to that peer.
 - Explicit shared notes. Tool `hub_remember(text, title?, tags?)` on every adapter and
   in the console (`hub remember`) posts `memory/save` with
-  `metadata: {peer, task, kind: decision | finding | contract}`. The hub auto-saves task
-  board transitions (proposed, accepted, done, review verdict) and checkpoint summaries
-  as `decision` notes so handoff history is recallable next session.
+  `metadata: {peer, task, kind: decision | finding | contract}` (payload verified live). The
+  hub auto-saves the transitions that carry content, `done`, the review verdict and
+  escalation (amended in M4: `proposed` and `accepted` would add two empty memories per
+  task), and checkpoint summaries (M5), so handoff history is recallable next session.
 - Budget relay. Before pausing a peer the hub calls `sessions/summarize` for its content
   session and includes that summary plus the open-task briefs in the receiving peer's
   first prompt; `.agenthub/checkpoint.md` remains as the file fallback.
@@ -466,11 +490,12 @@ M3 local worker and routing L2/L3
 - [x] Local worker capture into claude-mem (`sessions/init`, `observations`, `summarize`, `session-end`, skip list)
 
 M4 task board, roles, routing L1
-- [ ] sqlite board, `hub_task_*` and `hub_review` tools on all adapters
-- [ ] Role contract injection per native surface
-- [ ] `routing.toml` loader, signals (PII, context length, quota), `hub route explain`
-- [ ] Review handoff and task-level escalation
-- [ ] Task brief on handoff (search + timeline, `seen_ids`), `hub_remember` tool and console command, auto-saved board transitions
+- [x] sqlite board, `hub_task_*` and `hub_review` tools on all adapters
+- [x] Role contract injection per native surface
+- [x] `routing.toml` loader, signals (PII, context length, quota), `hub route explain`
+- [x] Review handoff and task-level escalation
+- [x] Task brief on handoff (search + timeline, `seen_ids`), `hub_remember` tool and console command, auto-saved board transitions
+- [ ] Live: Codex calling a hub tool in a real turn (MCP startup verified; a turn needs account quota), Claude plugin tools in a real session
 
 M5 budget relay
 - [ ] Quota sources (Codex native, Claude probe, Kimi tokens), gate, pause, checkpoint

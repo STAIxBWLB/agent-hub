@@ -15,6 +15,8 @@ export interface Envelope {
   priority: Priority;
   body: string; // agent conclusions only, never tool noise
   refs?: { repo?: string; branch?: string; commit?: string; paths?: string[]; task?: string };
+  /** The body must not be shown outside its recipients: console tail and log print a stub instead (PII tasks). */
+  private?: boolean;
   ts: number;
 }
 
@@ -30,6 +32,8 @@ export interface EnvelopeOpts {
   priority?: Priority;
   /** The envelope this one answers: inherits its trace, hop + 1. */
   inReplyTo?: Pick<Envelope, "trace" | "hop">;
+  refs?: Envelope["refs"];
+  private?: boolean;
 }
 
 export function newEnvelope(from: PeerId, body: string, opts: EnvelopeOpts = {}): Envelope {
@@ -42,6 +46,8 @@ export function newEnvelope(from: PeerId, body: string, opts: EnvelopeOpts = {})
     kind: opts.kind ?? "chat",
     priority: opts.priority ?? "status",
     body,
+    ...(opts.refs ? { refs: opts.refs } : {}),
+    ...(opts.private ? { private: true } : {}),
     ts: Date.now(),
   };
 }
