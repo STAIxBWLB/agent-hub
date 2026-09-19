@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2
+
+- The channel plugin no longer fights a second session attached as the same peer: the replaced one stays detached and its tools say so, instead of taking the peer back every second (#16).
+- The plugin MCP server exits when its host goes away, and stops retrying a hub that refused it (wire version, token, peer id), reporting the hub's reason (#17).
+- After upgrading, run `ahub setup` to refresh the Claude plugin and restart agent sessions; stale `server.js` processes from earlier versions have to be ended by hand once.
+
 ## 0.3.1
 
 - Hub task, review and budget events are distinguished from reference-only presence/recall in agent instructions and rendered message kinds, including mixed Claude digests.
