@@ -18,6 +18,8 @@ export interface PermissionRequest {
 export interface AcpOptions {
   /** e.g. ["kimi", "acp"]. `opencode acp` fits the same adapter. */
   cmd: string[];
+  /** Coordinator-visible selected model only; contains no prompts or command arguments. */
+  launchModel?: string;
   cwd: string;
   watchdogMs?: number;
   /** ACP stdio MCP servers for the session (the hub's task tools). */
@@ -50,6 +52,10 @@ export class AcpPeer extends BasePeer {
     private readonly opts: AcpOptions,
   ) {
     super(id, opts.watchdogMs);
+  }
+
+  recoveryMetadata(): Record<string, unknown> {
+    return { launch: { kind: "acp", ...(this.opts.launchModel ? { model: this.opts.launchModel } : {}) }, ...(this.sessionId ? { sessionId: this.sessionId } : {}) };
   }
 
   async start(): Promise<void> {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+- Controlled protocol-8 restart with private queue/session snapshots, manual-pause preservation, instance fencing and verified release (#21).
+- Exact-version upgrade planning, immutable package staging, detached resumable operation receipts and machine lifecycle locking.
+- Orca-first native terminal recovery: original Codex/Claude conversations, new Kimi/local sessions with task context, and explicit manual blockers for unsupported sessions.
+- Running projects transition sequentially; the shared Claude plugin and Claude sessions have a final common phase. Global CLI promotion follows verification.
+- Protocols 5–7 require a manual bootstrap using their matching CLI. No automatic legacy shutdown, uncertain side-effect replay or rollback.
+
 ## 0.4.1
 
 - Synchronize the daemon digest integration fixture without changing batching semantics or weakening digest/FYI assertions (#15).

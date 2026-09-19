@@ -2,6 +2,31 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## Controlled recovery implementation checks (issue #21, 0.5.0 development)
+
+Verified on 2026-09-20, without upgrading the developer's running hubs:
+
+- The local release gate passed: 228 tests, 0 failures, 1352 assertions,
+  `check: OK`. Tests used an isolated `AGENTHUB_HOME` and no inherited project
+  state overrides.
+- An actual detached daemon in a temporary initialized project was restarted by
+  the detached coordinator from a preserved package tree. Its instance changed,
+  its project identity and task board survived, and ordinary task commands worked
+  after release. This scenario had no native agent peers attached.
+- Fake-service tests cover two-project ordering, shared plugin sequencing,
+  busy/approval blockers, snapshot validation, manual pauses, terminal identity,
+  account-home isolation and lost commit/start/release responses.
+- Read-only inspection of the installed runtime still found protocol 7 in this
+  project and protocol 5 in hwp-cli. The new CLI's dry-run returned a bootstrap
+  blocker instead of trying to stop them.
+- The installed Orca CLI's read-only TUI-idle query returned its documented
+  `result.wait.satisfied` shape. No production terminal was closed or relaunched.
+
+Still pending: a real Orca smoke with native Codex/Claude sessions after an
+attended protocol-8 bootstrap; actual registry package/plugin upgrade; production
+rollout. Fake terminal receipts do not establish native conversation restoration.
+Issue #12's Access and natural-quota prerequisites remain unchanged.
+
 ## Install
 
 ```bash

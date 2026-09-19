@@ -4,13 +4,14 @@
 // user's own status line command: it records the limits for the hub's budget coordinator and then runs the original
 // command with the same input, so the status line looks exactly as before. It must never fail the render.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const input = await Bun.stdin.text();
 let own = "";
 try {
-  const limits = JSON.parse(input).rate_limits;
+  const parsed = JSON.parse(input);
+  const limits = parsed.rate_limits;
   const pct = (w: any) => (typeof w?.used_percentage === "number" ? `${Math.round(w.used_percentage)}%` : "-");
   if (limits) own = `agent-hub  5h ${pct(limits.five_hour)}  wk ${pct(limits.seven_day)}`;
   const dir = process.env.AGENTHUB_STATE_DIR;
@@ -18,6 +19,14 @@ try {
     mkdirSync(dir, { recursive: true });
     const file = join(dir, "claude-usage.json");
     writeFileSync(`${file}.tmp`, JSON.stringify({ at: Date.now(), rate_limits: limits }));
+    renameSync(`${file}.tmp`, file);
+  }
+  const sessionId = typeof parsed.session_id === "string" ? parsed.session_id : typeof parsed.sessionId === "string" ? parsed.sessionId : "";
+  if (sessionId && dir) {
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, "claude-session.json");
+    writeFileSync(`${file}.tmp`, JSON.stringify({ at: Date.now(), sessionId, ...(process.env.AGENTHUB_INSTANCE_ID ? { instanceId: process.env.AGENTHUB_INSTANCE_ID } : {}), ...(process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {}) }), { mode: 0o600 });
+    chmodSync(`${file}.tmp`, 0o600);
     renameSync(`${file}.tmp`, file);
   }
 } catch {

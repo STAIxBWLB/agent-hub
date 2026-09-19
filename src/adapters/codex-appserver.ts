@@ -64,6 +64,13 @@ export class CodexPeer extends BasePeer {
     super(id, opts.watchdogMs);
   }
 
+  recoveryMetadata(): Record<string, unknown> {
+    return {
+      launch: { kind: "codex", bin: this.opts.bin ?? "codex", cwd: this.opts.cwd, appPort: this.opts.appPort, proxyPort: this.opts.proxyPort },
+      ...(this.threadId ? { threadId: this.threadId } : {}),
+    };
+  }
+
   get proxyUrl(): string {
     return `ws://127.0.0.1:${this.server?.port ?? this.opts.proxyPort}`;
   }

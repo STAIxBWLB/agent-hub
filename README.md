@@ -7,6 +7,13 @@ task-aware model routing (Switchyard) in front of a self-hosted gateway (OmniRou
 Status: 0.4.0. All six milestones of the design spec are implemented; the [smoke checklist](docs/smoke.md)
 says what has and has not been verified against real agents.
 
+The development branch prepares 0.5.0 with [controlled upgrade and session recovery](docs/specs/2026-09-20-upgrade-recovery-design.md).
+After bootstrapping a protocol-8 hub, use `ahub restart --dry-run` to inspect one
+project or `ahub upgrade --to <exact-version> --dry-run` to inspect an upgrade of
+the running projects. Remove `--dry-run` to review and schedule the operation;
+`ahub recovery status <operation-id>` reports progress. Existing protocol-5–7
+hubs require their matching CLI and an attended maintenance bootstrap.
+
 ## Start here
 
 Requires [Bun](https://bun.sh) >=1.3.0 on PATH; Node alone cannot run the CLI.

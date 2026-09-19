@@ -93,6 +93,11 @@ export class Budget {
     return r ? { peer: r.peer, since: r.since, resetsAt: r.resets_at, reason: r.reason, summary: r.summary, handedOff: !!r.handed_off, moved: JSON.parse(r.moved) } : undefined;
   }
 
+  /** Recovery integrity input: persisted pause records only, excluding live usage readings and private summaries. */
+  persistedPauseDigestRows(): { peer: PeerId; since: number; resetsAt: number; reason: string }[] {
+    return this.records().map(({ peer, since, resetsAt, reason }) => ({ peer, since, resetsAt, reason }));
+  }
+
   private records(): PauseRecord[] {
     return (this.db.query("SELECT peer FROM budget_pauses").all() as { peer: string }[]).map((r) => this.record(r.peer)!);
   }

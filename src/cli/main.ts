@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ControlClient, readControl } from "../hub/control-client.ts";
@@ -17,6 +17,10 @@ import { nextStep, parseList, pluginState, type InstalledPlugin, type Marketplac
 import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
 import { createInterface } from "node:readline/promises";
+import { assertLifecycleAvailable, readOperation } from "../hub/recovery-store.ts";
+import { abortRecovery, createOperation, publicOperation, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
+import { makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
+import { recordTerminalLaunch } from "./terminal-recovery.ts";
 
 const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one project directory
 
@@ -29,6 +33,9 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub setup [--yes]            install or update the Claude Code channel plugin from this package, then run doctor
   ahub init                     write .agenthub/config.json and the CLAUDE.md / AGENTS.md marker blocks
   ahub up [--unattended]        start the daemon for this directory
+  ahub upgrade --to <version> [--dry-run] [--yes]   review and upgrade running projects
+  ahub restart [--dry-run] [--yes]                 recover this project's runtime
+  ahub recovery status|resume|abort <operation-id> inspect, resume or cancel a preflight
   ahub claude [args...]         launch Claude Code with the hub channel   [--unattended]
   ahub codex [args...]          start the Codex adapter and attach the TUI [--unattended]
   ahub kimi [--model <alias>]   start Kimi headless under ACP
@@ -65,13 +72,13 @@ const [cmd = "help", ...args] = argv;
 let selected: { root: string; stateDir: string };
 try {
   if (selector) {
-    const registry = new Registry();
-    try {
-      const known = registry.get(selector);
+    const projects = registeredProjects();
+    {
+      const known = projects.find((p) => p.id === selector);
       const context = known ?? projectContext(selector, {});
-      const registered = known ?? registry.list().find((p) => p.root === context.root);
+      const registered = known ?? projects.find((p) => p.root === context.root);
       selected = registered ?? context;
-    } finally { registry.close(); }
+    }
   } else selected = projectContext(process.cwd());
 } catch (error) { fail((error as Error).message); }
 const cwd = selected.root;
@@ -166,7 +173,56 @@ async function hold(t: "pause" | "resume"): Promise<void> {
   console.log(`${args[0]} is ${res.state}`);
 }
 
+function spawnRecovery(operation: RecoveryOperation): void {
+  const child = spawn(process.execPath, [join(operation.sourceRoot, "src/cli/main.js"), "recovery-run", operation.id], {
+    cwd, detached: true, stdio: "ignore", env: { ...process.env, AGENTHUB_RECOVERY_OPERATION: operation.id },
+  });
+  child.on("error", () => console.error(`runner launch failed; use ahub recovery resume ${operation.id}`));
+  child.unref();
+  console.log(`Recovery operation ${operation.id} scheduled.\nahub recovery status ${operation.id}`);
+}
+
+async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
+  const { one, rest } = takeFlags(args, ["--to"], []);
+  if (rest.some((a) => !["--dry-run", "--yes"].includes(a)) || (kind === "restart" && one["--to"])) fail("usage: ahub upgrade --to <version> [--dry-run] [--yes] | ahub restart [--dry-run] [--yes]");
+  if (kind === "upgrade" && !one["--to"]) fail("upgrade requires --to <exact-version>");
+  if (kind === "upgrade" && selector) fail("upgrade changes the shared package/plugin; omit --project to review all affected running projects");
+  const plan = await makeUpgradePlan(kind, one["--to"] ?? VERSION, kind === "restart" ? cwd : undefined);
+  console.log(JSON.stringify(plan, null, 2));
+  if (args.includes("--dry-run")) return;
+  if (plan.blockers.length || plan.projects.some((p) => p.blockers.length)) fail("plan has blockers; no runtime was changed");
+  assertLifecycleAvailable();
+  if (!args.includes("--yes")) {
+    if (!process.stdin.isTTY) fail("review --dry-run and use --yes in non-interactive sessions");
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      if (!/^(y|yes)$/i.test((await rl.question("Apply this project list and restore its sessions? [y/N] ")).trim())) return;
+    } finally { rl.close(); }
+  }
+  const current = await makeUpgradePlan(kind, plan.version, kind === "restart" ? cwd : undefined);
+  if (current.fingerprint !== plan.fingerprint) fail("plan changed during review; run the command again");
+  const sourceRoot = preserveSource(plan);
+  const operation = createOperation(plan, sourceRoot);
+  spawnRecovery(operation);
+}
+
 const commands: Record<string, () => Promise<void> | void> = {
+  upgrade: () => upgrade("upgrade"),
+  restart: () => upgrade("restart"),
+  recovery: async () => {
+    const [action, id] = args;
+    if (args.length !== 2 || !id || !["status", "resume", "abort"].includes(action ?? "")) fail("usage: ahub recovery status|resume|abort <operation-id>");
+    const operation = readOperation<RecoveryOperation>(id);
+    if (action === "status") console.log(JSON.stringify(publicOperation(operation), null, 2));
+    else if (action === "abort") { await abortRecovery(id, makeRecoveryDriver()); console.log("preflight cancelled; no committed transition was rolled back"); }
+    else if (["completed", "cancelled"].includes(operation.phase)) console.log(`recovery is already ${operation.phase}`);
+    else spawnRecovery(operation);
+  },
+  "recovery-run": async () => {
+    if (args.length !== 1 || process.env.AGENTHUB_RECOVERY_OPERATION !== args[0]) fail("recovery-run is an internal command");
+    const result = await runRecovery(args[0]!, makeRecoveryDriver());
+    if (result.phase !== "completed") process.exitCode = 1;
+  },
   help: () => console.log(USAGE),
   "--version": () => console.log(VERSION),
   version: () => console.log(VERSION),
@@ -214,6 +270,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   setup: async () => {
+    assertLifecycleAvailable();
     const root = join(import.meta.dir, "..", "..");
     const state = () => {
       const out = (argv: string[]) => spawnSync("claude", argv, { encoding: "utf8" }).stdout ?? "";
@@ -239,6 +296,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   init: () => {
+    assertLifecycleAvailable();
     const changed = init(cwd);
     registeredProject();
     console.log(changed.length ? changed.map((p) => `wrote ${p}`).join("\n") : "already up to date");
@@ -258,7 +316,10 @@ const commands: Record<string, () => Promise<void> | void> = {
     console.log(`ahub up (ws://127.0.0.1:${status.controlPort}), state in ${stateDir}`);
   },
 
-  claude: () => {
+  claude: async () => {
+    assertLifecycleAvailable();
+    const control = readControl(stateDir);
+    if (control?.instanceId) await recordTerminalLaunch("claude", cwd, stateDir, control.instanceId);
     // `--settings` outranks project and user settings, so the tee has to wrap whichever status line would have won:
     // project local, then project, then user.
     let original: { command?: string; refreshInterval?: number; padding?: number } | undefined;
@@ -275,11 +336,14 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   codex: async () => {
+    assertLifecycleAvailable();
     const launch0 = buildLaunch("codex", args, { unattended: unattendedEnv, proxyUrl: "pending" }); // refuse bad flags before starting anything
     const hub = await connect();
-    const res = await hub.request({ t: "start", peer: "codex" });
+    const res = await hub.request({ t: "start", peer: "codex", operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
     hub.close();
     if (!res.ok) fail(res.error);
+    const control = readControl(stateDir);
+    if (control?.instanceId) await recordTerminalLaunch("codex", cwd, stateDir, control.instanceId);
     const launch = buildLaunch("codex", args, { unattended: unattendedEnv, proxyUrl: res.proxyUrl, codexBin: loadConfig(cwd).codex_bin });
     if (launch0.warning) console.error(launch0.warning);
     exec(launch.cmd, launch.args);
@@ -289,7 +353,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const i = args.indexOf("--model");
     const model = i === -1 ? undefined : args[i + 1] ?? fail("--model needs an alias");
     const hub = await connect();
-    const res = await hub.request({ t: "start", peer: "kimi", args: { model } });
+    const res = await hub.request({ t: "start", peer: "kimi", args: { model }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
     hub.close();
     if (!res.ok) fail(res.error);
     console.log(res.already ? "kimi is already attached" : 'kimi attached (headless). Talk to it with: ahub say @kimi "..."');
@@ -298,7 +362,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   local: async () => {
     const opt = (flag: string) => (args.includes(flag) ? args[args.indexOf(flag) + 1] ?? fail(`${flag} needs a value`) : undefined);
     const hub = await connect();
-    const res = await hub.request({ t: "start", peer: "local", args: { route: opt("--route"), model: opt("--model") } });
+    const res = await hub.request({ t: "start", peer: "local", args: { route: opt("--route"), model: opt("--model") }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
     hub.close();
     if (!res.ok) fail(res.error);
     console.log(res.already ? "local is already attached" : `local attached on ${res.model}. Give it work with: ahub say @local "..."`);

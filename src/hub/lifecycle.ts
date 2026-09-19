@@ -7,6 +7,7 @@ import { ControlClient, PROTOCOL, readControl } from "./control-client.ts";
 import { startDaemon } from "./daemon.ts";
 import { Registry, type Project } from "./registry.ts";
 import { CODEX_APP, CODEX_PROXY, CONTROL, SWITCHYARD } from "./ports.ts";
+import { assertLifecycleAvailable } from "./recovery-store.ts";
 
 export type ProjectInspection = {
   state: "running" | "stopped" | "stopping" | "unavailable" | "incompatible" | "missing" | "starting";
@@ -85,6 +86,7 @@ async function available(base: number): Promise<boolean> {
 
 /** Called only in the detached daemon process. A competing starter exits without touching state. */
 export async function runProjectDaemon(project: Project, unattended = false): Promise<void> {
+  assertLifecycleAvailable();
   const registry = new Registry();
   const instanceId = randomUUID();
   let claimed = false;
@@ -122,6 +124,7 @@ export async function runProjectDaemon(project: Project, unattended = false): Pr
 }
 
 export async function startProject(project: Project, options: { unattended?: boolean; env?: NodeJS.ProcessEnv } = {}): Promise<any> {
+  assertLifecycleAvailable();
   const registry = new Registry();
   try {
     const current = registry.get(project.id);
@@ -160,6 +163,7 @@ export async function startProject(project: Project, options: { unattended?: boo
 }
 
 export async function stopProject(project: Project, expectedInstance?: string): Promise<void> {
+  assertLifecycleAvailable();
   const inspection = await inspectProject(project);
   if (inspection.state === "stopped") return;
   if (inspection.state !== "running" && inspection.state !== "stopping") throw new Error(inspection.error ?? "hub ownership is not verified; not stopping it");
