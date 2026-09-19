@@ -218,3 +218,38 @@ kinds, mixed Claude channel metadata and hop-preserving reply-parent selection.
 Upgrade existing projects with `ahub init` and refresh the Claude plugin with
 `ahub setup`; restart the daemon and agent sessions to load the new instructions.
 Updating the plugin alone leaves an old managed AGENTS block in place.
+
+
+## Multi-project manager source smoke (issue #19, 0.4.0)
+
+Verified on 2026-09-19 from the feature branch, with an isolated `AGENTHUB_HOME`
+and two temporary initialized projects. These were actual detached hub/manager
+processes and a real Chromium session driven by `agent-browser`; model inference
+and memory capture were disabled in the temporary project configurations.
+
+- Opened the unified manager before either project was running; both registered
+  roots appeared with disabled project mutation controls until selected and ready.
+- Started alpha and beta from the browser and observed distinct authenticated
+  project/instance identities and control ports through `projects --json`.
+- Proposed `Beta browser isolation check` through beta's task form. Beta showed
+  task #1; alpha's board stayed empty. The registry summary reported beta's one
+  proposed task rather than counting the number of task-state categories.
+- Switched away from alpha with an unsent message and returned: its text draft was
+  restored while beta's draft remained separate. A subsequent peer-roster change
+  also preserved text currently being typed.
+- Held a beta snapshot response in the browser, switched to alpha, then released
+  it. Alpha's root/board/draft were unchanged and polling continued afterward.
+- An additional delayed action-response check retained the newly selected
+  project's draft and did not show the previous project's notice there.
+- Used alpha's Stop button and accepted the confirmation naming its full root.
+  Independent CLI readback showed alpha stopped and beta still running with its
+  task retained.
+- Stopped the manager, verified beta was still running, then reopened the manager.
+  Browser sessions were replaced without restarting beta.
+- Cleaned up the temporary manager and hubs after verification.
+
+Automated fixtures cover native Claude/MCP, ACP and Codex protocol behavior,
+parallel registration/startup, cross-token refusal, stale instances, incomplete
+shutdown, occupied ports, worktree aliases and manager crash recovery. Simultaneous
+live provider-account sessions were not launched in this smoke; npm publication
+and upgrading existing user sessions are separate release actions.

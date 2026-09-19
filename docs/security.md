@@ -34,3 +34,24 @@ Please report vulnerabilities privately through GitHub's "Report a vulnerability
 - The browser receives a bounded redacted event stream, peer states and queue counts, public task views, budget windows and pending approvals. Private envelope bodies and PII task text never cross this endpoint. Local-worker approval titles can contain PII, so their details remain terminal-only; the dashboard identifies the request and directs the operator to `ahub tail` before allowing it. Budget checkpoint summaries are also omitted.
 - The closed action list is permission response, peer pause/resume, console message, task proposal and task assignment. These use the existing daemon/task paths and budget pause rules. There is no generic control proxy, task-detail read, shell, file access, configuration edit, budget override, peer launch or daemon shutdown API.
 - The listener stops with the daemon. Expired sessions must be reopened with `ahub ui`; the page does not silently obtain new credentials.
+
+
+## Multi-project manager (protocol 7)
+
+The manager has its own loopback session server and authenticated local control
+endpoint. Browsers provide registered project IDs and expected daemon instance
+IDs; they cannot submit arbitrary paths, ports, PIDs or control tokens. The
+manager forwards the same closed, redacted dashboard operations as a project-local
+page. It cannot expose private task history or allow local-worker tools.
+
+Per-project control handshakes verify project, root and instance against the
+runtime manifest. Shutdown removes only the owning instance's runtime files and
+waits for owned child processes. Registry and manager startup claims serialize
+concurrent starts; uncertain ownership is reported, not forcibly reclaimed.
+A stale browser action against a restarted daemon is rejected, and mutations are
+never automatically replayed after a connection failure.
+
+The manager can start registered hubs in attended mode. Its project launches do
+not inherit state, unattended or gateway URL/key overrides from the session that
+opened the manager. Native memory is deliberately not a project-isolation boundary:
+its existing basename/worktree aliases and provider accounts can remain shared.

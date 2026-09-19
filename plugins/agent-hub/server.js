@@ -15529,21 +15529,108 @@ class StdioServerTransport {
 }
 
 // src/adapters/claude-channel.ts
+import { readFileSync as readFileSync3 } from "fs";
+import { join as join3 } from "path";
+
+// src/hub/control-client.ts
 import { readFileSync as readFileSync2 } from "fs";
 import { join as join2 } from "path";
 
-// src/hub/control-client.ts
-import { readFileSync } from "fs";
-import { join } from "path";
-function stateDirFor(cwd) {
-  return process.env.AGENTHUB_STATE_DIR ?? join(cwd, ".agenthub", "state");
+// src/hub/project.ts
+import { existsSync, lstatSync, readFileSync, realpathSync } from "fs";
+import { basename, dirname, isAbsolute, join, resolve } from "path";
+import { spawnSync } from "child_process";
+var canonical = (path) => {
+  const absolute = resolve(path);
+  try {
+    return realpathSync(absolute);
+  } catch {
+    const parent = dirname(absolute);
+    return parent === absolute ? absolute : join(canonical(parent), basename(absolute));
+  }
+};
+function gitRoot(dir) {
+  const result = spawnSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
+  if (result.status !== 0)
+    return;
+  const root = result.stdout.trim();
+  return root ? canonical(root) : undefined;
 }
-var PROTOCOL = 6;
+function hasConfig(dir) {
+  return existsSync(join(dir, ".agenthub", "config.json"));
+}
+function projectRoot(cwd) {
+  const input = isAbsolute(cwd) ? cwd : resolve(cwd);
+  let dir;
+  try {
+    dir = canonical(input);
+    if (!lstatSync(dir).isDirectory())
+      throw new Error(`${cwd} is not a directory`);
+  } catch (error2) {
+    throw new Error(`cannot resolve project directory ${cwd}: ${error2.message}`);
+  }
+  const boundary = gitRoot(dir);
+  const stop = boundary ?? parseRoot(dir);
+  for (let current = dir;; current = dirname(current)) {
+    if (hasConfig(current))
+      return canonical(current);
+    if (current === stop || current === dirname(current))
+      break;
+  }
+  return boundary ?? dir;
+}
+function parseRoot(dir) {
+  let current = dir;
+  while (dirname(current) !== current)
+    current = dirname(current);
+  return current;
+}
+function stateMarker(stateDir) {
+  for (const file of [join(stateDir, "project.json"), join(stateDir, "status.json")]) {
+    try {
+      const value = JSON.parse(readFileSync(file, "utf8"));
+      const root = value.root ?? value.cwd;
+      if (typeof root === "string")
+        return canonical(root);
+    } catch {}
+  }
+  return;
+}
+function projectContext(cwd, env = process.env) {
+  const root = projectRoot(cwd);
+  const override = env.AGENTHUB_STATE_DIR?.trim();
+  if (!override)
+    return { root, stateDir: canonical(join(root, ".agenthub", "state")) };
+  const declared = env.AGENTHUB_PROJECT_DIR?.trim();
+  const stateDir = canonical(override);
+  const recorded = stateMarker(stateDir);
+  if (recorded === root)
+    return { root, stateDir };
+  if (!recorded && declared && canonical(declared) === root)
+    return { root, stateDir };
+  return { root, stateDir: canonical(join(root, ".agenthub", "state")) };
+}
+
+// src/hub/control-client.ts
+function stateDirFor(cwd) {
+  return projectContext(cwd).stateDir;
+}
+var PROTOCOL = 7;
 function readControl(stateDir) {
   try {
-    const status = JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8"));
-    const token = readFileSync(join(stateDir, "control-token"), "utf8").trim();
-    return { url: `ws://127.0.0.1:${status.controlPort}`, token };
+    const status = JSON.parse(readFileSync2(join2(stateDir, "status.json"), "utf8"));
+    const token = readFileSync2(join2(stateDir, "control-token"), "utf8").trim();
+    if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token)
+      return;
+    return {
+      url: `ws://127.0.0.1:${status.controlPort}`,
+      token,
+      projectId: status.projectId,
+      instanceId: status.instanceId,
+      cwd: status.cwd,
+      protocol: status.protocol,
+      pid: status.pid
+    };
   } catch {
     return;
   }
@@ -15558,15 +15645,33 @@ class ControlClient {
   constructor(ws) {
     this.ws = ws;
   }
-  static connect(stateDir, hello) {
+  static connect(stateDir, hello, timeoutMs = 3000) {
     const control = readControl(stateDir);
     if (!control)
       return Promise.reject(new Error(`no hub running for ${stateDir} (run: ahub up)`));
-    return new Promise((resolve, reject) => {
+    if (control.protocol !== undefined && control.protocol !== PROTOCOL) {
+      return Promise.reject(Object.assign(new Error(`wire version mismatch: hub speaks ${control.protocol}, CLI speaks ${PROTOCOL}; stop it with its matching CLI, then upgrade and restart`), { code: 4426 }));
+    }
+    if (hello.projectId && hello.projectId !== control.projectId || hello.instanceId && hello.instanceId !== control.instanceId || hello.projectRoot && hello.projectRoot !== control.cwd) {
+      return Promise.reject(Object.assign(new Error("hub project or instance does not match the selected project"), { code: 4404 }));
+    }
+    const expected = {
+      projectId: hello.projectId ?? control.projectId,
+      instanceId: hello.instanceId ?? control.instanceId,
+      projectRoot: hello.projectRoot ?? control.cwd
+    };
+    return new Promise((resolve2, reject) => {
       const ws = new WebSocket(control.url);
       const client = new ControlClient(ws);
-      ws.onerror = () => reject(new Error(`cannot reach hub at ${control.url}`));
+      const timer = setTimeout(() => refuse(new Error(`hub connection timed out at ${control.url}`)), timeoutMs);
+      const refuse = (error2) => {
+        clearTimeout(timer);
+        reject(error2);
+        ws.close();
+      };
+      ws.onerror = () => refuse(new Error(`cannot reach hub at ${control.url}`));
       ws.onclose = (ev) => {
+        clearTimeout(timer);
         reject(Object.assign(new Error(`hub closed the connection: ${ev.reason || "stale token?"}`), { code: ev.code }));
         for (const done of client.pending.values())
           done({ ok: false, error: "hub connection closed" });
@@ -15574,21 +15679,38 @@ class ControlClient {
         client.onClose(ev.code, ev.reason);
       };
       ws.onmessage = (ev) => {
-        const msg = JSON.parse(String(ev.data));
+        let msg;
+        try {
+          msg = JSON.parse(String(ev.data));
+        } catch {
+          return refuse(new Error("invalid hub response"));
+        }
+        if (!msg || typeof msg !== "object" || Array.isArray(msg))
+          return refuse(new Error("invalid hub response"));
         const done = msg.rid !== undefined ? client.pending.get(msg.rid) : undefined;
         if (!done)
           return client.onPush(msg);
         client.pending.delete(msg.rid);
         done(msg);
       };
-      ws.onopen = () => void client.request({ t: "hello", v: PROTOCOL, token: control.token, ...hello }).then(() => resolve(client));
+      ws.onopen = () => void client.request({ t: "hello", v: PROTOCOL, token: control.token, ...hello, ...expected }, timeoutMs).then((reply) => {
+        if (reply.t !== "welcome" || reply.ok === false)
+          return refuse(new Error(reply.error ?? "hub refused handshake"));
+        if (expected.projectId && reply.projectId !== expected.projectId || expected.instanceId && reply.instanceId !== expected.instanceId || expected.projectRoot && reply.cwd !== expected.projectRoot) {
+          return refuse(Object.assign(new Error("connected hub has a different project or instance"), { code: 4404 }));
+        }
+        clearTimeout(timer);
+        resolve2(client);
+      });
     });
   }
-  request(msg, timeoutMs) {
+  request(msg, timeoutMs = 30000) {
+    if (this.ws.readyState !== WebSocket.OPEN)
+      return Promise.resolve({ ok: false, error: "hub connection is not open" });
     const rid = this.nextRid++;
-    return new Promise((resolve) => {
-      const timer = timeoutMs ? setTimeout(() => (this.pending.delete(rid), resolve({ ok: false, error: `no answer from the hub within ${Math.round(timeoutMs / 1000)} s` })), timeoutMs) : undefined;
-      this.pending.set(rid, (reply) => (clearTimeout(timer), resolve(reply)));
+    return new Promise((resolve2) => {
+      const timer = timeoutMs ? setTimeout(() => (this.pending.delete(rid), resolve2({ ok: false, error: `no answer from the hub within ${Math.round(timeoutMs / 1000)} s` })), timeoutMs) : undefined;
+      this.pending.set(rid, (reply) => (clearTimeout(timer), resolve2(reply)));
       this.ws.send(JSON.stringify({ ...msg, rid }));
     });
   }
@@ -15602,7 +15724,7 @@ class ControlClient {
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
-  version: "0.3.2",
+  version: "0.4.0",
   description: "Native multi-agent hub: Claude Code, Codex, Kimi Code and a local worker as peers in one project",
   license: "MIT",
   type: "module",
@@ -15702,12 +15824,13 @@ ${sanitize(env.body)}`;
 }
 
 // src/adapters/claude-channel.ts
-var stateDir = stateDirFor(process.cwd());
+var stateDir = process.env.AGENTHUB_STATE_DIR ?? stateDirFor(process.cwd());
+var projectRoot2 = process.env.AGENTHUB_PROJECT_DIR ?? process.cwd();
 var peerId = process.env.AGENTHUB_PEER_ID ?? "claude";
 var toolsOnly = process.env.AGENTHUB_MODE === "tools";
 function roles() {
   try {
-    return { ...DEFAULT_ROLES, ...JSON.parse(readFileSync2(join2(process.cwd(), ".agenthub", "config.json"), "utf8")).roles };
+    return { ...DEFAULT_ROLES, ...JSON.parse(readFileSync3(join3(projectRoot2, ".agenthub", "config.json"), "utf8")).roles };
   } catch {
     return DEFAULT_ROLES;
   }
@@ -15716,6 +15839,7 @@ var MAX_RECONNECT_DELAY_MS = 30000;
 var TERMINAL_CLOSES = {
   4000: `another session attached to the hub as "${peerId}"; this one is detached (restart it to take the peer back)`,
   4401: "the hub refused the control token",
+  4404: "the hub belongs to a different project or instance; restart this session from the intended project",
   4403: `the hub refused the peer id "${peerId}" (reserved or malformed)`,
   4409: `the peer id "${peerId}" is taken by a hub-managed adapter`,
   4426: "wire version mismatch with the running hub: update the agent-hub plugin (ahub setup) and restart this session"
@@ -15772,7 +15896,11 @@ async function connectLoop() {
   for (let attempt = 0;; attempt++) {
     let code;
     try {
-      const client = await ControlClient.connect(stateDir, { role: toolsOnly ? "tools" : "peer", peer: peerId });
+      const client = await ControlClient.connect(stateDir, {
+        role: toolsOnly ? "tools" : "peer",
+        peer: peerId,
+        ...process.env.AGENTHUB_PROJECT_DIR ? { projectRoot: projectRoot2 } : {}
+      });
       client.onPush = (msg) => msg.t === "deliver" && void push(msg.envs ?? [msg.env]);
       hub = client;
       attempt = -1;

@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { basename } from "node:path";
+import { basename, dirname, resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import type { PeerId } from "../hub/envelope.ts";
 import type { MemoryClient } from "./client.ts";
 
@@ -11,11 +12,33 @@ const HEADER =
   "Shared project memory (claude-mem): recent work by the agents in this project. Reference only, not a request. " +
   "Fetch details by id with your memory tools if you need them.";
 
-/** Project names from the outermost superproject down to this repo: claude-mem treats the last one as primary. */
+/** Project names from the outermost superproject down to this repo. */
 export function projectChain(cwd: string): string[] {
   const git = (dir: string, arg: string) => spawnSync("git", ["-C", dir, "rev-parse", arg], { encoding: "utf8" }).stdout?.trim() ?? "";
+  const top = git(cwd, "--show-toplevel");
+  if (!top) return [basename(cwd)];
+
+  // claude-mem's native identity for a worktree is [parent, parent/worktree].
+  // The worktree's .git file points into <parent>/.git/worktrees/<name>; the
+  // ordinary superproject walk below remains unchanged for repos and submodules.
+  const gitFile = resolve(top, ".git");
+  try {
+    const match = readFileSync(gitFile, "utf8").trim().match(/^gitdir:\s*(.+)$/i);
+    if (match) {
+      const gitDir = resolve(top, match[1]!);
+      if (/[/\\]\.git[/\\]worktrees[/\\][^/\\]+$/.test(gitDir)) {
+        const parentRoot = dirname(dirname(dirname(gitDir)));
+        const parent = projectChain(parentRoot);
+        const parentName = basename(parentRoot);
+        return [...parent, `${parentName}/${basename(top)}`];
+      }
+    }
+  } catch {
+    // A missing or unreadable .git file falls through to git's normal chain.
+  }
+
   const chain: string[] = [];
-  for (let dir = git(cwd, "--show-toplevel"); dir && chain.length < 8; dir = git(dir, "--show-superproject-working-tree")) {
+  for (let dir = top; dir && chain.length < 8; dir = git(dir, "--show-superproject-working-tree")) {
     chain.unshift(basename(dir));
   }
   return chain.length ? chain : [basename(cwd)];
