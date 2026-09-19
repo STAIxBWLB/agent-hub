@@ -11,6 +11,24 @@ ahub setup                                 # Claude Code channel plugin from thi
 
 Claude channels are a research preview: `ahub claude` passes `--dangerously-load-development-channels plugin:agent-hub@agent-hub`.
 
+## npm package preparation (issue #4)
+
+Verified locally on 2026-09-19 with Bun 1.3.14, using an actual `npm pack` tarball:
+
+- Global installation into isolated `BUN_INSTALL_GLOBAL_DIR` / `BUN_INSTALL_BIN`.
+- Both `ahub --version` and `agent-hub --version` return the package version.
+- `ahub init` resolves the installed templates and creates project configuration.
+- `ahub setup --yes` installs the real Claude Code plugin using an isolated
+  `CLAUDE_CONFIG_DIR`; `claude plugin list --json` reports the expected version,
+  and its cached `server.js` matches the packaged bundle byte for byte.
+- Node invocation of the JavaScript bin exits 1 with one Bun-required line.
+- The release workflow's tag guard accepts the current version and rejects a
+  mismatched tag. Publication was not attempted.
+
+Still pending: the first approved npm release, registry provenance readback, and
+installation by registry name on a clean machine. The local tarball check does
+not establish those results or an interactive Claude channel session.
+
 ## M1: trio chat
 
 In the project directory, one terminal each:

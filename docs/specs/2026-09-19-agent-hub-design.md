@@ -565,6 +565,23 @@ M6 internal inference, packaging
       npm publish and brew are follow-ups.)
 - [x] docs: `docs/quickstart.md`, `docs/security.md`, `docs/smoke.md`, `CONTRIBUTING.md`, `CHANGELOG.md`
 
+## npm distribution amendment (issue #4)
+
+- Publish `@staix/agent-hub` under the `staix` npm organization; installed commands
+  remain `ahub` and `agent-hub`. GitHub installation remains available.
+- Ship the source tree and relative runtime assets. The gate checks the actual
+  `npm pack --dry-run` file list, including hidden marketplace and plugin manifests.
+- Use a plain-JavaScript `src/cli/main.js` bin entrypoint that checks for Bun before
+  dynamically importing `main.ts`. This refines the issue's proposed guard location:
+  a guard in `main.ts` cannot precede its static Bun-only imports, and older Node
+  versions cannot load the TypeScript file at all. No preinstall hook or Node build.
+- The release workflow validates the tag/version, runs the gate, then publishes
+  publicly with provenance and `NPM_TOKEN`. The token belongs to an authorized
+  organization member. Organization conversion and credential provisioning are
+  owner operations; this implementation does not perform them.
+- First registry publication, provenance readback, and real Claude setup from the
+  registry installation must be verified after the next approved release tag.
+
 ## Out of scope
 
 - Cross-machine broker or rooms, web UI, Windows.
