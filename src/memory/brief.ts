@@ -17,6 +17,16 @@ export function parseRows(markdown: string | undefined): BriefItem[] {
   return out;
 }
 
+/** Index first, then the neighbourhood of the top hit: the retrieval both task briefs and `ahub ask` use. Deduplicated, in order. */
+export async function related(client: MemoryClient, project: string, query: string, around = 3): Promise<BriefItem[]> {
+  const hits = parseRows(await client.search(query.slice(0, 300), project, 10));
+  if (!hits.length) return [];
+  const near = parseRows(await client.timeline(hits[0]!.id, project, around, around));
+  const out: BriefItem[] = [];
+  for (const item of [...hits, ...near]) if (!out.some((o) => o.id === item.id)) out.push(item);
+  return out;
+}
+
 /**
  * Task briefs: what memory already knows about a piece of work, handed over with it. Index first (search), then the
  * neighbourhood of the top hit (timeline); details stay in claude-mem for the receiver to fetch by id. A peer is never
@@ -32,15 +42,13 @@ export class Briefs {
   ) {}
 
   async forTask(peer: PeerId, task: { title: string; refs: { paths?: string[] } }): Promise<string | undefined> {
-    const query = [task.title, ...(task.refs.paths ?? [])].join(" ").slice(0, 300);
-    const hits = parseRows(await this.client.search(query, this.project, 10));
-    if (!hits.length) return undefined;
-    const around = parseRows(await this.client.timeline(hits[0]!.id, this.project));
+    const found = await related(this.client, this.project, [task.title, ...(task.refs.paths ?? [])].join(" "));
+    if (!found.length) return undefined;
     const seen = this.seen.get(peer) ?? new Set<number>();
     this.seen.set(peer, seen);
     const items: BriefItem[] = [];
-    for (const item of [...hits, ...around]) {
-      if (seen.has(item.id) || items.some((i) => i.id === item.id)) continue;
+    for (const item of found) {
+      if (seen.has(item.id)) continue;
       items.push(item);
       if (items.length === this.maxItems) break;
     }

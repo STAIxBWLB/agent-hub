@@ -9,3 +9,5 @@ dist/
 .agenthub/checkpoint.md
 # this checkout's own hub config: personal paths (key file, Access files)
 .agenthub/config.json
+# this checkout's own hub files (a project that uses the hub commits its routing.toml; the tool's repo does not)
+/.agenthub/

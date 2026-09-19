@@ -53,6 +53,7 @@ or set `OMNIROUTE_API_KEY`. Name the model in `.agenthub/routing.toml` (`[local]
 | `ahub task propose [--class <c>] <title>` | put work on the board; the hub picks an owner and a reviewer, and the class if you name none |
 | `ahub board` | who has what; `ahub task show <id>` for one task |
 | `ahub status` | peers, queues, pauses; `ahub budget` for quota windows |
+| `ahub ask <question>` | what the board, shared memory and the log say, with the ids the answer rests on |
 | `ahub kill` | stop the daemon and everything it started |
 
 More: `ahub help`. How it is built and why: [`docs/specs/2026-09-19-agent-hub-design.md`](specs/2026-09-19-agent-hub-design.md). What it protects and what it does not: [`docs/security.md`](security.md).

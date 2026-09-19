@@ -132,7 +132,10 @@ export class LocalPeer extends BasePeer {
     const { maxSteps = 30 } = this.opts;
     // claude-mem's observer is a cloud model: nothing of a PII turn is captured.
     const capture = policy?.pii ? undefined : this.opts.capture;
-    if (policy?.pii && (await this.opts.omni.offCampus())) {
+    // Positive confirmation, and for the path this turn will really take: a sidecar generated against the off-campus URL
+    // keeps sending there even after the client has found the campus gateway again.
+    const viaOffCampus = !!this.opts.sidecar?.upstream && this.opts.omni.isAccessHost(this.opts.sidecar.upstream);
+    if (policy?.pii && (viaOffCampus || !(await this.opts.omni.onCampus()))) {
       return "Refused: this is a PII task and the only reachable gateway is off campus (Cloudflare Access). Connect the VPN and assign it again.";
     }
     const ctx: ToolContext = {

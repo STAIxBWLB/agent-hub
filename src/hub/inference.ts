@@ -43,37 +43,43 @@ export class Inference {
     private readonly d: InferenceDeps,
   ) {}
 
-  async complete(system: string, user: string, maxTokens: number): Promise<string | undefined> {
-    if (!this.cfg.enabled || Date.now() < this.offUntil) return undefined;
+  /**
+   * `interactive`: a person is waiting for this one answer (`ahub ask`). It gets its own, longer clock and neither obeys
+   * nor trips the backoff that protects the delivery path, so a slow answer cannot switch off triage and digests.
+   */
+  async complete(system: string, user: string, maxTokens: number, opts: { interactive?: boolean; timeoutMs?: number } = {}): Promise<string | undefined> {
+    if (!this.cfg.enabled || (!opts.interactive && Date.now() < this.offUntil)) return undefined;
     const abort = new AbortController();
-    const limit = this.d.timeoutMs ?? TIMEOUT_MS;
+    const limit = opts.timeoutMs ?? this.d.timeoutMs ?? TIMEOUT_MS;
+    const quiet = !!opts.interactive;
     let timer: ReturnType<typeof setTimeout> | undefined;
     // One clock over everything, the gateway probe and the sidecar start included, not only the model call.
     const timeout = new Promise<"timeout">((resolve) => (timer = setTimeout(() => (abort.abort(), resolve("timeout")), limit)));
-    const result = await Promise.race([this.run(system, user, maxTokens, abort.signal), timeout]);
+    const result = await Promise.race([this.run(system, user, maxTokens, abort.signal, quiet), timeout]);
     clearTimeout(timer);
-    if (result === "timeout") return this.backOff(`no answer within ${limit / 1000} s`);
+    if (result === "timeout") return quiet ? undefined : this.backOff(`no answer within ${limit / 1000} s`);
     return result;
   }
 
-  private backOff(why: string): undefined {
+  private backOff(why: string, quiet = false): undefined {
+    if (quiet) return undefined;
     this.offUntil = Date.now() + BACKOFF_MS; // do not make every delivery wait out the timeout while the model is down
     this.d.log(`inference: off for ${BACKOFF_MS / 60_000} min (${why.slice(0, 120)})`);
     return undefined;
   }
 
-  private async run(system: string, user: string, maxTokens: number, signal: AbortSignal): Promise<string | undefined> {
+  private async run(system: string, user: string, maxTokens: number, signal: AbortSignal, quiet = false): Promise<string | undefined> {
     try {
       // No gateway configured is the normal state of a fresh install; one that is configured but unreachable costs a
       // probe every time, so both back off.
-      if (!(await this.d.omni.base())) return this.backOff("no gateway configured or reachable");
+      if (!(await this.d.omni.base())) return this.backOff("no gateway configured or reachable", quiet);
       const messages = [{ role: "system" as const, content: system }, { role: "user" as const, content: user }];
       const via = await this.d.sidecar()?.endpoint();
       const body = via ? { model: this.d.route, messages, max_tokens: maxTokens } : { model: this.d.fixedModel(), messages, max_tokens: maxTokens };
       const res = await this.d.omni.chat(body, { signal, ...(via ? { via } : {}) });
       return res.message.content?.trim() || undefined;
     } catch (e) {
-      return signal.aborted ? undefined : this.backOff((e as Error).message);
+      return signal.aborted ? undefined : this.backOff((e as Error).message, quiet);
     }
   }
 

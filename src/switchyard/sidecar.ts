@@ -26,6 +26,8 @@ export class Sidecar {
   private proc: ChildProcess | undefined;
   private starting: Promise<string | undefined> | undefined;
   private off = "";
+  /** The gateway URL the running sidecar was generated with; calls through it go there whatever the client probes later. */
+  upstream: string | undefined;
 
   constructor(private readonly opts: SidecarOptions) {}
 
@@ -65,6 +67,7 @@ export class Sidecar {
     const baseUrl = await omni.base();
     const key = omni.apiKey();
     if (!baseUrl || !key) throw new GatewayDown("no OmniRoute endpoint or key");
+    this.upstream = baseUrl;
 
     const file = join(stateDir, "switchyard.toml");
     writeFileSync(file, switchyardToml(routing, { baseUrl, extraHeaders: omni.accessHeaders(baseUrl) }), { mode: 0o600 });

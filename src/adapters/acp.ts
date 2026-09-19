@@ -152,7 +152,10 @@ export class AcpPeer extends BasePeer {
 
   private async answerPermission(msg: any): Promise<void> {
     const options: PermissionOption[] = msg.params?.options ?? [];
-    const title: string = msg.params?.toolCall?.title ?? "tool call";
+    const call = msg.params?.toolCall ?? {};
+    // The approver has to see what runs, not only the tool's name ("Bash").
+    const input = call.rawInput === undefined ? "" : `: ${(typeof call.rawInput === "string" ? call.rawInput : JSON.stringify(call.rawInput)).slice(0, 600)}`;
+    const title: string = `${call.title ?? "tool call"}${input}`;
     const picked = await this.opts.onPermission?.({ peer: this.id, title, options }).catch(() => undefined);
     const valid = options.some((o) => o.optionId === picked);
     this.send({
