@@ -178,3 +178,39 @@ check: OK
 
 This gate covers type checking, bundle freshness, package contents and tests;
 it does not replace the live outcomes or unblock #11 and #12.
+
+## Issue #11 default workflow retest (0.3.1)
+
+Verified on 2026-09-19 with fresh real Claude Code 2.1.278, Codex TUI 0.155.1
+and Kimi 2.0.1 sessions in an isolated project. `ahub init` generated the new
+managed instructions; `ahub setup --yes` installed the rebuilt 0.3.1 Claude
+plugin and read back a matching bundle. The daemon and Codex/Kimi MCP servers
+ran the same patched checkout. Control wire protocol remains 6; only prompt
+rendering and instructions changed.
+
+The console asked Claude to propose a read-only smoke task for Codex and to
+request two deliberate revisions before approving. No user prompt or corrective
+instruction was entered into the Codex TUI. Real board history for
+`ISSUE11-DEFAULT-FLOW`:
+
+- 12:55:08 UTC: Claude proposed and assigned task #1 to Codex, reviewer Claude.
+- 12:55:18: Codex accepted it using `hub_task_accept`.
+- 12:55:23: Codex read `smoke.txt` and submitted `issue11-workflow-ok` using
+  `hub_task_done`, without changing the file.
+- 12:55:28: Claude requested the first deliberate revision.
+- 12:55:36: Codex resubmitted through `hub_task_done`.
+- 12:55:41: Claude requested the second revision; the hub automatically moved
+  ownership to Kimi, retaining Claude as reviewer.
+- 12:55:45: Codex acknowledged the handoff and stopped work.
+
+This closes the default acceptance/review/escalation failure found in the
+0.3.0 issue #7 run. The earlier failure is retained above as historical evidence.
+The off-campus Access and natural budget-pause prerequisites in #12 remain open.
+
+Regression gate: `scripts/check.sh` completed with `159 pass`, `0 fail`,
+`1045 expect() calls`, `check: OK`. Added coverage exercises rendered workflow
+kinds, mixed Claude channel metadata and hop-preserving reply-parent selection.
+
+Upgrade existing projects with `ahub init` and refresh the Claude plugin with
+`ahub setup`; restart the daemon and agent sessions to load the new instructions.
+Updating the plugin alone leaves an old managed AGENTS block in place.

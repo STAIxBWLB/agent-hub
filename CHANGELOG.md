@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- Hub task, review and budget events are distinguished from reference-only presence/recall in agent instructions and rendered message kinds, including mixed Claude digests.
+- Reply-parent selection retains hub workflow events and their hop count.
+- After upgrading, run `ahub init` to refresh managed project instructions and `ahub setup` to refresh the Claude plugin, then restart agent sessions.
+
 ## 0.3.0
 
 - `ahub ui`: a local dashboard for live messages, peer queues, tasks, budgets and approvals, with console messages, task proposal/assignment and peer pause/resume.

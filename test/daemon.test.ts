@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { HUB, newEnvelope } from "../src/hub/envelope.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 import { startFakeModelServer, toolCall } from "./fakes/model-server.ts";
 
@@ -204,6 +205,33 @@ test("console messages go out at once, agent status is batched into one digest n
   expect(channel[1].params.content).toContain("two");
   expect(events.some((e) => e.t === "envelope" && e.dropped === "fyi")).toBe(true);
   other.close();
+});
+
+test("Claude channel preserves a single workflow kind and distinguishes recall from workflow items in a digest", async () => {
+  const { stateDir, daemon } = await hub();
+  const { channel } = await fakeClaude(stateDir);
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
+
+  const single = newEnvelope(HUB, "Review task #7", { to: ["claude"], kind: "review", priority: "important" });
+  daemon.bus.publish(single);
+  await until(() => channel.length === 1, "single review notification");
+  expect(channel[0].params.content).toBe(single.body);
+  expect(channel[0].params.meta.source).toBe(HUB);
+  expect(channel[0].params.meta.kind).toBe("review");
+
+  daemon.bus.pause("claude");
+  const recall = newEnvelope(HUB, "Earlier decisions", { to: ["claude"], kind: "presence", priority: "important" });
+  const task = newEnvelope(HUB, "Accept task #8", { to: ["claude"], kind: "task", priority: "important" });
+  const chat = newEnvelope("codex", "Ordinary update", { to: ["claude"], priority: "important" });
+  for (const env of [recall, task, chat]) daemon.bus.publish(env);
+  daemon.bus.resume("claude");
+  await until(() => channel.length === 2, "mixed digest notification");
+  expect(channel[1].params.meta.source).toBe("hub-digest");
+  for (const env of [recall, task, chat]) {
+    expect(channel[1].params.content).toContain(`--- from ${env.from} (id ${env.id}, kind ${env.kind}) ---\n${env.body}`);
+  }
+  await Bun.sleep(60);
+  expect(channel).toHaveLength(2);
 });
 
 test("an outdated plugin is refused loudly instead of silently dropping digests; fyi sends say so", async () => {
