@@ -11,6 +11,7 @@ export interface RecoveryPeer {
   state: string;
   threadId?: string;
   sessionId?: string;
+  sessionFile?: string;
   args?: Record<string, string>;
 }
 export interface Inspection {
@@ -112,6 +113,7 @@ export interface RecoveryDriver {
   restore(planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation, group: "native" | "claude", save: () => void): Promise<void>;
   installPlugin(op: RecoveryOperation): Promise<void>;
   installGlobal(op: RecoveryOperation): Promise<void>;
+  refreshManager?(op: RecoveryOperation): Promise<void>;
   release(project: Project, operation: string, instance: string): Promise<void>;
   verify(planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation): Promise<void>;
   sleep(ms: number): Promise<void>;
@@ -245,6 +247,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       await driver.release(planned.project, id, progress.instanceId!);
       progress.phase = "verified"; save();
     }
+    if (driver.refreshManager) { step("refresh-manager"); await driver.refreshManager(op); }
     if (op.plan.kind === "upgrade" && !op.globalInstalled) {
       step("install-global"); await driver.installGlobal(op); op.globalInstalled = true; save();
     }

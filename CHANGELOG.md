@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0
+
+- Pi peer with managed local model routing, RPC and native terminal integration (#25).
+- Authenticated inference relay for DGX coding/fast aliases and loopback MLX Qwen3 8B inference on Apple Silicon.
+- Pi-first task routing with per-class backend selection; PII tasks remain restricted to the existing local worker.
+- Hub-approved file and shell tools with persistent session/tool-call receipts to prevent duplicate effects.
+- Protocol 9 and Pi session metadata for controlled recovery from protocol 8.
+
 ## 0.5.0
 
 - Controlled protocol-8 restart with private queue/session snapshots, manual-pause preservation, instance fencing and verified release (#21).

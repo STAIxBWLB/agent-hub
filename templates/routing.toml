@@ -52,33 +52,44 @@ pii = "local_only"            # hard: a PII task is owned by `local` or nobody, 
 long_context = "skip_local"
 budget_paused = "skip_peer"
 
+[pi]
+dgx_max_context_tokens = 262144
+mlx_max_context_tokens = 16000
+
 [classes.plan]
 peers = ["claude", "codex"]
 local_allowed = false
 
 [classes.implement]
-peers = ["codex", "kimi", "local"]
+peers = ["pi", "local", "codex", "kimi"]
 route = "sy/coding"
-escalate_to = ["kimi", "claude"]
+pi_backend = "dgx"
+escalate_to = ["codex", "kimi", "claude"]
 
 [classes.bulk_edit]
-peers = ["local", "kimi"]
+peers = ["pi", "local", "kimi"]
 route = "sy/fast"
-escalate_to = ["kimi", "codex"]
+pi_backend = "dgx"
+escalate_to = ["codex", "kimi"]
 
 [classes.test]
-peers = ["kimi", "local", "codex"]
+peers = ["pi", "local", "kimi", "codex"]
 route = "sy/fast"
-escalate_to = ["codex"]
+pi_backend = "dgx"
+escalate_to = ["codex", "kimi"]
 
 [classes.review]
 peers = ["claude", "codex"]
 local_allowed = false         # judgment classes never go to local
 
 [classes.summarize]
-peers = ["local", "kimi"]
+peers = ["pi", "local", "kimi"]
 route = "sy/fast"
+pi_backend = "mlx"
+escalate_to = ["codex", "kimi"]
 
 [classes.triage]
-peers = ["local", "kimi"]
+peers = ["pi", "local", "kimi"]
 route = "sy/fast"
+pi_backend = "mlx"
+escalate_to = ["codex", "kimi"]

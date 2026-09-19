@@ -2,6 +2,7 @@
   "watchdog_ms": 300000,
   "kimi_cmd": ["kimi", "acp"],
   "codex_bin": "codex",
+  "pi": { "enabled": false, "auto_start": false, "cmd": ["pi"], "backend": "auto", "dgx_coding": "coding", "dgx_fast": "fast", "max_steps": 30 },
   "batch_max": 3,
   "batch_ms": 15000,
   "queue_cap": 200,
@@ -10,7 +11,8 @@
     "claude": ["planner", "reviewer"],
     "codex": ["implementer"],
     "kimi": ["implementer", "verifier"],
-    "local": ["implementer", "verifier"]
+    "local": ["implementer", "verifier"],
+    "pi": ["implementer", "verifier"]
   },
   "budget": { "gate": 0.9, "stale_min": 30, "poll_min": 10, "checkpoint_timeout_s": 90, "kimi_tokens_5h": 0 },
   "inference": { "enabled": true, "digest_min_items": 5, "digest_min_chars": 8000, "triage": true },

@@ -4,9 +4,35 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
-import { makeRecoveryDriver } from "../src/cli/upgrade-runtime.ts";
+import { makeRecoveryDriver, restoredTerminalArgv } from "../src/cli/upgrade-runtime.ts";
 import { VERSION } from "../src/version.ts";
 import type { PlannedProject, ProjectProgress, RecoveryOperation } from "../src/cli/upgrade.ts";
+
+test("Pi terminal restoration builds a TUI command with the saved session selector", () => {
+  const argv = restoredTerminalArgv("/target/src/cli/main.js", "/project", {
+    peer: "pi", handle: "h", incarnationId: "i", worktreeId: "w", projectRoot: "/project", sessionId: "sid", sessionFile: "/state/pi-session.json", backend: "dgx", model: "dgx/coding",
+    launch: { packageEntrypoint: "/old/main.js", command: "old", argv: [], env: {} }, launchMetadata: { packageEntrypoint: "/old/main.js", command: "old", argv: [], env: {} },
+  });
+  expect(argv).toEqual([process.execPath, "/target/src/cli/main.js", "--project", "/project", "pi", "--mode", "tui", "--backend", "dgx", "--model", "dgx/coding", "--session-file", "/state/pi-session.json"]);
+});
+
+test("recovery driver uses the source manifest protocol for a protocol-8 prepare", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-source-v8-"));
+  const projectRoot = mkdtempSync(join(tmpdir(), "ahub-source-v8-project-"));
+  const seenVersions: number[] = [];
+  const server = Bun.serve<any>({
+    hostname: "127.0.0.1", port: 0,
+    fetch(_request, srv) { return srv.upgrade(_request) ? undefined : new Response("no"); },
+    websocket: { message(ws, data) { const msg = JSON.parse(String(data)); if (msg.t === "hello") { seenVersions.push(msg.v); ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p8", instanceId: "i8", cwd: projectRoot, protocol: 8 })); } else { ws.send(JSON.stringify({ rid: msg.rid, t: "recovery", ok: true })); } } },
+  });
+  writeFileSync(join(stateDir, "control-token"), "source-v8-token\n");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: server.port, protocol: 8, projectId: "p8", instanceId: "i8", cwd: projectRoot }));
+  try {
+    const driver = makeRecoveryDriver();
+    await driver.prepare({ id: "p8", root: projectRoot, stateDir, basePort: 4600 } as any, "op8", "i8");
+    expect(seenVersions).toEqual([8]);
+  } finally { server.stop(true); rmSync(stateDir, { recursive: true, force: true }); rmSync(projectRoot, { recursive: true, force: true }); }
+});
 
 for (const change of ["incarnation", "session"] as const) {
   test(`production recovery verification rejects a changed ${change} without terminal mutation`, async () => {

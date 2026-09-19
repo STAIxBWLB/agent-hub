@@ -308,7 +308,7 @@ test("the channel server exits when its host goes away and does not retry a hub 
     websocket: { message: (ws) => (hellos++, ws.close(4426, "wire version mismatch")) },
   });
   cleanup.push(() => void fake.stop(true)); // awaiting it hangs while a closed upgrade is pending
-  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: fake.port }));
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: fake.port, protocol: PROTOCOL, cwd: ROOT }));
   writeFileSync(join(stateDir, "control-token"), "t");
 
   const { client } = await fakeClaude(stateDir);

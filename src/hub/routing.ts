@@ -15,6 +15,8 @@ export interface ClassPolicy {
   escalate_to?: PeerId[];
   /** false: `local` is never owner or reviewer for this class */
   local_allowed?: boolean;
+  /** Pi backend for Pi-owned work. */
+  pi_backend?: "dgx" | "mlx";
 }
 
 export interface Routing {
@@ -24,10 +26,12 @@ export interface Routing {
   classes: Partial<Record<TaskClass, ClassPolicy>>;
   signals: { pii_patterns: string[]; long_context_tokens: number };
   constraints: { pii: "local_only" | "off"; long_context: "skip_local" | "off"; budget_paused: "skip_peer" | "off" };
+  pi: { dgx_max_context_tokens: number; mlx_max_context_tokens: number };
 }
 
 const TEMPLATE = join(import.meta.dir, "..", "..", "templates", "routing.toml");
 export const LOCAL: PeerId = "local";
+export const PI: PeerId = "pi";
 
 /** `.agenthub/routing.toml`, or the shipped default when the project has none. Throws on a file that does not parse or lacks a fixed model. */
 export function loadRouting(cwd: string): Routing {
@@ -41,13 +45,20 @@ export function loadRouting(cwd: string): Routing {
   if (!raw.local?.fixed_model) throw new Error("routing.toml: [local] fixed_model is required (the path that works without Switchyard)");
   const signals = { pii_patterns: [], long_context_tokens: 120_000, ...raw.signals };
   for (const p of signals.pii_patterns) new RegExp(p); // a bad pattern fails here, at load, not in the middle of an assignment
+  const classes = raw.classes ?? {};
+  for (const [name, policy] of Object.entries(classes)) {
+    if (policy?.pi_backend !== undefined && policy.pi_backend !== "dgx" && policy.pi_backend !== "mlx") throw new Error(`routing.toml: [classes.${name}] pi_backend must be "dgx" or "mlx"`);
+  }
+  const pi = { dgx_max_context_tokens: 262_144, mlx_max_context_tokens: 16_000, ...(raw as any).pi };
+  if (!(Number.isSafeInteger(pi.dgx_max_context_tokens) && pi.dgx_max_context_tokens > 0) || !(Number.isSafeInteger(pi.mlx_max_context_tokens) && pi.mlx_max_context_tokens > 0)) throw new Error("routing.toml: [pi] context limits must be positive integers");
   return {
     local: raw.local,
     targets: raw.targets ?? {},
     routes: raw.routes ?? {},
-    classes: raw.classes ?? {},
+    classes,
     signals,
     constraints: { pii: "local_only", long_context: "skip_local", budget_paused: "skip_peer", ...raw.constraints },
+    pi,
   };
 }
 
@@ -102,6 +113,7 @@ export interface Assignment {
   /** what `local` should ask for on this task: a Switchyard route id and the model to fall back to */
   route?: string;
   fixedModel?: string;
+  piBackend?: "dgx" | "mlx";
   trace: string[];
 }
 
@@ -126,6 +138,12 @@ export function assign(
     if (states[peer] === "paused" && routing.constraints.budget_paused === "skip_peer") return "paused";
     if (pii && peer !== LOCAL) return "pii: on-prem peers only";
     if (peer === LOCAL && policy?.local_allowed === false) return "local_allowed = false for this class";
+    if (peer === PI && policy?.local_allowed === false) return "local_allowed = false also excludes pi for this class";
+    if (peer === PI && task.signals.includes("long_context")) {
+      const backend = policy?.pi_backend ?? "dgx";
+      const limit = backend === "mlx" ? routing.pi.mlx_max_context_tokens : routing.pi.dgx_max_context_tokens;
+      if (routing.signals.long_context_tokens > limit) return `pi ${backend} capability limit ${limit} tokens`;
+    }
     if (peer === LOCAL && role === "owner" && task.signals.includes("long_context") && routing.constraints.long_context === "skip_local") return "long_context: skip local";
     return undefined;
   };
@@ -137,7 +155,9 @@ export function assign(
       trace.push(`  ${role} candidate ${peer}: ${why ? `skipped, ${why}` : states[peer]}`);
       if (!why) ok.push(peer);
     }
-    return ok.find((p) => states[p] === "idle") ?? ok[0]; // idle before busy, otherwise preference order
+    const localTier = ok.filter((p) => p === LOCAL || p === PI);
+    if (localTier.length) return localTier.find((p) => states[p] === "idle") ?? localTier[0]; // local/Pi stays ahead of an idle cloud peer
+    return ok.find((p) => states[p] === "idle") ?? ok[0];
   };
 
   // Never the task's current owner by default: a decline or an escalation has to reach the next peer in the list.
@@ -155,6 +175,8 @@ export function assign(
   }
   const route = policy?.route ?? routing.local.route;
   const fixedModel = policy?.fixed_model ?? routing.local.fixed_model;
+  const piBackend = policy?.pi_backend;
   if (owner === LOCAL) trace.push(`route: ${route ?? "(none)"}, fixed_model ${fixedModel}`);
-  return { ...(owner ? { owner } : {}), ...(pii ? { reviewer: "user" } : reviewer ? { reviewer } : {}), ...(route ? { route } : {}), fixedModel, trace };
+  if (owner === PI) trace.push(`pi decision: backend ${piBackend ?? "dgx"}${task.signals.includes("long_context") ? `, context limit ${piBackend === "mlx" ? routing.pi.mlx_max_context_tokens : routing.pi.dgx_max_context_tokens}` : ""}`);
+  return { ...(owner ? { owner } : {}), ...(pii ? { reviewer: "user" } : reviewer ? { reviewer } : {}), ...(route ? { route } : {}), fixedModel, ...(piBackend ? { piBackend } : {}), trace };
 }

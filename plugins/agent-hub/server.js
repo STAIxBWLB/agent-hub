@@ -15615,7 +15615,7 @@ function projectContext(cwd, env = process.env) {
 function stateDirFor(cwd) {
   return projectContext(cwd).stateDir;
 }
-var PROTOCOL = 8;
+var PROTOCOL = 9;
 function readControl(stateDir) {
   try {
     const status = JSON.parse(readFileSync2(join2(stateDir, "status.json"), "utf8"));
@@ -15645,12 +15645,14 @@ class ControlClient {
   constructor(ws) {
     this.ws = ws;
   }
-  static connect(stateDir, hello, timeoutMs = 3000) {
+  static connect(stateDir, hello, timeoutMs = 3000, protocol = PROTOCOL) {
+    if (protocol !== 8 && protocol !== PROTOCOL)
+      return Promise.reject(new Error(`unsupported recovery source protocol ${protocol}`));
     const control = readControl(stateDir);
     if (!control)
       return Promise.reject(new Error(`no hub running for ${stateDir} (run: ahub up)`));
-    if (control.protocol !== undefined && control.protocol !== PROTOCOL) {
-      return Promise.reject(Object.assign(new Error(`wire version mismatch: hub speaks ${control.protocol}, CLI speaks ${PROTOCOL}; stop it with its matching CLI, then upgrade and restart`), { code: 4426 }));
+    if (control.protocol !== undefined && control.protocol !== protocol) {
+      return Promise.reject(Object.assign(new Error(`wire version mismatch: hub speaks ${control.protocol}, CLI speaks ${protocol}; stop it with its matching CLI, then upgrade and restart`), { code: 4426 }));
     }
     if (hello.projectId && hello.projectId !== control.projectId || hello.instanceId && hello.instanceId !== control.instanceId || hello.projectRoot && hello.projectRoot !== control.cwd) {
       return Promise.reject(Object.assign(new Error("hub project or instance does not match the selected project"), { code: 4404 }));
@@ -15693,7 +15695,7 @@ class ControlClient {
         client.pending.delete(msg.rid);
         done(msg);
       };
-      ws.onopen = () => void client.request({ t: "hello", v: PROTOCOL, token: control.token, ...hello, ...expected }, timeoutMs).then((reply) => {
+      ws.onopen = () => void client.request({ t: "hello", v: protocol, token: control.token, ...hello, ...expected }, timeoutMs).then((reply) => {
         if (reply.t !== "welcome" || reply.ok === false)
           return refuse(new Error(reply.error ?? "hub refused handshake"));
         if (expected.projectId && reply.projectId !== expected.projectId || expected.instanceId && reply.instanceId !== expected.instanceId || expected.projectRoot && reply.cwd !== expected.projectRoot) {
@@ -15724,8 +15726,8 @@ class ControlClient {
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
-  version: "0.5.0",
-  description: "Native multi-agent hub: Claude Code, Codex, Kimi Code and a local worker as peers in one project",
+  version: "0.6.0",
+  description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
   license: "MIT",
   type: "module",
   bin: {
@@ -15798,7 +15800,7 @@ var ROLE_TEXT = {
   verifier: "verifier: run the checks a task names and report what passed and what did not in hub_task_done.",
   reviewer: "reviewer: when asked to review, read the change itself, then hub_review with approved or changes_requested and a note that says what to fix."
 };
-var DEFAULT_ROLES = { claude: ["planner", "reviewer"], codex: ["implementer"], kimi: ["implementer", "verifier"], local: ["implementer", "verifier"] };
+var DEFAULT_ROLES = { claude: ["planner", "reviewer"], codex: ["implementer"], kimi: ["implementer", "verifier"], local: ["implementer", "verifier"], pi: ["implementer", "verifier"] };
 function roleContract(peer, roles = DEFAULT_ROLES) {
   const mine = (roles[peer] ?? []).map((r) => ROLE_TEXT[r]).filter(Boolean);
   if (!mine.length)

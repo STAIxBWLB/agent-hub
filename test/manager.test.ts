@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openManager, startManager, stopManager, type Lifecycle, type ProjectRecord } from "../src/hub/manager.ts";
@@ -46,4 +46,23 @@ test("listing isolates an unavailable project", async () => {
   const projects = await fetch(`${origin}/projects`, { method: "POST", headers: { origin, cookie, "content-type": "application/json" }, body: "{}" });
   const body = await projects.json() as any;
   expect(body.projects[0].state).toBe("unavailable");
+});
+
+test("manager accepts the explicitly supported protocol-8 HTTP owner during protocol-9 refresh", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ahub-manager-v8-"));
+  const instanceId = "legacy-manager-instance";
+  const server = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch(req) {
+      if (req.headers.get("authorization") !== "Bearer legacy") return new Response("unauthorized", { status: 401 });
+      return Response.json({ ok: true, instanceId, url: "http://127.0.0.1:1/#ticket" });
+    },
+  });
+  const managerDir = join(home, "manager");
+  mkdirSync(managerDir, { recursive: true });
+  writeFileSync(join(managerDir, "control-token"), "legacy\n");
+  writeFileSync(join(managerDir, "status.json"), JSON.stringify({ port: server.port, protocol: 8, instanceId, pid: process.pid }));
+  try {
+    expect(await openManager({ home })).toBe("http://127.0.0.1:1/#ticket");
+  } finally { server.stop(true); rmSync(home, { recursive: true, force: true }); }
 });

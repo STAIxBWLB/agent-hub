@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -166,4 +167,32 @@ test("prepare remains blocked by a pending permission, then preserves a manual p
   expect((await console_.request({ t: "status" })).status.peers.kimi.state).toBe("paused");
   expect((await console_.request({ t: "recovery", op: "abort", operationId: "op-1", expectedInstanceId: "instance-1" })).aborted).toBe(true);
   console_.close();
+});
+
+test("restored fresh local sessions retain manual pause and queued work before release", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "agenthub-local-recovery-"));
+  const queued = newEnvelope("user", "held fixture", { to: ["local"] });
+  writeRestartSnapshot(stateDir, {
+    schemaVersion: 1, projectRoot: stateDir, projectId: "local-project", sourceInstanceId: "old-local", operationId: "local-op", committedAt: Date.now(),
+    bus: { schemaVersion: 1, queues: { local: [queued] }, prefaces: {}, seen: [queued], attempts: {}, withdrawn: [] },
+    manualPaused: ["local"], peers: [{ id: "local", state: "idle", queueIds: [queued.id], sessionId: "old-worker-session", launch: { kind: "local" } }],
+    integrity: { queues: { local: [queued.id] }, manualPaused: ["local"], boardDigest: createHash("sha256").update("[]").digest("hex"), budgetDigest: createHash("sha256").update("[]").digest("hex") },
+  });
+  const previous = process.env.AGENTHUB_RECOVERY_OPERATION;
+  process.env.AGENTHUB_RECOVERY_OPERATION = "local-op";
+  let daemon: Awaited<ReturnType<typeof startDaemon>>;
+  try {
+    daemon = await startDaemon({ cwd: stateDir, stateDir, projectId: "local-project", instanceId: "new-local", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+      config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
+  } finally { if (previous === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION; else process.env.AGENTHUB_RECOVERY_OPERATION = previous; }
+  const client = await ControlClient.connect(stateDir, { role: "console" });
+  try {
+    expect((await client.request({ t: "start", peer: "local", operationId: "local-op" })).ok).toBe(true);
+    const inspected = await client.request({ t: "recovery", op: "inspect", expectedInstanceId: "new-local" });
+    expect(inspected.recovery.peers.local.sessionId).not.toBe("old-worker-session");
+    expect(inspected.recovery.ready).toBe(true);
+    expect((await client.request({ t: "recovery", op: "release", operationId: "local-op", expectedInstanceId: "new-local" })).ok).toBe(true);
+    expect(daemon.bus.stateOf("local")).toBe("paused");
+    expect(daemon.bus.queueIds("local")).toEqual([queued.id]);
+  } finally { client.close(); await daemon.stop(); }
 });

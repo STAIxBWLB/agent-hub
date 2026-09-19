@@ -21,6 +21,7 @@ type ManagerHandle = { stop(): Promise<void>; stopped: Promise<void> };
 type Manifest = { port: number; protocol: number; instanceId: string; pid: number };
 const active = new Map<string, { handle: ManagerHandle; issue(): string }>();
 const CONTROL_TIMEOUT = 3000;
+const SUPPORTED_MANAGER_PROTOCOLS = new Set([8, PROTOCOL]);
 const safeError = (error: unknown) => error instanceof Error ? error.message.slice(0, 300) : "operation failed";
 
 function files(home: string) {
@@ -175,7 +176,7 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
 async function managerRequest(home: string, path: "/open" | "/stop"): Promise<{ status: Manifest; body: any }> {
   const status = readManifest(home);
   if (!status) throw new Error("manager manifest is unavailable");
-  if (status.protocol !== PROTOCOL) throw new Error("manager protocol is incompatible; use its matching CLI to stop it");
+  if (!SUPPORTED_MANAGER_PROTOCOLS.has(status.protocol)) throw new Error("manager protocol is incompatible; use its matching CLI to stop it");
   const token = readFileSync(files(home).token, "utf8").trim();
   if (!token) throw new Error("manager token is unavailable");
   const response = await fetch(`http://127.0.0.1:${status.port}${path}`, {
@@ -213,6 +214,19 @@ export async function openManager(options: ManagerOptions = {}): Promise<string>
     catch (caught) { error = caught; await Bun.sleep(100); }
   }
   throw new Error(`manager readiness not confirmed: ${safeError(error)}; see ${join(f.dir, "manager.log")}`);
+}
+
+/** Refresh an explicitly supported protocol-8 manager onto the current CLI after upgrade. */
+export async function refreshManager(options: ManagerOptions = {}): Promise<string> {
+  const home = options.home ?? hubHome();
+  const manifest = readManifest(home);
+  if (manifest && manifest.protocol === 8) {
+    await managerRequest(home, "/stop");
+    const deadline = Date.now() + CONTROL_TIMEOUT;
+    while (Date.now() < deadline && readManifest(home)) await Bun.sleep(25);
+    if (readManifest(home)) throw new Error("legacy manager shutdown is still pending; refresh was not confirmed");
+  }
+  return openManager(options);
 }
 
 export async function stopManager(options: ManagerOptions = {}): Promise<void> {
