@@ -1,6 +1,6 @@
 # agent-hub design spec
 
-Date: 2026-09-19. Status: M1 to M4 merged (PR #2, #4, #6, #7, #9); M5 implemented on `feat/m5-budget-relay` (phase spec: issue #10); M6 not started.
+Date: 2026-09-19. Status: M1 to M5 merged; M6 implemented on `feat/m6-packaging-inference` (phase spec: issue #2 of the public repository). Version 0.1.0.
 Owner: Young Joon Lee. Repo: STAIxBWLB/agent-hub.
 
 Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) or
@@ -537,9 +537,18 @@ M5 budget relay
 - [ ] Live: the Claude status line tee in an interactive session; a real pause driven by Codex's own numbers with a TUI attached
 
 M6 internal inference, packaging
-- [ ] Status digests and triage through `sy/fast`
-- [ ] Bundles for plugin and CLI, marketplace manifest, brew or npm distribution
-- [ ] docs: quickstart, smoke checklist, security notes
+- [x] Status digests and triage through `sy/fast` (amended: optional and fail-open with a backoff. Only plain status
+      chatter over a threshold is condensed, into one item from `digest` that keeps every sender, envelope id and the
+      highest hop; important, task, review, budget, preface and private items are never touched. A task proposed
+      without a class is labelled from the closed class list, a PII task only when the gateway is on campus. The
+      model's output is capped text framed as untrusted or a validated enum, never a route, peer id or instruction.)
+- [x] Packaging (amended: no compiled binary, because the daemon re-spawns itself and five places resolve assets
+      relative to the source tree; the package ships the tree and installs from GitHub with Bun, verified:
+      `bun add -g github:STAIxBWLB/agent-hub`. `package.json` is the one version, stamped into the plugin manifest
+      and the MCP server and checked by the gate. `ahub setup` installs or updates the Claude plugin from the
+      package after asking. CI runs the gate on Ubuntu and macOS; a `v*` tag matching `package.json` cuts a release.
+      npm publish and brew are follow-ups.)
+- [x] docs: `docs/quickstart.md`, `docs/security.md`, `docs/smoke.md`, `CONTRIBUTING.md`, `CHANGELOG.md`
 
 ## Out of scope
 

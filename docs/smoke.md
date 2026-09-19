@@ -5,10 +5,8 @@
 ## Install
 
 ```bash
-bun install && bun link                      # puts `hub` on PATH
-claude plugin marketplace add "$(pwd)"       # this repo is the marketplace
-claude plugin install agent-hub@agent-hub
-ahub doctor                                   # every row "ok"; memory rows may be "--" (the hub works without them)
+bun add -g github:STAIxBWLB/agent-hub      # or: git clone, bun install, bun link
+ahub setup                                 # Claude Code channel plugin from this package, then doctor
 ```
 
 Claude channels are a research preview: `ahub claude` passes `--dangerously-load-development-channels plugin:agent-hub@agent-hub`.
@@ -60,6 +58,14 @@ Needs a model gateway in `omniroute.urls` (for the owner: the campus gateway ove
 5. Codex: with a TUI attached through `ahub codex`, `ahub budget` shows its windows from `account/rateLimits/read`; on a limited account Codex is paused until `resetsAt` without a checkpoint.
 6. Claude: start with `ahub claude` and check that `.agenthub/state/claude-usage.json` appears and the status line looks as before; `ahub budget` shows `claude 5h` and `week`.
 
+## M6: packaging and internal inference
+
+1. Install from GitHub into a clean Bun prefix (`BUN_INSTALL=<dir> bun add -g github:STAIxBWLB/agent-hub`), then from an unrelated directory: `ahub --version`, `ahub init`, `ahub up`, `ahub local`.
+2. `ahub setup` shows what it will run, asks, installs or updates the plugin; `ahub doctor` shows `agent-hub@agent-hub <version>` equal to `ahub --version`.
+3. `ahub task propose "Rename X to Y in file.ts"` without a class: the board shows a class and `ahub task show <id>` has a `triaged` history entry.
+4. Six or more unmarked messages to a paused peer, then `ahub resume <peer>`: the peer's prompt holds one `digest` item that names every sender and id. With the gateway unreachable the plain digest arrives.
+5. Release: tag `v<version>`; the workflow checks the tag against `package.json`, runs the gate and creates the GitHub Release.
+
 ## Record
 
 | Date | Leg | Result |
@@ -83,6 +89,8 @@ Needs a model gateway in `omniroute.urls` (for the owner: the campus gateway ove
 | 2026-09-19 | M5 step 6, Claude status line tee through `--settings` (claude 2.1.278, pty run of `ahub claude`) | pass: `.agenthub/state/claude-usage.json` appeared within seconds of the session loading (`five_hour 69%`, `seven_day 24%` with `resets_at`), the dotfiles HUD status line rendered unchanged through the wrapped command, `ahub budget` shows both windows `[claude status line]` as fresh |
 | 2026-09-19 | M5 Kimi token source (kimi 2.0.1, `budget.kimi_tokens_5h: 200000`, live `ahub say @kimi` turn) | pass: `usage_update` is emitted once per turn; raw payload captured from the ACP stream is `{"sessionUpdate":"usage_update","used":47144,"size":1048576}`; `used` is context occupancy against the 1M window, matched by the parser's `used` fallback; `ahub budget` shows `kimi tokens 25% [kimi usage_update (soft limit)]` right after the turn |
 | | M5 step 5 with a real TUI (pause driven by Codex's own numbers) | not run: needs an interactive `ahub codex` session |
+| 2026-09-19 | M6 step 1 | pass: `bun add -g github:STAIxBWLB/agent-hub#main` into an isolated prefix installed `ahub` and `agent-hub`; from an unrelated directory `ahub help` and `ahub init` worked, templates and the plugin bundle resolved from the installed package |
+| 2026-09-19 | M6 step 3, live model (DeepSeek-V4-Flash) | pass: a task proposed without a class was labelled `implement`, history `triaged`, assigned by that class |
 | | M3 off-campus path (public URL behind Cloudflare Access) | not run live (on the VPN today); header selection covered by tests |
 | | Two-target `stage_router` / escalation routing | not run live: only DeepSeek-V4-Flash is served; both shapes validate against the real binary's `--dry-run` |
 | | Codex TUI through `ahub codex` | not run |

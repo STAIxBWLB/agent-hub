@@ -7,7 +7,7 @@ Bun + TypeScript daemon that lets Claude Code, Codex, Kimi Code (and later a loc
 - Install: `bun install`
 - Test: `bun test` (one file: `bun test test/bus.test.ts`)
 - Typecheck: `bun x tsc --noEmit`
-- Rebuild the plugin bundle after touching `src/adapters/claude-channel.ts` or anything it imports: `bun run build`
+- Rebuild the plugin bundle after touching `src/adapters/claude-channel.ts` or anything it imports, and after changing `version` in `package.json`: `bun run build` (it also stamps the plugin manifest)
 - Run from source: `bun src/cli/main.ts <command>` (`hub` once linked with `bun link`)
 
 ## Verifying your work
@@ -29,6 +29,7 @@ Run this before reporting any task complete, and paste the output. A failing tes
 
 - `src/hub/`: envelope, markers and digest rendering, bus (fan-out, hop cap, dedupe, one queue per peer delivered as a digest when ready, steer, cap, pause, preface), `BasePeer` state machine with the inactivity watchdog, daemon (control WS, state dir), control client, port registry.
 - `src/adapters/`: one file per native surface. `claude-channel.ts` runs inside Claude Code as the plugin's MCP server and talks to the daemon over the control WS; `codex-appserver.ts` and `acp.ts` run inside the daemon.
+- `src/hub/inference.ts` (the hub's own model calls: digest condensation, task triage), `src/version.ts` (the one version, from `package.json`), `src/cli/setup.ts`.
 - `src/hub/budget.ts` (quota readings, pause records in `hub.db`, resume), `src/cli/statusline-tee.ts` (Claude's quota source).
 - `src/hub/board.ts` (sqlite), `src/hub/routing.ts` (`routing.toml`, `assign()`), `src/hub/tasks.ts` (the flow), `src/hub/hub-tools.ts` (tool and role definitions, read by the MCP server and the local worker alike), `src/memory/brief.ts`.
 - `src/adapters/local-worker.ts` + `src/local/` (tools, path guard, seatbelt runner): the hub-native peer. `src/omniroute/`: the only place that reads the gateway key and Access headers. `src/switchyard/`: config generator and session-scoped sidecar. `src/hub/routing.ts`: `routing.toml`.
@@ -50,6 +51,9 @@ Run this before reporting any task complete, and paste the output. A failing tes
 - The sandbox denies home reads by default (toolchain dirs, the project and its real git dir excepted) and all network, loopback included: claude-mem and the Codex app-server listen on loopback without auth. Tests that bind a local port therefore fail when the worker runs them; that is the intended trade-off, `local.bash_network` is the switch.
 - Every task change goes through `Tasks` (`src/hub/tasks.ts`); adapters, tools and the CLI never touch the board. Assignment stays a pure function so `ahub route explain` cannot drift from what assignment does.
 - PII: redaction happens where the envelope (`private: true`) and the public view are built, never at call sites. Anything new that shows task text (a log line, a notice, a tool result, a memory call) uses `publicTitle` / `publicView`, and nothing about a PII task is sent to claude-mem: its observer is a cloud model.
+- Inference is optional and fail-open: it returns its input or `undefined` on any failure and backs off, so a delivery never waits on a dead model twice. Its output is only ever capped text or a value checked against a closed list.
+- A condensed digest is sent by `digest`, not `hub`: `replyParent()` skips `hub` items, and a reply to a digest must keep the highest hop of what it replaced. On a failed delivery the bus puts back the originals, never the digest.
+- Releasing: bump `version` in `package.json`, `bun run build`, update `CHANGELOG.md`, merge, then tag `v<version>`; the release workflow refuses a tag that does not match.
 - Budget: checkpoint first, pause second (a paused peer receives nothing). A handoff that fails is left unmarked so the next tick or hub run retries it; never record it as done.
 - A handoff needs somebody to hand over to: `canHandOff` is false right after a restart, when no peer is attached yet, and the handoff waits for a later tick instead of stripping tasks of their owner.
 - A reading has its own timestamp. Numbers that arrive through a file (`claude-usage.json`) carry the file's `at`; a window whose `resetsAt` has passed says nothing any more.
