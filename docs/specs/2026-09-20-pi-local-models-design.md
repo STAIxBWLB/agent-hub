@@ -30,3 +30,11 @@ Public templates keep Pi disabled until the optional executable and model runtim
 ## Verification
 
 The release gate is `scripts/check.sh`. Live acceptance additionally requires Pi tool roundtrips through DGX and MLX, native/RPC session handover, and canonical runtime status readback. Unit tests alone do not prove operational cutover.
+
+## Empty session handover (#27)
+
+Pi may report a session file before writing it. Before stopping an idle source,
+the hub queries its live session state. Only a verified empty source with no
+observed activity or persisted history may resume by exact session ID alone.
+Persisted conversations retain their exact file; missing nonempty history blocks
+handover. A failed target launch retains the verified resume identity for retry.

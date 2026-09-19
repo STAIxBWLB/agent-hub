@@ -91,3 +91,35 @@ test("an unattached Pi TUI launch can be replaced without restarting the hub", a
   expect(staleStatus).not.toBe(200);
   expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
 });
+
+test("empty Pi mode handover and pending-launch retry retain the source identity", async () => {
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), "--empty-session"] } };
+  const { daemon, console_ } = await hub(config);
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  const id = daemon.bus.peers.get("pi")!.recoveryMetadata!().sessionId;
+  const inspected = await console_.request({ t: "recovery", op: "inspect", expectedInstanceId: (await console_.request({ t: "status" })).status.instanceId });
+  expect(inspected.ok).toBe(true);
+  expect(inspected.recovery.peers.pi.launch.sessionFile).toBeUndefined();
+  const tui = await console_.request({ t: "start", peer: "pi", args: { mode: "tui" } });
+  expect(tui.ok).toBe(true);
+  expect(tui.launch.args).toContain("--session-id");
+  expect(tui.launch.args).toContain(id);
+  expect(tui.launch.args).not.toContain("--session");
+  const retried = await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } });
+  expect(retried.ok).toBe(true);
+  expect(daemon.bus.peers.get("pi")!.recoveryMetadata!().sessionId).toBe(id);
+});
+
+test("a stopped Pi owner can hand its persisted history to a different mode", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-stopped-"));
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { daemon, console_ } = await hub(config);
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  const peer = daemon.bus.peers.get("pi")!;
+  const saved = peer.recoveryMetadata!();
+  await peer.stop();
+  const resumed = await console_.request({ t: "start", peer: "pi", args: { mode: "tui" } });
+  expect(resumed.ok).toBe(true);
+  expect(resumed.launch.args).toContain("--session");
+  expect(resumed.launch.args).toContain(saved.sessionFile);
+});
