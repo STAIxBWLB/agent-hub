@@ -59,6 +59,24 @@ export class OmniRoute {
     return process.env.OMNIROUTE_API_KEY?.trim() || readSecret(this.cfg.api_key_file);
   }
 
+  /** Is this URL behind Cloudflare Access, i.e. reached by leaving the campus network? */
+  isAccessHost(url: string): boolean {
+    try {
+      return this.cfg.access_hosts.includes(new URL(url).hostname);
+    } catch {
+      return true; // unparseable: not something to send PII to
+    }
+  }
+
+  /**
+   * Positively confirmed: a gateway answered and it is not behind Access. "Unknown" is not "on campus": with no healthy
+   * candidate a later probe may land on the off-campus URL, so PII decisions use this, never `!offCampus()`.
+   */
+  async onCampus(): Promise<boolean> {
+    const base = await this.base();
+    return !!base && !this.isAccessHost(base);
+  }
+
   /** True when the live gateway is reached through Cloudflare Access, i.e. the traffic leaves the campus network. */
   async offCampus(): Promise<boolean> {
     const base = await this.base();

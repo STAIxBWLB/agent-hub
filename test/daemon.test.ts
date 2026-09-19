@@ -448,21 +448,25 @@ test("ahub ask over the control link: console only, evidence from the board, --r
   await console_.request({ t: "task", op: "hub_task_propose", args: { title: "write the release notes", class: "summarize" } });
 
   const res = await console_.request({ t: "ask", question: "what is open?", remember: true });
-  expect(res).toMatchObject({ ok: true, answer: "One task is open [task #1].", pii: false, saved: "saved to shared memory" });
+  expect(res).toMatchObject({ ok: true, found: true, answer: "One task is open [task #1].", pii: false, saved: "saved to shared memory as a model-written answer" });
   expect(res.evidence[0]).toMatchObject({ id: "task #1", kind: "task" });
-  expect(mem.calls.filter((c) => c.path === "/api/memory/save").at(-1)!.body).toMatchObject({ metadata: { peer: "user", kind: "finding" } });
+  // saved as what it is: the hub's model wrote it, the user only asked
+  const note = mem.calls.filter((c) => c.path === "/api/memory/save").at(-1)!.body as any;
+  expect(note.metadata).toMatchObject({ peer: "hub", asked_by: "user", source: "ahub ask" });
+  expect(note.title).toStartWith("ahub ask (model answer)");
 
   await console_.request({ t: "task", op: "hub_task_propose", args: { title: "fix the entry for 900101-1234567", class: "implement" } });
   const saves = mem.calls.filter((c) => c.path === "/api/memory/save").length;
   const withPii = await console_.request({ t: "ask", question: "what is open?", remember: true });
-  expect(withPii).toMatchObject({ pii: true, saved: "not saved: the evidence includes a PII task" });
+  expect(withPii).toMatchObject({ pii: true, saved: "not saved: PII is involved" });
   expect(mem.calls.filter((c) => c.path === "/api/memory/save")).toHaveLength(saves);
   expect(JSON.stringify(mem.calls.map((c) => c.body ?? c.query))).not.toContain("900101");
 
   // a peer-side client gets no answer at all
   const asKimi = await ControlClient.connect(stateDir, { role: "tools", peer: "kimi" });
-  const silent = await Promise.race([asKimi.request({ t: "ask", question: "what is open?" }), Bun.sleep(150).then(() => "no reply")]);
-  expect(silent).toBe("no reply");
+  expect(await asKimi.request({ t: "ask", question: "what is open?" })).toMatchObject({ ok: false, error: "ask is a console command" });
+  // and a message this hub does not know is answered, not left hanging (a newer CLI against an older hub)
+  expect(await asKimi.request({ t: "from-the-future" })).toMatchObject({ ok: false });
   asKimi.close();
 });
 

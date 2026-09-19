@@ -329,11 +329,11 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (!res.ok) fail(res.error);
     console.log(res.answer ?? `(${res.note})`);
     // "Nothing found" means the list did not answer the question: printing it anyway would only look like an answer.
-    if (res.evidence.length && !String(res.answer ?? "").startsWith("Nothing found")) {
+    if (res.evidence.length && (res.found || res.note)) {
       console.log("\nEvidence:");
       for (const e of res.evidence as { id: string; text: string }[]) console.log(`  ${e.id.padEnd(12)} ${e.text.slice(0, 150)}`);
     }
-    if (res.pii) console.log("\n(the evidence includes a PII task: shown here only, not saved anywhere)");
+    if (res.pii) console.log("\n(PII is involved: shown here only, not saved anywhere)");
     if (res.saved) console.log(`\n${res.saved}`);
   },
 

@@ -99,3 +99,15 @@ test("routing.toml: shipped default loads; a project file wins; a file without f
   writeFileSync(join(dir, ".agenthub", "routing.toml"), '[local]\nroute = "sy/x"\n');
   expect(() => loadRouting(dir)).toThrow(/fixed_model is required/);
 });
+
+test("on campus is a positive finding: an unreachable gateway is not on campus, an Access host is off campus", async () => {
+  const up = startFakeModelServer();
+  cleanup.push(up.stop);
+  process.env.OMNIROUTE_API_KEY = "k";
+  expect(await new OmniRoute({ urls: [up.url], access_hosts: [] }).onCampus()).toBe(true);
+  expect(await new OmniRoute({ urls: [up.url], access_hosts: ["127.0.0.1"] }).onCampus()).toBe(false);
+  const dead = new OmniRoute({ urls: ["http://127.0.0.1:9/v1"], access_hosts: [] });
+  expect(await dead.onCampus()).toBe(false);
+  expect(await dead.offCampus()).toBe(false); // which is why PII decisions must not use !offCampus()
+  expect(dead.isAccessHost("not a url")).toBe(true);
+});

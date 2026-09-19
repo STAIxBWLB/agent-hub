@@ -18,7 +18,7 @@ import type { BusEvent } from "./bus.ts";
 import { DEFAULT_ROLES, roleContract, TASK_TOOLS } from "./hub-tools.ts";
 import { Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, type InferenceConfig } from "./inference.ts";
-import { ask } from "./ask.ts";
+import { ask, ASK_NOTE_TITLE } from "./ask.ts";
 import { currentRouting, detectSignals } from "./routing.ts";
 import { Bus } from "./bus.ts";
 import { PROTOCOL, stateDirFor } from "./control-client.ts";
@@ -154,6 +154,11 @@ export async function startDaemon(opts: DaemonOptions) {
   }
 
   const omni = new OmniRoute(config.omniroute, log);
+  /**
+   * PII decisions need a positive answer about the path a hub-owned model call will really take: a gateway that
+   * answered and is not behind Access, and no sidecar that was generated against the off-campus URL. Unknown is no.
+   */
+  const onCampus = async (): Promise<boolean> => (await omni.onCampus()) && !(sidecar?.upstream && omni.isAccessHost(sidecar.upstream));
   let sidecar: Sidecar | undefined; // L2, started by the first hub-owned model call, stopped with the hub
   let sidecarRouting = "";
   inference = new Inference(config.inference, { omni, sidecar: () => sidecar, route: "sy/fast", fixedModel: () => currentRouting(opts.cwd, log).local.fixed_model, log });
@@ -173,7 +178,7 @@ export async function startDaemon(opts: DaemonOptions) {
     project: chain.at(-1)!,
     ...(config.memory.enabled ? { memory, briefs: new Briefs(memory, chain.at(-1)!, config.memory.brief_items) } : {}),
     notify,
-    triage: { classify: (title, detail) => inference?.triage(title, detail) ?? Promise.resolve(undefined), onCampus: async () => !(await omni.offCampus()) },
+    triage: { classify: (title, detail) => inference?.triage(title, detail) ?? Promise.resolve(undefined), onCampus: () => onCampus() },
   });
   // ---- budget relay -------------------------------------------------------------------------------------------
   const manualPaused = new Set<PeerId>(); // `ahub pause`: the coordinator never lifts these
@@ -544,11 +549,11 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "ask":
         // Console only: the evidence may hold PII task text (on campus), and the answer is for the person at the terminal.
-        if (c.role !== "console") return;
+        if (c.role !== "console") return void reply({ t: "ask", ok: false, error: "ask is a console command" });
         ask(String(msg.question ?? ""), {
           board,
           isPii: (t) => tasks.isPii(t),
-          onCampus: async () => !(await omni.offCampus()),
+          onCampus,
           questionIsPii: (q) => currentRouting(opts.cwd, log).constraints.pii === "local_only" && detectSignals({ title: q, detail: "", refs: {} }, currentRouting(opts.cwd, log), opts.cwd).includes("pii"),
           ...(config.memory.enabled ? { memory } : {}),
           project: chain.at(-1)!,
@@ -557,8 +562,21 @@ export async function startDaemon(opts: DaemonOptions) {
         })
           .then(async (res) => {
             let saved: string | undefined;
-            if (msg.remember && res.answer && !res.pii) saved = await tasks.remember(USER, { text: `Q: ${String(msg.question).slice(0, 300)}\nA: ${res.answer}`, title: `ahub ask: ${String(msg.question).slice(0, 80)}`, kind: "finding" });
-            else if (msg.remember) saved = res.pii ? "not saved: the evidence includes a PII task" : "not saved: there was no answer to save";
+            if (msg.remember) {
+              if (res.pii) saved = "not saved: PII is involved";
+              else if (!res.found) saved = "not saved: there was no answer to save";
+              else if (!config.memory.enabled) saved = "not saved: memory is disabled";
+              else {
+                // Saved as what it is: a model's answer, attributed to the hub, under a title later asks exclude from their evidence.
+                const ok = await memory.save({
+                  title: `${ASK_NOTE_TITLE}: ${String(msg.question).slice(0, 80)}`,
+                  text: `Model-written answer from ahub ask, not a person's own finding.\nQ: ${String(msg.question).slice(0, 300)}\nA: ${res.answer}\nEvidence ids: ${res.evidence.map((e) => e.id).join(", ").slice(0, 600)}`,
+                  project: chain.at(-1)!,
+                  metadata: { peer: "hub", asked_by: USER, kind: "finding", source: "ahub ask" },
+                });
+                saved = ok ? "saved to shared memory as a model-written answer" : "memory worker unavailable; nothing saved";
+              }
+            }
             reply({ t: "ask", ok: true, ...res, ...(saved ? { saved } : {}) });
           })
           .catch((e: Error) => reply({ t: "ask", ok: false, error: e.message }));
@@ -580,6 +598,9 @@ export async function startDaemon(opts: DaemonOptions) {
       case "kill":
         if (c.role === "console") void stop();
         return;
+      default:
+        // A newer CLI talking to an older hub must get an answer, not wait forever.
+        if (msg.rid !== undefined) reply({ t: String(msg.t), ok: false, error: `this hub does not know "${msg.t}" (restart it: ahub kill && ahub up)` });
     }
   }
 
