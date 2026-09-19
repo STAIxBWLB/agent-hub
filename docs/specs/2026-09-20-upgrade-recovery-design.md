@@ -47,6 +47,10 @@ parents/hops, retries, dedupe state, prefaces, manual pauses and peer descriptor
 The existing task and budget databases remain authoritative. A mismatched or
 corrupt snapshot blocks startup. Snapshot restoration precedes peer attachment;
 release is idempotent and retires replayable snapshot state before delivery.
+Release atomically moves that snapshot to a private per-operation archive before
+lifting the hold. Archives retain evidence for an uncertain release and are never
+automatically replayed. Preparation freezes the peer roster; a new unplanned peer
+cannot attach until recovery ends.
 
 The coordinator has an exclusive machine operation lock and an exclusive runner
 claim. Lifecycle commands and the manager respect that lock. Package versions
@@ -63,6 +67,9 @@ There is no automatic rollback of projects that have resumed work.
 
 An interrupted operation re-reads actual daemon identity, package digests,
 terminal mappings and phase receipts. Lost commit/start replies can be reconciled.
+Mutable receipts are reloaded under the exclusive runner claim, and saved terminal
+bindings are checked again before release. An ordinary startup ignores a completed
+operation ID inherited from a restored agent session.
 An uncertain terminal creation is not repeated: the original session must be
 found and verified, or the operation stays blocked for manual recovery.
 

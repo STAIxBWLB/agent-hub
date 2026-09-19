@@ -28,7 +28,7 @@ import { BasePeer, DEFAULT_WATCHDOG_MS } from "./peers.ts";
 import { MemoryClient, workerUrl } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { projectChain, recallFor } from "../memory/recall.ts";
-import { readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
+import { archiveRestartSnapshot, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 
 export interface HubConfig {
   watchdog_ms: number;
@@ -198,7 +198,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const restored = recoveryOperation
     ? readRestartSnapshot(opts.stateDir, { projectRoot: opts.cwd, projectId, operationId: recoveryOperation })
     : undefined;
-  if (restartFilePresent && !restored) throw new Error("restart state is unreadable or does not match this project and recovery operation");
+  if ((restartFilePresent && !restored) || (recoveryOperation && !restored)) throw new Error("restart state is unreadable, missing, or does not match this project and recovery operation");
   if (restored) {
     bus.restore(restored.bus);
     for (const peer of restored.manualPaused) { manualPaused.add(peer); bus.pause(peer); }
@@ -207,6 +207,7 @@ export async function startDaemon(opts: DaemonOptions) {
     recoveryPeerSnapshot = restored.peers;
     bus.setRecoveryHold(true);
   }
+  const recoveryPeerAllowed = (id: PeerId) => !recoveryActive() || !recoveryPeerSnapshot || recoveryPeerSnapshot.some((peer) => peer.id === id);
   const armRecoveryLease = () => {
     clearTimeout(recoveryLeaseTimer);
     recoveryLeaseTimer = setTimeout(() => {
@@ -806,7 +807,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!restored?.integrity || JSON.stringify(restored.integrity) !== JSON.stringify(integrity())) {
         return recoveryError("queue, pause, task board or budget integrity changed during recovery");
       }
-      removeRestartSnapshot(opts.stateDir);
+      archiveRestartSnapshot(opts.stateDir, op);
       recoveryPhase = "released";
       clearTimeout(recoveryLeaseTimer);
       bus.setRecoveryHold(false);
@@ -840,6 +841,7 @@ export async function startDaemon(opts: DaemonOptions) {
       } else {
         c.peer = String(msg.peer ?? "claude");
         if (!PEER_ID.test(c.peer) || RESERVED_IDS.has(c.peer)) return sock.close(4403, "peer id is reserved or malformed");
+        if (!recoveryPeerAllowed(c.peer)) return sock.close(4403, "peer id is not part of the recovery roster");
         let peer = bus.peers.get(c.peer);
         if (!peer) bus.add((peer = new WsPeer(c.peer)));
         if (!(peer instanceof WsPeer)) return sock.close(4409, "peer id is taken by a hub-managed adapter");
@@ -899,6 +901,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "start":
         if (c.role !== "console") return;
         if (recoveryActive() && !(recoveryPhase === "restored" && msg.operationId === recoveryOperationId)) return void reply({ t: "started", ok: false, error: "recovery is holding mutations" });
+        if (recoveryActive() && !recoveryPeerAllowed(String(msg.peer))) return void reply({ t: "started", ok: false, error: "peer is not part of the recovery roster" });
         startPeer(String(msg.peer), msg.args ?? {})
           .catch((e: Error) => ({ ok: false, error: e.message }))
           .then((r) => {

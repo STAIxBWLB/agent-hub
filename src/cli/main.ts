@@ -319,7 +319,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   claude: async () => {
     assertLifecycleAvailable();
     const control = readControl(stateDir);
-    if (control?.instanceId) await recordTerminalLaunch("claude", cwd, stateDir, control.instanceId);
+    if (control?.instanceId) {
+      process.env.AGENTHUB_INSTANCE_ID = control.instanceId;
+      await recordTerminalLaunch("claude", cwd, stateDir, control.instanceId);
+    }
     // `--settings` outranks project and user settings, so the tee has to wrap whichever status line would have won:
     // project local, then project, then user.
     let original: { command?: string; refreshInterval?: number; padding?: number } | undefined;

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { abortRecovery, createOperation, planFingerprint, registeredProjects, runRecovery, type Inspection, type RecoveryDriver, type UpgradePlan } from "../src/cli/upgrade.ts";
-import { claimRunner, readOperation, recoveryLock, releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
+import { acquireRecoveryLock, claimRunner, readOperation, recoveryLock, releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
 import { exactVersion, registryRelease } from "../src/cli/recovery-package.ts";
 import { makeRecoveryDriver } from "../src/cli/upgrade-runtime.ts";
 
@@ -53,6 +53,49 @@ test("two project upgrade restores native peers sequentially, Claude after share
   const before = [...f.calls];
   await runRecovery(f.operation.id, f.driver, f.home);
   expect(f.calls).toEqual(before);
+});
+
+test("resume and abort re-read a completed receipt under the runner claim and clear a stale same-operation lock", async () => {
+  const f = fixture();
+  expect((await runRecovery(f.operation.id, f.driver, f.home)).phase).toBe("completed");
+  acquireRecoveryLock(f.operation.id, f.home);
+  expect((await runRecovery(f.operation.id, f.driver, f.home)).phase).toBe("completed");
+  expect(recoveryLock(f.home)).toBeUndefined();
+  const calls = [...f.calls];
+
+  acquireRecoveryLock(f.operation.id, f.home);
+  await abortRecovery(f.operation.id, f.driver, f.home);
+  expect(recoveryLock(f.home)).toBeUndefined();
+  expect(f.calls).toEqual(calls);
+});
+
+test("a resumed peers-restored project still keeps saved terminal bindings in the release verification gate", async () => {
+  const f = fixture();
+  const planned = f.plan.projects[0]!;
+  const progress = f.operation.projects[0]!;
+  const binding = {
+    peer: "codex" as const, handle: "term-codex", incarnationId: "inc-codex", worktreeId: "repo::/alpha", projectRoot: "/alpha", sessionId: "thread-alpha",
+    launch: { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js", argv: [], env: {} },
+    launchMetadata: { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js", argv: [], env: {} },
+  };
+  planned.terminals = [binding];
+  progress.phase = "peers-restored";
+  progress.instanceId = "new-alpha";
+  progress.terminals["restored:codex"] = binding;
+  f.states.get("alpha")!.instanceId = "new-alpha";
+  f.states.get("alpha")!.recovery = { operationId: f.operation.id, phase: "restored", ready: true };
+  const verified: string[] = [];
+  f.driver.verify = async (p, saved) => {
+    if (p.project.id === "alpha" && !saved.terminals["restored:codex"]) throw new Error("saved terminal binding was dropped");
+    verified.push(p.project.id);
+  };
+  const { fingerprint: _fingerprint, ...reviewed } = f.plan;
+  f.plan.fingerprint = planFingerprint(reviewed);
+  f.operation.plan = f.plan;
+  writeOperation(f.operation.id, f.operation, f.home);
+  const result = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(result.phase).toBe("completed");
+  expect(verified).toContain("alpha");
 });
 
 test("read-only registry planning creates no directory or database", () => {

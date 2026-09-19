@@ -51,6 +51,12 @@ test("installed-layout detached restart completes in an isolated project and pre
     expect((await cli(["task", "propose", "--class", "implement", "Normal writes after recovery"])).code).toBe(0);
     const second = await cli(["restart", "--dry-run"]);
     expect(JSON.parse(second.out).projects[0].blockers).toEqual([]);
+    // An agent restored by this operation may later invoke CLI commands with the old
+    // operation environment still inherited. A regular stop/up must not replay it.
+    expect((await cli(["kill"], { AGENTHUB_RECOVERY_OPERATION: operation! })).code).toBe(0);
+    expect((await cli(["up"], { AGENTHUB_RECOVERY_OPERATION: operation! })).code).toBe(0);
+    expect((await status()).recovery).toBeUndefined();
+    expect((await cli(["board"])).out).toContain("Keep this task through restart");
   } finally {
     const stop = await cli(["kill"], operation ? { AGENTHUB_RECOVERY_OPERATION: operation } : {});
     if (stop.code === 0) rmSync(temp, { recursive: true, force: true });

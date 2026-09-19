@@ -7,7 +7,7 @@ import { ControlClient, PROTOCOL, readControl } from "./control-client.ts";
 import { startDaemon } from "./daemon.ts";
 import { Registry, type Project } from "./registry.ts";
 import { CODEX_APP, CODEX_PROXY, CONTROL, SWITCHYARD } from "./ports.ts";
-import { assertLifecycleAvailable } from "./recovery-store.ts";
+import { assertLifecycleAvailable, recoveryLock } from "./recovery-store.ts";
 
 export type ProjectInspection = {
   state: "running" | "stopped" | "stopping" | "unavailable" | "incompatible" | "missing" | "starting";
@@ -141,10 +141,14 @@ export async function startProject(project: Project, options: { unattended?: boo
       renameSync(temporary, marker);
       const log = openSync(join(project.stateDir, "hub.log"), "a");
       try {
+        const launchEnv = { ...(options.env ?? process.env) };
+        // Native sessions can outlive the operation which launched them. An expired
+        // operation ID must not make a later ordinary startup load a retired snapshot.
+        if (launchEnv.AGENTHUB_RECOVERY_OPERATION !== recoveryLock()) delete launchEnv.AGENTHUB_RECOVERY_OPERATION;
         const child = spawn(process.execPath, [join(import.meta.dir, "../cli/main.ts"), "--project", project.root, "daemon",
           ...(options.unattended ? ["--unattended"] : [])], {
           cwd: project.root, detached: true, stdio: ["ignore", log, log],
-          env: { ...(options.env ?? process.env), AGENTHUB_STATE_DIR: project.stateDir, AGENTHUB_PROJECT_DIR: project.root,
+          env: { ...launchEnv, AGENTHUB_STATE_DIR: project.stateDir, AGENTHUB_PROJECT_DIR: project.root,
             AGENTHUB_UNATTENDED: options.unattended ? "1" : "0" },
         });
         child.on("error", () => {}); // bounded readiness below reports failure with the project's log path

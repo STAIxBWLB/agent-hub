@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
-import { acquireRecoveryLock, claimRunner, readOperation, releaseRecoveryLock, writeOperation } from "../hub/recovery-store.ts";
+import { acquireRecoveryLock, claimRunner, readOperation, recoveryLock, releaseRecoveryLock, writeOperation } from "../hub/recovery-store.ts";
 
 export interface RecoveryPeer {
   id: string;
@@ -94,6 +94,13 @@ export function createOperation(plan: UpgradePlan, sourceRoot: string, home = hu
   return op;
 }
 
+function validateReceipt(id: string, op: RecoveryOperation): void {
+  if (op.schema !== 1 || op.id !== id) throw new Error("unsupported operation receipt");
+  const { fingerprint, ...reviewed } = op.plan;
+  if (fingerprint !== planFingerprint(reviewed) || op.projects.length !== op.plan.projects.length ||
+      op.projects.some((p, i) => p.id !== op.plan.projects[i]?.project.id)) throw new Error("reviewed operation plan or project scope changed");
+}
+
 export interface RecoveryDriver {
   stage(op: RecoveryOperation): Promise<{ root: string; digest: string }>;
   inspect(project: Project): Promise<Inspection>;
@@ -113,14 +120,21 @@ export interface RecoveryDriver {
 
 /** Resumable state machine. Driver actions are preceded by receipts and followed by live readback. */
 export async function runRecovery(id: string, driver: RecoveryDriver, home = hubHome(), idleTimeoutMs = 600_000): Promise<RecoveryOperation> {
-  const op = readOperation<RecoveryOperation>(id, home);
-  if (op.schema !== 1 || op.id !== id) throw new Error("unsupported operation receipt");
-  const { fingerprint, ...reviewed } = op.plan;
-  if (fingerprint !== planFingerprint(reviewed) || op.projects.length !== op.plan.projects.length ||
-      op.projects.some((p, i) => p.id !== op.plan.projects[i]?.project.id)) throw new Error("reviewed operation plan or project scope changed");
-  if (op.phase === "completed" || op.phase === "cancelled") return op;
+  // Read once to validate the selector, then claim the runner before trusting any
+  // mutable phase. A concurrent runner may have completed the operation meanwhile.
+  let op = readOperation<RecoveryOperation>(id, home);
+  validateReceipt(id, op);
   acquireRecoveryLock(id, home);
   const releaseRunner = claimRunner(id, home);
+  try {
+    op = readOperation<RecoveryOperation>(id, home);
+    validateReceipt(id, op);
+    if (op.phase === "completed" || op.phase === "cancelled") {
+      if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
+      releaseRunner();
+      return op;
+    }
+  } catch (error) { releaseRunner(); throw error; }
   const save = () => { op.updatedAt = driver.now(); writeOperation(id, op, home); };
   const step = (value: string) => { op.step = value; save(); };
   const identity = (observed: Inspection, planned: PlannedProject, progress: ProjectProgress) => {
@@ -243,16 +257,24 @@ export function publicOperation(op: RecoveryOperation) {
 
 /** Escape a blocked preflight without abandoning a stopped runtime or an uncertain terminal mutation. */
 export async function abortRecovery(id: string, driver: RecoveryDriver, home = hubHome()): Promise<void> {
-  const op = readOperation<RecoveryOperation>(id, home);
-  if (op.phase === "completed" || op.phase === "cancelled") return;
-  if (op.projects.some((p) => !["pending", "prepared"].includes(p.phase) || Object.keys(p.terminals).length)) {
-    throw new Error("operation has stopped runtimes or uncertain terminal effects; resume it instead");
-  }
-  const { fingerprint, ...body } = op.plan;
-  if (fingerprint !== planFingerprint(body)) throw new Error("operation plan changed");
+  let op = readOperation<RecoveryOperation>(id, home);
+  validateReceipt(id, op);
   acquireRecoveryLock(id, home);
   const releaseRunner = claimRunner(id, home);
   try {
+    // Re-read after the exclusive runner claim so cancellation cannot act on a
+    // stale pending/prepared receipt after another runner advanced it.
+    op = readOperation<RecoveryOperation>(id, home);
+    validateReceipt(id, op);
+    if (op.phase === "completed" || op.phase === "cancelled") {
+      if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
+      return;
+    }
+    if (op.projects.some((p) => !["pending", "prepared"].includes(p.phase) || Object.keys(p.terminals).length)) {
+      throw new Error("operation has stopped runtimes or uncertain terminal effects; resume it instead");
+    }
+    const { fingerprint, ...body } = op.plan;
+    if (fingerprint !== planFingerprint(body)) throw new Error("operation plan changed");
     for (const planned of op.plan.projects) {
       const live = await driver.inspect(planned.project);
       if (live.recovery?.operationId === id) {

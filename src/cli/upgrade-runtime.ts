@@ -7,7 +7,7 @@ import type { Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
 import { packageDigest, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
 import { inspectTerminals, closeTerminal, createTerminal, waitForIdle, shellQuote, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
-import { planFingerprint, registeredProjects, type Inspection, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
+import { planFingerprint, registeredProjects, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
 
 export const PACKAGE_ROOT = resolve(import.meta.dir, "../..");
 const orcaExecutable = () => process.env.ORCA_CLI_COMMAND || (process.env.ORCA_DEV_REPO_ROOT ? "orca-dev" : process.platform === "linux" && !process.env.ORCA_TERMINAL_HANDLE ? "orca-ide" : "orca");
@@ -148,6 +148,22 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
     return result;
   };
   const control = (project: Project, op: string, id: string, instance: string) => rpc(project, { t: "recovery", op, operationId: id, expectedInstanceId: instance }).then(() => {});
+  const revalidateTerminal = async (planned: PlannedProject, progress: ProjectProgress, saved: TerminalBinding, exact: boolean): Promise<TerminalBinding> => {
+    const options = { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId };
+    const found = await inspectTerminals(planned.project.root, { [saved.peer]: saved.sessionId }, options);
+    const current = found.byPeer[saved.peer];
+    if (found.manualRequired || !current || (exact && (current.handle !== saved.handle || current.incarnationId !== saved.incarnationId || current.worktreeId !== saved.worktreeId || current.projectRoot !== saved.projectRoot))) {
+      throw new Error(`${saved.peer}: saved terminal identity changed or is not verified; manual-required`);
+    }
+    const idle = await waitForIdle(exact ? saved : current, 120_000, options);
+    if (!idle.satisfied) throw new Error(`${saved.peer}: terminal is not idle; manual-required`);
+    const observed = await inspectRecovery(planned.project);
+    if (observed.instanceId !== progress.instanceId) throw new Error(`${saved.peer}: daemon instance changed during terminal revalidation`);
+    const peer = observed.peers.find((item) => item.id === saved.peer);
+    const session = saved.peer === "codex" ? peer?.threadId : peer?.sessionId;
+    if (session !== saved.sessionId) throw new Error(`${saved.peer}: daemon session changed during terminal revalidation; manual-required`);
+    return current;
+  };
   return {
     now, sleep, inspect: inspectRecovery,
     stage: async (op) => {
@@ -213,19 +229,17 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
       for (const original of planned.terminals as TerminalBinding[]) {
         if ((original.peer === "claude") !== (group === "claude")) continue;
         const key = `restored:${original.peer}`;
-        if (progress.terminals[key] && progress.terminals[key] !== "pending") continue;
+        if (progress.terminals[key] && progress.terminals[key] !== "pending") {
+          progress.terminals[key] = await revalidateTerminal(planned, progress, progress.terminals[key] as TerminalBinding, true); save();
+          continue;
+        }
         if (progress.terminals[key] === "pending") {
           const observed = await inspectRecovery(planned.project);
           const peer = observed.peers.find((p) => p.id === original.peer);
           if ((original.peer === "codex" ? peer?.threadId : peer?.sessionId) !== original.sessionId) {
             throw new Error(`${original.peer}: terminal creation outcome is uncertain; attach the original session manually, then resume`);
           }
-          const found = await inspectTerminals(planned.project.root, { [original.peer]: original.sessionId },
-            { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId });
-          const existing = found.byPeer[original.peer];
-          if (!existing || found.manualRequired || !(await waitForIdle(existing, 120_000, terminalOptions(run))).satisfied) {
-            throw new Error(`${original.peer}: resumed terminal identity/readiness is not verified`);
-          }
+          const existing = await revalidateTerminal(planned, progress, original, false);
           progress.terminals[key] = existing; save(); continue;
         }
         const entrypoint = join(op.targetRoot!, "src/cli/main.js");
@@ -267,6 +281,11 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         if (!peer || !["idle", "busy", "paused"].includes(peer.state)) throw new Error(`${old.id}: peer reattachment not verified`);
         if (old.id === "codex" && peer.threadId !== old.threadId) throw new Error("Codex resumed a different conversation");
         if (old.id === "claude" && peer.sessionId !== old.sessionId) throw new Error("Claude resumed a different conversation");
+      }
+      for (const original of planned.terminals as TerminalBinding[]) {
+        const saved = progress.terminals[`restored:${original.peer}`];
+        if (!saved || saved === "pending") throw new Error(`${original.peer}: restored terminal outcome is not recorded; manual-required`);
+        await revalidateTerminal(planned, progress, saved as TerminalBinding, true);
       }
       const snapshot = await rpc(planned.project, { t: "ui_snapshot", after: 0 });
       if (snapshot.ok === false) throw new Error("dashboard snapshot readback failed");

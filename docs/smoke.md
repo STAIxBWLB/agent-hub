@@ -21,6 +21,9 @@ Verified on 2026-09-20, without upgrading the developer's running hubs:
   blocker instead of trying to stop them.
 - The installed Orca CLI's read-only TUI-idle query returned its documented
   `result.wait.satisfied` shape. No production terminal was closed or relaunched.
+- During merge review, the published 0.4.0 package was installed into an isolated
+  staging directory. Registry integrity and repeated cache verification passed;
+  no global package or Claude plugin store was changed.
 
 Still pending: a real Orca smoke with native Codex/Claude sessions after an
 attended protocol-8 bootstrap; actual registry package/plugin upgrade; production

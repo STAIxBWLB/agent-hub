@@ -7,7 +7,7 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { newEnvelope, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
-import { readRestartSnapshot, writeRestartSnapshot, type RestartSnapshot } from "../src/hub/restart.ts";
+import { readRestartSnapshot, releasedRestartPath, writeRestartSnapshot, type RestartSnapshot } from "../src/hub/restart.ts";
 
 class HeldPeer extends BasePeer {
   readonly deliveries: Envelope[][] = [];
@@ -105,10 +105,12 @@ test("recovery RPC is console-only, fences sends, commits, restores and releases
   const inspected = await consoleTwo.request({ t: "recovery", op: "inspect", operationId: "op-1", expectedInstanceId: "instance-2" });
   expect(inspected.recovery.phase).toBe("restored");
   expect((await consoleTwo.request({ t: "recovery", op: "release", operationId: "op-1", expectedInstanceId: "instance-2" })).ok).toBe(false);
+  await expect(ControlClient.connect(stateDir, { role: "peer", peer: "claude-3" }, 200)).rejects.toThrow(/not part of the recovery roster|closed/);
   const restoredPeer = await ControlClient.connect(stateDir, { role: "peer", peer: "claude-2" });
   await Bun.sleep(20);
   const released = await consoleTwo.request({ t: "recovery", op: "release", operationId: "op-1", expectedInstanceId: "instance-2" });
   expect(released.released).toBe(true);
+  expect(JSON.parse(readFileSync(releasedRestartPath(stateDir, "op-1"), "utf8")).operationId).toBe("op-1");
   expect((await consoleTwo.request({ t: "recovery", op: "release", operationId: "op-1", expectedInstanceId: "instance-2" })).released).toBe(true);
   expect(JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).recovery.phase).toBe("released");
   expect((await consoleTwo.request({ t: "send", body: "ordinary after release" })).ok).toBe(true);
@@ -123,6 +125,17 @@ test("a present corrupt restart snapshot blocks daemon startup", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-recovery-corrupt-"));
   writeFileSync(join(stateDir, "restart.json"), "not-json", { mode: 0o600 });
   await expect(startDaemon({ cwd: process.cwd(), projectId: "project-1", instanceId: "instance-1", stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } })).rejects.toThrow(/restart state/);
+});
+
+test("restart validation rejects invalid queued hops while retaining seen dropped envelopes", () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "agenthub-recovery-envelope-"));
+  const envelope = { id: "e1", trace: "t", hop: 99, from: "claude", body: "queued", kind: "chat", priority: "status", ts: Date.now() };
+  const snapshot: any = { schemaVersion: 1, projectRoot: "/project", projectId: "project-1", sourceInstanceId: "instance-1", operationId: "operation-1", committedAt: Date.now(), bus: { schemaVersion: 1, queues: { kimi: [envelope] }, prefaces: {}, seen: [{ ...envelope }], attempts: {}, withdrawn: [] }, manualPaused: [], peers: [] };
+  writeFileSync(join(stateDir, "restart.json"), JSON.stringify(snapshot), { mode: 0o600 });
+  expect(readRestartSnapshot(stateDir, { projectRoot: "/project", projectId: "project-1", operationId: "operation-1" })).toBeUndefined();
+  snapshot.bus.queues.kimi = [];
+  writeFileSync(join(stateDir, "restart.json"), JSON.stringify(snapshot), { mode: 0o600 });
+  expect(readRestartSnapshot(stateDir, { projectRoot: "/project", projectId: "project-1", operationId: "operation-1" })).toBeDefined();
 });
 
 test("prepare remains blocked by a pending permission, then preserves a manual pause", async () => {
