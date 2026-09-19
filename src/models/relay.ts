@@ -56,6 +56,7 @@ export interface ModelRelay {
 interface ActiveRequest {
   controller: AbortController;
   release?: () => void;
+  cancel?: (reason?: unknown) => Promise<void>;
   cleanup: () => void;
 }
 
@@ -89,12 +90,16 @@ function bodyForUpstream(body: RelayRequest, model: string): Record<string, unkn
   };
 }
 
-function sseResponse(response: Response, release: () => void, onModel?: (model: string) => void): Response {
+function sseResponse(response: Response, release: () => void, onModel?: (model: string) => void, registerCancel?: (cancel: (reason?: unknown) => Promise<void>) => void): Response {
   if (!response.body) {
     release();
     return new Response("upstream returned no stream", { status: 502 });
   }
   const reader = response.body.getReader();
+  const cancel = async (reason?: unknown) => {
+    try { await reader.cancel(reason); } catch { /* the upstream may already be closed */ }
+  };
+  registerCancel?.(cancel);
   let inspectBuffer = "";
   let inspectedModel = false;
   const inspect = (chunk: Uint8Array) => {
@@ -130,7 +135,7 @@ function sseResponse(response: Response, release: () => void, onModel?: (model: 
     },
     async cancel(reason) {
       release();
-      await reader.cancel(reason);
+      await cancel(reason);
     },
   });
   return new Response(stream, {
@@ -192,7 +197,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       base = handle.url;
       model = options.mlxModel ?? handle.model;
       if (signal.aborted) throw new Error("request was cancelled before MLX generation started");
-      release = await handle.acquire();
+      release = await handle.acquire(signal);
     } else {
       base = (await options.omni.base()) ?? (() => { throw new Error("DGX gateway is unavailable"); })();
       model = options.allowedDGXmodels[backend.alias]!;
@@ -285,7 +290,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
           activeRequests.delete(record);
         };
         record.release = release;
-        return sseResponse(result.response, release, result.onModel);
+        return sseResponse(result.response, release, result.onModel, (cancel) => { record.cancel = cancel; });
       } catch (error) {
         if (!fallback || controller.signal.aborted) {
           record.cleanup();
@@ -303,7 +308,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
             activeRequests.delete(record);
           };
           record.release = release;
-          return sseResponse(result.response, release, result.onModel);
+          return sseResponse(result.response, release, result.onModel, (cancel) => { record.cancel = cancel; });
         } catch (fallbackError) {
           record.cleanup();
           activeRequests.delete(record);
@@ -315,11 +320,13 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
   const url = `http://${host}:${server.port}/v1`;
   const status = (): ModelRelayStatus => ({ url, models, backends: [...states.values()].map((value) => ({ ...value })) });
   return { url, token, models, status, close: async () => {
-    for (const request of activeRequests) {
+    const closing = [...activeRequests].map(async (request) => {
       request.controller.abort(new Error("model relay closed"));
+      await request.cancel?.(new Error("model relay closed"));
       request.release?.();
       request.cleanup();
-    }
+    });
+    await Promise.allSettled(closing);
     activeRequests.clear();
     server.stop(false);
     await mlx?.close();

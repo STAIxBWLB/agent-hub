@@ -1,4 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { startModelRelay } from "../src/models/relay.ts";
 
 const cleanup: (() => Promise<void> | void)[] = [];
@@ -108,4 +111,53 @@ test("relay close aborts an active upstream request", async () => {
   await requestSeen;
   await relay.close();
   expect((await pending).status).toBe(502);
+});
+
+test("relay aborts queued MLX acquisition and close does not wait for the 120 second lock deadline", async () => {
+  const runtimeDir = mkdtempSync(join(tmpdir(), "agenthub-relay-queue-"));
+  let seen!: () => void;
+  const requestSeen = new Promise<void>((resolve) => { seen = resolve; });
+  let upstream: ReturnType<typeof Bun.serve> | undefined;
+  let requests = 0;
+  const child = { pid: 2_000_000_010, kill: () => true, unref: () => {} } as any;
+  const processInfo = (pid: number) => pid === child.pid
+    ? { command: "/venv/bin/mlx_lm.server --model /models/qwen3", start: "child-start" }
+    : pid === process.pid ? { command: "bun test", start: "self-start" } : undefined;
+  const spawn = ((_bin: string, args: string[]) => {
+    const port = Number(args[args.indexOf("--port") + 1]);
+    upstream = Bun.serve({ hostname: "127.0.0.1", port, fetch: async () => {
+      requests++;
+      seen();
+      return new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"wait"}}]}\n\n')); } }), { headers: { "content-type": "text/event-stream" } });
+    } });
+    return child;
+  }) as any;
+  const relay = await startModelRelay({
+    omni: {} as any,
+    mlx: { runtimeDir, modelPath: "/models/qwen3", bin: "/venv/bin/mlx_lm.server", maxConcurrency: 1, spawn, processInfo, health: async () => true },
+    allowedDGXmodels: {}, token: "mlx-token",
+  });
+  cleanup.push(async () => { await relay.close(); upstream?.stop(true); rmSync(runtimeDir, { recursive: true, force: true }); });
+  const body = JSON.stringify({ model: "mlx/fast", messages: [{ role: "user", content: "wait" }] });
+  const first = fetch(`${relay.url}/chat/completions`, { method: "POST", headers: { authorization: "Bearer mlx-token", "content-type": "application/json" }, body });
+  await requestSeen;
+  expect((await first).status).toBe(200);
+  expect(requests).toBe(1);
+
+  const aborter = new AbortController();
+  const queuedAbort = fetch(`${relay.url}/chat/completions`, { method: "POST", headers: { authorization: "Bearer mlx-token", "content-type": "application/json" }, body, signal: aborter.signal });
+  await Bun.sleep(30);
+  const started = performance.now();
+  aborter.abort();
+  await expect(queuedAbort).rejects.toThrow();
+  expect(performance.now() - started).toBeLessThan(1_000);
+  expect(requests).toBe(1);
+
+  const queuedClose = fetch(`${relay.url}/chat/completions`, { method: "POST", headers: { authorization: "Bearer mlx-token", "content-type": "application/json" }, body });
+  await Bun.sleep(30);
+  const closeStarted = performance.now();
+  await relay.close();
+  const closeResponse = await queuedClose;
+  expect(closeResponse.status).toBe(502);
+  expect(performance.now() - closeStarted).toBeLessThan(1_000);
 });

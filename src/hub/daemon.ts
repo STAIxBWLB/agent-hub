@@ -443,8 +443,11 @@ export async function startDaemon(opts: DaemonOptions) {
     return recoveryPeerSnapshot.every((saved) => {
       const now = current[saved.id];
       if (!now) return true; // a detached peer is checked by the coordinator before terminal close
-      if (saved.threadId && now.threadId && saved.threadId !== now.threadId) return false;
-      if (saved.sessionId && now.sessionId && saved.sessionId !== now.sessionId) return false;
+      if (saved.threadId && saved.threadId !== now.threadId) return false;
+      // Kimi/local rebuild a fresh worker with task context on the target; native
+      // Claude and Pi sessions must keep their exact identities across restoration.
+      const freshWorker = recoveryPhase === "restored" && (saved.id === "kimi" || saved.id === "local");
+      if (!freshWorker && saved.sessionId && saved.sessionId !== now.sessionId) return false;
       return true;
     });
   };

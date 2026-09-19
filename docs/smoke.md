@@ -6,7 +6,7 @@
 
 Verified on 2026-09-20 on Apple Silicon with installed Pi 0.85.1:
 
-- `scripts/check.sh`: 265 tests passed, 0 failed, 1491 assertions; typecheck,
+- `scripts/check.sh`: 272 tests passed, 0 failed, 1511 assertions; typecheck,
   plugin freshness and npm package contents also passed.
 - A disposable project ran the real hub daemon and Pi headless peer. Pi called
   the managed `read` tool and returned an exact marker from a project file,
@@ -19,6 +19,7 @@ Verified on 2026-09-20 on Apple Silicon with installed Pi 0.85.1:
 - Pi also reviewed the tool-call receipt implementation through DGX. Its
   suggestions were checked against the code; shutdown fencing was fixed and
   regression-tested. Model-generated review remains advisory.
+- A real disposable protocol-8 hub from 0.5.0 completed a controlled restart into 0.6.0/protocol 9. Its proposed task, manually paused local peer and one queued message survived; the target reached `released`. The disposable daemon and manager were stopped after verification.
 - `ahub models start` returned promptly while the owned MLX process remained
   healthy; a subsequent status check returned the same PID. Project relay
   teardown left the shared MLX runtime running.

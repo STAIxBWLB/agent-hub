@@ -20,6 +20,14 @@ function terminalOptions(run: RunCommand = runCommand): TerminalRecoveryOptions 
   } };
 }
 
+export function restoredTerminalArgv(entrypoint: string, projectRoot: string, binding: TerminalBinding): string[] {
+  if (binding.peer === "codex") return [process.execPath, entrypoint, "--project", projectRoot, "codex", "resume", binding.sessionId];
+  if (binding.peer === "claude") return [process.execPath, entrypoint, "--project", projectRoot, "claude", "--resume", binding.sessionId];
+  return [process.execPath, entrypoint, "--project", projectRoot, "pi", "--mode", "tui",
+    ...(binding.backend ? ["--backend", binding.backend] : []), ...(binding.model ? ["--model", binding.model] : []),
+    ...(binding.sessionFile ? ["--session-file", binding.sessionFile] : ["--session-id", binding.sessionId])];
+}
+
 async function rpc(project: Project, message: Record<string, unknown>, protocol = PROTOCOL): Promise<any> {
   const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: project.root, projectId: project.id }, 30_000, protocol);
   try {
@@ -159,7 +167,11 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
     if (result.code !== 0) throw new Error(`target command ${args[0]} failed; inspect recovery state before retrying`);
     return result;
   };
-  const control = (project: Project, op: string, id: string, instance: string) => rpc(project, { t: "recovery", op, operationId: id, expectedInstanceId: instance }).then(() => {});
+  const control = (project: Project, op: string, id: string, instance: string) => {
+    const sourceProtocol = readControl(project.stateDir)?.protocol;
+    const protocol = sourceProtocol === 8 ? 8 : PROTOCOL;
+    return rpc(project, { t: "recovery", op, operationId: id, expectedInstanceId: instance }, protocol).then(() => {});
+  };
   const revalidateTerminal = async (planned: PlannedProject, progress: ProjectProgress, saved: TerminalBinding, exact: boolean): Promise<TerminalBinding> => {
     const options = { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId };
     const found = await inspectTerminals(planned.project.root, { [saved.peer]: saved.sessionId }, options);
@@ -260,8 +272,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           progress.terminals[key] = existing; save(); continue;
         }
         const entrypoint = join(op.targetRoot!, "src/cli/main.js");
-        const argv = [process.execPath, entrypoint, "--project", planned.project.root, original.peer,
-          ...(original.peer === "codex" ? ["resume", original.sessionId] : ["--resume", original.sessionId])];
+        const argv = restoredTerminalArgv(entrypoint, planned.project.root, original);
         const assignments = { ...original.launch.env, AGENTHUB_HOME: hubHome(), AGENTHUB_RECOVERY_OPERATION: op.id };
         const launch = { ...original.launch, packageEntrypoint: entrypoint, argv,
           command: ["env", ...Object.entries(assignments).map(([k, v]) => `${k}=${v}`), ...argv].map(shellQuote).join(" ") };
@@ -299,6 +310,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         if (!peer || !["idle", "busy", "paused"].includes(peer.state)) throw new Error(`${old.id}: peer reattachment not verified`);
         if (old.id === "codex" && peer.threadId !== old.threadId) throw new Error("Codex resumed a different conversation");
         if (old.id === "claude" && peer.sessionId !== old.sessionId) throw new Error("Claude resumed a different conversation");
+        if (old.id === "pi" && (peer.sessionId !== old.sessionId || (old.sessionFile && peer.sessionFile !== old.sessionFile))) throw new Error("Pi resumed a different conversation");
       }
       for (const original of planned.terminals as TerminalBinding[]) {
         const saved = progress.terminals[`restored:${original.peer}`];

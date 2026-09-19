@@ -131,6 +131,11 @@ function piFlags(): { mode: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"
   const model = args.includes("--model") ? args[args.indexOf("--model") + 1] : undefined;
   const sessionId = args.includes("--session-id") ? args[args.indexOf("--session-id") + 1] : undefined;
   const sessionFile = args.includes("--session-file") ? args[args.indexOf("--session-file") + 1] : undefined;
+  const valueFlags = new Set(["--mode", "--backend", "--model", "--session-id", "--session-file"]);
+  for (let i = 0; i < args.length; i++) {
+    if (!valueFlags.has(args[i]!)) fail(`unknown Pi option: ${args[i]}`);
+    i++;
+  }
   if (!["headless", "tui"].includes(mode) || (backend !== undefined && !["auto", "dgx", "mlx"].includes(backend)) || (sessionId && sessionFile)) fail("usage: ahub pi [--mode headless|tui] [--backend auto|dgx|mlx] [--model <alias>] [--session-id <id> | --session-file <path>]");
   return { mode: mode as "headless" | "tui", ...(backend ? { backend: backend as "auto" | "dgx" | "mlx" } : {}), ...(model ? { model } : {}), ...(sessionId ? { sessionId } : {}), ...(sessionFile ? { sessionFile } : {}) };
 }

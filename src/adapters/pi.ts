@@ -99,7 +99,7 @@ export class PiPeer extends BasePeer {
       }
       if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
       const body = await request.json() as any;
-      if (url.pathname === "/event") { if (body.type === "session_start" && this.ownerClaimed && (body.ownerToken !== this.ownerToken || body.pid !== this.ownerPid || body.signature !== this.ownerSignature || (this.sessionId && body.sessionId !== this.sessionId) || (this.sessionFile && body.sessionFile !== this.sessionFile))) return Response.json({ ok: false, error: "Pi session owner or identity already claimed" }, { status: 409 }); if (body.type === "session_start" && (!Number.isInteger(body.pid) || !body.signature || processSignature(body.pid) !== body.signature)) return Response.json({ ok: false, error: "Pi process identity is not verified" }, { status: 409 }); this.handleBridgeEvent(body); return Response.json({ ok: true }); }
+      if (url.pathname === "/event") { if (body.type === "session_start" && (typeof body.sessionId !== "string" || !body.sessionId || typeof body.sessionFile !== "string" || !body.sessionFile)) return Response.json({ ok: false, error: "Pi session identity is missing" }, { status: 400 }); if (body.type === "session_start" && this.ownerClaimed && (body.ownerToken !== this.ownerToken || body.pid !== this.ownerPid || body.signature !== this.ownerSignature || (this.sessionId && body.sessionId !== this.sessionId) || (this.sessionFile && body.sessionFile !== this.sessionFile))) return Response.json({ ok: false, error: "Pi session owner or identity already claimed" }, { status: 409 }); if (body.type === "session_start" && (!Number.isInteger(body.pid) || !body.signature || processSignature(body.pid) !== body.signature)) return Response.json({ ok: false, error: "Pi process identity is not verified" }, { status: 409 }); this.handleBridgeEvent(body); return Response.json({ ok: true }); }
       if (url.pathname === "/ack") {
         const pending = this.tuiCommands.get(String(body.id));
         if (!pending) return Response.json({ ok: false }, { status: 404 });
@@ -129,7 +129,7 @@ export class PiPeer extends BasePeer {
     this.proc.on("error", (error) => this.fail(error));
     this.proc.on("exit", (code) => { if (code !== 0) this.fail(new Error(`pi exited with code ${code}`)); else this.setState("offline"); });
     const state = await this.waitRpc("get_state", 15_000);
-    if (state.success !== true || typeof state.data?.sessionId !== "string" || typeof state.data?.sessionFile !== "string") throw new Error("Pi get_state did not prove session identity");
+    if (state.success !== true || typeof state.data?.sessionId !== "string" || typeof state.data?.sessionFile !== "string" || !state.data.sessionId || !state.data.sessionFile) throw new Error("Pi get_state did not prove session identity");
     if ((this.opts.sessionId && state.data.sessionId !== this.opts.sessionId) || (this.opts.sessionFile && state.data.sessionFile !== this.opts.sessionFile)) {
       throw new Error("Pi get_state session identity does not match the requested recovery session");
     }

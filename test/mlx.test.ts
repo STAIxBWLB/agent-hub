@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,5 +40,74 @@ test("MLX refuses malformed owner state instead of starting a duplicate", async 
   const runtimeDir = mkdtempSync(join(tmpdir(), "agenthub-mlx-malformed-"));
   writeFileSync(join(runtimeDir, "owner.json"), "{}\n");
   await expect(inspectMlx({ runtimeDir })).rejects.toThrow("owner record");
+  rmSync(runtimeDir, { recursive: true, force: true });
+});
+
+test("generation slots reclaim a dead or reused PID, then preserve an active claimant", async () => {
+  const runtimeDir = mkdtempSync(join(tmpdir(), "agenthub-mlx-generation-reclaim-"));
+  const deadPid = 2_000_000_000;
+  const reusedPid = deadPid + 1;
+  const db = new Database(join(runtimeDir, "generation-slots.db"), { create: true });
+  db.run(`CREATE TABLE generation_slots (slot INTEGER PRIMARY KEY, token TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL)`);
+  db.query("INSERT INTO generation_slots (slot, token, pid, process_start) VALUES (?, ?, ?, ?)").run(0, "dead-owner", deadPid, "old-start");
+  db.close();
+  const child = { pid: deadPid + 2, kill: () => true, unref: () => {} } as any;
+  const processInfo = (pid: number) => pid === reusedPid
+    ? { command: "/venv/bin/mlx_lm.server --model /models/qwen3", start: "reused-start" }
+    : pid === child.pid
+      ? { command: "/venv/bin/mlx_lm.server --model /models/qwen3", start: "child-start" }
+      : pid === process.pid
+        ? { command: "bun test", start: "self-start" }
+        : undefined;
+  const handle = await ensureMlx({ runtimeDir, modelPath: "/models/qwen3", bin: "/venv/bin/mlx_lm.server", port: 47772,
+    spawn: (() => child) as any, processInfo, health: async () => true });
+  cleanup.push(async () => { await handle.close(); rmSync(runtimeDir, { recursive: true, force: true }); });
+
+  const releasedDeadOwner = await handle.acquire();
+  releasedDeadOwner();
+  const reused = new Database(join(runtimeDir, "generation-slots.db"), { create: true });
+  reused.query("INSERT OR REPLACE INTO generation_slots (slot, token, pid, process_start) VALUES (?, ?, ?, ?)").run(0, "reused-owner", reusedPid, "old-start");
+  reused.close();
+  const release = await handle.acquire();
+  const secondHandle = await ensureMlx({ runtimeDir, modelPath: "/models/qwen3", bin: "/venv/bin/mlx_lm.server", port: 47772, processInfo, health: async () => true });
+  let secondFinished = false;
+  const waiting = secondHandle.acquire().then((releaseSecond) => { secondFinished = true; return releaseSecond; });
+  await Bun.sleep(70);
+  expect(secondFinished).toBe(false);
+  release();
+  const releaseSecond = await waiting;
+  releaseSecond();
+  expect(secondFinished).toBe(true);
+});
+
+test("generation slots fail closed for malformed owner rows", async () => {
+  const runtimeDir = mkdtempSync(join(tmpdir(), "agenthub-mlx-generation-malformed-"));
+  const db = new Database(join(runtimeDir, "generation-slots.db"), { create: true });
+  db.run(`CREATE TABLE generation_slots (slot INTEGER PRIMARY KEY, token TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL)`);
+  db.query("INSERT INTO generation_slots (slot, token, pid, process_start) VALUES (?, ?, ?, ?)").run(0, "", 2_000_000_000, "old-start");
+  db.close();
+  const child = { pid: 2_000_000_001, kill: () => true, unref: () => {} } as any;
+  const processInfo = (pid: number) => pid === child.pid
+    ? { command: "/venv/bin/mlx_lm.server --model /models/qwen3", start: "child-start" }
+    : pid === process.pid ? { command: "bun test", start: "self-start" } : undefined;
+  const handle = await ensureMlx({ runtimeDir, modelPath: "/models/qwen3", bin: "/venv/bin/mlx_lm.server", port: 47773,
+    spawn: (() => child) as any, processInfo, health: async () => true });
+  await expect(handle.acquire()).rejects.toThrow("generation owner is malformed");
+  rmSync(runtimeDir, { recursive: true, force: true });
+});
+
+test("generation slots fail closed when a live owner cannot be authenticated", async () => {
+  const runtimeDir = mkdtempSync(join(tmpdir(), "agenthub-mlx-generation-unknown-"));
+  const db = new Database(join(runtimeDir, "generation-slots.db"), { create: true });
+  db.run(`CREATE TABLE generation_slots (slot INTEGER PRIMARY KEY, token TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL)`);
+  db.query("INSERT INTO generation_slots (slot, token, pid, process_start) VALUES (?, ?, ?, ?)").run(0, "unknown-owner", process.ppid, "old-start");
+  db.close();
+  const child = { pid: 2_000_000_021, kill: () => true, unref: () => {} } as any;
+  const processInfo = (pid: number) => pid === child.pid
+    ? { command: "/venv/bin/mlx_lm.server --model /models/qwen3", start: "child-start" }
+    : pid === process.pid ? { command: "bun test", start: "self-start" } : undefined;
+  const handle = await ensureMlx({ runtimeDir, modelPath: "/models/qwen3", bin: "/venv/bin/mlx_lm.server", port: 47774,
+    spawn: (() => child) as any, processInfo, health: async () => true });
+  await expect(handle.acquire()).rejects.toThrow("owner cannot be authenticated");
   rmSync(runtimeDir, { recursive: true, force: true });
 });

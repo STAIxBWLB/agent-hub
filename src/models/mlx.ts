@@ -4,6 +4,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, r
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createServer, isIP } from "node:net";
+import { Database } from "bun:sqlite";
 
 export type MlxState = "disabled" | "starting" | "ready" | "stopped" | "foreign" | "error";
 
@@ -62,10 +63,10 @@ const DEFAULT_RUNTIME_DIR = join(homedir(), ".agenthub", "runtimes", "mlx");
 const DEFAULT_MODEL_PATH = join(homedir(), ".agenthub", "models", "qwen3-8b-mlx");
 const DEFAULT_BIN = join(DEFAULT_RUNTIME_DIR, "bin", "mlx_lm.server");
 const OWNER_FILE = "owner.json";
-const LOCK_DIR = "start.lock";
+const GENERATION_DB = "generation-slots.db";
 
 const ownerPath = (runtimeDir: string) => join(runtimeDir, OWNER_FILE);
-const lockPath = (runtimeDir: string) => join(runtimeDir, LOCK_DIR);
+const generationDbPath = (runtimeDir: string) => join(runtimeDir, GENERATION_DB);
 
 function assertLoopback(host: string): void {
   const value = host.toLowerCase();
@@ -78,7 +79,7 @@ function readOwner(runtimeDir: string): OwnerRecord | undefined {
   if (!existsSync(ownerPath(runtimeDir))) return undefined;
   try {
     const value = JSON.parse(readFileSync(ownerPath(runtimeDir), "utf8")) as Partial<OwnerRecord>;
-    if (value.schema !== 1 || typeof value.token !== "string" || !Number.isSafeInteger(value.pid) ||
+    if (value.schema !== 1 || typeof value.token !== "string" || typeof value.pid !== "number" || !Number.isSafeInteger(value.pid) || value.pid < 1 ||
         typeof value.bin !== "string" || typeof value.modelPath !== "string" || typeof value.host !== "string" ||
         !Number.isInteger(value.port) || typeof value.startedAt !== "number" || typeof value.processStart !== "string") throw new Error("MLX owner record is malformed; inspect it before retrying");
     return value as OwnerRecord;
@@ -102,29 +103,52 @@ function ownedProcess(owner: OwnerRecord, readInfo = processInfo): boolean {
   return !!current && current.start === owner.processStart && current.command.includes(owner.bin) && current.command.includes(owner.modelPath);
 }
 
-function processAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch { return false; }
+function processAlive(pid: number): boolean | undefined {
+  try { process.kill(pid, 0); return true; }
+  catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH" ? false : undefined;
+  }
 }
 
-function acquireStartLock(runtimeDir: string): () => void {
-  const path = lockPath(runtimeDir);
+function acquireStartLock(runtimeDir: string, readInfo: (pid: number) => ProcessSignature | undefined): () => void {
+  // A pre-SQLite lock cannot be reclaimed safely by this version. Leave it for
+  // explicit inspection instead of allowing two starters to race on the GPU.
+  if (existsSync(join(runtimeDir, "start.lock"))) throw new Error("legacy MLX startup lock exists; inspect it before retrying");
+  const db = generationDatabase(runtimeDir);
+  const self = readInfo(process.pid);
+  if (!self) { db.close(); throw new Error("MLX startup owner identity is unavailable"); }
+  const token = randomUUID();
   try {
-    mkdirSync(path, { mode: 0o700 });
-    writeFileSync(join(path, "owner.json"), JSON.stringify({ pid: process.pid, processStart: processInfo(process.pid)?.start ?? "" }), { mode: 0o600 });
-    return () => rmSync(path, { recursive: true, force: true });
+    db.run(`CREATE TABLE IF NOT EXISTS startup_lock (
+      slot INTEGER PRIMARY KEY CHECK (slot = 1),
+      token TEXT NOT NULL,
+      pid INTEGER NOT NULL,
+      process_start TEXT NOT NULL
+    )`);
+    db.transaction(() => {
+      const row = db.query("SELECT slot, token, pid, process_start FROM startup_lock WHERE slot = 1").get() as Record<string, unknown> | null;
+      if (row) {
+        if (row.slot !== 1 || typeof row.token !== "string" || !row.token || !Number.isSafeInteger(row.pid) || (row.pid as number) < 1 ||
+            typeof row.process_start !== "string" || !row.process_start) throw new Error("MLX startup lock is malformed; inspect it before retrying");
+        const current = readInfo(row.pid as number);
+        if (current && current.start === row.process_start) throw new Error("another MLX startup owns the runtime lock");
+        if (!current && processAlive(row.pid as number) !== false) throw new Error("MLX startup lock owner cannot be authenticated");
+        db.query("DELETE FROM startup_lock WHERE slot = 1 AND token = ? AND pid = ? AND process_start = ?")
+          .run(row.token as string, row.pid as number, row.process_start as string);
+      }
+      db.query("INSERT INTO startup_lock (slot, token, pid, process_start) VALUES (1, ?, ?, ?)").run(token, process.pid, self.start);
+    }).immediate();
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    let lock: { pid?: number; processStart?: string };
-    try { lock = JSON.parse(readFileSync(join(path, "owner.json"), "utf8")); }
-    catch { throw new Error("MLX startup lock is unreadable; inspect it before retrying"); }
-    if (!Number.isSafeInteger(lock.pid) || typeof lock.processStart !== "string") throw new Error("MLX startup lock is malformed; inspect it before retrying");
-    const pid = lock.pid!;
-    const current = processInfo(pid);
-    if (current && current.start === lock.processStart) throw new Error("another MLX startup owns the runtime lock");
-    if (processAlive(pid)) throw new Error("MLX startup lock owner cannot be authenticated");
-    rmSync(path, { recursive: true, force: true });
-    return acquireStartLock(runtimeDir);
+    db.close();
+    throw error;
   }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    try { db.query("DELETE FROM startup_lock WHERE slot = 1 AND token = ? AND pid = ? AND process_start = ?").run(token, process.pid, self.start); }
+    finally { db.close(); }
+  };
 }
 
 function writeOwner(runtimeDir: string, owner: OwnerRecord): void {
@@ -134,44 +158,112 @@ function writeOwner(runtimeDir: string, owner: OwnerRecord): void {
   renameSync(temporary, ownerPath(runtimeDir));
 }
 
-async function acquireGeneration(runtimeDir: string, maxConcurrency: number, signal?: AbortSignal): Promise<() => void> {
+interface GenerationOwner {
+  slot: number;
+  token: string;
+  pid: number;
+  processStart: string;
+}
+
+class GenerationSlotBusy extends Error {}
+
+function generationDatabase(runtimeDir: string): Database {
+  mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+  const db = new Database(generationDbPath(runtimeDir), { create: true });
+  try {
+    db.run("PRAGMA busy_timeout = 100");
+    db.run(`CREATE TABLE IF NOT EXISTS generation_slots (
+      slot INTEGER PRIMARY KEY,
+      token TEXT NOT NULL,
+      pid INTEGER NOT NULL,
+      process_start TEXT NOT NULL
+    )`);
+    return db;
+  } catch (error) { db.close(); throw new Error(`MLX generation lock database is unreadable: ${(error as Error).message}`); }
+}
+
+function parseGenerationOwner(slot: number, row: Record<string, unknown>): GenerationOwner {
+  if (row.slot !== slot || typeof row.token !== "string" || !row.token || !Number.isSafeInteger(row.pid) || (row.pid as number) < 1 ||
+      typeof row.process_start !== "string" || !row.process_start) {
+    throw new Error("MLX generation owner is malformed; inspect it before retrying");
+  }
+  return { slot, token: row.token, pid: row.pid as number, processStart: row.process_start };
+}
+
+function claimGenerationSlot(db: Database, slot: number, readInfo: (pid: number) => ProcessSignature | undefined): (() => void) | undefined {
+  const token = randomUUID();
+  const self = readInfo(process.pid);
+  if (!self) throw new Error("MLX generation owner identity is unavailable");
+  try {
+    db.transaction(() => {
+      const row = db.query("SELECT slot, token, pid, process_start FROM generation_slots WHERE slot = ?").get(slot) as Record<string, unknown> | null;
+      if (row) {
+        const owner = parseGenerationOwner(slot, row);
+        const current = readInfo(owner.pid);
+        if (current && current.start === owner.processStart) throw new GenerationSlotBusy("generation slot is active");
+        if (!current && processAlive(owner.pid) !== false) throw new Error("MLX generation owner cannot be authenticated");
+        // A different start signature proves PID reuse; a missing process with
+        // ESRCH proves the old owner exited. The transaction makes reclamation
+        // and replacement one atomic state transition.
+        db.query("DELETE FROM generation_slots WHERE slot = ? AND token = ? AND pid = ? AND process_start = ?")
+          .run(owner.slot, owner.token, owner.pid, owner.processStart);
+      }
+      db.query("INSERT INTO generation_slots (slot, token, pid, process_start) VALUES (?, ?, ?, ?)")
+        .run(slot, token, process.pid, self.start);
+    }).immediate();
+  } catch (error) {
+    if (error instanceof GenerationSlotBusy) return undefined;
+    const message = String((error as Error).message).toLowerCase();
+    if (message.includes("database is locked") || message.includes("database is busy")) return undefined;
+    throw error;
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    try {
+      db.query("DELETE FROM generation_slots WHERE slot = ? AND token = ? AND pid = ? AND process_start = ?")
+        .run(slot, token, process.pid, self.start);
+    } finally { db.close(); }
+  };
+}
+
+async function acquireGeneration(runtimeDir: string, maxConcurrency: number, signal?: AbortSignal, readInfo: (pid: number) => ProcessSignature | undefined = processInfo): Promise<() => void> {
+  if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) throw new Error("MLX maxConcurrency must be a positive integer");
+  if (signal?.aborted) throw new Error("MLX generation acquisition cancelled");
   const deadline = Date.now() + 120_000;
-  for (;;) {
-    for (let slot = 0; slot < maxConcurrency; slot++) {
-      const path = join(runtimeDir, `generation-${slot}.lock`);
-      try {
-        mkdirSync(path, { mode: 0o700 });
-        const token = randomUUID();
-        writeFileSync(join(path, "owner.json"), JSON.stringify({ token, pid: process.pid, processStart: processInfo(process.pid)?.start ?? "" }), { mode: 0o600 });
-        return () => {
-          try {
-            const current = JSON.parse(readFileSync(join(path, "owner.json"), "utf8")) as { token?: string };
-            if (current.token === token) rmSync(path, { recursive: true, force: true });
-          } catch { /* another owner or an already released slot */ }
+  const db = generationDatabase(runtimeDir);
+  try {
+    for (;;) {
+      for (let slot = 0; slot < maxConcurrency; slot++) {
+        const release = claimGenerationSlot(db, slot, readInfo);
+        if (release) return release;
+      }
+      if (signal?.aborted) throw new Error("MLX generation acquisition cancelled");
+      if (Date.now() >= deadline) throw new Error("MLX generation is busy");
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: Error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", abort);
+          error ? reject(error) : resolve();
         };
-      } catch { /* try another slot */ }
+        const timer = setTimeout(() => finish(), 50);
+        const abort = () => finish(new Error("MLX generation acquisition cancelled"));
+        signal?.addEventListener("abort", abort, { once: true });
+      });
     }
-    if (signal?.aborted) throw new Error("MLX generation acquisition cancelled");
-    if (Date.now() >= deadline) throw new Error("MLX generation is busy");
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const finish = (error?: Error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        signal?.removeEventListener("abort", abort);
-        error ? reject(error) : resolve();
-      };
-      const timer = setTimeout(() => finish(), 50);
-      const abort = () => finish(new Error("MLX generation acquisition cancelled"));
-      signal?.addEventListener("abort", abort, { once: true });
-    });
+  } catch (error) {
+    db.close();
+    throw error;
   }
 }
 
 async function waitForExit(owner: OwnerRecord, readInfo: (pid: number) => ProcessSignature | undefined): Promise<void> {
   for (let i = 0; i < 60; i++) {
-    if (!readInfo(owner.pid) && !processAlive(owner.pid)) return;
+    if (!readInfo(owner.pid) && processAlive(owner.pid) === false) return;
     await Bun.sleep(50);
   }
   throw new Error("MLX process did not terminate after SIGTERM");
@@ -223,7 +315,7 @@ export async function inspectMlx(options: MlxOptions = {}): Promise<MlxStatus> {
   if (!owner) return { state: "stopped", model: modelPath, maxInputTokens, maxConcurrency, active: 0 };
   const current = (options.processInfo ?? processInfo)(owner.pid);
   if (!ownedProcess(owner, options.processInfo ?? processInfo)) {
-    if (current || processAlive(owner.pid)) return { state: "foreign", url: `http://${host}:${owner.port}/v1`, model: owner.modelPath, pid: owner.pid, maxInputTokens, maxConcurrency, active: 0, lastError: "runtime record does not match the live process" };
+    if (current || processAlive(owner.pid) !== false) return { state: "foreign", url: `http://${host}:${owner.port}/v1`, model: owner.modelPath, pid: owner.pid, maxInputTokens, maxConcurrency, active: 0, lastError: "runtime record does not match the live process" };
     return { state: "stopped", model: owner.modelPath, maxInputTokens, maxConcurrency, active: 0 };
   }
   const url = `http://${owner.host}:${owner.port}/v1`;
@@ -238,6 +330,7 @@ export async function ensureMlx(options: MlxOptions = {}): Promise<MlxHandle> {
   const host = options.host ?? "127.0.0.1";
   const maxInputTokens = options.maxInputTokens ?? 16_000;
   const maxConcurrency = options.maxConcurrency ?? 1;
+  const readInfo = options.processInfo ?? processInfo;
   assertLoopback(host);
   const health = options.health ?? defaultHealth;
   const existing = await inspectMlx(options);
@@ -248,7 +341,7 @@ export async function ensureMlx(options: MlxOptions = {}): Promise<MlxHandle> {
   const sharedHandle = (status: MlxStatus): MlxHandle => {
     let active = 0;
     return { url: status.url!, model: modelPath, status: () => ({ ...status, active }), acquire: async (signal) => {
-      const releaseSlot = await acquireGeneration(runtimeDir, maxConcurrency, signal);
+      const releaseSlot = await acquireGeneration(runtimeDir, maxConcurrency, signal, readInfo);
       active++;
       return () => { active = Math.max(0, active - 1); releaseSlot(); };
     }, close: async () => {} };
@@ -263,7 +356,7 @@ export async function ensureMlx(options: MlxOptions = {}): Promise<MlxHandle> {
   }
   if (existing.state === "foreign") throw new Error("MLX endpoint is owned by an unknown process; refusing to kill or reuse it");
   mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
-  const releaseStartLock = acquireStartLock(runtimeDir);
+  const releaseStartLock = acquireStartLock(runtimeDir, readInfo);
   let child: ChildProcess | undefined;
   try {
     const port = await freePort(host, options.port);
@@ -280,7 +373,7 @@ export async function ensureMlx(options: MlxOptions = {}): Promise<MlxHandle> {
       });
     } finally { closeSync(logFd); }
     if (!child.pid) throw new Error("MLX process did not provide a PID");
-    const signature = (options.processInfo ?? processInfo)(child.pid);
+    const signature = readInfo(child.pid);
     if (!signature) throw new Error("could not verify MLX process ownership");
     const owner: OwnerRecord = { ...ownerBase, pid: child.pid, processStart: signature.start };
     writeOwner(runtimeDir, owner);
@@ -293,7 +386,7 @@ export async function ensureMlx(options: MlxOptions = {}): Promise<MlxHandle> {
         // only the explicit stopMlx operation may stop the owned runtime.
         const close = async () => {};
         return { url, model: modelPath, status: () => ({ state: "ready", url, model: modelPath, pid: child?.pid, maxInputTokens, maxConcurrency, active }), acquire: async (signal) => {
-          const releaseSlot = await acquireGeneration(runtimeDir, maxConcurrency, signal);
+          const releaseSlot = await acquireGeneration(runtimeDir, maxConcurrency, signal, readInfo);
           active++;
           return () => { active = Math.max(0, active - 1); releaseSlot(); };
         }, close };
@@ -313,7 +406,7 @@ export async function stopMlx(options: MlxOptions = {}): Promise<void> {
   const owner = readOwner(runtimeDir);
   if (!owner) return;
   if (!ownedProcess(owner, options.processInfo ?? processInfo)) {
-    if ((options.processInfo ?? processInfo)(owner.pid) || processAlive(owner.pid)) throw new Error("MLX owner record does not match the live process; refusing to kill it");
+    if ((options.processInfo ?? processInfo)(owner.pid) || processAlive(owner.pid) !== false) throw new Error("MLX owner record does not match the live process; refusing to kill it");
     rmSync(ownerPath(runtimeDir), { force: true });
     return;
   }
