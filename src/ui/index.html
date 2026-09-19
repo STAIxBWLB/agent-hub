@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>agent-hub | Local dashboard</title>
+<style>
+:root{color-scheme:light;--paper:#f5f4ef;--ink:#252b29;--muted:#68716c;--line:#d9ddd5;--green:#245f45;--red:#a2392f}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.5 system-ui,sans-serif}header,main{max-width:1440px;margin:auto;padding:24px 32px}header{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);gap:20px}h1{font-size:24px;letter-spacing:-1px;margin:0}h1 span{font-weight:400;color:var(--muted)}h2{font-size:15px;margin:0}p{margin:6px 0}.eyebrow,.meta{font-size:12px;color:var(--muted)}.eyebrow{letter-spacing:1.5px;text-transform:uppercase}.connection{font-size:12px;color:var(--muted)}main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:24px}.stack{display:flex;flex-direction:column;gap:24px;min-width:0}section{border:1px solid var(--line);background:#fff;border-radius:8px;overflow:hidden}.section-head{display:flex;justify-content:space-between;align-items:center;padding:16px 18px;border-bottom:1px solid var(--line);gap:12px}.content{padding:16px 18px}.empty{color:var(--muted);padding:20px 18px}.row{padding:14px 18px;border-bottom:1px solid var(--line)}.row:last-child{border-bottom:0}.row-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.label{font-weight:600;overflow-wrap:anywhere}.badge{display:inline-block;font:11px ui-monospace,monospace;padding:3px 7px;background:#edf2ee;color:var(--green);border-radius:4px}.badge.warn{color:#855417;background:#f9f0dc}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}button,input,select,textarea{font:inherit}button{background:#fff;color:var(--ink);border:1px solid #bbc4bb;border-radius:5px;padding:6px 10px;cursor:pointer}button:hover{background:#f0f4ef}button.primary{background:var(--green);color:#fff;border-color:var(--green)}button.danger{color:var(--red)}button:disabled{opacity:.5;cursor:default}:focus-visible{outline:2px solid var(--green);outline-offset:3px}input,select,textarea{width:100%;border:1px solid #bbc4bb;border-radius:5px;padding:8px;background:#fff;color:var(--ink)}input[type="checkbox"]{width:auto;margin-right:6px}textarea{resize:vertical;min-height:78px}label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}form .field{margin-bottom:12px}.actions select{width:auto;max-width:220px}.body{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:7px}.stream{height:360px;overflow:auto}.event{padding:12px 18px;border-bottom:1px solid var(--line)}.event .body{font:13px/1.55 ui-monospace,monospace}.notice{grid-column:1/-1;margin:0;border:1px solid var(--line);border-radius:6px;padding:10px 14px;background:#fff;overflow-wrap:anywhere}.notice.error{color:var(--red);border-color:#dfb8b3}.notice:empty{display:none}progress{width:100%;height:8px;accent-color:var(--green);display:block;margin:8px 0}.budget-window+.budget-window{margin-top:14px}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}details summary{cursor:pointer;padding:14px 18px;color:var(--green);font-weight:600}details form{padding:0 18px 18px}.task-list{max-height:460px;overflow:auto}footer{max-width:1440px;margin:auto;padding:0 32px 24px;color:var(--muted);font-size:12px}@media(max-width:900px){main{grid-template-columns:1fr}.stack{gap:18px}header,main{padding:18px}.stream{height:300px}footer{padding:0 18px 18px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<header><div><div class="eyebrow">Local control room</div><h1>agent-hub <span>/ dashboard</span></h1></div><div id="connection" class="connection" role="status">Connecting...</div></header>
+<main>
+<p id="notice" class="notice" role="status" aria-live="polite"></p>
+<div class="stack">
+<section aria-labelledby="stream-title"><div class="section-head"><h2 id="stream-title">Live stream</h2><label><input id="follow" type="checkbox" checked> Follow latest</label></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div></section>
+<section aria-labelledby="tasks-title"><div class="section-head"><h2 id="tasks-title">Task board</h2><span id="task-count" class="meta"></span></div><div id="tasks" class="task-list"></div><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><button class="primary" type="submit">Propose task</button></form></details></section>
+<section aria-labelledby="compose-title"><div class="section-head"><h2 id="compose-title">Console message</h2></div><form id="send" class="content"><div class="field"><label for="recipient">Recipient</label><select id="recipient" name="recipient"><option value="">All peers</option></select></div><div class="field"><label for="message">Message</label><textarea id="message" name="body" required maxlength="8000" placeholder="Send an instruction to the team..."></textarea></div><button class="primary" type="submit">Send message</button></form></section>
+</div>
+<div class="stack">
+<section aria-labelledby="peers-title"><div class="section-head"><h2 id="peers-title">Peers &amp; queues</h2><span id="peer-count" class="meta"></span></div><div id="peers"></div></section>
+<section aria-labelledby="permissions-title"><div class="section-head"><h2 id="permissions-title">Pending approvals</h2><span id="permission-count" class="meta"></span></div><div id="permissions"></div></section>
+<section aria-labelledby="budget-title"><div class="section-head"><h2 id="budget-title">Usage budgets</h2></div><div id="budget"></div></section>
+</div>
+</main>
+<footer>Loopback session. Private task content stays in the terminal. Reopen with <code>ahub ui</code> when your session expires.</footer>
+<script>
+'use strict';
+let ticket = location.hash.slice(1);
+history.replaceState(null, '', location.pathname);
+const $ = (id) => document.getElementById(id);
+const el = (tag, text, cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = String(text); if (cls) node.className = cls; return node; };
+let stopped = false, cursor = 0, timer, eventCount = 0;
+const signatures = new Map();
+const time = (value) => value ? new Date(value).toLocaleString() : 'unknown';
+function notice(text, error = false) { $('notice').textContent = text; $('notice').classList.toggle('error', error); }
+function expire() { stopped = true; clearTimeout(timer); $('connection').textContent = 'Session closed'; notice('Session missing or expired. Run ahub ui in your terminal to reopen the dashboard.', true); document.querySelectorAll('button').forEach((button) => { button.disabled = true; }); }
+async function post(path, body) {
+  const response = await fetch(path, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  if (response.status === 401) { expire(); throw new Error('Run ahub ui to start a new session.'); }
+  const result = await response.json();
+  if (!response.ok || result.ok === false) throw new Error(result.error || 'Request failed (' + response.status + ').');
+  return result;
+}
+async function action(payload, button) {
+  if (stopped) return false;
+  if (button) button.disabled = true;
+  try { const result = await post('/action', payload); notice(result.text || 'Action accepted.'); return true; }
+  catch (error) { if (!stopped) notice(error.message, true); return false; }
+  finally { if (button && !stopped) button.disabled = false; }
+}
+function button(text, payload, cls) { const node = el('button', text, cls); node.type = 'button'; node.addEventListener('click', () => void action(payload, node)); return node; }
+function update(id, data, render) { const signature = JSON.stringify(data); if (signatures.get(id) === signature) return; signatures.set(id, signature); const target = $(id); target.replaceChildren(); render(target); }
+function empty(target, text) { target.append(el('p', text, 'empty')); }
+function peerOptions(select, ids, first) { const selected = select.value; select.replaceChildren(); const initial = el('option', first); initial.value = ''; select.append(initial); for (const id of ids) { const option = el('option', id); option.value = id; select.append(option); } if (ids.includes(selected)) select.value = selected; }
+function render(snapshot) {
+  const peers = snapshot.status.peers || {}, ids = Object.keys(peers);
+  $('peer-count').textContent = ids.length + ' peers';
+  update('peers', peers, (target) => {
+    if (!ids.length) return empty(target, 'No peers connected. Start an agent from your terminal.');
+    for (const [id, peer] of Object.entries(peers)) {
+      const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
+      head.append(el('span', id, 'label'), el('span', peer.state, 'badge' + (peer.state === 'paused' ? ' warn' : '')));
+      row.append(head, el('p', peer.queued + ' queued', 'meta'));
+      if (peer.paused) row.append(el('p', peer.paused, 'meta'));
+      const paused = peer.state === 'paused' || peer.paused;
+      row.append(button(paused ? 'Resume' : 'Pause', {action:paused ? 'resume' : 'pause', peer:id})); target.append(row);
+    }
+  });
+  const peerSignature = JSON.stringify(ids);
+  if (signatures.get('peer-options') !== peerSignature) { signatures.set('peer-options', peerSignature); peerOptions($('owner'), ids, 'Automatic'); peerOptions($('recipient'), ids, 'All peers'); }
+  $('task-count').textContent = snapshot.tasks.length + ' tasks';
+  update('tasks', [snapshot.tasks, ids], (target) => {
+    if (!snapshot.tasks.length) return empty(target, 'No public tasks yet. Propose a task below to get started.');
+    for (const task of snapshot.tasks) {
+      const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
+      head.append(el('span', '#' + task.id + ' ' + task.title, 'label'), el('span', task.state.replaceAll('_', ' '), 'badge'));
+      row.append(head, el('p', task.class + ' / ' + (task.owner || 'unassigned') + (task.reviewer ? ' / review: ' + task.reviewer : ''), 'meta'));
+      if (task.detail) row.append(el('p', task.detail, 'body'));
+      if (task.state !== 'approved' && ids.length) {
+        const actions = el('div', undefined, 'actions'), select = el('select'); select.setAttribute('aria-label', 'Assign task ' + task.id); peerOptions(select, ids, 'Select peer'); if (ids.includes(task.owner)) select.value = task.owner;
+        const assign = el('button', 'Assign'); assign.type = 'button'; assign.addEventListener('click', () => { if (select.value) void action({action:'assign', id:task.id, peer:select.value}, assign); else notice('Select a peer before assigning this task.', true); });
+        actions.append(select, assign); row.append(actions);
+      }
+      target.append(row);
+    }
+  });
+  $('permission-count').textContent = String(snapshot.permissions.length);
+  update('permissions', snapshot.permissions, (target) => {
+    if (!snapshot.permissions.length) return empty(target, 'No approvals waiting.');
+    for (const permission of snapshot.permissions) {
+      const row = el('div', undefined, 'row'); row.append(el('div', permission.peer, 'label'), el('p', permission.title, 'body'));
+      if (permission.terminalOnly) row.append(el('p', 'Review details and allow in the terminal with ahub tail. You can deny here.', 'meta'));
+      const actions = el('div', undefined, 'actions');
+      for (const option of permission.options) { const deny = option.kind === 'reject_once' || option.kind === 'reject_always'; if (permission.terminalOnly && !deny) continue; actions.append(button(option.name, {action:'permit', id:permission.id, option:option.optionId}, deny ? 'danger' : 'primary')); }
+      row.append(actions); target.append(row);
+    }
+  });
+  update('budget', snapshot.budget, (target) => {
+    if (!Object.keys(snapshot.budget).length) return empty(target, 'No usage readings yet. Usage appears when a peer reports it.');
+    for (const [peer, budget] of Object.entries(snapshot.budget)) {
+      const row = el('div', undefined, 'row'); row.append(el('div', peer, 'label'));
+      if (budget.paused) row.append(el('p', 'Paused: ' + budget.paused.reason + ' / resets ' + time(budget.paused.resetsAt), 'meta'));
+      if (!budget.windows.length) row.append(el('p', 'No usage windows reported.', 'meta'));
+      for (const window of budget.windows) { const item = el('div', undefined, 'budget-window'), percent = Math.round(window.used * 100); item.append(el('p', window.id + ': ' + percent + '% used' + (window.stale ? ' (stale)' : ''), 'meta')); const bar = el('progress'); bar.max = 1; bar.value = window.used; bar.setAttribute('aria-label', peer + ' ' + window.id + ' usage'); item.append(bar, el('p', window.source + (window.resetsAt ? ' / resets ' + time(window.resetsAt) : ''), 'meta')); row.append(item); }
+      target.append(row);
+    }
+  });
+  const stream = $('stream');
+  for (const entry of snapshot.events || []) {
+    if (entry.seq <= cursor) continue;
+    if (!eventCount) stream.replaceChildren();
+    const event = entry.event, node = el('div', undefined, 'event');
+    if (event.env) { const env = event.env; node.append(el('div', new Date(env.ts).toLocaleTimeString() + ' / ' + env.from + ' → ' + (env.to ? env.to.join(', ') : 'all') + ' / ' + env.kind + (event.t !== 'envelope' ? ' / ' + event.t : '') + (event.dropped ? ' / ' + event.dropped : ''), 'meta'), el('div', env.body, 'body')); }
+    else node.append(el('div', event.peer + ' / ' + event.state, 'meta'));
+    stream.append(node); eventCount++; while (stream.children.length > 200) stream.firstElementChild.remove();
+  }
+  cursor = Math.max(cursor, snapshot.cursor || 0);
+  if ($('follow').checked) stream.scrollTop = stream.scrollHeight;
+}
+async function poll() {
+  if (stopped) return;
+  try { render(await post('/snapshot', {after:cursor})); $('connection').textContent = 'Live / updated ' + new Date().toLocaleTimeString(); }
+  catch (error) { if (!stopped) $('connection').textContent = 'Disconnected / retrying: ' + error.message; }
+  if (!stopped) timer = setTimeout(poll, 1000);
+}
+$('send').addEventListener('submit', async (event) => { event.preventDefault(); const body = $('message').value.trim(); if (!body) return; const to = $('recipient').value, payload = {action:'send', body}; if (to) payload.to = [to]; if (await action(payload, event.submitter)) $('message').value = ''; });
+$('propose').addEventListener('submit', async (event) => { event.preventDefault(); const title = $('title').value.trim(); if (!title) return; const payload = {action:'propose', title, class:$('class').value}; if ($('detail').value.trim()) payload.detail = $('detail').value.trim(); if ($('owner').value) payload.owner = $('owner').value; if (await action(payload, event.submitter)) { $('title').value = ''; $('detail').value = ''; } });
+(async () => { try { if (ticket) await post('/session', {ticket}); ticket = ''; await poll(); } catch (error) { ticket = ''; if (!stopped) { stopped = true; notice('Could not start session: ' + error.message + ' Run ahub ui to reopen.', true); $('connection').textContent = 'Session unavailable'; } } })();
+</script>
+</body>
+</html>

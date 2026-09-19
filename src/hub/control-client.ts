@@ -5,8 +5,8 @@ export function stateDirFor(cwd: string): string {
   return process.env.AGENTHUB_STATE_DIR ?? join(cwd, ".agenthub", "state");
 }
 
-/** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages; 4 = budget messages and `hub_checkpoint`; 5 = `ask`. The plugin is installed apart from the daemon, so they can drift. */
-export const PROTOCOL = 5;
+/** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages; 4 = budget messages and `hub_checkpoint`; 5 = `ask`; 6 = console-only `ui` session bootstrap. The plugin is installed apart from the daemon, so they can drift. */
+export const PROTOCOL = 6;
 
 export interface Hello {
   /** `tools`: acts for `peer` (task tools, hub_send) without being a delivery target: the MCP server Kimi and Codex run. */
