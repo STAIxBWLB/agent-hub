@@ -10,9 +10,14 @@ import { OmniRoute } from "../omniroute/client.ts";
 import { MemoryClient } from "../memory/client.ts";
 import { init } from "./init.ts";
 import { buildLaunch, UNATTENDED_WARNING } from "./launch.ts";
+import { nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
+import { CLASSES } from "../hub/board.ts";
+import { VERSION } from "../version.ts";
+import { createInterface } from "node:readline/promises";
 
-const USAGE = `agent-hub: Claude Code, Codex and Kimi as peers in one project directory
+const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one project directory
 
+  ahub setup [--yes]            install or update the Claude Code channel plugin from this package, then run doctor
   ahub init                     write .agenthub/config.json and the CLAUDE.md / AGENTS.md marker blocks
   ahub up [--unattended]        start the daemon for this directory
   ahub claude [args...]         launch Claude Code with the hub channel   [--unattended]
@@ -27,7 +32,7 @@ const USAGE = `agent-hub: Claude Code, Codex and Kimi as peers in one project di
   ahub budget set <peer> <0..1> [--resets-in 30m] [--window 5h|week]   feed a reading by hand (also: test the relay)
   ahub budget resume <peer>     override a budget pause; readings are ignored for that peer until the window resets
   ahub board [state]            the task board
-  ahub task propose <class> <title...> [--owner <peer>] [--path <p>]... [--detail <text>]
+  ahub task propose [--class <c> | <class>] <title...> [--owner <peer>] [--path <p>]... [--detail <text>]
   ahub task show|escalate <id>  full task with history (PII text included) / hand it to the next peer in escalate_to
   ahub task assign <id> <peer>  give a task to a peer yourself
   ahub review <id> approved|changes_requested [note...]
@@ -108,6 +113,33 @@ async function hold(t: "pause" | "resume"): Promise<void> {
 
 const commands: Record<string, () => Promise<void> | void> = {
   help: () => console.log(USAGE),
+  "--version": () => console.log(VERSION),
+  version: () => console.log(VERSION),
+
+  setup: async () => {
+    const root = join(import.meta.dir, "..", "..");
+    const state = () => {
+      const out = (argv: string[]) => spawnSync("claude", argv, { encoding: "utf8" }).stdout ?? "";
+      return nextStep(parseList<InstalledPlugin>(out(["plugin", "list", "--json"])), parseList<Marketplace>(out(["plugin", "marketplace", "list", "--json"])), root);
+    };
+    let step = state();
+    if (!step) console.log(`Claude Code plugin agent-hub@agent-hub ${VERSION} is installed from this package.`);
+    else {
+      console.log(`ahub setup changes your Claude Code plugin configuration, one step at a time, re-checking after each. First step:\n  ${step.argv.join(" ")}\n      ${step.why}`);
+      if (!args.includes("--yes")) {
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        const answer = (await rl.question("Proceed (this and the steps that follow from it)? [y/N] ")).trim().toLowerCase();
+        rl.close();
+        if (answer !== "y" && answer !== "yes") return console.log("nothing was changed");
+      }
+      for (let i = 0; step && i < 6; i++, step = state()) {
+        console.log(`> ${step.argv.join(" ")}   (${step.why})`);
+        if (spawnSync(step.argv[0]!, step.argv.slice(1), { stdio: "inherit" }).status !== 0) fail(`"${step.argv.join(" ")}" failed; nothing after it was run`);
+      }
+      if (step) fail(`still not done after 6 steps; next would be: ${step.argv.join(" ")}`);
+    }
+    await commands.doctor!();
+  },
 
   init: () => {
     const changed = init(cwd);
@@ -267,9 +299,15 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (sub === "show") return console.log(await taskOp("task_show", { id: rest[0] }));
     if (sub === "escalate") return console.log(await taskOp("task_escalate", { id: rest[0] }));
     if (sub === "assign") return console.log(await taskOp("task_assign", { id: rest[0], peer: rest[1] }));
-    if (sub !== "propose" || rest.length < 2) fail("usage: ahub task propose <class> <title...> | show <id> | assign <id> <peer> | escalate <id>");
-    const flags = takeFlags(rest.slice(1), ["--owner", "--detail"], ["--path"]);
-    console.log(await taskOp("hub_task_propose", { class: rest[0], title: flags.rest.join(" "), owner: flags.one["--owner"], detail: flags.one["--detail"], ...(flags.many["--path"]?.length ? { refs: { paths: flags.many["--path"] } } : {}) }));
+    if (sub !== "propose" || rest.length < 1) fail("usage: ahub task propose [<class>] <title...> | show <id> | assign <id> <peer> | escalate <id>");
+    // `--class` is the explicit form. A first word that is a class name is still taken as the class (the documented
+    // short form), but said out loud: "review the auth module" would otherwise be filed as class review, silently.
+    const flags = takeFlags(rest, ["--owner", "--detail", "--class"], ["--path"]);
+    const positional = !flags.one["--class"] && (CLASSES as readonly string[]).includes(flags.rest[0] ?? "") && flags.rest.length > 1;
+    const cls = flags.one["--class"] ?? (positional ? flags.rest[0] : undefined);
+    const title = (positional ? flags.rest.slice(1) : flags.rest).join(" ");
+    if (positional) console.error(`note: "${cls}" was taken as the class and left out of the title; use --class <c> when the title itself starts with that word`);
+    console.log(await taskOp("hub_task_propose", { ...(cls ? { class: cls } : {}), title, owner: flags.one["--owner"], detail: flags.one["--detail"], ...(flags.many["--path"]?.length ? { refs: { paths: flags.many["--path"] } } : {}) }));
   },
 
   review: async () => {
@@ -347,8 +385,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     const up = await healthy();
     row(up, "ahub daemon", up ? readControl(stateDir)!.url : "not running (ahub up)");
-    const plugins = spawnSync("claude", ["plugin", "list"], { encoding: "utf8" }).stdout ?? "";
-    row(plugins.includes("agent-hub@agent-hub"), "claude plugin", plugins.includes("agent-hub@agent-hub") ? "agent-hub@agent-hub installed" : "missing: see docs/smoke.md, Install");
+    const plugin = pluginState(parseList<InstalledPlugin>(spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8" }).stdout ?? ""), join(import.meta.dir, "..", ".."));
+    row(plugin.state === "current", "claude plugin", plugin.state === "missing" ? "missing: run ahub setup" : plugin.state === "current" ? `agent-hub@agent-hub ${plugin.version}` : `agent-hub@agent-hub is stale (${plugin.why}): run ahub setup`);
 
     const config = loadConfig(cwd);
     const omni = new OmniRoute(config.omniroute);

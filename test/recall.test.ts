@@ -40,7 +40,9 @@ test("trim cuts at a line boundary; the project chain ends with this repo", () =
   expect(cut).toEndWith("\n(trimmed)");
   expect(cut.split("\n").at(-2)).toMatch(/^line \d+$/);
   expect(trimToTokens("short", 10)).toBe("short");
-  expect(projectChain(import.meta.dir).at(-1)).toBe("agent-hub");
+  // whatever the checkout directory is called (a CI workspace, a worktree, a renamed clone)
+  const top = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { cwd: import.meta.dir }).stdout.toString().trim();
+  expect(projectChain(import.meta.dir).at(-1)).toBe(top.split("/").at(-1)!);
 });
 
 test("the token budget is split per platform so the first one cannot crowd out the rest", async () => {

@@ -15,6 +15,8 @@ export interface TasksDeps {
   memory?: MemoryClient;
   /** a line for the human: console tail and hub.log */
   notify: (line: string) => void;
+  /** Optional: name a class for a task proposed without one. `onCampus` says whether the model call stays on campus. */
+  triage?: { classify: (title: string, detail: string) => Promise<TaskClass | undefined>; onCampus: () => Promise<boolean> };
 }
 
 const ESCALATE_AFTER = 2;
@@ -67,9 +69,22 @@ export class Tasks {
   async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; refs?: TaskRefs; owner?: PeerId }): Promise<Task> {
     const title = String(input.title ?? "").trim();
     if (!title) throw new Error("title is required");
-    if (!CLASSES.includes(input.class as TaskClass)) throw new Error(`class must be one of ${CLASSES.join(", ")}`);
-    const draft = { title, detail: String(input.detail ?? ""), class: input.class as TaskClass, refs: cleanRefs(input.refs) };
-    const task = this.d.board.propose(by, { ...draft, signals: detectSignals(draft, this.d.routing(), this.d.cwd) });
+    const given = input.class === undefined || input.class === "" ? undefined : input.class;
+    if (given !== undefined && !CLASSES.includes(given as TaskClass)) throw new Error(`class must be one of ${CLASSES.join(", ")}`);
+    const text = { title, detail: String(input.detail ?? ""), refs: cleanRefs(input.refs) };
+    const signals = detectSignals(text, this.d.routing(), this.d.cwd);
+    let cls = given as TaskClass | undefined;
+    let triaged = false;
+    if (!cls && this.d.triage) {
+      // Signals first: a PII task's text may only go to a model that is reached without leaving the campus network.
+      const pii = signals.includes("pii") && this.d.routing().constraints.pii === "local_only";
+      if (!pii || (await this.d.triage.onCampus().catch(() => false))) cls = await this.d.triage.classify(text.title, text.detail).catch(() => undefined);
+      triaged = !!cls;
+    }
+    if (!cls) throw new Error(`class is required (one of ${CLASSES.join(", ")}); the hub could not name one for you`);
+    const draft = { ...text, class: cls };
+    let task = this.d.board.propose(by, { ...draft, signals });
+    if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
     this.d.notify(`task ${this.publicTitle(task)} proposed by ${by} [${task.class}]${task.signals.length ? ` signals: ${task.signals.join(", ")}` : ""}`);
     return this.assignOwner(task, by, input.owner ? { candidates: [input.owner] } : {});
   }

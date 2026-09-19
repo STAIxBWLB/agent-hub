@@ -106,7 +106,7 @@ export class OmniRoute {
     return undefined;
   }
 
-  async chat(body: { model: string; messages: ChatMessage[]; tools?: unknown[] }, opts: ChatOptions = {}): Promise<ChatResult> {
+  async chat(body: { model: string; messages: ChatMessage[]; tools?: unknown[]; max_tokens?: number }, opts: ChatOptions = {}): Promise<ChatResult> {
     const base = opts.via ?? (await this.base());
     if (!base) throw new Error("no model gateway is configured or reachable (omniroute.urls in .agenthub/config.json; see ahub doctor)");
     const headers: Record<string, string> = { "content-type": "application/json" };

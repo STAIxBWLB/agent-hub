@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalPeer, type LocalOptions } from "../src/adapters/local-worker.ts";
@@ -270,7 +270,7 @@ test("sidecar: calls go through the route, the selected model is recorded, the c
   expect(ctx.model.requests.at(-1)!.body.model).toBe("vllm/deepseek-ai/DeepSeek-V4-Flash-0731"); // the route id was mapped to the target
   expect(readFileSync(join(ctx.cwd, "a.txt"), "utf8")).toBe("one\n2\n"); // tool calls survive the hop
   const file = join(stateDir, "switchyard.toml");
-  expect(Bun.spawnSync(["stat", "-f", "%Lp", file]).stdout.toString().trim()).toBe("600");
+  expect(statSync(file).mode & 0o777).toBe(0o600);
   expect(readFileSync(file, "utf8")).not.toContain("sk-fake-secret");
   sidecar.stop();
   expect(() => readFileSync(file)).toThrow();
