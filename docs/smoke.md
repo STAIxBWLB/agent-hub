@@ -51,6 +51,15 @@ Needs WARP (or the Access files for `gateway.example.edu`) and a key: `OMNIROUTE
 4. PII: propose a task whose title matches `signals.pii_patterns`. Owner `local`, reviewer `user`; `grep <value> .agenthub/state/hub.log` and the `hub tail` output find nothing; `hub board` shows `[pii]`; `hub task show <id>` shows the text; `hub review <id> approved` closes it; claude-mem has no row with the value.
 5. With Claude and Codex attached: a task proposed by Claude, done by Codex, reaches Claude as a review; two `changes_requested` move it to the next peer in `escalate_to`.
 
+## M5: budget relay
+
+1. `hub up`, `hub kimi`, `hub local`, `hub tail`. Give Kimi a task, then `hub budget set kimi 0.95 --resets-in 2m`.
+2. `hub tail`: Kimi is asked for a checkpoint, writes `.agenthub/checkpoint.md`, calls `hub_checkpoint`; then `budget: kimi paused ...; checkpoint received` and `budget: moved from kimi: #<id> owner -> local`. `hub status` shows `kimi paused (budget: ...)`, `hub board` shows the task with `local`.
+3. `hub budget set kimi 0.97` again changes nothing. `hub resume kimi` is refused while the record is open; `hub budget resume kimi` overrides it, and further readings over the gate do not pause Kimi again until that window has reset.
+4. `hub budget set kimi 0.1` (the mocked reset), or wait for the reset time: `kimi resumed`, and Kimi gets one envelope listing what moved.
+5. Codex: with a TUI attached through `hub codex`, `hub budget` shows its windows from `account/rateLimits/read`; on a limited account Codex is paused until `resetsAt` without a checkpoint.
+6. Claude: start with `hub claude` and check that `.agenthub/state/claude-usage.json` appears and the status line looks as before; `hub budget` shows `claude 5h` and `week`.
+
 ## Record
 
 | Date | Leg | Result |
@@ -68,6 +77,11 @@ Needs WARP (or the Access files for `gateway.example.edu`) and a key: `OMNIROUTE
 | 2026-09-19 | M4 step 4, PII | pass: owner `local`, reviewer `user`, file edited, 0 hits for the value in `hub tail` and `hub.log`, 0 rows and 0 pending messages with it in claude-mem, console review closed it |
 | 2026-09-19 | Codex MCP override | partial: `codex app-server -c mcp_servers.agent-hub.*` starts the hub's MCP server and reports `ready` (no model quota needed); a real Codex turn calling a hub tool is not verified |
 | | M4 step 5 (review handoff and escalation with Claude and Codex live) | not run: needs interactive Claude and Codex sessions; covered by tests against fakes |
+| 2026-09-19 | M5 steps 1 to 4 (Kimi 0.43.1, DeepSeek `local`, `hub budget set`) | pass: Kimi wrote `.agenthub/checkpoint.md` and called `hub_checkpoint`, was paused after it, task #5 moved to `local` which accepted it, the second 0.97 reading changed nothing, the mocked reset resumed Kimi with the list of moves |
+| 2026-09-19 | M5 step 3 after the review fixes | pass: pause with checkpoint, `hub resume` refused with the hint, `hub budget resume kimi` lifted it, a following 96% reading did not pause again |
+| 2026-09-19 | M5 Codex source, real `account/rateLimits/read` through the proxy | pass: `primary {usedPercent: 100, windowDurationMins: 10080, resetsAt: 1789811966}`, `rateLimitReachedType: rate_limit_reached`, parsed as the weekly window at 100% with its reset time; the answer did not reach the TUI side |
+| 2026-09-19 | M5 step 6, Claude status line tee through `--settings` | not verified: a pty run without a person produced no status line render; the tee itself is tested (records the limits, output identical). Fallback if the injection does not work: add the same tee in front of the dotfiles-owned status line command |
+| | M5 step 5 with a real TUI (pause driven by Codex's own numbers) | not run: needs an interactive `hub codex` session |
 | | M3 off-campus path (`gateway.example.edu` with Access headers) | not run live (on WARP today); header selection covered by tests |
 | | Two-target `stage_router` / escalation routing | not run live: only DeepSeek-V4-Flash is served; both shapes validate against the real binary's `--dry-run` |
 | | Codex TUI through `hub codex` | not run |

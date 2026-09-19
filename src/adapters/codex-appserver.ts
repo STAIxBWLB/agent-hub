@@ -15,6 +15,10 @@ export interface CodexOptions {
   extraArgs?: string[];
   /** Appended to the standing instruction of the first delivery (role contract). */
   preamble?: string;
+  /** Raw `rateLimits` snapshots from app-server, and `hard = true` when a turn was refused for quota. */
+  onUsage?: (rateLimits: unknown, hard: boolean) => void;
+  /** How often to ask app-server for the rate limits while a TUI is attached. */
+  usagePollMs?: number;
   cwd: string;
   watchdogMs?: number;
   log?: (line: string) => void;
@@ -42,7 +46,8 @@ export class CodexPeer extends BasePeer {
   private threadId = "";
   private readonly activeTurns = new Set<string>();
   private nextId = -1;
-  private readonly pending = new Map<number, { resolve: () => void; reject: (e: Error) => void }>();
+  private readonly pending = new Map<number, { resolve: (result?: any) => void; reject: (e: Error) => void }>();
+  private usageTimer: ReturnType<typeof setInterval> | undefined;
   private injected: Envelope | undefined; // the hub envelope that started the current turn, if any
   private lastAnswer = "";
   private readonly deltas = new Map<string, string[]>();
@@ -213,6 +218,7 @@ export class CodexPeer extends BasePeer {
   private detach(link: Link): void {
     link.up.close();
     if (this.link !== link) return;
+    clearInterval(this.usageTimer);
     this.link = undefined;
     this.threadId = "";
     this.activeTurns.clear();
@@ -237,7 +243,7 @@ export class CodexPeer extends BasePeer {
       const p = this.pending.get(msg.id);
       this.pending.delete(msg.id);
       if (msg.error) p?.reject(new Error(msg.error.message ?? "turn/start rejected"));
-      else p?.resolve();
+      else p?.resolve(msg.result);
       return; // ours: the TUI never asked for it
     }
     if (msg.id !== undefined && !msg.method && link.tracked.delete(msg.id)) this.adopt(link, msg.result?.thread?.id);
@@ -252,9 +258,28 @@ export class CodexPeer extends BasePeer {
     this.activeTurns.clear();
     this.opts.log?.(`[${this.id}] thread ${threadId}`);
     this.setState("idle");
+    this.readUsage();
+    clearInterval(this.usageTimer);
+    this.usageTimer = setInterval(() => this.readUsage(), this.opts.usagePollMs ?? 600_000);
+    this.usageTimer.unref?.();
+  }
+
+  /** account/rateLimits/read through the TUI's connection, with a hub id so the answer never reaches the TUI. */
+  private readUsage(): void {
+    const link = this.link;
+    if (!this.opts.onUsage || !link || link.up.readyState !== WebSocket.OPEN) return;
+    const id = this.nextId--;
+    this.pending.set(id, { resolve: (result) => this.opts.onUsage?.(result?.rateLimits, false), reject: () => {} });
+    link.up.send(JSON.stringify({ method: "account/rateLimits/read", id }));
+    setTimeout(() => this.pending.delete(id), 30_000).unref?.(); // an unanswered poll must not pile up until detach
   }
 
   private onNotification(link: Link, method: string, params: any): void {
+    // Account-level notifications carry no threadId.
+    if (link === this.link && method === "account/rateLimits/updated") return void this.opts.onUsage?.(params.rateLimits, false);
+    if (link === this.link && method === "error" && params.error?.codexErrorInfo === "usageLimitExceeded") {
+      this.opts.onUsage?.({ rateLimitReachedType: "usageLimitExceeded" }, true);
+    }
     if (link !== this.link || params.threadId !== this.threadId) return;
     if (method === "turn/started") {
       this.activeTurns.add(params.turn?.id ?? `unknown:${Date.now()}`);

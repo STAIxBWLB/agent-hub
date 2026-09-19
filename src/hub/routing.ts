@@ -113,7 +113,7 @@ export function assign(
   task: Pick<Task, "class" | "signals">,
   states: Record<PeerId, PeerState>,
   routing: Routing,
-  opts: { exclude?: PeerId[]; candidates?: PeerId[] } = {},
+  opts: { exclude?: PeerId[]; candidates?: PeerId[]; notReviewer?: PeerId } = {},
 ): Assignment {
   const policy = routing.classes[task.class];
   const trace: string[] = [`class ${task.class}${policy ? "" : " (no [classes] entry: only an explicit owner can take it)"}`, `signals: ${task.signals.join(", ") || "none"}`];
@@ -149,7 +149,7 @@ export function assign(
   if (task.class !== "review") {
     if (pii) trace.push("reviewer: user (pii: no second on-prem peer; hub review <id> <verdict>)");
     else {
-      reviewer = pick(routing.classes.review?.peers ?? [], "reviewer", owner);
+      reviewer = pick(routing.classes.review?.peers ?? [], "reviewer", owner ?? opts.notReviewer);
       trace.push(reviewer ? `reviewer: ${reviewer}` : "reviewer: none, done will approve directly");
     }
   }

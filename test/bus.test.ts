@@ -291,3 +291,26 @@ test("a hub task envelope whose delivery fails is retried like any other; only t
   expect(bodies.filter((b) => b === "memory block")).toHaveLength(1);
   expect(bus.queued("kimi")).toBe(0);
 });
+
+test("withdraw takes back an envelope that is queued, or whose steer is still in flight", async () => {
+  const { bus, kimi, codex } = await trio();
+  (kimi as any).steer = undefined; // like the real Kimi: busy means queued
+  kimi.set("busy");
+  const ask = newEnvelope(HUB, "checkpoint?", { to: ["kimi"], kind: "budget", priority: "important" });
+  bus.publish(ask);
+  bus.publish(newEnvelope(HUB, "other", { to: ["kimi"], priority: "important" }));
+  expect(bus.withdraw(ask.id)).toBe(true);
+  expect(bus.withdraw(ask.id)).toBe(false);
+  kimi.set("idle");
+  await tick();
+  expect(kimi.got.map((e) => e.body)).toEqual(["other"]);
+
+  codex.set("busy"); // steerable, and the steer is refused a moment later
+  const late = newEnvelope(HUB, "checkpoint? (steered)", { to: ["codex"], kind: "budget", priority: "important" });
+  bus.publish(late);
+  expect(bus.withdraw(late.id)).toBe(false); // in flight, in no queue
+  await tick();
+  codex.set("idle");
+  await tick();
+  expect(codex.got.map((e) => e.body)).not.toContain("checkpoint? (steered)");
+});

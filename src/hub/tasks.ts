@@ -88,19 +88,19 @@ export class Tasks {
 
   private declined = (task: Task) => task.history.filter((h) => h.event === "declined").map((h) => h.by);
 
-  private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; clearOnFail?: boolean } = {}): Promise<Task> {
-    const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}) });
+  private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; clearOnFail?: boolean; exclude?: PeerId[]; context?: string } = {}): Promise<Task> {
+    const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}) });
     if (!a.owner) {
       this.d.notify(`task ${this.publicTitle(task)}: no peer can take it (${a.trace.filter((l) => l.includes("skipped")).length} skipped); assign with: hub task assign ${task.id} <peer>`);
       // Only a decline takes the task away from its owner; a failed console assign or escalation leaves it where it was.
       return opts.clearOnFail && task.owner ? this.d.board.update(task.id, by, "unassigned", { owner: null }) : task;
     }
     const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}) }, opts.note ?? `to ${a.owner}`);
-    await this.sendTask(next, a);
+    await this.sendTask(next, a, opts.context);
     return next;
   }
 
-  private async sendTask(task: Task, a: Assignment): Promise<void> {
+  private async sendTask(task: Task, a: Assignment, context?: string): Promise<void> {
     const pii = this.isPii(task);
     const brief = pii ? undefined : await this.d.briefs?.forTask(task.owner!, task).catch(() => undefined);
     const rejected = task.history.filter((h) => h.event === "changes_requested").map((h) => `- ${h.by}: ${h.note ?? ""}`);
@@ -111,6 +111,8 @@ export class Tasks {
       `Facts: ${facts}`,
       rejected.length ? `Earlier review notes:\n${rejected.join("\n")}` : "",
       brief ?? "",
+      // What the previous owner left behind. Peer-written free text: never attached to a PII task.
+      context && !pii ? `Handoff from the previous owner:\n${context.slice(0, 3000)}` : "",
       `Take it with hub_task_accept {id: ${task.id}} or pass with hub_task_decline. When finished: hub_task_done {id: ${task.id}, summary, refs}.`,
     ].filter(Boolean).join("\n\n");
     this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner!], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id) }, ...(pii ? { private: true } : {}) }));
@@ -149,19 +151,22 @@ export class Tasks {
     this.mine(task, by, "owner");
     if (task.state === "in_review" || task.state === "approved") throw new Error(`task #${task.id} is already ${task.state}`);
     if (task.state === "proposed" || task.state === "changes_requested") task = this.d.board.update(task.id, by, "accepted", { state: "in_progress" }); // done without a separate accept
-    const pii = this.isPii(task);
     const reviewer = task.reviewer;
     const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", refs: cleanRefs(refs) }, summary);
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`);
     if (!reviewer) this.d.notify(`task ${this.publicTitle(next)} done by ${by}, no reviewer: approved`);
     else if (reviewer === USER) this.d.notify(`task ${this.publicTitle(next)} done by ${by}: review it with hub task show ${next.id}, then hub review ${next.id} approved|changes_requested [note]`);
-    else {
-      const r = next.refs;
-      const where = [r.branch ? `branch ${r.branch}` : "", r.commit ? `commit ${r.commit}` : "", r.paths?.length ? `paths ${r.paths.join(", ")}` : ""].filter(Boolean).join("; ");
-      const body = `Review task #${next.id} [${next.class}] ${next.title}\nDone by ${by}: ${summary ?? "(no summary)"}\n${where ? `Where: ${where}\n` : ""}Give your verdict with hub_review {id: ${next.id}, verdict: "approved" | "changes_requested", note}.`;
-      this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, task: String(next.id) }, ...(pii ? { private: true } : {}) }));
-    }
+    else this.sendReview(next, reviewer);
     return next;
+  }
+
+  /** The one place a review request is written: the first reviewer and a replacement get the same text, refs and privacy. */
+  private sendReview(task: Task, reviewer: PeerId, why = ""): void {
+    const r = task.refs;
+    const last = [...task.history].reverse().find((h) => h.event === "done");
+    const where = [r.branch ? `branch ${r.branch}` : "", r.commit ? `commit ${r.commit}` : "", r.paths?.length ? `paths ${r.paths.join(", ")}` : ""].filter(Boolean).join("; ");
+    const body = `Review task #${task.id} [${task.class}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${last?.note ?? "(no summary)"}\n${where ? `Where: ${where}\n` : ""}${why ? `${why}\n` : ""}Give your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note}.`;
+    this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, task: String(task.id) }, ...(this.isPii(task) ? { private: true } : {}) }));
   }
 
   async review(by: PeerId, id: unknown, verdict: unknown, note?: string): Promise<Task> {
@@ -208,6 +213,32 @@ export class Tasks {
   /** Console only. */
   async assignTo(id: unknown, peer: PeerId): Promise<Task> {
     return this.assignOwner(this.need(id, true), USER, { candidates: [peer], event: "reassigned" });
+  }
+
+  /**
+   * Budget relay: a paused peer's open work moves on. `local` first (it has no quota), then the class list, all through
+   * the usual constraints. Tasks it was reviewing get another reviewer. Moves are reported, never taken back automatically.
+   */
+  async reassignForPause(peer: PeerId, context: string | undefined): Promise<{ id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]> {
+    const moved: { id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[] = [];
+    const routing = this.d.routing();
+    for (const task of this.d.board.list()) {
+      if (task.owner === peer && OPEN.includes(task.state)) {
+        const candidates = [LOCAL, ...(routing.classes[task.class]?.peers ?? []).filter((p) => p !== LOCAL)];
+        const back = task.state === "in_progress" ? this.d.board.update(task.id, HUB, "released", { state: "proposed" }, `budget pause of ${peer}`) : task;
+        const next = await this.assignOwner(back, HUB, { candidates, exclude: [peer], event: "reassigned", note: `budget pause of ${peer}`, clearOnFail: true, ...(context ? { context } : {}) });
+        moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner, role: "owner" });
+      } else if (task.reviewer === peer && task.state !== "approved") {
+        // No owner candidates: only the reviewer is wanted, and it must be neither the paused peer nor the task's owner.
+        const a = assign(task, this.states(), routing, { exclude: [peer], candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}) });
+        const reviewer = a.reviewer && a.reviewer !== peer && a.reviewer !== task.owner ? a.reviewer : null;
+        const next = this.d.board.update(task.id, HUB, "reviewer changed", { reviewer }, `budget pause of ${peer}`);
+        moved.push({ id: task.id, title: this.publicTitle(task), to: reviewer, role: "reviewer" });
+        if (next.state === "in_review" && reviewer && reviewer !== USER) this.sendReview(next, reviewer, `(${peer} was reviewing this and is paused for quota.)`);
+        else if (next.state === "in_review" && !reviewer) this.d.notify(`task ${this.publicTitle(next)}: its reviewer ${peer} is paused and nobody else can review; use hub review ${next.id}`);
+      }
+    }
+    return moved;
   }
 
   /** What the local worker needs to know about the turn it is about to run. */

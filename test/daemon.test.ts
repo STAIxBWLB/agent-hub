@@ -394,6 +394,50 @@ test("a PII task shows nowhere but the local console's task view: not on hub tai
   asClaude.close();
 });
 
+test("budget relay end to end: checkpoint, pause, task to local with the summary, idempotent, resume with the list of moves; a manual pause is not lifted", async () => {
+  const model = startFakeModelServer({ key: "k", script: (b) => ({ content: `local got: ${String(b.messages.at(-1)?.content).includes("Handoff from the previous owner") ? "handoff" : "no handoff"}` }) });
+  cleanup.push(model.stop);
+  process.env.OMNIROUTE_API_KEY = "k";
+  cleanup.push(() => delete process.env.OMNIROUTE_API_KEY);
+  const { stateDir, daemon, console_, events, pushes } = await hub({ modelUrl: model.url });
+  await console_.request({ t: "start", peer: "kimi" });
+  await console_.request({ t: "start", peer: "local", args: { model: "vllm/x" } });
+  expect((await console_.request({ t: "task", op: "hub_task_propose", args: { title: "port the parser", class: "implement", owner: "kimi" } })).text).toContain("owner kimi");
+  const kimiTools = await ControlClient.connect(stateDir, { role: "tools", peer: "kimi" });
+  await kimiTools.request({ t: "task", op: "hub_task_accept", args: { id: 1 } });
+
+  const before = events.length;
+  expect((await console_.request({ t: "budget", set: { peer: "ghost", used: 0.5 } })).ok).toBe(false);
+  await console_.request({ t: "budget", set: { peer: "kimi", used: 0.95, resetsInMs: 3_600_000 } });
+  await until(() => events.slice(before).some((e) => e.t === "envelope" && e.env.kind === "budget" && e.env.to?.[0] === "kimi"), "checkpoint request");
+  expect(daemon.bus.stateOf("kimi")).not.toBe("paused"); // checkpoint first, pause second
+  expect((await kimiTools.request({ t: "task", op: "hub_checkpoint", args: { summary: "tokenizer done, grammar half done" } })).text).toContain("checkpoint received");
+  await until(() => daemon.bus.stateOf("kimi") === "paused", "pause");
+  await until(() => events.some((e) => e.t === "envelope" && e.env.from === "local"), "local took it over");
+  expect(events.find((e) => e.t === "envelope" && e.env.from === "local").env.body).toBe("local got: handoff");
+  const notices = () => pushes.filter((p) => p.t === "notice").map((p) => p.line as string);
+  expect(notices().some((l) => l.includes("moved from kimi: #1 owner -> local"))).toBe(true);
+
+  await console_.request({ t: "budget", set: { peer: "kimi", used: 0.97, resetsInMs: 3_600_000 } }); // again: nothing happens
+  await Bun.sleep(50);
+  expect(notices().filter((l) => l.includes("kimi paused"))).toHaveLength(1);
+  const shown = await console_.request({ t: "budget" });
+  expect(shown.budget.kimi.paused.reason).toContain("95%");
+  expect((await console_.request({ t: "status" })).status.peers.kimi.paused).toContain("budget: 5h window at 95%");
+  const refused = await console_.request({ t: "resume", peer: "kimi" }); // hub resume does not override the coordinator
+  expect(refused).toMatchObject({ ok: false });
+  expect(refused.error).toContain("hub budget resume kimi");
+
+  await console_.request({ t: "pause", peer: "kimi" }); // the user also pauses it by hand
+  await console_.request({ t: "budget", set: { peer: "kimi", used: 0.2 } }); // the mocked reset
+  await until(() => notices().some((l) => l.includes("kimi resumed")), "budget resume");
+  expect(daemon.bus.stateOf("kimi")).toBe("paused"); // the manual pause stays
+  expect((await console_.request({ t: "resume", peer: "kimi" })).ok).toBe(true);
+  await until(() => events.some((e) => e.t === "envelope" && e.env.kind === "budget" && e.env.body.includes("has resumed you")), "resume envelope");
+  expect(events.find((e) => e.t === "envelope" && e.env.body.includes("has resumed you")).env.body).toContain("#1 port the parser (owner -> local)");
+  kimiTools.close();
+});
+
 test("kill removes pid, status and token", async () => {
   const { stateDir, daemon, console_ } = await hub();
   console_.send({ t: "kill" });

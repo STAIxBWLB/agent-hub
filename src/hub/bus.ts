@@ -36,6 +36,7 @@ export class Bus {
   private readonly draining = new Set<PeerId>();
   private readonly seen = new Map<string, Envelope>();
   private readonly taps = new Set<(e: BusEvent) => void>();
+  private readonly withdrawn = new Set<string>();
   private readonly attempts = new Map<string, number>(); // `${peer}:${envelope id}` -> failed deliveries
 
   constructor(opts: Partial<BusOptions> = {}) {
@@ -110,11 +111,28 @@ export class Bus {
     return this.seen.get(id);
   }
 
+  /**
+   * Take back an envelope that has not been delivered yet (a request that has expired). True when it was removed from a
+   * queue now; an envelope whose steer is still in flight is not in any queue, so its id is remembered and it is
+   * dropped if the refused steer tries to queue it later.
+   */
+  withdraw(envelopeId: string): boolean {
+    this.withdrawn.add(envelopeId);
+    if (this.withdrawn.size > 256) this.withdrawn.delete(this.withdrawn.values().next().value as string);
+    let removed = false;
+    for (const queue of this.queues.values()) {
+      const i = queue.findIndex((e) => e.id === envelopeId);
+      if (i !== -1) removed = queue.splice(i, 1).length > 0;
+    }
+    return removed;
+  }
+
   queued(id: PeerId): number {
     return this.queues.get(id)?.length ?? 0;
   }
 
   private enqueue(id: PeerId, env: Envelope, front = false): void {
+    if (this.withdrawn.has(env.id)) return;
     const queue = this.queues.get(id)!;
     if (front) queue.unshift(env);
     else queue.push(env);

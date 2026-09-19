@@ -23,6 +23,9 @@ const USAGE = `agent-hub: Claude Code, Codex and Kimi as peers in one project di
   hub say [@peer ...] <text>   send as the console user (no @peer = broadcast); delivered at once,
                                start the text with [STATUS] to let it batch or [FYI] for the record only
   hub pause|resume <peer>      hold a peer's deliveries in its queue / release them
+  hub budget                   quota windows per peer, and who is paused until when
+  hub budget set <peer> <0..1> [--resets-in 30m] [--window 5h|week]   feed a reading by hand (also: test the relay)
+  hub budget resume <peer>     override a budget pause; readings are ignored for that peer until the window resets
   hub board [state]            the task board
   hub task propose <class> <title...> [--owner <peer>] [--path <p>]... [--detail <text>]
   hub task show|escalate <id>  full task with history (PII text included) / hand it to the next peer in escalate_to
@@ -151,7 +154,17 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   claude: () => {
-    const launch = buildLaunch("claude", args, { unattended: unattendedEnv });
+    // `--settings` outranks project and user settings, so the tee has to wrap whichever status line would have won:
+    // project local, then project, then user.
+    let original: { command?: string; refreshInterval?: number; padding?: number } | undefined;
+    for (const file of [join(cwd, ".claude", "settings.local.json"), join(cwd, ".claude", "settings.json"), join(process.env.HOME ?? "", ".claude", "settings.json")]) {
+      try {
+        original ??= JSON.parse(readFileSync(file, "utf8")).statusLine;
+      } catch {
+        // no such file, or no status line in it
+      }
+    }
+    const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir, ...(original ? { original } : {}) } });
     if (launch.warning) console.error(launch.warning);
     exec(launch.cmd, launch.args);
   },
@@ -213,6 +226,36 @@ const commands: Record<string, () => Promise<void> | void> = {
     await new Promise(() => {});
   },
 
+  budget: async () => {
+    const hub = await connect();
+    let set: Record<string, unknown> | undefined;
+    if (args[0] === "resume") {
+      if (!args[1]) fail("usage: hub budget resume <peer>");
+      const res = await hub.request({ t: "budget", resume: args[1] });
+      hub.close();
+      if (!res.ok) fail(res.error);
+      return console.log(`${args[1]} resumed; the coordinator leaves it alone until its window resets`);
+    }
+    if (args[0] === "set") {
+      const flags = takeFlags(args.slice(1), ["--resets-in", "--window"], []);
+      const [peer, used] = flags.rest;
+      if (!peer || used === undefined) fail("usage: hub budget set <peer> <0..1> [--resets-in 30m] [--window 5h|week]");
+      const m = /^(\d+)(s|m|h)$/.exec(flags.one["--resets-in"] ?? "");
+      if (flags.one["--resets-in"] && !m) fail("--resets-in takes a duration like 90s, 30m or 5h");
+      set = { peer, used: Number(used), window: flags.one["--window"], ...(m ? { resetsInMs: Number(m[1]) * { s: 1000, m: 60_000, h: 3_600_000 }[m[2] as "s" | "m" | "h"] } : {}) };
+    }
+    const res = await hub.request({ t: "budget", ...(set ? { set } : {}) });
+    hub.close();
+    if (!res.ok) fail(res.error);
+    const peers = Object.entries(res.budget as Record<string, any>);
+    if (!peers.length) return console.log(`no quota readings yet (gate ${res.gate}). Sources: Codex rate limits, Claude's status line (hub claude), hub budget set.`);
+    const left = (at: number) => { const s = Math.max(0, Math.round((at - Date.now()) / 1000)); return s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`; };
+    for (const [peer, b] of peers) {
+      console.log(`${peer}${b.paused ? `  PAUSED: ${b.paused.reason}, resumes in ${left(b.paused.resetsAt)}` : ""}`);
+      for (const w of b.windows) console.log(`  ${String(w.id).padEnd(7)} ${String(Math.round(w.used * 100)).padStart(3)}%${w.resetsAt ? `  resets in ${left(w.resetsAt)}` : ""}  [${w.source}, ${Math.round((Date.now() - w.at) / 1000)}s ago${w.stale ? ", STALE" : ""}]`);
+    }
+  },
+
   board: async () => {
     const tasks = JSON.parse(await taskOp("hub_task_list", args[0] ? { state: args[0] } : {})) as any[];
     if (!tasks.length) return console.log("no tasks");
@@ -261,7 +304,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     hub.close();
     console.log(`hub pid ${status.pid}, control 127.0.0.1:${status.controlPort}, ${status.cwd}`);
     const peers = Object.entries(status.peers as Record<string, { state: string; queued: number }>);
-    for (const [id, p] of peers) console.log(`  ${id.padEnd(8)} ${p.state.padEnd(8)} queued ${p.queued}${(p as any).servedBy ? `  last call: ${(p as any).servedBy}` : ""}`);
+    for (const [id, p] of peers) console.log(`  ${id.padEnd(8)} ${p.state.padEnd(8)} queued ${p.queued}${(p as any).paused ? `  (${(p as any).paused})` : ""}${(p as any).servedBy ? `  last call: ${(p as any).servedBy}` : ""}`);
     if (status.switchyard) console.log(`  switchyard: ${status.switchyard}`);
     const counts = Object.entries(status.tasks ?? {}).map(([s, n]) => `${n} ${s}`).join(", ");
     if (counts) console.log(`  tasks: ${counts} (hub board)`);

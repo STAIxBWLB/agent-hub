@@ -126,6 +126,31 @@ test("a refused steer is not lost: it is delivered when the peer goes idle", asy
   expect(said.map((e) => e.body)).toEqual(["echo: first", "echo: urgent"]);
 });
 
+test("usage: rate limits are read through the TUI's connection without the TUI seeing it; a refused turn reports a hard limit", async () => {
+  const fake = startFakeAppServer();
+  const bus = new Bus({ batchMs: 0 });
+  const usage: { rl: any; hard: boolean }[] = [];
+  const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: fake.url, cwd: process.cwd(), onUsage: (rl, hard) => usage.push({ rl, hard }) });
+  bus.add(peer);
+  await peer.start();
+  cleanup.push(fake.stop, () => peer.stop());
+  const seen: any[] = [];
+  const tui = new WebSocket(peer.proxyUrl);
+  tui.onmessage = (ev) => seen.push(JSON.parse(String(ev.data)));
+  await new Promise((r) => (tui.onopen = r));
+  cleanup.push(() => tui.close());
+  tui.send(JSON.stringify({ id: 1, method: "initialize", params: {} }));
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => usage.length === 1);
+  expect(usage[0]).toMatchObject({ hard: false, rl: { primary: { usedPercent: 93 } } });
+  expect(seen.some((m) => typeof m.id === "number" && m.id < 0)).toBe(false);
+
+  bus.publish(newEnvelope("claude", "QUOTA", { priority: "important" }));
+  await until(() => usage.some((u) => u.hard));
+  expect(usage.at(-1)!.rl).toEqual({ rateLimitReachedType: "usageLimitExceeded" });
+  await until(() => peer.state === "idle");
+});
+
 test("TUI detach takes the peer offline and keeps queued messages", async () => {
   const { bus, peer, tui } = await setup();
   tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));

@@ -1,6 +1,6 @@
 # agent-hub design spec
 
-Date: 2026-09-19. Status: M1 to M3 merged (PR #2, #4, #6, #7); M4 implemented on `feat/m4-task-board` (phase spec: issue #8); M5 and M6 not started.
+Date: 2026-09-19. Status: M1 to M4 merged (PR #2, #4, #6, #7, #9); M5 implemented on `feat/m5-budget-relay` (phase spec: issue #10); M6 not started.
 Owner: Young Joon Lee. Repo: STAIxBWLB/agent-hub (private).
 
 Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) or
@@ -121,7 +121,7 @@ hub CLI / console ── control WS 127.0.0.1:<ctl> ─────────�
   Claude Code restarts. State in `.agenthub/state/` (pid, status.json, sqlite, logs).
 - `plugins/agent-hub`: Claude Code plugin. Its MCP server is the channel; it reconnects to
   the daemon over the control WS with backoff. Exposes tools `hub_send`, `hub_inbox`
-  (fallback drain), `hub_task_*`, `hub_review`, `hub_checkpoint`, `hub_ack_resume`.
+  (fallback drain), `hub_task_*`, `hub_review`, `hub_remember`, `hub_checkpoint`.
 - Codex adapter: spawns `codex app-server --listen ws://127.0.0.1:<port>`, runs a
   transparent proxy the TUI attaches to (`--enable tui_app_server --remote`). The proxy never
   runs its own handshake: it learns the thread id from the TUI's `thread/start` /
@@ -322,14 +322,40 @@ inside a peer.
 
 ### Budget relay
 
-- Sources: Codex `account/rateLimits/read` and `account/rateLimits/updated` (verified in
-  schema); Claude OAuth usage probe as agent-quota-guard does (inferred); Kimi
-  `usage_update` tokens only, no quota API (verified absent). Local has no quota.
-- Gate at configurable utilisation (default 0.9 of the 5 h or weekly window): mark
-  `paused`, send `hub_checkpoint` request, the peer writes `.agenthub/checkpoint.md`,
-  open tasks are reassigned by L1 (local first when the class allows), the peer resumes
-  when the window resets (`hub_ack_resume` for Claude, `turn/start` for Codex,
-  `session/prompt` for Kimi). Idempotent per pending record.
+- Sources (amended in M5). Codex: `account/rateLimits/read` sent through the TUI's
+  connection with a hub id, `account/rateLimits/updated` forwarded from the proxy, and a
+  turn refused with `usageLimitExceeded` as a hard limit (verified live: the owner's account
+  answered `primary {usedPercent: 100, windowDurationMins: 10080, resetsAt}`). Claude: no
+  OAuth probe. Claude Code passes `rate_limits.five_hour` / `seven_day` (`used_percentage`,
+  `resets_at`) to the status line command (verified in the input this Mac's HUD script
+  reads); `hub claude` puts a tee in front of the user's status line command through
+  `--settings` for that session, records the limits in `.agenthub/state/claude-usage.json`
+  and runs the original command unchanged. `~/.claude/settings.json` is never edited; a
+  user-supplied `--settings` wins and turns the tee off. The `--settings` injection itself
+  is not yet verified in an interactive session. Kimi: `usage_update` tokens over a rolling
+  5 h against `budget.kimi_tokens_5h` (off by default; the payload shape is inferred, none
+  was emitted in a short live turn). `hub budget set` feeds a reading by hand. `local` has
+  no quota and is never paused.
+- Gate at `budget.gate` (default 0.9) on any fresh window; readings older than
+  `budget.stale_min` are ignored. Checkpoint first, pause second: the peer gets one
+  important envelope asking it to write `.agenthub/checkpoint.md` and call `hub_checkpoint`,
+  the hub waits up to `budget.checkpoint_timeout_s`, then pauses it; a hard-limited peer is
+  paused at once. Its open tasks are reassigned, `local` first and then the class list,
+  through the M4 constraints, with the checkpoint summary (or the peer's platform block
+  from claude-mem) and the task brief in the envelope; tasks it was reviewing get another
+  reviewer; PII tasks never get handoff text. One open record per peer in `hub.db`:
+  repeated readings do nothing, a restart keeps the pause and finishes an interrupted
+  handoff. Resume at `resetsAt` plus a minute, or on a fresh reading under `gate - 0.1`,
+  with one important envelope from the hub listing what moved; this replaces the per-peer
+  resume calls and the `hub_ack_resume` tool; the notice is queued before the peer is
+  released, so it leads the first delivery. Moved tasks stay with their new owners. A manual
+  `hub pause` is never lifted by the coordinator; `hub resume` does not override a budget
+  pause, `hub budget resume <peer>` does, and the coordinator then leaves that peer alone
+  until the window that paused it has reset. A handoff waits until another peer is attached
+  (right after a restart nobody is), readings keep their own timestamp, and a window whose
+  reset time has passed no longer counts. A peer whose window reset while the hub was down is
+  not paused again, and still gets the resume envelope once it attaches. With no status line
+  of the user's own to wrap, the tee prints a short usage line instead of a blank one.
 
 ### Shared memory (claude-mem)
 
@@ -367,9 +393,11 @@ inside a peer.
   hub auto-saves the transitions that carry content, `done`, the review verdict and
   escalation (amended in M4: `proposed` and `accepted` would add two empty memories per
   task), and checkpoint summaries (M5), so handoff history is recallable next session.
-- Budget relay. Before pausing a peer the hub calls `sessions/summarize` for its content
-  session and includes that summary plus the open-task briefs in the receiving peer's
-  first prompt; `.agenthub/checkpoint.md` remains as the file fallback.
+- Budget relay (amended in M5). The hub owns a claude-mem session id only for `local`, so
+  `sessions/summarize` cannot be called for Claude, Codex or Kimi. The handoff context is
+  the peer's own checkpoint summary, else its platform block from `context/inject`, and it
+  travels with the task brief in the task envelope; `.agenthub/checkpoint.md` remains as the
+  file the peer writes.
 - Efficiency rules. Index first (`search`), then `timeline`, then details; injection
   and briefs are token-capped; project chain filtering only; tool_input containing
   denylisted paths is never posted; no transcript or full observation bodies cross the
@@ -498,9 +526,10 @@ M4 task board, roles, routing L1
 - [ ] Live: Codex calling a hub tool in a real turn (MCP startup verified; a turn needs account quota), Claude plugin tools in a real session
 
 M5 budget relay
-- [ ] Quota sources (Codex native, Claude probe, Kimi tokens), gate, pause, checkpoint
-- [ ] Reassignment to local, resume paths per peer, idempotency
-- [ ] `sessions/summarize` on pause; summary plus open-task briefs in the resume prompt
+- [x] Quota sources (Codex native, Claude status line, Kimi tokens, manual), gate, pause, checkpoint
+- [x] Reassignment to local, one resume envelope, idempotency and restart recovery
+- [x] Handoff context (checkpoint summary or memory block) plus task briefs in the task envelope
+- [ ] Live: the Claude status line tee in an interactive session; a real pause driven by Codex's own numbers with a TUI attached
 
 M6 internal inference, packaging
 - [ ] Status digests and triage through `sy/fast`

@@ -23,6 +23,8 @@ export interface AcpOptions {
   mcpServers?: { name: string; command: string; args: string[]; env: { name: string; value: string }[] }[];
   /** Appended to the standing instruction of the first delivery (role contract). */
   preamble?: string;
+  /** The session's running token total from `usage_update` (inferred shape: totalTokens, else input + output, else `used`). Cumulative, not a delta. */
+  onTokens?: (sessionTotal: number) => void;
   /** Resolve with an optionId, or undefined to cancel. Absent = every request is cancelled. */
   onPermission?: (req: PermissionRequest) => Promise<string | undefined>;
   log?: (line: string) => void;
@@ -130,6 +132,12 @@ export class AcpPeer extends BasePeer {
     if (msg.method === "session/update") {
       const u = msg.params?.update;
       if (u?.sessionUpdate === "agent_message_chunk" && u.content?.type === "text") this.chunks.push(u.content.text);
+      else if (u?.sessionUpdate === "usage_update" && this.opts.onTokens) {
+        const f = { ...u, ...(typeof u.usage === "object" ? u.usage : {}) } as Record<string, unknown>;
+        const num = (k: string) => (typeof f[k] === "number" ? (f[k] as number) : 0);
+        const total = num("totalTokens") || num("total_tokens") || num("inputTokens") + num("outputTokens") || num("input_tokens") + num("output_tokens") || num("used");
+        if (total > 0) this.opts.onTokens(total);
+      }
     } else if (msg.method === "session/request_permission") {
       void this.answerPermission(msg);
     } else if (msg.method && msg.id !== undefined) {

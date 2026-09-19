@@ -27,6 +27,7 @@ export const TASK_TOOLS: HubTool[] = [
   tool("hub_task_done", "Mark your task finished. It goes to its reviewer with your summary and refs.", { id, summary: str, refs }, ["id", "summary"]),
   tool("hub_task_list", "The task board. PII tasks show as [pii].", { state: { type: "string", enum: ["proposed", "in_progress", "in_review", "approved", "changes_requested"] } }),
   tool("hub_review", "Give your verdict on a task you were asked to review. Two changes_requested in a row move the task to another peer.", { id, verdict: { type: "string", enum: ["approved", "changes_requested"] }, note: str }, ["id", "verdict"]),
+  tool("hub_checkpoint", "Answer a checkpoint request from the hub (your quota window is nearly used up): what you were doing, what is half done, what whoever continues must know. Write the same to .agenthub/checkpoint.md first if you can.", { summary: str }, ["summary"]),
   tool("hub_remember", "Save a decision, finding or contract to the memory all agents share (claude-mem). Conclusions worth recalling next session, not chatter.", { text: str, title: str, kind: { type: "string", enum: ["decision", "finding", "contract"] }, task: id }, ["text"]),
 ];
 

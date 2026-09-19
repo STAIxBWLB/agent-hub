@@ -10,6 +10,10 @@ import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute
 import { Sidecar } from "../switchyard/sidecar.ts";
 import { Briefs } from "../memory/brief.ts";
 import { Board, type TaskClass } from "./board.ts";
+import { Budget, claudeWindows, codexWindows, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
+import { HUB } from "./envelope.ts";
+import { trimToTokens } from "../memory/recall.ts";
+import { statSync } from "node:fs";
 import type { BusEvent } from "./bus.ts";
 import { DEFAULT_ROLES, roleContract, TASK_TOOLS } from "./hub-tools.ts";
 import { Tasks } from "./tasks.ts";
@@ -30,6 +34,7 @@ export interface HubConfig {
   queue_cap: number;
   memory: { enabled: boolean; worker_url?: string; inject_tokens: number; brief_items: number };
   roles: Record<string, string[]>;
+  budget: BudgetConfig;
   omniroute: OmniRouteConfig;
   local: { deny: string[]; bash_network: boolean; max_steps: number; read_allow: string[] };
 }
@@ -42,6 +47,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   queue_cap: 200,
   memory: { enabled: true, inject_tokens: 2000, brief_items: 8 },
   roles: DEFAULT_ROLES,
+  budget: DEFAULT_BUDGET,
   omniroute: DEFAULT_OMNIROUTE,
   local: { deny: [], bash_network: false, max_steps: 30, read_allow: [] },
 };
@@ -60,6 +66,7 @@ export function loadConfig(cwd: string): HubConfig {
       ...file,
       memory: { ...DEFAULT_CONFIG.memory, ...file.memory },
       roles: { ...DEFAULT_CONFIG.roles, ...file.roles },
+      budget: { ...DEFAULT_CONFIG.budget, ...file.budget },
       omniroute: { ...DEFAULT_CONFIG.omniroute, ...file.omniroute },
       local: { ...DEFAULT_CONFIG.local, ...file.local },
     };
@@ -159,6 +166,84 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(config.memory.enabled ? { memory, briefs: new Briefs(memory, chain.at(-1)!, config.memory.brief_items) } : {}),
     notify,
   });
+  // ---- budget relay -------------------------------------------------------------------------------------------
+  const manualPaused = new Set<PeerId>(); // `hub pause`: the coordinator never lifts these
+  const checkpointWaits = new Map<PeerId, (summary: string | undefined) => void>();
+  const PLATFORM: Record<PeerId, string> = { claude: "claude", codex: "codex", kimi: "kimi" };
+  const budget = new Budget(join(opts.stateDir, "hub.db"), config.budget, {
+    pause: (peer) => bus.pause(peer),
+    resume: (peer) => {
+      if (!manualPaused.has(peer)) bus.resume(peer);
+    },
+    requestCheckpoint: (peer) => {
+      const state = bus.stateOf(peer);
+      if (state !== "idle" && state !== "busy") return Promise.resolve(undefined); // nobody there to answer
+      const ask =
+        newEnvelope(HUB, "Checkpoint request: your quota window is almost used up and the hub is about to pause you. Finish the step you are on, write what you were doing, what is half done and what whoever continues must know to .agenthub/checkpoint.md, then call hub_checkpoint {summary} with the same text. Your open tasks will be handed to another peer; you will be resumed when the window resets.", { to: [peer], kind: "budget", priority: "important" });
+      bus.publish(ask);
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => done(undefined), config.budget.checkpoint_timeout_s * 1000);
+        const done = (summary: string | undefined) => {
+          clearTimeout(timer);
+          checkpointWaits.delete(peer);
+          // A busy peer may never have seen the request: left in its queue it would arrive after the resume, asking for a checkpoint of nothing.
+          if (summary === undefined) bus.withdraw(ask.id);
+          resolve(summary);
+        };
+        checkpointWaits.set(peer, done);
+      });
+    },
+    platformContext: async (peer) => {
+      const platform = PLATFORM[peer];
+      if (!config.memory.enabled || !platform) return undefined;
+      const text = await memory.contextInject(chain, platform);
+      return text?.startsWith("# [") ? `Recent ${platform} sessions in this project, from shared memory (the peer left no checkpoint):\n${trimToTokens(text.slice(Math.max(text.indexOf("\n### "), 0)).trim(), 800)}` : undefined;
+    },
+    attached: (peer) => bus.peers.has(peer),
+    // Somebody other than the paused peer has to be there, or the handoff would only leave its tasks without an owner.
+    canHandOff: (peer) => [...bus.peers.keys()].some((id) => id !== peer && ["idle", "busy"].includes(bus.stateOf(id))),
+    handoff: (peer, context) => tasks.reassignForPause(peer, context),
+    resumed: (record) => {
+      if (record.peer === "kimi") kimiTokens.length = 0; // a new window: the old counts would pause it again at once
+      const moved = record.moved.length ? `While you were paused these moved: ${record.moved.map((m) => `${m.title} (${m.role} -> ${m.to ?? "nobody"})`).join("; ")}. They stay where they are; ask the user if you should take one back.` : "Nothing was moved while you were paused.";
+      bus.publish(newEnvelope(HUB, `Your quota window has reset and the hub has resumed you (paused since ${new Date(record.since).toLocaleTimeString()}, ${record.reason}). ${moved} Messages queued for you follow.`, { to: [record.peer], kind: "budget", priority: "important" }));
+    },
+    notify: (line) => notify(line),
+  });
+  const kimiTokens: { at: number; n: number }[] = [];
+  let kimiSessionTotal = 0;
+  /** `total` is the session's running count: only what was added since the last update goes into the rolling window. */
+  const onKimiTokens = (total: number) => {
+    if (!config.budget.kimi_tokens_5h) return;
+    const now = Date.now();
+    const n = total >= kimiSessionTotal ? total - kimiSessionTotal : total; // a smaller total means a new session
+    kimiSessionTotal = total;
+    if (!n) return;
+    kimiTokens.push({ at: now, n });
+    while (kimiTokens.length && now - kimiTokens[0]!.at > 5 * 3_600_000) kimiTokens.shift();
+    const used = kimiTokens.reduce((s, t) => s + t.n, 0) / config.budget.kimi_tokens_5h;
+    budget.report("kimi", [{ id: "tokens", used, resetsAt: kimiTokens[0]!.at + 5 * 3_600_000, source: "kimi usage_update (soft limit)" }]);
+  };
+  // Claude's numbers arrive through the status line tee `hub claude` installs (src/cli/statusline-tee.ts).
+  let claudeUsageSeen = 0;
+  const intervals = [
+    setInterval(() => budget.tick(), 30_000),
+    setInterval(() => {
+      try {
+        const file = join(opts.stateDir, "claude-usage.json");
+        const mtime = statSync(file).mtimeMs;
+        if (mtime === claudeUsageSeen) return;
+        claudeUsageSeen = mtime;
+        const usage = JSON.parse(readFileSync(file, "utf8"));
+        // The file's own timestamp, not "now": a file left behind by yesterday's session is a stale reading, not a fresh one.
+        budget.report("claude", claudeWindows(usage.rate_limits), false, Number(usage.at) || mtime);
+      } catch {
+        // no tee in this session, or a half-written file: next round
+      }
+    }, 5_000),
+  ];
+  for (const i of intervals) i.unref?.();
+
   /** What the console stream and the log may show: a private envelope (PII task) keeps its body to its recipients. */
   const redact = (e: BusEvent): BusEvent => ("env" in e && e.env.private ? { ...e, env: { ...e.env, body: `[private${e.env.refs?.task ? `: task #${e.env.refs.task}, see hub task show ${e.env.refs.task}` : ""}]` } } : e);
   const SERVER_JS = join(import.meta.dir, "..", "..", "plugins", "agent-hub", "server.js");
@@ -187,6 +272,13 @@ export async function startDaemon(opts: DaemonOptions) {
         return line(await tasks.review(by, a.id, a.verdict, a.note));
       case "hub_remember":
         return tasks.remember(by, a);
+      case "hub_checkpoint": {
+        const summary = String(a.summary ?? "").trim();
+        if (!summary) throw new Error("summary is required");
+        budget.checkpointed(by, summary);
+        checkpointWaits.get(by)?.(summary);
+        return "checkpoint received; you will be paused now and resumed when your window resets";
+      }
       case "hub_task_list":
         return JSON.stringify(board.list(a.state).map((t) => (onPrem ? t : tasks.publicView(t))).map(({ history: _h, ...t }) => t));
     }
@@ -206,13 +298,17 @@ export async function startDaemon(opts: DaemonOptions) {
   const permissions = new Map<string, { push: string; done: (optionId: string | undefined) => void }>();
   let stopping = false;
 
+  const pausedNote = (id: PeerId) => {
+    const r = budget.record(id); // one read per peer: status.json is rewritten on every bus event
+    return r ? { paused: `budget: ${r.reason}, resets ${new Date(r.resetsAt).toLocaleTimeString()}` } : {};
+  };
   const status = () => ({
     pid: process.pid,
     cwd: opts.cwd,
     controlPort: server.port,
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      [...bus.peers].map(([id, p]) => [id, { state: bus.stateOf(id), queued: bus.queued(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}) }]),
+      [...bus.peers].map(([id, p]) => [id, { state: bus.stateOf(id), queued: bus.queued(id), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}) }]),
     ),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
     tasks: board.counts(),
@@ -275,6 +371,7 @@ export async function startDaemon(opts: DaemonOptions) {
         watchdogMs: config.watchdog_ms,
         onPermission,
         log,
+        onTokens: onKimiTokens,
         mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("kimi")).map(([name, value]) => ({ name, value })) }],
         preamble: roleContract("kimi", config.roles),
       });
@@ -297,6 +394,8 @@ export async function startDaemon(opts: DaemonOptions) {
           ...["hub_send", ...TASK_TOOLS.map((t) => t.name)].map((name) => [`tools.${name}.approval_mode`, '"approve"']),
         ].flatMap(([k, v]) => ["-c", `mcp_servers.agent-hub.${k}=${v}`]),
         preamble: roleContract("codex", config.roles),
+        onUsage: (rateLimits, hard) => budget.report("codex", codexWindows(rateLimits), hard),
+        usagePollMs: config.budget.poll_min * 60_000,
         cwd: opts.cwd,
         watchdogMs: config.watchdog_ms,
         log,
@@ -424,10 +523,27 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role !== "console") return;
         const id = String(msg.peer);
         if (!bus.peers.has(id)) return void reply({ t: msg.t, ok: false, error: `unknown peer: ${id}` });
-        if (msg.t === "pause") bus.pause(id);
-        else bus.resume(id);
+        if (msg.t === "pause") {
+          manualPaused.add(id);
+          bus.pause(id);
+        } else {
+          if (budget.record(id)) return void reply({ t: msg.t, ok: false, error: `${id} is paused by the budget coordinator until its window resets (hub budget); to override: hub budget resume ${id}` });
+          manualPaused.delete(id);
+          bus.resume(id);
+        }
         return void reply({ t: msg.t, ok: true, state: bus.stateOf(id) });
       }
+      case "budget":
+        if (c.role !== "console") return;
+        if (msg.resume) {
+          if (!budget.override(String(msg.resume))) return void reply({ t: "budget", ok: false, error: `${msg.resume} is not paused by the budget coordinator` });
+        } else if (msg.set) {
+          const used = Number(msg.set.used);
+          if (!bus.peers.has(String(msg.set.peer)) && !budget.record(String(msg.set.peer))) return void reply({ t: "budget", ok: false, error: `unknown peer: ${msg.set.peer}` });
+          if (!(used >= 0 && used <= 1)) return void reply({ t: "budget", ok: false, error: "used must be between 0 and 1" });
+          budget.report(String(msg.set.peer), [{ id: msg.set.window === "week" ? "week" : "5h", used, ...(msg.set.resetsInMs ? { resetsAt: Date.now() + Number(msg.set.resetsInMs) } : {}), source: "hub budget set" }]);
+        }
+        return void reply({ t: "budget", ok: true, budget: budget.status(), gate: config.budget.gate });
       case "permit":
         if (c.role === "console") permissions.get(String(msg.id))?.done(msg.option ? String(msg.option) : undefined);
         return;
@@ -468,6 +584,9 @@ export async function startDaemon(opts: DaemonOptions) {
     log("hub stopping");
     await Promise.allSettled([...bus.peers.values()].map((p) => p.stop()));
     sidecar?.stop();
+    for (const i of intervals) clearInterval(i);
+    for (const done of checkpointWaits.values()) done(undefined);
+    budget.close();
     board.close();
     server.stop(true);
     for (const f of ["hub.pid", "status.json", "control-token"]) rmSync(join(opts.stateDir, f), { force: true });
@@ -478,6 +597,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const tokenFile = join(opts.stateDir, "control-token");
   writeFileSync(tokenFile, token, { mode: 0o600 });
   chmodSync(tokenFile, 0o600);
+  budget.restore(); // pauses recorded by an earlier hub run stay in force; unfinished handoffs wait for peers to attach
   writeFileSync(join(opts.stateDir, "hub.pid"), `${process.pid}\n`);
   writeStatus();
   log(`hub up pid=${process.pid} control=127.0.0.1:${server.port} cwd=${opts.cwd}`);

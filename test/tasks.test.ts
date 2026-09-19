@@ -274,6 +274,57 @@ test("hub_remember carries peer, kind and task; with the worker down the board w
   expect((await tasks.done("codex", 1, "done")).state).toBe("in_review");
 });
 
+test("budget pause: open work goes to local first through the constraints, reviews move on, PII gets no handoff text", async () => {
+  const { tasks, peers, board, bus } = await setup();
+  await tasks.propose("claude", { title: "implement parser", class: "implement" }); // #1 -> codex
+  await tasks.propose("user", { title: "plan the release", class: "plan", owner: "codex" }); // #2 -> codex, local not allowed
+  await tasks.propose("claude", { title: "note for kim@example.ac.kr", class: "implement" }); // #3 pii -> local
+  await tasks.propose("user", { title: "kimi's change", class: "implement", owner: "kimi" }); // #4, reviewer claude
+  tasks.accept("codex", 1);
+  tasks.accept("kimi", 4);
+  await tasks.done("kimi", 4, "done by kimi");
+  await tick();
+
+  bus.pause("codex");
+  const moved = await tasks.reassignForPause("codex", "I was halfway through the tokenizer; tests in test/parser.test.ts fail on unicode");
+  await tick();
+  expect(moved).toEqual([
+    { id: 1, title: "#1 implement parser", to: "local", role: "owner" },
+    { id: 2, title: "#2 plan the release", to: "claude", role: "owner" }, // never local: local_allowed = false
+  ]);
+  const handed = peers.local!.got.find((e) => e.refs?.task === "1")!;
+  expect(handed.body).toContain("Handoff from the previous owner:\nI was halfway through the tokenizer");
+  expect(board.get(1)).toMatchObject({ owner: "local", state: "proposed" });
+  expect(board.get(1)!.history.map((h) => h.event)).toEqual(expect.arrayContaining(["released", "reassigned"]));
+
+  bus.pause("claude"); // claude was reviewing #4 (in review) and now owns #2
+  const second = await tasks.reassignForPause("claude", "ctx");
+  await tick();
+  expect(second.find((m) => m.id === 4)).toMatchObject({ role: "reviewer", to: null }); // codex is paused too: nobody left
+
+  // with codex back, the replacement reviewer is codex, never the task's own owner, and gets the full request
+  bus.resume("codex");
+  board.update(4, "hub", "test setup", { reviewer: "claude" });
+  const third = await tasks.reassignForPause("claude", undefined);
+  await tick();
+  expect(third.find((m) => m.id === 4)).toMatchObject({ role: "reviewer", to: "codex" });
+  const ask = peers.codex!.got.at(-1)!;
+  expect(ask.kind).toBe("review");
+  expect(ask.body).toContain("Done by kimi: done by kimi");
+  expect(ask.body).toContain("claude was reviewing this and is paused");
+  bus.pause("codex");
+  expect(second.find((m) => m.id === 2)).toMatchObject({ role: "owner", to: null });
+
+  // a PII task that has to move keeps its text and gets no peer-written handoff
+  bus.resume("codex");
+  bus.resume("claude");
+  await tasks.reassignForPause("local", "SECRET-HANDOFF-TEXT");
+  await tick();
+  expect(board.get(3)!.owner).toBeNull(); // only local may hold it
+  expect(JSON.stringify(Object.values(peers).flatMap((p) => p.got))).not.toContain("SECRET-HANDOFF-TEXT-for-pii");
+  expect(Object.values(peers).filter((p) => p.id !== "local").flatMap((p) => p.got).some((e) => e.body.includes("kim@example"))).toBe(false);
+});
+
 test("route explain runs the assignment code: same owner, skipped candidates named", async () => {
   const { tasks, peers } = await setup();
   peers.codex!.set("offline");
