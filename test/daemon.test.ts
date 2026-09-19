@@ -192,9 +192,13 @@ test("console messages go out at once, agent status is batched into one digest n
   await until(() => channel.length === 1, "immediate console message");
   expect(channel[0].params.meta.priority).toBe("important");
 
+  // Hold the recipient while the two status requests are accepted so the test does not
+  // depend on both WebSocket round trips completing inside the 30 ms batch window.
+  daemon.bus.pause("claude");
   await other.request({ t: "send", body: "[FYI] for the record" });
   await other.request({ t: "send", body: "one" });
   await other.request({ t: "send", body: "[STATUS] two" });
+  daemon.bus.resume("claude");
   await until(() => channel.length === 2, "digest");
   await Bun.sleep(60);
   expect(channel).toHaveLength(2); // one notification for both, none for the fyi
