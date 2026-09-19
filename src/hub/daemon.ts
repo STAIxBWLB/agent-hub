@@ -26,6 +26,7 @@ import { PROTOCOL, stateDirFor } from "./control-client.ts";
 import { newEnvelope, parseMarker, USER, type Envelope, type PeerId } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS } from "./peers.ts";
 import { MemoryClient, workerUrl } from "../memory/client.ts";
+import { VERSION } from "../version.ts";
 import { projectChain, recallFor } from "../memory/recall.ts";
 
 export interface HubConfig {
@@ -82,6 +83,8 @@ export function loadConfig(cwd: string): HubConfig {
 }
 
 export interface DaemonOptions {
+  projectId?: string;
+  instanceId?: string;
   cwd: string;
   stateDir: string;
   controlPort: number;
@@ -134,6 +137,11 @@ class WsPeer extends BasePeer {
 }
 
 export async function startDaemon(opts: DaemonOptions) {
+  const projectId = opts.projectId ?? randomUUID();
+  const instanceId = opts.instanceId ?? randomUUID();
+  const startupCleanup: (() => void)[] = [];
+  let ready = false;
+  try {
   const config = opts.config ?? loadConfig(opts.cwd);
   mkdirSync(opts.stateDir, { recursive: true });
   const logFile = join(opts.stateDir, "hub.log");
@@ -142,6 +150,33 @@ export async function startDaemon(opts: DaemonOptions) {
   // Any local web page can open a WebSocket to a loopback port, so the control link needs a secret.
   // The file is written only after the port is bound: a second daemon that loses the bind must not clobber it.
   const token = randomBytes(24).toString("hex");
+
+  const server = Bun.serve<Client>({
+    hostname: "127.0.0.1",
+    port: opts.controlPort,
+    fetch(req, srv) {
+      if (req.headers.has("origin")) return new Response("forbidden", { status: 403 });
+      if (new URL(req.url).pathname === "/healthz") return new Response("ok");
+      return srv.upgrade(req, { data: { authed: false } }) ? undefined : new Response("agent-hub control");
+    },
+    websocket: {
+      message(sock, data) {
+        try {
+          onMessage(sock, JSON.parse(String(data)));
+        } catch (e) {
+          log(`bad control message: ${(e as Error).message}`);
+        }
+      },
+      close(sock) {
+        consoles.delete(sock);
+        sock.data.tail?.();
+        const peer = sock.data.peer ? bus.peers.get(sock.data.peer) : undefined;
+        if (peer instanceof WsPeer) peer.detach(sock);
+      },
+    },
+  });
+  startupCleanup.push(() => server.stop(true));
+
 
   // The hub's own model calls (digest condensation, task triage) are wired below, once the gateway client exists.
   let inference: Inference | undefined;
@@ -180,6 +215,7 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const c of consoles) if (c.data.tail) c.send(JSON.stringify({ t: "notice", line }));
   };
   const board = new Board(join(opts.stateDir, "hub.db"));
+  startupCleanup.push(() => board.close());
   const tasks = new Tasks({
     board,
     bus,
@@ -235,6 +271,7 @@ export async function startDaemon(opts: DaemonOptions) {
     notify: (line) => notify(line),
   });
   const kimiTokens: { at: number; n: number }[] = [];
+  startupCleanup.push(() => budget.close());
   let kimiSessionTotal = 0;
   /** `total` is the session's running count: only what was added since the last update goes into the rolling window. */
   const onKimiTokens = (total: number) => {
@@ -267,6 +304,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }, 5_000),
   ];
   for (const i of intervals) i.unref?.();
+  startupCleanup.push(() => { for (const i of intervals) clearInterval(i); });
 
   /** What the console stream and the log may show: a private envelope (PII task) keeps its body to its recipients. */
   const redact = (e: BusEvent): BusEvent => {
@@ -277,7 +315,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return { ...e, env: { ...env, ...(task ? { refs: { task } } : {}), body: `[private${task ? `: task #${task}, see ahub task show ${task}` : ""}]` } };
   };
   const SERVER_JS = join(import.meta.dir, "..", "..", "plugins", "agent-hub", "server.js");
-  const toolEnv = (peer: PeerId) => ({ AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: opts.stateDir });
+  const toolEnv = (peer: PeerId) => ({ AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: opts.stateDir, AGENTHUB_PROJECT_DIR: opts.cwd });
 
   /** One entry point for the task tools, whoever calls them: MCP clients, the local worker, the console. */
   async function taskOp(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
@@ -333,6 +371,11 @@ export async function startDaemon(opts: DaemonOptions) {
     return r ? { paused: `budget: ${r.reason}, resets ${new Date(r.resetsAt).toLocaleTimeString()}` } : {};
   };
   const status = () => ({
+    projectId,
+    instanceId,
+    version: VERSION,
+    protocol: PROTOCOL,
+    stopping,
     pid: process.pid,
     cwd: opts.cwd,
     controlPort: server.port,
@@ -346,16 +389,14 @@ export async function startDaemon(opts: DaemonOptions) {
   });
   const writeStatus = () => {
     const file = join(opts.stateDir, "status.json"); // clients parse this on every connect: replace it atomically
-    writeFileSync(`${file}.tmp`, `${JSON.stringify(status(), null, 2)}\n`);
-    renameSync(`${file}.tmp`, file);
+    writeFileSync(`${file}.${instanceId}.tmp`, `${JSON.stringify(status(), null, 2)}\n`);
+    renameSync(`${file}.${instanceId}.tmp`, file);
   };
 
   bus.tap((e) => {
     e = redact(e);
-    if (dashboard) {
-      uiEvents.push({ seq: ++uiSequence, event: e });
-      if (uiEvents.length > 200) uiEvents.shift();
-    }
+    uiEvents.push({ seq: ++uiSequence, event: e });
+    if (uiEvents.length > 200) uiEvents.shift();
     if (e.t === "state") log(`state ${e.peer} -> ${e.state}`);
     else if (e.t === "undeliverable") log(`UNDELIVERABLE to ${e.peer} after retries: ${e.env.id} from ${e.env.from}`);
     else if (e.t === "overflow") log(`OVERFLOW ${e.peer}: dropped ${e.env.id} from ${e.env.from}`);
@@ -364,6 +405,7 @@ export async function startDaemon(opts: DaemonOptions) {
   });
 
   async function onPermission(req: PermissionRequest): Promise<string | undefined> {
+    if (stopping) return undefined;
     if (opts.unattended) return req.options.find((o) => o.kind === "allow_once")?.optionId;
     const id = randomUUID().slice(0, 8);
     // The title is written by an agent and read by the person approving it: escape sequences and carriage returns
@@ -388,6 +430,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // One start per peer at a time: a second `ahub codex` must not tear down an adapter that is still coming up.
   const starting = new Map<string, Promise<Record<string, unknown>>>();
   function startPeer(peer: string, args: { model?: string; route?: string }): Promise<Record<string, unknown>> {
+    if (stopping) return Promise.resolve({ ok: false, error: "hub is stopping" });
     const running = starting.get(peer) ?? startPeerOnce(peer, args).finally(() => starting.delete(peer));
     starting.set(peer, running);
     return running;
@@ -450,7 +493,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // The sidecar serves the routes it was generated from: a changed routing.toml needs a new one.
       const routingKey = JSON.stringify([routing.targets, routing.routes]);
       if (sidecar && routingKey !== sidecarRouting) {
-        sidecar.stop();
+        await sidecar.stop();
         sidecar = undefined;
       }
       if (route && opts.switchyardPort) {
@@ -507,6 +550,8 @@ export async function startDaemon(opts: DaemonOptions) {
   function uiSnapshot(after: number) {
     return {
       ok: true,
+      projectId,
+      instanceId,
       status: { peers: status().peers },
       tasks: board.list().map((task) => {
         const view = tasks.publicView(task);
@@ -568,7 +613,7 @@ export async function startDaemon(opts: DaemonOptions) {
 
   function onMessage(sock: Sock, msg: any): void {
     const c = sock.data;
-    const reply = (body: Record<string, unknown>) => sock.send(JSON.stringify({ rid: msg.rid, ...body }));
+    const reply = (body: Record<string, unknown>) => { if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ rid: msg.rid, ...body })); };
     if (!c.authed) {
       if (msg.t !== "hello" || msg.token !== token) return sock.close(4401, "bad token");
       if (msg.v !== PROTOCOL) {
@@ -576,8 +621,12 @@ export async function startDaemon(opts: DaemonOptions) {
         log(`refused ${msg.role} ${msg.peer ?? ""}: wire version ${msg.v ?? 1}, hub speaks ${PROTOCOL} (claude plugin update agent-hub@agent-hub)`);
         return sock.close(4426, `wire version mismatch: hub speaks ${PROTOCOL}; update the agent-hub plugin`);
       }
+      if ((msg.projectId && msg.projectId !== projectId) || (msg.instanceId && msg.instanceId !== instanceId) ||
+          (msg.projectRoot && msg.projectRoot !== opts.cwd)) return sock.close(4404, "project or instance mismatch");
+      if (!["peer", "tools", "console"].includes(msg.role)) return sock.close(4403, "invalid client role");
+      if (stopping && msg.role !== "console") return sock.close(1013, "hub is stopping");
       c.authed = true;
-      c.role = msg.role === "peer" || msg.role === "tools" ? msg.role : "console";
+      c.role = msg.role;
       if (c.role === "console") consoles.add(sock);
       else if (c.role === "tools") {
         // Acts for a peer the hub manages itself (kimi, codex): may send and use the board as that peer, is never a delivery target.
@@ -595,8 +644,9 @@ export async function startDaemon(opts: DaemonOptions) {
           if (sock.readyState === WebSocket.OPEN) ws.attach(sock);
         });
       }
-      return void reply({ t: "welcome" });
+      return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: PROTOCOL });
     }
+    if (stopping && msg.t !== "status" && msg.t !== "kill") return void reply({ ok: false, error: "hub is stopping" });
     switch (msg.t) {
       case "send": {
         // A human at the console should not wait out the batch window; agents default to status.
@@ -625,6 +675,16 @@ export async function startDaemon(opts: DaemonOptions) {
         }
       case "status":
         return void reply({ t: "status", status: status() });
+      case "ui_snapshot":
+        if (c.role !== "console") return void reply({ ok: false, error: "ui_snapshot is a console command" });
+        if (!Number.isSafeInteger(msg.after ?? 0) || (msg.after ?? 0) < 0) return void reply({ ok: false, error: "invalid cursor" });
+        return void reply(uiSnapshot(msg.after ?? 0));
+      case "ui_action":
+        if (c.role !== "console") return void reply({ ok: false, error: "ui_action is a console command" });
+        if (msg.instanceId !== instanceId) return void reply({ ok: false, error: "hub restarted; refresh before acting" });
+        if (!msg.action || typeof msg.action !== "object" || Array.isArray(msg.action)) return void reply({ ok: false, error: "invalid dashboard action" });
+        void uiAction(msg.action).then((result) => reply(result as Record<string, unknown>), () => reply({ ok: false, error: "dashboard action failed; check its inputs" }));
+        return;
       case "start":
         if (c.role !== "console") return;
         startPeer(String(msg.peer), msg.args ?? {})
@@ -694,7 +754,11 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role === "console") permissions.get(String(msg.id))?.done(msg.option ? String(msg.option) : undefined);
         return;
       case "kill":
-        if (c.role === "console") void stop();
+        if (c.role !== "console") return void reply({ ok: false, error: "kill is a console command" });
+        if (msg.instanceId !== undefined && msg.instanceId !== instanceId) return void reply({ ok: false, error: "hub restarted; refresh before stopping" });
+        reply({ t: "stopping", ok: true, instanceId });
+        // Let the acknowledgement flush before closing the control listener.
+        setTimeout(() => void stop().catch((error) => log(`shutdown incomplete: ${(error as Error).message}`)), 0);
         return;
       default:
         // A newer CLI talking to an older hub must get an answer, not wait forever.
@@ -702,45 +766,34 @@ export async function startDaemon(opts: DaemonOptions) {
     }
   }
 
-  const server = Bun.serve<Client>({
-    hostname: "127.0.0.1",
-    port: opts.controlPort,
-    fetch(req, srv) {
-      if (req.headers.has("origin")) return new Response("forbidden", { status: 403 });
-      if (new URL(req.url).pathname === "/healthz") return new Response("ok");
-      return srv.upgrade(req, { data: { authed: false } }) ? undefined : new Response("agent-hub control");
-    },
-    websocket: {
-      message(sock, data) {
-        try {
-          onMessage(sock, JSON.parse(String(data)));
-        } catch (e) {
-          log(`bad control message: ${(e as Error).message}`);
-        }
-      },
-      close(sock) {
-        consoles.delete(sock);
-        sock.data.tail?.();
-        const peer = sock.data.peer ? bus.peers.get(sock.data.peer) : undefined;
-        if (peer instanceof WsPeer) peer.detach(sock);
-      },
-    },
-  });
 
-  async function stop(): Promise<void> {
-    if (stopping) return;
+  let shutdown: Promise<void> | undefined;
+  function stop(): Promise<void> {
+    if (shutdown) return shutdown;
+    shutdown = stopOnce().catch((error) => { shutdown = undefined; throw error; });
+    return shutdown;
+  }
+  async function stopOnce(): Promise<void> {
     stopping = true;
     log("hub stopping");
+    writeStatus();
     dashboard?.stop();
-    for (const p of permissions.values()) p.done(undefined);
-    await Promise.allSettled([...bus.peers.values()].map((p) => p.stop()));
-    sidecar?.stop();
     for (const i of intervals) clearInterval(i);
     for (const done of checkpointWaits.values()) done(undefined);
+    for (const p of permissions.values()) p.done(undefined);
+    // A peer can still be inside memory recall or its native handshake when kill arrives.
+    // Drain those starts before taking the final owned-process snapshot.
+    await Promise.allSettled([...starting.values()]);
+    const exits = await Promise.allSettled([...bus.peers.values()].map((p) => p.stop()).concat(sidecar ? [sidecar.stop()] : []));
+    const failed = exits.find((r) => r.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
     budget.close();
     board.close();
     server.stop(true);
-    for (const f of ["hub.pid", "status.json", "control-token"]) rmSync(join(opts.stateDir, f), { force: true });
+    try {
+      const current = JSON.parse(readFileSync(join(opts.stateDir, "status.json"), "utf8"));
+      if (current.instanceId === instanceId) for (const f of ["hub.pid", "status.json", "control-token"]) rmSync(join(opts.stateDir, f), { force: true });
+    } catch { /* another owner or no published state: never remove it */ }
     onStop?.();
   }
   let onStop: (() => void) | undefined;
@@ -752,5 +805,9 @@ export async function startDaemon(opts: DaemonOptions) {
   writeFileSync(join(opts.stateDir, "hub.pid"), `${process.pid}\n`);
   writeStatus();
   log(`${RUN_START}${process.pid} control=127.0.0.1:${server.port} cwd=${opts.cwd}`);
+  ready = true;
   return { bus, token, port: server.port as number, stop, stopped: new Promise<void>((r) => (onStop = r)) };
+  } finally {
+    if (!ready) for (const cleanup of startupCleanup.reverse()) { try { cleanup(); } catch { /* preserve startup error */ } }
+  }
 }

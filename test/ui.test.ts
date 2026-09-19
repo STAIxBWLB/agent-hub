@@ -174,3 +174,37 @@ test("oversized API bodies are rejected before the action callback", async () =>
   expect(response.ok).toBe(false);
   expect(actions).toEqual([]);
 });
+
+test("manager project route and async scoped snapshots preserve project context", async () => {
+  const calls: { after: number; input?: Record<string, unknown> }[] = [];
+  const ui = startDashboard({
+    projects: async () => ({ ok: true, mode: "all", projects: [{ id: "p1", root: "/tmp/one", state: "running", instanceId: "i1" }] }),
+    snapshot: async (after, input) => { calls.push({ after, input }); await Promise.resolve(); return { events: [], cursor: after + 1, projectId: "p1", instanceId: "i1" }; },
+    action: async () => ({ ok: true }),
+  });
+  cleanup.push(ui.stop);
+  const post = (path: string, body: unknown, cookie?: string) => fetch(`${ui.origin}${path}`, { method: "POST", headers: { origin: ui.origin, "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) });
+  const ticket = new URL(ui.issue()).hash.slice(1);
+  const session = await post("/session", { ticket });
+  const cookie = session.headers.get("set-cookie")!.split(";")[0]!;
+  expect(await (await post("/projects", {}, cookie)).json()).toMatchObject({ mode: "all", projects: [{ id: "p1" }] });
+  const response = await post("/snapshot", { after: 4, projectId: "p1", instanceId: "i1" }, cookie);
+  expect(await response.json()).toMatchObject({ cursor: 5, projectId: "p1", instanceId: "i1" });
+  expect(calls).toEqual([{ after: 4, input: { after: 4, projectId: "p1", instanceId: "i1" } }]);
+});
+
+test("local project route remains available without a manager callback", async () => {
+  const { post, session } = setup();
+  const { cookie } = await session();
+  expect(await (await post("/projects", {}, { cookie })).json()).toEqual({ ok: true, mode: "project" });
+});
+
+test("snapshot rejects a backend identity that disagrees with the requested project", async () => {
+  const ui = startDashboard({ snapshot: async () => ({ status: {}, events: [], cursor: 0, projectId: "authoritative", instanceId: "i1" }), action: async () => ({ ok: true }) });
+  cleanup.push(ui.stop);
+  const post = (body: unknown, cookie: string) => fetch(`${ui.origin}/snapshot`, { method: "POST", headers: { origin: ui.origin, "content-type": "application/json", cookie }, body: JSON.stringify(body) });
+  const ticket = new URL(ui.issue()).hash.slice(1);
+  const session = await fetch(`${ui.origin}/session`, { method: "POST", headers: { origin: ui.origin, "content-type": "application/json" }, body: JSON.stringify({ ticket }) });
+  const cookie = session.headers.get("set-cookie")!.split(";")[0]!;
+  expect((await post({ after: 0, projectId: "requested", instanceId: "i1" }, cookie)).status).toBe(409);
+});

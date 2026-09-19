@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 (unreleased)
+
+- Independent repository and worktree hubs with canonical project selection, `--project <path|id>`, `projects`, and `status --all` (#19).
+- Transactional machine-wide project/port registration, concurrent startup claims, authenticated instance checks and owned shutdown; legacy port allocations are imported without resetting them.
+- `ahub ui --all` opens a separate local manager for project selection, hub start/stop and existing dashboard actions. `ahub ui --all --stop` leaves project hubs running.
+- Native memory aliases stay compatible with claude-mem, including worktree parent/composite names. Shared aliases are indicated in the manager.
+- A second Codex TUI cannot take over an existing hub connection. Owned child shutdown is awaited before runtime ownership is released.
+- Control protocol 7: stop old hubs with their matching CLI before upgrading; refresh the channel bundle with `ahub setup`, then restart hubs and agent sessions. No automatic restarts or account configuration changes.
+
 ## 0.3.2
 
 - The channel plugin no longer fights a second session attached as the same peer: the replaced one stays detached and its tools say so, instead of taking the peer back every second (#16).

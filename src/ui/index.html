@@ -5,19 +5,20 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>agent-hub | Local dashboard</title>
 <style>
-:root{color-scheme:light;--paper:#f5f4ef;--ink:#252b29;--muted:#68716c;--line:#d9ddd5;--green:#245f45;--red:#a2392f}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.5 system-ui,sans-serif}header,main{max-width:1440px;margin:auto;padding:24px 32px}header{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);gap:20px}h1{font-size:24px;letter-spacing:-1px;margin:0}h1 span{font-weight:400;color:var(--muted)}h2{font-size:15px;margin:0}p{margin:6px 0}.eyebrow,.meta{font-size:12px;color:var(--muted)}.eyebrow{letter-spacing:1.5px;text-transform:uppercase}.connection{font-size:12px;color:var(--muted)}main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:24px}.stack{display:flex;flex-direction:column;gap:24px;min-width:0}section{border:1px solid var(--line);background:#fff;border-radius:8px;overflow:hidden}.section-head{display:flex;justify-content:space-between;align-items:center;padding:16px 18px;border-bottom:1px solid var(--line);gap:12px}.content{padding:16px 18px}.empty{color:var(--muted);padding:20px 18px}.row{padding:14px 18px;border-bottom:1px solid var(--line)}.row:last-child{border-bottom:0}.row-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.label{font-weight:600;overflow-wrap:anywhere}.badge{display:inline-block;font:11px ui-monospace,monospace;padding:3px 7px;background:#edf2ee;color:var(--green);border-radius:4px}.badge.warn{color:#855417;background:#f9f0dc}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}button,input,select,textarea{font:inherit}button{background:#fff;color:var(--ink);border:1px solid #bbc4bb;border-radius:5px;padding:6px 10px;cursor:pointer}button:hover{background:#f0f4ef}button.primary{background:var(--green);color:#fff;border-color:var(--green)}button.danger{color:var(--red)}button:disabled{opacity:.5;cursor:default}:focus-visible{outline:2px solid var(--green);outline-offset:3px}input,select,textarea{width:100%;border:1px solid #bbc4bb;border-radius:5px;padding:8px;background:#fff;color:var(--ink)}input[type="checkbox"]{width:auto;margin-right:6px}textarea{resize:vertical;min-height:78px}label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}form .field{margin-bottom:12px}.actions select{width:auto;max-width:220px}.body{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:7px}.stream{height:360px;overflow:auto}.event{padding:12px 18px;border-bottom:1px solid var(--line)}.event .body{font:13px/1.55 ui-monospace,monospace}.notice{grid-column:1/-1;margin:0;border:1px solid var(--line);border-radius:6px;padding:10px 14px;background:#fff;overflow-wrap:anywhere}.notice.error{color:var(--red);border-color:#dfb8b3}.notice:empty{display:none}progress{width:100%;height:8px;accent-color:var(--green);display:block;margin:8px 0}.budget-window+.budget-window{margin-top:14px}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}details summary{cursor:pointer;padding:14px 18px;color:var(--green);font-weight:600}details form{padding:0 18px 18px}.task-list{max-height:460px;overflow:auto}footer{max-width:1440px;margin:auto;padding:0 32px 24px;color:var(--muted);font-size:12px}@media(max-width:900px){main{grid-template-columns:1fr}.stack{gap:18px}header,main{padding:18px}.stream{height:300px}footer{padding:0 18px 18px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+:root{color-scheme:light;--paper:#f5f4ef;--ink:#252b29;--muted:#68716c;--line:#d9ddd5;--green:#245f45;--red:#a2392f}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.5 system-ui,sans-serif}header,main{max-width:1440px;margin:auto;padding:24px 32px}header{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);gap:20px}h1{font-size:24px;letter-spacing:-1px;margin:0}h1 span{font-weight:400;color:var(--muted)}h2{font-size:15px;margin:0}p{margin:6px 0}.eyebrow,.meta{overflow-wrap:anywhere;font-size:12px;color:var(--muted)}.eyebrow{letter-spacing:1.5px;text-transform:uppercase}.connection{font-size:12px;color:var(--muted)}main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:24px}.stack{display:flex;flex-direction:column;gap:24px;min-width:0}section{border:1px solid var(--line);background:#fff;border-radius:8px;overflow:hidden}.section-head{display:flex;justify-content:space-between;align-items:center;padding:16px 18px;border-bottom:1px solid var(--line);gap:12px}.content{padding:16px 18px}.empty{color:var(--muted);padding:20px 18px}.row{padding:14px 18px;border-bottom:1px solid var(--line)}.row:last-child{border-bottom:0}.row-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.label{font-weight:600;overflow-wrap:anywhere}.badge{display:inline-block;font:11px ui-monospace,monospace;padding:3px 7px;background:#edf2ee;color:var(--green);border-radius:4px}.badge.warn{color:#855417;background:#f9f0dc}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}button,input,select,textarea{font:inherit}button{background:#fff;color:var(--ink);border:1px solid #bbc4bb;border-radius:5px;padding:6px 10px;cursor:pointer}button:hover{background:#f0f4ef}button.primary{background:var(--green);color:#fff;border-color:var(--green)}button.danger{color:var(--red)}button:disabled{opacity:.5;cursor:default}:focus-visible{outline:2px solid var(--green);outline-offset:3px}input,select,textarea{width:100%;border:1px solid #bbc4bb;border-radius:5px;padding:8px;background:#fff;color:var(--ink)}input[type="checkbox"]{width:auto;margin-right:6px}textarea{resize:vertical;min-height:78px}label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}form .field{margin-bottom:12px}.actions select{width:auto;max-width:220px}.body{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:7px}.stream{height:360px;overflow:auto}.event{padding:12px 18px;border-bottom:1px solid var(--line)}.event .body{font:13px/1.55 ui-monospace,monospace}.notice{grid-column:1/-1;margin:0;border:1px solid var(--line);border-radius:6px;padding:10px 14px;background:#fff;overflow-wrap:anywhere}.notice.error{color:var(--red);border-color:#dfb8b3}.notice:empty{display:none}progress{width:100%;height:8px;accent-color:var(--green);display:block;margin:8px 0}.budget-window+.budget-window{margin-top:14px}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}details summary{cursor:pointer;padding:14px 18px;color:var(--green);font-weight:600}details form{padding:0 18px 18px}.task-list{max-height:460px;overflow:auto}footer{max-width:1440px;margin:auto;padding:0 32px 24px;color:var(--muted);font-size:12px}@media(max-width:900px){main{grid-template-columns:1fr}.stack{gap:18px}header,main{padding:18px}.stream{height:300px}footer{padding:0 18px 18px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
 </style>
 </head>
 <body>
-<header><div><div class="eyebrow">Local control room</div><h1>agent-hub <span>/ dashboard</span></h1></div><div id="connection" class="connection" role="status">Connecting...</div></header>
+<header><div><div class="eyebrow">Local control room</div><h1>agent-hub <span>/ dashboard</span></h1><div id="project-context" class="meta"></div></div><div id="connection" class="connection" role="status">Connecting...</div></header>
 <main>
 <p id="notice" class="notice" role="status" aria-live="polite"></p>
 <div class="stack">
 <section aria-labelledby="stream-title"><div class="section-head"><h2 id="stream-title">Live stream</h2><label><input id="follow" type="checkbox" checked> Follow latest</label></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div></section>
-<section aria-labelledby="tasks-title"><div class="section-head"><h2 id="tasks-title">Task board</h2><span id="task-count" class="meta"></span></div><div id="tasks" class="task-list"></div><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><button class="primary" type="submit">Propose task</button></form></details></section>
-<section aria-labelledby="compose-title"><div class="section-head"><h2 id="compose-title">Console message</h2></div><form id="send" class="content"><div class="field"><label for="recipient">Recipient</label><select id="recipient" name="recipient"><option value="">All peers</option></select></div><div class="field"><label for="message">Message</label><textarea id="message" name="body" required maxlength="8000" placeholder="Send an instruction to the team..."></textarea></div><button class="primary" type="submit">Send message</button></form></section>
+<section aria-labelledby="tasks-title"><div class="section-head"><h2 id="tasks-title">Task board</h2><span id="task-count" class="meta"></span></div><div id="tasks" class="task-list"></div><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><button class="primary" data-mutation="project" type="submit">Propose task</button></form></details></section>
+<section aria-labelledby="compose-title"><div class="section-head"><h2 id="compose-title">Console message</h2></div><form id="send" class="content"><div class="field"><label for="recipient">Recipient</label><select id="recipient" name="recipient"><option value="">All peers</option></select></div><div class="field"><label for="message">Message</label><textarea id="message" name="body" required maxlength="8000" placeholder="Send an instruction to the team..."></textarea></div><button class="primary" data-mutation="project" type="submit">Send message</button></form></section>
 </div>
 <div class="stack">
+<section id="projects-panel" aria-labelledby="projects-title"><div class="section-head"><h2 id="projects-title">Projects</h2><span id="project-count" class="meta"></span></div><div id="projects"></div></section>
 <section aria-labelledby="peers-title"><div class="section-head"><h2 id="peers-title">Peers &amp; queues</h2><span id="peer-count" class="meta"></span></div><div id="peers"></div></section>
 <section aria-labelledby="permissions-title"><div class="section-head"><h2 id="permissions-title">Pending approvals</h2><span id="permission-count" class="meta"></span></div><div id="permissions"></div></section>
 <section aria-labelledby="budget-title"><div class="section-head"><h2 id="budget-title">Usage budgets</h2></div><div id="budget"></div></section>
@@ -30,11 +31,15 @@ let ticket = location.hash.slice(1);
 history.replaceState(null, '', location.pathname);
 const $ = (id) => document.getElementById(id);
 const el = (tag, text, cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = String(text); if (cls) node.className = cls; return node; };
-let stopped = false, cursor = 0, timer, eventCount = 0;
+let stopped = false, cursor = 0, timer, projectsTimer, eventCount = 0;
+let managerMode = false, projectList = [], selectedProjectId = '', selectedInstanceId = '', snapshotValid = false, viewGeneration = 0, projectRequest = 0;
+const drafts = new Map();
+const pendingButtons = new WeakSet();
+let draftChoicesPending = false;
 const signatures = new Map();
 const time = (value) => value ? new Date(value).toLocaleString() : 'unknown';
 function notice(text, error = false) { $('notice').textContent = text; $('notice').classList.toggle('error', error); }
-function expire() { stopped = true; clearTimeout(timer); $('connection').textContent = 'Session closed'; notice('Session missing or expired. Run ahub ui in your terminal to reopen the dashboard.', true); document.querySelectorAll('button').forEach((button) => { button.disabled = true; }); }
+function expire() { stopped = true; clearTimeout(timer); clearTimeout(projectsTimer); $('connection').textContent = 'Session closed'; notice('Session missing or expired. Run ahub ui in your terminal to reopen the dashboard.', true); document.querySelectorAll('button').forEach((button) => { button.disabled = true; }); }
 async function post(path, body) {
   const response = await fetch(path, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
   if (response.status === 401) { expire(); throw new Error('Run ahub ui to start a new session.'); }
@@ -42,16 +47,86 @@ async function post(path, body) {
   if (!response.ok || result.ok === false) throw new Error(result.error || 'Request failed (' + response.status + ').');
   return result;
 }
-async function action(payload, button) {
+function canMutate() { return !managerMode || snapshotValid; }
+function context() { return { projectId: selectedProjectId, instanceId: selectedInstanceId, generation: viewGeneration }; }
+async function action(payload, button, managerAction = false) {
   if (stopped) return false;
-  if (button) button.disabled = true;
-  try { const result = await post('/action', payload); notice(result.text || 'Action accepted.'); return true; }
-  catch (error) { if (!stopped) notice(error.message, true); return false; }
-  finally { if (button && !stopped) button.disabled = false; }
+  if (!managerAction && !canMutate()) { notice('Wait for a current project snapshot before changing it.', true); return false; }
+  const captured = context();
+  if (managerMode && !managerAction) payload = {...payload, projectId: captured.projectId, instanceId: captured.instanceId};
+  if (button) { pendingButtons.add(button); button.disabled = true; }
+  try { const result = await post('/action', payload); if (!managerMode || captured.generation === viewGeneration) notice(result.text || 'Action accepted.'); return true; }
+  catch (error) { if (!stopped && (!managerMode || captured.generation === viewGeneration)) notice(error.message, true); return false; }
+  finally { if (button) { pendingButtons.delete(button); if (!stopped) button.disabled = !managerAction && managerMode && !snapshotValid; } }
 }
-function button(text, payload, cls) { const node = el('button', text, cls); node.type = 'button'; node.addEventListener('click', () => void action(payload, node)); return node; }
+function button(text, payload, cls, managerAction = false) { const node = el('button', text, cls); node.type = 'button'; node.dataset.mutation = managerAction ? 'manager' : 'project'; node.disabled = !managerAction && managerMode && !snapshotValid; node.addEventListener('click', () => void action(payload, node, managerAction)); return node; }
 function update(id, data, render) { const signature = JSON.stringify(data); if (signatures.get(id) === signature) return; signatures.set(id, signature); const target = $(id); target.replaceChildren(); render(target); }
 function empty(target, text) { target.append(el('p', text, 'empty')); }
+function count(value) { return Array.isArray(value) ? value.length : value && typeof value === 'object' ? Object.keys(value).length : value; }
+function taskCount(value) { return Array.isArray(value) ? value.length : value && typeof value === 'object' ? Object.values(value).reduce((total, item) => total + (typeof item === 'number' ? item : 0), 0) : value; }
+function saveDraft() {
+  if (!managerMode || !selectedProjectId) return;
+  const previous = drafts.get(selectedProjectId) || {};
+  drafts.set(selectedProjectId, {message:$('message').value, recipient:draftChoicesPending ? previous.recipient || '' : $('recipient').value,
+    title:$('title').value, detail:$('detail').value, class:$('class').value, owner:draftChoicesPending ? previous.owner || '' : $('owner').value});
+}
+function restoreDraft(choices = false) {
+  const draft = drafts.get(selectedProjectId) || {};
+  if (choices) {
+    for (const id of ['recipient','owner']) $(id).value = Array.from($(id).options).some((o) => o.value === draft[id]) ? draft[id] : '';
+  } else { $('message').value = draft.message || ''; $('title').value = draft.title || ''; $('detail').value = draft.detail || ''; $('class').value = draft.class || 'implement'; }
+}
+function syncMutationControls() { document.querySelectorAll('button[data-mutation="project"]').forEach((b) => { b.disabled = pendingButtons.has(b) || (managerMode && !snapshotValid); }); }
+function resetView(id, instance) {
+  saveDraft();
+  selectedProjectId = id || ''; selectedInstanceId = instance || ''; snapshotValid = false; cursor = 0; eventCount = 0; viewGeneration++;
+  signatures.clear(); $('stream').replaceChildren(); empty($('stream'), managerMode ? 'Select a running project...' : 'Waiting for hub activity...');
+  for (const [id, text] of [['peers','No project selected.'],['tasks','No project selected.'],['permissions','No project selected.'],['budget','No project selected.']]) { $(id).replaceChildren(); empty($(id), text); }
+  $('peer-count').textContent = ''; $('task-count').textContent = ''; $('permission-count').textContent = ''; $('project-context').textContent = '';
+  notice('');
+  draftChoicesPending = managerMode && Boolean(selectedProjectId);
+  peerOptions($('owner'), [], 'Automatic'); peerOptions($('recipient'), [], 'All peers');
+  restoreDraft(); syncMutationControls();
+}
+function projectName(root, id) { const value = String(root || id); return value.split('/').filter(Boolean).pop() || value; }
+function renderProjects() {
+  $('project-count').textContent = managerMode ? projectList.length + ' registered' : '';
+  const selected = projectList.find((project) => project && project.id === selectedProjectId);
+  $('project-context').textContent = managerMode ? (selected ? String(selected.root || selected.id) : 'No project selected') : '';
+  update('projects', [projectList, selectedProjectId], (target) => {
+    if (!managerMode) return empty(target, 'This is a project-local dashboard.');
+    if (!projectList.length) return empty(target, 'No registered projects.');
+    for (const project of projectList) {
+      const id = typeof project.id === 'string' ? project.id : '', state = String(project.state || 'unavailable');
+      const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
+      head.append(el('span', projectName(project.root, id), 'label'), el('span', state, 'badge' + (['unavailable','incompatible','missing'].includes(state) ? ' warn' : ''))); row.append(head); row.append(el('p', String(project.root || id), 'meta'));
+      const counts = []; if (project.peers !== undefined) counts.push(String(count(project.peers)) + ' peers'); if (project.tasks !== undefined) counts.push(String(taskCount(project.tasks)) + ' tasks');
+      if (counts.length) row.append(el('p', counts.join(' / '), 'meta')); if (project.warning || project.error) row.append(el('p', project.warning || project.error, 'meta'));
+      const actions = el('div', undefined, 'actions');
+      if (state === 'running' && id === selectedProjectId) {
+        actions.append(el('span', 'Selected', 'badge'));
+        const stop = el('button', 'Stop', 'danger'); stop.type = 'button'; stop.addEventListener('click', () => { if (confirm('Stop ' + String(project.root || id) + '?')) void action({action:'stop', projectId:id, instanceId:typeof project.instanceId === 'string' ? project.instanceId : ''}, stop, true); }); actions.append(stop);
+      } else if (state === 'running') { const use = el('button', 'Use'); use.type = 'button'; use.addEventListener('click', () => { resetView(id, typeof project.instanceId === 'string' ? project.instanceId : ''); renderProjects(); }); actions.append(use); }
+      else if (['stopped','missing'].includes(state)) { const start = el('button', 'Start', 'primary'); start.type = 'button'; start.addEventListener('click', async () => { resetView(id, ''); renderProjects(); if (await action({action:'start', projectId:id}, start, true)) await refreshProjects(); }); actions.append(start); }
+      row.append(actions); target.append(row);
+    }
+  });
+}
+async function refreshProjects() {
+  if (stopped) return;
+  const request = ++projectRequest;
+  try {
+    const result = await post('/projects', {});
+    if (request !== projectRequest) return;
+    if (result.mode !== 'all') { managerMode = false; if (typeof result.selectedProjectId === 'string') selectedProjectId = result.selectedProjectId; renderProjects(); return; }
+    managerMode = true; projectList = Array.isArray(result.projects) ? result.projects : [];
+    if (!selectedProjectId && typeof result.selectedProjectId === 'string') selectedProjectId = result.selectedProjectId;
+    const selected = projectList.find((p) => p && p.id === selectedProjectId), nextInstance = selected && typeof selected.instanceId === 'string' ? selected.instanceId : '';
+    if (!selected || selected.state !== 'running' || nextInstance !== selectedInstanceId) resetView(selected?.id || '', nextInstance);
+    renderProjects();
+  } catch (error) { if (!stopped) $('connection').textContent = 'Projects unavailable: ' + error.message; }
+  if (!stopped) projectsTimer = setTimeout(refreshProjects, 3000);
+}
 function peerOptions(select, ids, first) { const selected = select.value; select.replaceChildren(); const initial = el('option', first); initial.value = ''; select.append(initial); for (const id of ids) { const option = el('option', id); option.value = id; select.append(option); } if (ids.includes(selected)) select.value = selected; }
 function render(snapshot) {
   const peers = snapshot.status.peers || {}, ids = Object.keys(peers);
@@ -68,7 +143,7 @@ function render(snapshot) {
     }
   });
   const peerSignature = JSON.stringify(ids);
-  if (signatures.get('peer-options') !== peerSignature) { signatures.set('peer-options', peerSignature); peerOptions($('owner'), ids, 'Automatic'); peerOptions($('recipient'), ids, 'All peers'); }
+  if (signatures.get('peer-options') !== peerSignature) { signatures.set('peer-options', peerSignature); peerOptions($('owner'), ids, 'Automatic'); peerOptions($('recipient'), ids, 'All peers'); if (draftChoicesPending) { restoreDraft(true); draftChoicesPending = false; } }
   $('task-count').textContent = snapshot.tasks.length + ' tasks';
   update('tasks', [snapshot.tasks, ids], (target) => {
     if (!snapshot.tasks.length) return empty(target, 'No public tasks yet. Propose a task below to get started.');
@@ -79,7 +154,7 @@ function render(snapshot) {
       if (task.detail) row.append(el('p', task.detail, 'body'));
       if (task.state !== 'approved' && ids.length) {
         const actions = el('div', undefined, 'actions'), select = el('select'); select.setAttribute('aria-label', 'Assign task ' + task.id); peerOptions(select, ids, 'Select peer'); if (ids.includes(task.owner)) select.value = task.owner;
-        const assign = el('button', 'Assign'); assign.type = 'button'; assign.addEventListener('click', () => { if (select.value) void action({action:'assign', id:task.id, peer:select.value}, assign); else notice('Select a peer before assigning this task.', true); });
+        const assign = el('button', 'Assign'); assign.type = 'button'; assign.dataset.mutation = 'project'; assign.disabled = managerMode && !snapshotValid; assign.addEventListener('click', () => { if (select.value) void action({action:'assign', id:task.id, peer:select.value}, assign); else notice('Select a peer before assigning this task.', true); });
         actions.append(select, assign); row.append(actions);
       }
       target.append(row);
@@ -107,6 +182,7 @@ function render(snapshot) {
     }
   });
   const stream = $('stream');
+  if (!eventCount) { stream.replaceChildren(); empty(stream, 'No activity yet.'); }
   for (const entry of snapshot.events || []) {
     if (entry.seq <= cursor) continue;
     if (!eventCount) stream.replaceChildren();
@@ -117,16 +193,25 @@ function render(snapshot) {
   }
   cursor = Math.max(cursor, snapshot.cursor || 0);
   if ($('follow').checked) stream.scrollTop = stream.scrollHeight;
+  syncMutationControls();
 }
 async function poll() {
   if (stopped) return;
-  try { render(await post('/snapshot', {after:cursor})); $('connection').textContent = 'Live / updated ' + new Date().toLocaleTimeString(); }
+  const captured = context();
+  if (managerMode && (!captured.projectId || !captured.instanceId)) { if (!stopped) timer = setTimeout(poll, 1000); return; }
+  try {
+    const input = {after:cursor}; if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
+    const result = await post('/snapshot', input);
+    if (!managerMode || (result.projectId === captured.projectId && result.instanceId === captured.instanceId && captured.generation === viewGeneration)) {
+      snapshotValid = true; render(result); $('connection').textContent = 'Live / updated ' + new Date().toLocaleTimeString();
+    }
+  }
   catch (error) { if (!stopped) $('connection').textContent = 'Disconnected / retrying: ' + error.message; }
   if (!stopped) timer = setTimeout(poll, 1000);
 }
-$('send').addEventListener('submit', async (event) => { event.preventDefault(); const body = $('message').value.trim(); if (!body) return; const to = $('recipient').value, payload = {action:'send', body}; if (to) payload.to = [to]; if (await action(payload, event.submitter)) $('message').value = ''; });
-$('propose').addEventListener('submit', async (event) => { event.preventDefault(); const title = $('title').value.trim(); if (!title) return; const payload = {action:'propose', title, class:$('class').value}; if ($('detail').value.trim()) payload.detail = $('detail').value.trim(); if ($('owner').value) payload.owner = $('owner').value; if (await action(payload, event.submitter)) { $('title').value = ''; $('detail').value = ''; } });
-(async () => { try { if (ticket) await post('/session', {ticket}); ticket = ''; await poll(); } catch (error) { ticket = ''; if (!stopped) { stopped = true; notice('Could not start session: ' + error.message + ' Run ahub ui to reopen.', true); $('connection').textContent = 'Session unavailable'; } } })();
+$('send').addEventListener('submit', async (event) => { event.preventDefault(); const generation = viewGeneration, body = $('message').value.trim(); if (!body) return; const to = $('recipient').value, payload = {action:'send', body}; if (to) payload.to = [to]; if (await action(payload, event.submitter) && generation === viewGeneration) $('message').value = ''; });
+$('propose').addEventListener('submit', async (event) => { event.preventDefault(); const generation = viewGeneration, title = $('title').value.trim(); if (!title) return; const payload = {action:'propose', title, class:$('class').value}; if ($('detail').value.trim()) payload.detail = $('detail').value.trim(); if ($('owner').value) payload.owner = $('owner').value; if (await action(payload, event.submitter) && generation === viewGeneration) { $('title').value = ''; $('detail').value = ''; } });
+(async () => { try { if (ticket) await post('/session', {ticket}); ticket = ''; await refreshProjects(); await poll(); } catch (error) { ticket = ''; if (!stopped) { stopped = true; notice('Could not start session: ' + error.message + ' Run ahub ui to reopen.', true); $('connection').textContent = 'Session unavailable'; } } })();
 </script>
 </body>
 </html>
