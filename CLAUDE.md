@@ -77,6 +77,7 @@ Run this before reporting any task complete, and paste the output. A failing tes
 - A worker turn builds its messages in a local array and joins the history only as a whole. Never push to `history` mid-turn: one tool call without its result poisons every later request.
 - After a tool with side effects ran, a failed turn is reported, never redelivered.
 - Approval titles are agent-written text shown to a person: the daemon escapes control characters, and write/edit/bash show what will be written or run.
+- An ACP permission request may carry no `rawInput` (Kimi 2.0.1): the arguments were on the earlier `tool_call` update, which `acp.ts` remembers by `toolCallId`. A payload that still cannot be resolved is labelled as unresolved and its `allow_always` option is withheld - never render a bare tool name as if it described the call.
 - Secrets stay inside `OmniRoute`: never put the key or Access values in a log line, an error message, a return value or the generated Switchyard file (the key goes by env var name).
 - Switchyard's docs drift from the released binary. Any change to `switchyardToml` is checked with the real `switchyard-server --dry-run`, not only the stand-in in `test/fakes/`.
 - A child process gets a scrubbed environment, so test knobs for fakes travel in a wrapper script, not in `process.env`.
