@@ -17,6 +17,7 @@ import { buildLaunch, UNATTENDED_WARNING } from "./launch.ts";
 import { nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
 import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
+import { freeText } from "./free-text.ts";
 import { createInterface } from "node:readline/promises";
 import { assertLifecycleAvailable, readOperation } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
@@ -157,19 +158,6 @@ async function printProjects(json = false) {
     if (row.error) console.log(`  ${row.error}`);
   }
   if (!rows.length) console.log("No registered projects. Run ahub init in a project directory.");
-}
-
-/**
- * Free text that a launcher flag can land in by mistake (`ahub say --backend mlx hi` sent the flag as chat and
- * ignored the option it named, issue #40). A `--flag` fails loudly instead of being absorbed; `--` ends the
- * options, so a message that really is about a flag stays sendable.
- */
-function freeText(words: string[], usage: string): string {
-  const end = words.indexOf("--");
-  if (end !== -1) return words.slice(end + 1).join(" ");
-  const flag = words.find((a) => a.startsWith("--"));
-  if (flag) fail(`the message would absorb the flag "${flag}"; put it after "--" to send it as text; usage: ${usage}`);
-  return words.join(" ");
 }
 
 function fail(message: string): never {

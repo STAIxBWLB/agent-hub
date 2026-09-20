@@ -372,6 +372,18 @@ test("two starts of the same peer at once share one adapter", async () => {
   expect((await console_.request({ t: "status" })).status.peers.kimi.state).toBe("idle");
 });
 
+test("withdrawing an expired queued request updates status.json immediately", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  await console_.request({ t: "start", peer: "kimi" });
+  await console_.request({ t: "pause", peer: "kimi" });
+  const ask = newEnvelope(HUB, "checkpoint?", { to: ["kimi"], kind: "budget", priority: "important" });
+  daemon.bus.publish(ask);
+  const peer = () => JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).peers.kimi;
+  expect(peer()).toEqual({ state: "paused", queued: 1, queuedImportant: 1 });
+  expect(daemon.bus.withdraw(ask.id)).toBe(true);
+  expect(peer()).toEqual({ state: "paused", queued: 0 });
+});
+
 test("pause and resume from the console", async () => {
   const { stateDir, console_, events } = await hub();
   await console_.request({ t: "start", peer: "kimi" });

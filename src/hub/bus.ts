@@ -243,6 +243,7 @@ export class Bus {
       const i = queue.findIndex((e) => e.id === envelopeId);
       if (i !== -1) removed = queue.splice(i, 1).length > 0;
     }
+    if (removed) this.onQueues?.();
     return removed;
   }
 
