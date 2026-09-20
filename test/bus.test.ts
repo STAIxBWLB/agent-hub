@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Bus, type BusEvent, type BusOptions } from "../src/hub/bus.ts";
-import { frame, HUB, newEnvelope, sanitize, parseMarker, renderDigest, replyParent, type Envelope, type PeerState } from "../src/hub/envelope.ts";
+import { DIGEST, frame, HUB, newEnvelope, sanitize, parseMarker, renderDigest, replyAudience, replyParent, USER, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 
 class FakePeer extends BasePeer {
@@ -30,6 +30,15 @@ class FakePeer extends BasePeer {
   set(s: PeerState) {
     this.setState(s);
   }
+}
+
+class NativeFakePeer extends BasePeer {
+  readonly hubNative = true;
+  got: Envelope[] = [];
+  async deliver(envs: Envelope[]) { this.got.push(...envs); }
+  async start() { this.setState("idle"); }
+  async stop() { this.setState("offline"); }
+  set(s: PeerState) { this.setState(s); }
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
@@ -341,4 +350,127 @@ test("withdraw takes back an envelope that is queued, or whose steer is still in
   codex.set("idle");
   await tick();
   expect(codex.got.map((e) => e.body)).not.toContain("checkpoint? (steered)");
+});
+
+// issue #29: a reply is for whoever asked, and a hub-native peer cannot rate its own urgency.
+
+test("a reply to a directed message reaches the sender only, and bystanders stay idle", async () => {
+  const { bus, claude, codex, kimi } = await trio();
+  bus.publish(newEnvelope("claude", "kimi, what does envelope.ts do?", { to: ["kimi"], priority: "important" }));
+  await tick();
+  // What the adapters do at the end of a turn: answer the delivery, without naming a target themselves.
+  kimi.onMessage!("it defines the message envelope", { inReplyTo: replyParent(kimi.got), to: replyAudience(kimi.got) });
+  await tick();
+  expect(claude.got.map((e) => e.body)).toEqual(["it defines the message envelope"]);
+  expect(codex.got).toHaveLength(0);
+});
+
+test("a reply to a console message reaches nobody's turn", async () => {
+  const { bus, claude, codex, kimi } = await trio();
+  bus.publish(newEnvelope(USER, "kimi, what does envelope.ts do?", { to: ["kimi"], priority: "important" }));
+  await tick();
+  kimi.onMessage!("it defines the message envelope", { inReplyTo: replyParent(kimi.got), to: replyAudience(kimi.got) });
+  await tick();
+  expect(claude.got).toHaveLength(0);
+  expect(codex.got).toHaveLength(0);
+});
+
+test("a reply to a hub task envelope is not broadcast to the other peers", async () => {
+  const { bus, claude, codex, kimi } = await trio();
+  bus.publish(newEnvelope(HUB, "Task #1 [implement] write TOKEN.txt", { to: ["kimi"], kind: "task", priority: "important" }));
+  await tick();
+  kimi.onMessage!("Task #1 is complete.", { inReplyTo: replyParent(kimi.got), to: replyAudience(kimi.got) });
+  await tick();
+  expect(codex.got).toHaveLength(0);
+  expect(claude.got).toHaveLength(0);
+});
+
+test("a reply without an explicit audience still goes back to its sender", async () => {
+  const { bus, claude, codex, kimi } = await trio();
+  bus.publish(newEnvelope("claude", "kimi, please check this", { to: ["kimi"] }));
+  await tick();
+  kimi.onMessage!("checked", { inReplyTo: replyParent(kimi.got) });
+  await tick();
+  expect(claude.got.map((e) => e.body)).toEqual(["checked"]);
+  expect(codex.got).toHaveLength(0);
+});
+
+test("replyAudience names every sender of a digest once, skipping the hub preface", async () => {
+  const preface = newEnvelope(HUB, "recall", { kind: "presence" });
+  const a = newEnvelope("claude", "one"), b = newEnvelope("codex", "two"), c = newEnvelope("claude", "three");
+  expect(replyAudience([preface, a, b, c])).toEqual(["claude", "codex"]);
+});
+
+test("a peer can still broadcast on purpose", async () => {
+  const { codex, kimi, claude } = await trio();
+  claude.onMessage!("heads up, the build is red");
+  await tick();
+  expect(codex.got).toHaveLength(1);
+  expect(kimi.got).toHaveLength(1);
+});
+
+test("a hub-native peer cannot mark its own unsolicited report important", async () => {
+  const bus = new Bus({ retryMs: 15, batchMs: 0 });
+  const pi = new NativeFakePeer("pi");
+  const codex = new FakePeer("codex");
+  for (const p of [pi, codex]) { bus.add(p); await p.start(); }
+  pi.onMessage!("[IMPORTANT] Task #1 is complete.");
+  await tick();
+  expect(codex.got[0]!.priority).toBe("status");
+});
+
+test("a hub-native peer keeps important when it answers an important request addressed to it", async () => {
+  const bus = new Bus({ retryMs: 15, batchMs: 0 });
+  const pi = new NativeFakePeer("pi");
+  const codex = new FakePeer("codex");
+  for (const p of [pi, codex]) { bus.add(p); await p.start(); }
+  bus.publish(newEnvelope("codex", "is the gate green?", { to: ["pi"], priority: "important" }));
+  await tick();
+  pi.onMessage!("[IMPORTANT] no, two tests fail", { inReplyTo: replyParent(pi.got), to: replyAudience(pi.got) });
+  await tick();
+  expect(codex.got.at(-1)!.priority).toBe("important");
+});
+
+test("a non-native peer keeps the priority it claims", async () => {
+  const { codex, kimi } = await trio();
+  kimi.onMessage!("[IMPORTANT] main is broken");
+  await tick();
+  expect(codex.got[0]!.priority).toBe("important");
+});
+
+// Codex review of #33: what a condensed delivery stands for, not what the peer was handed.
+
+test("a reply to a condensed delivery reaches the senders the condensation replaced", async () => {
+  const { bus, claude, codex, kimi } = await trio(undefined, {
+    batchMax: 2,
+    condense: async (envs) => (envs.length < 2 ? envs : [newEnvelope(DIGEST, `condensed ${envs.length}`, { kind: "status" })]),
+  });
+  kimi.set("busy"); // both queue, so one delivery is condensed
+  bus.publish(newEnvelope("claude", "one", { to: ["kimi"] }));
+  bus.publish(newEnvelope("codex", "two", { to: ["kimi"] }));
+  kimi.set("idle");
+  await tick();
+  expect(kimi.got.map((e) => e.from)).toEqual([DIGEST]); // handed the condensation, not the originals
+  kimi.onMessage!("answering both", { inReplyTo: replyParent(kimi.got), to: replyAudience(kimi.got) });
+  await tick();
+  expect(claude.got.map((e) => e.body)).toEqual(["answering both"]);
+  expect(codex.got.map((e) => e.body)).toEqual(["answering both"]);
+});
+
+test("a hub-native peer keeps important when the delivery held an important request for it, whatever replyParent picked", async () => {
+  const bus = new Bus({ retryMs: 15, batchMs: 0, batchMax: 2 });
+  const pi = new NativeFakePeer("pi");
+  const codex = new FakePeer("codex");
+  for (const p of [pi, codex]) { bus.add(p); await p.start(); }
+  pi.set("busy"); // both queue, so they arrive as one delivery
+  bus.publish(newEnvelope("codex", "is the gate green?", { to: ["pi"], priority: "important" }));
+  bus.publish(newEnvelope("codex", "no rush on this one", { to: ["pi"], priority: "status" }));
+  pi.set("idle");
+  await tick();
+  expect(pi.got).toHaveLength(2);
+  // replyParent ties on hop and takes the later item: the status one, not the request being answered.
+  expect(replyParent(pi.got).body).toBe("no rush on this one");
+  pi.onMessage!("[IMPORTANT] no, two tests fail", { inReplyTo: replyParent(pi.got), to: replyAudience(pi.got) });
+  await tick();
+  expect(codex.got.at(-1)!.priority).toBe("important");
 });

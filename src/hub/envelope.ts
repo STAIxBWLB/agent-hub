@@ -25,13 +25,15 @@ export const MAX_HOP = 3;
 export const USER: PeerId = "user";
 /** The hub itself: sender of recall and workflow events. */
 export const HUB: PeerId = "hub";
+/** A hub-written condensation of several status messages. Not a peer: a reply to it is for the senders it replaced. */
+export const DIGEST: PeerId = "digest";
 
 export interface EnvelopeOpts {
   to?: PeerId[];
   kind?: Kind;
   priority?: Priority;
-  /** The envelope this one answers: inherits its trace, hop + 1. */
-  inReplyTo?: Pick<Envelope, "trace" | "hop">;
+  /** The envelope this one answers: inherits its trace, hop + 1, and - when `to` is absent - its sender as the addressee. */
+  inReplyTo?: Pick<Envelope, "trace" | "hop"> & Partial<Pick<Envelope, "id" | "from" | "to" | "priority">>;
   refs?: Envelope["refs"];
   private?: boolean;
 }
@@ -42,7 +44,10 @@ export function newEnvelope(from: PeerId, body: string, opts: EnvelopeOpts = {})
     trace: opts.inReplyTo?.trace ?? randomUUID(),
     hop: opts.inReplyTo ? opts.inReplyTo.hop + 1 : 0,
     from,
-    ...(opts.to?.length ? { to: opts.to } : {}),
+    // An answer goes back to whoever asked. Without this a reply carries no `to` and the bus fans it out to
+    // every peer, so one directed question costs every other agent a turn (issue #29). `user` and `hub` are not
+    // peers, so a reply to them reaches the console and the log and nobody's turn.
+    ...(opts.to?.length ? { to: opts.to } : opts.inReplyTo?.from ? { to: [opts.inReplyTo.from] } : {}),
     kind: opts.kind ?? "chat",
     priority: opts.priority ?? "status",
     body,
@@ -78,6 +83,11 @@ export function parseMarker(body: string, fallback: Priority = "status"): { prio
 export function renderDigest(envs: Envelope[], primed: boolean): string {
   const items = envs.map(frame).join("\n\n");
   return primed ? items : `${STANDING_INSTRUCTION}\n\n${items}`;
+}
+
+/** Who a reply to a delivery is for: everyone whose message it answers, each once, in the order they arrived. */
+export function replyAudience(envs: Envelope[]): PeerId[] {
+  return [...new Set(envs.filter((e) => !(e.from === HUB && e.kind === "presence")).map((e) => e.from))];
 }
 
 /** What a reply to a delivery answers: the highest-hop item, so a digest cannot be used to reset the hop cap. */

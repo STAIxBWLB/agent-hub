@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import { renderDigest, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
+import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { childEnv, stopOwnedProcess } from "../hub/child-process.ts";
 
@@ -108,7 +108,7 @@ export class AcpPeer extends BasePeer {
         this.primed = true;
         if (turn !== this.turn) return; // superseded: these chunks belong to a later turn
         const body = this.chunks.join("").trim();
-        if (body) this.onMessage?.(body, { inReplyTo: replyParent(envs) });
+        if (body) this.onMessage?.(body, { inReplyTo: replyParent(envs), to: replyAudience(envs) });
       })
       .catch((e: Error) => {
         this.opts.log?.(`[${this.id}] prompt failed: ${e.message}`);

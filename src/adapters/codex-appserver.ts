@@ -344,6 +344,8 @@ export class CodexPeer extends BasePeer {
       const inReplyTo = this.injected;
       this.injected = undefined;
       this.deltas.clear();
+      // ponytail: the reply is addressed to the highest-hop sender only (newEnvelope's default). A digest that
+      // mixed senders answers the last of them; track the audience alongside `injected` if that starts to matter.
       if (this.lastAnswer) this.onMessage?.(this.lastAnswer, inReplyTo ? { inReplyTo } : {});
       this.lastAnswer = "";
       this.setState("idle");
