@@ -15753,6 +15753,7 @@ var package_default = {
     "src",
     "plugins",
     "templates",
+    "docs",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"

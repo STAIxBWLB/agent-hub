@@ -63,3 +63,5 @@ Update README and quickstart, add an English operations guide covering installat
 ## Integration decision
 
 The journal, adapter receipt contract and wire change are delivered in one coherent implementation PR, reviewed by subsystem. Shipping intermediate incompatible interfaces would leave a falsely durable runtime. The queue remains a durable snapshot until handoff; receipt rows retain handoff and resolution history. An operator retry atomically links a queued attempt and updates the bus snapshot.
+
+An identical operator action/reason may be repeated with its original observed revision or the freshly read terminal revision. Both return the existing result without another audit transition or retry enqueue. Conflicting actions/reasons and unrelated stale revisions are refused.

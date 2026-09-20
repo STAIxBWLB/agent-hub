@@ -88,6 +88,7 @@ export class Bus {
   private readonly attempts = new Map<string, number>(); // `${peer}:${envelope id}` -> failed deliveries
   /** Correlates each native receipt independently; a peer can have a steer and a delivery in flight. */
   private readonly activeDeliveries = new Map<string, PeerId>();
+  private readonly pendingOutcomes: Omit<JournalDelivery, "revision" | "updatedAt">[] = [];
   private suppressDrain = false;
   private readonly recoveryHeldPeers = new Set<PeerId>();
   /**
@@ -162,7 +163,14 @@ export class Bus {
 
   private persist(): void {
     if (!this.journal) return;
-    try { this.journal.persistBus(this.snapshotWithoutJournal(), [...this.manualPaused]); this.storageError = undefined; }
+    try {
+      this.journal.transaction(() => {
+        for (const outcome of this.pendingOutcomes) this.journal!.createDelivery(outcome);
+        this.journal!.persistBus(this.snapshotWithoutJournal(), [...this.manualPaused]);
+      });
+      this.pendingOutcomes.length = 0;
+      this.storageError = undefined;
+    }
     catch { this.storageError = "delivery journal unavailable"; throw new Error("delivery journal unavailable"); }
   }
 
@@ -267,6 +275,7 @@ export class Bus {
     if (["dispatching", "accepted"].includes(record.state) || this.peers.get(record.peer)?.state === "busy") throw new Error("active delivery cannot be resolved");
     if (record.revision !== revision) throw new Error("stale delivery revision");
     if (record.state === "queued" && action === "retry") throw new Error("queued delivery is already scheduled");
+    if (action === "retry" && (this.queues.get(record.peer)?.length ?? 0) + record.originals.length > this.opts.queueCap) throw new Error("recipient queue is full");
     const before = this.snapshotWithoutJournal();
     try {
       this.journal.transaction(() => {
@@ -484,6 +493,7 @@ export class Bus {
     if (queue.length > this.opts.queueCap) {
       const victim = queue.findIndex((e) => e.priority !== "important");
       const [lost] = queue.splice(victim === -1 ? 0 : victim, 1);
+      if (this.journal) this.pendingOutcomes.push({ id: crypto.randomUUID(), peer: id, state: "failed", createdAt: Date.now(), originals: [lost!], out: [], reason: "queue capacity exceeded" });
       this.emit({ t: "overflow", env: lost!, peer: id });
     }
     this.onQueues?.();

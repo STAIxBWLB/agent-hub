@@ -136,3 +136,14 @@ test("invalid snapshot import fails before mutating an uninitialized journal", (
   expect(durable.snapshot()).toMatchObject({ revision: before.revision, deliveries: [], bus: before.bus });
   durable.close();
 });
+
+test("queue overflow is retained as a durable failed outcome", () => {
+  const { bus, durable } = setupBus({ queueCap: 1 });
+  bus.add(new FakePeer("claude")); bus.pause("claude");
+  const first = newEnvelope("user", "evicted", { to: ["claude"] });
+  const second = newEnvelope("user", "retained", { to: ["claude"] });
+  bus.publish(first); bus.publish(second);
+  expect(durable.snapshot().bus.queues.claude!.map((env) => env.id)).toEqual([second.id]);
+  expect(durable.list().find((row) => row.originals.some((env) => env.id === first.id))).toMatchObject({ state: "failed", reason: "queue capacity exceeded" });
+  bus.closeJournal();
+});
