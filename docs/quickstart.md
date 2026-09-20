@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.7.0
+bun add -g github:STAIxBWLB/agent-hub#v0.7.1
 ahub setup
 ```
 
