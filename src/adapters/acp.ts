@@ -30,12 +30,15 @@ export interface AcpOptions {
   preamble?: string;
   /** The session's running token total from `usage_update` (inferred shape: totalTokens, else input + output, else `used`). Cumulative, not a delta. */
   onTokens?: (sessionTotal: number) => void;
-  /** Resolve with an optionId, or undefined to cancel. Absent = every request is cancelled. */
+  /** Resolve with an optionId, or undefined to cancel. Absent = every request is cancelled.
+   *  A request whose payload could not be resolved is titled as such and carries no session-wide allow option. */
   onPermission?: (req: PermissionRequest) => Promise<string | undefined>;
   log?: (line: string) => void;
 }
 
 const HANDSHAKE_MS = 30_000;
+/** Tool calls whose arguments are remembered until their permission request arrives. */
+const TOOL_INPUT_CAP = 64;
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 
@@ -46,6 +49,7 @@ export class AcpPeer extends BasePeer {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   private chunks: string[] = [];
+  private readonly toolInputs = new Map<string, unknown>();
   private primed = false;
   private turn = 0; // generation: a prompt cancelled by the watchdog must not touch the turn that followed it
 
@@ -144,6 +148,13 @@ export class AcpPeer extends BasePeer {
     if (msg.method === "session/update") {
       const u = msg.params?.update;
       if (u?.sessionUpdate === "agent_message_chunk" && u.content?.type === "text") this.chunks.push(u.content.text);
+      // The permission request that follows may carry no `rawInput` (Kimi 2.0.1 does not), and then the
+      // console would be asked to approve a bare tool name. Keep what the call said it would run (issue #31).
+      else if ((u?.sessionUpdate === "tool_call" || u?.sessionUpdate === "tool_call_update") && typeof u.toolCallId === "string") {
+        if (u.rawInput !== undefined) this.toolInputs.set(u.toolCallId, u.rawInput);
+        if (u.status === "completed" || u.status === "failed") this.toolInputs.delete(u.toolCallId);
+        while (this.toolInputs.size > TOOL_INPUT_CAP) this.toolInputs.delete(this.toolInputs.keys().next().value as string);
+      }
       else if (u?.sessionUpdate === "usage_update" && this.opts.onTokens) {
         const f = { ...u, ...(typeof u.usage === "object" ? u.usage : {}) } as Record<string, unknown>;
         const num = (k: string) => (typeof f[k] === "number" ? (f[k] as number) : 0);
@@ -163,11 +174,14 @@ export class AcpPeer extends BasePeer {
   }
 
   private async answerPermission(msg: any): Promise<void> {
-    const options: PermissionOption[] = msg.params?.options ?? [];
     const call = msg.params?.toolCall ?? {};
-    // The approver has to see what runs, not only the tool's name ("Bash").
-    const input = call.rawInput === undefined ? "" : `: ${(typeof call.rawInput === "string" ? call.rawInput : JSON.stringify(call.rawInput)).slice(0, 600)}`;
-    const title: string = `${call.title ?? "tool call"}${input}`;
+    // The approver has to see what runs, not only the tool's name ("Bash"). The request itself carries it
+    // for some agents; for the rest it was on the `tool_call` update that announced the call.
+    const raw = call.rawInput ?? (typeof call.toolCallId === "string" ? this.toolInputs.get(call.toolCallId) : undefined);
+    const input = raw === undefined ? "" : `: ${(typeof raw === "string" ? raw : JSON.stringify(raw)).slice(0, 600)}`;
+    // An unknown payload is never dressed up as a description, and it must not buy a blanket grant.
+    const title: string = raw === undefined ? `${call.title ?? "tool call"} (payload not reported by the agent)` : `${call.title ?? "tool call"}${input}`;
+    const options: PermissionOption[] = (msg.params?.options ?? []).filter((o: PermissionOption) => raw !== undefined || o.kind !== "allow_always");
     const picked = await this.opts.onPermission?.({ peer: this.id, title, options }).catch(() => undefined);
     const valid = options.some((o) => o.optionId === picked);
     this.send({

@@ -677,7 +677,7 @@ test("dashboard snapshots, allow/deny approvals, task actions, pauses and restri
     expect(await ui.post("action", { action: "send", to: ["kimi"], body: "PERMISSION" })).toMatchObject({ ok: true });
     await until(() => pushes.some((p) => p.t === "permission"));
     const pending = (await ui.post("snapshot")).permissions[0];
-    expect(pending.title).toBe("write file");
+    expect(pending.title).toBe("write file (payload not reported by the agent)");
     expect(await ui.post("action", { action: "permit", id: pending.id, option: "made-up" })).toMatchObject({ ok: false });
     expect(await ui.post("action", { action: "permit", id: pending.id, option })).toMatchObject({ ok: true });
     await until(() => events.some((e) => e.t === "envelope" && e.env.body.endsWith(`permission=${option}`)));
