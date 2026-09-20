@@ -28,16 +28,34 @@ function roles(): Record<string, string[]> {
   }
 }
 const MAX_RECONNECT_DELAY_MS = 30_000;
-/** Close codes a retry cannot fix: another session took this peer id (4000), bad token, reserved or taken id, wire version. */
+/** Close codes a retry cannot fix: bad token, wrong project, reserved or taken id, wire version. */
 const TERMINAL_CLOSES: Record<number, string> = {
-  4000: `another session attached to the hub as "${peerId}"; this one is detached (restart it to take the peer back)`,
   4401: "the hub refused the control token",
   4404: "the hub belongs to a different project or instance; restart this session from the intended project",
   4403: `the hub refused the peer id "${peerId}" (reserved or malformed)`,
   4409: `the peer id "${peerId}" is taken by a hub-managed adapter`,
   4426: "wire version mismatch with the running hub: update the agent-hub plugin (ahub setup) and restart this session",
 };
+/** Another session attached under this peer id. Unlike the other closes this one ends on its own, so the
+ *  session stands by and takes the peer back once the hub reports it offline (issue #30). */
+const HELD_CLOSE = 4000;
+const HELD = `another session is attached to the hub as "${peerId}"; this one is standing by and takes the peer back when that session leaves`;
 const INBOX_CAP = 200;
+
+/**
+ * Whether a live session holds this peer id, per the daemon's own status file. The hub gives the id to
+ * whoever said hello last, so reconnecting blind would evict the session that just took it and the two
+ * would trade the peer forever. No readable status means no live hub holds it, and a connect can only fail.
+ */
+function peerHeld(): boolean {
+  try {
+    const status = JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")) as { peers?: Record<string, { state?: string }> };
+    const peer = status.peers?.[peerId];
+    return !!peer && peer.state !== "offline";
+  } catch {
+    return false;
+  }
+}
 
 const INSTRUCTIONS = [
   "agent-hub connects you to other coding agents working in this project (for example codex, kimi, local) and to the hub console user.",
@@ -89,7 +107,13 @@ async function push(envs: Envelope[]): Promise<void> {
 }
 
 async function connectLoop(): Promise<void> {
+  let standingBy = false;
   for (let attempt = 0; ; attempt++) {
+    // Standing by after a take-over: wait for the slot rather than evicting whoever holds it now.
+    if (standingBy && peerHeld()) {
+      await new Promise((r) => setTimeout(r, Math.min(1000 * 2 ** Math.max(attempt, 0), MAX_RECONNECT_DELAY_MS)));
+      continue;
+    }
     let code: number | undefined;
     try {
       const client = await ControlClient.connect(stateDir, { role: toolsOnly ? "tools" : "peer", peer: peerId,
@@ -97,6 +121,8 @@ async function connectLoop(): Promise<void> {
       client.onPush = (msg) => msg.t === "deliver" && void push(msg.envs ?? [msg.env]); // `env`: a daemon older than wire version 2
       hub = client;
       attempt = -1;
+      standingBy = false;
+      detached = undefined;
       log(`connected to hub as "${peerId}"`);
       code = await new Promise<number>((r) => (client.onClose = r));
       hub = undefined;
@@ -105,10 +131,15 @@ async function connectLoop(): Promise<void> {
       code = (e as { code?: number }).code;
       if (attempt === 0) log((e as Error).message);
     }
-    // Retrying these only fights another session or hammers a hub that will refuse again.
+    // Retrying these only hammers a hub that will refuse again.
     if (code !== undefined && TERMINAL_CLOSES[code]) {
       detached = TERMINAL_CLOSES[code];
       return log(`stopped reconnecting: ${detached}`);
+    }
+    if (code === HELD_CLOSE) {
+      if (!standingBy) log(`standing by: ${HELD}`);
+      standingBy = true;
+      detached = HELD;
     }
     await new Promise((r) => setTimeout(r, Math.min(1000 * 2 ** Math.max(attempt, 0), MAX_RECONNECT_DELAY_MS)));
   }

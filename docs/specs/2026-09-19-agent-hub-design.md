@@ -120,11 +120,14 @@ hub CLI / console ── control WS 127.0.0.1:<ctl> ─────────�
   budget coordinator, router L1, and the Codex proxy, ACP child and local worker. Survives
   Claude Code restarts. State in `.agenthub/state/` (pid, status.json, sqlite, logs).
 - `plugins/agent-hub`: Claude Code plugin. Its MCP server is the channel; it reconnects to
-  the daemon over the control WS with backoff, except after a close no retry can fix: 4000
-  (another session attached as the same peer; the newest hello wins, whatever order the
-  session-start recalls finish in), 4401, 4403, 4409 and 4426. It then
-  stays detached and its tools report why. It exits when its host closes stdin. Exposes tools `hub_send`, `hub_inbox`
-  (fallback drain), `hub_task_*`, `hub_review`, `hub_remember`, `hub_checkpoint`.
+  the daemon over the control WS with backoff, except after a close no retry can fix: 4401,
+  4403, 4409 and 4426. It then stays detached and its tools report why. Close 4000 (another
+  session attached as the same peer; the newest hello wins, whatever order the session-start
+  recalls finish in) is not one of them (amended, issue #30): that session stands by, and
+  reconnects only once `status.json` reports the peer offline, so it never evicts the session
+  holding the id and the two cannot trade it back and forth. Its tools say it is standing by
+  until it has the peer again. It exits when its host closes stdin. Exposes tools `hub_send`,
+  `hub_inbox` (fallback drain), `hub_task_*`, `hub_review`, `hub_remember`, `hub_checkpoint`.
 - Codex adapter: spawns `codex app-server --listen ws://127.0.0.1:<port>`, runs a
   transparent proxy the TUI attaches to (`--enable tui_app_server --remote`). The proxy never
   runs its own handshake: it learns the thread id from the TUI's `thread/start` /

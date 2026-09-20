@@ -15839,14 +15839,24 @@ function roles() {
 }
 var MAX_RECONNECT_DELAY_MS = 30000;
 var TERMINAL_CLOSES = {
-  4000: `another session attached to the hub as "${peerId}"; this one is detached (restart it to take the peer back)`,
   4401: "the hub refused the control token",
   4404: "the hub belongs to a different project or instance; restart this session from the intended project",
   4403: `the hub refused the peer id "${peerId}" (reserved or malformed)`,
   4409: `the peer id "${peerId}" is taken by a hub-managed adapter`,
   4426: "wire version mismatch with the running hub: update the agent-hub plugin (ahub setup) and restart this session"
 };
+var HELD_CLOSE = 4000;
+var HELD = `another session is attached to the hub as "${peerId}"; this one is standing by and takes the peer back when that session leaves`;
 var INBOX_CAP = 200;
+function peerHeld() {
+  try {
+    const status = JSON.parse(readFileSync3(join3(stateDir, "status.json"), "utf8"));
+    const peer = status.peers?.[peerId];
+    return !!peer && peer.state !== "offline";
+  } catch {
+    return false;
+  }
+}
 var INSTRUCTIONS = [
   "agent-hub connects you to other coding agents working in this project (for example codex, kimi, local) and to the hub console user.",
   'Their messages arrive as <channel source="agent-hub" ...> tags; meta.source names the sender and meta.message_id identifies the message.',
@@ -15895,7 +15905,12 @@ ${sanitize(e.body)}`).join(`
   }
 }
 async function connectLoop() {
+  let standingBy = false;
   for (let attempt = 0;; attempt++) {
+    if (standingBy && peerHeld()) {
+      await new Promise((r) => setTimeout(r, Math.min(1000 * 2 ** Math.max(attempt, 0), MAX_RECONNECT_DELAY_MS)));
+      continue;
+    }
     let code;
     try {
       const client = await ControlClient.connect(stateDir, {
@@ -15906,6 +15921,8 @@ async function connectLoop() {
       client.onPush = (msg) => msg.t === "deliver" && void push(msg.envs ?? [msg.env]);
       hub = client;
       attempt = -1;
+      standingBy = false;
+      detached = undefined;
       log(`connected to hub as "${peerId}"`);
       code = await new Promise((r) => client.onClose = r);
       hub = undefined;
@@ -15918,6 +15935,12 @@ async function connectLoop() {
     if (code !== undefined && TERMINAL_CLOSES[code]) {
       detached = TERMINAL_CLOSES[code];
       return log(`stopped reconnecting: ${detached}`);
+    }
+    if (code === HELD_CLOSE) {
+      if (!standingBy)
+        log(`standing by: ${HELD}`);
+      standingBy = true;
+      detached = HELD;
     }
     await new Promise((r) => setTimeout(r, Math.min(1000 * 2 ** Math.max(attempt, 0), MAX_RECONNECT_DELAY_MS)));
   }
