@@ -8,6 +8,7 @@ import { allocatePorts } from "../src/hub/ports.ts";
 import { nextStep, parseList, pluginState } from "../src/cli/setup.ts";
 import { VERSION } from "../src/version.ts";
 import { childEnv } from "../src/hub/child-process.ts";
+import { freeText } from "../src/cli/free-text.ts";
 
 test("ahub init is idempotent and keeps text outside the markers", () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
@@ -84,6 +85,30 @@ test("one version: package.json, the plugin manifest, the CLI and the MCP server
   expect(JSON.parse(readFileSync("plugins/agent-hub/.claude-plugin/plugin.json", "utf8")).version).toBe(pkg);
   expect(Bun.spawnSync(["bun", "src/cli/main.ts", "--version"]).stdout.toString().trim()).toBe(pkg);
   expect(readFileSync("plugins/agent-hub/server.js", "utf8")).toContain(`version: "${pkg}"`); // stamped into the bundle
+});
+
+// issue #40: the text after a leading @peer was absorbed into the body, so `ahub say --backend mlx hi`
+// sent the flag as chat and ignored the option it named.
+test("say refuses a message that would absorb a flag, before touching the daemon", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "agenthub-cli-flags-"));
+  const cli = join(process.cwd(), "src/cli/main.ts");
+  const run = (...args: string[]) => Bun.spawnSync(["bun", cli, ...args], { cwd });
+  const bad = run("say", "--backend", "mlx", "hi");
+  expect(bad.exitCode).toBe(1);
+  expect(bad.stderr.toString()).toContain("absorb");
+  expect(bad.stderr.toString()).toContain("--backend");
+  expect(run("say", "@pi", "try --model dgx/fast", "--verbose").exitCode).toBe(1);
+  // `--` ends the options, so a message that really is about a flag is still sendable (it fails on the daemon
+  // connection, not on the parse: the refusal above happens before `connect()`).
+  expect(run("say", "@pi", "--", "--backend", "is", "broken").stderr.toString()).not.toContain("absorb");
+  expect(run("remember", "--backend", "mlx").stderr.toString()).toContain("absorb");
+});
+
+test("free text preserves words before -- and still rejects preceding flags", () => {
+  expect(freeText(["hello", "--", "--backend"], "say")).toBe("hello --backend");
+  expect(freeText(["--", "--backend", "--"], "say")).toBe("--backend --");
+  expect(() => freeText(["--backend", "mlx", "--", "hello"], "say")).toThrow("absorb");
+  expect(freeText(["hello", "--"], "remember")).toBe("hello");
 });
 
 test("ahub setup: one step at a time from the JSON listings; paths compared exactly; a stale cached bundle counts as stale", () => {

@@ -21,3 +21,11 @@ test("a peer line names the backend the peer asked for on its last turn", () => 
   expect(peerLine("local", { state: "idle", queued: 0, servedBy: "switchyard sy/coding -> glm53" })).toContain("last call: switchyard sy/coding -> glm53");
   expect(peerLine("codex", { state: "paused", queued: 2, paused: "budget" })).toBe("  codex    paused   queued 2  (budget)");
 });
+
+// issue #41: `queued 3` hid which queued messages would interrupt their recipient at once.
+test("a peer line marks queued messages that would interrupt on delivery", () => {
+  expect(peerLine("kimi", { state: "idle", queued: 1, queuedImportant: 1 })).toBe("  kimi     idle     queued 1 (1 important)");
+  expect(peerLine("kimi", { state: "idle", queued: 3, queuedImportant: 2 })).toBe("  kimi     idle     queued 3 (2 important)");
+  expect(peerLine("codex", { state: "paused", queued: 2, queuedImportant: 2, paused: "budget" })).toBe("  codex    paused   queued 2 (2 important)  (budget)");
+  expect(peerLine("kimi", { state: "idle", queued: 2, queuedImportant: 0 })).toBe("  kimi     idle     queued 2");
+});
