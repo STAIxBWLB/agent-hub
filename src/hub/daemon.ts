@@ -131,6 +131,11 @@ class WsPeer extends BasePeer {
   claim(sock: Sock): void {
     this.claimed = sock;
   }
+  /** A hello that has not finished its preface yet. The peer reads as offline until then, and a session standing by
+   *  for the id must not take it from a claimant that is still arriving. */
+  get claiming(): boolean {
+    return !!this.claimed && this.claimed !== this.sock && this.claimed.readyState === WebSocket.OPEN;
+  }
   attach(sock: Sock): void {
     if (sock !== this.claimed) return void sock.close(4000, "replaced"); // a newer session said hello meanwhile
     this.sock?.close(4000, "replaced");
@@ -493,7 +498,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      [...bus.peers].map(([id, p]) => [id, { state: bus.stateOf(id), queued: bus.queued(id), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]),
+      [...bus.peers].map(([id, p]) => [id, { state: bus.stateOf(id), queued: bus.queued(id), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]),
     ),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
     ...(modelRelay ? { models: modelRelay.status() } : {}),
@@ -979,6 +984,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!(peer instanceof WsPeer)) return sock.close(4409, "peer id is taken by a hub-managed adapter");
         const ws = peer;
         ws.claim(sock);
+        writeStatus(); // the claim has to be visible before the preface, or a standing-by session takes the id back
         void ensurePreface(c.peer).finally(() => {
           if (sock.readyState === WebSocket.OPEN) ws.attach(sock);
         });
