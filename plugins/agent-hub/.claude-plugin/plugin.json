@@ -1,6 +1,6 @@
 {
   "name": "agent-hub",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Channel between Claude Code and the agent-hub daemon: peer messages from Codex, Kimi and the local worker arrive as channel events; hub_send replies.",
   "author": {
     "name": "Young Joon Lee",
