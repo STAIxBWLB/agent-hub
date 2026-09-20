@@ -110,3 +110,42 @@ publication remain explicit release activities; this implementation does not
 silently restart the developer's currently running project sessions.
 The bootstrap includes an incompatible dashboard manager, which must also be
 stopped with its matching CLI before a protocol-8 manager is launched.
+
+## Current 0.7.0 correction and recovery contract
+
+The earlier sections record the protocol-8 implementation history. The current
+release is 0.6.4 with protocol 9; the next target is 0.7.0 with protocol 10.
+This correction supersedes the earlier protocol-8 source/target statement for
+the planned transition while retaining that historical evidence.
+
+The 0.7.0 coordinator accepts a verified protocol-9 source and starts a
+protocol-10 target. It must stage the exact package, preserve the source
+coordinator, and promote the global CLI only after the target has passed its
+readback. The transition is sequential per project and uses native managed
+launchers. Claude requires manual confirmation of the captured session before
+resume; the coordinator must never create a second Claude terminal when
+ownership is uncertain. Kimi and local-worker sessions may start fresh with
+preserved routing and task context. hwp-cli is outside this transition.
+
+Protocol 10 adds durable delivery receipts with the states
+`queued`, `dispatching`, `accepted`, `completed`, `needs_review`, `failed`,
+and `discarded`. An accepted bridge handoff is not task completion. An
+unsettled `dispatching` or `accepted` record after an unplanned stop becomes
+`needs_review`; timeout, disconnect, cancellation, and partial effects are
+uncertain and are never replayed automatically. Queue resolution records the
+observed revision and operator reason. A retry closes the old record and makes
+one linked attempt; stale or conflicting resolutions fail.
+
+The target console commands are `ahub queue list [--peer <id>] [--json]`,
+`ahub queue show <delivery-id>`, and `ahub queue resolve <delivery-id>
+--action completed|retry|discard --reason <text>`. They are a 0.7.0 target and
+remain unavailable in the released 0.6.4 CLI until implementation and live
+verification complete.
+
+The documented verification sequence is: run a dry-run, verify package and
+session identity, manually confirm Claude recovery, read back version, session,
+queue, task, and budget state, then release the held queues. Do not claim a
+successful 0.7.0 cutover from tests, synthetic approvals, or package
+installation alone. Issue [#12](https://github.com/STAIxBWLB/agent-hub/issues/12)
+remains open for off-campus Access credentials and a natural near-limit budget
+pause.

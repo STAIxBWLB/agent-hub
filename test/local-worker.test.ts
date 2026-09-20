@@ -139,6 +139,24 @@ test("a model failure after tools with side effects is reported, not redelivered
   expect(said[1]!.body).toBe("roles=system,user,assistant,tool,assistant,user");
 });
 
+test("correlated local delivery after a side effect requires review", async () => {
+  let calls = 0;
+  const { peer, said, model, cwd } = await setup((body) => {
+    calls++;
+    if (calls === 1) return { tool_calls: [toolCall("edit", { path: "a.txt", old: "two", new: "2" })] };
+    throw new Error("model disconnected after edit");
+  });
+  const receipts: { id: string; state: string }[] = [];
+  peer.onDelivery = (r) => receipts.push({ id: r.id, state: r.state });
+  await peer.deliver([newEnvelope("user", "edit then disconnect", { to: ["local"] })], "local-effects");
+  await until(() => receipts.some((r) => r.state === "needs_review"), "needs-review receipt");
+  expect(receipts[0]).toEqual({ id: "local-effects", state: "accepted" });
+  expect(receipts.at(-1)).toEqual({ id: "local-effects", state: "needs_review" });
+  expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("one\n2\n");
+  expect(said).toHaveLength(1);
+  expect(model.requests).toHaveLength(2);
+});
+
 test("a long turn elides its oldest tool outputs instead of outgrowing the context", async () => {
   const big = "x".repeat(19_000);
   const { bus, said, model, cwd } = await setup((body) => {

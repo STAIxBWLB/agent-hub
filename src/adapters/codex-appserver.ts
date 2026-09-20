@@ -51,13 +51,15 @@ export class CodexPeer extends BasePeer {
   private threadId = "";
   private readonly activeTurns = new Set<string>();
   private nextId = -1;
-  private readonly pending = new Map<number, { resolve: (result?: any) => void; reject: (e: Error) => void }>();
+  private readonly pending = new Map<number, { resolve: (result?: any) => void; reject: (e: Error) => void; deliveryId?: string; kind?: "deliver" | "steer" }>();
   private usageTimer: ReturnType<typeof setInterval> | undefined;
   private injected: Envelope | undefined; // the hub envelope that started the current turn, if any
   private lastAnswer = "";
   private readonly deltas = new Map<string, string[]>();
   private primed = false;
   private readonly steers = new Set<number>(); // request ids of turn/steer calls app-server has not answered yet
+  private readonly turnDeliveries = new Map<string, Set<string>>();
+  private readonly unboundDeliveries = new Set<string>();
 
   constructor(
     id: PeerId,
@@ -129,9 +131,10 @@ export class CodexPeer extends BasePeer {
   }
 
   /** Resolves when app-server accepts the turn. Only called while idle, i.e. a thread exists and no turn runs. */
-  deliver(envs: Envelope[]): Promise<void> {
+  deliver(envs: Envelope[], deliveryId?: string): Promise<void> {
     const link = this.link;
     if (this.state !== "idle" || !link || link.up.readyState !== WebSocket.OPEN) {
+      if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is not injectable` });
       return Promise.reject(new Error(`${this.id} is not injectable`));
     }
     const text = this.render(envs);
@@ -139,13 +142,21 @@ export class CodexPeer extends BasePeer {
     this.setState("busy"); // claim the turn now so the bus stops draining
     return new Promise<void>((resolve, reject) => {
       this.pending.set(id, {
-        resolve: () => {
+        deliveryId, kind: "deliver",
+        resolve: (result) => {
           this.primed = true;
           this.injected = replyParent(envs);
+          const nativeTurn = typeof result?.turn?.id === "string" ? result.turn.id : undefined;
+          if (deliveryId) {
+            if (nativeTurn) this.addTurnDelivery(nativeTurn, deliveryId);
+            else this.unboundDeliveries.add(deliveryId);
+            this.delivery({ id: deliveryId, state: "accepted" });
+          }
           resolve();
         },
         reject: (e) => {
           if (!this.activeTurns.size) this.setState("idle");
+          if (deliveryId) this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message });
           reject(e);
         },
       });
@@ -160,25 +171,32 @@ export class CodexPeer extends BasePeer {
   }
 
   /** `important` while a turn runs: feed it into that turn. Rejects when there is no steerable turn or app-server refuses. */
-  steer(envs: Envelope[]): Promise<void> {
+  steer(envs: Envelope[], deliveryId?: string): Promise<void> {
     const link = this.link;
     const expectedTurnId = [...this.activeTurns].reverse().find((t) => !t.startsWith("unknown:"));
     if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId) {
+      if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} has no steerable turn` });
       return Promise.reject(new Error(`${this.id} has no steerable turn`));
     }
     const id = this.nextId--;
     this.steers.add(id);
     return new Promise<void>((resolve, reject) => {
       this.pending.set(id, {
+        deliveryId, kind: "steer",
         resolve: () => {
           this.steers.delete(id);
           this.primed = true;
           // The turn now answers these too; the highest hop wins so a steer cannot reset the hop cap.
           this.injected = replyParent(this.injected ? [this.injected, ...envs] : envs);
+          if (deliveryId) {
+            this.addTurnDelivery(expectedTurnId, deliveryId);
+            this.delivery({ id: deliveryId, state: "accepted" });
+          }
           resolve();
         },
         reject: (e) => {
           this.steers.delete(id);
+          if (deliveryId) this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message });
           reject(e);
         },
       });
@@ -194,6 +212,9 @@ export class CodexPeer extends BasePeer {
       this.link?.up.send(JSON.stringify({ method: "turn/interrupt", id: this.nextId--, params: { threadId: this.threadId, turnId } }));
     }
     this.activeTurns.clear();
+    for (const ids of this.turnDeliveries.values()) for (const id of ids) this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout" });
+    for (const id of this.unboundDeliveries) this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout" });
+    this.turnDeliveries.clear(); this.unboundDeliveries.clear();
     this.injected = undefined;
     this.lastAnswer = "";
     this.abandonSteers("turn went silent");
@@ -207,6 +228,15 @@ export class CodexPeer extends BasePeer {
       this.pending.delete(id);
       p?.reject(new Error(`steer unanswered: ${reason}`));
     }
+  }
+
+  private addTurnDelivery(turnId: string, deliveryId: string): void {
+    const ids = this.turnDeliveries.get(turnId) ?? new Set<string>();
+    ids.add(deliveryId); this.turnDeliveries.set(turnId, ids); this.unboundDeliveries.delete(deliveryId);
+  }
+
+  private knownRejection(error: Error): boolean {
+    return /turn in progress|no active turn|not injectable|rejected|usage limit/i.test(error.message);
   }
 
   private async spawnAppServer(): Promise<string> {
@@ -259,8 +289,14 @@ export class CodexPeer extends BasePeer {
     this.link = undefined;
     this.threadId = "";
     this.activeTurns.clear();
-    for (const p of this.pending.values()) p.reject(new Error("codex TUI detached"));
+    for (const p of this.pending.values()) {
+      if (p.deliveryId) this.delivery({ id: p.deliveryId, state: "needs_review", reason: "Codex TUI detached" });
+      p.reject(new Error("codex TUI detached"));
+    }
     this.pending.clear();
+    for (const ids of this.turnDeliveries.values()) for (const id of ids) this.delivery({ id, state: "needs_review", reason: "Codex TUI detached" });
+    for (const id of this.unboundDeliveries) this.delivery({ id, state: "needs_review", reason: "Codex TUI detached" });
+    this.turnDeliveries.clear(); this.unboundDeliveries.clear();
     this.setState("offline");
   }
 
@@ -319,7 +355,9 @@ export class CodexPeer extends BasePeer {
     }
     if (link !== this.link || params.threadId !== this.threadId) return;
     if (method === "turn/started") {
-      this.activeTurns.add(params.turn?.id ?? `unknown:${Date.now()}`);
+      const nativeTurn = params.turn?.id ?? `unknown:${Date.now()}`;
+      this.activeTurns.add(nativeTurn);
+      for (const id of [...this.unboundDeliveries]) this.addTurnDelivery(nativeTurn, id);
       this.lastAnswer = "";
       this.setState("busy");
     } else if (method === "item/agentMessage/delta") {
@@ -334,13 +372,18 @@ export class CodexPeer extends BasePeer {
       // Conclusions only: skip commentary, keep the last answer of the turn (phase may be absent).
       if (item.phase !== "commentary" && text.trim()) this.lastAnswer = text.trim();
     } else if (method === "turn/completed") {
-      this.activeTurns.delete(params.turn?.id);
+      const nativeTurn = params.turn?.id;
+      this.activeTurns.delete(nativeTurn);
       for (const id of this.activeTurns) if (id.startsWith("unknown:")) this.activeTurns.delete(id);
       if (params.turn?.status === "failed") {
         this.opts.log?.(`[${this.id}] turn failed: ${params.turn.error?.message ?? "unknown error"}`);
       }
       if (this.activeTurns.size) return;
       this.abandonSteers("turn completed");
+      if (typeof nativeTurn === "string") {
+        for (const id of this.turnDeliveries.get(nativeTurn) ?? []) this.delivery({ id, state: params.turn?.status === "failed" ? "needs_review" : "completed", ...(params.turn?.status === "failed" ? { reason: params.turn?.error?.message ?? "Codex turn failed" } : {}) });
+        this.turnDeliveries.delete(nativeTurn);
+      }
       const inReplyTo = this.injected;
       this.injected = undefined;
       this.deltas.clear();

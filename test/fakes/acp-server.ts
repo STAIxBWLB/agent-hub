@@ -44,6 +44,7 @@ async function prompt(id: number, text: string) {
     return send({ jsonrpc: "2.0", id, error: { code: -32603, message: "session error" } });
   }
   if (text.includes("SLOW")) {
+    if (text.includes("ACK_SLOW")) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "started" } } } });
     const cancelled = await new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => resolve(false), 10_000);
       cancel = () => (clearTimeout(timer), resolve(true));

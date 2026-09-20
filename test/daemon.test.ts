@@ -372,6 +372,25 @@ test("two starts of the same peer at once share one adapter", async () => {
   expect((await console_.request({ t: "status" })).status.peers.kimi.state).toBe("idle");
 });
 
+test("queue diagnostics are console-only and private delivery bodies stay redacted", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  const peer = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" });
+  cleanup.push(() => peer.close());
+  await console_.request({ t: "pause", peer: "claude" });
+  daemon.bus.publish(newEnvelope(HUB, "private fixture must not leak", { to: ["claude"], private: true, priority: "important" }));
+  const list = await console_.request({ t: "queue", op: "list" });
+  expect(list.ok).toBe(true);
+  expect(list.deliveries.length).toBeGreaterThan(0);
+  expect(JSON.stringify(list)).not.toContain("private fixture");
+  const item = list.deliveries.find((row: any) => row.peer === "claude" && row.state === "queued");
+  expect(item).toBeDefined();
+  const shown = await console_.request({ t: "queue", op: "show", id: item.id });
+  expect(JSON.stringify(shown)).not.toContain("private fixture");
+  expect(JSON.stringify(shown)).toContain("[private:");
+  expect((await peer.request({ t: "queue", op: "list" })).ok).toBe(false);
+  expect((await peer.request({ t: "queue", op: "resolve", id: item.id, revision: item.revision, action: "discard", reason: "not authorized" })).ok).toBe(false);
+});
+
 test("withdrawing an expired queued request updates status.json immediately", async () => {
   const { stateDir, daemon, console_ } = await hub();
   await console_.request({ t: "start", peer: "kimi" });
@@ -379,7 +398,7 @@ test("withdrawing an expired queued request updates status.json immediately", as
   const ask = newEnvelope(HUB, "checkpoint?", { to: ["kimi"], kind: "budget", priority: "important" });
   daemon.bus.publish(ask);
   const peer = () => JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).peers.kimi;
-  expect(peer()).toEqual({ state: "paused", queued: 1, queuedImportant: 1 });
+  expect(peer()).toEqual({ state: "paused", queued: 1, queuedImportant: 1, oldestQueuedAt: expect.any(Number) });
   expect(daemon.bus.withdraw(ask.id)).toBe(true);
   expect(peer()).toEqual({ state: "paused", queued: 0 });
 });
@@ -393,11 +412,11 @@ test("pause and resume from the console", async () => {
   await console_.request({ t: "send", body: "held two", to: ["kimi"] });
   await Bun.sleep(80);
   const status = (await console_.request({ t: "status" })).status.peers.kimi;
-  expect(status).toEqual({ state: "paused", queued: 2, queuedImportant: 2 });
+  expect(status).toEqual({ state: "paused", queued: 2, queuedImportant: 2, oldestQueuedAt: expect.any(Number) });
   // status.json is what a client parses on connect, and a queue change is not a bus event: `publish` emits its
   // envelope event before it enqueues, so the file used to report the queue as it was one message ago.
   const peers = () => JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).peers.kimi;
-  expect(peers()).toEqual({ state: "paused", queued: 2, queuedImportant: 2 });
+  expect(peers()).toEqual({ state: "paused", queued: 2, queuedImportant: 2, oldestQueuedAt: expect.any(Number) });
   await console_.request({ t: "resume", peer: "kimi" });
   await until(() => events.some((e) => e.t === "envelope" && e.env.from === "kimi"), "digest reply");
   expect(events.find((e) => e.t === "envelope" && e.env.from === "kimi").env.body).toBe("echo: held two (2 items)");
@@ -422,7 +441,7 @@ test("session-start recall rides on the first delivery, is capped, and is not re
   let delivered = "";
   const kimi = daemon.bus.peers.get("kimi")!;
   const deliver = kimi.deliver.bind(kimi);
-  kimi.deliver = (envs) => ((delivered = envs.map((e) => `${e.from}:${e.body}`).join("\n")), deliver(envs));
+  kimi.deliver = (envs, deliveryId) => ((delivered = envs.map((e) => `${e.from}:${e.body}`).join("\n")), deliver(envs, deliveryId));
   await console_.request({ t: "send", body: "hello", to: ["kimi"] });
   await until(() => replies().length === 1, "first reply");
   expect(replies()[0]).toBe("echo: hello (2 items) +memory");

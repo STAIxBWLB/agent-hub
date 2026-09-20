@@ -51,6 +51,7 @@ export class PiPeer extends BasePeer {
   private persistedOnce = false;
   private activeEnvs: Envelope[] = [];
   private activeTools = 0;
+  private readonly activeDeliveryIds = new Set<string>();
   private agentRunning = false;
   private owner = randomUUID();
   private _tuiLaunch?: PiTuiLaunch;
@@ -206,6 +207,8 @@ export class PiPeer extends BasePeer {
   }
 
   async stop(): Promise<void> {
+    for (const id of this.activeDeliveryIds) this.delivery({ id, state: "needs_review", reason: "Pi session stopped before settlement" });
+    this.activeDeliveryIds.clear();
     this.stopping = true;
     this.clearOwnerMonitor();
     if (this.opts.mode === "tui") {
@@ -240,8 +243,11 @@ export class PiPeer extends BasePeer {
     this.server?.stop(true); this.server = undefined; this.setState("offline");
   }
 
-  async deliver(envs: Envelope[]): Promise<void> {
-    if (this.state !== "idle" || this.stopping) throw new Error(`${this.id} is not ready`);
+  async deliver(envs: Envelope[], deliveryId?: string): Promise<void> {
+    if (this.state !== "idle" || this.stopping) {
+      if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is not ready` });
+      throw new Error(`${this.id} is not ready`);
+    }
     this.setState("busy"); this.activeEnvs = envs; this.currentReply = replyParent(envs); this.settledText = "";
     let attempted = false;
     try {
@@ -249,23 +255,39 @@ export class PiPeer extends BasePeer {
       if (requested) await this.setRequestedModel(requested);
       this.noteActivity();
       attempted = true;
+      if (deliveryId) this.activeDeliveryIds.add(deliveryId);
       if (this.opts.mode === "tui") await this.sendTui({ type: "prompt", message: renderDigest(envs, true) });
       else await this.sendRpc({ type: "prompt", message: renderDigest(envs, true) });
+      if (deliveryId && this.activeDeliveryIds.has(deliveryId)) this.delivery({ id: deliveryId, state: "accepted" });
     } catch (error) {
-      if (!attempted) { this.activeEnvs = []; this.setState("idle"); throw error; }
+      if (!attempted) {
+        this.activeEnvs = []; this.setState("idle");
+        if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: error instanceof Error ? error.message : String(error) });
+        throw error;
+      }
       // The prompt may have reached Pi even if its acknowledgement was lost.
       // Fence the owner before reporting failure; never return it to the bus for replay.
-      await this.terminateFailedTurn(error instanceof Error ? error : new Error(String(error)));
+      const reason = error instanceof Error ? error.message : String(error);
+      if (deliveryId && /process is not running/i.test(reason)) {
+        this.activeDeliveryIds.delete(deliveryId);
+        this.delivery({ id: deliveryId, state: "failed_safe", reason });
+      }
+      await this.terminateFailedTurn(error instanceof Error ? error : new Error(reason));
     }
   }
 
-  async steer(envs: Envelope[]): Promise<void> {
-    if (this.state !== "busy" || this.stopping || envs.some((e) => e.kind !== "chat" || e.private || e.priority !== "important")) throw new Error("Pi workflow/private messages must queue");
+  async steer(envs: Envelope[], deliveryId?: string): Promise<void> {
+    if (this.state !== "busy" || this.stopping || envs.some((e) => e.kind !== "chat" || e.private || e.priority !== "important")) {
+      if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: "Pi workflow/private messages must queue" });
+      throw new Error("Pi workflow/private messages must queue");
+    }
     const reply = replyParent([...this.activeEnvs, ...envs]);
     this.activeEnvs.push(...envs); this.currentReply = reply;
     try {
+      if (deliveryId) this.activeDeliveryIds.add(deliveryId);
       if (this.opts.mode === "tui") await this.sendTui({ type: "steer", message: renderDigest(envs, true) });
       else await this.sendRpc({ type: "steer", message: renderDigest(envs, true) });
+      if (deliveryId && this.activeDeliveryIds.has(deliveryId)) this.delivery({ id: deliveryId, state: "accepted" });
     } catch (error) {
       await this.terminateFailedTurn(error instanceof Error ? error : new Error(String(error)));
     }
@@ -288,7 +310,7 @@ export class PiPeer extends BasePeer {
       if ((this.opts.sessionId && this.sessionId !== this.opts.sessionId) || (this.opts.sessionFile && this.sessionFile !== this.opts.sessionFile)) { this.opts.log?.(`[${this.id}] Pi session identity mismatch`); return; }
       this.startOwnerMonitor(); if (this.opts.mode === "tui") this.setState("idle");
     }
-    if (event.type === "session_shutdown") { this.stopping = true; this.ownerClaimed = false; this.clearOwnerMonitor(); this.resolveTuiExit?.(); this.resolveTuiExit = undefined; this.setState("offline"); }
+    if (event.type === "session_shutdown") { this.stopping = true; this.ownerClaimed = false; this.clearOwnerMonitor(); this.resolveTuiExit?.(); this.resolveTuiExit = undefined; this.fail(new Error("Pi session shut down before settlement")); }
     if (event.type === "agent_start") { this.noteActivity(); this.agentRunning = true; this.setState("busy"); }
     if (event.type === "activity" && this.state === "busy") this.touch();
     if (event.type === "agent_end") {
@@ -307,6 +329,8 @@ export class PiPeer extends BasePeer {
       if (cancelled) this.onMessage?.("Pi turn cancelled; inspect any partial effects before continuing.", reply);
       else if (error) void this.opts.onTurnFailure?.(this.activeEnvs, error);
       else if (text) this.onMessage?.(text, reply);
+      for (const id of this.activeDeliveryIds) this.delivery({ id, state: error || cancelled ? "needs_review" : "completed", ...(error || cancelled ? { reason: error || "Pi turn cancelled; partial effects are possible" } : {}) });
+      this.activeDeliveryIds.clear();
       this.currentReply = undefined; this.activeEnvs = []; if (this.state === "busy" && !this.activeTools) this.setState("idle");
     }
   }
@@ -346,6 +370,8 @@ export class PiPeer extends BasePeer {
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
     const envs = this.activeEnvs; this.activeEnvs = [];
+    for (const id of this.activeDeliveryIds) this.delivery({ id, state: "needs_review", reason: error.message });
+    this.activeDeliveryIds.clear();
     if (envs.length) {
       this.onMessage?.("Pi turn failed; inspect its session and any partial effects before continuing.", { inReplyTo: this.currentReply });
       void this.opts.onTurnFailure?.(envs, error.message).catch(() => this.opts.log?.("Pi failure handoff could not be completed"));

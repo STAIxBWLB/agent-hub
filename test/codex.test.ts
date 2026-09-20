@@ -59,6 +59,21 @@ test("idle injection uses turn/start with a negative id; only the final answer i
   expect(seen.some((m) => typeof m.id === "number" && m.id < 0)).toBe(false);
 });
 
+test("Codex correlates acceptance and silent completion to the native turn id", async () => {
+  const { peer, tui } = await setup();
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => peer.state === "idle");
+  const receipts: { id: string; state: string }[] = [];
+  peer.onDelivery = (r) => receipts.push({ id: r.id, state: r.state });
+  await peer.deliver([newEnvelope("claude", "hello")], "codex-delivery");
+  expect(receipts).toEqual([{ id: "codex-delivery", state: "accepted" }]);
+  await until(() => receipts.some((r) => r.state === "completed"));
+  expect(receipts).toEqual([
+    { id: "codex-delivery", state: "accepted" },
+    { id: "codex-delivery", state: "completed" },
+  ]);
+});
+
 test("a turn typed in the TUI makes the peer busy; hub messages queue until turn/completed", async () => {
   const { bus, peer, said, tui } = await setup();
   tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));

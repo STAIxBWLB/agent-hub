@@ -66,6 +66,10 @@ export interface RecoveryBlocker {
   message: string;
   peer?: TerminalPeer;
   handle?: string;
+  /** Stable terminal reference when Orca supplied one, for operator reconciliation. */
+  terminalReference?: string;
+  /** Human action that can resolve the blocker without guessing or retrying an effect. */
+  nextAction?: string;
 }
 
 export interface TerminalInspection {
@@ -399,7 +403,13 @@ function launchFor(peer: TerminalPeer, projectRoot: string, sessionId: string, o
 }
 
 function blocker(code: RecoveryBlocker["code"], message: string, peer?: TerminalPeer, handle?: string): RecoveryBlocker {
-  return { code, message, ...(peer ? { peer } : {}), ...(handle ? { handle } : {}) };
+  const nextAction = code === "missing-session" ? "reconnect the original native session and rerun recovery" :
+    code === "ownership-unknown" ? "confirm the terminal owner in Orca, then resume recovery" :
+    code === "ambiguous-terminal" ? "close or identify the duplicate terminal, then resume recovery" :
+    code === "ambiguous-create" ? "inspect the existing terminal and attach the original session before resuming" :
+    code === "terminal-unready" ? "finish or cancel the active terminal turn, then resume recovery" :
+    "inspect the named terminal and resume recovery after the identity is verified";
+  return { code, message, ...(peer ? { peer } : {}), ...(handle ? { handle, terminalReference: handle } : {}), nextAction };
 }
 
 function verifyBindingData(actual: Record<string, unknown>, binding: TerminalBinding): RecoveryBlocker | undefined {
@@ -547,6 +557,36 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
   const config = normalizeOptions(options);
   try {
     const worktreeSelector = binding.worktreeId.startsWith("id:") ? binding.worktreeId : `id:${binding.worktreeId}`;
+    // A lost create reply is an uncertain effect. Before issuing another create,
+    // reconcile terminals already present in the captured worktree. An exact
+    // session match is safe to adopt; any other occupant requires an operator
+    // decision rather than risking a duplicate native session.
+    const existing = listTerminals(await run(config.runner, ["terminal", "list", "--json"])).filter((terminal) =>
+      rootMatches(terminal.worktreePath ?? terminal.projectRoot, binding.projectRoot) &&
+      nestedString(terminal, ["worktreeId"]) === binding.worktreeId,
+    );
+    if (existing.length > 0) {
+      const matches: TerminalBinding[] = [];
+      for (const listed of existing) {
+        const handle = nestedString(listed, ["handle"]);
+        if (!handle) continue;
+        try {
+          const shown = terminalObject(await run(config.runner, ["terminal", "show", "--terminal", handle, "--json"]));
+          if (identityFrom(shown) === binding.peer && sessionFrom(shown) === binding.sessionId) {
+            const incarnationId = nestedString(shown, ["incarnationId"]);
+            const worktreeId = nestedString(shown, ["worktreeId"]);
+            if (incarnationId && worktreeId) matches.push({ ...binding, handle, incarnationId, worktreeId });
+          }
+        } catch { /* An unreadable candidate remains an ambiguity below. */ }
+      }
+      if (matches.length === 1) {
+        const recovered = matches[0]!;
+        const idle = await waitForIdle(recovered, timeoutMs, config);
+        if (!idle.satisfied) return { created: false, ready: false, manualRequired: true, blockers: idle.blockers };
+        return { created: true, ready: true, manualRequired: false, binding: recovered, newBinding: recovered, blockers: [] };
+      }
+      return { created: false, ready: false, manualRequired: true, blockers: [blocker("ambiguous-create", `an existing terminal in worktree ${binding.worktreeId} may be the result of an earlier create; refusing another create`, binding.peer)] };
+    }
     const value = await run(config.runner, ["terminal", "create", "--worktree", worktreeSelector, "--command", binding.launch.command, "--title", `${binding.peer} recovery`, "--json"]);
     let created = terminalObject(value);
     const createdHandle = nestedString(created, ["handle"]);
