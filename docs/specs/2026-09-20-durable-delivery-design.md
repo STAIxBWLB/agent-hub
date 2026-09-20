@@ -1,6 +1,6 @@
 # Durable delivery and supervised operations
 
-Status: Implemented on `feat/durable-delivery-operations`; release application pending
+Status: Implemented in #47; applied and verified with the #48/#49 recovery patch in 0.7.1
 Date: 2026-09-20
 Target: 0.7.0, protocol 10
 
@@ -58,7 +58,7 @@ Update README and quickstart, add an English operations guide covering installat
 - [x] Queue operator controls and status/dashboard visibility.
 - [x] Cross-version recovery compatibility and actionable diagnostics.
 - [x] English guides and recorded live evidence.
-- [ ] Fault tests, independent review, CI, release and verified application.
+- [x] Fault tests, independent review, CI, release and verified application.
 
 ## Integration decision
 

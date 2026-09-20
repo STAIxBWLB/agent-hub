@@ -511,7 +511,7 @@ pause.
   npm integrity against the new coordinator. Protocol 9 to 10 migration reached
   `released`; exact queued envelope IDs, manual pauses and task identity/state
   digest were preserved. The disposable daemon was stopped afterward.
-- Real Kimi 2.0.1 and Pi ran in a disposable project using the 0.7.0 code.
+- Real Kimi and Pi ran in a disposable project using the 0.7.0 code.
   Kimi requested a read-only task-list approval before answering the no-action
   note as FYI; 85.361 seconds includes operator waiting and is not model latency.
   No follow-on recipient delivery occurred.
@@ -543,3 +543,31 @@ reached `completed` with its project `verified`.
 coordinator's pending-create fence and returned terminal/session verification.
 Regression tests include unrelated terminals and delayed close inventory.
 The 0.7.1 attended repeat is recorded separately after application.
+
+
+## 0.7.1 verified production application (2026-09-20)
+
+- Local full gate: 328 pass, 0 fail, 1732 assertions, `check: OK`. Ubuntu and
+  macOS CI passed for the merged patch. npm publication with provenance and
+  GitHub Release completed; the staged package matched registry integrity.
+- The patched coordinator recreated the captured Claude session while the
+  unrelated Codex and Qwen terminals remained open. It did not require manual
+  terminal creation. The native development-channel confirmation still required
+  an attended acknowledgement; resume adopted that same replacement terminal.
+- Recovery completed with the project verified and the live daemon released.
+  Global CLI, daemon and Claude plugin report 0.7.1, control protocol 10.
+  The installed runtime digest matches the verified staged artifact.
+- Claude and Pi session identities match the pre-0.7.0 plan. Kimi reattached
+  with a fresh session by design. Queue/manual-pause/task/budget integrity
+  matched the recovery snapshot; the board still has three approved tasks.
+- The disconnected Codex recipient is visible with the same two queued
+  messages. They were neither dispatched nor discarded during validation.
+- A production Pi read returned an exact random marker through MLX in 6.067
+  seconds. Its journal receipt reached `completed`; its FYI answer triggered
+  zero other-peer turns. The daemon instance and Pi session stayed unchanged,
+  and the temporary file was removed.
+- `ahub doctor` reported all configured checks healthy, including the delivery
+  journal and Claude recovery identity. The hwp-cli hub remained stopped.
+- These are supervised live checks. Native confirmation screens, uncertain
+  delivery review, and the infrastructure prerequisites in #12 remain explicit
+  operator responsibilities; this does not certify unattended operation.
