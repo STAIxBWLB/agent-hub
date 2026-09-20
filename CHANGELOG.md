@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.4
+
+- Refuse accidental CLI flags in `say` and `remember`, while preserving message text around the `--` separator (#40, #44).
+- Show important queued message counts and keep persisted status current after enqueue, delivery and withdrawal (#41, #44).
+- Avoid a transient offline event during Pi handover, while reporting failed replacement accurately (#42, #44).
+- Share no-acknowledgement and message-priority marker instructions across peers (#43, #44).
+
 ## 0.6.3
 
 - The dashboard follows the system light/dark scheme with two tuned palettes, adds relative timestamps, kind filters for the message stream, a state filter for the task list and colored usage bars for budgets (#38).
