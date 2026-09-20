@@ -381,7 +381,7 @@ test("pause and resume from the console", async () => {
   await console_.request({ t: "send", body: "held two", to: ["kimi"] });
   await Bun.sleep(80);
   const status = (await console_.request({ t: "status" })).status.peers.kimi;
-  expect(status).toEqual({ state: "paused", queued: 2 });
+  expect(status).toEqual({ state: "paused", queued: 2, queuedImportant: 2 });
   await console_.request({ t: "resume", peer: "kimi" });
   await until(() => events.some((e) => e.t === "envelope" && e.env.from === "kimi"), "digest reply");
   expect(events.find((e) => e.t === "envelope" && e.env.from === "kimi").env.body).toBe("echo: held two (2 items)");

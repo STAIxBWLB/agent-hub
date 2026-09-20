@@ -447,6 +447,10 @@ const commands: Record<string, () => Promise<void> | void> = {
     const lead = args.findIndex((a) => !/^@[a-z][a-z0-9-]*$/.test(a)); // only leading @tokens are recipients
     const to = args.slice(0, lead === -1 ? args.length : lead).map((a) => a.slice(1));
     const body = lead === -1 ? "" : args.slice(lead).join(" ");
+    // A `--` token was meant for another subcommand (`ahub pi --backend mlx`): passing it through sent the
+    // flag as message text (issue #40). Loud failure over silent absorption, like the launcher flags.
+    const flag = args.slice(lead === -1 ? args.length : lead).find((a) => a.startsWith("--"));
+    if (flag) fail(`the message would absorb the flag "${flag}"; usage: ahub say [@peer ...] <text>`);
     const hub = await connect();
     const res = await hub.request({ t: "send", body, to });
     hub.close();

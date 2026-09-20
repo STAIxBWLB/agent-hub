@@ -498,7 +498,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      [...bus.peers].map(([id, p]) => [id, { state: bus.stateOf(id), queued: bus.queued(id), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]),
+      [...bus.peers].map(([id, p]) => [id, { state: bus.stateOf(id), queued: bus.queued(id), ...(bus.queuedImportant(id) > 0 ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]),
     ),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
     ...(modelRelay ? { models: modelRelay.status() } : {}),
@@ -574,11 +574,16 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!args.sessionId && !args.sessionFile) args = { ...args, ...existing.pendingResume };
         // Revoke the previous launch bridge before issuing another launch. A late
         // process from the abandoned CLI cannot claim the replacement owner.
+        // The replacement's start event is the only state change the console should see (issue #42):
+        // the old adapter's stop would otherwise flash `offline` into status.json and the dashboard.
+        existing.onState = undefined;
         await existing.stop();
       } else if (changesOwner) {
         saved = await existing.captureResume();
         if (!saved.sessionId) return { ok: false, error: "Pi session identity is not ready for handover" };
         args = { ...args, backend: args.backend ?? launch.backend as "auto" | "dgx" | "mlx", model: args.model ?? (args.backend === undefined && typeof launch.model === "string" ? launch.model : undefined), sessionId: String(saved.sessionId), sessionFile: typeof saved.sessionFile === "string" ? saved.sessionFile : undefined };
+        // Same as the unclaimed handover: no offline flash between the adapters (issue #42).
+        existing.onState = undefined;
         await existing.stop();
       } else if (existing.state !== "offline") {
         return mode === "tui" ? { ok: false, error: "Pi already owns a native terminal; use that terminal or switch to headless first" } : { ok: true, already: true };

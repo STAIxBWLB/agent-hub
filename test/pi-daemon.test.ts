@@ -48,9 +48,16 @@ test("enabled Pi starts headless, duplicate start is idempotent, and handover pr
   expect(daemon.bus.stateOf("pi")).toBe("idle");
   expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).already).toBe(true);
   const originalSession = daemon.bus.peers.get("pi")!.recoveryMetadata!().sessionId;
+  // Handover must not flash `offline` into the status snapshot between adapters (issue #42): the console
+  // sees only the replacement's transition to `idle`.
+  const states: string[] = [];
+  daemon.bus.tap((e) => { if (e.t === "state") states.push(e.state); });
+  states.length = 0;
   expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless", backend: "mlx" } })).ok).toBe(true);
+  for (let i = 0; i < 100 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(10);
   expect(daemon.bus.peers.get("pi")!.recoveryMetadata!().sessionId).toBe(originalSession);
   expect((daemon.bus.peers.get("pi")!.recoveryMetadata!().launch as any).backend).toBe("mlx");
+  expect(states).toEqual(["idle"]);
   const tui = await console_.request({ t: "start", peer: "pi", args: { mode: "tui", backend: "dgx" } });
   if (!tui.ok) throw new Error(String(tui.error));
   expect(tui.ok).toBe(true);

@@ -86,6 +86,17 @@ test("one version: package.json, the plugin manifest, the CLI and the MCP server
   expect(readFileSync("plugins/agent-hub/server.js", "utf8")).toContain(`version: "${pkg}"`); // stamped into the bundle
 });
 
+// issue #40: the text after a leading @peer was absorbed into the body, so `ahub say --backend mlx hi`
+// sent the flag as chat and ignored the option it named.
+test("say refuses a message that would absorb a flag, before touching the daemon", () => {
+  const run = (...args: string[]) => Bun.spawnSync(["bun", "src/cli/main.ts", ...args]);
+  const bad = run("say", "--backend", "mlx", "hi");
+  expect(bad.exitCode).toBe(1);
+  expect(bad.stderr.toString()).toContain("absorb");
+  expect(bad.stderr.toString()).toContain("--backend");
+  expect(run("say", "@pi", "try --model dgx/fast", "--verbose").exitCode).toBe(1);
+});
+
 test("ahub setup: one step at a time from the JSON listings; paths compared exactly; a stale cached bundle counts as stale", () => {
   const root = mkdtempSync(join(tmpdir(), "agenthub-pkg-"));
   Bun.spawnSync(["mkdir", "-p", join(root, "plugins/agent-hub"), join(root, "cache")]);

@@ -244,6 +244,11 @@ export class Bus {
     return this.queues.get(id)?.length ?? 0;
   }
 
+  /** Queued envelopes that would interrupt on delivery (issue #41: `queued 3` hid which ones wait out the batch window). */
+  queuedImportant(id: PeerId): number {
+    return (this.queues.get(id) ?? []).filter((e) => e.priority === "important").length;
+  }
+
   private enqueue(id: PeerId, env: Envelope, front = false): void {
     if (this.withdrawn.has(env.id)) return;
     const queue = this.queues.get(id)!;

@@ -87,6 +87,21 @@ test("busy and offline peers queue in order and drain on idle, nothing is lost",
   expect(codex.got.map((e) => e.body)).toEqual(["one", "two"]);
 });
 
+// issue #41: `queued 3` hid which ones would interrupt their recipient at once.
+test("queuedImportant counts only the queued envelopes that would interrupt on delivery", async () => {
+  const { bus, claude, kimi } = await trio();
+  kimi.set("busy");
+  claude.onMessage!("[STATUS] routine");
+  claude.onMessage!("[IMPORTANT] stop, wrong branch");
+  claude.onMessage!("minor");
+  await tick();
+  expect(bus.queued("kimi")).toBe(3);
+  expect(bus.queuedImportant("kimi")).toBe(1);
+  kimi.set("idle");
+  await tick();
+  expect(bus.queuedImportant("kimi")).toBe(0);
+});
+
 test("failed delivery stays at the queue head and is retried without any further traffic", async () => {
   const { bus, claude, kimi } = await trio();
   kimi.failNext = true;

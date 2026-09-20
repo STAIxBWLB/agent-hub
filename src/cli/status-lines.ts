@@ -1,6 +1,6 @@
 // What `ahub status` prints for a peer and for a model backend, kept pure so it can be checked.
 
-export interface PeerRow { state?: string; queued?: number; paused?: string; servedBy?: string; requestedModel?: string }
+export interface PeerRow { state?: string; queued?: number; queuedImportant?: number; paused?: string; servedBy?: string; requestedModel?: string }
 export interface BackendRow { kind?: string; alias?: string; state?: string; active?: number; requestedModel?: string; actualModel?: string; provider?: string }
 
 /** Aliases are already namespaced ("dgx/coding"); only an alias that is not gets its kind in front of it. */
@@ -12,6 +12,8 @@ export function backendLabel(backend: BackendRow): string {
 
 export function peerLine(id: string, p: PeerRow): string {
   return `  ${id.padEnd(8)} ${(p.state ?? "unknown").padEnd(8)} queued ${p.queued ?? 0}` +
+    // Which queued messages would interrupt on delivery: `queued 1 (important)` vs a batch-window wait (issue #41).
+    (p.queuedImportant ? ` (${p.queuedImportant} important)` : "") +
     (p.paused ? `  (${p.paused})` : "") +
     (p.servedBy ? `  last call: ${p.servedBy}` : "") +
     // Which backend the peer asked for on its last turn: without it, telling a Pi DGX turn from an MLX one
