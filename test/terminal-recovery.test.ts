@@ -6,6 +6,7 @@ import {
   inspectTerminals,
   recordTerminalLaunch,
   createTerminal,
+  closeTerminal,
   restoreTerminal,
   shellQuote,
   waitForIdle,
@@ -218,4 +219,39 @@ test("create accepts a recorded replacement only after exact readback and reject
     if (previous.launchId === undefined) delete process.env.AGENTHUB_LAUNCH_ID; else process.env.AGENTHUB_LAUNCH_ID = previous.launchId;
     rmSync(stateDir, { recursive: true, force: true });
   }
+});
+
+
+test("native restoration permits unrelated terminals in the same worktree", async () => {
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js codex resume session-1", argv: [], env: {} };
+  const binding: TerminalBinding = { peer: "codex", handle: "term-old", incarnationId: "inc-old", worktreeId, projectRoot: root, sessionId: session, launch, launchMetadata: launch };
+  const replacement = terminal({ handle: "term-new", incarnationId: "inc-new" });
+  const unrelated = terminal({ handle: "term-claude", incarnationId: "inc-claude", agentIdentity: "claude", sessionId: "other-session" });
+  const { calls, runner } = fake((argv) => {
+    if (argv[1] === "create") return { result: { terminal: { handle: "term-new" } } };
+    if (argv[1] === "list") return { result: { terminals: calls.some((call) => call[1] === "create") ? [unrelated, replacement] : [unrelated] } };
+    if (argv[1] === "show") return { result: { terminal: replacement } };
+    if (argv[1] === "wait") return { result: { satisfied: true } };
+    throw new Error("unexpected command");
+  });
+  const result = await createTerminal(binding, runner, 1000);
+  expect(result.manualRequired).toBe(false);
+  expect(result.newBinding?.handle).toBe("term-new");
+  expect(calls.filter((argv) => argv[1] === "create")).toHaveLength(1);
+  expect(calls.filter((argv) => argv[1] === "close")).toHaveLength(0);
+});
+
+test("terminal close tolerates one stale inventory read without closing twice", async () => {
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js", argv: [], env: {} };
+  const binding: TerminalBinding = { peer: "codex", handle: "term-old", incarnationId: "inc-old", worktreeId, projectRoot: root, sessionId: session, launch, launchMetadata: launch };
+  let reads = 0;
+  const { calls, runner } = fake((argv) => {
+    if (argv[1] === "show") return { result: { terminal: terminal() } };
+    if (argv[1] === "close") return { result: { close: { ptyKilled: true } } };
+    if (argv[1] === "list") return { result: { terminals: reads++ === 0 ? [terminal()] : [] } };
+    throw new Error("unexpected command");
+  });
+  expect((await closeTerminal(binding, 0, runner)).closed).toBe(true);
+  expect(calls.filter((argv) => argv[1] === "close")).toHaveLength(1);
+  expect(reads).toBe(2);
 });

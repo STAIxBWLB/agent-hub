@@ -543,10 +543,13 @@ export async function closeTerminal(binding: TerminalBinding, timeoutMs = 600_00
   try {
     await showBinding(binding, config);
     await run(config.runner, ["terminal", "close", "--terminal", binding.handle, "--json"]);
-    const afterClose = listTerminals(await run(config.runner, ["terminal", "list", "--json"]));
-    const stillThere = afterClose.some((terminal) => terminal.handle === binding.handle || terminal.incarnationId === binding.incarnationId);
-    if (stillThere) return closeFailure(binding, [blocker("ambiguous-create", `close of terminal ${binding.handle} was not confirmed`, binding.peer, binding.handle)]);
-    return { closed: true, manualRequired: false, binding, blockers: [] };
+    const deadline = Date.now() + 5000;
+    do {
+      const afterClose = listTerminals(await run(config.runner, ["terminal", "list", "--json"]));
+      if (!afterClose.some((terminal) => terminal.handle === binding.handle || terminal.incarnationId === binding.incarnationId)) return { closed: true, manualRequired: false, binding, blockers: [] };
+      await Bun.sleep(100);
+    } while (Date.now() < deadline);
+    return closeFailure(binding, [blocker("ambiguous-create", `close of terminal ${binding.handle} was not confirmed`, binding.peer, binding.handle)]);
   } catch (error) {
     return closeFailure(binding, [error instanceof OrcaCommandError ? error.blocker : blocker("command-error", String(error), binding.peer, binding.handle)]);
   }
@@ -557,36 +560,8 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
   const config = normalizeOptions(options);
   try {
     const worktreeSelector = binding.worktreeId.startsWith("id:") ? binding.worktreeId : `id:${binding.worktreeId}`;
-    // A lost create reply is an uncertain effect. Before issuing another create,
-    // reconcile terminals already present in the captured worktree. An exact
-    // session match is safe to adopt; any other occupant requires an operator
-    // decision rather than risking a duplicate native session.
-    const existing = listTerminals(await run(config.runner, ["terminal", "list", "--json"])).filter((terminal) =>
-      rootMatches(terminal.worktreePath ?? terminal.projectRoot, binding.projectRoot) &&
-      nestedString(terminal, ["worktreeId"]) === binding.worktreeId,
-    );
-    if (existing.length > 0) {
-      const matches: TerminalBinding[] = [];
-      for (const listed of existing) {
-        const handle = nestedString(listed, ["handle"]);
-        if (!handle) continue;
-        try {
-          const shown = terminalObject(await run(config.runner, ["terminal", "show", "--terminal", handle, "--json"]));
-          if (identityFrom(shown) === binding.peer && sessionFrom(shown) === binding.sessionId) {
-            const incarnationId = nestedString(shown, ["incarnationId"]);
-            const worktreeId = nestedString(shown, ["worktreeId"]);
-            if (incarnationId && worktreeId) matches.push({ ...binding, handle, incarnationId, worktreeId });
-          }
-        } catch { /* An unreadable candidate remains an ambiguity below. */ }
-      }
-      if (matches.length === 1) {
-        const recovered = matches[0]!;
-        const idle = await waitForIdle(recovered, timeoutMs, config);
-        if (!idle.satisfied) return { created: false, ready: false, manualRequired: true, blockers: idle.blockers };
-        return { created: true, ready: true, manualRequired: false, binding: recovered, newBinding: recovered, blockers: [] };
-      }
-      return { created: false, ready: false, manualRequired: true, blockers: [blocker("ambiguous-create", `an existing terminal in worktree ${binding.worktreeId} may be the result of an earlier create; refusing another create`, binding.peer)] };
-    }
+    // The coordinator journals a pending creation before this call and reconciles
+    // it on resume. Other agents in the worktree do not imply a prior create.
     const value = await run(config.runner, ["terminal", "create", "--worktree", worktreeSelector, "--command", binding.launch.command, "--title", `${binding.peer} recovery`, "--json"]);
     let created = terminalObject(value);
     const createdHandle = nestedString(created, ["handle"]);
