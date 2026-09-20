@@ -55,7 +55,7 @@ test("permission requests are relayed; no handler means cancelled", async () => 
   });
   bus.publish(newEnvelope("user", "PERMISSION", { to: ["kimi"] }));
   await until(() => said.length === 1);
-  expect(asked).toEqual(["kimi:write file"]);
+  expect(asked).toEqual(["kimi:write file (payload not reported by the agent)"]);
   expect(said[0]!.body).toBe("echo: PERMISSION permission=yes");
 
   await peer!.stop();
@@ -63,6 +63,36 @@ test("permission requests are relayed; no handler means cancelled", async () => 
   second.bus.publish(newEnvelope("user", "PERMISSION", { to: ["kimi"] }));
   await until(() => second.said.length === 1);
   expect(second.said[0]!.body).toEndWith("permission=cancelled");
+});
+
+// issue #31: the console was asked to approve a bare "Bash" because the request carried no rawInput.
+test("a permission prompt shows the command the tool_call update announced", async () => {
+  const asked: { title: string; options: string[] }[] = [];
+  const { bus, said } = await setup({
+    onPermission: async (req) => {
+      asked.push({ title: req.title, options: req.options.map((o) => o.kind) });
+      return "yes";
+    },
+  });
+  bus.publish(newEnvelope("user", "PERMISSION ANNOUNCED", { to: ["kimi"] }));
+  await until(() => said.length === 1);
+  expect(asked[0]!.title).toBe("Bash: rm -rf build && make");
+  expect(asked[0]!.options).toContain("allow_always"); // the payload is known: a session-wide grant is informed
+});
+
+test("a permission prompt with no resolvable payload says so and offers no session-wide grant", async () => {
+  const asked: { title: string; options: string[] }[] = [];
+  const { bus, said } = await setup({
+    onPermission: async (req) => {
+      asked.push({ title: req.title, options: req.options.map((o) => o.kind) });
+      return "always"; // the option that is no longer on offer
+    },
+  });
+  bus.publish(newEnvelope("user", "PERMISSION", { to: ["kimi"] }));
+  await until(() => said.length === 1);
+  expect(asked[0]!.title).toBe("write file (payload not reported by the agent)");
+  expect(asked[0]!.options).not.toContain("allow_always");
+  expect(said[0]!.body).toEndWith("permission=cancelled"); // an option that was withheld is not accepted
 });
 
 test("a dead child goes offline", async () => {

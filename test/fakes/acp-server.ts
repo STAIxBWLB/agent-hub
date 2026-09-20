@@ -16,6 +16,9 @@ async function prompt(id: number, text: string) {
   busy = true;
   let verdict = "";
   if (text.includes("PERMISSION")) {
+    // Kimi 2.0.1's shape: the arguments travel on the tool_call update, the permission request has none.
+    const announced = text.includes("ANNOUNCED");
+    if (announced) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "tool_call", toolCallId: "tc1", title: "Bash", status: "pending", rawInput: "rm -rf build && make" } } });
     const reqId = nextId++;
     const result = await new Promise<any>((resolve) => {
       waiting.set(reqId, resolve);
@@ -25,9 +28,10 @@ async function prompt(id: number, text: string) {
         method: "session/request_permission",
         params: {
           sessionId: "s1",
-          toolCall: { title: "write file" },
+          toolCall: announced ? { title: "Bash", toolCallId: "tc1" } : { title: "write file" },
           options: [
             { optionId: "yes", name: "Allow", kind: "allow_once" },
+            { optionId: "always", name: "Approve for this session", kind: "allow_always" },
             { optionId: "no", name: "Reject", kind: "reject_once" },
           ],
         },

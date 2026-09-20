@@ -145,6 +145,10 @@ hub CLI / console ── control WS 127.0.0.1:<ctl> ─────────�
   in-flight prompt, queues on `turn.agent_busy`. Relays `session/request_permission`
   to the console (`ahub tail` shows the request, `ahub permit <id> <option>` answers, 120 s of
   silence cancels; `ahub up --unattended` auto-selects the agent's `allow_once` option). The
+  prompt names what will run, not only the tool (amended, issue #31): the request's `rawInput`
+  when it has one, otherwise what the `tool_call` update announced for the same `toolCallId`.
+  A payload that cannot be resolved either way is titled as unresolved and its `allow_always`
+  option is withheld, so a blind click cannot grant every later call of the session. The
   watchdog sends `session/cancel` before forcing idle. `--model` maps to `kimi --model <alias> acp`
   (verified flag). Reusable for `opencode acp`.
 - Local worker (amended in M3): a hub-native tool-calling loop over non-streaming

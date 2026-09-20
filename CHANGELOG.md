@@ -5,6 +5,7 @@
 - Address a peer's reply at whoever asked instead of broadcasting it, so one directed question no longer costs every attached peer a turn (#29).
 - Cap the priority a hub-native peer claims for itself: `[IMPORTANT]` on an unsolicited report no longer interrupts the other peers (#29).
 - A session whose peer id was taken over stands by and reclaims it once the hub reports the peer offline, instead of staying detached until the whole session is restarted (#30).
+- Show the command a Kimi tool call will run in its approval prompt, taken from the `tool_call` update when the permission request omits it; a prompt whose payload cannot be resolved says so and offers no session-wide grant (#31).
 
 ## 0.6.1
 
