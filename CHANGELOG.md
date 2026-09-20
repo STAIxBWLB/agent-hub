@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.3
+
+- The dashboard follows the system light/dark scheme with two tuned palettes, adds relative timestamps, kind filters for the message stream, a state filter for the task list and colored usage bars for budgets (#38).
+
 ## 0.6.2
 
 - Address a peer's reply at whoever asked instead of broadcasting it, so one directed question no longer costs every attached peer a turn (#29).
