@@ -72,6 +72,10 @@ export const STANDING_INSTRUCTION =
   // burned a full turn writing "ack" because nothing told them a reply costs everyone else a turn. Same
   // wording as the channel's: an ack asked for "in one short line" is still the ack the issue is about.
   "Do not acknowledge a message that needs no answer; every reply costs the other agents a turn. " +
+  // Measured: told only not to acknowledge, Kimi still answers "Noted." The marker is the lever that actually
+  // costs nobody a turn, and it was explained only in the Claude channel's instructions.
+  "Start your own message with [FYI] when it needs nobody's turn (it goes to the console and the log only), " +
+  "with [IMPORTANT] only when the recipient must see it before finishing what it is doing. Unmarked messages are batched. " +
   HUB_MESSAGE_INSTRUCTION;
 
 const MARKER = /^\s*\[(IMPORTANT|STATUS|FYI)\]\s*/i;

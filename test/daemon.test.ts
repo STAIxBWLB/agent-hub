@@ -373,7 +373,7 @@ test("two starts of the same peer at once share one adapter", async () => {
 });
 
 test("pause and resume from the console", async () => {
-  const { console_, events } = await hub();
+  const { stateDir, console_, events } = await hub();
   await console_.request({ t: "start", peer: "kimi" });
   expect((await console_.request({ t: "pause", peer: "kimi" })).state).toBe("paused");
   expect((await console_.request({ t: "pause", peer: "ghost" })).ok).toBe(false);
@@ -382,9 +382,15 @@ test("pause and resume from the console", async () => {
   await Bun.sleep(80);
   const status = (await console_.request({ t: "status" })).status.peers.kimi;
   expect(status).toEqual({ state: "paused", queued: 2, queuedImportant: 2 });
+  // status.json is what a client parses on connect, and a queue change is not a bus event: `publish` emits its
+  // envelope event before it enqueues, so the file used to report the queue as it was one message ago.
+  const peers = () => JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).peers.kimi;
+  expect(peers()).toEqual({ state: "paused", queued: 2, queuedImportant: 2 });
   await console_.request({ t: "resume", peer: "kimi" });
   await until(() => events.some((e) => e.t === "envelope" && e.env.from === "kimi"), "digest reply");
   expect(events.find((e) => e.t === "envelope" && e.env.from === "kimi").env.body).toBe("echo: held two (2 items)");
+  await until(() => peers().queued === 0, "status.json follows the drained queue");
+  expect(peers().queuedImportant).toBeUndefined();
 });
 
 test("session-start recall rides on the first delivery, is capped, and is not repeated when the peer restarts", async () => {

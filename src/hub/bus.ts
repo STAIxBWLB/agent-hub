@@ -74,6 +74,12 @@ export class Bus {
   /** What each peer was last handed, next to what it stands for: an adapter that reports a failure later hands back the former. */
   private readonly lastDelivery = new Map<PeerId, { out: Envelope[]; originals: Envelope[] }>();
   private readonly attempts = new Map<string, number>(); // `${peer}:${envelope id}` -> failed deliveries
+  /**
+   * The queue lengths changed. `publish` emits its envelope event *before* it enqueues, and a delivery emits
+   * nothing at all, so anything that renders `queued` off a bus event records the count from before the change
+   * and is never corrected once the queue empties (measured: status.json kept `queued 4` on an empty queue).
+   */
+  onQueues?: () => void;
   private recoveryHeld = false;
   private steering = 0;
   private condensing = 0;
@@ -263,6 +269,7 @@ export class Bus {
       const [lost] = queue.splice(victim === -1 ? 0 : victim, 1);
       this.emit({ t: "overflow", env: lost!, peer: id });
     }
+    this.onQueues?.();
     void this.drain(id);
   }
 
@@ -313,6 +320,7 @@ export class Bus {
       }
     } finally {
       this.draining.delete(id);
+      this.onQueues?.();
     }
   }
 

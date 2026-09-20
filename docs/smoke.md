@@ -62,6 +62,47 @@ and the local worker:
   markers, zero queued at the end). The disposable hub and manager were
   stopped after recording.
 
+## Issues #40-#43 re-measurement after the review fixes (2026-09-20)
+
+Measured against a live hub built from the PR branch in the disposable project
+`/tmp/ahub-measure-44`, with real Kimi 2.0.1, Pi 0.86.0 on MLX, and a control-WS
+peer standing in for Claude.
+
+- #40 flag absorption: `ahub say --backend mlx hi` and `ahub say @codex "try
+  this" --verbose` both refuse before touching the daemon. `ahub say -- --backend
+  is broken, check it` reaches the log verbatim
+  (`msg user -> * important hop=0: --backend is broken, check it`), and
+  `ahub remember --backend mlx note` refuses the same way while
+  `ahub remember -- --backend is a flag` saves. The `--` escape exists because
+  the first version of the fix left a message that is about a flag unsendable.
+- #41 queued important: a paused peer with one `[STATUS]` and two console
+  messages printed `queued 1`, `queued 2 (1 important)`, `queued 3 (2 important)`,
+  and status.json carried `queuedImportant` only from the second message on.
+- **status.json was one message behind** (found by this run, fixed here): the
+  file said `queued 3, queuedImportant 1` while `ahub status` said 4, and it kept
+  `queued 4` after the queue had drained to 0. `publish` emits its envelope event
+  *before* it enqueues, and a delivery emits nothing at all, so the daemon's
+  `writeStatus` tap always recorded the previous count and was never called again
+  once the queue emptied. The bus now reports a queue change (`onQueues`); after
+  the fix the file tracked 1 -> 2 -> 3 -> 0 exactly, with the field absent at 0.
+- #42 Pi handover: `ahub pi --mode headless --backend mlx` then
+  `--backend auto` produced exactly one state line in the log
+  (`state pi -> idle`), `ahub tail` showed only `pi is idle`, and status.json read
+  `idle` before and after. The other half - a handover whose replacement never
+  arrives - is not reachable from the CLI on a healthy install and is covered by
+  `test/pi-daemon.test.ts` (verified to fail without the restore).
+- #43 no-ack: the new wording reaches Kimi verbatim (asked to quote it, it
+  returned `"Do not acknowledge a message that needs no answer; every reply costs
+  the other agents a turn."`). **It did not stop the ack**: a no-action note from
+  the console was answered with "Noted, no action needed on my side." (14 s), and
+  the same note from another agent with "Noted." (6 s), both delivered at
+  `status` priority and costing the recipient a turn. The instruction never told
+  Codex, Kimi or the local worker that the markers exist - only the Claude channel
+  did. With `[FYI]`/`[IMPORTANT]` added to the shared instruction, an unprimed
+  Kimi on a fresh session answered the identical note with
+  `msg kimi -> claude fyi hop=1 NOT DELIVERED(fyi)`: recorded, nobody's turn spent.
+  Kimi still chooses to answer; what changed is that the answer is free.
+
 ## 0.6.3 release gate and isolated install (2026-09-20)
 
 - `bun run check` on the 0.6.3 checkout: 301 tests, 37 files, 1600 expect()
@@ -265,6 +306,8 @@ Needs a model gateway in `omniroute.urls` (for the owner: the campus gateway ove
 | 2026-09-20 | #29 unsolicited `[IMPORTANT]` to busy Kimi via local `hub_send`, live 0.6.2 | pass (no interrupt): `kimi busy queued 1` during the slow turn, delivered right after turn end (idle 09:16:47.551 → busy 09:16:47.552); idle Kimi started a turn immediately; AcpPeer has no steer, capPriority demotes only the peer's own unsolicited marker |
 | 2026-09-20 | #29 hop ceiling, live 0.6.2 (Kimi 2.0.1) | pass: hop-1 message answered by idle Kimi in ~8 s; its fyi ack arrived at hop 2 and was dropped (`NOT DELIVERED(fyi)`) |
 | 2026-09-20 | #31 permission payload, Kimi 2.0.1 | pass (previous session): `session/request_permission` carries no `rawInput`; hub kept `tool_call` arguments, no bare-tool approval shown |
+| 2026-09-20 | #40-#43 after the review fixes, live hub from the PR branch (Kimi 2.0.1, Pi 0.86.0 MLX) | pass: say/remember refuse an absorbed flag and send it after `--`; paused peer printed `queued 3 (2 important)`; Pi mlx->auto handover emitted one `state pi -> idle` and no offline; unprimed Kimi answered a no-action note as `fyi` (`NOT DELIVERED(fyi)`) once the shared instruction named the markers |
+| 2026-09-20 | status.json queue depth, live hub | found: the file was one message behind (`queued 3` vs live 4) and kept `queued 4` on an empty queue, because `publish` emits before it enqueues and a delivery emits nothing. Fixed: `bus.onQueues` -> `writeStatus`; re-measured 1 -> 2 -> 3 -> 0 exact, field absent at 0 |
 | 2026-09-20 | 0.6.3 gate + isolated install | pass: `bun run check` 301 tests / 1600 expect / `check: OK`; npm pack tgz (281 KB) → isolated BUN_INSTALL prefix, `ahub --version` 0.6.3, `ahub init` wrote all five files; direct `bun add -g .` of the workspace root fails (nameless dependency, DependencyLoop) |
 
 ## Issue #7 verification ledger (2026-09-19)
