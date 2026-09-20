@@ -1,4 +1,4 @@
-import { HUB, MAX_HOP, newEnvelope, parseMarker, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
+import { DIGEST, HUB, MAX_HOP, newEnvelope, parseMarker, replyAudience, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
 import type { PeerAdapter } from "./peers.ts";
 
 export type BusEvent =
@@ -35,10 +35,20 @@ export const DEFAULT_BUS: BusOptions = { retryMs: 1000, batchMax: 3, batchMs: 15
  * (issue #29), and `important` interrupts every recipient at once, so it only keeps it when answering an
  * `important` request that was addressed to it. `fyi` and `status` are never capped.
  */
-function capPriority(peer: PeerAdapter, priority: Priority, parent: EnvelopeOpts["inReplyTo"]): Priority {
+function capPriority(peer: PeerAdapter, priority: Priority, parent: EnvelopeOpts["inReplyTo"], delivery: Envelope[] | undefined): Priority {
   if (!peer.hubNative || priority !== "important") return priority;
-  const answered = parent?.priority === "important" && !!parent.to?.includes(peer.id);
-  return answered ? "important" : "status";
+  if (!parent) return "status"; // nothing was asked: an unsolicited report is never urgent enough to interrupt
+  // The whole delivery, not just `replyParent`: an important request addressed to the peer can share a hop with a
+  // later status item, and then the parent is that status item.
+  const asked = delivery ?? [parent];
+  return asked.some((e) => e.priority === "important" && !!e.to?.includes(peer.id)) ? "important" : "status";
+}
+
+/** `digest` is not a peer. A reply to a condensed delivery is for the senders that condensation replaced. */
+function resolveTo(to: PeerId[], originals: Envelope[] | undefined): PeerId[] {
+  if (!to.includes(DIGEST)) return to;
+  const senders = originals ? replyAudience(originals) : [];
+  return [...new Set(to.flatMap((id) => (id === DIGEST ? senders : [id])))];
 }
 
 const SEEN_CAP = 2048;
@@ -77,7 +87,17 @@ export class Bus {
     if (!this.queues.has(peer.id)) this.queues.set(peer.id, []);
     peer.onMessage = (text, opts) => {
       const { priority, body } = parseMarker(text);
-      if (body) this.publish(newEnvelope(peer.id, body, { ...opts, priority: opts?.priority ?? capPriority(peer, priority, opts?.inReplyTo) }));
+      if (!body) return;
+      // What the peer was handed differs from what it stands for once a delivery was condensed; both the audience
+      // and the priority ceiling are about what it stands for.
+      const last = this.lastDelivery.get(peer.id);
+      const answers = opts?.inReplyTo?.id !== undefined && last?.out.some((e) => e.id === opts.inReplyTo!.id);
+      const originals = answers ? last!.originals : undefined;
+      this.publish(newEnvelope(peer.id, body, {
+        ...opts,
+        ...(opts?.to?.length ? { to: resolveTo(opts.to, originals) } : {}),
+        priority: opts?.priority ?? capPriority(peer, priority, opts?.inReplyTo, originals),
+      }));
     };
     peer.onFailed = (envs) => {
       // The adapter got the condensed list; what has to come back is what that list replaced.

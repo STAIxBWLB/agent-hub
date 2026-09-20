@@ -25,13 +25,15 @@ export const MAX_HOP = 3;
 export const USER: PeerId = "user";
 /** The hub itself: sender of recall and workflow events. */
 export const HUB: PeerId = "hub";
+/** A hub-written condensation of several status messages. Not a peer: a reply to it is for the senders it replaced. */
+export const DIGEST: PeerId = "digest";
 
 export interface EnvelopeOpts {
   to?: PeerId[];
   kind?: Kind;
   priority?: Priority;
   /** The envelope this one answers: inherits its trace, hop + 1, and - when `to` is absent - its sender as the addressee. */
-  inReplyTo?: Pick<Envelope, "trace" | "hop"> & Partial<Pick<Envelope, "from" | "to" | "priority">>;
+  inReplyTo?: Pick<Envelope, "trace" | "hop"> & Partial<Pick<Envelope, "id" | "from" | "to" | "priority">>;
   refs?: Envelope["refs"];
   private?: boolean;
 }
