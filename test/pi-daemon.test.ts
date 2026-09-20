@@ -52,7 +52,6 @@ test("enabled Pi starts headless, duplicate start is idempotent, and handover pr
   // sees only the replacement's transition to `idle`.
   const states: string[] = [];
   daemon.bus.tap((e) => { if (e.t === "state") states.push(e.state); });
-  states.length = 0;
   expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless", backend: "mlx" } })).ok).toBe(true);
   for (let i = 0; i < 100 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(10);
   expect(daemon.bus.peers.get("pi")!.recoveryMetadata!().sessionId).toBe(originalSession);
@@ -62,6 +61,23 @@ test("enabled Pi starts headless, duplicate start is idempotent, and handover pr
   if (!tui.ok) throw new Error(String(tui.error));
   expect(tui.ok).toBe(true);
   expect(tui.launch?.args).toContain("--session");
+});
+
+// issue #42, other half: the handover hides the replaced adapter's `offline` from the console. If the
+// replacement never arrives, the hook has to go back on, or status keeps reporting a dead peer as idle.
+test("a handover that never reaches a replacement reports the stopped adapter as offline", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-nohandover-"));
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { daemon, console_ } = await hub(config);
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless", backend: "dgx" } })).ok).toBe(true);
+  for (let i = 0; i < 100 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(10);
+  const states: string[] = [];
+  daemon.bus.tap((e) => { if (e.t === "state") states.push(e.state); });
+  config.pi.enabled = false; // the daemon shares this object: the replacement is refused after the stop
+  const res = await console_.request({ t: "start", peer: "pi", args: { mode: "tui", backend: "mlx" } });
+  expect(res.ok).toBe(false);
+  expect(daemon.bus.stateOf("pi")).toBe("offline");
+  expect(states).toEqual(["offline"]);
 });
 
 test("Pi tools use hub path guards and approval denial, with persisted call receipts", async () => {

@@ -12,7 +12,7 @@ export function backendLabel(backend: BackendRow): string {
 
 export function peerLine(id: string, p: PeerRow): string {
   return `  ${id.padEnd(8)} ${(p.state ?? "unknown").padEnd(8)} queued ${p.queued ?? 0}` +
-    // Which queued messages would interrupt on delivery: `queued 1 (important)` vs a batch-window wait (issue #41).
+    // Which queued messages the peer will not wait out the batch window for (issue #41).
     (p.queuedImportant ? ` (${p.queuedImportant} important)` : "") +
     (p.paused ? `  (${p.paused})` : "") +
     (p.servedBy ? `  last call: ${p.servedBy}` : "") +

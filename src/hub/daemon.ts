@@ -30,7 +30,7 @@ import { Bus } from "./bus.ts";
 import { startDashboard } from "./ui.ts";
 import { PROTOCOL, stateDirFor } from "./control-client.ts";
 import { newEnvelope, parseMarker, replyParent, USER, type Envelope, type PeerId } from "./envelope.ts";
-import { BasePeer, DEFAULT_WATCHDOG_MS } from "./peers.ts";
+import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
 import { MemoryClient, workerUrl } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { projectChain, recallFor } from "../memory/recall.ts";
@@ -498,7 +498,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      [...bus.peers].map(([id, p]) => [id, { state: bus.stateOf(id), queued: bus.queued(id), ...(bus.queuedImportant(id) > 0 ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]),
+      [...bus.peers].map(([id, p]) => [id, { state: bus.stateOf(id), queued: bus.queued(id), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]),
     ),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
     ...(modelRelay ? { models: modelRelay.status() } : {}),
@@ -555,7 +555,32 @@ export async function startDaemon(opts: DaemonOptions) {
     return running;
   }
 
+  /**
+   * Hide a replaced adapter's stop from the console (issue #42): its `offline` would flash into status.json and
+   * the dashboard between the two adapters. Returns the undo, which the caller runs on every exit: if no
+   * replacement was ever added, the hook goes back on and the truth is emitted, or status keeps reporting a dead
+   * peer as idle.
+   */
+  function muteState(p: PeerAdapter): () => void {
+    const hook = p.onState;
+    p.onState = undefined;
+    return () => {
+      if (bus.peers.get(p.id) !== p || p.onState) return; // a replacement took the id: nothing to put back
+      p.onState = hook;
+      hook?.(p.state);
+    };
+  }
+
   async function startPeerOnce(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string }): Promise<Record<string, unknown>> {
+    let unmute: (() => void) | undefined;
+    try {
+      return await startPeerBody(peer, args, (p) => { unmute = muteState(p); });
+    } finally {
+      unmute?.();
+    }
+  }
+
+  async function startPeerBody(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string }, mute: (p: PeerAdapter) => void): Promise<Record<string, unknown>> {
     if (peer === "pi") {
       if (args.mode !== undefined && !["headless", "tui"].includes(args.mode)) return { ok: false, error: "invalid Pi mode" };
       if (args.backend !== undefined && !["auto", "dgx", "mlx"].includes(args.backend)) return { ok: false, error: "invalid Pi backend" };
@@ -574,16 +599,15 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!args.sessionId && !args.sessionFile) args = { ...args, ...existing.pendingResume };
         // Revoke the previous launch bridge before issuing another launch. A late
         // process from the abandoned CLI cannot claim the replacement owner.
-        // The replacement's start event is the only state change the console should see (issue #42):
-        // the old adapter's stop would otherwise flash `offline` into status.json and the dashboard.
-        existing.onState = undefined;
+        // The replacement's start event is the only state change the console should see (issue #42).
+        mute(existing);
         await existing.stop();
       } else if (changesOwner) {
         saved = await existing.captureResume();
         if (!saved.sessionId) return { ok: false, error: "Pi session identity is not ready for handover" };
         args = { ...args, backend: args.backend ?? launch.backend as "auto" | "dgx" | "mlx", model: args.model ?? (args.backend === undefined && typeof launch.model === "string" ? launch.model : undefined), sessionId: String(saved.sessionId), sessionFile: typeof saved.sessionFile === "string" ? saved.sessionFile : undefined };
         // Same as the unclaimed handover: no offline flash between the adapters (issue #42).
-        existing.onState = undefined;
+        mute(existing);
         await existing.stop();
       } else if (existing.state !== "offline") {
         return mode === "tui" ? { ok: false, error: "Pi already owns a native terminal; use that terminal or switch to headless first" } : { ok: true, already: true };

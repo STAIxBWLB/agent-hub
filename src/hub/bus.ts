@@ -244,7 +244,11 @@ export class Bus {
     return this.queues.get(id)?.length ?? 0;
   }
 
-  /** Queued envelopes that would interrupt on delivery (issue #41: `queued 3` hid which ones wait out the batch window). */
+  /**
+   * Queued envelopes that skip the batch window (issue #41: `queued 3` hid which ones the peer still waits out).
+   * An `important` envelope that is in a queue is one that could not be steered, so it does not interrupt a
+   * running turn; it is why the queue is delivered the moment the peer goes idle.
+   */
   queuedImportant(id: PeerId): number {
     return (this.queues.get(id) ?? []).filter((e) => e.priority === "important").length;
   }

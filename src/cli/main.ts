@@ -159,6 +159,19 @@ async function printProjects(json = false) {
   if (!rows.length) console.log("No registered projects. Run ahub init in a project directory.");
 }
 
+/**
+ * Free text that a launcher flag can land in by mistake (`ahub say --backend mlx hi` sent the flag as chat and
+ * ignored the option it named, issue #40). A `--flag` fails loudly instead of being absorbed; `--` ends the
+ * options, so a message that really is about a flag stays sendable.
+ */
+function freeText(words: string[], usage: string): string {
+  const end = words.indexOf("--");
+  if (end !== -1) return words.slice(end + 1).join(" ");
+  const flag = words.find((a) => a.startsWith("--"));
+  if (flag) fail(`the message would absorb the flag "${flag}"; put it after "--" to send it as text; usage: ${usage}`);
+  return words.join(" ");
+}
+
 function fail(message: string): never {
   console.error(`ahub: ${message}`);
   process.exit(1);
@@ -446,11 +459,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   say: async () => {
     const lead = args.findIndex((a) => !/^@[a-z][a-z0-9-]*$/.test(a)); // only leading @tokens are recipients
     const to = args.slice(0, lead === -1 ? args.length : lead).map((a) => a.slice(1));
-    const body = lead === -1 ? "" : args.slice(lead).join(" ");
-    // A `--` token was meant for another subcommand (`ahub pi --backend mlx`): passing it through sent the
-    // flag as message text (issue #40). Loud failure over silent absorption, like the launcher flags.
-    const flag = args.slice(lead === -1 ? args.length : lead).find((a) => a.startsWith("--"));
-    if (flag) fail(`the message would absorb the flag "${flag}"; usage: ahub say [@peer ...] <text>`);
+    const body = lead === -1 ? "" : freeText(args.slice(lead), "ahub say [@peer ...] <text>");
     const hub = await connect();
     const res = await hub.request({ t: "send", body, to });
     hub.close();
@@ -532,7 +541,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     console.log(await taskOp("hub_review", { id: Number(id), verdict, note: note.join(" ") }));
   },
 
-  remember: async () => console.log(await taskOp("hub_remember", { text: args.join(" ") })),
+  remember: async () => console.log(await taskOp("hub_remember", { text: freeText(args, "ahub remember <text>") })),
 
   ask: async () => {
     const remember = args.includes("--remember");

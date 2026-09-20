@@ -95,6 +95,10 @@ test("say refuses a message that would absorb a flag, before touching the daemon
   expect(bad.stderr.toString()).toContain("absorb");
   expect(bad.stderr.toString()).toContain("--backend");
   expect(run("say", "@pi", "try --model dgx/fast", "--verbose").exitCode).toBe(1);
+  // `--` ends the options, so a message that really is about a flag is still sendable (it fails on the daemon
+  // connection, not on the parse: the refusal above happens before `connect()`).
+  expect(run("say", "@pi", "--", "--backend", "is", "broken").stderr.toString()).not.toContain("absorb");
+  expect(run("remember", "--backend", "mlx").stderr.toString()).toContain("absorb");
 });
 
 test("ahub setup: one step at a time from the JSON listings; paths compared exactly; a stale cached bundle counts as stale", () => {
