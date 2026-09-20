@@ -11,3 +11,5 @@ dist/
 .agenthub/config.json
 # this checkout's own hub files (a project that uses the hub commits its routing.toml; the tool's repo does not)
 /.agenthub/
+.qwen/
+.pi-*/
