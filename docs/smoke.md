@@ -21,8 +21,103 @@ Measured on 2026-09-20 against a live 0.6.1 hub and a disposable project, before
 - A Kimi shell approval reached the console as the four characters `Bash`, with
   `approve_always` beside it. Issue #31.
 
-Re-measuring these legs after the 0.6.2 rollout is still pending; the fixes are covered by
-`scripts/check.sh` against fakes and a real daemon, not by a repeat of this run.
+Re-measured on 2026-09-20 after the 0.6.2 rollout — see the next section.
+
+## Hub collaboration re-measurement (issues #29-#32, 0.6.2)
+
+Re-measured on 2026-09-20 against a live 0.6.2 hub in the disposable project
+`/tmp/agenthub-smoke-062-recheck`, with real Kimi 2.0.1, installed Pi 0.85.1
+and the local worker:
+
+- #32 backend alias: Pi answered a file-read question in ~2.4 s on the
+  `dgx/coding` backend (glm-5.3-flash through the gateway) and ~4 s after a
+  `ahub pi --mode headless --backend mlx` re-attach, whose handover preserved
+  the session identity. `ahub status` printed each alias exactly once — the
+  peer line `model: dgx/coding` plus one backend line
+  `dgx/coding ready ... requested dgx/coding actual glm-5.3-flash` — and
+  `grep -c "dgx/dgx\|mlx/mlx"` over the log returned 0. `ahub say` has no
+  `--backend` flag: a flag passed in message text is absorbed as body (seen
+  once in the log), so per-class changes only go through re-attach.
+- #29 unsolicited `[IMPORTANT]`: the local worker's `hub_send` delivered an
+  unsolicited `[IMPORTANT]` to a busy Kimi. No interrupt: the status snapshot
+  during the slow turn showed `kimi busy queued 1`, and the message was
+  delivered right after the turn ended (log: `idle` at 09:16:47.551, `busy`
+  at 09:16:47.552), with the turn's own reply first. An idle Kimi started a
+  turn immediately instead, as designed. Code basis: `AcpPeer` has no
+  `steer`, so `bus.publish` can only enqueue for it; `capPriority` demotes an
+  unsolicited hub-native report to `status` only when the peer claims the
+  marker itself — the console's own `[IMPORTANT]` is delivered as sent.
+- #29 hop ceiling: Kimi's `fyi` acknowledgement of the hop-1 message arrived
+  at hop 2 and was dropped (`NOT DELIVERED(fyi)` in the log), so both the
+  `fyi` rule and the hop cap stopped the chain after one round trip. The
+  hop-1 delivery itself reached an idle Kimi and was answered in ~8 s.
+- #31 permission payload: Kimi 2.0.1's `session/request_permission` carries
+  no `rawInput`, so the hub keeps the arguments from the announcing
+  `tool_call` update (previous session's leg; covered by `scripts/check.sh`).
+- Task #1 reached `approved` with its file written. The local worker served
+  `sy/coding` through the switchyard on 127.0.0.1:4813
+  (`vllm/deepseek-ai/DeepSeek-V4-Flash-0731`), and Pi's `dgx/coding` traffic
+  went through the gateway (omniroute 172.16.229.33:20128) as before.
+- Kimi stayed healthy through the run (KIMI-IDLE-AGAIN, KIMI-FINAL-MARKER
+  markers, zero queued at the end). The disposable hub and manager were
+  stopped after recording.
+
+## Issues #40-#43 re-measurement after the review fixes (2026-09-20)
+
+Measured against a live hub built from the PR branch in the disposable project
+`/tmp/ahub-measure-44`, with real Kimi 2.0.1, Pi 0.86.0 on MLX, and a control-WS
+peer standing in for Claude.
+
+- #40 flag absorption: `ahub say --backend mlx hi` and `ahub say @codex "try
+  this" --verbose` both refuse before touching the daemon. `ahub say -- --backend
+  is broken, check it` reaches the log verbatim
+  (`msg user -> * important hop=0: --backend is broken, check it`), and
+  `ahub remember --backend mlx note` refuses the same way while
+  `ahub remember -- --backend is a flag` saves. The `--` escape exists because
+  the first version of the fix left a message that is about a flag unsendable.
+- #41 queued important: a paused peer with one `[STATUS]` and two console
+  messages printed `queued 1`, `queued 2 (1 important)`, `queued 3 (2 important)`,
+  and status.json carried `queuedImportant` only from the second message on.
+- **status.json was one message behind** (found by this run, fixed here): the
+  file said `queued 3, queuedImportant 1` while `ahub status` said 4, and it kept
+  `queued 4` after the queue had drained to 0. `publish` emits its envelope event
+  *before* it enqueues, and a delivery emits nothing at all, so the daemon's
+  `writeStatus` tap always recorded the previous count and was never called again
+  once the queue emptied. The bus now reports a queue change (`onQueues`); after
+  the fix the file tracked 1 -> 2 -> 3 -> 0 exactly, with the field absent at 0.
+- #42 Pi handover: `ahub pi --mode headless --backend mlx` then
+  `--backend auto` produced exactly one state line in the log
+  (`state pi -> idle`), `ahub tail` showed only `pi is idle`, and status.json read
+  `idle` before and after. The other half - a handover whose replacement never
+  arrives - is not reachable from the CLI on a healthy install and is covered by
+  `test/pi-daemon.test.ts` (verified to fail without the restore).
+- #43 no-ack: the new wording reaches Kimi verbatim (asked to quote it, it
+  returned `"Do not acknowledge a message that needs no answer; every reply costs
+  the other agents a turn."`). **It did not stop the ack**: a no-action note from
+  the console was answered with "Noted, no action needed on my side." (14 s), and
+  the same note from another agent with "Noted." (6 s), both delivered at
+  `status` priority and costing the recipient a turn. The instruction never told
+  Codex, Kimi or the local worker that the markers exist - only the Claude channel
+  did. With `[FYI]`/`[IMPORTANT]` added to the shared instruction, an unprimed
+  Kimi on a fresh session answered the identical note with
+  `msg kimi -> claude fyi hop=1 NOT DELIVERED(fyi)`: recorded, nobody's turn spent.
+  Kimi still chooses to answer; what changed is that the answer is free.
+
+## 0.6.3 release gate and isolated install (2026-09-20)
+
+- `bun run check` on the 0.6.3 checkout: 301 tests, 37 files, 1600 expect()
+  calls, `check: OK`; `bun run build` produced `plugins/agent-hub/server.js`
+  (543 KB) and `src/cli/main.js`.
+- Global install from an `npm pack` tarball (`@staix/agent-hub-0.6.3.tgz`,
+  281 KB) into an isolated `BUN_INSTALL` prefix: `ahub --version` → 0.6.3,
+  both `ahub` and `agent-hub` bins linked, and `ahub init` from an unrelated
+  temp directory wrote config.json, routing.toml, CLAUDE.md, AGENTS.md and
+  .gitignore.
+- Installing the workspace root directly does not work: `bun add -g .` writes
+  a nameless dependency (`"" -> "."`) into the global package.json, later
+  attempts fail with `DependencyLoop`, and `bun add -g @staix/agent-hub@./`
+  installs only bun.lock/package.json without `src/` or bin links. Use
+  `npm pack` + the tgz, `bun link`, or the GitHub source.
 
 ## Pi local inference checks (issue #25, 0.6.0)
 
@@ -207,6 +302,13 @@ Needs a model gateway in `omniroute.urls` (for the owner: the campus gateway ove
 | 2026-09-19 | Dedicated inference key `agent-hub-local` issued on the gateway (`omniroute api api-keys`, admin context), stored at `~/.agenthub/omniroute-agent-hub-local.key` (0600), `.agenthub/config.json` points `omniroute.api_key_file` at it | pass: `GET /models` 200, chat completion "pong" via DeepSeek-V4-Flash, `ahub doctor` key present; `AGENTHUB_SWITCHYARD_BIN=$HOME/.cargo/bin/switchyard-server` exported in `~/.config/shell/30-ai.sh` (checked: not in `~/.zshrc`; visible in a login shell), doctor finds switchyard 0.2.0 there |
 | 2026-09-19 | Gateway choice with both candidates reachable | found: `ahub doctor` picked the off-campus URL while the internal URL was up (sequential probing, a stalled first request, and a non-5xx answer counting as healthy). Fixed: concurrent probes, list order decides, only 2xx is healthy. After the fix the dedicated key answered "pong" through the internal URL in 324 ms, `provider vllm` |
 | 2026-09-19 | `ahub setup` after the M5/M6 commits | pass: `ahub doctor` flagged the morning's plugin as stale (same version, bundle differs), `ahub setup --yes` uninstalled and reinstalled `agent-hub@agent-hub 0.1.0`, doctor then shows `claude plugin ok` |
+| 2026-09-20 | #32 backend alias, live 0.6.2 hub (Pi 0.85.1, dgx/coding + mlx) | pass: file-read answer ~2.4 s on dgx/coding (glm-5.3-flash) and ~4 s after `ahub pi --mode headless --backend mlx` re-attach with handover; status printed each alias once, `dgx/dgx`/`mlx/mlx` 0 hits; `ahub say` has no `--backend` flag (absorbed as body) |
+| 2026-09-20 | #29 unsolicited `[IMPORTANT]` to busy Kimi via local `hub_send`, live 0.6.2 | pass (no interrupt): `kimi busy queued 1` during the slow turn, delivered right after turn end (idle 09:16:47.551 → busy 09:16:47.552); idle Kimi started a turn immediately; AcpPeer has no steer, capPriority demotes only the peer's own unsolicited marker |
+| 2026-09-20 | #29 hop ceiling, live 0.6.2 (Kimi 2.0.1) | pass: hop-1 message answered by idle Kimi in ~8 s; its fyi ack arrived at hop 2 and was dropped (`NOT DELIVERED(fyi)`) |
+| 2026-09-20 | #31 permission payload, Kimi 2.0.1 | pass (previous session): `session/request_permission` carries no `rawInput`; hub kept `tool_call` arguments, no bare-tool approval shown |
+| 2026-09-20 | #40-#43 after the review fixes, live hub from the PR branch (Kimi 2.0.1, Pi 0.86.0 MLX) | pass: say/remember refuse an absorbed flag and send it after `--`; paused peer printed `queued 3 (2 important)`; Pi mlx->auto handover emitted one `state pi -> idle` and no offline; unprimed Kimi answered a no-action note as `fyi` (`NOT DELIVERED(fyi)`) once the shared instruction named the markers |
+| 2026-09-20 | status.json queue depth, live hub | found: the file was one message behind (`queued 3` vs live 4) and kept `queued 4` on an empty queue, because `publish` emits before it enqueues and a delivery emits nothing. Fixed: `bus.onQueues` -> `writeStatus`; re-measured 1 -> 2 -> 3 -> 0 exact, field absent at 0 |
+| 2026-09-20 | 0.6.3 gate + isolated install | pass: `bun run check` 301 tests / 1600 expect / `check: OK`; npm pack tgz (281 KB) → isolated BUN_INSTALL prefix, `ahub --version` 0.6.3, `ahub init` wrote all five files; direct `bun add -g .` of the workspace root fails (nameless dependency, DependencyLoop) |
 
 ## Issue #7 verification ledger (2026-09-19)
 

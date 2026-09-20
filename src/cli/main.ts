@@ -17,6 +17,7 @@ import { buildLaunch, UNATTENDED_WARNING } from "./launch.ts";
 import { nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
 import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
+import { freeText } from "./free-text.ts";
 import { createInterface } from "node:readline/promises";
 import { assertLifecycleAvailable, readOperation } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
@@ -446,7 +447,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   say: async () => {
     const lead = args.findIndex((a) => !/^@[a-z][a-z0-9-]*$/.test(a)); // only leading @tokens are recipients
     const to = args.slice(0, lead === -1 ? args.length : lead).map((a) => a.slice(1));
-    const body = lead === -1 ? "" : args.slice(lead).join(" ");
+    const body = lead === -1 ? "" : freeText(args.slice(lead), "ahub say [@peer ...] <text>");
     const hub = await connect();
     const res = await hub.request({ t: "send", body, to });
     hub.close();
@@ -528,7 +529,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     console.log(await taskOp("hub_review", { id: Number(id), verdict, note: note.join(" ") }));
   },
 
-  remember: async () => console.log(await taskOp("hub_remember", { text: args.join(" ") })),
+  remember: async () => console.log(await taskOp("hub_remember", { text: freeText(args, "ahub remember <text>") })),
 
   ask: async () => {
     const remember = args.includes("--remember");

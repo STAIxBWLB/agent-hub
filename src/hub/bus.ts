@@ -74,6 +74,12 @@ export class Bus {
   /** What each peer was last handed, next to what it stands for: an adapter that reports a failure later hands back the former. */
   private readonly lastDelivery = new Map<PeerId, { out: Envelope[]; originals: Envelope[] }>();
   private readonly attempts = new Map<string, number>(); // `${peer}:${envelope id}` -> failed deliveries
+  /**
+   * The queue lengths changed. `publish` emits its envelope event *before* it enqueues, and a delivery emits
+   * nothing at all, so anything that renders `queued` off a bus event records the count from before the change
+   * and is never corrected once the queue empties (measured: status.json kept `queued 4` on an empty queue).
+   */
+  onQueues?: () => void;
   private recoveryHeld = false;
   private steering = 0;
   private condensing = 0;
@@ -237,11 +243,21 @@ export class Bus {
       const i = queue.findIndex((e) => e.id === envelopeId);
       if (i !== -1) removed = queue.splice(i, 1).length > 0;
     }
+    if (removed) this.onQueues?.();
     return removed;
   }
 
   queued(id: PeerId): number {
     return this.queues.get(id)?.length ?? 0;
+  }
+
+  /**
+   * Queued envelopes that skip the batch window (issue #41: `queued 3` hid which ones the peer still waits out).
+   * An `important` envelope that is in a queue is one that could not be steered, so it does not interrupt a
+   * running turn; it is why the queue is delivered the moment the peer goes idle.
+   */
+  queuedImportant(id: PeerId): number {
+    return (this.queues.get(id) ?? []).filter((e) => e.priority === "important").length;
   }
 
   private enqueue(id: PeerId, env: Envelope, front = false): void {
@@ -254,6 +270,7 @@ export class Bus {
       const [lost] = queue.splice(victim === -1 ? 0 : victim, 1);
       this.emit({ t: "overflow", env: lost!, peer: id });
     }
+    this.onQueues?.();
     void this.drain(id);
   }
 
@@ -304,6 +321,7 @@ export class Bus {
       }
     } finally {
       this.draining.delete(id);
+      this.onQueues?.();
     }
   }
 
