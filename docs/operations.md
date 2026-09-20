@@ -207,7 +207,8 @@ not a latency or reliability benchmark.
 The 0.6.4 production readback retained two envelopes for a disconnected Codex
 peer with identical IDs before and after recovery; general status lists attached
 peers and therefore did not show that backlog. No messages were deleted. The
-0.7.0 queue readback and receipt semantics remain pending live verification.
+0.7.1 attended cutover and production readback verified queue visibility and
+completion receipts; see the final section of the smoke checklist.
 
 Issue [#12](https://github.com/STAIxBWLB/agent-hub/issues/12) remains open for
 off-campus Access credentials and a natural near-limit budget pause. Tests,
