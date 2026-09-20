@@ -32,3 +32,16 @@ test("resolution requires the observed revision and is idempotent", () => {
   journal.close();
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("terminal history is bounded without pruning an unresolved receipt", () => {
+  const { dir, journal } = open();
+  const env = newEnvelope("user", "history fixture");
+  journal.createDelivery({ id: "pending", peer: "claude", state: "needs_review", createdAt: env.ts, originals: [env], out: [env] });
+  journal.transaction(() => {
+    for (let n = 0; n < 2050; n++) journal.createDelivery({ id: `terminal-${n}`, peer: "claude", state: "failed", createdAt: env.ts + n, originals: [env], out: [] });
+  });
+  expect(journal.list().filter((row) => row.state === "failed").length).toBeLessThanOrEqual(2048);
+  expect(journal.get("pending")?.state).toBe("needs_review");
+  journal.close();
+  rmSync(dir, { recursive: true, force: true });
+});

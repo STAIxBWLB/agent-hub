@@ -606,6 +606,7 @@ export class DeliveryJournal {
           input.attempt ?? null,
           input.previousId ?? null,
         );
+      this.pruneTerminal();
       return { ...input, revision, updatedAt };
     })();
   }
@@ -732,7 +733,7 @@ export class DeliveryJournal {
       (
         this.db
           .query(
-            "SELECT COUNT(*) AS n FROM deliveries WHERE project_id = ? AND state IN ('completed','discarded')",
+            "SELECT COUNT(*) AS n FROM deliveries WHERE project_id = ? AND state IN ('completed','discarded','failed')",
           )
           .get(this.projectId) as { n: number }
       ).n,
@@ -740,7 +741,7 @@ export class DeliveryJournal {
     if (count <= TERMINAL_CAP) return;
     this.db
       .query(
-        "DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.project_id = ? AND d.state IN ('completed','discarded') AND NOT EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id = d.project_id AND c.previous_id = d.id) ORDER BY d.updated_at, d.id LIMIT ?)",
+        "DELETE FROM deliveries WHERE id IN (SELECT d.id FROM deliveries d WHERE d.project_id = ? AND d.state IN ('completed','discarded','failed') AND NOT EXISTS (SELECT 1 FROM deliveries c WHERE c.project_id = d.project_id AND c.previous_id = d.id) ORDER BY d.updated_at, d.id LIMIT ?)",
       )
       .run(this.projectId, count - TERMINAL_CAP);
   }
