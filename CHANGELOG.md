@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.1
+
+- Restore native sessions while unrelated agents remain in the same worktree; the coordinator continues to fence uncertain terminal creations (#48).
+- Allow a bounded inventory refresh after closing the captured terminal before reporting uncertain shutdown (#48).
+
 ## 0.7.0
 
 - Persist queued deliveries and expose uncertain handoffs for explicit operator reconciliation (#46).

@@ -523,3 +523,23 @@ pause.
   with a correlated FYI. This does not establish a real Claude inference turn.
 - Production application, attended Claude restoration and post-deploy readback
   remain pending until the tagged artifact is installed. Issue #12 remains open.
+
+
+## 0.7.0 attended production cutover and follow-up
+
+The published 0.7.0 package passed integrity staging and completed protocol 9
+to 10 recovery in the production project. Task/budget state and queued Codex
+messages were retained. General status now displays the disconnected Codex
+recipient and its two pending messages.
+
+Attended recovery exposed #48: the pre-create terminal check treated unrelated
+Codex/Qwen terminals as an ambiguous earlier Claude creation. The original
+Claude conversation was manually reattached with the captured session identity,
+the native development-channel confirmation was accepted, and recovery resume
+verified the existing replacement without creating a duplicate. The operation
+reached `completed` with its project `verified`.
+
+0.7.1 removes the redundant worktree-wide create blocker while retaining the
+coordinator's pending-create fence and returned terminal/session verification.
+Regression tests include unrelated terminals and delayed close inventory.
+The 0.7.1 attended repeat is recorded separately after application.
