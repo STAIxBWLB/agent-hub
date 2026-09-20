@@ -182,6 +182,16 @@ interface Envelope {
   injected inherits that envelope's `trace` with `hop + 1` (Claude passes `reply_to` on
   `hub_send`); a turn the user started begins a fresh trace at hop 0. Envelopes over the
   cap are dropped for peers but still shown on the console.
+- A reply is addressed, not broadcast (amended after the 0.6.1 measurement run, issue #29).
+  An adapter answering a delivery addresses `to` at the senders it answers (`replyAudience`);
+  a reply that names no target inherits the sender of the envelope it answers. `user` and `hub`
+  are not peers, so an answer to the console or to a hub workflow envelope reaches the console
+  and the log and costs no peer a turn - stakeholders already hear about a task through the
+  hub's own `task` and `review` envelopes. A peer that wants every peer to hear it leaves `to`
+  empty on purpose. Before this, one directed question cost every attached peer a turn, and a
+  Pi task report woke the local worker into unsolicited work. A delivery that was condensed is
+  answered by what it stands for, not by what the peer was handed: the bus maps the reserved
+  `digest` sender back to the senders of the originals it kept next to `out`.
 - One queue rule per peer (amended in M2): the whole queue goes out as one delivery, a single
   envelope or a digest of up to 10, when the peer is idle and the queue holds an `important`
   envelope, or `batch_max` (3) envelopes, or its oldest one has waited `batch_ms` (15 s).
@@ -192,6 +202,11 @@ interface Envelope {
   the digest; an envelope that failed before is retried alone. The control WS hello carries a
   wire version (2 since digests): a plugin bundle older than the daemon is refused with close
   code 4426 rather than dropping digests silently.
+- A hub-native peer (Pi, the local worker) may not rate its own urgency: `important` it claims
+  for itself is capped to `status` unless the delivery it answers held an `important` envelope
+  addressed to it. The whole delivery is checked, not `replyParent` alone - an important request
+  can share a hop with a later status item. A message that answers nothing is always `status`.
+  Peers driven by their own session keep the priority they claim.
 - Markers `[IMPORTANT]`, `[STATUS]`, `[FYI]` at the start of agent text, `hub_send` or `ahub say`
   set the priority and are stripped. Default `status` for agents, `important` for the console
   user (a human typing `ahub say` should not wait out the batch window).

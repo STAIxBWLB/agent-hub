@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { renderDigest, replyParent, STANDING_INSTRUCTION, USER, type Envelope, type EnvelopeOpts, type PeerId } from "../hub/envelope.ts";
+import { renderDigest, replyAudience, replyParent, STANDING_INSTRUCTION, USER, type Envelope, type EnvelopeOpts, type PeerId } from "../hub/envelope.ts";
 import { TASK_TOOL_NAMES, TASK_TOOLS } from "../hub/hub-tools.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { profile } from "../local/sandbox.ts";
@@ -52,6 +52,7 @@ const system = (cwd: string, preamble = "") =>
 
 /** Hub-native agent loop: the hub owns every model call, so it can choose the model per call (L2) and the gateway (L3). */
 export class LocalPeer extends BasePeer {
+  readonly hubNative = true;
   private readonly history: ChatMessage[] = [];
   private readonly sessionId = `agent-hub-local-${randomUUID()}`;
   private turn = 0; // generation guard, as in acp.ts: a turn aborted by the watchdog must not touch the next one
@@ -96,7 +97,7 @@ export class LocalPeer extends BasePeer {
     const policy = this.opts.turnPolicy?.(envs);
     // A PII turn speaks to the console user only, and privately: its answer must not be broadcast to cloud-hosted peers.
     // The task id travels with it, so the board can keep the text (`ahub task show`) while tail and log show a stub.
-    const reply: EnvelopeOpts = { inReplyTo: replyParent(envs), ...(policy?.pii ? { to: [USER], private: true, priority: "important" as const, ...(policy.task ? { refs: { task: policy.task } } : {}) } : {}) };
+    const reply: EnvelopeOpts = { inReplyTo: replyParent(envs), to: replyAudience(envs), ...(policy?.pii ? { to: [USER], private: true, priority: "important" as const, ...(policy.task ? { refs: { task: policy.task } } : {}) } : {}) };
     this.run(envs, turn, msgs, progress, policy, reply)
       .then((answer) => {
         if (turn !== this.turn) return;
@@ -148,7 +149,7 @@ export class LocalPeer extends BasePeer {
       permit: this.opts.tools.permit,
       sandboxProfile: this.sandboxProfile,
       send: (text, to) => {
-        this.onMessage?.(text, policy?.pii ? reply : { inReplyTo: replyParent(envs), ...(to?.length ? { to } : {}) });
+        this.onMessage?.(text, policy?.pii ? reply : { inReplyTo: replyParent(envs), to: to?.length ? to : replyAudience(envs) });
         return policy?.pii ? "sent to the console user only (PII task)" : "sent";
       },
     };

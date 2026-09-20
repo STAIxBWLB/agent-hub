@@ -1,7 +1,7 @@
 import type { OmniRoute } from "../omniroute/client.ts";
 import type { Sidecar } from "../switchyard/sidecar.ts";
 import { CLASSES, type TaskClass } from "./board.ts";
-import { newEnvelope, type Envelope } from "./envelope.ts";
+import { DIGEST, newEnvelope, type Envelope } from "./envelope.ts";
 
 export interface InferenceConfig {
   enabled: boolean;
@@ -14,7 +14,7 @@ export interface InferenceConfig {
 export const DEFAULT_INFERENCE: InferenceConfig = { enabled: true, digest_min_items: 5, digest_min_chars: 8000, triage: true };
 
 /** Sender of a condensed digest. Not the hub's own id: replies to it must keep the hop count of what it replaced. */
-export const DIGEST = "digest";
+export { DIGEST };
 
 const TIMEOUT_MS = 8000;
 const BACKOFF_MS = 5 * 60_000;

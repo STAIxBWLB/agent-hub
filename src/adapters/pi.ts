@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { renderDigest, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
+import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { stopOwnedProcess } from "../hub/child-process.ts";
 
@@ -33,6 +33,7 @@ const modelFor = (backend: PiOptions["backend"], models: PiModelDescriptor[]): s
 };
 
 export class PiPeer extends BasePeer {
+  readonly hubNative = true;
   private proc?: ChildProcessWithoutNullStreams;
   private server?: ReturnType<typeof Bun.serve>;
   private buffer = "";
@@ -300,9 +301,12 @@ export class PiPeer extends BasePeer {
       if (typeof event.text === "string" && event.text.trim()) this.settledText = event.text;
       const text = this.settledText.trim(); const error = this.settledError; const cancelled = this.settledCancelled;
       this.settledText = ""; this.settledError = ""; this.settledCancelled = false;
-      if (cancelled) this.onMessage?.("Pi turn cancelled; inspect any partial effects before continuing.", { inReplyTo: this.currentReply });
+      // Answer the peers this turn was for, not every peer on the bus (issue #29). activeEnvs still holds the
+      // whole delivery here, steered additions included.
+      const reply = { inReplyTo: this.currentReply, to: replyAudience(this.activeEnvs) };
+      if (cancelled) this.onMessage?.("Pi turn cancelled; inspect any partial effects before continuing.", reply);
       else if (error) void this.opts.onTurnFailure?.(this.activeEnvs, error);
-      else if (text) this.onMessage?.(text, { inReplyTo: this.currentReply });
+      else if (text) this.onMessage?.(text, reply);
       this.currentReply = undefined; this.activeEnvs = []; if (this.state === "busy" && !this.activeTools) this.setState("idle");
     }
   }
