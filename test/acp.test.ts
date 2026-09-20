@@ -35,6 +35,24 @@ test("prompt round trip: chunks are aggregated into one reply that inherits the 
   expect(peer!.state).toBe("idle");
 });
 
+test("correlated ACP delivery reports acceptance before completion and ignores a late cancelled result", async () => {
+  const { peer: acp } = await (async () => { const p = new AcpPeer("kimi", { cmd: FAKE, cwd: process.cwd(), watchdogMs: 40 }); await p.start(); return { peer: p }; })();
+  const receipts: { id: string; state: string }[] = [];
+  acp.onDelivery = (r) => receipts.push({ id: r.id, state: r.state });
+  try {
+    await acp.deliver([newEnvelope("user", "ping", { to: ["kimi"] })], "d-accepted");
+    expect(receipts).toEqual([]);
+    await until(() => receipts.some((r) => r.id === "d-accepted" && r.state === "accepted"));
+    await until(() => receipts.some((r) => r.state === "completed"));
+    expect(receipts.map((r) => r.state)).toEqual(["accepted", "completed"]);
+
+    await acp.deliver([newEnvelope("user", "ACK_SLOW", { to: ["kimi"] })], "d-slow");
+    await until(() => receipts.some((r) => r.id === "d-slow" && r.state === "needs_review"));
+    await Bun.sleep(100);
+    expect(receipts.filter((r) => r.id === "d-slow")).toHaveLength(2); // accepted + one uncertain terminal state
+  } finally { await acp.stop(); }
+});
+
 test("messages arriving mid-prompt are queued, then drained as one digest prompt, never lost", async () => {
   const { bus, said } = await setup();
   for (const body of ["one", "two", "three"]) bus.publish(newEnvelope("user", body, { to: ["kimi"] }));

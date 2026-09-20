@@ -52,6 +52,8 @@ export class AcpPeer extends BasePeer {
   private readonly toolInputs = new Map<string, unknown>();
   private primed = false;
   private turn = 0; // generation: a prompt cancelled by the watchdog must not touch the turn that followed it
+  private activeDeliveryId: string | undefined;
+  private deliveryAccepted = false;
 
   constructor(
     id: PeerId,
@@ -94,6 +96,8 @@ export class AcpPeer extends BasePeer {
   }
 
   async stop(): Promise<void> {
+    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "ACP session stopped before settlement" });
+    this.activeDeliveryId = undefined;
     const proc = this.proc;
     if (!proc || proc.exitCode !== null) return;
     await stopOwnedProcess(proc);
@@ -101,38 +105,64 @@ export class AcpPeer extends BasePeer {
   }
 
   /** Resolves once the prompt is in flight; the turn result arrives on its own. */
-  async deliver(envs: Envelope[]): Promise<void> {
-    if (this.state !== "idle") throw new Error(`${this.id} is ${this.state}`);
+  async deliver(envs: Envelope[], deliveryId?: string): Promise<void> {
+    if (this.state !== "idle") {
+      if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
+      throw new Error(`${this.id} is ${this.state}`);
+    }
     const turn = ++this.turn;
+    this.activeDeliveryId = deliveryId;
+    this.deliveryAccepted = false;
     this.chunks = [];
     this.setState("busy");
     // session/prompt answers only when the turn ends, so deliver resolves now and failures come back through onFailed.
-    this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: this.primed || !this.opts.preamble ? renderDigest(envs, this.primed) : `${this.opts.preamble}\n\n${renderDigest(envs, false)}` }] })
-      .then(() => {
-        this.primed = true;
+    const prompt = this.request("session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: this.primed || !this.opts.preamble ? renderDigest(envs, this.primed) : `${this.opts.preamble}\n\n${renderDigest(envs, false)}` }] });
+    prompt
+      .then((result) => {
         if (turn !== this.turn) return; // superseded: these chunks belong to a later turn
+        this.primed = true;
         const body = this.chunks.join("").trim();
         if (body) this.onMessage?.(body, { inReplyTo: replyParent(envs), to: replyAudience(envs) });
+        if (deliveryId && this.activeDeliveryId === deliveryId) {
+          this.acceptDelivery();
+          this.delivery({ id: deliveryId, state: result?.stopReason === "end_turn" ? "completed" : "needs_review", ...(result?.stopReason === "end_turn" ? {} : { reason: "ACP prompt ended without normal completion" }) });
+        }
       })
       .catch((e: Error) => {
         this.opts.log?.(`[${this.id}] prompt failed: ${e.message}`);
-        this.onFailed?.(envs);
+        if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: e.message });
+        else if (!deliveryId) this.onFailed?.(envs);
       })
       .finally(() => {
         if (turn === this.turn && this.state === "busy") this.setState("idle");
+        if (turn === this.turn && this.activeDeliveryId === deliveryId) this.activeDeliveryId = undefined;
       });
   }
 
   protected override onWatchdog(): void {
+    const durable = !!this.activeDeliveryId;
+    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "ACP turn watchdog timeout" });
+    this.activeDeliveryId = undefined;
     this.notify("session/cancel", { sessionId: this.sessionId });
     this.turn++; // whatever the cancelled prompt still reports is stale
-    super.onWatchdog();
+    // ACP updates carry only a session ID, not a turn ID. After a durable turn times out,
+    // keep the adapter offline until it is restarted so late chunks cannot contaminate a new turn.
+    if (durable) this.setState("offline");
+    else super.onWatchdog();
+  }
+
+  private acceptDelivery(): void {
+    if (!this.activeDeliveryId || this.deliveryAccepted) return;
+    this.deliveryAccepted = true;
+    this.delivery({ id: this.activeDeliveryId, state: "accepted" });
   }
 
   private down(reason: string): void {
     this.opts.log?.(`[${this.id}] ${reason}`);
     for (const p of this.pending.values()) p.reject(new Error(reason));
     this.pending.clear();
+    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason });
+    this.activeDeliveryId = undefined;
     this.setState("offline");
   }
 
@@ -146,6 +176,9 @@ export class AcpPeer extends BasePeer {
     if (this.state === "busy") this.touch();
 
     if (msg.method === "session/update") {
+      if (msg.params?.sessionId && msg.params.sessionId !== this.sessionId) return;
+      if (this.state !== "busy") return;
+      this.acceptDelivery();
       const u = msg.params?.update;
       if (u?.sessionUpdate === "agent_message_chunk" && u.content?.type === "text") this.chunks.push(u.content.text);
       // The permission request that follows may carry no `rawInput` (Kimi 2.0.1 does not), and then the

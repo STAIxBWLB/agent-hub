@@ -29,3 +29,11 @@ test("a peer line marks queued messages that would interrupt on delivery", () =>
   expect(peerLine("codex", { state: "paused", queued: 2, queuedImportant: 2, paused: "budget" })).toBe("  codex    paused   queued 2 (2 important)  (budget)");
   expect(peerLine("kimi", { state: "idle", queued: 2, queuedImportant: 0 })).toBe("  kimi     idle     queued 2");
 });
+
+test("a disconnected recipient exposes pending age and uncertain work", () => {
+  const line = peerLine("codex", { state: "offline", queued: 2, queuedImportant: 1, needsReview: 1, attached: false, oldestQueuedAt: Date.now() - 60000 });
+  expect(line).toContain("queued 2 (1 important)");
+  expect(line).toContain("needs review 1");
+  expect(line).toContain("oldest 60s");
+  expect(line).toContain("disconnected");
+});

@@ -58,6 +58,9 @@ test("unknown ownership and wrong root are blockers before a mutation", async ()
   const inspected = await inspectTerminals(root, { codex: session }, unknown.runner);
   expect(inspected.manualRequired).toBe(true);
   expect(inspected.blockers.some((item) => item.code === "ownership-unknown")).toBe(true);
+  const ownership = inspected.blockers.find((item) => item.code === "ownership-unknown");
+  expect(ownership?.peer).toBe("codex");
+  expect(ownership?.nextAction).toContain("confirm the terminal owner");
 
   const binding: TerminalBinding = {
     peer: "codex",

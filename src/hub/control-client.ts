@@ -6,8 +6,10 @@ export function stateDirFor(cwd: string): string {
   return projectContext(cwd).stateDir;
 }
 
-/** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages; 4 = budget messages and `hub_checkpoint`; 5 = `ask`; 6 = console-only `ui` session bootstrap; 8 = controlled recovery; 9 = Pi bridge metadata. The plugin is installed apart from the daemon, so they can drift. */
-export const PROTOCOL = 9; // controlled restart/recovery plus the Pi bridge contract
+/** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages; 4 = budget messages and `hub_checkpoint`; 5 = `ask`; 6 = console-only `ui` session bootstrap; 8 = controlled recovery; 9 = Pi bridge metadata; 10 = durable delivery receipts. The plugin is installed apart from the daemon, so they can drift. */
+export const PROTOCOL = 10;
+/** Protocols a current coordinator may authenticate while upgrading a running source. */
+export const RECOVERY_SOURCE_PROTOCOLS = [9, PROTOCOL] as const;
 
 export interface Hello {
   /** `tools`: acts for `peer` (task tools, hub_send) without being a delivery target: the MCP server Kimi and Codex run. */
@@ -53,7 +55,7 @@ export class ControlClient {
 
   /** `protocol` is used only by the upgrade coordinator for an authenticated, explicitly supported source contract. */
   static connect(stateDir: string, hello: Hello, timeoutMs = 3000, protocol = PROTOCOL): Promise<ControlClient> {
-    if (protocol !== 8 && protocol !== PROTOCOL) return Promise.reject(new Error(`unsupported recovery source protocol ${protocol}`));
+    if (!RECOVERY_SOURCE_PROTOCOLS.includes(protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number])) return Promise.reject(new Error(`unsupported recovery source protocol ${protocol}`));
     const control = readControl(stateDir);
     if (!control) return Promise.reject(new Error(`no hub running for ${stateDir} (run: ahub up)`));
     if (control.protocol !== undefined && control.protocol !== protocol) {

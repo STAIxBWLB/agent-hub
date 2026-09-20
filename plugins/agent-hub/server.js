@@ -15615,7 +15615,8 @@ function projectContext(cwd, env = process.env) {
 function stateDirFor(cwd) {
   return projectContext(cwd).stateDir;
 }
-var PROTOCOL = 9;
+var PROTOCOL = 10;
+var RECOVERY_SOURCE_PROTOCOLS = [9, PROTOCOL];
 function readControl(stateDir) {
   try {
     const status = JSON.parse(readFileSync2(join2(stateDir, "status.json"), "utf8"));
@@ -15646,7 +15647,7 @@ class ControlClient {
     this.ws = ws;
   }
   static connect(stateDir, hello, timeoutMs = 3000, protocol = PROTOCOL) {
-    if (protocol !== 8 && protocol !== PROTOCOL)
+    if (!RECOVERY_SOURCE_PROTOCOLS.includes(protocol))
       return Promise.reject(new Error(`unsupported recovery source protocol ${protocol}`));
     const control = readControl(stateDir);
     if (!control)
@@ -15726,7 +15727,7 @@ class ControlClient {
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
-  version: "0.6.4",
+  version: "0.7.0",
   description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
   license: "MIT",
   type: "module",
@@ -15752,6 +15753,7 @@ var package_default = {
     "src",
     "plugins",
     "templates",
+    "docs",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
@@ -15879,7 +15881,7 @@ var inbox = [];
 var hub;
 var detached;
 var offline = () => detached ?? "hub is not running for this project (start it with: ahub up).";
-async function push(envs) {
+async function push(envs, deliveryId) {
   const parent = replyParent(envs);
   const single = envs.length === 1;
   const content = single ? parent.body : envs.map((e) => `--- from ${e.from} (id ${e.id}, kind ${e.kind}) ---
@@ -15896,12 +15898,31 @@ ${sanitize(e.body)}`).join(`
   };
   try {
     await server.notification({ method: "notifications/claude/channel", params: { content, meta: meta2 } });
+    if (deliveryId && hub) {
+      try {
+        const receipt = await hub.request({ t: "delivery_receipt", deliveryId, state: "accepted" });
+        if (!receipt.ok)
+          log(`delivery receipt rejected by hub: ${receipt.error}`);
+      } catch (e) {
+        log(`channel delivery accepted but receipt could not be sent: ${e.message}`);
+      }
+    }
   } catch (e) {
-    log(`channel push failed, queued for hub_inbox: ${e.message}`);
-    for (const env of envs)
-      inbox.push(frame(env));
-    while (inbox.length > INBOX_CAP)
-      inbox.shift();
+    log(`channel push failed${deliveryId ? ", delivery requires review" : ", queued for hub_inbox"}: ${e.message}`);
+    if (deliveryId) {
+      if (hub) {
+        const receipt = await hub.request({ t: "delivery_receipt", deliveryId, state: "needs_review", reason: e.message });
+        if (!receipt.ok)
+          log(`delivery receipt rejected by hub: ${receipt.error}`);
+      } else {
+        log(`channel push failed while hub was unavailable; delivery ${deliveryId} remains unresolved`);
+      }
+    } else {
+      for (const env of envs)
+        inbox.push(frame(env));
+      while (inbox.length > INBOX_CAP)
+        inbox.shift();
+    }
   }
 }
 async function connectLoop() {
@@ -15918,7 +15939,7 @@ async function connectLoop() {
         peer: peerId,
         ...process.env.AGENTHUB_PROJECT_DIR ? { projectRoot: projectRoot2 } : {}
       });
-      client.onPush = (msg) => msg.t === "deliver" && void push(msg.envs ?? [msg.env]);
+      client.onPush = (msg) => msg.t === "deliver" && void push(msg.envs ?? [msg.env], msg.deliveryId);
       hub = client;
       attempt = -1;
       standingBy = false;

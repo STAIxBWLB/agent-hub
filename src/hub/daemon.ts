@@ -27,9 +27,10 @@ import { DEFAULT_INFERENCE, DIGEST, Inference, type InferenceConfig } from "./in
 import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, detectSignals } from "./routing.ts";
 import { Bus } from "./bus.ts";
+import { DeliveryJournal } from "./delivery-journal.ts";
 import { startDashboard } from "./ui.ts";
 import { PROTOCOL, stateDirFor } from "./control-client.ts";
-import { newEnvelope, parseMarker, replyParent, USER, type Envelope, type PeerId } from "./envelope.ts";
+import { newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
 import { MemoryClient, workerUrl } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
@@ -147,10 +148,11 @@ class WsPeer extends BasePeer {
     this.sock = undefined;
     this.setState("offline");
   }
-  async deliver(envs: Envelope[]): Promise<void> {
+  async deliver(envs: Envelope[], deliveryId?: string): Promise<void> {
     if (!this.sock) throw new Error(`${this.id} is offline`);
-    this.sock.send(JSON.stringify({ t: "deliver", envs }));
+    this.sock.send(JSON.stringify({ t: "deliver", envs, ...(deliveryId ? { deliveryId } : {}) }));
   }
+  owns(sock: Sock): boolean { return this.sock === sock; }
   async start(): Promise<void> {}
   async stop(): Promise<void> {
     this.sock?.close();
@@ -186,10 +188,13 @@ export async function startDaemon(opts: DaemonOptions) {
     },
     websocket: {
       message(sock, data) {
+        let parsed: any;
         try {
-          onMessage(sock, JSON.parse(String(data)));
+          parsed = JSON.parse(String(data));
+          onMessage(sock, parsed);
         } catch (e) {
-          log(`bad control message: ${(e as Error).message}`);
+          log("control operation failed; inspect delivery storage and recovery status");
+          if (sock.data.authed && Number.isSafeInteger(parsed?.rid)) sock.send(JSON.stringify({ rid: parsed.rid, ok: false, error: "operation failed; inspect delivery storage and recovery status before retrying" }));
         }
       },
       close(sock) {
@@ -203,25 +208,29 @@ export async function startDaemon(opts: DaemonOptions) {
   startupCleanup.push(() => server.stop(true));
 
 
-  // The hub's own model calls (digest condensation, task triage) are wired below, once the gateway client exists.
-  let inference: Inference | undefined;
-  const bus = new Bus({ batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs) });
-  const manualPaused = new Set<PeerId>(); // `ahub pause`: recovery never lifts these
-  let recoveryOperationId: string | undefined;
-  let recoveryPhase: RecoveryPhase | undefined;
-  let recoveryCommitted = false;
-  let recoveryPeerSnapshot: RestartPeerSnapshot[] | undefined;
-  let recoveryLeaseTimer: ReturnType<typeof setTimeout> | undefined;
-  const recoveryActive = () => !!recoveryOperationId && recoveryPhase !== "released";
   const recoveryOperation = process.env.AGENTHUB_RECOVERY_OPERATION;
   const restartFilePresent = existsSync(restartPath(opts.stateDir));
   const restored = recoveryOperation
     ? readRestartSnapshot(opts.stateDir, { projectRoot: opts.cwd, projectId, operationId: recoveryOperation })
     : undefined;
   if ((restartFilePresent && !restored) || (recoveryOperation && !restored)) throw new Error("restart state is unreadable, missing, or does not match this project and recovery operation");
+
+  // The hub's own model calls (digest condensation, task triage) are wired below, once the gateway client exists.
+  let inference: Inference | undefined;
+  const journal = new DeliveryJournal({ file: join(opts.stateDir, "hub.db"), projectRoot: opts.cwd, projectId, instanceId, operationId: recoveryOperation });
+  const bus = new Bus({ journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs) });
+  startupCleanup.push(() => bus.closeJournal());
+  const manualPaused = new Set<PeerId>(bus.manualPausedPeers()); // recovery never lifts an operator's pause
+  let recoveryOperationId: string | undefined;
+  let recoveryPhase: RecoveryPhase | undefined;
+  let recoveryCommitted = false;
+  let recoveryPeerSnapshot: RestartPeerSnapshot[] | undefined;
+  let recoveryLeaseTimer: ReturnType<typeof setTimeout> | undefined;
+  const recoveryActive = () => !!recoveryOperationId && recoveryPhase !== "released";
   if (restored) {
-    bus.restore(restored.bus);
+    bus.restore(restored.bus, restored.operationId);
     for (const peer of restored.manualPaused) { manualPaused.add(peer); bus.pause(peer); }
+    bus.setManualPaused([...manualPaused]);
     recoveryOperationId = restored.operationId;
     recoveryPhase = "restored";
     recoveryPeerSnapshot = restored.peers;
@@ -442,7 +451,7 @@ export async function startDaemon(opts: DaemonOptions) {
 
   const pausedNote = (id: PeerId) => {
     const r = budget.record(id); // one read per peer: status.json is rewritten on every bus event
-    return r ? { paused: `budget: ${r.reason}, resets ${new Date(r.resetsAt).toLocaleTimeString()}` } : {};
+    return r ? { paused: `budget: ${r.reason}, resets ${new Date(r.resetsAt).toLocaleTimeString()}` } : manualPaused.has(id) && bus.stateOf(id) === "offline" ? { paused: "manual" } : {};
   };
   const recoveryReady = () => {
     if (!recoveryActive() || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;
@@ -498,11 +507,12 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      [...bus.peers].map(([id, p]) => [id, { state: bus.stateOf(id), queued: bus.queued(id), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]),
+      bus.knownPeers().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); return [id, { state: bus.stateOf(id), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
     ),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
     ...(modelRelay ? { models: modelRelay.status() } : {}),
     tasks: board.counts(),
+    ...(bus.storageError ? { deliveryError: bus.storageError } : {}),
     ...(recoveryOperationId ? { recovery: { operationId: recoveryOperationId, phase: recoveryPhase, ready: recoveryReady() } } : {}),
   });
   const writeStatus = () => {
@@ -789,16 +799,35 @@ export async function startDaemon(opts: DaemonOptions) {
   }
 
   function holdPeer(action: "pause" | "resume", id: string) {
-    if (!bus.peers.has(id)) return { ok: false, error: `unknown peer: ${id}` };
+    if (!bus.knownPeers().includes(id)) return { ok: false, error: `unknown peer: ${id}` };
     if (action === "pause") {
+      const next = [...new Set([...manualPaused, id])];
+      bus.setManualPaused(next);
       manualPaused.add(id);
       bus.pause(id);
     } else {
       if (budget.record(id)) return { ok: false, error: `${id} is paused by the budget coordinator until its window resets (ahub budget); to override: ahub budget resume ${id}` };
+      bus.setManualPaused([...manualPaused].filter((peer) => peer !== id));
       manualPaused.delete(id);
       bus.resume(id);
     }
     return { ok: true, state: bus.stateOf(id) };
+  }
+
+  // Queue diagnostics are public metadata by default. Private bodies stay behind the existing task console.
+  function queueView(row: ReturnType<Bus["queueShow"]>, detail = false) {
+    if (!row) return undefined;
+    const originals = row.originals;
+    const privateDelivery = originals.some((env) => env.private);
+    return {
+      id: row.id, peer: row.peer, state: row.state, revision: row.revision,
+      createdAt: row.createdAt, updatedAt: row.updatedAt,
+      envelopeIds: originals.map((env) => env.id),
+      important: originals.some((env) => env.priority === "important"),
+      ...(detail ? { messages: originals.map((env) => ({ id: env.id, from: env.from, priority: env.priority, kind: env.kind,
+        body: privateDelivery ? "[private: inspect the associated task with ahub task show]" : sanitize(env.body),
+      })) } : {}),
+    };
   }
 
   function uiSnapshot(after: number) {
@@ -847,7 +876,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "send": {
         if (!text("body", 8000)) return bad;
-        if (a.to !== undefined && (!Array.isArray(a.to) || a.to.length > 32 || a.to.some((id) => typeof id !== "string" || !PEER_ID.test(id) || !bus.peers.has(id)))) return bad;
+        if (a.to !== undefined && (!Array.isArray(a.to) || a.to.length > 32 || a.to.some((id) => typeof id !== "string" || !PEER_ID.test(id) || !bus.knownPeers().includes(id)))) return bad;
         const { body, priority } = parseMarker(a.body as string, "important");
         if (!body) return bad;
         bus.publish(newEnvelope(USER, body, { priority, ...(Array.isArray(a.to) && a.to.length ? { to: a.to as string[] } : {}) }));
@@ -1026,6 +1055,31 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (stopping && msg.t !== "status" && msg.t !== "kill") return void reply({ ok: false, error: "hub is stopping" });
     switch (msg.t) {
+      case "queue": {
+        if (c.role !== "console") return void reply({ ok: false, error: "queue inspection and resolution are console-only" });
+        if (msg.op === "list") {
+          if (msg.peer !== undefined && (typeof msg.peer !== "string" || !PEER_ID.test(msg.peer))) return void reply({ ok: false, error: "invalid peer" });
+          return void reply({ ok: true, deliveries: bus.queueList(msg.peer).map((row) => queueView(row)) });
+        }
+        if (typeof msg.id !== "string" || !msg.id || msg.id.length > 256) return void reply({ ok: false, error: "invalid delivery ID" });
+        if (msg.op === "show") {
+          const row = bus.queueShow(msg.id);
+          return void reply(row ? { ok: true, delivery: queueView(row, true) } : { ok: false, error: "delivery not found" });
+        }
+        if (msg.op !== "resolve" || !["completed", "retry", "discard"].includes(msg.action) || !Number.isSafeInteger(msg.revision) || msg.revision < 0 || typeof msg.reason !== "string" || !msg.reason.trim() || msg.reason.length > 2000) return void reply({ ok: false, error: "resolution needs an action, observed revision and reason" });
+        if (recoveryActive() || stopping) return void reply({ ok: false, error: "recovery or shutdown is holding queue mutations" });
+        try {
+          bus.resolveDelivery(msg.id, msg.revision, msg.action, msg.reason.trim());
+          writeStatus();
+          return void reply({ ok: true, delivery: queueView(bus.queueShow(msg.id)) });
+        } catch { return void reply({ ok: false, error: "resolution refused: refresh the delivery revision and inspect active or already resolved work" }); }
+      }
+      case "delivery_receipt": {
+        const peer = c.peer ? bus.peers.get(c.peer) : undefined;
+        if (c.role !== "peer" || !(peer instanceof WsPeer) || !peer.owns(sock) || typeof msg.deliveryId !== "string" || !["accepted", "needs_review"].includes(msg.state)) return void reply({ ok: false, error: "invalid delivery receipt" });
+        bus.deliveryReceipt(peer.id, { id: msg.deliveryId, state: msg.state, ...(msg.state === "needs_review" ? { reason: "Claude bridge could not confirm notification delivery" } : {}) });
+        return void reply({ ok: true });
+      }
       case "recovery":
         if (c.role !== "console") return void reply(recoveryError("recovery is a console command"));
         void recoveryOp(msg).then(reply, () => reply(recoveryError("recovery operation failed")));
@@ -1036,10 +1090,11 @@ export async function startDaemon(opts: DaemonOptions) {
         const { priority, body } = parseMarker(String(msg.body ?? ""), c.peer ? "status" : "important");
         if (!body) return void reply({ t: "sent", ok: false, error: "empty body" });
         const to: PeerId[] | undefined = Array.isArray(msg.to) && msg.to.length ? msg.to.map(String) : undefined;
-        const unknown = to?.filter((id) => !bus.peers.has(id)) ?? [];
+        const unknown = to?.filter((id) => !bus.knownPeers().includes(id)) ?? [];
         if (unknown.length) return void reply({ t: "sent", ok: false, error: `unknown peer: ${unknown.join(", ")}` });
         const inReplyTo = msg.reply_to ? bus.get(String(msg.reply_to)) : undefined;
         const targets = bus.publish(newEnvelope(c.peer ?? USER, body, { priority, ...(to ? { to } : {}), ...(inReplyTo ? { inReplyTo } : {}) }));
+        if (c.peer && inReplyTo) bus.completeReply(c.peer, inReplyTo.id);
         return void reply({ t: "sent", ok: true, targets, recorded: priority === "fyi" });
       }
       case "tail":
@@ -1181,6 +1236,7 @@ export async function startDaemon(opts: DaemonOptions) {
     budget.close();
     board.close();
     server.stop(true);
+    bus.closeJournal();
     try {
       const current = JSON.parse(readFileSync(join(opts.stateDir, "status.json"), "utf8"));
       if (current.instanceId === instanceId) for (const f of ["hub.pid", "status.json", "control-token"]) rmSync(join(opts.stateDir, f), { force: true });

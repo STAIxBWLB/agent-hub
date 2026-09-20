@@ -1,7 +1,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { ControlClient, PROTOCOL, readControl } from "../hub/control-client.ts";
+import { ControlClient, PROTOCOL, RECOVERY_SOURCE_PROTOCOLS, readControl } from "../hub/control-client.ts";
 import { inspectProject } from "../hub/lifecycle.ts";
 import type { Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
@@ -41,7 +41,7 @@ export async function inspectRecovery(project: Project): Promise<Inspection> {
   const base = await inspectProject(project);
   const control = readControl(project.stateDir);
   const sourceProtocol = control?.protocol;
-  const legacySupported = sourceProtocol === 8;
+  const legacySupported = sourceProtocol !== undefined && RECOVERY_SOURCE_PROTOCOLS.includes(sourceProtocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]);
   if (base.state !== "running" && !legacySupported) return {
     state: base.state, peers: [], blockers: base.state === "stopped" ? [] : [base.state === "incompatible" ? "manual-bootstrap-required: source lacks the recovery contract; use its matching CLI" : base.error ?? base.state],
     ...(control?.instanceId ? { instanceId: control.instanceId } : {}), ...(control?.protocol ? { protocol: control.protocol } : {}),
@@ -84,7 +84,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
   if (existsSync(managerFile)) {
     try {
       const manager = JSON.parse(readFileSync(managerFile, "utf8"));
-      if (![8, PROTOCOL].includes(manager.protocol)) body.blockers.push("manager requires manual bootstrap with its matching CLI before protocol-9 recovery");
+      if (!RECOVERY_SOURCE_PROTOCOLS.includes(manager.protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number])) body.blockers.push("manager requires manual bootstrap with its matching CLI before protocol-10 recovery");
     } catch { body.blockers.push("manager ownership manifest is unreadable"); }
   }
   for (const project of projects) {
@@ -94,24 +94,24 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
     catch { source = { state: "unavailable", peers: [], blockers: ["source recovery metadata could not be authenticated"] }; }
     if (source.state === "stopped" || source.state === "missing") continue;
     const blockers = [...source.blockers];
-    if (![8, PROTOCOL].includes(source.protocol ?? 0) || source.state !== "running") blockers.push("manual-bootstrap-required: an authenticated recovery-capable source is required");
+    if (!RECOVERY_SOURCE_PROTOCOLS.includes(source.protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]) || source.state !== "running") blockers.push("manual-bootstrap-required: an authenticated protocol-9 or protocol-10 source is required");
     if (source.recovery?.operationId && source.recovery.phase !== "released") blockers.push(`existing recovery operation ${source.recovery.operationId} must be resolved first`);
     const sessions: { codex?: string; claude?: string; pi?: SessionRef } = {};
     for (const peer of source.peers) {
       if (peer.state === "offline") continue;
       if (peer.id === "codex" || peer.id === "claude") {
         const session = peer.id === "codex" ? peer.threadId : peer.sessionId;
-        if (!session) blockers.push(`${peer.id}: original conversation ID is unknown; manual-required`);
+        if (!session) blockers.push(`${peer.id}: original conversation ID is unknown; manual-required; next action: reconnect the original native session and make a new recovery plan`);
         else sessions[peer.id] = session;
       } else if (peer.id === "pi" && peer.args?.mode === "tui") {
-        if (!peer.sessionId) blockers.push("pi: original session ID is unknown; manual-required");
+        if (!peer.sessionId) blockers.push("pi: original session ID is unknown; manual-required; next action: reconnect the original Pi session and make a new recovery plan");
         else sessions.pi = { sessionId: peer.sessionId, ...(peer.sessionFile ? { sessionFile: peer.sessionFile } : {}), ...(peer.args.backend ? { backend: peer.args.backend } : {}), ...(peer.args.model ? { model: peer.args.model } : {}) };
       } else if (peer.id !== "kimi" && peer.id !== "local" && peer.id !== "pi") blockers.push(`${peer.id}: no automatic recovery adapter`);
     }
     const terminals = await inspectTerminals(project.root, sessions, {
       ...terminalOptions(run), stateDir: project.stateDir, instanceId: source.instanceId,
     });
-    blockers.push(...terminals.blockers.map((b) => b.message));
+    blockers.push(...terminals.blockers.map((b) => `${b.message}${b.terminalReference ? ` (terminal ${b.terminalReference})` : ""}${b.nextAction ? `; next action: ${b.nextAction}` : ""}`));
     body.projects.push({ project, source, terminals: terminals.bindings, blockers });
   }
   if (!body.projects.length) body.blockers.push("no running registered projects in scope");
@@ -169,7 +169,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
   };
   const control = (project: Project, op: string, id: string, instance: string) => {
     const sourceProtocol = readControl(project.stateDir)?.protocol;
-    const protocol = sourceProtocol === 8 ? 8 : PROTOCOL;
+    const protocol = sourceProtocol !== undefined && RECOVERY_SOURCE_PROTOCOLS.includes(sourceProtocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]) ? sourceProtocol : PROTOCOL;
     return rpc(project, { t: "recovery", op, operationId: id, expectedInstanceId: instance }, protocol).then(() => {});
   };
   const revalidateTerminal = async (planned: PlannedProject, progress: ProjectProgress, saved: TerminalBinding, exact: boolean): Promise<TerminalBinding> => {

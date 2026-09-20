@@ -48,8 +48,8 @@ test("listing isolates an unavailable project", async () => {
   expect(body.projects[0].state).toBe("unavailable");
 });
 
-test("manager accepts the explicitly supported protocol-8 HTTP owner during protocol-9 refresh", async () => {
-  const home = mkdtempSync(join(tmpdir(), "ahub-manager-v8-"));
+test("manager accepts the explicitly supported protocol-9 HTTP owner during protocol-10 refresh", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ahub-manager-v9-"));
   const instanceId = "legacy-manager-instance";
   const server = Bun.serve({
     hostname: "127.0.0.1", port: 0,
@@ -61,7 +61,7 @@ test("manager accepts the explicitly supported protocol-8 HTTP owner during prot
   const managerDir = join(home, "manager");
   mkdirSync(managerDir, { recursive: true });
   writeFileSync(join(managerDir, "control-token"), "legacy\n");
-  writeFileSync(join(managerDir, "status.json"), JSON.stringify({ port: server.port, protocol: 8, instanceId, pid: process.pid }));
+  writeFileSync(join(managerDir, "status.json"), JSON.stringify({ port: server.port, protocol: 9, instanceId, pid: process.pid }));
   try {
     expect(await openManager({ home })).toBe("http://127.0.0.1:1/#ticket");
   } finally { server.stop(true); rmSync(home, { recursive: true, force: true }); }

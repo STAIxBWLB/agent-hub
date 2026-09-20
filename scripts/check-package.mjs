@@ -19,10 +19,10 @@ function tree(directory) {
     });
 }
 
-// Compare the complete runtime tree, including dotfiles, against npm's own pack list.
+// Compare runtime assets and the public operating guides against npm's own pack list.
 const expected = new Set([
   'package.json', 'README.md', 'LICENSE', 'CHANGELOG.md',
-  ...['src', 'templates', 'plugins', '.claude-plugin'].flatMap(tree),
+  ...['src', 'templates', 'plugins', '.claude-plugin', 'docs'].flatMap(tree),
 ]);
 const [pack] = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json'], {
   cwd: root,
@@ -39,6 +39,7 @@ for (const path of [
   'plugins/agent-hub/.claude-plugin/plugin.json', 'plugins/agent-hub/.mcp.json',
   'templates/CLAUDE.block.md', 'templates/AGENTS.block.md',
   'templates/config.json', 'templates/routing.toml',
+  'docs/operations.md', 'docs/quickstart.md',
 ]) {
   assert(actual.has(path), `npm package is missing runtime file: ${path}`);
 }

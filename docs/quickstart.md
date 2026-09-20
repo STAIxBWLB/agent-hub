@@ -17,13 +17,16 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.2.0
+bun add -g github:STAIxBWLB/agent-hub#v0.7.0
 ahub setup
 ```
 
 From a clone instead: `git clone`, `bun install`, `bun link`.
 
 `ahub doctor` tells you what is installed, running and configured. Rows you do not need can stay red: the hub works with any subset of the peers.
+
+For managed launchers, two-agent task/review work, approvals, graceful shutdown,
+and upgrade or crash recovery, see the [operations guide](operations.md).
 
 ## First session
 

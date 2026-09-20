@@ -453,3 +453,73 @@ Verified with installed Pi 0.85.1 and the authenticated MLX relay on 2026-09-20:
 - A managed `read` tool call through `mlx/fast` returned the fixture marker and caused Pi to persist its transcript.
 - Headless RPC then resumed the exact session ID and persisted file.
 - Disposable Pi processes exited after the test. This check did not restart hwp-cli or prove the agent-hub production cutover.
+
+## 0.6.4 live measurement correction and 0.7.0 status
+
+Measured on 2026-09-20 against the released 0.6.4 runtime. The following
+records the actual measurements without private filesystem paths or session
+identifiers:
+
+- A production Pi read through the MLX backend returned the exact temporary
+  file marker in 5.800 seconds. Pi remained attached with its session identity,
+  all peers were idle, and the queue depth was zero after the probe.
+- The installed-package run used real Kimi 2.0.1 and Pi, with a synthetic
+  control-WebSocket Claude peer. That peer observation does not claim a real
+  Claude model round trip.
+- Pi returned the exact marker through MLX in 2.234 seconds and through DGX in
+  1.324 seconds. MLX-to-DGX handover took 208 ms and preserved the same session
+  identity.
+- Unknown flags were refused with exit 1. The `--` escape preserved a message
+  body containing a flag. CLI and status-file queue readings both showed three
+  queued messages and two important messages.
+- Withdrawing an expired envelope changed persisted counts from 4/3 to 3/2.
+  Resuming a paused peer drained the queue and delivered one batch.
+- A Kimi no-action note took 12.242 seconds and returned an FYI reply with zero
+  extra recipient deliveries.
+- Authenticated recovery readback preserved the task and budget digests. Two
+  envelopes for a disconnected Codex peer retained identical IDs before and
+  after recovery; general status lists attached peers and did not display this
+  latent backlog. No messages were deleted.
+
+These are individual observations, not a latency benchmark or reliability
+estimate. Kimi spent its own turn acknowledging, and no handover failure was
+deliberately induced. The first synchronous harness run blocked the disposable
+daemon event loop; its pass/fail flags are excluded. The corrected asynchronous
+run was repeated successfully. Strict response formatting is not guaranteed by
+these measurements.
+
+The 0.7.0 protocol-10 durable-delivery implementation, source-9-to-target-10
+transition, queue CLI, receipt reconciliation, and attended Claude
+confirmation remain pending live verification. Do not claim a successful
+0.7.0 production cutover from package installation, tests, or synthetic
+approval alone. Issue [#12](https://github.com/STAIxBWLB/agent-hub/issues/12)
+remains open for off-campus Access credentials and a natural near-limit budget
+pause.
+
+
+## 0.7.0 pre-release validation (2026-09-20)
+
+- The local repository gate passed with 324 tests, 0 failures, 1717 assertions
+  before the final packaging-only documentation inclusion. Final CI remains
+  authoritative for the merged head.
+- Test-owned subprocesses were killed at queued and handoff boundaries. Queued
+  work and manual pauses survived; uncertain handoffs were held for review and
+  were not automatically replayed. Invariant tests cover concurrent publication
+  during condensation, recipient-scoped resolution, repeated retry decisions,
+  stale-instance writes, corrupt metadata and rejected snapshot import.
+- `bun scripts/smoke-recovery-09-10.ts` ran the published 0.6.4 artifact with its
+  npm integrity against the new coordinator. Protocol 9 to 10 migration reached
+  `released`; exact queued envelope IDs, manual pauses and task identity/state
+  digest were preserved. The disposable daemon was stopped afterward.
+- Real Kimi 2.0.1 and Pi ran in a disposable project using the 0.7.0 code.
+  Kimi requested a read-only task-list approval before answering the no-action
+  note as FYI; 85.361 seconds includes operator waiting and is not model latency.
+  No follow-on recipient delivery occurred.
+- Pi returned exact random file markers in 21.370 seconds on MLX and 2.238
+  seconds on DGX (`glm-5.3-flash`). MLX-to-DGX handover took 211 ms, retained
+  the session and emitted only `idle`. These single observations are not a
+  performance comparison with earlier runs. Temporary processes were stopped.
+- The synthetic Claude control peer acknowledged bridge receipt and replied
+  with a correlated FYI. This does not establish a real Claude inference turn.
+- Production application, attended Claude restoration and post-deploy readback
+  remain pending until the tagged artifact is installed. Issue #12 remains open.
