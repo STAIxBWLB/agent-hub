@@ -253,17 +253,53 @@ test("an outdated plugin is refused loudly instead of silently dropping digests;
   expect(res).toMatchObject({ ok: true, recorded: true, targets: [] });
 });
 
-test("a second session attached as the same peer wins and the replaced one stays detached", async () => {
+// issue #30: the replaced session used to stay detached for good, even after the taker left.
+test("a second session attached as the same peer wins, and the replaced one stands by and takes it back", async () => {
   const { stateDir, daemon, events } = await hub();
   const first = await fakeClaude(stateDir);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "first attach");
-  await fakeClaude(stateDir);
+  const second = await fakeClaude(stateDir);
   await until(() => events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline").length === 1, "replacement");
-  await Bun.sleep(2500); // past the replaced side's first retry (1 s)
+  await Bun.sleep(2500); // past the replaced side's first retries: it must not fight for a peer someone holds
   expect(events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline")).toHaveLength(1);
   expect(daemon.bus.peers.get("claude")?.state).toBe("idle");
-  const res: any = await first.client.callTool({ name: "hub_send", arguments: { text: "x" } });
-  expect(res.content[0].text).toStartWith('another session attached to the hub as "claude"');
+  const held: any = await first.client.callTool({ name: "hub_send", arguments: { text: "x" } });
+  expect(held.content[0].text).toStartWith('another session is attached to the hub as "claude"');
+
+  await second.client.close(); // the taking session leaves: the slot is free again
+  await until(() => events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline").length === 2, "taker left");
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "reclaimed without a restart");
+  const back: any = await first.client.callTool({ name: "hub_send", arguments: { text: "back" } });
+  expect(back.content[0].text).not.toContain("standing by");
+}, 30_000);
+
+// Codex review of #34: the standing-by gate reads status.json, so a hello that is still arriving must show there.
+test("a hello that has not finished its preface is reported as claiming, not as an offline peer", async () => {
+  let injects = 0;
+  let slow = true;
+  const slowMem = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(req) {
+      const path = new URL(req.url).pathname;
+      if (path === "/api/health") return Response.json({ status: "ok", version: "13.25.1" });
+      if (path === "/api/context/inject" && (injects++, slow)) await Bun.sleep(600);
+      return new Response("# claude-mem status\n\nThis project has no memory yet.\n");
+    },
+  });
+  cleanup.push(() => void slowMem.stop(true));
+  const { stateDir, daemon } = await hub({ memoryUrl: `http://127.0.0.1:${slowMem.port}` });
+  const token = readFileSync(join(stateDir, "control-token"), "utf8");
+  const peerOf = () => JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).peers?.claude;
+
+  const ws = new WebSocket(`ws://127.0.0.1:${daemon.port}`);
+  await new Promise<void>((r) => (ws.onopen = () => (ws.send(JSON.stringify({ t: "hello", v: PROTOCOL, token, role: "peer", peer: "claude", rid: 1 })), r())));
+  await until(() => injects > 0, "recall started");
+  expect(peerOf()).toMatchObject({ state: "offline", claiming: true }); // arriving: a standing-by session must wait
+  slow = false;
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "attached");
+  expect(peerOf().claiming).toBeUndefined();
+  ws.close();
 }, 15_000);
 
 test("the newest hello wins even when an older session's recall finishes last", async () => {
