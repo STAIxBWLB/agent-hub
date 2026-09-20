@@ -49,9 +49,10 @@ const INBOX_CAP = 200;
  */
 function peerHeld(): boolean {
   try {
-    const status = JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")) as { peers?: Record<string, { state?: string }> };
+    const status = JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")) as { peers?: Record<string, { state?: string; claiming?: boolean }> };
     const peer = status.peers?.[peerId];
-    return !!peer && peer.state !== "offline";
+    // `claiming`: a hello that has not finished its preface. It reads as offline but a session is arriving.
+    return !!peer && (peer.state !== "offline" || peer.claiming === true);
   } catch {
     return false;
   }

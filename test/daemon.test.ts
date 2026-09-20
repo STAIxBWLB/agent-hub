@@ -273,6 +273,35 @@ test("a second session attached as the same peer wins, and the replaced one stan
   expect(back.content[0].text).not.toContain("standing by");
 }, 30_000);
 
+// Codex review of #34: the standing-by gate reads status.json, so a hello that is still arriving must show there.
+test("a hello that has not finished its preface is reported as claiming, not as an offline peer", async () => {
+  let injects = 0;
+  let slow = true;
+  const slowMem = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(req) {
+      const path = new URL(req.url).pathname;
+      if (path === "/api/health") return Response.json({ status: "ok", version: "13.25.1" });
+      if (path === "/api/context/inject" && (injects++, slow)) await Bun.sleep(600);
+      return new Response("# claude-mem status\n\nThis project has no memory yet.\n");
+    },
+  });
+  cleanup.push(() => void slowMem.stop(true));
+  const { stateDir, daemon } = await hub({ memoryUrl: `http://127.0.0.1:${slowMem.port}` });
+  const token = readFileSync(join(stateDir, "control-token"), "utf8");
+  const peerOf = () => JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).peers?.claude;
+
+  const ws = new WebSocket(`ws://127.0.0.1:${daemon.port}`);
+  await new Promise<void>((r) => (ws.onopen = () => (ws.send(JSON.stringify({ t: "hello", v: PROTOCOL, token, role: "peer", peer: "claude", rid: 1 })), r())));
+  await until(() => injects > 0, "recall started");
+  expect(peerOf()).toMatchObject({ state: "offline", claiming: true }); // arriving: a standing-by session must wait
+  slow = false;
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "attached");
+  expect(peerOf().claiming).toBeUndefined();
+  ws.close();
+}, 15_000);
+
 test("the newest hello wins even when an older session's recall finishes last", async () => {
   let injects = 0;
   let slow = true; // only the older session's recall is slow

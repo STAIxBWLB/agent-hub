@@ -15852,7 +15852,7 @@ function peerHeld() {
   try {
     const status = JSON.parse(readFileSync3(join3(stateDir, "status.json"), "utf8"));
     const peer = status.peers?.[peerId];
-    return !!peer && peer.state !== "offline";
+    return !!peer && (peer.state !== "offline" || peer.claiming === true);
   } catch {
     return false;
   }

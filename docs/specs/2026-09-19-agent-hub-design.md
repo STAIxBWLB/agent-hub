@@ -124,8 +124,10 @@ hub CLI / console ── control WS 127.0.0.1:<ctl> ─────────�
   4403, 4409 and 4426. It then stays detached and its tools report why. Close 4000 (another
   session attached as the same peer; the newest hello wins, whatever order the session-start
   recalls finish in) is not one of them (amended, issue #30): that session stands by, and
-  reconnects only once `status.json` reports the peer offline, so it never evicts the session
-  holding the id and the two cannot trade it back and forth. Its tools say it is standing by
+  reconnects only once `status.json` reports the peer offline and not `claiming`, so it never
+  evicts the session holding the id - nor one whose hello is still finishing its preface - and
+  the two cannot trade it back and forth. The daemon writes the status file at the claim, before
+  the preface, so the arriving session is visible for that window. Its tools say it is standing by
   until it has the peer again. It exits when its host closes stdin. Exposes tools `hub_send`,
   `hub_inbox` (fallback drain), `hub_task_*`, `hub_review`, `hub_remember`, `hub_checkpoint`.
 - Codex adapter: spawns `codex app-server --listen ws://127.0.0.1:<port>`, runs a
