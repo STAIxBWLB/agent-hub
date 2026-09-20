@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PiPeer } from "../src/adapters/pi.ts";
-import { newEnvelope } from "../src/hub/envelope.ts";
+import { newEnvelope, type EnvelopeOpts } from "../src/hub/envelope.ts";
 
 const currentSignature = (pid = process.pid) => { const p = Bun.spawnSync(["ps", "-p", String(pid), "-o", "lstart=,comm="], { stdout: "pipe" }); return new Bun.CryptoHasher("sha256").update(p.stdout.toString().trim()).digest("hex"); };
 
@@ -195,4 +195,30 @@ test("only a verified empty source can resume by ID when Pi has not persisted a 
     await expect(target.captureResume()).rejects.toThrow("not persisted");
     expect(target.recoveryMetadata().sessionFile).toBeString();
   } finally { await source.stop(); await target?.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+});
+
+// issue #29: Pi used to answer with no addressee, so every attached peer spent a turn on it.
+test("Pi addresses its answer to the senders of the delivery it answers", async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-reply-test-"));
+  const peer = new PiPeer("pi", {
+    cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx", cmd: ["bun", join(import.meta.dir, "fakes/pi-rpc.ts")],
+    relay: { url: "http://127.0.0.1:9/v1", token: "relay-token", models: [{ id: "dgx/coding" }] },
+    tools: [], executeTool: async () => "ok",
+  });
+  const sent: { text: string; opts?: EnvelopeOpts }[] = [];
+  peer.onMessage = (text, opts) => sent.push({ text, opts });
+  try {
+    await peer.start();
+    await peer.deliver([newEnvelope("user", "hello", { to: ["pi"] }), newEnvelope("codex", "and this", { to: ["pi"] })]);
+    const launch = peer.tuiLaunch!;
+    const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
+    const url = launch.env.AGENTHUB_PI_BRIDGE_URL!;
+    await fetch(`${url}/event`, { method: "POST", headers, body: JSON.stringify({ type: "agent_end", text: "done" }) });
+    await fetch(`${url}/event`, { method: "POST", headers, body: JSON.stringify({ type: "agent_settled" }) });
+    expect(sent.map((s) => s.text)).toEqual(["done"]);
+    expect(sent[0]!.opts?.to).toEqual(["user", "codex"]);
+  } finally {
+    await peer.stop();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
 });

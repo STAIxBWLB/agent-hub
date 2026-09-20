@@ -3,6 +3,8 @@ import type { Envelope, EnvelopeOpts, PeerId, PeerState } from "./envelope.ts";
 export interface PeerAdapter {
   readonly id: PeerId;
   readonly state: PeerState;
+  /** A peer the hub drives itself (Pi, the local worker). It cannot be trusted to rate its own urgency: the bus caps it. */
+  readonly hubNative?: boolean;
   /** Inject now, as one prompt. Only called while `state === "idle"`. Rejecting puts the envelopes back at the queue head. */
   deliver(envs: Envelope[]): Promise<void>;
   /** Optional: feed envelopes into the turn that is running now. Only called while `state === "busy"`. */

@@ -1,4 +1,4 @@
-import { HUB, MAX_HOP, newEnvelope, parseMarker, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
+import { HUB, MAX_HOP, newEnvelope, parseMarker, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
 import type { PeerAdapter } from "./peers.ts";
 
 export type BusEvent =
@@ -29,6 +29,17 @@ export interface BusSnapshot {
 }
 
 export const DEFAULT_BUS: BusOptions = { retryMs: 1000, batchMax: 3, batchMs: 15_000, queueCap: 200 };
+
+/**
+ * What a peer may claim for its own message. A hub-native peer writes `[IMPORTANT]` on routine status reports
+ * (issue #29), and `important` interrupts every recipient at once, so it only keeps it when answering an
+ * `important` request that was addressed to it. `fyi` and `status` are never capped.
+ */
+function capPriority(peer: PeerAdapter, priority: Priority, parent: EnvelopeOpts["inReplyTo"]): Priority {
+  if (!peer.hubNative || priority !== "important") return priority;
+  const answered = parent?.priority === "important" && !!parent.to?.includes(peer.id);
+  return answered ? "important" : "status";
+}
 
 const SEEN_CAP = 2048;
 const MAX_ATTEMPTS = 3;
@@ -66,7 +77,7 @@ export class Bus {
     if (!this.queues.has(peer.id)) this.queues.set(peer.id, []);
     peer.onMessage = (text, opts) => {
       const { priority, body } = parseMarker(text);
-      if (body) this.publish(newEnvelope(peer.id, body, { priority, ...opts }));
+      if (body) this.publish(newEnvelope(peer.id, body, { ...opts, priority: opts?.priority ?? capPriority(peer, priority, opts?.inReplyTo) }));
     };
     peer.onFailed = (envs) => {
       // The adapter got the condensed list; what has to come back is what that list replaced.
