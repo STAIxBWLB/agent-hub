@@ -2,6 +2,28 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## Hub collaboration measurement (issues #29-#32, 0.6.2)
+
+Measured on 2026-09-20 against a live 0.6.1 hub and a disposable project, before the fixes:
+
+- Pi answered a file-read question correctly on both backends: 2.53 s through DGX
+  (glm-5.3-flash) and 3.95 s through the local MLX Qwen3 8B. Per-class backend selection
+  (`implement` to DGX, `summarize` to MLX) matched `ahub route explain`, and a routed
+  `implement` task ran propose -> accept (0.81 s) -> approved with the file written correctly.
+- One console message addressed to Kimi alone produced three extra agent turns across two
+  peers: Kimi answered to `*`, Pi spent a turn restating it, Kimi acknowledged. The chain
+  stopped at the `fyi` rule and the hop cap. Issue #29.
+- A Pi task completion marked `[IMPORTANT]` by the model interrupted the idle local worker,
+  which began verifying work nobody had asked it to check. Issue #29.
+- A running Claude Code session kept the hub tools refusing with "restart it to take the peer
+  back" while `ahub status` reported the peer offline. Reproduced with two channel servers.
+  Issue #30.
+- A Kimi shell approval reached the console as the four characters `Bash`, with
+  `approve_always` beside it. Issue #31.
+
+Re-measuring these legs after the 0.6.2 rollout is still pending; the fixes are covered by
+`scripts/check.sh` against fakes and a real daemon, not by a repeat of this run.
+
 ## Pi local inference checks (issue #25, 0.6.0)
 
 Verified on 2026-09-20 on Apple Silicon with installed Pi 0.85.1:

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.2
 
 - Address a peer's reply at whoever asked instead of broadcasting it, so one directed question no longer costs every attached peer a turn (#29).
 - Cap the priority a hub-native peer claims for itself: `[IMPORTANT]` on an unsolicited report no longer interrupts the other peers (#29).
