@@ -571,3 +571,29 @@ The 0.7.1 attended repeat is recorded separately after application.
 - These are supervised live checks. Native confirmation screens, uncertain
   delivery review, and the infrastructure prerequisites in #12 remain explicit
   operator responsibilities; this does not certify unattended operation.
+
+
+## 0.7.1 live status re-measurement (2026-09-21)
+
+Read-only checks against the running production daemon one day after the
+verified application; no daemon, plugin, terminal, or journal mutation.
+
+- `ahub --version` returned 0.7.1 and `ahub status` showed the daemon
+  (pid 48154, control 127.0.0.1:4600) with claude offline (queued 0), kimi
+  idle, pi idle on `mlx/fast`, and the disconnected Codex recipient still
+  carrying two queued messages (`oldest 68615s`). The board still shows
+  three approved tasks.
+- `ahub doctor` reported all 14 configured checks ok, including delivery
+  recovery (`journal healthy; no deliveries need review`), the Claude plugin
+  at 0.7.1, omniroute and switchyard 0.2.0, Pi MLX, and claude-mem 13.25.2.
+- `ahub queue list --json` (protocol 10) read back the two Codex receipts as
+  `queued` at revision 16 with their envelope IDs unchanged from the 0.7.1
+  validation, and the Pi read receipt as `completed` with `important: true`.
+  Neither Codex message was dispatched or discarded.
+- `bun run check` on the current HEAD passed with 328 tests, 0 failures and
+  1734 expect() calls, `check: OK`. The count is two above the 1732 recorded
+  for the 0.7.1 application; no source change is present on HEAD.
+- Kimi reports 2.0.2 in doctor; earlier live legs on this page used 2.0.1.
+
+Issue [#12](https://github.com/STAIxBWLB/agent-hub/issues/12) remains open
+for off-campus Access credentials and a natural near-limit budget pause.
