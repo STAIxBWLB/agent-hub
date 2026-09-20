@@ -157,13 +157,16 @@ test("user-cancelled Pi turns are reported without automatic cloud escalation", 
   const failures: string[] = [], messages: string[] = [];
   const peer = new PiPeer("pi", { cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx", cmd: ["bun", join(import.meta.dir, "fakes/pi-rpc.ts")], relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [{ id: "dgx/coding" }] }, tools: [], executeTool: async () => "ok", onTurnFailure: async (_envs, why) => { failures.push(why); } });
   peer.onMessage = (text) => messages.push(text);
+  const receipts: { id: string; state: string }[] = [];
+  peer.onDelivery = (r) => receipts.push({ id: r.id, state: r.state });
   try {
-    await peer.start(); await peer.deliver([newEnvelope("user", "cancel fixture", { to: ["pi"] })]);
+    await peer.start(); await peer.deliver([newEnvelope("user", "cancel fixture", { to: ["pi"] })], "pi-cancel");
     const launch = peer.tuiLaunch!;
     const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
     for (const event of [{ type: "agent_end", cancelled: true }, { type: "agent_settled" }]) await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/event`, { method: "POST", headers, body: JSON.stringify(event) });
     expect(failures).toEqual([]);
     expect(messages[0]).toContain("cancelled");
+    expect(receipts).toEqual([{ id: "pi-cancel", state: "accepted" }, { id: "pi-cancel", state: "needs_review" }]);
     expect(peer.state).toBe("idle");
   } finally { await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
 });

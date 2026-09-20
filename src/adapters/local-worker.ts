@@ -57,6 +57,7 @@ export class LocalPeer extends BasePeer {
   private readonly sessionId = `agent-hub-local-${randomUUID()}`;
   private turn = 0; // generation guard, as in acp.ts: a turn aborted by the watchdog must not touch the next one
   private abort: AbortController | undefined;
+  private activeDeliveryId: string | undefined;
   private readonly sandboxProfile: string; // built once: profile() spawns git and must stay off the per-call path
   /** What served the last call, for `ahub status`. */
   lastServedBy = "";
@@ -79,6 +80,8 @@ export class LocalPeer extends BasePeer {
   }
 
   async stop(): Promise<void> {
+    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "turn stopped before settlement" });
+    this.activeDeliveryId = undefined;
     this.turn++;
     this.abort?.abort();
     await this.opts.capture?.end();
@@ -86,10 +89,15 @@ export class LocalPeer extends BasePeer {
   }
 
   /** Resolves once the turn is claimed; a turn that cannot reach any model hands the envelopes back through onFailed. */
-  async deliver(envs: Envelope[]): Promise<void> {
-    if (this.state !== "idle") throw new Error(`${this.id} is ${this.state}`);
+  async deliver(envs: Envelope[], deliveryId?: string): Promise<void> {
+    if (this.state !== "idle") {
+      if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
+      throw new Error(`${this.id} is ${this.state}`);
+    }
     const turn = ++this.turn;
+    this.activeDeliveryId = deliveryId;
     this.setState("busy");
+    if (deliveryId) this.delivery({ id: deliveryId, state: "accepted" });
     // The turn works on its own message list and joins the history only as a whole, so a failed or aborted turn can
     // never leave a tool call without its result (strict servers reject that history forever after).
     const msgs: ChatMessage[] = [{ role: "user", content: renderDigest(envs, true) }];
@@ -103,24 +111,33 @@ export class LocalPeer extends BasePeer {
         if (turn !== this.turn) return;
         if (!policy?.pii) this.commit(msgs); // a PII turn leaves nothing in the history later turns send along
         if (answer) this.onMessage?.(answer, reply);
+        if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "completed" });
       })
       .catch((e: Error) => {
         if (turn !== this.turn) return; // aborted by the watchdog or stop(): nothing to report, nothing was committed
         this.opts.log?.(`[${this.id}] turn failed: ${e.message}`);
-        if (!progress.sideEffects) return this.onFailed?.(envs); // nothing happened yet: safe to redeliver
+        if (!progress.sideEffects) {
+          if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: e.message });
+          else this.onFailed?.(envs); // legacy delivery: safe to redeliver
+          return;
+        }
         // Tools already changed things. Redelivering would redo approved writes and commits, so report instead.
         // A model call is the only thing that throws here, and every tool call before it has its result: msgs is consistent.
         const note = `(turn failed after ${progress.sideEffects} tool call(s) with side effects: ${e.message.slice(0, 200)}. The work may be partial; check before repeating it.) ${progress.last}`.trim();
         msgs.push({ role: "assistant", content: note });
         if (!policy?.pii) this.commit(msgs);
         this.onMessage?.(note, reply);
+        if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: e.message });
       })
       .finally(() => {
         if (turn === this.turn && this.state === "busy") this.setState("idle");
+        if (turn === this.turn && this.activeDeliveryId === deliveryId) this.activeDeliveryId = undefined;
       });
   }
 
   protected override onWatchdog(): void {
+    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "turn watchdog timeout" });
+    this.activeDeliveryId = undefined;
     this.turn++;
     this.abort?.abort();
     super.onWatchdog();

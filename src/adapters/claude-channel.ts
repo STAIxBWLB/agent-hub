@@ -86,7 +86,7 @@ let detached: string | undefined; // why this server stopped reconnecting; tool 
 const offline = () => detached ?? "hub is not running for this project (start it with: ahub up).";
 
 /** One delivery = one notification, because every notification can cost Claude a turn. */
-async function push(envs: Envelope[]): Promise<void> {
+async function push(envs: Envelope[], deliveryId?: string): Promise<void> {
   const parent = replyParent(envs); // reply_to on this id keeps the hop count honest
   const single = envs.length === 1;
   const content = single ? parent.body : envs.map((e) => `--- from ${e.from} (id ${e.id}, kind ${e.kind}) ---\n${sanitize(e.body)}`).join("\n\n");
@@ -100,10 +100,27 @@ async function push(envs: Envelope[]): Promise<void> {
   };
   try {
     await server.notification({ method: "notifications/claude/channel", params: { content, meta } });
+    if (deliveryId && hub) {
+      try {
+        const receipt = await hub.request({ t: "delivery_receipt", deliveryId, state: "accepted" });
+        if (!receipt.ok) log(`delivery receipt rejected by hub: ${receipt.error}`);
+      } catch (e) {
+        log(`channel delivery accepted but receipt could not be sent: ${(e as Error).message}`);
+      }
+    }
   } catch (e) {
-    log(`channel push failed, queued for hub_inbox: ${(e as Error).message}`);
-    for (const env of envs) inbox.push(frame(env)); // same sanitized header as everywhere else
-    while (inbox.length > INBOX_CAP) inbox.shift();
+    log(`channel push failed${deliveryId ? ", delivery requires review" : ", queued for hub_inbox"}: ${(e as Error).message}`);
+    if (deliveryId) {
+      if (hub) {
+        const receipt = await hub.request({ t: "delivery_receipt", deliveryId, state: "needs_review", reason: (e as Error).message });
+        if (!receipt.ok) log(`delivery receipt rejected by hub: ${receipt.error}`);
+      } else {
+        log(`channel push failed while hub was unavailable; delivery ${deliveryId} remains unresolved`);
+      }
+    } else {
+      for (const env of envs) inbox.push(frame(env)); // same sanitized header as everywhere else
+      while (inbox.length > INBOX_CAP) inbox.shift();
+    }
   }
 }
 
@@ -119,7 +136,7 @@ async function connectLoop(): Promise<void> {
     try {
       const client = await ControlClient.connect(stateDir, { role: toolsOnly ? "tools" : "peer", peer: peerId,
         ...(process.env.AGENTHUB_PROJECT_DIR ? { projectRoot } : {}) });
-      client.onPush = (msg) => msg.t === "deliver" && void push(msg.envs ?? [msg.env]); // `env`: a daemon older than wire version 2
+      client.onPush = (msg) => msg.t === "deliver" && void push(msg.envs ?? [msg.env], msg.deliveryId); // `env`: a daemon older than wire version 2
       hub = client;
       attempt = -1;
       standingBy = false;

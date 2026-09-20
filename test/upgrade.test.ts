@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { abortRecovery, createOperation, planFingerprint, registeredProjects, runRecovery, type Inspection, type RecoveryDriver, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { acquireRecoveryLock, claimRunner, readOperation, recoveryLock, releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
-import { exactVersion, registryRelease } from "../src/cli/recovery-package.ts";
-import { makeRecoveryDriver } from "../src/cli/upgrade-runtime.ts";
+import { exactVersion, packageDigest, registryRelease } from "../src/cli/recovery-package.ts";
+import { makeRecoveryDriver, PACKAGE_ROOT } from "../src/cli/upgrade-runtime.ts";
 
 const homes: string[] = [];
 afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true }); });
@@ -15,7 +15,7 @@ function fixture(kind: "restart" | "upgrade" = "upgrade") {
   const states = new Map<string, Inspection>();
   const body: Omit<UpgradePlan, "fingerprint"> = { schema: 1, kind, version: "0.5.0", sourceRoot: "/old", sourceDigest: "digest",
     projects: ["alpha", "beta"].map((id) => {
-      const source: Inspection = { state: "running", instanceId: `old-${id}`, version: "0.5.0", protocol: 8, peers: [], blockers: [] };
+      const source: Inspection = { state: "running", instanceId: `old-${id}`, version: "0.5.0", protocol: 9, peers: [], blockers: [] };
       states.set(id, structuredClone(source));
       return { project: { id, root: `/${id}`, stateDir: `/${id}/state`, pid: 123, instanceId: `old-${id}`, basePort: 4600 }, source, terminals: [], blockers: [] };
     }), blockers: [] };
@@ -29,7 +29,7 @@ function fixture(kind: "restart" | "upgrade" = "upgrade") {
     abort: async (p) => { calls.push(`abort:${p.id}`); delete states.get(p.id)!.recovery; },
     closeTerminals: async (p) => { calls.push(`close:${p.project.id}`); },
     commit: async (p) => { calls.push(`commit:${p.id}`); states.set(p.id, { state: "stopped", peers: [], blockers: [] }); },
-    start: async (p, op) => { calls.push(`start:${p.id}`); states.set(p.id, { state: "running", peers: [], blockers: [], instanceId: `new-${p.id}`, version: "0.5.0", protocol: 8,
+    start: async (p, op) => { calls.push(`start:${p.id}`); states.set(p.id, { state: "running", peers: [], blockers: [], instanceId: `new-${p.id}`, version: "0.5.0", protocol: 10,
       recovery: { operationId: op.id, phase: "restored", ready: true } }); },
     restore: async (p, _progress, _op, group) => { calls.push(`${group}:${p.project.id}`); },
     installPlugin: async () => { calls.push("plugin"); },
@@ -276,4 +276,19 @@ test("target daemons use their captured account homes and each Claude store is u
   } finally {
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
   }
+});
+
+test("protocol-9 source recovery stages only a protocol-10 target", async () => {
+  const f = fixture("restart");
+  f.operation.sourceRoot = PACKAGE_ROOT;
+  f.operation.plan.sourceRoot = PACKAGE_ROOT;
+  f.operation.plan.version = JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version;
+  f.operation.plan.sourceDigest = packageDigest(PACKAGE_ROOT);
+  const driver = makeRecoveryDriver(async (argv) => argv[1] === "-e"
+    ? { code: 0, stdout: "10\n", stderr: "" }
+    : { code: 0, stdout: "", stderr: "" });
+  const target = await driver.stage(f.operation);
+  expect(target.root).toBe(PACKAGE_ROOT);
+  expect(f.operation.plan.projects[0]?.source.protocol).toBe(9);
+  expect(f.operation.plan.projects[0]?.source.protocol).not.toBe(10);
 });

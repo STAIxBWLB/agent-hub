@@ -4,15 +4,14 @@ Native multi-agent hub for one developer's machine: Claude Code, Codex, Kimi Cod
 hub-owned local-LLM worker collaborate as peers in independent project directories, with
 task-aware model routing (Switchyard) in front of a self-hosted gateway (OmniRoute).
 
-Status: 0.6.4. All six milestones of the design spec are implemented; the [smoke checklist](docs/smoke.md)
-says what has and has not been verified against real agents.
+Status: 0.7.0, control protocol 10. Durable delivery records distinguish queued
+work from uncertain execution. The [smoke checklist](docs/smoke.md) records
+verified paths and remaining prerequisites.
 
-Version 0.5.0 adds [controlled upgrade and session recovery](docs/specs/2026-09-20-upgrade-recovery-design.md).
-After bootstrapping a protocol-8 hub, use `ahub restart --dry-run` to inspect one
-project or `ahub upgrade --to <exact-version> --dry-run` to inspect an upgrade of
-the running projects. Remove `--dry-run` to review and schedule the operation;
-`ahub recovery status <operation-id>` reports progress. Existing protocol-5–7
-hubs require their matching CLI and an attended maintenance bootstrap.
+Read the [operations guide](docs/operations.md) for the daily workflow, queue
+reconciliation, and the staged protocol-9 to protocol-10 upgrade command.
+Controlled recovery preserves work; uncertain effects are never automatically
+replayed and may require operator review.
 
 ## Start here
 
@@ -29,7 +28,7 @@ cd <your project> && ahub init && ahub up && ahub tail
 Or install the same version from GitHub:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.6.4 && ahub setup
+bun add -g github:STAIxBWLB/agent-hub#v0.7.0 && ahub setup
 ```
 
 The installed commands remain `ahub` and `agent-hub`.
@@ -39,6 +38,7 @@ instructions and `ahub setup` to refresh the Claude plugin. Restart the daemon
 and agent sessions so both load the update.
 
 - [Quickstart](docs/quickstart.md): install, first session, the local worker, the commands of a working day
+- [Operations guide](docs/operations.md): managed launchers, task/review flow, receipts, shutdown and recovery
 - [Security notes](docs/security.md): what the hub defends and what it does not
 - [Design spec](docs/specs/2026-09-19-agent-hub-design.md): how it is built and why, with every amendment made along the way
 - [Smoke checklist](docs/smoke.md): the live checks, and what has and has not been verified against real agents
@@ -101,9 +101,10 @@ starts. Inspect `ahub status` for requested routes and reported backend models.
 A project has one managed Pi session owner. Mode changes require the agent to
 settle and preserve the session file. Before the first generation, a live source
 verified to be empty can instead retain its exact session ID without a file.
-Missing history from a nonempty session blocks handover. Protocol 9 adds Pi recovery metadata;
-protocol-8 hubs can use controlled upgrade, while protocols 5-7 still require
-their matching CLI and an attended bootstrap.
+Missing history from a nonempty session blocks handover. Protocol 9 adds Pi
+recovery metadata. Protocol 10 is the 0.7.0 target for durable delivery
+receipts and conservative queue recovery; it is pending live verification.
+Older protocol hubs still require their matching CLI and an attended bootstrap.
 
 ## Runtime
 
@@ -165,7 +166,7 @@ worktrees recall their parent and composite identity. A shared-alias notice does
 not mean that task boards or agent sessions are shared. Provider quota readings
 may describe the same account and should not be added across projects.
 
-Before upgrading to protocol 7, stop existing hubs with their matching CLI, then
-update the package/plugin and restart the desired projects and agent sessions.
+Before upgrading an older hub, inspect the plan with the matching CLI.
 Incompatible or unverified processes are shown explicitly and are never killed by
-PID-name matching. See the [multi-project specification](docs/specs/2026-09-19-multi-project-design.md).
+PID-name matching. See the [operations guide](docs/operations.md) and the
+[multi-project specification](docs/specs/2026-09-19-multi-project-design.md).

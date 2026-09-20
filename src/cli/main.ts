@@ -67,6 +67,9 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub ui [--no-open]           open the local dashboard (or print its one-time link)
   ahub tail                     live stream of messages, states and permission requests
   ahub permit <id> <option>     answer a permission request shown by tail ("deny" cancels)
+  ahub queue list [--peer <id>] [--json]       inspect durable deliveries
+  ahub queue show <delivery-id>               inspect one delivery and revision
+  ahub queue resolve <delivery-id> --action completed|retry|discard --reason <text>
   ahub status | logs [-f] | doctor | kill`;
 
 const argv = process.argv.slice(2);
@@ -456,6 +459,36 @@ const commands: Record<string, () => Promise<void> | void> = {
     console.log(res.targets.length ? `queued for: ${res.targets.join(", ")}` : "no peers attached; nothing delivered");
   },
 
+  queue: async () => {
+    const [operation = "list", ...rest] = args;
+    const hub = await connect();
+    try {
+      if (operation === "list") {
+        const { one, rest: flags } = takeFlags(rest, ["--peer"], []);
+        if (flags.some((flag) => flag !== "--json")) fail("usage: ahub queue list [--peer <id>] [--json]");
+        const result = await hub.request({ t: "queue", op: "list", ...(one["--peer"] ? { peer: one["--peer"] } : {}) });
+        if (!result.ok) fail(result.error);
+        if (flags.includes("--json")) return console.log(JSON.stringify(result.deliveries, null, 2));
+        for (const row of result.deliveries) console.log(`${row.id}  ${row.peer}  ${row.state}  revision ${row.revision}${row.important ? "  important" : ""}`);
+        if (!result.deliveries.length) console.log("no retained deliveries");
+        return;
+      }
+      const [id, ...flags] = rest;
+      if (!id || !["show", "resolve"].includes(operation)) fail("usage: ahub queue show <id> | resolve <id> --action completed|retry|discard --reason <text>");
+      const shown = await hub.request({ t: "queue", op: "show", id });
+      if (!shown.ok) fail(shown.error);
+      if (operation === "show") {
+        if (flags.length) fail("usage: ahub queue show <id>");
+        return console.log(JSON.stringify(shown.delivery, null, 2));
+      }
+      const { one, rest: extra } = takeFlags(flags, ["--action", "--reason"], []);
+      if (extra.length || !["completed", "retry", "discard"].includes(one["--action"] ?? "") || !one["--reason"]?.trim()) fail("usage: ahub queue resolve <id> --action completed|retry|discard --reason <text>");
+      const result = await hub.request({ t: "queue", op: "resolve", id, revision: shown.delivery.revision, action: one["--action"], reason: one["--reason"] });
+      if (!result.ok) fail(result.error);
+      console.log(JSON.stringify(result.delivery, null, 2));
+    } finally { hub.close(); }
+  },
+
   tail: async () => {
     const hub = await connect();
     hub.onPush = (msg) => {
@@ -572,7 +605,9 @@ const commands: Record<string, () => Promise<void> | void> = {
     const hub = await connect();
     const { status } = await hub.request({ t: "status" });
     hub.close();
+    if (args.includes("--json")) return console.log(JSON.stringify(status, null, 2));
     console.log(`hub pid ${status.pid}, control 127.0.0.1:${status.controlPort}, ${status.cwd}`);
+    if (status.deliveryError) console.log(`  delivery storage: ${status.deliveryError}; dispatch is stopped`);
     const peers = Object.entries(status.peers as Record<string, PeerRow>);
     for (const [id, p] of peers) console.log(peerLine(id, p));
     const models = (status as any).models?.backends as BackendRow[] | undefined;
@@ -612,6 +647,20 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     const up = await healthy();
     row(up, "ahub daemon", up ? readControl(stateDir)!.url : "not running (ahub up)");
+    if (up) {
+      const hub = await connect();
+      try {
+        const { status } = await hub.request({ t: "status" });
+        const pending = Object.values(status.peers as Record<string, PeerRow>).reduce((n, peer) => n + (peer.needsReview ?? 0), 0);
+        row(!status.deliveryError && pending === 0, "delivery recovery", status.deliveryError ?? (pending ? `${pending} deliveries need review; run ahub queue list` : "journal healthy; no deliveries need review"));
+        const observed = await hub.request({ t: "recovery", op: "inspect", expectedInstanceId: status.instanceId });
+        for (const peer of Object.values(observed.recovery?.peers ?? {}) as { id: string; state: string; sessionId?: string; threadId?: string }[]) {
+          if (!["claude", "codex"].includes(peer.id) || peer.state === "offline") continue;
+          const identity = peer.id === "claude" ? peer.sessionId : peer.threadId;
+          row(!!identity, `${peer.id} recovery ID`, identity ? "recorded" : `missing; verify the current conversation and reconnect with ahub ${peer.id} before upgrading`);
+        }
+      } finally { hub.close(); }
+    }
     const plugin = pluginState(parseList<InstalledPlugin>(spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8" }).stdout ?? ""), join(import.meta.dir, "..", ".."));
     row(plugin.state === "current", "claude plugin", plugin.state === "missing" ? "missing: run ahub setup" : plugin.state === "current" ? `agent-hub@agent-hub ${plugin.version}` : `agent-hub@agent-hub is stale (${plugin.why}): run ahub setup`);
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.0
+
+- Persist queued deliveries and expose uncertain handoffs for explicit operator reconciliation (#46).
+- Show disconnected recipients, important pending counts and work needing review in CLI and dashboard; add console queue inspection and resolution (#46).
+- Separate adapter acceptance from execution completion, use protocol 10 receipts, and support controlled protocol 9 to 10 upgrades (#46).
+- Add an English daily operations and recovery guide with measured evidence and explicit operational limits (#46).
+
 ## 0.6.4
 
 - Refuse accidental CLI flags in `say` and `remember`, while preserving message text around the `--` separator (#40, #44).

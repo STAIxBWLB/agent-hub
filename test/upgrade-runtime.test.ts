@@ -16,21 +16,21 @@ test("Pi terminal restoration builds a TUI command with the saved session select
   expect(argv).toEqual([process.execPath, "/target/src/cli/main.js", "--project", "/project", "pi", "--mode", "tui", "--backend", "dgx", "--model", "dgx/coding", "--session-file", "/state/pi-session.json"]);
 });
 
-test("recovery driver uses the source manifest protocol for a protocol-8 prepare", async () => {
-  const stateDir = mkdtempSync(join(tmpdir(), "ahub-source-v8-"));
-  const projectRoot = mkdtempSync(join(tmpdir(), "ahub-source-v8-project-"));
+test("recovery driver uses the source manifest protocol for a protocol-9 prepare", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-source-v9-"));
+  const projectRoot = mkdtempSync(join(tmpdir(), "ahub-source-v9-project-"));
   const seenVersions: number[] = [];
   const server = Bun.serve<any>({
     hostname: "127.0.0.1", port: 0,
     fetch(_request, srv) { return srv.upgrade(_request) ? undefined : new Response("no"); },
-    websocket: { message(ws, data) { const msg = JSON.parse(String(data)); if (msg.t === "hello") { seenVersions.push(msg.v); ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p8", instanceId: "i8", cwd: projectRoot, protocol: 8 })); } else { ws.send(JSON.stringify({ rid: msg.rid, t: "recovery", ok: true })); } } },
+    websocket: { message(ws, data) { const msg = JSON.parse(String(data)); if (msg.t === "hello") { seenVersions.push(msg.v); ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p9", instanceId: "i9", cwd: projectRoot, protocol: 9 })); } else { ws.send(JSON.stringify({ rid: msg.rid, t: "recovery", ok: true })); } } },
   });
-  writeFileSync(join(stateDir, "control-token"), "source-v8-token\n");
-  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: server.port, protocol: 8, projectId: "p8", instanceId: "i8", cwd: projectRoot }));
+  writeFileSync(join(stateDir, "control-token"), "source-v9-token\n");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: server.port, protocol: 9, projectId: "p9", instanceId: "i9", cwd: projectRoot }));
   try {
     const driver = makeRecoveryDriver();
-    await driver.prepare({ id: "p8", root: projectRoot, stateDir, basePort: 4600 } as any, "op8", "i8");
-    expect(seenVersions).toEqual([8]);
+    await driver.prepare({ id: "p9", root: projectRoot, stateDir, basePort: 4600 } as any, "op9", "i9");
+    expect(seenVersions).toEqual([9]);
   } finally { server.stop(true); rmSync(stateDir, { recursive: true, force: true }); rmSync(projectRoot, { recursive: true, force: true }); }
 });
 

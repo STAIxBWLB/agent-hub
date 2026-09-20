@@ -155,7 +155,10 @@ function render(snapshot) {
       const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head'), name = el('div', undefined, 'peername');
       name.append(dot(peerDot[peer.state] || ''), el('span', id, 'label'));
       head.append(name, badge(peer.state, peerDot[peer.state] || ''));
-      row.append(head, el('p', peer.queued + ' queued', 'meta'));
+      row.append(head, el('p', peer.queued + ' queued' + (peer.queuedImportant ? ' (' + peer.queuedImportant + ' important)' : ''), 'meta'));
+      if (peer.needsReview) row.append(el('p', peer.needsReview + ' need review: use ahub queue list', 'meta'));
+      if (peer.oldestQueuedAt !== undefined) row.append(el('p', 'Oldest pending: ' + Math.max(0, Math.floor((Date.now() - peer.oldestQueuedAt) / 1000)) + 's', 'meta'));
+      if (peer.attached === false) row.append(el('p', 'Disconnected recipient; work is retained.', 'meta'));
       if (peer.paused) row.append(el('p', peer.paused, 'meta'));
       if (peer.requestedModel) row.append(el('p', 'Requested: ' + peer.requestedModel, 'meta'));
       for (const backend of peer.backends || []) {
@@ -165,8 +168,9 @@ function render(snapshot) {
       row.append(button(paused ? 'Resume' : 'Pause', {action:paused ? 'resume' : 'pause', peer:id})); target.append(row);
     }
   });
-  const peerSignature = JSON.stringify(ids);
-  if (signatures.get('peer-options') !== peerSignature) { signatures.set('peer-options', peerSignature); peerOptions($('owner'), ids, 'Automatic'); peerOptions($('recipient'), ids, 'All peers'); if (draftChoicesPending) { restoreDraft(true); draftChoicesPending = false; } }
+  const assignable = ids.filter((id) => peers[id].state !== 'offline' && peers[id].attached !== false);
+  const peerSignature = JSON.stringify([ids, assignable]);
+  if (signatures.get('peer-options') !== peerSignature) { signatures.set('peer-options', peerSignature); peerOptions($('owner'), assignable, 'Automatic'); peerOptions($('recipient'), ids, 'All peers'); if (draftChoicesPending) { restoreDraft(true); draftChoicesPending = false; } }
   $('task-count').textContent = snapshot.tasks.length + ' tasks';
   const taskFilter = $('task-filter').value;
   const visibleTasks = taskFilter ? snapshot.tasks.filter((task) => task.state === taskFilter) : snapshot.tasks;
