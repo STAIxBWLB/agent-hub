@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>agent-hub | Local dashboard</title>
 <style>
-:root{color-scheme:light;--paper:#f5f4ef;--ink:#252b29;--muted:#68716c;--line:#d9ddd5;--green:#245f45;--red:#a2392f}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.5 system-ui,sans-serif}header,main{max-width:1440px;margin:auto;padding:24px 32px}header{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);gap:20px}h1{font-size:24px;letter-spacing:-1px;margin:0}h1 span{font-weight:400;color:var(--muted)}h2{font-size:15px;margin:0}p{margin:6px 0}.eyebrow,.meta{overflow-wrap:anywhere;font-size:12px;color:var(--muted)}.eyebrow{letter-spacing:1.5px;text-transform:uppercase}.connection{font-size:12px;color:var(--muted)}main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:24px}.stack{display:flex;flex-direction:column;gap:24px;min-width:0}section{border:1px solid var(--line);background:#fff;border-radius:8px;overflow:hidden}.section-head{display:flex;justify-content:space-between;align-items:center;padding:16px 18px;border-bottom:1px solid var(--line);gap:12px}.content{padding:16px 18px}.empty{color:var(--muted);padding:20px 18px}.row{padding:14px 18px;border-bottom:1px solid var(--line)}.row:last-child{border-bottom:0}.row-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.label{font-weight:600;overflow-wrap:anywhere}.badge{display:inline-block;font:11px ui-monospace,monospace;padding:3px 7px;background:#edf2ee;color:var(--green);border-radius:4px}.badge.warn{color:#855417;background:#f9f0dc}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}button,input,select,textarea{font:inherit}button{background:#fff;color:var(--ink);border:1px solid #bbc4bb;border-radius:5px;padding:6px 10px;cursor:pointer}button:hover{background:#f0f4ef}button.primary{background:var(--green);color:#fff;border-color:var(--green)}button.danger{color:var(--red)}button:disabled{opacity:.5;cursor:default}:focus-visible{outline:2px solid var(--green);outline-offset:3px}input,select,textarea{width:100%;border:1px solid #bbc4bb;border-radius:5px;padding:8px;background:#fff;color:var(--ink)}input[type="checkbox"]{width:auto;margin-right:6px}textarea{resize:vertical;min-height:78px}label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}form .field{margin-bottom:12px}.actions select{width:auto;max-width:220px}.body{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:7px}.stream{height:360px;overflow:auto}.event{padding:12px 18px;border-bottom:1px solid var(--line)}.event .body{font:13px/1.55 ui-monospace,monospace}.notice{grid-column:1/-1;margin:0;border:1px solid var(--line);border-radius:6px;padding:10px 14px;background:#fff;overflow-wrap:anywhere}.notice.error{color:var(--red);border-color:#dfb8b3}.notice:empty{display:none}progress{width:100%;height:8px;accent-color:var(--green);display:block;margin:8px 0}.budget-window+.budget-window{margin-top:14px}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}details summary{cursor:pointer;padding:14px 18px;color:var(--green);font-weight:600}details form{padding:0 18px 18px}.task-list{max-height:460px;overflow:auto}footer{max-width:1440px;margin:auto;padding:0 32px 24px;color:var(--muted);font-size:12px}@media(max-width:900px){main{grid-template-columns:1fr}.stack{gap:18px}header,main{padding:18px}.stream{height:300px}footer{padding:0 18px 18px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+:root{color-scheme:light;--paper:#f5f4ef;--ink:#252b29;--muted:#68716c;--line:#d9ddd5;--panel:#ffffff;--panel-soft:#f4f6f2;--control:#ffffff;--control-border:#bbc4bb;--hover:#f0f4ef;--green:#245f45;--green-soft:#e4efe9;--amber:#8a5b12;--amber-soft:#f8eed6;--blue:#245a93;--blue-soft:#e6eef8;--red:#a2392f;--red-soft:#f6e5e2;--dot:#98a29b;--dot-ok:#2f7a52;--dot-warn:#b07a16;--dot-err:#b24539;--focus:#245f45;--on-accent:#ffffff}@media(prefers-color-scheme:dark){:root{color-scheme:dark;--paper:#161a18;--ink:#e5e8e3;--muted:#97a099;--line:#2c342f;--panel:#1d2320;--panel-soft:#17201b;--control:#1d2320;--control-border:#3a443d;--hover:#263029;--green:#6fc2a0;--green-soft:#1e3a2e;--amber:#d9a64f;--amber-soft:#3a2f14;--blue:#8ab8ea;--blue-soft:#1d2f44;--red:#e28b80;--red-soft:#3d2320;--dot:#5b6660;--dot-ok:#4cb77f;--dot-warn:#d9a64f;--dot-err:#e28b80;--focus:#6fc2a0;--on-accent:#161a18}}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.5 system-ui,sans-serif}header,main{max-width:1440px;margin:auto;padding:24px 32px}header{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);gap:20px}h1{font-size:24px;letter-spacing:-1px;margin:0}h1 span{font-weight:400;color:var(--muted)}h2{font-size:15px;margin:0}p{margin:6px 0}.eyebrow{overflow-wrap:anywhere;font-size:12px;color:var(--muted)}.eyebrow{letter-spacing:1.5px;text-transform:uppercase}.meta{overflow-wrap:anywhere;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.connection{font-size:12px;color:var(--muted)}main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:24px;align-items:start}.stack{display:flex;flex-direction:column;gap:24px;min-width:0}section{border:1px solid var(--line);background:var(--panel);border-radius:8px;overflow:hidden}.section-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line);gap:12px}.section-head .filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.content{padding:16px 18px}.empty{color:var(--muted);padding:20px 18px}.row{padding:14px 18px;border-bottom:1px solid var(--line)}.row:last-child{border-bottom:0}.row-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.peername{display:flex;align-items:center;gap:8px;min-width:0}.label{font-weight:600;overflow-wrap:anywhere}.badge{display:inline-block;font:11px ui-monospace,monospace;padding:2px 7px;background:var(--panel-soft);color:var(--muted);border-radius:4px;white-space:nowrap}.badge.ok{background:var(--green-soft);color:var(--green)}.badge.warn{color:var(--amber);background:var(--amber-soft)}.badge.info{color:var(--blue);background:var(--blue-soft)}.badge.err{color:var(--red);background:var(--red-soft)}.dot{flex:none;width:9px;height:9px;border-radius:50%;background:var(--dot)}.dot.ok{background:var(--dot-ok)}.dot.warn{background:var(--dot-warn)}.dot.err{background:var(--dot-err)}.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{background:var(--control);color:var(--muted);border:1px solid var(--control-border);border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer;line-height:1.2}.chip:hover{background:var(--hover)}.chip[aria-pressed="true"]{background:var(--green);color:var(--on-accent);border-color:var(--green);font-weight:600}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}button,input,select,textarea{font:inherit}button{background:var(--control);color:var(--ink);border:1px solid var(--control-border);border-radius:5px;padding:6px 10px;cursor:pointer}button:hover{background:var(--hover)}button.primary{background:var(--green);color:var(--on-accent);border-color:var(--green)}button.danger{color:var(--red)}button:disabled{opacity:.5;cursor:default}:focus-visible{outline:2px solid var(--focus);outline-offset:3px}input,select,textarea{width:100%;border:1px solid var(--control-border);border-radius:5px;padding:8px;background:var(--control);color:var(--ink)}input[type="checkbox"]{width:auto;margin-right:6px}textarea{resize:vertical;min-height:78px}label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}form .field{margin-bottom:12px}.actions select{width:auto;max-width:220px}.body{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:7px}.stream{height:360px;overflow:auto}.event{padding:12px 18px;border-bottom:1px solid var(--line)}.event[hidden]{display:none}.event .body{font:13px/1.55 ui-monospace,monospace}.notice{grid-column:1/-1;margin:0;border:1px solid var(--line);border-radius:6px;padding:10px 14px;background:var(--panel);overflow-wrap:anywhere}.notice.error{color:var(--red);border-color:var(--red-soft)}.notice:empty{display:none}progress{width:100%;height:8px;accent-color:var(--green);display:block;margin:8px 0}progress.warn{accent-color:var(--amber)}progress.warn::-webkit-progress-value{background:var(--amber)}progress.critical{accent-color:var(--red)}progress.critical::-webkit-progress-value{background:var(--red)}progress::-moz-progress-bar{background:var(--green)}progress.warn::-moz-progress-bar{background:var(--amber)}progress.critical::-moz-progress-bar{background:var(--red)}.budget-window+.budget-window{margin-top:14px}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}details summary{cursor:pointer;padding:14px 18px;color:var(--green);font-weight:600}details form{padding:0 18px 18px}.task-list{max-height:460px;overflow:auto}footer{max-width:1440px;margin:auto;padding:0 32px 24px;color:var(--muted);font-size:12px}@media(max-width:900px){main{grid-template-columns:1fr}.stack{gap:18px}header,main{padding:18px}.stream{height:300px}footer{padding:0 18px 18px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
 </style>
 </head>
 <body>
@@ -13,8 +13,8 @@
 <main>
 <p id="notice" class="notice" role="status" aria-live="polite"></p>
 <div class="stack">
-<section aria-labelledby="stream-title"><div class="section-head"><h2 id="stream-title">Live stream</h2><label><input id="follow" type="checkbox" checked> Follow latest</label></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div></section>
-<section aria-labelledby="tasks-title"><div class="section-head"><h2 id="tasks-title">Task board</h2><span id="task-count" class="meta"></span></div><div id="tasks" class="task-list"></div><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><button class="primary" data-mutation="project" type="submit">Propose task</button></form></details></section>
+<section aria-labelledby="stream-title"><div class="section-head"><h2 id="stream-title">Live stream</h2><div class="filters"><div id="stream-filters" class="chips" role="group" aria-label="Filter events by kind"></div><label><input id="follow" type="checkbox" checked> Follow latest</label></div></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div><p id="stream-empty" class="empty" hidden>No events match this filter.</p></section>
+<section aria-labelledby="tasks-title"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="proposed">Proposed</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span></div></div><div id="tasks" class="task-list"></div><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><button class="primary" data-mutation="project" type="submit">Propose task</button></form></details></section>
 <section aria-labelledby="compose-title"><div class="section-head"><h2 id="compose-title">Console message</h2></div><form id="send" class="content"><div class="field"><label for="recipient">Recipient</label><select id="recipient" name="recipient"><option value="">All peers</option></select></div><div class="field"><label for="message">Message</label><textarea id="message" name="body" required maxlength="8000" placeholder="Send an instruction to the team..."></textarea></div><button class="primary" data-mutation="project" type="submit">Send message</button></form></section>
 </div>
 <div class="stack">
@@ -33,11 +33,26 @@ const $ = (id) => document.getElementById(id);
 const el = (tag, text, cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = String(text); if (cls) node.className = cls; return node; };
 let stopped = false, cursor = 0, timer, projectsTimer, eventCount = 0;
 let managerMode = false, projectList = [], selectedProjectId = '', selectedInstanceId = '', snapshotValid = false, viewGeneration = 0, projectRequest = 0;
+let lastSnapshot = null;
 const drafts = new Map();
 const pendingButtons = new WeakSet();
 let draftChoicesPending = false;
 const signatures = new Map();
 const time = (value) => value ? new Date(value).toLocaleString() : 'unknown';
+const rel = (value) => {
+  if (!value) return 'unknown';
+  const delta = Math.round((value - Date.now()) / 1000), past = delta < 0, span = Math.abs(delta);
+  if (span < 15) return 'just now';
+  const unit = span < 60 ? [span, 's'] : span < 3600 ? [Math.floor(span / 60), 'm'] : span < 86400 ? [Math.floor(span / 3600), 'h'] : [Math.floor(span / 86400), 'd'];
+  const text = unit[0] + unit[1];
+  return past ? text + ' ago' : 'in ' + text;
+};
+const badge = (text, cls = '') => { const node = el('span', text, 'badge' + (cls ? ' ' + cls : '')); return node; };
+const dot = (cls) => el('span', undefined, 'dot ' + cls);
+const taskBadge = { proposed: '', in_progress: 'warn', in_review: 'info', approved: 'ok', changes_requested: 'err' };
+const peerDot = { idle: 'ok', busy: 'warn', paused: 'warn', offline: '' };
+const projectBadge = { running: 'ok', starting: 'warn', stopping: 'warn', stopped: '', unavailable: 'err', incompatible: 'err', missing: 'err' };
+function refreshRelativeTimes(root) { for (const node of root.querySelectorAll('[data-ts]')) node.textContent = rel(Number(node.dataset.ts)); }
 function notice(text, error = false) { $('notice').textContent = text; $('notice').classList.toggle('error', error); }
 function expire() { stopped = true; clearTimeout(timer); clearTimeout(projectsTimer); $('connection').textContent = 'Session closed'; notice('Session missing or expired. Run ahub ui in your terminal to reopen the dashboard.', true); document.querySelectorAll('button').forEach((button) => { button.disabled = true; }); }
 async function post(path, body) {
@@ -81,6 +96,8 @@ function resetView(id, instance) {
   saveDraft();
   selectedProjectId = id || ''; selectedInstanceId = instance || ''; snapshotValid = false; cursor = 0; eventCount = 0; viewGeneration++;
   signatures.clear(); $('stream').replaceChildren(); empty($('stream'), managerMode ? 'Select a running project...' : 'Waiting for hub activity...');
+  if (streamFilter) { streamFilter = ''; for (const child of $('stream-filters').children) child.setAttribute('aria-pressed', 'false'); }
+  $('stream-empty').hidden = true; $('task-filter').value = '';
   for (const [id, text] of [['peers','No project selected.'],['tasks','No project selected.'],['permissions','No project selected.'],['budget','No project selected.']]) { $(id).replaceChildren(); empty($(id), text); }
   $('peer-count').textContent = ''; $('task-count').textContent = ''; $('permission-count').textContent = ''; $('project-context').textContent = '';
   notice('');
@@ -98,8 +115,9 @@ function renderProjects() {
     if (!projectList.length) return empty(target, 'No registered projects.');
     for (const project of projectList) {
       const id = typeof project.id === 'string' ? project.id : '', state = String(project.state || 'unavailable');
-      const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
-      head.append(el('span', projectName(project.root, id), 'label'), el('span', state, 'badge' + (['unavailable','incompatible','missing'].includes(state) ? ' warn' : ''))); row.append(head); row.append(el('p', String(project.root || id), 'meta'));
+      const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head'), name = el('div', undefined, 'peername');
+      name.append(dot(projectBadge[state] || ''), el('span', projectName(project.root, id), 'label'));
+      head.append(name, badge(state, projectBadge[state])); row.append(head); row.append(el('p', String(project.root || id), 'meta'));
       const counts = []; if (project.peers !== undefined) counts.push(String(count(project.peers)) + ' peers'); if (project.tasks !== undefined) counts.push(String(taskCount(project.tasks)) + ' tasks');
       if (counts.length) row.append(el('p', counts.join(' / '), 'meta')); if (project.warning || project.error) row.append(el('p', project.warning || project.error, 'meta'));
       const actions = el('div', undefined, 'actions');
@@ -134,8 +152,9 @@ function render(snapshot) {
   update('peers', peers, (target) => {
     if (!ids.length) return empty(target, 'No peers connected. Start an agent from your terminal.');
     for (const [id, peer] of Object.entries(peers)) {
-      const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
-      head.append(el('span', id, 'label'), el('span', peer.state, 'badge' + (peer.state === 'paused' ? ' warn' : '')));
+      const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head'), name = el('div', undefined, 'peername');
+      name.append(dot(peerDot[peer.state] || ''), el('span', id, 'label'));
+      head.append(name, badge(peer.state, peer.state === 'paused' ? 'warn' : peer.state === 'idle' ? 'ok' : ''));
       row.append(head, el('p', peer.queued + ' queued', 'meta'));
       if (peer.paused) row.append(el('p', peer.paused, 'meta'));
       if (peer.requestedModel) row.append(el('p', 'Requested: ' + peer.requestedModel, 'meta'));
@@ -149,11 +168,14 @@ function render(snapshot) {
   const peerSignature = JSON.stringify(ids);
   if (signatures.get('peer-options') !== peerSignature) { signatures.set('peer-options', peerSignature); peerOptions($('owner'), ids, 'Automatic'); peerOptions($('recipient'), ids, 'All peers'); if (draftChoicesPending) { restoreDraft(true); draftChoicesPending = false; } }
   $('task-count').textContent = snapshot.tasks.length + ' tasks';
-  update('tasks', [snapshot.tasks, ids], (target) => {
+  const taskFilter = $('task-filter').value;
+  const visibleTasks = taskFilter ? snapshot.tasks.filter((task) => task.state === taskFilter) : snapshot.tasks;
+  update('tasks', [visibleTasks, ids, taskFilter, snapshot.tasks.length], (target) => {
     if (!snapshot.tasks.length) return empty(target, 'No public tasks yet. Propose a task below to get started.');
-    for (const task of snapshot.tasks) {
+    if (!visibleTasks.length) return empty(target, 'No tasks in this state.');
+    for (const task of visibleTasks) {
       const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
-      head.append(el('span', '#' + task.id + ' ' + task.title, 'label'), el('span', task.state.replaceAll('_', ' '), 'badge'));
+      head.append(el('span', '#' + task.id + ' ' + task.title, 'label'), badge(task.state.replaceAll('_', ' '), taskBadge[task.state] || ''));
       row.append(head, el('p', task.class + ' / ' + (task.owner || 'unassigned') + (task.reviewer ? ' / review: ' + task.reviewer : ''), 'meta'));
       if (task.detail) row.append(el('p', task.detail, 'body'));
       if (task.state !== 'approved' && ids.length) {
@@ -179,9 +201,17 @@ function render(snapshot) {
     if (!Object.keys(snapshot.budget).length) return empty(target, 'No usage readings yet. Usage appears when a peer reports it.');
     for (const [peer, budget] of Object.entries(snapshot.budget)) {
       const row = el('div', undefined, 'row'); row.append(el('div', peer, 'label'));
-      if (budget.paused) row.append(el('p', 'Paused: ' + budget.paused.reason + ' / resets ' + time(budget.paused.resetsAt), 'meta'));
+      if (budget.paused) row.append(el('p', 'Paused: ' + budget.paused.reason + ' / resets ' + rel(budget.paused.resetsAt), 'meta'));
       if (!budget.windows.length) row.append(el('p', 'No usage windows reported.', 'meta'));
-      for (const window of budget.windows) { const item = el('div', undefined, 'budget-window'), percent = Math.round(window.used * 100); item.append(el('p', window.id + ': ' + percent + '% used' + (window.stale ? ' (stale)' : ''), 'meta')); const bar = el('progress'); bar.max = 1; bar.value = window.used; bar.setAttribute('aria-label', peer + ' ' + window.id + ' usage'); item.append(bar, el('p', window.source + (window.resetsAt ? ' / resets ' + time(window.resetsAt) : ''), 'meta')); row.append(item); }
+      for (const window of budget.windows) {
+        const item = el('div', undefined, 'budget-window'), percent = Math.round(window.used * 100);
+        item.append(el('p', window.id + ': ' + percent + '% used' + (window.stale ? ' (stale)' : ''), 'meta'));
+        const bar = el('progress'); bar.max = 1; bar.value = window.used; bar.className = percent >= 90 ? 'critical' : percent >= 70 ? 'warn' : '';
+        bar.setAttribute('aria-label', peer + ' ' + window.id + ' usage'); item.append(bar);
+        const meta = el('p', window.source + (window.resetsAt ? ' / resets ' : ''), 'meta');
+        if (window.resetsAt) { const stamp = el('span'); stamp.dataset.ts = window.resetsAt; stamp.title = time(window.resetsAt); stamp.textContent = rel(window.resetsAt); meta.append(stamp); }
+        item.append(meta); row.append(item);
+      }
       target.append(row);
     }
   });
@@ -190,13 +220,18 @@ function render(snapshot) {
   for (const entry of snapshot.events || []) {
     if (entry.seq <= cursor) continue;
     if (!eventCount) stream.replaceChildren();
-    const event = entry.event, node = el('div', undefined, 'event');
-    if (event.env) { const env = event.env; node.append(el('div', new Date(env.ts).toLocaleTimeString() + ' / ' + env.from + ' → ' + (env.to ? env.to.join(', ') : 'all') + ' / ' + env.kind + (event.t !== 'envelope' ? ' / ' + event.t : '') + (event.dropped ? ' / ' + event.dropped : ''), 'meta'), el('div', env.body, 'body')); }
+    const event = entry.event, node = el('div', undefined, 'event'), kind = event.env ? (event.t !== 'envelope' ? event.t : event.env.kind) : 'state';
+    node.dataset.kind = kind; applyStreamFilter(node);
+    if (event.env) { const env = event.env, meta = el('div', '', 'meta'), stamp = el('span'); stamp.dataset.ts = env.ts; stamp.title = time(env.ts); stamp.textContent = rel(env.ts);
+      meta.append(stamp, el('span', ' / ' + env.from + ' → ' + (env.to ? env.to.join(', ') : 'all') + ' / ' + env.kind + (event.t !== 'envelope' ? ' / ' + event.t : '') + (event.dropped ? ' / ' + event.dropped : '')));
+      node.append(meta, el('div', env.body, 'body')); }
     else node.append(el('div', event.peer + ' / ' + event.state, 'meta'));
     stream.append(node); eventCount++; while (stream.children.length > 200) stream.firstElementChild.remove();
   }
   cursor = Math.max(cursor, snapshot.cursor || 0);
   if ($('follow').checked) stream.scrollTop = stream.scrollHeight;
+  refreshRelativeTimes(stream);
+  refreshStreamEmpty();
   syncMutationControls();
 }
 async function poll() {
@@ -207,15 +242,35 @@ async function poll() {
     const input = {after:cursor}; if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
     const result = await post('/snapshot', input);
     if (!managerMode || (result.projectId === captured.projectId && result.instanceId === captured.instanceId && captured.generation === viewGeneration)) {
-      snapshotValid = true; render(result); $('connection').textContent = 'Live / updated ' + new Date().toLocaleTimeString();
+      snapshotValid = true; lastSnapshot = result; render(result); $('connection').textContent = 'Live / updated ' + new Date().toLocaleTimeString();
     }
   }
   catch (error) { if (!stopped) $('connection').textContent = 'Disconnected / retrying: ' + error.message; }
   if (!stopped) timer = setTimeout(poll, 1000);
 }
+const STREAM_KINDS = ['chat', 'task', 'review', 'status', 'budget', 'presence', 'state'];
+let streamFilter = '';
+function applyStreamFilter(node) { node.hidden = streamFilter !== '' && node.dataset.kind !== streamFilter; }
+function refreshStreamEmpty() { const has = $('stream').querySelector('.event:not([hidden])') !== null, any = $('stream').querySelector('.event') !== null; $('stream-empty').hidden = has || !any; }
+function renderStreamChips() {
+  const group = $('stream-filters');
+  if (group.children.length) return;
+  for (const kind of STREAM_KINDS) {
+    const chip = el('button', kind);
+    chip.type = 'button'; chip.className = 'chip'; chip.setAttribute('aria-pressed', 'false');
+    chip.addEventListener('click', () => {
+      streamFilter = streamFilter === kind ? '' : kind;
+      for (const child of group.children) child.setAttribute('aria-pressed', String(child.textContent === streamFilter));
+      for (const node of $('stream').querySelectorAll('.event')) applyStreamFilter(node);
+      refreshStreamEmpty();
+    });
+    group.append(chip);
+  }
+}
+$('task-filter').addEventListener('change', () => { if (snapshotValid && lastSnapshot) render(lastSnapshot); });
 $('send').addEventListener('submit', async (event) => { event.preventDefault(); const generation = viewGeneration, body = $('message').value.trim(); if (!body) return; const to = $('recipient').value, payload = {action:'send', body}; if (to) payload.to = [to]; if (await action(payload, event.submitter) && generation === viewGeneration) $('message').value = ''; });
 $('propose').addEventListener('submit', async (event) => { event.preventDefault(); const generation = viewGeneration, title = $('title').value.trim(); if (!title) return; const payload = {action:'propose', title, class:$('class').value}; if ($('detail').value.trim()) payload.detail = $('detail').value.trim(); if ($('owner').value) payload.owner = $('owner').value; if (await action(payload, event.submitter) && generation === viewGeneration) { $('title').value = ''; $('detail').value = ''; } });
-(async () => { try { if (ticket) await post('/session', {ticket}); ticket = ''; await refreshProjects(); await poll(); } catch (error) { ticket = ''; if (!stopped) { stopped = true; notice('Could not start session: ' + error.message + ' Run ahub ui to reopen.', true); $('connection').textContent = 'Session unavailable'; } } })();
+(async () => { try { if (ticket) await post('/session', {ticket}); ticket = ''; renderStreamChips(); await refreshProjects(); await poll(); } catch (error) { ticket = ''; if (!stopped) { stopped = true; notice('Could not start session: ' + error.message + ' Run ahub ui to reopen.', true); $('connection').textContent = 'Session unavailable'; } } })();
 </script>
 </body>
 </html>
