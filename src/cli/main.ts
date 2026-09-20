@@ -25,6 +25,8 @@ import { makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-r
 import { recordTerminalLaunch } from "./terminal-recovery.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
 
+import { backendLine, peerLine, type BackendRow, type PeerRow } from "./status-lines.ts";
+
 const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one project directory
 
   ahub --project <path|id> <command>  select a repository or worktree explicitly
@@ -570,10 +572,10 @@ const commands: Record<string, () => Promise<void> | void> = {
     const { status } = await hub.request({ t: "status" });
     hub.close();
     console.log(`hub pid ${status.pid}, control 127.0.0.1:${status.controlPort}, ${status.cwd}`);
-    const peers = Object.entries(status.peers as Record<string, { state: string; queued: number }>);
-    for (const [id, p] of peers) console.log(`  ${id.padEnd(8)} ${p.state.padEnd(8)} queued ${p.queued}${(p as any).paused ? `  (${(p as any).paused})` : ""}${(p as any).servedBy ? `  last call: ${(p as any).servedBy}` : ""}`);
-    const models = (status as any).models?.backends as any[] | undefined;
-    if (models?.length) for (const backend of models) console.log(`  model    ${backend.kind ?? "unknown"}/${backend.alias ?? "unknown"} ${backend.state ?? "unknown"} active ${backend.active ?? 0}${backend.requestedModel ? ` requested ${backend.requestedModel}` : ""}${backend.actualModel ? ` actual ${backend.actualModel}` : ""}${backend.provider ? ` provider ${backend.provider}` : ""}`);
+    const peers = Object.entries(status.peers as Record<string, PeerRow>);
+    for (const [id, p] of peers) console.log(peerLine(id, p));
+    const models = (status as any).models?.backends as BackendRow[] | undefined;
+    if (models?.length) for (const backend of models) console.log(backendLine(backend));
     if (status.switchyard) console.log(`  switchyard: ${status.switchyard}`);
     const counts = Object.entries(status.tasks ?? {}).map(([s, n]) => `${n} ${s}`).join(", ");
     if (counts) console.log(`  tasks: ${counts} (ahub board)`);
