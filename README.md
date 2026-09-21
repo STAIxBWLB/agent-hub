@@ -69,8 +69,8 @@ peer with the hub. The project uses its existing OmniRoute connection for DGX;
 `pi.dgx_coding` and `pi.dgx_fast` select the gateway's configured model IDs.
 
 ```bash
-ahub models setup       # dedicated Python 3.12 environment and pinned Qwen3 8B MLX weights
-ahub models start       # loopback-only Apple Silicon runtime
+ahub models setup       # prepare bounded Qwen3.5 4B MLX in an existing Ollama service
+ahub models start       # verify loopback Ollama/model readiness (no daemon spawn)
 ahub models status
 ahub pi --mode headless --backend auto
 ahub say @pi "Read the project and summarize the next small implementation task"
@@ -92,11 +92,22 @@ Tool-call receipts survive daemon restart; an interrupted operation with an
 unknown outcome must be reconciled before repeating it. Cancelling a Pi turn
 does not automatically hand its task to a cloud peer.
 
-MLX uses a pinned Qwen3 8B 4-bit model, a 16K input budget and one generation
-at a time. `ahub models stop` stops only the runtime whose process identity
-matches its ownership record. Project hubs share the runtime; stopping a hub
-does not stop MLX. The relay can fall back from MLX to DGX before streaming
-starts. Inspect `ahub status` for requested routes and reported backend models.
+The `mlx/fast` alias now defaults to an externally managed Ollama MLX backend.
+Install and start Ollama separately, with `OLLAMA_NO_CLOUD=1`,
+`OLLAMA_NUM_PARALLEL=1`, `OLLAMA_MAX_LOADED_MODELS=1`, and a finite
+`OLLAMA_KEEP_ALIVE` (five minutes is the tested setting). `models setup`
+prepares `agenthub-fast-mlx:4b-8k` from `qwen3.5:4b-mlx`, with an 8K total
+context and a 2K output cap. The relay budgets input separately at 6,000
+estimated tokens and serializes local requests across project hubs.
+
+`models status` distinguishes model availability from memory residency.
+`models stop` refuses to unload an externally managed Ollama model: other
+clients may be using it. Ollama owns idle eviction; stopping a hub never
+kills Ollama. The OpenAI compatibility endpoint does not enforce a request
+`keep_alive` field, so configure the server and verify its expiry readback.
+The relay can fall back to DGX before streaming starts as before. See the
+[Ollama migration procedure](docs/operations.md#ollama-mlx-migration-issue-51)
+for existing Python runtime/configuration cleanup and rollback.
 
 A project has one managed Pi session owner. Mode changes require the agent to
 settle and preserve the session file. Before the first generation, a live source

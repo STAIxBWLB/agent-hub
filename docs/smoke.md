@@ -597,3 +597,33 @@ verified application; no daemon, plugin, terminal, or journal mutation.
 
 Issue [#12](https://github.com/STAIxBWLB/agent-hub/issues/12) remains open
 for off-campus Access credentials and a natural near-limit budget pause.
+
+
+## Ollama MLX migration validation (issue #51, 2026-09-22)
+
+The repository gate passed with 343 tests, zero failures, and `check: OK`.
+A source-build smoke on Apple silicon/macOS 27.0 with Ollama 0.34.2 verified:
+
+- Official `qwen3.5:4b-mlx` was prepared as the dedicated model
+  `agenthub-fast-mlx:4b-8k` (digest prefix `975ef418e0df`). Model metadata and
+  resident status both reported context length 8192; output is capped at 2048.
+- `bun scripts/smoke-ollama.ts` sent a completion, streamed a `get_status`
+  tool call, and sent back a synthetic tool result through the authenticated
+  AgentHub relay. The final response was nonempty and the relay reported
+  actual model `agenthub-fast-mlx:4b-8k`. No real tool or DGX fallback ran.
+- Ollama logged `starting mlx runner subprocess`. A short direct completion
+  recorded approximately 3.87 GiB peak; after tool calls the resident model
+  was approximately 4.6 GB by Ollama's accounting. These are short smoke
+  samples, not a long-context peak-memory guarantee or a controlled
+  like-for-like comparison with the former Qwen3-8B Python process.
+- A separate native-API 15-second keep-alive probe expired and `/api/ps`
+  became empty. The OpenAI relay requests independently reported a five-minute
+  expiry from the external service configuration. This does not mean the
+  relay sets a per-request keep-alive on the OpenAI endpoint.
+- The Homebrew Ollama build logged a missing optional xgrammar library.
+  Ordinary text and tool calls passed; grammar-constrained structured JSON
+  output is not certified by this smoke.
+
+The live harness is opt-in and is not called by the hermetic repository
+check. `AHUB_SMOKE_PROJECT` selects a project configuration without starting
+its daemon or replaying its queue. It deliberately forbids remote inference.

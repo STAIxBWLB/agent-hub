@@ -50,7 +50,7 @@ export interface HubConfig {
   inference: InferenceConfig;
   omniroute: OmniRouteConfig;
   pi: { enabled: boolean; auto_start: boolean; cmd: string[]; backend: "auto" | "dgx" | "mlx"; dgx_coding: string; dgx_fast: string; max_steps: number };
-  mlx: Pick<MlxOptions, "runtimeDir" | "modelPath" | "port" | "maxInputTokens" | "maxTokens">;
+  mlx: Pick<MlxOptions, "provider" | "host" | "runtimeDir" | "modelPath" | "port" | "model" | "sourceModel" | "contextWindow" | "maxInputTokens" | "maxTokens" | "maxConcurrency">;
   local: { deny: string[]; bash_network: boolean; max_steps: number; read_allow: string[] };
 }
 export const DEFAULT_CONFIG: HubConfig = {
@@ -66,7 +66,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   inference: DEFAULT_INFERENCE,
   omniroute: DEFAULT_OMNIROUTE,
   pi: { enabled: false, auto_start: false, cmd: ["pi"], backend: "auto", dgx_coding: "coding", dgx_fast: "fast", max_steps: 30 },
-  mlx: { maxInputTokens: 16_000, maxTokens: 2048 },
+  mlx: { provider: "ollama", model: "agenthub-fast-mlx:4b-8k", sourceModel: "qwen3.5:4b-mlx", contextWindow: 8192, maxInputTokens: 6000, maxTokens: 2048, maxConcurrency: 1 },
   local: { deny: [], bash_network: false, max_steps: 30, read_allow: [] },
 };
 
@@ -79,7 +79,12 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 export function loadConfig(cwd: string): HubConfig {
   try {
     const file = JSON.parse(readFileSync(join(cwd, ".agenthub", "config.json"), "utf8"));
-    const mlx = { ...DEFAULT_CONFIG.mlx, ...file.mlx };
+    if (file.mlx != null && (typeof file.mlx !== "object" || Array.isArray(file.mlx))) throw new Error("mlx configuration must be an object");
+    if (file.mlx?.provider !== undefined && !["ollama", "legacy"].includes(file.mlx.provider)) throw new Error("mlx.provider must be ollama or legacy");
+    if (file.mlx?.provider === undefined && (file.mlx?.modelPath || file.mlx?.runtimeDir || file.mlx?.bin || file.mlx?.port)) {
+      throw new Error("legacy MLX configuration requires explicit mlx.provider=legacy; migrate to provider=ollama to avoid Python serving");
+    }
+    const mlx = { ...(file.mlx?.provider === "legacy" ? { provider: "legacy" as const, maxInputTokens: 16_000, maxTokens: 2048 } : DEFAULT_CONFIG.mlx), ...file.mlx };
     if (typeof mlx.runtimeDir === "string") mlx.runtimeDir = resolve(cwd, mlx.runtimeDir);
     if (typeof mlx.modelPath === "string") mlx.modelPath = resolve(cwd, mlx.modelPath);
     return {
@@ -94,8 +99,9 @@ export function loadConfig(cwd: string): HubConfig {
       pi: { ...DEFAULT_CONFIG.pi, ...file.pi },
       mlx,
     };
-  } catch {
-    return DEFAULT_CONFIG;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return DEFAULT_CONFIG;
+    throw error;
   }
 }
 
