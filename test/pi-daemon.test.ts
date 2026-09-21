@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
@@ -15,6 +15,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const dir = process.argv[process.argv.indexOf("--session-dir") + 1];
 mkdirSync(dir, { recursive: true });
+writeFileSync(join(dir, "model-descriptors.json"), process.env.AGENTHUB_PI_MODELS ?? "[]");
 const sessionFile = join(dir, "pi-session.jsonl");
 writeFileSync(sessionFile, JSON.stringify({ type: "session", id: "pi-session-1", cwd: process.cwd() }) + "\\n");
 const out = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\\n");
@@ -41,11 +42,13 @@ test("Pi is disabled by default and its peer identity remains reserved", async (
 test("enabled Pi starts headless, duplicate start is idempotent, and handover preserves the saved session", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-fake-"));
   const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
-  const { daemon, console_ } = await hub(config);
+  const { stateDir, daemon, console_ } = await hub(config);
   const first = await console_.request({ t: "start", peer: "pi", args: { mode: "headless", backend: "dgx" } });
   expect(first.ok).toBe(true);
   for (let i = 0; i < 100 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(10);
   expect(daemon.bus.stateOf("pi")).toBe("idle");
+  const models = JSON.parse(readFileSync(join(stateDir, "pi-sessions", "model-descriptors.json"), "utf8"));
+  expect(models.find((model: { id: string }) => model.id === "mlx/fast")).toMatchObject({ contextWindow: 8192, maxTokens: 2048 });
   expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).already).toBe(true);
   const originalSession = daemon.bus.peers.get("pi")!.recoveryMetadata!().sessionId;
   // Handover must not flash `offline` into the status snapshot between adapters (issue #42): the console

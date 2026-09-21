@@ -618,8 +618,10 @@ A source-build smoke on Apple silicon/macOS 27.0 with Ollama 0.34.2 verified:
   like-for-like comparison with the former Qwen3-8B Python process.
 - A separate native-API 15-second keep-alive probe expired and `/api/ps`
   became empty. The OpenAI relay requests independently reported a five-minute
-  expiry from the external service configuration. This does not mean the
-  relay sets a per-request keep-alive on the OpenAI endpoint.
+  expiry from the external service configuration. After the last relay
+  request at 08:19:21 KST, `/api/ps` was empty at 08:24:27 without an explicit
+  unload. This does not mean the relay sets a per-request keep-alive on the
+  OpenAI endpoint.
 - The Homebrew Ollama build logged a missing optional xgrammar library.
   Ordinary text and tool calls passed; grammar-constrained structured JSON
   output is not certified by this smoke.

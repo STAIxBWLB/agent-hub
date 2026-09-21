@@ -708,7 +708,7 @@ export async function startDaemon(opts: DaemonOptions) {
         cwd: opts.cwd, stateDir: opts.stateDir, cmd: config.pi.cmd, mode, backend,
         model: args.model,
         sessionId: args.sessionId, sessionFile: args.sessionFile,
-        relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? routing.pi.mlx_max_context_tokens : routing.pi.dgx_max_context_tokens, maxTokens: id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
+        relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? Math.min(routing.pi.mlx_max_context_tokens, config.mlx.provider === "ollama" ? (config.mlx.contextWindow ?? 8192) : routing.pi.mlx_max_context_tokens) : routing.pi.dgx_max_context_tokens, maxTokens: id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
         tools: [...TOOL_SCHEMAS.map((t) => t.function), ...TASK_TOOLS.map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
         executeTool: async (name, raw, callId, sessionId) => {
           if (stopping || (recoveryActive() && recoveryPhase !== "preparing")) return "error: recovery is holding tool effects";
