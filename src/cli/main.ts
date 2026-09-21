@@ -25,6 +25,7 @@ import { abortRecovery, createOperation, publicOperation, registeredProjects, ru
 import { makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { recordTerminalLaunch } from "./terminal-recovery.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
+import { setupOllamaModel } from "./models-setup.ts";
 
 import { backendLine, peerLine, type BackendRow, type PeerRow } from "./status-lines.ts";
 
@@ -46,7 +47,7 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub codex [args...]          start the Codex adapter and attach the TUI [--unattended]
   ahub kimi [--model <alias>]   start Kimi headless under ACP
   ahub pi [--mode headless|tui] [--backend auto|dgx|mlx] [--session-id <id>] [--session-file <path>]  start Pi
-  ahub models setup|status|start|stop  manage the pinned local MLX runtime
+  ahub models setup|status|start|stop  prepare or inspect local Ollama MLX (legacy stop is explicit)
   ahub local [--route <id> | --model <id>]
                                start the hub-native worker on the self-hosted models (routing.toml)
   ahub say [@peer ...] <text>   send as the console user (no @peer = broadcast); delivered at once,
@@ -434,11 +435,16 @@ const commands: Record<string, () => Promise<void> | void> = {
     const configured = loadConfig(cwd).mlx;
     const runtimeDir = configured.runtimeDir ? resolve(cwd, configured.runtimeDir) : join(homedir(), ".agenthub", "runtimes", "mlx");
     const modelPath = configured.modelPath ? resolve(cwd, configured.modelPath) : join(homedir(), ".agenthub", "models", "qwen3-8b-mlx");
-    const mlxOptions = { ...configured, runtimeDir, modelPath };
+    const mlxOptions = configured.provider === "ollama" ? configured : { ...configured, runtimeDir, modelPath };
     if (action === "status") return console.log(JSON.stringify(await inspectMlx(mlxOptions), null, 2));
     if (action === "start") { const handle = await ensureMlx(mlxOptions); return console.log(JSON.stringify(handle.status(), null, 2)); }
     if (action === "stop") { await stopMlx(mlxOptions); return console.log("MLX stopped"); }
     if (action !== "setup") fail("usage: ahub models setup|status|start|stop");
+    if (configured.provider === "ollama") {
+      await setupOllamaModel(configured);
+      const handle = await ensureMlx(configured);
+      return console.log(JSON.stringify(handle.status(), null, 2));
+    }
     const python = join(runtimeDir, "bin", "python");
     const run = (argv: string[]) => { const result = spawnSync(argv[0]!, argv.slice(1), { cwd, stdio: "inherit" }); if (result.status !== 0) fail(`models setup failed: ${argv.join(" ")}`); };
     if (!existsSync(python)) run(["uv", "venv", "--python", "3.12", runtimeDir]);

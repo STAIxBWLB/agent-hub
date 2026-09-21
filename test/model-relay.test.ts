@@ -161,3 +161,53 @@ test("relay aborts queued MLX acquisition and close does not wait for the 120 se
   expect(closeResponse.status).toBe(502);
   expect(performance.now() - closeStarted).toBeLessThan(1_000);
 });
+
+test("relay uses explicit Ollama MLX mode, clamps default output, and enforces total context", async () => {
+  const runtimeDir = mkdtempSync(join(tmpdir(), "agenthub-relay-ollama-"));
+  const model = "agenthub-fast-mlx:4b-8k";
+  const upstream = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      const path = new URL(request.url).pathname;
+      if (path === "/api/tags") return Response.json({ models: [{ name: model }] });
+      if (path === "/api/show") return Response.json({ parameters: "num_ctx 8192\nnum_predict 2048\n" });
+      if (path === "/api/ps") return Response.json({ models: [] });
+      if (path === "/v1/chat/completions") {
+        const body = await request.json() as Record<string, unknown>;
+        expect(body.model).toBe(model);
+        expect(body.max_tokens).toBe(2048);
+        expect(body.reasoning_effort).toBe("none");
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('data: {"model":"agenthub-fast-mlx:4b-8k","choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'));
+            controller.close();
+          },
+        }), { headers: { "content-type": "text/event-stream" } });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+  cleanup.push(() => upstream.stop(true));
+  cleanup.push(() => rmSync(runtimeDir, { recursive: true, force: true }));
+  const relay = await startModelRelay({
+    omni: {} as any,
+    mlx: { provider: "ollama", host: "127.0.0.1", port: upstream.port, model, runtimeDir, contextWindow: 8192, maxInputTokens: 6000, maxTokens: 2048, maxConcurrency: 1 },
+    allowedDGXmodels: {},
+    token: "ollama-token",
+  });
+  cleanup.push(relay.close);
+  const response = await fetch(`${relay.url}/chat/completions`, {
+    method: "POST",
+    headers: { authorization: "Bearer ollama-token", "content-type": "application/json" },
+    body: JSON.stringify({ model: "mlx/fast", messages: [{ role: "user", content: "hello" }] }),
+  });
+  expect(response.status).toBe(200);
+  expect(await response.text()).toContain("ok");
+  const tooMuch = await fetch(`${relay.url}/chat/completions`, {
+    method: "POST",
+    headers: { authorization: "Bearer ollama-token", "content-type": "application/json" },
+    body: JSON.stringify({ model: "mlx/fast", max_tokens: 2048, messages: [{ role: "user", content: "x".repeat(25_000) }] }),
+  });
+  expect(tooMuch.status).toBe(400);
+});

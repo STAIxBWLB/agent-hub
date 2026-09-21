@@ -81,7 +81,7 @@ function aliasOf(backend: ModelBackend, mlxAlias: string): string {
 }
 
 function bodyForUpstream(body: RelayRequest, model: string): Record<string, unknown> {
-  const allowed = ["temperature", "top_p", "max_tokens", "stop", "tools", "tool_choice", "response_format"];
+  const allowed = ["temperature", "top_p", "max_tokens", "stop", "tools", "tool_choice", "response_format", "reasoning_effort"];
   return {
     model,
     messages: body.messages,
@@ -195,6 +195,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
         throw error;
       }
       base = handle.url;
+      if (options.mlx?.provider === "ollama" && options.mlxModel && options.mlxModel !== handle.model) throw new Error("Ollama model override does not match the validated model");
       model = options.mlxModel ?? handle.model;
       if (signal.aborted) throw new Error("request was cancelled before MLX generation started");
       release = await handle.acquire(signal);
@@ -215,7 +216,11 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
     if (key) Object.assign(headers, { authorization: `Bearer ${key}` }, options.omni.accessHeaders(base));
     let response: Response;
     try {
-      response = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, { method: "POST", headers, body: JSON.stringify(bodyForUpstream(request, model)), signal: AbortSignal.any([signal, AbortSignal.timeout(180_000)]) });
+      const isOllama = backend.kind === "mlx" && options.mlx?.provider === "ollama";
+      const boundedRequest = isOllama
+        ? { ...request, max_tokens: request.max_tokens ?? options.mlx!.maxTokens ?? 2048, reasoning_effort: request.reasoning_effort ?? "none" }
+        : request;
+      response = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, { method: "POST", ...(isOllama ? { redirect: "error" as const } : {}), headers, body: JSON.stringify(bodyForUpstream(boundedRequest, model)), signal: AbortSignal.any([signal, AbortSignal.timeout(180_000)]) });
     } catch (error) {
       releaseOnce();
       setState(backend, { state: "error", lastError: error instanceof Error ? error.message.slice(0, 160) : "upstream request failed" });
@@ -272,8 +277,18 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
         activeRequests.delete(record);
         return Response.json({ error: error instanceof Error ? error.message : "backend unavailable" }, { status: 400 });
       }
-      const inputBudget = backend.kind === "mlx" ? (options.mlx?.maxInputTokens ?? 16_000) : dgxMaxInputTokens;
-      if (estimateInputTokens(body.messages, body.tools) > inputBudget) {
+      const inputBudget = backend.kind === "mlx" ? (options.mlx?.maxInputTokens ?? (options.mlx?.provider === "ollama" ? 6000 : 16_000)) : dgxMaxInputTokens;
+      const inputTokens = estimateInputTokens(body.messages, body.tools);
+      const ollama = backend.kind === "mlx" && options.mlx?.provider === "ollama";
+      const contextWindow = ollama ? (options.mlx?.contextWindow ?? 8192) : undefined;
+      const configuredMaxTokens = ollama ? (options.mlx?.maxTokens ?? 2048) : undefined;
+      const requestedMaxTokens = body.max_tokens === undefined ? configuredMaxTokens : body.max_tokens;
+      if (ollama && (!Number.isInteger(requestedMaxTokens) || (requestedMaxTokens as number) < 1 || (requestedMaxTokens as number) > configuredMaxTokens! || inputTokens + (requestedMaxTokens as number) > contextWindow!)) {
+        record.cleanup();
+        activeRequests.delete(record);
+        return Response.json({ error: "input and max_tokens exceed the Ollama context budget" }, { status: 400 });
+      }
+      if (inputTokens > inputBudget) {
         record.cleanup();
         activeRequests.delete(record);
         return Response.json({ error: "input exceeds the model context budget" }, { status: 400 });

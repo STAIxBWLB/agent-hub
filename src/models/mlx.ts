@@ -9,8 +9,11 @@ import { Database } from "bun:sqlite";
 export type MlxState = "disabled" | "starting" | "ready" | "stopped" | "foreign" | "error";
 
 export interface MlxOptions {
+  provider?: "legacy" | "ollama";
   runtimeDir?: string;
   modelPath?: string;
+  model?: string;
+  sourceModel?: string;
   bin?: string;
   host?: string;
   port?: number;
@@ -21,6 +24,7 @@ export interface MlxOptions {
   spawn?: typeof spawn;
   health?: (url: string, signal: AbortSignal) => Promise<boolean>;
   processInfo?: (pid: number) => ProcessSignature | undefined;
+  contextWindow?: number;
 }
 
 export interface MlxStatus {
@@ -32,6 +36,12 @@ export interface MlxStatus {
   maxConcurrency: number;
   active: number;
   lastError?: string;
+  provider?: "legacy" | "ollama";
+  modelAvailable?: boolean;
+  modelResident?: boolean;
+  expiresAt?: string | null;
+  contextWindow?: number;
+  maxTokens?: number;
 }
 
 export interface MlxHandle {
@@ -54,7 +64,7 @@ interface OwnerRecord {
   processStart: string;
 }
 
-interface ProcessSignature {
+export interface ProcessSignature {
   command: string;
   start: string;
 }
@@ -227,7 +237,7 @@ function claimGenerationSlot(db: Database, slot: number, readInfo: (pid: number)
   };
 }
 
-async function acquireGeneration(runtimeDir: string, maxConcurrency: number, signal?: AbortSignal, readInfo: (pid: number) => ProcessSignature | undefined = processInfo): Promise<() => void> {
+export async function acquireGeneration(runtimeDir: string, maxConcurrency: number, signal?: AbortSignal, readInfo: (pid: number) => ProcessSignature | undefined = processInfo): Promise<() => void> {
   if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) throw new Error("MLX maxConcurrency must be a positive integer");
   if (signal?.aborted) throw new Error("MLX generation acquisition cancelled");
   const deadline = Date.now() + 120_000;
@@ -304,6 +314,10 @@ function argsFor(options: Required<Pick<MlxOptions, "modelPath" | "host" | "port
 }
 
 export async function inspectMlx(options: MlxOptions = {}): Promise<MlxStatus> {
+  if (options.provider === "ollama") {
+    const { inspectOllama } = await import("./ollama.ts");
+    return inspectOllama(options);
+  }
   const runtimeDir = options.runtimeDir ?? DEFAULT_RUNTIME_DIR;
   const modelPath = options.modelPath ?? DEFAULT_MODEL_PATH;
   const host = options.host ?? "127.0.0.1";
@@ -323,6 +337,10 @@ export async function inspectMlx(options: MlxOptions = {}): Promise<MlxStatus> {
 }
 
 export async function ensureMlx(options: MlxOptions = {}): Promise<MlxHandle> {
+  if (options.provider === "ollama") {
+    const { ensureOllama } = await import("./ollama.ts");
+    return ensureOllama(options);
+  }
   const runtimeDir = options.runtimeDir ?? DEFAULT_RUNTIME_DIR;
   const modelPath = options.modelPath ?? DEFAULT_MODEL_PATH;
   const bin = options.bin ?? join(runtimeDir, "bin", "mlx_lm.server");
@@ -405,6 +423,10 @@ export async function ensureMlx(options: MlxOptions = {}): Promise<MlxHandle> {
 }
 
 export async function stopMlx(options: MlxOptions = {}): Promise<void> {
+  if (options.provider === "ollama") {
+    const { stopOllama } = await import("./ollama.ts");
+    return stopOllama(options);
+  }
   const runtimeDir = options.runtimeDir ?? DEFAULT_RUNTIME_DIR;
   const owner = readOwner(runtimeDir);
   if (!owner) return;
