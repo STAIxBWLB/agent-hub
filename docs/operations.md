@@ -216,3 +216,62 @@ synthetic approvals, and an authenticated internal network do not close those
 prerequisites. Adapter acceptance is not task completion, and package
 installation or a passing test suite is not proof of a successful production
 cutover.
+
+
+## Ollama MLX migration (issue #51)
+
+The routing names `mlx/fast` and `--backend mlx` are retained. The normal
+runtime provider is now Ollama; the standalone Python server is legacy.
+Use an Apple Silicon Ollama build with MLX support and keep it bound to
+loopback. Configure its finite keep-alive and one-model/one-generation
+limits before use. The model is prepared only by explicit `models setup`;
+an incoming generation does not download models or start a service.
+
+Project `.agenthub/config.json` example:
+
+```json
+{
+  "mlx": {
+    "provider": "ollama",
+    "host": "127.0.0.1",
+    "port": 11434,
+    "model": "agenthub-fast-mlx:4b-8k",
+    "sourceModel": "qwen3.5:4b-mlx",
+    "contextWindow": 8192,
+    "maxInputTokens": 6000,
+    "maxTokens": 2048,
+    "maxConcurrency": 1
+  }
+}
+```
+
+1. Record the current project/hub state. Do not restart stopped hubs or
+   replay queued tasks as part of model migration.
+2. If the old Python server is still running, use the old matching CLI's
+   `models stop` before changing configuration, or explicitly select
+   `provider: "legacy"` temporarily. Its PID, start time and command must
+   match the ownership record. Never kill by process name. Preserve model
+   files and the old configuration for rollback.
+3. Apply the Ollama configuration above, removing legacy `modelPath`,
+   `runtimeDir` and Python binary settings. Existing custom legacy paths
+   without an explicit provider fail with a migration error. Old 16K input
+   overrides must also be reduced; the new total context is 8K.
+4. Run `ahub models setup`, `ahub models start`, and `ahub models status`.
+   Setup creates a dedicated derived model; an existing model is inspected
+   rather than silently overwritten. A wrong context recipe must be fixed
+   deliberately under a new model name or after an explicit model change.
+5. Verify a streamed completion and tool call through the authenticated
+   relay. Check Ollama logs for the MLX runner, `/api/ps` for context and
+   finite expiry, then confirm idle eviction. Catalog availability does
+   not mean the model is resident. Unit tests are not this live proof.
+
+Ollama is shared and external. `models stop` refuses in Ollama mode rather
+than interrupting another client. Hub shutdown releases local handles and
+requests, not the server. Normal idle eviction is Ollama's responsibility;
+no AgentHub timer unloads a potentially shared active model.
+
+The relay's input budget is an estimate, not exact model tokenization. Keep
+headroom for templates/tool metadata and choose a larger dedicated recipe
+only after measuring memory. This path does not change local-worker PII
+routing or the DGX backend. Rollback requires explicitly restoring the old
+config with `provider: "legacy"`; Ollama errors never launch Python.

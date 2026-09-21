@@ -673,3 +673,22 @@ ownership and a separate optional dashboard manager. Runtime data and routing
 remain per project. Native memory aliases remain compatible and shared.
 Control protocol 7 adds project/instance identity and console-only dashboard
 snapshot/action forwarding. Existing project-local UI security rules still apply.
+
+
+## Amendment: externally managed Ollama MLX (issue #51)
+
+The `mlx/fast` route retains its name but defaults to `mlx.provider=ollama`.
+The hub connects to a loopback Ollama service and a dedicated bounded model,
+without spawning Python or owning the Ollama PID. Setup explicitly prepares
+Qwen3.5 4B MLX with an 8K context; input and output budgets and shared
+cross-process admission bound each request. Status separates catalog
+availability, residency, expiry and provider readiness. Shared-service
+shutdown/unload is not a hub operation; finite idle eviction is configured
+and verified in Ollama. Legacy Python lifecycle functions remain available
+only through explicit project configuration for migration/rollback.
+
+The authenticated relay, cancellation, tool streaming, Pi backend aliases,
+pre-stream DGX fallback and PII policy remain intact. Ollama model/context
+mismatch fails explicitly, and errors do not resurrect a Python runtime.
+See issue #51 for the acceptance contract and docs/operations.md for the
+non-destructive migration procedure.
