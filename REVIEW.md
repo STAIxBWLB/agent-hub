@@ -24,6 +24,6 @@ Report at most 5 nits per review; summarize the rest as a count.
 - Anything CI already enforces: type errors, bundle staleness (`scripts/check.sh`)
 - Milestone scope: features the spec assigns to a later milestone than the PR under review
 
-## Feedback into CLAUDE.md
+## Feedback into AGENTS.md
 
-When the same finding appears twice, the correction goes into `CLAUDE.md` in the same PR.
+When the same finding appears twice, the correction goes into `AGENTS.md` in the same PR.

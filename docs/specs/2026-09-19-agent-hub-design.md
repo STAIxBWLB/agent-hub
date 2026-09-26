@@ -505,7 +505,7 @@ plugins/agent-hub/  .claude-plugin/plugin.json, .mcp.json, server bundle, hooks 
 templates/          CLAUDE.md and AGENTS.md marker blocks, routing.toml default, config.json default
 scripts/            check.sh, build.mjs, smoke-*.ts
 docs/specs/         this file
-CLAUDE.md, REVIEW.md
+AGENTS.md, REVIEW.md
 ```
 
 ## Acceptance criteria
