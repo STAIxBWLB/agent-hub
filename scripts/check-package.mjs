@@ -37,7 +37,7 @@ for (const path of [
   'src/cli/main.js', 'src/cli/main.ts', 'src/cli/statusline-tee.ts',
   '.claude-plugin/marketplace.json', 'plugins/agent-hub/server.js',
   'plugins/agent-hub/.claude-plugin/plugin.json', 'plugins/agent-hub/.mcp.json',
-  'templates/CLAUDE.block.md', 'templates/AGENTS.block.md',
+  'templates/AGENTS.block.md',
   'templates/config.json', 'templates/routing.toml',
   'docs/operations.md', 'docs/quickstart.md',
 ]) {
