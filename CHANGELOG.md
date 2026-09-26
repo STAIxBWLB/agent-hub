@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `ahub init` writes the managed block to `AGENTS.md` only and never creates `CLAUDE.md`: any `CLAUDE.md` stops Claude Code from loading `AGENTS.md`. A block an older `init` left in `CLAUDE.md` is removed, and a `CLAUDE.md` that held nothing else is deleted; a symlinked or hard-linked `CLAUDE.md` is left alone. The one template now tells every agent how it receives and answers hub messages (#54).
+
 ## 0.7.1
 
 - Restore native sessions while unrelated agents remain in the same worktree; the coordinator continues to fence uncertain terminal creations (#48).

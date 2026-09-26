@@ -33,7 +33,7 @@ and upgrade or crash recovery, see the [operations guide](operations.md).
 In your project directory, one terminal each:
 
 ```bash
-ahub init          # .agenthub/config.json, .agenthub/routing.toml, marker blocks in CLAUDE.md and AGENTS.md
+ahub init          # .agenthub/config.json, .agenthub/routing.toml, the marker block in AGENTS.md
 ahub up            # the daemon for this directory (loopback only)
 ahub tail          # keep open: the conversation, state changes, permission requests
 ahub kimi          # Kimi, headless

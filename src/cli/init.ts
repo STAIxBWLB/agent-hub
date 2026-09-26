@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const TEMPLATES = join(import.meta.dir, "..", "..", "templates");
@@ -12,6 +12,15 @@ export function upsertBlock(existing: string, block: string): string {
   const end = existing.indexOf(END, Math.max(start, 0));
   if (start !== -1 && end > start) return existing.slice(0, start) + managed + existing.slice(end + END.length);
   return `${existing.trimEnd()}${existing.trim() ? "\n\n" : ""}${managed}\n`;
+}
+
+/** Drop the managed block and the blank lines around it. Text without a complete block is returned as is. */
+export function removeBlock(existing: string): string {
+  const start = existing.indexOf("<!-- AGENT_HUB:BEGIN");
+  const end = existing.indexOf(END, Math.max(start, 0));
+  if (start === -1 || end <= start) return existing;
+  const rest = [existing.slice(0, start).trimEnd(), existing.slice(end + END.length).trim()].filter(Boolean).join("\n\n");
+  return rest && `${rest}\n`;
 }
 
 /** Returns the paths it changed. */
@@ -30,10 +39,23 @@ export function init(cwd: string): string[] {
   const routing = join(cwd, ".agenthub", "routing.toml");
   if (!existsSync(routing)) write(routing, readFileSync(join(TEMPLATES, "routing.toml"), "utf8"));
 
-  for (const [file, template] of [["CLAUDE.md", "CLAUDE.block.md"], ["AGENTS.md", "AGENTS.block.md"]] as const) {
-    const path = join(cwd, file);
-    const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
-    write(path, upsertBlock(existing, readFileSync(join(TEMPLATES, template), "utf8")));
+  const agents = join(cwd, "AGENTS.md");
+  write(agents, upsertBlock(existsSync(agents) ? readFileSync(agents, "utf8") : "", readFileSync(join(TEMPLATES, "AGENTS.block.md"), "utf8")));
+
+  // Any CLAUDE.md, even an empty one, stops Claude Code from loading AGENTS.md: take back the block older versions wrote there.
+  // Only a regular file of its own: a symlink may lead out of the project, and a link to AGENTS.md
+  // (hard, or AGENTS.md -> CLAUDE.md) holds the block just written.
+  const claude = join(cwd, "CLAUDE.md");
+  const own = lstatSync(claude, { throwIfNoEntry: false });
+  const target = statSync(agents);
+  const legacy = own?.isFile() && !(own.dev === target.dev && own.ino === target.ino) ? readFileSync(claude, "utf8") : "";
+  const rest = removeBlock(legacy);
+  if (rest !== legacy) {
+    if (rest) write(claude, rest);
+    else {
+      unlinkSync(claude);
+      changed.push(claude);
+    }
   }
 
   const ignore = join(cwd, ".gitignore");

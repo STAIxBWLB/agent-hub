@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { init, upsertBlock } from "../src/cli/init.ts";
+import { init, removeBlock, upsertBlock } from "../src/cli/init.ts";
 import { buildLaunch, CLAUDE_CHANNEL, statusLineSettings, UNATTENDED_WARNING } from "../src/cli/launch.ts";
 import { allocatePorts } from "../src/hub/ports.ts";
 import { nextStep, parseList, pluginState } from "../src/cli/setup.ts";
@@ -10,14 +10,79 @@ import { VERSION } from "../src/version.ts";
 import { childEnv } from "../src/hub/child-process.ts";
 import { freeText } from "../src/cli/free-text.ts";
 
-test("ahub init is idempotent and keeps text outside the markers", () => {
+test("ahub init is idempotent, keeps text outside the markers and writes no CLAUDE.md", () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
-  writeFileSync(join(dir, "CLAUDE.md"), "# Mine\n\nkeep me\n");
-  expect(init(dir).map((p) => p.slice(dir.length + 1)).sort()).toEqual([".agenthub/config.json", ".agenthub/routing.toml", ".gitignore", "AGENTS.md", "CLAUDE.md"]);
-  const first = readFileSync(join(dir, "CLAUDE.md"), "utf8");
+  writeFileSync(join(dir, "AGENTS.md"), "# Mine\n\nkeep me\n");
+  expect(init(dir).map((p) => p.slice(dir.length + 1)).sort()).toEqual([".agenthub/config.json", ".agenthub/routing.toml", ".gitignore", "AGENTS.md"]);
+  const first = readFileSync(join(dir, "AGENTS.md"), "utf8");
   expect(first).toStartWith("# Mine\n\nkeep me\n\n<!-- AGENT_HUB:BEGIN");
+  expect(existsSync(join(dir, "CLAUDE.md"))).toBe(false);
   expect(init(dir)).toEqual([]);
-  expect(upsertBlock(first.replace("untrusted", "EDITED"), readFileSync("templates/CLAUDE.block.md", "utf8"))).toBe(first);
+  expect(upsertBlock(first.replace("untrusted", "EDITED"), readFileSync("templates/AGENTS.block.md", "utf8"))).toBe(first);
+});
+
+// Any CLAUDE.md stops Claude Code from loading AGENTS.md, so init takes back the block older versions put there.
+const LEGACY = upsertBlock("", "## agent-hub\n\nold Claude block\n");
+
+test("ahub init strips a legacy CLAUDE.md block and keeps the user's text", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
+  writeFileSync(join(dir, "CLAUDE.md"), `# Mine\n\nkeep me\n\n${LEGACY}`);
+  expect(init(dir).map((p) => p.slice(dir.length + 1))).toContain("CLAUDE.md");
+  expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe("# Mine\n\nkeep me\n");
+  expect(init(dir)).toEqual([]);
+});
+
+test("ahub init deletes a CLAUDE.md that held only the legacy block", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
+  writeFileSync(join(dir, "CLAUDE.md"), `\n${LEGACY}\n`);
+  expect(init(dir).map((p) => p.slice(dir.length + 1))).toContain("CLAUDE.md");
+  expect(existsSync(join(dir, "CLAUDE.md"))).toBe(false);
+  expect(init(dir)).toEqual([]);
+});
+
+test("ahub init leaves a CLAUDE.md symlinked to AGENTS.md alone", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
+  symlinkSync("AGENTS.md", join(dir, "CLAUDE.md"));
+  init(dir);
+  expect(readFileSync(join(dir, "AGENTS.md"), "utf8")).toContain("<!-- AGENT_HUB:BEGIN");
+  expect(lstatSync(join(dir, "CLAUDE.md")).isSymbolicLink()).toBe(true);
+  expect(init(dir)).toEqual([]);
+});
+
+test("ahub init leaves a CLAUDE.md hard-linked to AGENTS.md alone", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
+  writeFileSync(join(dir, "AGENTS.md"), "# Shared\n");
+  linkSync(join(dir, "AGENTS.md"), join(dir, "CLAUDE.md"));
+  init(dir);
+  expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toContain("<!-- AGENT_HUB:BEGIN");
+  expect(statSync(join(dir, "CLAUDE.md")).nlink).toBe(2);
+  expect(init(dir)).toEqual([]);
+});
+
+test("ahub init leaves CLAUDE.md alone when AGENTS.md is a symlink to it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
+  writeFileSync(join(dir, "CLAUDE.md"), "# Mine\n");
+  symlinkSync("CLAUDE.md", join(dir, "AGENTS.md"));
+  init(dir);
+  expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toStartWith("# Mine\n\n<!-- AGENT_HUB:BEGIN");
+  expect(lstatSync(join(dir, "AGENTS.md")).isSymbolicLink()).toBe(true);
+  expect(init(dir)).toEqual([]);
+});
+
+test("ahub init never follows a CLAUDE.md symlink out of the project", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
+  const outside = join(mkdtempSync(join(tmpdir(), "agenthub-outside-")), "CLAUDE.md");
+  writeFileSync(outside, LEGACY);
+  symlinkSync(outside, join(dir, "CLAUDE.md"));
+  expect(init(dir).map((p) => p.slice(dir.length + 1))).not.toContain("CLAUDE.md");
+  expect(readFileSync(outside, "utf8")).toBe(LEGACY);
+  expect(lstatSync(join(dir, "CLAUDE.md")).isSymbolicLink()).toBe(true);
+});
+
+test("removeBlock drops only the managed block", () => {
+  expect(removeBlock(`a\n\n${LEGACY}\nb\n`)).toBe("a\n\nb\n");
+  expect(removeBlock("no markers\n")).toBe("no markers\n");
+  expect(removeBlock("<!-- AGENT_HUB:BEGIN unterminated\n")).toBe("<!-- AGENT_HUB:BEGIN unterminated\n");
 });
 
 test("default launches keep permission prompts; --unattended opts out and warns", () => {
