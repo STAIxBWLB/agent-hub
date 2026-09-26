@@ -38,7 +38,7 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub ui --all [--no-open]      open the unified project dashboard
   ahub ui --all --stop           stop only the dashboard manager
   ahub setup [--yes]            install or update the Claude Code channel plugin from this package, then run doctor
-  ahub init                     write .agenthub/config.json and the CLAUDE.md / AGENTS.md marker blocks
+  ahub init                     write .agenthub/config.json and the AGENTS.md marker block (drops a legacy CLAUDE.md block)
   ahub up [--unattended]        start the daemon for this directory
   ahub upgrade --to <version> [--dry-run] [--yes]   review and upgrade running projects
   ahub restart [--dry-run] [--yes]                 recover this project's runtime
@@ -339,7 +339,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     assertLifecycleAvailable();
     const changed = init(cwd);
     registeredProject();
-    console.log(changed.length ? changed.map((p) => `wrote ${p}`).join("\n") : "already up to date");
+    console.log(changed.length ? changed.map((p) => `${existsSync(p) ? "wrote" : "removed"} ${p}`).join("\n") : "already up to date");
   },
 
   // Internal: the detached daemon process started by ahub up or the manager.

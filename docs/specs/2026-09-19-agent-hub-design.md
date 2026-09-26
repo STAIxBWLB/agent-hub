@@ -274,7 +274,8 @@ peer. Peer ids claimed over the control WS must not be `user` or a hub-managed a
   natively. This replaces Codex `dynamicTools`: no rewriting of proxied TUI traffic.
 - Role contract: Claude in the plugin `instructions`, Codex, Kimi and `local` with the
   standing instruction of their first delivery, all of them in the `AGENT_HUB` marker
-  blocks; `roles` in `.agenthub/config.json` is the source. Codex `developerInstructions`
+  block of `AGENTS.md` (`ahub init` writes no `CLAUDE.md`: one hides `AGENTS.md` from
+  Claude Code); `roles` in `.agenthub/config.json` is the source. Codex `developerInstructions`
   injection is dropped for the same reason as `dynamicTools`.
 - PII (amended in M4): a task matching `signals.pii_patterns` is owned by `local` or by
   nobody; its envelopes are `private` (console tail and `hub.log` print a stub), lists show
@@ -502,7 +503,7 @@ src/memory/         claude-mem worker client, capture for the local worker, reca
 src/cli/            up, claude, codex, kimi, local, say, tail, board, route, budget, status, logs, kill, init
 plugins/agent-hub/  .claude-plugin/plugin.json, .mcp.json, server bundle, hooks (SessionStart health, Stop announce)
 .claude-plugin/marketplace.json
-templates/          CLAUDE.md and AGENTS.md marker blocks, routing.toml default, config.json default
+templates/          AGENTS.md marker block, routing.toml default, config.json default
 scripts/            check.sh, build.mjs, smoke-*.ts
 docs/specs/         this file
 AGENTS.md, REVIEW.md
