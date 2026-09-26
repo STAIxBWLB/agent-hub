@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const TEMPLATES = join(import.meta.dir, "..", "..", "templates");
@@ -43,9 +43,12 @@ export function init(cwd: string): string[] {
   write(agents, upsertBlock(existsSync(agents) ? readFileSync(agents, "utf8") : "", readFileSync(join(TEMPLATES, "AGENTS.block.md"), "utf8")));
 
   // Any CLAUDE.md, even an empty one, stops Claude Code from loading AGENTS.md: take back the block older versions wrote there.
-  // A CLAUDE.md that is AGENTS.md (a symlink) holds the block just written and is left alone.
+  // Only a regular file of its own: a symlink may lead out of the project, and a link to AGENTS.md
+  // (hard, or AGENTS.md -> CLAUDE.md) holds the block just written.
   const claude = join(cwd, "CLAUDE.md");
-  const legacy = existsSync(claude) && realpathSync(claude) !== realpathSync(agents) ? readFileSync(claude, "utf8") : "";
+  const own = lstatSync(claude, { throwIfNoEntry: false });
+  const target = statSync(agents);
+  const legacy = own?.isFile() && !(own.dev === target.dev && own.ino === target.ino) ? readFileSync(claude, "utf8") : "";
   const rest = removeBlock(legacy);
   if (rest !== legacy) {
     if (rest) write(claude, rest);

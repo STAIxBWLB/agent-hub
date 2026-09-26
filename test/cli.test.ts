@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { init, removeBlock, upsertBlock } from "../src/cli/init.ts";
@@ -47,6 +47,36 @@ test("ahub init leaves a CLAUDE.md symlinked to AGENTS.md alone", () => {
   expect(readFileSync(join(dir, "AGENTS.md"), "utf8")).toContain("<!-- AGENT_HUB:BEGIN");
   expect(lstatSync(join(dir, "CLAUDE.md")).isSymbolicLink()).toBe(true);
   expect(init(dir)).toEqual([]);
+});
+
+test("ahub init leaves a CLAUDE.md hard-linked to AGENTS.md alone", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
+  writeFileSync(join(dir, "AGENTS.md"), "# Shared\n");
+  linkSync(join(dir, "AGENTS.md"), join(dir, "CLAUDE.md"));
+  init(dir);
+  expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toContain("<!-- AGENT_HUB:BEGIN");
+  expect(statSync(join(dir, "CLAUDE.md")).nlink).toBe(2);
+  expect(init(dir)).toEqual([]);
+});
+
+test("ahub init leaves CLAUDE.md alone when AGENTS.md is a symlink to it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
+  writeFileSync(join(dir, "CLAUDE.md"), "# Mine\n");
+  symlinkSync("CLAUDE.md", join(dir, "AGENTS.md"));
+  init(dir);
+  expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toStartWith("# Mine\n\n<!-- AGENT_HUB:BEGIN");
+  expect(lstatSync(join(dir, "AGENTS.md")).isSymbolicLink()).toBe(true);
+  expect(init(dir)).toEqual([]);
+});
+
+test("ahub init never follows a CLAUDE.md symlink out of the project", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
+  const outside = join(mkdtempSync(join(tmpdir(), "agenthub-outside-")), "CLAUDE.md");
+  writeFileSync(outside, LEGACY);
+  symlinkSync(outside, join(dir, "CLAUDE.md"));
+  expect(init(dir).map((p) => p.slice(dir.length + 1))).not.toContain("CLAUDE.md");
+  expect(readFileSync(outside, "utf8")).toBe(LEGACY);
+  expect(lstatSync(join(dir, "CLAUDE.md")).isSymbolicLink()).toBe(true);
 });
 
 test("removeBlock drops only the managed block", () => {
