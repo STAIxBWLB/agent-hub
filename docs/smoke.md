@@ -629,3 +629,67 @@ A source-build smoke on Apple silicon/macOS 27.0 with Ollama 0.34.2 verified:
 The live harness is opt-in and is not called by the hermetic repository
 check. `AHUB_SMOKE_PROJECT` selects a project configuration without starting
 its daemon or replaying its queue. It deliberately forbids remote inference.
+
+
+## 0.7.2-0.7.4 attended upgrade smoke (issue #21, 2026-09-27)
+
+Attended registry package/plugin upgrade on a scratch project
+(`~/ahub-smoke`, Orca-managed worktree) with claude, codex and kimi attached
+to a 0.7.1 hub installed from npm. Pre-upgrade state: task #1 in_progress
+(owner codex, reviewer claude), kimi manually paused with one important
+envelope queued, live Claude session and live Codex thread captured by the
+dry-run plan. This run closes the attended leg left open by the 0.7.1
+cutover; it also exposed three recovery defects that became 0.7.3 and 0.7.4.
+
+### What the runs proved
+
+- The coordinator blocked safely, twice, when the Codex TUI detached
+  mid-prepare: "no terminal was closed", the 0.7.1 source kept running, and
+  the board, pause and queue were verified unchanged afterwards. Blocked
+  operations were resumable or cleanly resolvable once their cause was
+  removed.
+- The fifth attempt (0.7.3 coordinator, codex offline at plan time) drove
+  prepare, commit, source stop, staged-target start and native peer restore
+  without operator intervention; the new daemon reported version 0.7.3 with
+  a new instanceId, kimi still paused with its queued envelope intact, and
+  the task board unchanged. Claude restoration paused at the documented
+  attended step (development-channel confirmation in the captured terminal),
+  then resumed.
+- Final state after completion: daemon, CLI and plugin all 0.7.4
+  (pid 12483, new instanceId, protocol 10), claude idle, kimi idle with
+  queued 0. The important envelope queued at 03:16 on 0.7.1 was delivered
+  after resume and answered by kimi at 04:53 ("Received the upgrade
+  preservation check envelope"). Task #1 remains in_progress on the board.
+
+### Defects found and fixed by this smoke
+
+- A peer detaching between prepare and commit wedged the operation:
+  readiness never recovered, resume refused, abort refused. Fixed in 0.7.3
+  (PR #60): an offline peer no longer fails the identity comparison, and an
+  already-exited terminal closes as a no-op.
+- A zero-turn Claude session (no transcript on disk) made restore fail with
+  "No conversation found" and wedged the pending-restore identity gate.
+  Fixed in 0.7.4 (PR #62): with the original transcript absent, a fresh
+  operator-attached session is accepted.
+- The same zero-turn case still cannot pass the coordinator's verify step
+  or the daemon's release gate; tracked as issue #64. This operation was
+  completed manually (restart snapshot removed, daemon restarted), which is
+  an operator action, not a designed path.
+
+### Environmental limits recorded
+
+- An active native Codex TUI could not be kept alive on this machine: the
+  Orca runtime closed three `ahub codex` terminals in-process
+  (`origin: in-process`, `ptyKilled: true`) 35-90 seconds after each attach,
+  while the Claude terminal survived. The Codex leg therefore ran with
+  codex offline at plan time, as in the 0.7.1 cutover; this run does not
+  claim an active native Codex TUI restoration either.
+- The recovery runner for an existing operation always executes the
+  operation's preserved source, so a coordinator fix released after an
+  operation was created does not reach that operation's resume. The
+  sourceRoot digest guard correctly refused a hand-patched receipt.
+- `ahub setup` is interactive (one confirmation gates all steps); piping an
+  answer works, running it detached does not.
+
+Issue [#12](https://github.com/STAIxBWLB/agent-hub/issues/12) remains open
+for off-campus Access credentials and a natural near-limit budget pause.
