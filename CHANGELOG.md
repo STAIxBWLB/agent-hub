@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.7.3
+
+- A peer that detaches mid-upgrade no longer wedges the recovery: readiness ignores a now-offline peer's stale identity (a reattach with a different thread still blocks), an already-exited terminal is closed as a no-op instead of being waited on, and resume can drive the operation to release once the peer returns (#21).
+- The check.sh leak guard matches tmp test roots only, so a real hub in a directory starting with `ahub-` no longer trips it (#56).
+
 ## 0.7.2
 
 - Local inference defaults to a bounded Ollama MLX runtime: `ahub models setup/start/stop` manages it, the configured context is advertised to Pi, and the legacy standalone MLX runtime needs an explicit legacy provider (#51, #52).
