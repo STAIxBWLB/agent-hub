@@ -3,8 +3,8 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
-import { ControlClient } from "../src/hub/control-client.ts";
-import { makeRecoveryDriver, restoredTerminalArgv } from "../src/cli/upgrade-runtime.ts";
+import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
+import { inspectRecovery, makeRecoveryDriver, restoredTerminalArgv } from "../src/cli/upgrade-runtime.ts";
 import { VERSION } from "../src/version.ts";
 import type { PlannedProject, ProjectProgress, RecoveryOperation } from "../src/cli/upgrade.ts";
 
@@ -14,6 +14,27 @@ test("Pi terminal restoration builds a TUI command with the saved session select
     launch: { packageEntrypoint: "/old/main.js", command: "old", argv: [], env: {} }, launchMetadata: { packageEntrypoint: "/old/main.js", command: "old", argv: [], env: {} },
   });
   expect(argv).toEqual([process.execPath, "/target/src/cli/main.js", "--project", "/project", "pi", "--mode", "tui", "--backend", "dgx", "--model", "dgx/coding", "--session-file", "/state/pi-session.json"]);
+});
+
+// The #56 CI race: server.stop() precedes state-file removal, so a stopping hub briefly
+// refuses connections with its manifest still on disk. inspectRecovery must report the
+// transition as retryable "unavailable", never throw, and never infer stopped.
+test("a stopping hub with its manifest still on disk inspects as unavailable without throwing", async () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "ahub-stopping-project-"));
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-stopping-state-"));
+  // A port nothing listens on, standing in for the stopping hub's closed control listener.
+  const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("ok") });
+  const port = probe.port;
+  probe.stop(true);
+  writeFileSync(join(stateDir, "control-token"), "stopping-token\n");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: port, protocol: PROTOCOL, projectId: "p-stopping", instanceId: "i-stopping", cwd: projectRoot }));
+  try {
+    const observed = await inspectRecovery({ id: "p-stopping", root: projectRoot, stateDir, basePort: 4600 } as any);
+    expect(observed.state).toBe("unavailable");
+    expect(observed.blockers).toContain("runtime changed during recovery inspection");
+    expect(observed.instanceId).toBe("i-stopping");
+    expect(observed.protocol).toBe(PROTOCOL);
+  } finally { rmSync(stateDir, { recursive: true, force: true }); rmSync(projectRoot, { recursive: true, force: true }); }
 });
 
 test("recovery driver uses the source manifest protocol for a protocol-9 prepare", async () => {

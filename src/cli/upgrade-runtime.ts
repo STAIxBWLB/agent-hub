@@ -48,8 +48,16 @@ export async function inspectRecovery(project: Project): Promise<Inspection> {
   };
   let status = base.status;
   if (!status && legacySupported) {
-    const readback = await rpc(project, { t: "status" }, sourceProtocol);
-    status = readback.status;
+    try {
+      const readback = await rpc(project, { t: "status" }, sourceProtocol);
+      status = readback.status;
+    } catch {
+      // server.stop() runs before state-file removal, so a stopping hub briefly refuses
+      // connections with its manifest still on disk. Never infer stopped from a connect
+      // failure: callers poll again and see "stopped" once the manifest is gone.
+      return { state: "unavailable", peers: [], blockers: ["runtime changed during recovery inspection"],
+        ...(control?.instanceId ? { instanceId: control.instanceId } : {}), ...(control?.protocol ? { protocol: control.protocol } : {}) };
+    }
   }
   if (!status || !control) return { state: "unavailable", peers: [], blockers: ["authenticated source status unavailable"] };
   let response: any;

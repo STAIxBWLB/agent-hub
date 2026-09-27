@@ -55,7 +55,7 @@ test("installed-layout detached restart completes in an isolated project and pre
       if (["completed", "blocked"].includes(receipt.phase)) break;
       await Bun.sleep(50);
     }
-    expect({ phase: receipt.phase, error: receipt.error }).toEqual({ phase: "completed", error: undefined });
+    expect({ phase: receipt.phase, step: receipt.step, error: receipt.error }).toEqual({ phase: "completed", step: "completed", error: undefined });
     const after = await status();
     expect(after.instanceId).not.toBe(before.instanceId);
     expect(after.projectId).toBe(before.projectId);

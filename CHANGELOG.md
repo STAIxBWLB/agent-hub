@@ -2,7 +2,14 @@
 
 ## Unreleased
 
+## 0.7.2
+
+- Local inference defaults to a bounded Ollama MLX runtime: `ahub models setup/start/stop` manages it, the configured context is advertised to Pi, and the legacy standalone MLX runtime needs an explicit legacy provider (#51, #52).
 - `ahub init` writes the managed block to `AGENTS.md` only and never creates `CLAUDE.md`: any `CLAUDE.md` stops Claude Code from loading `AGENTS.md`. A block an older `init` left in `CLAUDE.md` is removed, and a `CLAUDE.md` that held nothing else is deleted; a symlinked or hard-linked `CLAUDE.md` is left alone. The one template now tells every agent how it receives and answers hub messages (#54).
+- Stop orphaned hub daemons from leaking and spinning: a rejected peer stop no longer blocks shutdown, a 15 s hard deadline ends a hung stop, the recovery fence waits with backoff and a timeout instead of spinning, and a daemon or manager whose project root or state dir vanished stops itself. A surviving Pi TUI owner is torn down by verified process identity before the hub reports stopped (#56).
+- `ahub doctor --orphans [--kill]` lists registrations whose project root is gone and kills only processes whose argv names that project's hub daemon exactly (#56).
+- A recovery commit no longer blocks when its stop-poll lands in the moment a stopping hub already refuses connections but has not removed its manifest yet: the inspection reports "unavailable" and the poll retries instead of failing the operation (#21).
+- The test suite records and sweeps every hub and manager pid it starts, and `scripts/check.sh` fails the gate on any leaked `ahub-*` test daemon (#56).
 
 ## 0.7.1
 
