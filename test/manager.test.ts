@@ -66,3 +66,12 @@ test("manager accepts the explicitly supported protocol-9 HTTP owner during prot
     expect(await openManager({ home })).toBe("http://127.0.0.1:1/#ticket");
   } finally { server.stop(true); rmSync(home, { recursive: true, force: true }); }
 });
+
+// issue #56: the detached manager must not outlive its AGENTHUB_HOME.
+test("the manager stops when its state directory vanishes", async () => {
+  const { home, registry, lifecycle } = setup();
+  const manager = await startManager({ home, registry, lifecycle, orphanWatchMs: 50 });
+  rmSync(join(home, "manager"), { recursive: true, force: true });
+  const bounded = new Promise<void>((_, reject) => setTimeout(() => reject(new Error("manager did not stop after losing its state dir")), 5_000));
+  await Promise.race([manager.stopped, bounded]);
+});

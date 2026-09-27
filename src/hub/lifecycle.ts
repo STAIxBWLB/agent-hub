@@ -91,6 +91,19 @@ export async function runProjectDaemon(project: Project, unattended = false): Pr
   const instanceId = randomUUID();
   let claimed = false;
   let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined;
+  // ponytail: shutdown is bounded as a whole, not per peer; a peer whose stop never settles
+  // escapes only through this process-level deadline (issue #56). 15 s leaves the claude-mem
+  // session-end work awaited in stop() its chance. Upgrade path: per-peer stop deadlines.
+  const SHUTDOWN_DEADLINE_MS = 15_000;
+  let forcedExit: ReturnType<typeof setTimeout> | undefined;
+  const onShutdownStart = () => {
+    if (forcedExit) return;
+    forcedExit = setTimeout(() => {
+      console.error(`hub shutdown did not finish within ${SHUTDOWN_DEADLINE_MS / 1000} s; exiting anyway`);
+      process.exit(1);
+    }, SHUTDOWN_DEADLINE_MS);
+    forcedExit.unref();
+  };
   try {
     const before = await inspectProject(registry.get(project.id) ?? project);
     if (before.state === "running" || before.state === "starting") return;
@@ -103,7 +116,7 @@ export async function runProjectDaemon(project: Project, unattended = false): Pr
         try {
           daemon = await startDaemon({ cwd: project.root, stateDir: project.stateDir, projectId: project.id, instanceId,
             controlPort: base + CONTROL, codexAppPort: base + CODEX_APP, codexProxyPort: base + CODEX_PROXY,
-            switchyardPort: base + SWITCHYARD, unattended });
+            switchyardPort: base + SWITCHYARD, unattended, onShutdownStart });
           break;
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
@@ -116,7 +129,7 @@ export async function runProjectDaemon(project: Project, unattended = false): Pr
     process.on("SIGINT", stop);
     process.on("SIGTERM", stop);
     try { await daemon.stopped; }
-    finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
+    finally { if (forcedExit) clearTimeout(forcedExit); process.off("SIGINT", stop); process.off("SIGTERM", stop); }
   } finally {
     if (claimed) registry.release(project.id, instanceId);
     registry.close();

@@ -144,6 +144,38 @@ peers. A stopped daemon does not delete task records or the durable journal.
 Do not kill a native terminal by PID or start a replacement while ownership is
 uncertain.
 
+Shutdown is bounded: once it begins, a daemon that cannot finish within
+15 seconds exits anyway, and a peer that refuses to stop is logged rather than
+allowed to block state cleanup. A native Pi TUI owner that does not exit
+gracefully is terminated by its verified process identity (never a bare PID),
+so a restarted hub never launches beside a survivor. A hub whose project root
+or state directory was deleted stops itself within about 10 seconds; the
+dashboard manager does the same when its home directory vanishes.
+
+## Orphaned daemons
+
+Daemons from before those guards, or daemons whose project directory was
+deleted while they were stopped mid-shutdown, are found with:
+
+```bash
+ahub doctor --orphans
+```
+
+It lists registrations whose project root is gone, with any live process
+candidates (the registry claim, the state manifest, the legacy pid file).
+To stop them:
+
+```bash
+ahub doctor --orphans --kill
+```
+
+`--kill` sends SIGTERM, then SIGKILL, but only while the process argv names
+that project's hub daemon exactly (the argument after `--project` must equal
+the registered root); a bare, reused, or merely prefix-matching PID is never
+killed.
+Rows without a live process are stale registrations; forget them with
+`ahub projects remove <id>`.
+
 ## Upgrade and crash recovery
 
 For an upgrade from 0.6.4 (protocol 9) or 0.7.0, use the patched coordinator without

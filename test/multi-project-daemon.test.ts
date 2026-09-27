@@ -69,22 +69,20 @@ test("two daemon instances isolate task ids and reject cross-token control", asy
   expect(await closed).toBe(4401);
 });
 
-test("incomplete shutdown stays owned and retryable, never reports a ready running hub", async () => {
+test("a peer that refuses to stop is logged and abandoned; shutdown still finishes (#56)", async () => {
   const one = await hub("project-shutdown");
-  let fail = true;
   class SlowPeer extends BasePeer {
     async start() {}
     async deliver() {}
-    async stop() { if (fail) throw new Error("child exit not confirmed"); }
+    async stop() { throw new Error("child exit not confirmed"); }
   }
   one.daemon.bus.add(new SlowPeer("slow"));
-  try {
-    await expect(one.daemon.stop()).rejects.toThrow("exit not confirmed");
-    expect(existsSync(join(one.stateDir, "status.json"))).toBe(true);
-    const observed = await inspectProject({ id: "project-shutdown", root: ROOT, stateDir: one.stateDir,
-      instanceId: "project-shutdown-instance", pid: process.pid, basePort: one.daemon.port });
-    expect(observed.state).toBe("stopping");
-    expect(observed.error).toContain("shutdown is pending");
-  } finally { fail = false; await one.daemon.stop(); }
+  // The old contract kept the state owned and retryable here; it also let a refusing peer
+  // strand the daemon past SIGTERM forever. Shutdown now finishes and releases the state.
+  await one.daemon.stop();
+  await one.daemon.stopped;
   expect(existsSync(join(one.stateDir, "status.json"))).toBe(false);
+  const observed = await inspectProject({ id: "project-shutdown", root: ROOT, stateDir: one.stateDir,
+    instanceId: null, pid: null, basePort: one.daemon.port });
+  expect(observed.state).toBe("stopped");
 });

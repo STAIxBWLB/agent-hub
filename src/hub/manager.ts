@@ -16,7 +16,7 @@ export type Lifecycle = {
   startProject(project: Project, options?: { unattended?: boolean; env?: NodeJS.ProcessEnv }): Promise<any>;
   stopProject(project: Project, expectedInstance?: string): Promise<void>;
 };
-export type ManagerOptions = { registry?: Registry; lifecycle?: Lifecycle; home?: string; cli?: string };
+export type ManagerOptions = { registry?: Registry; lifecycle?: Lifecycle; home?: string; cli?: string; orphanWatchMs?: number };
 type ManagerHandle = { stop(): Promise<void>; stopped: Promise<void> };
 type Manifest = { port: number; protocol: number; instanceId: string; pid: number };
 const active = new Map<string, { handle: ManagerHandle; issue(): string }>();
@@ -87,15 +87,20 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
   let server: ReturnType<typeof Bun.serve> | undefined;
   let dashboard: ReturnType<typeof startDashboard> | undefined;
   let stopping = false;
+  let orphanWatch: ReturnType<typeof setInterval> | undefined;
   let resolveStopped!: () => void;
   const stopped = new Promise<void>((resolve) => { resolveStopped = resolve; });
   const cleanup = () => {
+    if (orphanWatch) clearInterval(orphanWatch);
     dashboard?.stop(); server?.stop(true);
     active.delete(home);
     removeManifest(home, instanceId);
     if (owner) {
-      owner.query("DELETE FROM owner WHERE slot = 1 AND instance_id = ? AND pid = ?").run(instanceId, process.pid);
-      owner.close(); owner = undefined;
+      // The state dir may already be gone (the orphan watchdog path, issue #56): a DELETE on an
+      // unlinked database fails with SQLITE_IOERR_VNODE on macOS, and the claim went with the file.
+      try { owner.query("DELETE FROM owner WHERE slot = 1 AND instance_id = ? AND pid = ?").run(instanceId, process.pid); } catch { /* claim file already gone */ }
+      try { owner.close(); } catch { /* already unlinked */ }
+      owner = undefined;
     }
     if (ownsRegistry) registry.close();
   };
@@ -169,6 +174,13 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
     const temp = `${f.status}.${instanceId}.tmp`;
     writeFileSync(temp, JSON.stringify({ port: server.port, protocol: PROTOCOL, instanceId, pid: process.pid }));
     renameSync(temp, f.status);
+    // The manager outlives whoever opened it; a deleted AGENTHUB_HOME (a test suite's temp
+    // home, issue #56) must not leave it serving a registry that no longer exists.
+    orphanWatch = setInterval(() => {
+      if (stopping || existsSync(f.dir)) return;
+      void stop();
+    }, options.orphanWatchMs ?? 10_000);
+    orphanWatch.unref?.();
     const handle = { stop, stopped };
     active.set(home, { handle, issue: () => dashboard!.issue() });
     return handle;

@@ -225,3 +225,28 @@ test("Pi addresses its answer to the senders of the delivery it answers", async 
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+// #56 review: a native owner that ignores the graceful shutdown must not survive next to a replacement hub.
+test("Pi stop tears down a TUI owner whose shutdown acknowledgement was lost, by verified identity", async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-survivor-test-"));
+  const owner = Bun.spawn(["sleep", "60"]);
+  const peer = new PiPeer("pi", { cwd: process.cwd(), stateDir, mode: "tui", backend: "mlx", relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [{ id: "mlx/fast" }] }, tools: [], executeTool: async () => "ok", stopGraceMs: 100 });
+  try {
+    await peer.start();
+    const launch = peer.tuiLaunch!;
+    const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
+    const claimed = await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/event`, { method: "POST", headers, body: JSON.stringify({ type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: owner.pid, signature: currentSignature(owner.pid), sessionId: "survivor-session", sessionFile: "/tmp/survivor.jsonl" }) });
+    expect(claimed.status).toBe(200);
+    expect(peer.state).toBe("idle");
+    const at = performance.now();
+    await peer.stop(); // the shutdown command is never acknowledged: teardown, not abandonment
+    expect(performance.now() - at).toBeLessThan(5_000);
+    expect(peer.state).toBe("offline");
+    const outcome = await Promise.race([owner.exited, Bun.sleep(2_000).then(() => "alive")]);
+    expect(outcome).not.toBe("alive"); // the survivor was signaled after its signature verified
+  } finally {
+    if (owner.exitCode === null && owner.signalCode === null) { owner.kill("SIGKILL"); await owner.exited; }
+    await peer.stop();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});

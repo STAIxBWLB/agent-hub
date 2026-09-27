@@ -489,3 +489,45 @@ test("a hub-native peer keeps important when the delivery held an important requ
   await tick();
   expect(codex.got.at(-1)!.priority).toBe("important");
 });
+
+// issue #56: a peer whose deliver never settles must not spin the fence at 100% CPU forever.
+test("fenceRecovery times out on a stuck drain and restores the prior hold state", async () => {
+  const bus = new Bus({ retryMs: 15, batchMs: 0 });
+  const stuck = new FakePeer("claude");
+  stuck.deliver = () => new Promise<void>(() => {}); // never settles
+  bus.add(stuck);
+  await stuck.start();
+  bus.publish(newEnvelope("user", "hello"));
+  await tick(); // the drain is now parked inside the stuck deliver
+  expect(bus.isRecoveryHeld).toBe(false);
+  await expect(bus.fenceRecovery(80)).rejects.toThrow("still in flight");
+  expect(bus.isRecoveryHeld).toBe(false); // the caller had not held the bus; the timeout put nothing down
+});
+
+test("fenceRecovery keeps a caller's hold when it times out", async () => {
+  const bus = new Bus({ retryMs: 15, batchMs: 0 });
+  const stuck = new FakePeer("claude");
+  stuck.deliver = () => new Promise<void>(() => {}); // never settles
+  bus.add(stuck);
+  await stuck.start();
+  bus.publish(newEnvelope("user", "hello"));
+  await tick(); // the drain is now parked inside the stuck deliver
+  bus.setRecoveryHold(true); // what the recovery coordinator does before fencing
+  await expect(bus.fenceRecovery(80)).rejects.toThrow("still in flight");
+  expect(bus.isRecoveryHeld).toBe(true); // the caller's hold is not the fence's to lift
+});
+
+test("fenceRecovery resolves once in-flight work settles", async () => {
+  const bus = new Bus({ retryMs: 15, batchMs: 0 });
+  const slow = new FakePeer("claude");
+  let release!: () => void;
+  slow.deliver = () => new Promise<void>((resolve) => { release = resolve; });
+  bus.add(slow);
+  await slow.start();
+  bus.publish(newEnvelope("user", "hello"));
+  await tick(); // the drain is now parked inside the slow deliver
+  const pending = bus.fenceRecovery(1_000);
+  release();
+  await pending; // the fence waited out the in-flight drain instead of timing out
+  expect(bus.isRecoveryHeld).toBe(true);
+});

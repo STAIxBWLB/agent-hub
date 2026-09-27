@@ -120,6 +120,10 @@ export interface DaemonOptions {
   /** Auto-approve ACP permission requests with the agent's allow_once option. */
   unattended?: boolean;
   permissionTimeoutMs?: number;
+  /** Called once when shutdown begins, however it was triggered; the lifecycle uses it to arm a hard deadline. */
+  onShutdownStart?: () => void;
+  /** How often the daemon checks that its project root and state dir still exist. Tests shrink this. */
+  orphanWatchMs?: number;
 }
 
 interface Client {
@@ -178,7 +182,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const config = opts.config ?? loadConfig(opts.cwd);
   mkdirSync(opts.stateDir, { recursive: true });
   const logFile = join(opts.stateDir, "hub.log");
-  const log = (line: string) => appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`);
+  // The state dir can vanish under a running hub (issue #56): a log line must never take a handler down with it.
+  const log = (line: string) => { try { appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* the state dir is gone; the watchdog is stopping the hub */ } };
 
   // Any local web page can open a WebSocket to a loopback port, so the control link needs a secret.
   // The file is written only after the port is bound: a second daemon that loses the bind must not clobber it.
@@ -522,9 +527,11 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(recoveryOperationId ? { recovery: { operationId: recoveryOperationId, phase: recoveryPhase, ready: recoveryReady() } } : {}),
   });
   const writeStatus = () => {
-    const file = join(opts.stateDir, "status.json"); // clients parse this on every connect: replace it atomically
-    writeFileSync(`${file}.${instanceId}.tmp`, `${JSON.stringify(status(), null, 2)}\n`);
-    renameSync(`${file}.${instanceId}.tmp`, file);
+    try {
+      const file = join(opts.stateDir, "status.json"); // clients parse this on every connect: replace it atomically
+      writeFileSync(`${file}.${instanceId}.tmp`, `${JSON.stringify(status(), null, 2)}\n`);
+      renameSync(`${file}.${instanceId}.tmp`, file);
+    } catch { /* the state dir is gone; the watchdog is stopping the hub (issue #56) */ }
   };
 
   // A queue change is not a bus event: without this, status.json reports the queue as it was before the last
@@ -1088,7 +1095,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "recovery":
         if (c.role !== "console") return void reply(recoveryError("recovery is a console command"));
-        void recoveryOp(msg).then(reply, () => reply(recoveryError("recovery operation failed")));
+        void recoveryOp(msg).then(reply, (error) => reply(recoveryError((error as Error)?.message ?? "recovery operation failed")));
         return;
       case "send": {
         if (recoveryActive()) return void reply({ t: "sent", ok: false, error: "recovery is holding new deliveries" });
@@ -1220,6 +1227,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let shutdown: Promise<void> | undefined;
   function stop(): Promise<void> {
     if (shutdown) return shutdown;
+    opts.onShutdownStart?.();
     shutdown = stopOnce().catch((error) => { shutdown = undefined; throw error; });
     return shutdown;
   }
@@ -1231,25 +1239,43 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const i of intervals) clearInterval(i);
     for (const done of checkpointWaits.values()) done(undefined);
     for (const p of permissions.values()) p.done(undefined);
-    // A peer can still be inside memory recall or its native handshake when kill arrives.
-    // Drain those starts before taking the final owned-process snapshot.
-    await Promise.allSettled([...starting.values()]);
-    const exits = await Promise.allSettled([...bus.peers.values()].map((p) => p.stop()).concat(sidecar ? [sidecar.stop()] : []));
-    const failed = exits.find((r) => r.status === "rejected");
-    if (failed?.status === "rejected") throw failed.reason;
-    await modelRelay?.close();
-    await piReceipts?.close();
-    budget.close();
-    board.close();
-    server.stop(true);
-    bus.closeJournal();
     try {
-      const current = JSON.parse(readFileSync(join(opts.stateDir, "status.json"), "utf8"));
-      if (current.instanceId === instanceId) for (const f of ["hub.pid", "status.json", "control-token"]) rmSync(join(opts.stateDir, f), { force: true });
-    } catch { /* another owner or no published state: never remove it */ }
-    onStop?.();
+      // A peer can still be inside memory recall or its native handshake when kill arrives.
+      // Drain those starts before taking the final owned-process snapshot.
+      await Promise.allSettled([...starting.values()]);
+      const exits = await Promise.allSettled([...bus.peers.values()].map((p) => p.stop()).concat(sidecar ? [sidecar.stop()] : []));
+      // A peer whose stop rejects must not strand the daemon (issue #56): its failure is
+      // logged and shutdown finishes anyway, or the process ignores SIGTERM forever.
+      for (const exit of exits) if (exit.status === "rejected") log(`peer stop failed during shutdown: ${(exit.reason as Error)?.message ?? exit.reason}`);
+      await modelRelay?.close();
+      await piReceipts?.close();
+      budget.close();
+      board.close();
+      server.stop(true);
+      try { bus.closeJournal(); } catch { /* the state dir is gone; the journal went with it */ }
+    } finally {
+      // State removal and the stopped notification run no matter what failed above,
+      // or daemon.stopped never resolves and the daemon outlives its project.
+      try {
+        const current = JSON.parse(readFileSync(join(opts.stateDir, "status.json"), "utf8"));
+        if (current.instanceId === instanceId) for (const f of ["hub.pid", "status.json", "control-token"]) rmSync(join(opts.stateDir, f), { force: true });
+      } catch { /* another owner or no published state: never remove it */ }
+      onStop?.();
+    }
   }
   let onStop: (() => void) | undefined;
+
+  // A hub whose project root or state dir vanished has nothing left to serve: the test suite
+  // rmSync's the temp dir of a leaked daemon, and operators delete projects (issue #56).
+  // The check is slow and unref'd, so it never keeps a daemon alive on its own.
+  const orphanWatch = setInterval(() => {
+    if (stopping) return;
+    if (existsSync(opts.cwd) && existsSync(opts.stateDir)) return;
+    log("project root or state directory is gone; shutting down");
+    void stop().catch((error) => console.error(`shutdown incomplete: ${(error as Error).message}`));
+  }, opts.orphanWatchMs ?? 10_000);
+  orphanWatch.unref?.();
+  intervals.push(orphanWatch);
 
   const tokenFile = join(opts.stateDir, "control-token");
   writeFileSync(tokenFile, token, { mode: 0o600 });

@@ -71,7 +71,9 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub queue list [--peer <id>] [--json]       inspect durable deliveries
   ahub queue show <delivery-id>               inspect one delivery and revision
   ahub queue resolve <delivery-id> --action completed|retry|discard --reason <text>
-  ahub status | logs [-f] | doctor | kill`;
+  ahub status | logs [-f] | doctor | kill
+  ahub doctor --orphans [--kill]  list registrations whose project root is gone; --kill stops their
+                               daemons (SIGTERM, then SIGKILL) only after the process identity checks out`;
 
 const argv = process.argv.slice(2);
 let selector: string | undefined;
@@ -162,6 +164,87 @@ async function printProjects(json = false) {
     if (row.error) console.log(`  ${row.error}`);
   }
   if (!rows.length) console.log("No registered projects. Run ahub init in a project directory.");
+}
+
+/** Full command line of a live process, undefined once it is gone. */
+function processCommandLine(pid: number): string | undefined {
+  const res = spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
+  if (res.status !== 0) return undefined;
+  return res.stdout.trim() || undefined;
+}
+
+/**
+ * A bare PID is never enough to kill on: it must belong to this project's hub daemon.
+ * The daemon argv is `<bun> .../cli/main.ts --project <root> daemon [--unattended]`, built by
+ * startProject from the registry row. ps joins argv with spaces and drops quoting, so the
+ * token after `--project` must equal the root exactly: a substring check would let an orphan
+ * rooted at /tmp/foo match a healthy hub launched with --project /tmp/foo2, and a root whose
+ * path contains a space simply can never be verified this way and is refused (issue #56).
+ */
+function hubDaemonCommand(pid: number, root: string): string | undefined {
+  const command = processCommandLine(pid);
+  if (!command) return undefined;
+  const tokens = command.split(/\s+/);
+  const project = tokens.indexOf("--project");
+  if (project < 1 || tokens[project + 1] !== root || tokens[project + 2] !== "daemon") return undefined;
+  return command;
+}
+
+/** Live PID candidates for a registration whose project root is gone: the claim, the manifest, the legacy pid file. */
+function orphanPids(project: Project): number[] {
+  const candidates = new Set<number>();
+  if (typeof project.pid === "number") candidates.add(project.pid);
+  const control = readControl(project.stateDir);
+  if (control && Number.isSafeInteger(control.pid)) candidates.add(control.pid!);
+  try {
+    const pid = Number(readFileSync(join(project.stateDir, "hub.pid"), "utf8").trim());
+    if (Number.isSafeInteger(pid) && pid > 0) candidates.add(pid);
+  } catch { /* no legacy pid file */ }
+  return [...candidates].filter((pid) => {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  });
+}
+
+const processGone = (pid: number): boolean => !processCommandLine(pid);
+
+async function killOrphan(pid: number, root: string): Promise<boolean> {
+  if (!hubDaemonCommand(pid, root)) {
+    console.log(`    pid ${pid}: command line is not this project's hub daemon; refusing to kill`);
+    return false;
+  }
+  try { process.kill(pid, "SIGTERM"); } catch { return true; } // exited meanwhile
+  const graceful = Date.now() + 3_000;
+  while (Date.now() < graceful && !processGone(pid)) await Bun.sleep(100);
+  if (processGone(pid)) { console.log(`    pid ${pid}: stopped with SIGTERM`); return true; }
+  // The PID may have been reused since SIGTERM; verify identity again before escalating.
+  if (!hubDaemonCommand(pid, root)) {
+    console.log(`    pid ${pid}: identity changed after SIGTERM; refusing SIGKILL`);
+    return false;
+  }
+  try { process.kill(pid, "SIGKILL"); } catch { return true; }
+  const hard = Date.now() + 2_000;
+  while (Date.now() < hard && !processGone(pid)) await Bun.sleep(100);
+  if (!processGone(pid)) {
+    console.log(`    pid ${pid}: still alive after SIGKILL`);
+    return false;
+  }
+  console.log(`    pid ${pid}: killed with SIGKILL`);
+  return true;
+}
+
+async function orphanDoctor(kill: boolean): Promise<void> {
+  const orphans = registeredProjects().filter((project) => !existsSync(project.root));
+  if (!orphans.length) return console.log("no orphaned hub registrations");
+  console.log("orphaned hub registrations (the project root is gone):");
+  let failed = 0;
+  for (const project of orphans) {
+    const pids = orphanPids(project);
+    console.log(`  ${project.id}  ${project.root}${pids.length ? `  live pid ${pids.join(", ")}` : "  no live process"}`);
+    if (!kill) continue;
+    for (const pid of pids) if (!(await killOrphan(pid, project.root))) failed++;
+  }
+  if (!kill) console.log("kill live orphans with `ahub doctor --orphans --kill`, then forget each row with `ahub projects remove <id>`");
+  if (failed) fail(`${failed} orphaned hub process(es) could not be stopped`);
 }
 
 function fail(message: string): never {
@@ -640,6 +723,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   doctor: async () => {
+    if (args.includes("--orphans")) return orphanDoctor(args.includes("--kill"));
     const version = (bin: string) => {
       const res = spawnSync(bin, ["--version"], { encoding: "utf8" });
       return res.status === 0 ? res.stdout.trim().split("\n")[0]! : undefined;

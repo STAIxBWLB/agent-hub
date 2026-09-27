@@ -17,6 +17,8 @@ export interface PiOptions {
   selectModel?: (envs: Envelope[]) => Promise<string | undefined>; maxSteps?: number;
   onTurnFailure?: (envs: Envelope[], reason: string) => Promise<void>;
   watchdogMs?: number; log?: (line: string) => void;
+  /** How long stop() waits for a graceful TUI owner exit before verified teardown. Tests shrink this. */
+  stopGraceMs?: number;
 }
 export interface PiTuiLaunch { cmd: string; args: string[]; env: NodeJS.ProcessEnv; }
 type RpcMessage = { type?: string; id?: string | number; command?: string; success?: boolean; data?: any; [key: string]: any };
@@ -212,22 +214,25 @@ export class PiPeer extends BasePeer {
     this.stopping = true;
     this.clearOwnerMonitor();
     if (this.opts.mode === "tui") {
+      const grace = this.opts.stopGraceMs ?? 5_000;
       const alive = () => !!this.ownerPid && ownerStillAlive(this.ownerPid, this.ownerSignature);
       if (this.ownerClaimed && alive()) {
         try {
           await Promise.race([this.sendTui({ type: "shutdown" }), (async () => {
-            const deadline = Date.now() + 5_000;
+            const deadline = Date.now() + grace;
             while (alive() && Date.now() < deadline) await Bun.sleep(50);
             if (alive()) throw new Error("Pi TUI shutdown was not acknowledged");
           })()]);
         }
         catch (error) {
-          if (alive()) { this.setState("busy"); this.startOwnerMonitor(); throw error; }
+          // A lost shutdown acknowledgement is not a reason to leave a native owner running
+          // next to its replacement: tear it down by verified identity, or fail stop (#56).
+          if (alive() && !(await this.stopSurvivingOwner())) { this.setState("busy"); this.startOwnerMonitor(); throw error; }
         }
       }
-      const deadline = Date.now() + 5_000;
+      const deadline = Date.now() + grace;
       while (alive() && Date.now() < deadline) await Bun.sleep(50);
-      if (alive()) { this.setState("busy"); this.startOwnerMonitor(); throw new Error("Pi TUI owner process did not exit"); }
+      if (alive() && !(await this.stopSurvivingOwner()) && alive()) { this.setState("busy"); this.startOwnerMonitor(); throw new Error("Pi TUI owner process did not exit"); }
       this.ownerClaimed = false;
       this.resolveTuiExit?.(); this.resolveTuiExit = undefined;
     }
@@ -241,6 +246,26 @@ export class PiPeer extends BasePeer {
     for (const pending of this.pending.values()) pending.reject(new Error("Pi owner stopped"));
     this.pending.clear();
     this.server?.stop(true); this.server = undefined; this.setState("offline");
+  }
+
+  /**
+   * Terminate a verified TUI owner that outlived its graceful shutdown. Every signal is
+   * guarded by ownerStillAlive, which re-reads the process signature on each poll, so a
+   * reused PID is never signaled. True once the owner is confirmed gone.
+   */
+  private async stopSurvivingOwner(): Promise<boolean> {
+    const pid = this.ownerPid;
+    const signature = this.ownerSignature;
+    const gone = () => !pid || !ownerStillAlive(pid, signature);
+    if (!pid || !signature || gone()) return true;
+    try { process.kill(pid, "SIGTERM"); } catch { return gone(); }
+    let deadline = Date.now() + 2_000;
+    while (!gone() && Date.now() < deadline) await Bun.sleep(50);
+    if (gone()) return true;
+    try { process.kill(pid, "SIGKILL"); } catch { return gone(); }
+    deadline = Date.now() + 2_000;
+    while (!gone() && Date.now() < deadline) await Bun.sleep(50);
+    return gone();
   }
 
   async deliver(envs: Envelope[], deliveryId?: string): Promise<void> {

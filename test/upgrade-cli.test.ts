@@ -18,10 +18,23 @@ test("installed-layout detached restart completes in an isolated project and pre
     return { code, out, err };
   };
   let operation: string | undefined;
+  // Every daemon generation this test starts (up, restart, recovery) is recorded, so a
+  // failed `kill` can never leave a detached hub spinning behind the suite (issue #56).
+  const pids = new Set<number>();
   const status = async () => {
     const client = await ControlClient.connect(join(root, ".agenthub/state"), { role: "console", projectRoot: root });
-    try { return (await client.request({ t: "status" })).status; }
+    try {
+      const reply = (await client.request({ t: "status" })).status;
+      if (typeof reply?.pid === "number") pids.add(reply.pid);
+      return reply;
+    }
     finally { client.close(); }
+  };
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const waitDead = async (pid: number, ms: number) => {
+    const deadline = Date.now() + ms;
+    while (alive(pid) && Date.now() < deadline) await Bun.sleep(50);
+    return !alive(pid);
   };
   try {
     expect((await cli(["init"])).code).toBe(0);
@@ -57,8 +70,19 @@ test("installed-layout detached restart completes in an isolated project and pre
     expect((await cli(["up"], { AGENTHUB_RECOVERY_OPERATION: operation! })).code).toBe(0);
     expect((await status()).recovery).toBeUndefined();
     expect((await cli(["board"])).out).toContain("Keep this task through restart");
+    expect(pids.size).toBeGreaterThan(0); // the harness recorded at least one daemon generation
   } finally {
-    const stop = await cli(["kill"], operation ? { AGENTHUB_RECOVERY_OPERATION: operation } : {});
-    if (stop.code === 0) rmSync(temp, { recursive: true, force: true });
+    try { await cli(["kill"], operation ? { AGENTHUB_RECOVERY_OPERATION: operation } : {}); } catch { /* best effort; the pid sweep below is the guarantee */ }
+    // The recovery flow also runs a detached dashboard manager out of the staged source.
+    try {
+      const manifest = JSON.parse(readFileSync(join(home, "manager", "status.json"), "utf8"));
+      if (typeof manifest?.pid === "number") pids.add(manifest.pid);
+    } catch { /* no manager this run */ }
+    for (const pid of pids) { try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ } }
+    for (const pid of pids) if (!(await waitDead(pid, 5_000))) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
+    const stuck = [];
+    for (const pid of pids) if (!(await waitDead(pid, 2_000))) stuck.push(pid);
+    rmSync(temp, { recursive: true, force: true }); // unconditional: the watchdog removes the state a straggler still holds
+    if (stuck.length) throw new Error(`hub daemon(s) survived SIGTERM and SIGKILL: ${stuck.join(", ")}`);
   }
 }, 30_000);

@@ -194,10 +194,25 @@ export class Bus {
     return this.recoveryHeld;
   }
 
-  /** Wait until a hold has fenced condensation, steering and queue drains already in flight. */
-  async fenceRecovery(): Promise<void> {
+  /**
+   * Wait until a hold has fenced condensation, steering and queue drains already in flight.
+   * A drain stuck on a peer that never settles must not spin a core forever (issue #56):
+   * the wait backs off and gives up, leaving queues, in-flight deliveries and a hold the
+   * caller did not set exactly as they were.
+   */
+  async fenceRecovery(timeoutMs = 5_000): Promise<void> {
+    const heldBefore = this.recoveryHeld;
     this.recoveryHeld = true;
-    while (this.draining.size || this.steering || this.condensing) await Bun.sleep(0);
+    const deadline = Date.now() + timeoutMs;
+    let delay = 1;
+    while (this.draining.size || this.steering || this.condensing) {
+      if (Date.now() >= deadline) {
+        this.recoveryHeld = heldBefore;
+        throw new Error(`recovery fence timed out after ${timeoutMs} ms with ${this.draining.size + this.steering + this.condensing} deliveries still in flight; retry the operation`);
+      }
+      await Bun.sleep(delay);
+      delay = Math.min(delay * 2, 50);
+    }
   }
 
   /** A bounded, JSON-safe representation of queued work and retry/dedupe state. */
