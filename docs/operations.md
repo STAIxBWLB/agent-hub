@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.7.4 and control protocol 10. Live verification
+This guide describes ahub 0.7.5 and control protocol 10. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Install and start
@@ -182,27 +182,27 @@ For an upgrade from 0.6.4 (protocol 9) or 0.7.0, use the patched coordinator wit
 replacing the global CLI prematurely. Run from the project directory:
 
 ```bash
-bunx --package @staix/agent-hub@0.7.4 ahub upgrade --to 0.7.4 --dry-run
-bunx --package @staix/agent-hub@0.7.4 ahub upgrade --to 0.7.4 --yes
+bunx --package @staix/agent-hub@0.7.5 ahub upgrade --to 0.7.5 --dry-run
+bunx --package @staix/agent-hub@0.7.5 ahub upgrade --to 0.7.5 --yes
 ```
 
 The coordinator verifies and retains the exact target package, preserves its
 own source, and promotes the global CLI only after restored projects pass
 readback. Do not use the old protocol-9 coordinator to target protocol 10.
 
-Once the installed CLI is 0.7.4, review the current project or all registered
+Once the installed CLI is 0.7.5, review the current project or all registered
 projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.7.4 --dry-run
+ahub upgrade --to 0.7.5 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.7.4 --yes
+ahub upgrade --to 0.7.5 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.5
+
 - A zero-turn Claude session no longer wedges an upgrade after restore either: the commit snapshot records whether the session ever persisted a transcript, coordinator verification re-derives persistence from the terminal binding exactly like the restore gate did, and daemon readiness tolerates a fresh session while the original transcript is absent (snapshots from older sources are re-derived from disk). A session with a transcript keeps the strict identity check in all three places. The status line tee now records the transcript path Claude reports (#64).
 
 ## 0.7.4
