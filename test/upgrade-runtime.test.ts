@@ -199,3 +199,53 @@ for (const change of ["incarnation", "session"] as const) {
     }
   });
 }
+
+
+// issue #64: the original session never wrote a transcript, so the restore gate accepted a
+// fresh session; verification must tolerate that mismatch, but only while the transcript
+// is still absent (a first turn landing after the plan keeps the identity check strict).
+test("production recovery verification tolerates a fresh zero-turn Claude session only while no transcript exists", async () => {
+  for (const transcriptExists of [false, true] as const) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-zeroturn-runtime-")));
+    const stateDir = join(root, "state");
+    const claudeConfig = join(root, "claude-config");
+    if (transcriptExists) {
+      const dir = join(claudeConfig, "projects", root.replace(/[^a-zA-Z0-9]/g, "-"));
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "session-original.jsonl"), "{}\n");
+    }
+    const daemon = await startDaemon({ cwd: root, stateDir, projectId: "p-review", instanceId: "i-review", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+      config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [] } } });
+    const consoleClient = await ControlClient.connect(stateDir, { role: "console" });
+    const peer = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" });
+    try {
+      // The restored session reports its fresh id from the start, exactly like the post-restore state.
+      writeFileSync(join(stateDir, "claude-session.json"), JSON.stringify({ instanceId: "i-review", sessionId: "session-replaced" }));
+      expect((await consoleClient.request({ t: "recovery", op: "prepare", expectedInstanceId: "i-review", operationId: "op-review" })).ok).toBe(true);
+      const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: { CLAUDE_CONFIG_DIR: claudeConfig } };
+      const terminal = { handle: "term-review", incarnationId: "inc-original", worktreeId: `repo::${root}`, worktreePath: root,
+        agentIdentity: "claude", sessionId: "session-replaced", connected: true };
+      const binding = { ...terminal, peer: "claude" as const, projectRoot: root, sessionId: "session-original", launch, launchMetadata: launch };
+      const planned: PlannedProject = { project: { id: "p-review", root, stateDir, instanceId: "i-review", pid: process.pid, basePort: 0 },
+        source: { state: "running", peers: [{ id: "claude", state: "idle", sessionId: "session-original" }], blockers: [] }, terminals: [binding], blockers: [] };
+      const progress: ProjectProgress = { id: "p-review", instanceId: "i-review", phase: "peers-restored", terminals: { "restored:claude": { ...binding, sessionId: "session-replaced" } } };
+      const operation = { id: "op-review", plan: { version: VERSION } } as RecoveryOperation;
+      const driver = makeRecoveryDriver(async (argv) => {
+        let result: unknown;
+        if (argv[2] === "list") result = { terminals: [terminal] };
+        else if (argv[2] === "show") result = { terminal };
+        else if (argv[2] === "wait") result = { wait: { satisfied: true } };
+        else throw new Error("unexpected terminal mutation");
+        return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
+      });
+      if (transcriptExists) {
+        await expect(driver.verify(planned, progress, operation)).rejects.toThrow("Claude resumed a different conversation");
+      } else {
+        // Tolerated: the run now stops at the later integrity readback (prepared, not restored).
+        await expect(driver.verify(planned, progress, operation)).rejects.toThrow("preservation was not verified");
+      }
+    } finally {
+      peer.close(); consoleClient.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true });
+    }
+  }
+});

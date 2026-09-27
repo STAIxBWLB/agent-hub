@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { homedir } from "node:os";
 import type { ServerWebSocket } from "bun";
 import { AcpPeer, type PermissionRequest } from "../adapters/acp.ts";
 import { CodexPeer } from "../adapters/codex-appserver.ts";
@@ -480,27 +481,44 @@ export async function startDaemon(opts: DaemonOptions) {
       // Kimi/local rebuild a fresh worker with task context on the target; native
       // Claude and Pi sessions must keep their exact identities across restoration.
       const freshWorker = recoveryPhase === "restored" && (saved.id === "kimi" || saved.id === "local");
-      if (!freshWorker && saved.sessionId && saved.sessionId !== now.sessionId) return false;
+      if (!freshWorker && saved.sessionId && saved.sessionId !== now.sessionId) {
+        // #64: a Claude session that never persisted a transcript cannot be resumed, so the
+        // restore gate accepted a fresh session and nothing it stood for is lost. Snapshots
+        // written before this flag existed are re-derived from disk.
+        const unpersistedClaude = saved.id === "claude" && (saved.sessionPersisted === false || (saved.sessionPersisted === undefined && !claudeTranscriptPersisted(saved.sessionId)));
+        if (!unpersistedClaude) return false;
+      }
       return true;
     });
   };
-  const claudeSessionId = () => {
+  const claudeSession = (): { sessionId?: string; transcriptPath?: string } => {
     try {
       const value = JSON.parse(readFileSync(join(opts.stateDir, "claude-session.json"), "utf8"));
-      if (value.instanceId !== instanceId) return undefined;
+      if (value.instanceId !== instanceId) return {};
       try {
         const records = JSON.parse(readFileSync(join(opts.stateDir, "terminal-recovery.json"), "utf8"));
         const current = Array.isArray(records) ? records.find((row) => row?.peer === "claude" && row?.projectRoot === opts.cwd && row?.instanceId === instanceId) : undefined;
-        if (current?.launchId && value.launchId !== current.launchId) return undefined;
+        if (current?.launchId && value.launchId !== current.launchId) return {};
       } catch { /* no managed terminal record: the instance fence is still enforced */ }
-      return typeof value.sessionId === "string" && value.sessionId ? value.sessionId : undefined;
-    } catch { return undefined; }
+      return {
+        ...(typeof value.sessionId === "string" && value.sessionId ? { sessionId: value.sessionId } : {}),
+        ...(typeof value.transcriptPath === "string" && value.transcriptPath ? { transcriptPath: value.transcriptPath } : {}),
+      };
+    } catch { return {}; }
+  };
+  /** Claude persists projects/<slug>/<sessionId>.jsonl only with the first turn. Prefer the
+   * path Claude itself reported through the status line; fall back to the slug computation. */
+  const claudeTranscriptPersisted = (sessionId: string): boolean => {
+    const reported = claudeSession();
+    if (reported.sessionId === sessionId && reported.transcriptPath) return existsSync(reported.transcriptPath);
+    const config = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+    return existsSync(join(config, "projects", opts.cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`));
   };
   const recoveryPeers = (): Record<string, RestartPeerSnapshot> => Object.fromEntries([...bus.peers].map(([id, peer]) => {
     const metadata = peer.recoveryMetadata?.() ?? {};
     const row: RestartPeerSnapshot = { id, state: peer.state, queueIds: bus.queueIds(id), ...(metadata.launch ? { launch: metadata.launch as Record<string, unknown> } : {}) };
     if (typeof metadata.threadId === "string") row.threadId = metadata.threadId;
-    const sessionId = id === "claude" ? claudeSessionId() : metadata.sessionId;
+    const sessionId = id === "claude" ? claudeSession().sessionId : metadata.sessionId;
     if (typeof sessionId === "string" && sessionId) row.sessionId = sessionId;
     return [id, row];
   }));
@@ -991,6 +1009,8 @@ export async function startDaemon(opts: DaemonOptions) {
       const peers = (recoveryPeerSnapshot ?? Object.values(currentPeers)).map((saved) => ({
         ...saved,
         queueIds: bus.queueIds(saved.id),
+        // Recorded at commit, not prepare: a first turn landing in between flips it (#64).
+        ...(saved.id === "claude" && saved.sessionId ? { sessionPersisted: claudeTranscriptPersisted(saved.sessionId) } : {}),
       }));
       const snapshot: RestartSnapshot = {
         schemaVersion: 1,

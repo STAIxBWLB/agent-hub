@@ -25,7 +25,10 @@ try {
   if (sessionId && dir) {
     mkdirSync(dir, { recursive: true });
     const file = join(dir, "claude-session.json");
-    writeFileSync(`${file}.tmp`, JSON.stringify({ at: Date.now(), sessionId, ...(process.env.AGENTHUB_INSTANCE_ID ? { instanceId: process.env.AGENTHUB_INSTANCE_ID } : {}), ...(process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {}) }), { mode: 0o600 });
+    // The transcript path lets the hub tell a zero-turn session (file not yet created, so
+    // `claude --resume` can never work) from one whose conversation must be preserved (#64).
+    const transcriptPath = typeof parsed.transcript_path === "string" && parsed.transcript_path ? parsed.transcript_path : undefined;
+    writeFileSync(`${file}.tmp`, JSON.stringify({ at: Date.now(), sessionId, ...(transcriptPath ? { transcriptPath } : {}), ...(process.env.AGENTHUB_INSTANCE_ID ? { instanceId: process.env.AGENTHUB_INSTANCE_ID } : {}), ...(process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {}) }), { mode: 0o600 });
     chmodSync(`${file}.tmp`, 0o600);
     renameSync(`${file}.tmp`, file);
   }

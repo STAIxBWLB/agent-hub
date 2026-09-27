@@ -18,6 +18,10 @@ export interface RestartPeerSnapshot {
   /** Safe native correlation metadata. Never include prompt/message text here. */
   threadId?: string;
   sessionId?: string;
+  /** Claude only: false when the session never persisted a transcript (zero turns), so it
+   * cannot be resumed and a fresh session is accepted instead. Absent in snapshots written
+   * before this flag; those are re-derived from disk (#64). */
+  sessionPersisted?: boolean;
 }
 
 export interface RestartSnapshot {

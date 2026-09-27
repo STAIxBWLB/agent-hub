@@ -352,7 +352,13 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         const peer = live.peers.find((p) => p.id === old.id);
         if (!peer || !["idle", "busy", "paused"].includes(peer.state)) throw new Error(`${old.id}: peer reattachment not verified`);
         if (old.id === "codex" && peer.threadId !== old.threadId) throw new Error("Codex resumed a different conversation");
-        if (old.id === "claude" && peer.sessionId !== old.sessionId) throw new Error("Claude resumed a different conversation");
+        if (old.id === "claude" && peer.sessionId !== old.sessionId) {
+          // #64: the restore gate already accepted a fresh session when the original never
+          // persisted a transcript. Re-derive persistence from the binding exactly like that
+          // gate did, so a first turn landing after the plan was made keeps the check strict.
+          const binding = (planned.terminals as TerminalBinding[]).find((t) => t.peer === "claude");
+          if (!binding || binding.sessionId !== old.sessionId || claudeTranscriptExists(binding)) throw new Error("Claude resumed a different conversation");
+        }
         if (old.id === "pi" && (peer.sessionId !== old.sessionId || (old.sessionFile && peer.sessionFile !== old.sessionFile))) throw new Error("Pi resumed a different conversation");
       }
       for (const original of planned.terminals as TerminalBinding[]) {

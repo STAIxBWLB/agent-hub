@@ -219,6 +219,9 @@ package digest, terminal binding, and phase receipt. An uncertain terminal
 creation is never repeated blindly. If Claude shows its development-channel confirmation screen, confirm it in
 the captured terminal, then run `ahub recovery resume <operation-id>`; resume must not open a duplicate terminal.
 Kimi and local sessions may start fresh with preserved routing and task context.
+A Claude session that never persisted a transcript (zero turns) also starts fresh:
+there is nothing to resume, so the upgrade accepts the new session id; a session
+with a transcript must come back with its original id.
 Previously stopped projects stay stopped; only the reviewed running projects
 are upgraded.
 

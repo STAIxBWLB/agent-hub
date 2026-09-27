@@ -97,6 +97,7 @@ Run this before reporting any task complete, and paste the output. A failing tes
 - A reply is addressed, never broadcast. An adapter that answers a delivery passes `to: replyAudience(envs)`; anything else with an `inReplyTo` inherits that envelope's sender. Leaving `to` empty fans the message out to every peer, which is what made one directed question cost every agent a turn.
 - `digest` is not a peer: addressing a reply at the envelopes the peer was handed sends it nowhere once a delivery was condensed. The bus resolves `digest` back through `lastDelivery.originals`; anything else that reads a reply's `to` has to do the same.
 - A hub-native peer (Pi, the local worker) does not get to call its own message `important`: `capPriority` caps it unless the delivery it answers held an `important` envelope addressed to it. Check the delivery, not `replyParent`, which ties on hop and takes the later item. Do not bypass it by setting `priority` in the adapter.
+- A zero-turn Claude session has no transcript, so it can never be resumed: every identity gate that compares session ids (restore, coordinator verify, daemon readiness) must tolerate a fresh session while the transcript is absent and stay strict the moment one exists. The commit snapshot records `sessionPersisted` for the restored daemon, and snapshots too old to have it are re-derived from disk. Never treat "session id changed" as proof of a lost conversation without checking the transcript first.
 
 <!-- AGENT_HUB:BEGIN (managed by `ahub init`, edits inside are overwritten) -->
 ## agent-hub

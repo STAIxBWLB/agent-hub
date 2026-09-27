@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../src/hub/bus.ts";
@@ -237,4 +237,82 @@ test("a detached peer does not wedge recovery readiness; a changed thread still 
   codex.thread = "thread-T";
   expect(await ready()).toBe(true);
   expect((await console_.request({ t: "recovery", op: "abort", operationId: "op-wedge", expectedInstanceId: "instance-wedge" })).aborted).toBe(true);
+});
+
+
+// issue #64: the commit snapshot records whether the Claude session ever persisted a
+// transcript, preferring the path Claude itself reported through the status line.
+test("commit records whether the Claude session has a persisted transcript", async () => {
+  for (const persisted of [false, true] as const) {
+    const stateDir = mkdtempSync(join(tmpdir(), "agenthub-recovery-persisted-"));
+    const transcript = join(stateDir, "transcript.jsonl");
+    if (persisted) writeFileSync(transcript, "{}\n");
+    const daemon = await startDaemon({
+      cwd: stateDir, projectId: "project-persisted", instanceId: "instance-persisted", stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+      config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false } },
+    });
+    const console_ = await ControlClient.connect(stateDir, { role: "console" });
+    const peer = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" });
+    writeFileSync(join(stateDir, "claude-session.json"), JSON.stringify({ instanceId: "instance-persisted", sessionId: "s-old", transcriptPath: transcript }));
+    expect((await console_.request({ t: "recovery", op: "prepare", operationId: "op-persisted", expectedInstanceId: "instance-persisted" })).recovery.phase).toBe("prepared");
+    expect((await console_.request({ t: "recovery", op: "commit", operationId: "op-persisted", expectedInstanceId: "instance-persisted" })).committed).toBe(true);
+    const snapshot = readRestartSnapshot(stateDir, { projectRoot: stateDir, projectId: "project-persisted", operationId: "op-persisted" });
+    expect(snapshot?.peers.find((p) => p.id === "claude")?.sessionPersisted).toBe(persisted);
+    console_.close();
+    peer.close();
+    await daemon.stopped;
+  }
+});
+
+// issue #64: a zero-turn Claude session cannot be resumed (no transcript on disk), so a
+// fresh session reattaching after restore is not a changed conversation. The tolerance
+// ends the moment a transcript exists, and snapshots written before the flag are
+// re-derived from disk.
+test("a restored zero-turn Claude session may reattach fresh only while no transcript exists", async () => {
+  const cases = [
+    { name: "flag false", sessionPersisted: false as boolean | undefined, transcriptOnDisk: false, ready: true },
+    { name: "flag true", sessionPersisted: true as boolean | undefined, transcriptOnDisk: false, ready: false },
+    { name: "legacy snapshot, no transcript", sessionPersisted: undefined, transcriptOnDisk: false, ready: true },
+    { name: "legacy snapshot, transcript exists", sessionPersisted: undefined, transcriptOnDisk: true, ready: false },
+  ];
+  for (const c of cases) {
+    const stateDir = mkdtempSync(join(tmpdir(), "agenthub-recovery-zeroturn-"));
+    const claudeConfig = join(stateDir, "claude-config");
+    mkdirSync(claudeConfig, { recursive: true });
+    if (c.transcriptOnDisk) {
+      const dir = join(claudeConfig, "projects", stateDir.replace(/[^a-zA-Z0-9]/g, "-"));
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "s-old.jsonl"), "{}\n");
+    }
+    writeRestartSnapshot(stateDir, {
+      schemaVersion: 1, projectRoot: stateDir, projectId: "project-zeroturn", sourceInstanceId: "old", operationId: "op-zeroturn", committedAt: Date.now(),
+      bus: { schemaVersion: 1, queues: {}, prefaces: {}, seen: [], attempts: {}, withdrawn: [] },
+      manualPaused: [],
+      peers: [{ id: "claude", state: "idle", queueIds: [], launch: { kind: "claude-channel" }, sessionId: "s-old", ...(c.sessionPersisted === undefined ? {} : { sessionPersisted: c.sessionPersisted }) }],
+    });
+    const previousRecovery = process.env.AGENTHUB_RECOVERY_OPERATION;
+    const previousClaudeConfig = process.env.CLAUDE_CONFIG_DIR;
+    process.env.AGENTHUB_RECOVERY_OPERATION = "op-zeroturn";
+    process.env.CLAUDE_CONFIG_DIR = claudeConfig;
+    let daemon: Awaited<ReturnType<typeof startDaemon>>;
+    try {
+      daemon = await startDaemon({ cwd: stateDir, stateDir, projectId: "project-zeroturn", instanceId: "instance-zeroturn", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+        config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } });
+    } finally {
+      if (previousRecovery === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION; else process.env.AGENTHUB_RECOVERY_OPERATION = previousRecovery;
+    }
+    const console_ = await ControlClient.connect(stateDir, { role: "console" });
+    try {
+      const peer = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" });
+      writeFileSync(join(stateDir, "claude-session.json"), JSON.stringify({ instanceId: "instance-zeroturn", sessionId: "s-fresh" }));
+      await Bun.sleep(20);
+      const inspected = await console_.request({ t: "recovery", op: "inspect", expectedInstanceId: "instance-zeroturn" });
+      expect(inspected.recovery.ready).toBe(c.ready);
+      peer.close();
+    } finally {
+      console_.close();
+      await daemon.stop();
+      if (previousClaudeConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = previousClaudeConfig;
+    }
+  }
 });
