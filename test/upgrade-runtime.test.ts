@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
@@ -77,6 +77,68 @@ test("closeTerminals treats an already-exited TUI as closed without issuing a te
     expect(calls.length).toBeGreaterThan(0);
     expect(calls.every((argv) => argv[1] === "terminal" && argv[2] === "list")).toBe(true); // an inventory read, never a wait or close
   } finally { server.stop(true); rmSync(stateDir, { recursive: true, force: true }); rmSync(projectRoot, { recursive: true, force: true }); }
+});
+
+// issue #21: a zero-turn Claude session never persisted a transcript, so --resume can never
+// restore it and the pending-restored gate wedged. A fresh attach is accepted only then.
+function claudeRestoreFixture(attachedSession: string) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-restore-claude-")));
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-restore-claude-state-"));
+  const configDir = mkdtempSync(join(tmpdir(), "ahub-restore-claude-config-"));
+  const server = Bun.serve<any>({
+    hostname: "127.0.0.1", port: 0,
+    fetch(_request, srv) { return srv.upgrade(_request) ? undefined : new Response("no"); },
+    websocket: { message(ws, data) {
+      const msg = JSON.parse(String(data));
+      if (msg.t === "hello") ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p-restore", instanceId: "i-target", cwd: root, protocol: PROTOCOL }));
+      else if (msg.t === "status") ws.send(JSON.stringify({ rid: msg.rid, t: "status", ok: true, status: { projectId: "p-restore", instanceId: "i-target", cwd: root, version: VERSION, protocol: PROTOCOL } }));
+      else ws.send(JSON.stringify({ rid: msg.rid, t: "recovery", ok: true, recovery: { operationId: "op-restore", phase: "restored", ready: true, peers: { claude: { id: "claude", state: "idle", sessionId: attachedSession } } } }));
+    } },
+  });
+  writeFileSync(join(stateDir, "control-token"), "restore-token\n");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: server.port, protocol: PROTOCOL, projectId: "p-restore", instanceId: "i-target", cwd: root }));
+  const fresh = { handle: "term-fresh", incarnationId: "inc-fresh", worktreeId: `repo::${root}`, worktreePath: root, agentIdentity: "claude", sessionId: attachedSession, connected: true };
+  const run = async (argv: string[]) => {
+    let result: unknown;
+    if (argv[2] === "list") result = { terminals: [fresh] };
+    else if (argv[2] === "show") result = { terminal: fresh };
+    else if (argv[2] === "wait") result = { wait: { satisfied: true } };
+    else throw new Error(`unexpected orca command: ${argv.join(" ")}`);
+    return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
+  };
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js", argv: [], env: { CLAUDE_CONFIG_DIR: configDir } };
+  const binding = { peer: "claude" as const, handle: "term-old", incarnationId: "inc-old", worktreeId: `repo::${root}`, projectRoot: root, sessionId: "session-S", launch, launchMetadata: launch };
+  const planned: PlannedProject = {
+    project: { id: "p-restore", root, stateDir, instanceId: "i-target", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-target", version: VERSION, protocol: PROTOCOL, peers: [], blockers: [] },
+    terminals: [binding], blockers: [],
+  };
+  const progress: ProjectProgress = { id: "p-restore", instanceId: "i-target", phase: "peers-restored", terminals: { "restored:claude": "pending" } };
+  const op = { id: "op-restore", targetRoot: "/target", plan: { version: VERSION } } as RecoveryOperation;
+  const cleanup = () => { server.stop(true); for (const dir of [root, stateDir, configDir]) rmSync(dir, { recursive: true, force: true }); };
+  return { root, configDir, cleanup, driver: makeRecoveryDriver(run), planned, progress, op };
+}
+
+test("a pending restored:claude accepts a fresh attach when the original session never persisted a transcript", async () => {
+  const f = claudeRestoreFixture("session-F");
+  try {
+    await f.driver.restore(f.planned, f.progress, f.op, "claude", () => {});
+    const recorded = f.progress.terminals["restored:claude"] as any;
+    expect(recorded.sessionId).toBe("session-F"); // revalidated against the attach that actually exists
+    expect(recorded.handle).toBe("term-fresh");
+  } finally { f.cleanup(); }
+});
+
+test("a pending restored:claude with a transcript on disk keeps the strict identity check", async () => {
+  const f = claudeRestoreFixture("session-F");
+  try {
+    const slug = f.root.replace(/[^a-zA-Z0-9]/g, "-");
+    const transcript = join(f.configDir, "projects", slug);
+    mkdirSync(transcript, { recursive: true });
+    writeFileSync(join(transcript, "session-S.jsonl"), "{}\n");
+    await expect(f.driver.restore(f.planned, f.progress, f.op, "claude", () => {})).rejects.toThrow("terminal creation outcome is uncertain");
+    expect(f.progress.terminals["restored:claude"]).toBe("pending");
+  } finally { f.cleanup(); }
 });
 
 test("recovery driver uses the source manifest protocol for a protocol-9 prepare", async () => {

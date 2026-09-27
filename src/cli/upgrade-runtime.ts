@@ -1,4 +1,5 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ControlClient, PROTOCOL, RECOVERY_SOURCE_PROTOCOLS, readControl } from "../hub/control-client.ts";
@@ -12,6 +13,17 @@ import { refreshManager } from "../hub/manager.ts";
 
 export const PACKAGE_ROOT = resolve(import.meta.dir, "../..");
 const orcaExecutable = () => process.env.ORCA_CLI_COMMAND || (process.env.ORCA_DEV_REPO_ROOT ? "orca-dev" : process.platform === "linux" && !process.env.ORCA_TERMINAL_HANDLE ? "orca-ide" : "orca");
+
+/**
+ * Claude Code persists a transcript at projects/<slug>/<sessionId>.jsonl under its config
+ * dir, creating the project directory only with the first persisted turn; the slug replaces
+ * every non-alphanumeric character of the project root with '-'.
+ */
+function claudeTranscriptExists(binding: TerminalBinding): boolean {
+  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+  const slug = binding.projectRoot.replace(/[^a-zA-Z0-9]/g, "-");
+  return existsSync(join(config, "projects", slug, `${binding.sessionId}.jsonl`));
+}
 
 function terminalOptions(run: RunCommand = runCommand): TerminalRecoveryOptions {
   return { orcaExecutable: orcaExecutable(), runner: async (args) => {
@@ -286,10 +298,20 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         if (progress.terminals[key] === "pending") {
           const observed = await inspectRecovery(planned.project);
           const peer = observed.peers.find((p) => p.id === original.peer);
-          if ((original.peer === "codex" ? peer?.threadId : peer?.sessionId) !== original.sessionId) {
-            throw new Error(`${original.peer}: terminal creation outcome is uncertain; attach the original session manually, then resume`);
+          const attached = original.peer === "codex" ? peer?.threadId : peer?.sessionId;
+          let expected = original;
+          if (attached !== original.sessionId) {
+            // #21: a Claude session that never got a first turn has no transcript on disk,
+            // so `claude --resume S` can never succeed and nothing it stood for is lost by
+            // accepting the fresh attach. A session WITH a transcript keeps the strict
+            // identity check. Codex stays strict too: its rollout jsonl is written when the
+            // thread starts, so an unrestorable thread should not exist.
+            if (original.peer !== "claude" || !peer || peer.state === "offline" || !attached || claudeTranscriptExists(original)) {
+              throw new Error(`${original.peer}: terminal creation outcome is uncertain; attach the original session manually, then resume`);
+            }
+            expected = { ...original, sessionId: attached };
           }
-          const existing = await revalidateTerminal(planned, progress, original, false);
+          const existing = await revalidateTerminal(planned, progress, expected, false);
           progress.terminals[key] = existing; save(); continue;
         }
         const entrypoint = join(op.targetRoot!, "src/cli/main.js");
