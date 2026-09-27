@@ -86,6 +86,9 @@ test("lifecycle supports custom state, explicit project selection, and inherited
     expect(existsSync(join(custom, "status.json"))).toBe(true);
     expect(JSON.parse(readFileSync(join(custom, "status.json"), "utf8")).cwd).toBe(realpathSync(b));
   } finally {
+    // The daemon above lives in the custom state dir; a plain kill in b's cwd looks at the
+    // default state dir, finds nothing, exits 0 and stopAll's fallback never fires (#56).
+    await cli(b, ["kill"], { AGENTHUB_STATE_DIR: custom });
     await stopAll();
   }
 });

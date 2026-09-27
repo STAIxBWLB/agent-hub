@@ -10,12 +10,13 @@ node scripts/check-package.mjs
 
 tests=0
 bun test || tests=$?
-# issue #56: a daemon leaked by the suite spins a core for days. The daemon argv carries
-# --project <temp-root>, so the recovery test's temp-dir signature finds it. The guard runs
-# whether or not the tests passed; a leak fails the gate either way.
-if pgrep -f ahub-recovery-cli- >/dev/null 2>&1; then
+# issue #56: a daemon leaked by the suite spins a core for days. Test projects live in
+# mkdtemp dirs named ahub-*, and the daemon argv carries --project <temp-root>, so that
+# path signature finds any of them. The guard runs whether or not the tests passed;
+# a leak fails the gate either way.
+if pgrep -f "/ahub-" >/dev/null 2>&1; then
   echo "check: leaked agent-hub process(es) survived the test suite:" >&2
-  pgrep -fl ahub-recovery-cli- >&2 || true
+  pgrep -fl "/ahub-" >&2 || true
   exit 1
 fi
 if [ "$tests" -ne 0 ]; then exit "$tests"; fi
