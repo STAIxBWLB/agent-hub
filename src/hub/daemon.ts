@@ -471,6 +471,11 @@ export async function startDaemon(opts: DaemonOptions) {
     return recoveryPeerSnapshot.every((saved) => {
       const now = current[saved.id];
       if (!now) return true; // a detached peer is checked by the coordinator before terminal close
+      // A peer that went offline detached; it is not a changed conversation (#21). It is
+      // compared again the moment it reattaches, and release refuses while a peer that was
+      // online at the snapshot is still offline, so skipping the comparison cannot hide an
+      // identity change - it only keeps a detach from wedging readiness forever.
+      if (now.state === "offline") return true;
       if (saved.threadId && saved.threadId !== now.threadId) return false;
       // Kimi/local rebuild a fresh worker with task context on the target; native
       // Claude and Pi sessions must keep their exact identities across restoration.

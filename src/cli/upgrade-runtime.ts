@@ -224,13 +224,26 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           }
           progress.terminals[key] = true; save(); continue;
         }
+        // A peer whose TUI already exited left nothing to close: the source reports it
+        // detached, and inventory silence is the same proof the pending-reconcile path
+        // accepts. No mutation is issued for a terminal that no longer exists (#21).
+        const attached = (await inspectRecovery(planned.project)).peers.find((item) => item.id === binding.peer);
+        if (attached?.state === "offline") {
+          const result = await run([orcaExecutable(), "terminal", "list", "--json"]);
+          const inventory = JSON.parse(result.stdout);
+          const rows = inventory.result?.terminals;
+          if (result.code !== 0 || inventory.ok !== true || !Array.isArray(rows) || inventory.result?.truncated ||
+              rows.some((t: any) => t.handle === binding.handle || t.incarnationId === binding.incarnationId)) {
+            throw new Error(`${binding.peer}: terminal close outcome needs manual reconciliation`);
+          }
+          progress.terminals[key] = true; save(); continue;
+        }
         const idle = await waitForIdle(binding, 600_000, terminalOptions(run));
         if (!idle.satisfied) throw new Error(`${binding.peer}: terminal is not verified idle; source retained`);
         const source = await inspectRecovery(planned.project);
         if (source.instanceId !== planned.source.instanceId || source.recovery?.operationId !== op.id || !source.recovery.ready) {
           throw new Error("source preparation expired or changed while waiting for the terminal; no terminal was closed");
-        }
-        // Refresh the same prepared lease immediately before the terminal effect. Preserve
+        }        // Refresh the same prepared lease immediately before the terminal effect. Preserve
         // the original peer roster, including any terminal already closed in this operation.
         await control(planned.project, "prepare", op.id, planned.source.instanceId!);
         progress.terminals[key] = "pending"; save();

@@ -196,3 +196,45 @@ test("restored fresh local sessions retain manual pause and queued work before r
     expect(daemon.bus.queueIds("local")).toEqual([queued.id]);
   } finally { client.close(); await daemon.stop(); }
 });
+
+// issue #21: a TUI that exits after prepare must not wedge readiness forever, and a peer
+// that comes back with a DIFFERENT conversation must still wedge it.
+test("a detached peer does not wedge recovery readiness; a changed thread still does", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "agenthub-recovery-wedge-"));
+  const daemon = await startDaemon({
+    cwd: process.cwd(), projectId: "project-wedge", instanceId: "instance-wedge", stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false } },
+  });
+  cleanup.push(() => daemon.stop());
+  class CodexLike extends HeldPeer {
+    thread: string | undefined = "thread-T";
+    recoveryMetadata(): Record<string, unknown> {
+      return { launch: { kind: "codex-appserver" }, ...(this.thread ? { threadId: this.thread } : {}) };
+    }
+  }
+  const codex = new CodexLike("codex");
+  daemon.bus.add(codex);
+  await codex.start();
+  const console_ = await ControlClient.connect(stateDir, { role: "console" });
+  cleanup.push(() => console_.close());
+  const ready = async () => (await console_.request({ t: "recovery", op: "inspect", operationId: "op-wedge", expectedInstanceId: "instance-wedge" })).recovery.ready;
+
+  const prepared = await console_.request({ t: "recovery", op: "prepare", operationId: "op-wedge", expectedInstanceId: "instance-wedge" });
+  expect(prepared.recovery.phase).toBe("prepared");
+  expect(prepared.recovery.ready).toBe(true);
+
+  // The codex TUI exits: the peer detaches and its thread id is gone with it.
+  codex.thread = undefined;
+  codex.stateForTest("offline");
+  expect(await ready()).toBe(true); // not wedged: a detached peer is not a changed conversation
+
+  // A reattached peer carrying a different thread is the identity change the guard exists for.
+  codex.thread = "thread-other";
+  codex.stateForTest("idle");
+  expect(await ready()).toBe(false);
+
+  // The original thread coming back reads ready again.
+  codex.thread = "thread-T";
+  expect(await ready()).toBe(true);
+  expect((await console_.request({ t: "recovery", op: "abort", operationId: "op-wedge", expectedInstanceId: "instance-wedge" })).aborted).toBe(true);
+});

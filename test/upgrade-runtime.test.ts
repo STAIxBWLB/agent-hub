@@ -37,6 +37,48 @@ test("a stopping hub with its manifest still on disk inspects as unavailable wit
   } finally { rmSync(stateDir, { recursive: true, force: true }); rmSync(projectRoot, { recursive: true, force: true }); }
 });
 
+// issue #21: a peer whose TUI exited after prepare left nothing to close. closeTerminals
+// must journal the close from inventory silence instead of failing a wait on a dead terminal.
+test("closeTerminals treats an already-exited TUI as closed without issuing a terminal mutation", async () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "ahub-detached-project-"));
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-detached-state-"));
+  // A fake source daemon holding a prepared lease, with codex detached.
+  const server = Bun.serve<any>({
+    hostname: "127.0.0.1", port: 0,
+    fetch(_request, srv) { return srv.upgrade(_request) ? undefined : new Response("no"); },
+    websocket: { message(ws, data) {
+      const msg = JSON.parse(String(data));
+      if (msg.t === "hello") ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p-detached", instanceId: "i-detached", cwd: projectRoot, protocol: PROTOCOL }));
+      else if (msg.t === "status") ws.send(JSON.stringify({ rid: msg.rid, t: "status", ok: true, status: { projectId: "p-detached", instanceId: "i-detached", cwd: projectRoot, version: VERSION, protocol: PROTOCOL } }));
+      else ws.send(JSON.stringify({ rid: msg.rid, t: "recovery", ok: true, recovery: { operationId: "op-detached", phase: "prepared", ready: true, peers: { codex: { id: "codex", state: "offline" } } } }));
+    } },
+  });
+  writeFileSync(join(stateDir, "control-token"), "detached-token\n");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: server.port, protocol: PROTOCOL, projectId: "p-detached", instanceId: "i-detached", cwd: projectRoot }));
+  const calls: string[][] = [];
+  const run = async (argv: string[]) => {
+    calls.push(argv);
+    if (argv[1] === "terminal" && argv[2] === "list") return { code: 0, stdout: JSON.stringify({ ok: true, result: { terminals: [] } }), stderr: "" };
+    throw new Error(`unexpected orca command: ${argv.join(" ")}`);
+  };
+  try {
+    const driver = makeRecoveryDriver(run);
+    const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js", argv: [], env: {} };
+    const binding = { peer: "codex" as const, handle: "term-gone", incarnationId: "inc-gone", worktreeId: "repo::detached", projectRoot, sessionId: "thread-T", launch, launchMetadata: launch };
+    const planned: PlannedProject = {
+      project: { id: "p-detached", root: projectRoot, stateDir, instanceId: "i-detached", pid: null, basePort: 4600 },
+      source: { state: "running", instanceId: "i-detached", version: VERSION, protocol: PROTOCOL, peers: [{ id: "codex", state: "idle", threadId: "thread-T" }], blockers: [] },
+      terminals: [binding], blockers: [],
+    };
+    const progress: ProjectProgress = { id: "p-detached", phase: "prepared", terminals: {} };
+    const op = { id: "op-detached", plan: { version: VERSION } } as RecoveryOperation;
+    await driver.closeTerminals(planned, progress, op, () => {});
+    expect(progress.terminals["closed:codex"]).toBe(true);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((argv) => argv[1] === "terminal" && argv[2] === "list")).toBe(true); // an inventory read, never a wait or close
+  } finally { server.stop(true); rmSync(stateDir, { recursive: true, force: true }); rmSync(projectRoot, { recursive: true, force: true }); }
+});
+
 test("recovery driver uses the source manifest protocol for a protocol-9 prepare", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "ahub-source-v9-"));
   const projectRoot = mkdtempSync(join(tmpdir(), "ahub-source-v9-project-"));
