@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.7.4
+
+- A Claude session that never persisted a transcript (zero turns) no longer wedges an upgrade at restore: when the original transcript is absent, the coordinator accepts the fresh session the operator attached, because nothing was preserved and nothing is lost. Sessions with a transcript keep the strict identity check; Codex stays strict in all cases (#21).
+
 ## 0.7.3
 
 - A peer that detaches mid-upgrade no longer wedges the recovery: readiness ignores a now-offline peer's stale identity (a reattach with a different thread still blocks), an already-exited terminal is closed as a no-op instead of being waited on, and resume can drive the operation to release once the peer returns (#21).
