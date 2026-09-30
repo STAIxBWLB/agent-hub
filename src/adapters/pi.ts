@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { stopOwnedProcess } from "../hub/child-process.ts";
+import { realPath } from "../hub/project.ts";
 
 export interface PiModelDescriptor { id: string; name?: string; contextWindow?: number; maxTokens?: number; reasoning?: boolean; }
 export interface PiToolSchema { name: string; description?: string; parameters: Record<string, unknown>; }
@@ -139,11 +140,11 @@ export class PiPeer extends BasePeer {
     const sessions = join(this.opts.stateDir, "pi-sessions");
     mkdirSync(sessions, { recursive: true, mode: 0o700 });
     if (this.opts.sessionFile) {
-      const file = realpathSync(this.opts.sessionFile);
-      const rel = relative(realpathSync(sessions), file);
-      if (!rel || rel.startsWith("..") || resolve(realpathSync(sessions), rel) !== file) throw new Error("Pi session file is outside the managed project session directory");
+      const file = realPath(this.opts.sessionFile);
+      const rel = relative(realPath(sessions), file);
+      if (!rel || rel.startsWith("..") || resolve(realPath(sessions), rel) !== file) throw new Error("Pi session file is outside the managed project session directory");
       const header = JSON.parse(readFileSync(file, "utf8").split("\n", 1)[0]!);
-      if (header.type !== "session" || typeof header.cwd !== "string" || realpathSync(header.cwd) !== realpathSync(this.opts.cwd) || (this.opts.sessionId && header.id !== this.opts.sessionId)) throw new Error("Pi session header does not match the requested project/session");
+      if (header.type !== "session" || typeof header.cwd !== "string" || realPath(header.cwd) !== realPath(this.opts.cwd) || (this.opts.sessionId && header.id !== this.opts.sessionId)) throw new Error("Pi session header does not match the requested project/session");
     }
     const token = randomUUID();
     this.tuiExit = new Promise((resolvePromise) => { this.resolveTuiExit = resolvePromise; });

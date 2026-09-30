@@ -139,6 +139,34 @@ test.skipIf(!sandboxAvailable())("a local.deny entry with a quote or a backslash
   expect(output).not.toContain("hidden");
 });
 
+test("guardPath in a project whose path has a backslash: inside reads pass, escapes are still refused (issue #26)", () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-bs-")));
+  const cwd = join(base, "back\\slash");
+  mkdirSync(join(cwd, "sub"), { recursive: true });
+  writeFileSync(join(cwd, "a.txt"), "x");
+  symlinkSync(base, join(cwd, "out\\link"));
+  symlinkSync(join(cwd, "sub"), join(cwd, "in\\link"));
+  symlinkSync(join(cwd, "gone"), join(cwd, "dang\\ling"));
+  const ctx = { cwd, deny: [] };
+  expect(guardPath(ctx, "a.txt", "read")).toBe(join(cwd, "a.txt"));
+  expect(guardPath(ctx, "in\\link/new.txt", "write")).toBe(join(cwd, "sub", "new.txt"));
+  expect(() => guardPath(ctx, "../x", "read")).toThrow(/outside the project/);
+  expect(() => guardPath(ctx, "out\\link/x", "read")).toThrow(/outside the project/);
+  expect(() => guardPath(ctx, "dang\\ling", "write")).toThrow(/dangling symlink/);
+});
+
+test.skipIf(!sandboxAvailable())("the local worker's sandbox builds and works in a project whose path has a backslash (issue #26)", async () => {
+  const cwd = join(realpathSync(mkdtempSync(join(tmpdir(), "agenthub-bs-"))), "back\\slash");
+  mkdirSync(join(cwd, "private"), { recursive: true });
+  writeFileSync(join(cwd, "open.txt"), "visible");
+  writeFileSync(join(cwd, "private", "secret.txt"), "hidden");
+  const { output } = await sandboxedExec(["/bin/sh", "-c", "cat open.txt; cat private/secret.txt 2>/dev/null || echo blocked-deny; echo made > new.txt && echo wrote-inside"], { cwd, profile: profile(cwd, false, [], ["private/"]) });
+  expect(output).toContain("visible");
+  expect(output).toContain("blocked-deny");
+  expect(output).toContain("wrote-inside");
+  expect(output).not.toContain("hidden");
+});
+
 test.skipIf(!sandboxAvailable())("git: read-only subcommands run without asking, mutating ones ask, timeouts kill", async () => {
   const { cwd, ctx, asked } = project();
   Bun.spawnSync(["git", "init", "-q"], { cwd });

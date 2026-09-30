@@ -1,5 +1,6 @@
-import { lstatSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { realPath } from "../hub/project.ts";
 import { hasSegment, isDenied } from "./deny.ts";
 import { OUTPUT_CAP, sandboxedExec } from "./sandbox.ts";
 
@@ -31,7 +32,7 @@ const lexists = (p: string) => {
 
 /** Absolute path inside cwd after resolving symlinks, or an Error. `write` also refuses .git and .agenthub. */
 export function guardPath(ctx: Pick<ToolContext, "cwd" | "deny">, path: string, mode: "read" | "write"): string {
-  const root = realpathSync(ctx.cwd);
+  const root = realPath(ctx.cwd);
   const abs = resolve(root, path);
   // Resolve symlinks on the deepest part that exists: a link pointing outside must not pass as an inside path.
   // lstat, not exists: a dangling symlink "does not exist" to existsSync, yet a write through it lands at its target.
@@ -39,7 +40,7 @@ export function guardPath(ctx: Pick<ToolContext, "cwd" | "deny">, path: string, 
   while (!lexists(existing)) existing = dirname(existing);
   let realExisting: string;
   try {
-    realExisting = realpathSync(existing);
+    realExisting = realPath(existing);
   } catch {
     throw new Error(`${path} goes through a dangling symlink`);
   }

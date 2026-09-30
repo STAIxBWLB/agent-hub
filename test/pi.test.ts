@@ -91,6 +91,24 @@ test("Pi resume refuses a session outside its managed directory or from another 
   } finally { rmSync(stateDir, { recursive: true, force: true }); }
 });
 
+test("Pi resumes its own session in a project whose path has a backslash (issue #26)", async () => {
+  const base = mkdtempSync(join(process.cwd(), ".pi-backslash-"));
+  const cwd = join(base, "back\\slash");
+  const stateDir = join(cwd, ".agenthub", "state");
+  mkdirSync(join(stateDir, "pi-sessions"), { recursive: true });
+  const sessionFile = join(stateDir, "pi-sessions", "s.jsonl");
+  writeFileSync(sessionFile, JSON.stringify({ type: "session", id: "s", cwd }) + "\n");
+  const peer = new PiPeer("pi", {
+    cwd, stateDir, mode: "headless", backend: "dgx", cmd: ["bun", join(import.meta.dir, "fakes/pi-rpc.ts")], sessionFile,
+    relay: { url: "http://127.0.0.1:9/v1", token: "relay-token", models: [{ id: "dgx/coding" }] },
+    tools: [], executeTool: async () => "ok",
+  });
+  try {
+    await peer.start();
+    expect(peer.state).toBe("idle");
+  } finally { await peer.stop(); rmSync(base, { recursive: true, force: true }); }
+});
+
 for (const stopImmediately of [false, true]) test(`Pi native owner death without shutdown can be recovered (${stopImmediately ? "stop" : "monitor"})`, async () => {
   const stateDir = mkdtempSync(join(process.cwd(), ".pi-dead-owner-"));
   const owner = Bun.spawn(["sleep", "30"]);

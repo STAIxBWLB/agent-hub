@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { projectContext, projectRoot } from "../src/hub/project.ts";
+import { projectContext, projectRoot, realPath } from "../src/hub/project.ts";
 
 const git = (dir: string) => {
   Bun.spawnSync(["git", "init", "-q", dir]);
@@ -62,4 +62,24 @@ test("worktrees and nested repositories do not inherit parent project config", (
   const child = join(nested, "child");
   git(child);
   expect(projectRoot(child)).toBe(realpathSync(child));
+});
+
+// issue #26: Bun 1.3.14's realpathSync throws ENOENT for an existing path with a backslash in it.
+test("realPath resolves paths with a backslash like realpathSync would, and still refuses missing ones", () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-realpath-")));
+  const root = join(base, "back\\slash");
+  mkdirSync(join(root, "sub"), { recursive: true });
+  writeFileSync(join(root, "a.txt"), "x");
+  symlinkSync(join(root, "sub"), join(root, "in\\link"));
+  symlinkSync("sub", join(root, "rel\\link"));
+  symlinkSync(base, join(root, "out\\link"));
+  symlinkSync(join(root, "missing"), join(root, "dang\\ling"));
+  expect(realPath(root)).toBe(root);
+  expect(realPath(join(root, "a.txt"))).toBe(join(root, "a.txt"));
+  expect(realPath(join(root, "in\\link"))).toBe(join(root, "sub"));
+  expect(realPath(join(root, "rel\\link"))).toBe(join(root, "sub"));
+  expect(realPath(join(root, "out\\link"))).toBe(base);
+  expect(() => realPath(join(root, "dang\\ling"))).toThrow();
+  expect(() => realPath(join(root, "nope"))).toThrow();
+  expect(realPath(base)).toBe(realpathSync(base)); // ordinary paths take realpathSync's answer
 });

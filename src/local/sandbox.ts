@@ -1,7 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { realPath } from "../hub/project.ts";
 import { denyRegexes, sbplString } from "./deny.ts";
 
 const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
@@ -30,8 +31,8 @@ function externalGitDirs(root: string): string[] {
 export function profile(cwd: string, network: boolean, readAllow: string[] = [], deny: string[] = []): string {
   const home = homedir();
   const inHome = (p: string) => (p.startsWith("~/") ? join(home, p.slice(2)) : p);
-  const root = realpathSync(cwd);
-  const tmp = realpathSync(tmpdir());
+  const root = realPath(cwd);
+  const tmp = realPath(tmpdir());
   const gitDirs = externalGitDirs(root);
   const creds = [".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube", ".docker", ".netrc", ".npmrc", ".omniroute", ".claude", ".codex", ".kimi-code", "Library/Keychains"];
   return [

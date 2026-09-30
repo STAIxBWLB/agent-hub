@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- A project whose path contains a backslash works with the local worker and Pi again: Bun 1.3.14's `realpathSync` throws for such paths, so the sandbox profile, the file tools' path guard and the Pi resume check now resolve paths through `realPath`, which follows the path a component at a time when that happens (#26).
+
 ## 0.7.10
 
 - A `local.deny` entry, or a project path, containing `"` no longer breaks the local worker's sandbox profile (its bash and git tools stopped with a parse error); the deny rules are written as plain SBPL strings, which can hold a quote (#23).

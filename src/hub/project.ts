@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -15,6 +15,24 @@ const canonical = (path: string): string => {
 
 export function canonicalPath(path: string): string {
   return canonical(path);
+}
+
+/**
+ * realpathSync, except that Bun 1.3.14 throws ENOENT for an existing path containing a backslash (issue #26). Such a
+ * path is resolved a component at a time: the real parent, then the name, a symlink followed by hand. A missing path
+ * or a dangling symlink still throws, which guardPath relies on. Other paths take realpathSync's answer unchanged.
+ */
+export function realPath(path: string, links = 0): string {
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    if (!path.includes("\\") || links > 40) throw error;
+    const absolute = resolve(path);
+    const stat = lstatSync(absolute); // a missing path throws here, as realpathSync did
+    const parent = dirname(absolute);
+    const here = join(parent === absolute ? absolute : realPath(parent, links), basename(absolute));
+    return stat.isSymbolicLink() ? realPath(resolve(dirname(here), readlinkSync(absolute)), links + 1) : here;
+  }
 }
 
 function gitRoot(dir: string): string | undefined {
