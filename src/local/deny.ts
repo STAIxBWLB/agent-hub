@@ -17,7 +17,14 @@ export function isDenied(path: string, extra: string[] = []): boolean {
   return DENY_SEGMENTS.some((s) => hasSegment(norm, s)) || DENY_NAMES.some((re) => new RegExp(re).test(basename(norm))) || extra.some((e) => e && norm.includes(e));
 }
 
-const sbplEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/"/g, '\\"');
+/** Regex metacharacters only; `sbplString` quotes the finished regex. */
+const sbplEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * An SBPL string literal. Only the plain `"..."` form can hold a quote: in the raw `#"..."` form a backslash escapes
+ * nothing, so a `"` in a path ended the literal and broke the whole profile (issue #23).
+ */
+export const sbplString = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 
 /**
  * Seatbelt regex filters equivalent to isDenied. Seatbelt sees absolute paths, so the `local.deny` substrings are
@@ -32,5 +39,5 @@ export function denyRegexes(root: string, extra: string[] = []): string[] {
     ...DENY_SEGMENTS.map((s) => `/${sbplEscape(s)}(/|$)`),
     ...names,
     ...extra.filter(Boolean).map((e) => `^${sbplEscape(root)}/.*${sbplEscape(e)}`),
-  ].map((re) => `(regex #"${re.replace(/"/g, '\\"')}")`);
+  ].map((re) => `(regex ${sbplString(re)})`);
 }

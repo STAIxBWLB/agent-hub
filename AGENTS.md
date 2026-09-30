@@ -71,6 +71,7 @@ Run this before reporting any task complete, and paste the output. A failing tes
 - During a PII turn the worker's own words may carry the PII: `hub_remember` and `hub_task_propose` are refused for that turn, and its answers are filed on the board because the bus shows only a stub.
 - `assign()` never defaults to the task's current owner, or a decline can only come back to the decliner.
 - The state machine allows `in_progress -> approved` only for classes without a reviewer; `review()` checks `in_review` itself.
+- SBPL strings go through `sbplString` (the plain `"..."` form). In the raw `#"..."` form a backslash escapes nothing, so a `"` in a path ends the literal and the whole profile fails to parse.
 - One denylist, `src/local/deny.ts`: the path guard, the seatbelt profile and the memory filter all read it. Seatbelt sees absolute paths, so `local.deny` entries are anchored under the project root (a bare `private/` once denied all of `/private/var`).
 - `guardPath` walks with `lstat`: `existsSync` follows symlinks, so a dangling link looked like a new file and the write landed at its target.
 - git arguments never pass through `guardPath`; `gitArgsProblem` refuses absolute paths, `..`, `--no-index` and denylisted `rev:path` forms.

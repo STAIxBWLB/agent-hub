@@ -2,14 +2,14 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { denyRegexes } from "./deny.ts";
+import { denyRegexes, sbplString } from "./deny.ts";
 
 const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 export const OUTPUT_CAP = 20_000;
 
 export const sandboxAvailable = () => process.platform === "darwin" && existsSync(SANDBOX_EXEC);
 
-const q = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+const q = sbplString;
 
 /**
  * Seatbelt profile for everything the local worker executes (bash, git). Path checks cannot scope a shell,

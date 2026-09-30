@@ -123,6 +123,22 @@ test.skipIf(!sandboxAvailable())("sandbox: writes stay in the project, credentia
   expect(asked[0]).toStartWith("bash: echo inside");
 });
 
+test.skipIf(!sandboxAvailable())("a local.deny entry with a quote or a backslash, or a project root with a quote, still makes a profile that denies exactly those paths (issue #23)", async () => {
+  const cwd = join(realpathSync(mkdtempSync(join(tmpdir(), "agenthub-quote-"))), 'we"ird');
+  const entries = ['q"uoted/', "back\\slash/"];
+  mkdirSync(cwd);
+  for (const e of entries) {
+    mkdirSync(join(cwd, e));
+    writeFileSync(join(cwd, e, "secret.txt"), "hidden");
+  }
+  writeFileSync(join(cwd, "open.txt"), "visible");
+  const { output } = await sandboxedExec(["/bin/sh", "-c", `cat open.txt; cat 'q"uoted/secret.txt' 2>/dev/null || echo blocked-quote; cat 'back\\slash/secret.txt' 2>/dev/null || echo blocked-backslash`], { cwd, profile: profile(cwd, false, [], entries) });
+  expect(output).toContain("visible");
+  expect(output).toContain("blocked-quote");
+  expect(output).toContain("blocked-backslash");
+  expect(output).not.toContain("hidden");
+});
+
 test.skipIf(!sandboxAvailable())("git: read-only subcommands run without asking, mutating ones ask, timeouts kill", async () => {
   const { cwd, ctx, asked } = project();
   Bun.spawnSync(["git", "init", "-q"], { cwd });
