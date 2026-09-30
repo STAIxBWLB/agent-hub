@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bus } from "../src/hub/bus.ts";
 import { DeliveryJournal, type JournalDelivery } from "../src/hub/delivery-journal.ts";
-import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
+import { newEnvelope, noteLine, type Envelope } from "../src/hub/envelope.ts";
 import type { DeliveryReceipt, PeerAdapter } from "../src/hub/peers.ts";
 
 const dirs: string[] = [];
@@ -146,4 +146,30 @@ test("queue overflow is retained as a durable failed outcome", () => {
   expect(durable.snapshot().bus.queues.claude!.map((env) => env.id)).toEqual([second.id]);
   expect(durable.list().find((row) => row.originals.some((env) => env.id === first.id))).toMatchObject({ state: "failed", reason: "queue capacity exceeded" });
   bus.closeJournal();
+});
+
+test("a note that arrives while a delivery with the preface is in flight survives failed_safe and an operator retry, once each", async () => {
+  const { bus, durable } = setupBus();
+  let calls = 0;
+  const peer = new FakePeer("claude", async (_envs, id) => {
+    calls++;
+    if (calls === 1) { bus.note("claude", noteLine("codex", "fail", "mid-flight")); peer.onDelivery?.({ id: id!, state: "failed_safe" }); return; }
+    if (calls === 3) throw new Error("socket gone");
+    peer.onDelivery?.({ id: id!, state: "completed" });
+  });
+  bus.add(peer);
+  bus.preface("claude", "recall block");
+  bus.publish(newEnvelope("user", "m1", { to: ["claude"], priority: "important" }));
+  await waitFor(() => calls === 2, "safe retry");
+  expect(peer.deliveries[1]!.envs.map((e) => e.body)).toEqual(["recall block\n\nnote from codex [fail]: mid-flight", "m1"]);
+
+  bus.note("claude", noteLine("kimi", "finding", "second"));
+  bus.publish(newEnvelope("user", "m2", { to: ["claude"], priority: "important" }));
+  await waitFor(() => durable.list("claude").some((row) => row.state === "needs_review"), "review hold");
+  bus.note("claude", noteLine("kimi", "fail", "after the failure"));
+  const row = durable.list("claude").find((r) => r.state === "needs_review")!;
+  bus.resolveDelivery(row.id, row.revision, "retry", "operator");
+  await waitFor(() => calls === 4, "operator retry");
+  expect(peer.deliveries[3]!.envs.map((e) => e.body)).toEqual(["note from kimi [finding]: second\n\nnote from kimi [fail]: after the failure", "m2"]);
+  durable.close();
 });

@@ -429,7 +429,7 @@ inside a peer.
   repeats an observation already delivered to that peer.
 - Explicit shared notes. Tool `hub_remember(text, title?, tags?)` on every adapter and
   in the console (`ahub remember`) posts `memory/save` with
-  `metadata: {peer, task, kind: decision | finding | contract}` (payload verified live). The
+  `metadata: {peer, task, kind: decision | finding | contract | fail}` (payload verified live; `fail` and sharing with running peers amended in issue #68). The
   hub auto-saves the transitions that carry content, `done`, the review verdict and
   escalation (amended in M4: `proposed` and `accepted` would add two empty memories per
   task), and checkpoint summaries (M5), so handoff history is recallable next session.
@@ -693,3 +693,37 @@ pre-stream DGX fallback and PII policy remain intact. Ollama model/context
 mismatch fails explicitly, and errors do not resurrect a Python runtime.
 See issue #51 for the acceptance contract and docs/operations.md for the
 non-destructive migration procedure.
+
+
+## Amendment: shared notes, claims and done evidence (issue #68)
+
+Three mechanisms from Agensh (arXiv:2609.26781, a self-organized multi-agent harness)
+that need no new service and cost no peer an extra turn.
+
+- Notes reach peers working now. `hub_remember` gains `kind: "fail"` (an approach that
+  was tried and does not work, and why). A saved note is also handed to every other
+  peer as one line (`note from <peer> [<kind>]: ...`, at most 300 chars) in its presence
+  preface, so it rides on that peer's next delivery and never becomes a delivery of its
+  own. A preface keeps the newest 10 note lines; recall and restart context are never
+  trimmed, and a line in them that looks like a note is quoted, so peer-written task
+  detail can neither pass for a hub note nor be trimmed as one. A note is cut on a whole
+  character. Sharing is fail-open: a bus that cannot persist loses the sharing, not the
+  saved note. Auto notes (done, verdicts, escalation) are not shared: their stakeholders
+  already get task and review envelopes. A note whose text or title matches
+  `pii_patterns` is refused like a note about a PII task, because sharing would put it
+  in every cloud peer's prompt. A preface that went out with a failed delivery comes
+  back ahead of any preface created meanwhile instead of replacing it.
+- Claims. `hub_task_propose` with `owner` equal to the caller is a claim: the task is
+  assigned through the usual `assign()`, goes straight to `in_progress` with its
+  reviewer, and no task envelope comes back to the caller. When a task's `refs.paths`
+  overlap an open task of another owner (same path, or one is a directory of the other;
+  `.` is the whole project), the propose result, the new owner's task envelope and the
+  console say so. The later claimant settles it with that owner: only the new owner is
+  told to settle it, a caller proposing for someone else hears that the owner was told
+  (or, while nobody owns the task, that whoever takes it will be),
+  and the other owner is not interrupted. PII tasks are left out on both sides.
+  Implementers are told to claim work nobody assigned them.
+- Done evidence. The implementer role, the `hub_task_done` summary and the task
+  envelope's closing line ask for what changed, why, and the check that was run with
+  its result. The verifier role already asks for what passed and what did not, so it
+  stays as it was.

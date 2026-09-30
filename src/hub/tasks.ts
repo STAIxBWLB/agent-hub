@@ -2,7 +2,7 @@ import type { Briefs } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
 import { CLASSES, type Board, type Task, type TaskClass, type TaskRefs } from "./board.ts";
 import type { Bus } from "./bus.ts";
-import { HUB, newEnvelope, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
+import { HUB, newEnvelope, NOTE_KINDS, noteLine, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import { assign, detectSignals, LOCAL, PI, type Assignment, type Routing } from "./routing.ts";
 
 export interface TasksDeps {
@@ -15,12 +15,21 @@ export interface TasksDeps {
   memory?: MemoryClient;
   /** a line for the human: console tail and hub.log */
   notify: (line: string) => void;
+  /** Hands a saved note to every other peer; it rides on their next delivery. */
+  share?: (by: PeerId, line: string) => void;
   /** Optional: name a class for a task proposed without one. `onCampus` says whether the model call stays on campus. */
   triage?: { classify: (title: string, detail: string) => Promise<TaskClass | undefined>; onCampus: () => Promise<boolean> };
 }
 
 const ESCALATE_AFTER = 2;
 const OPEN: Task["state"][] = ["proposed", "in_progress", "changes_requested"];
+
+/** Same path, or one is a directory of the other; the project root (`.`) holds everything. */
+const samePlace = (a: string, b: string) => {
+  const norm = (p: string) => p.replace(/^\.\//, "").replace(/\/+$/, "") || ".";
+  const [x, y] = [norm(a), norm(b)];
+  return x === "." || y === "." || x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
+};
 
 /** Tool callers are models: inputSchema is not enforced on the way in, so refs are normalized before they reach the board. */
 function cleanRefs(input: unknown): TaskRefs {
@@ -86,7 +95,26 @@ export class Tasks {
     let task = this.d.board.propose(by, { ...draft, signals });
     if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
     this.d.notify(`task ${this.publicTitle(task)} proposed by ${by} [${task.class}]${task.signals.length ? ` signals: ${task.signals.join(", ")}` : ""}`);
-    return this.assignOwner(task, by, input.owner ? { candidates: [input.owner] } : {});
+    // Naming yourself is a claim: the work is already yours, so no offer comes back to you (paper: Agensh CLAIM, #68).
+    return this.assignOwner(task, by, input.owner ? { candidates: [input.owner], claim: input.owner === by } : {});
+  }
+
+  /**
+   * Open tasks of other owners whose paths overlap this one's. The later claimant settles it with the other owner, so
+   * only the new owner reads "settle it"; anyone else learns that the owner was told. PII tasks are left out on both
+   * sides: their refs are hidden from cloud peers.
+   */
+  overlaps(task: Task, forOwner = true): string {
+    const mine = task.refs.paths ?? [];
+    if (!mine.length || this.isPii(task)) return "";
+    const hits = this.d.board.list().flatMap((t) => {
+      if (t.id === task.id || !t.owner || t.owner === task.owner || !OPEN.includes(t.state) || this.isPii(t)) return [];
+      const shared = mine.filter((p) => (t.refs.paths ?? []).some((q) => samePlace(p, q)));
+      return shared.length ? [`#${t.id} (owner ${t.owner}) on ${shared.join(", ")}`] : [];
+    });
+    if (!hits.length) return "";
+    const who = forOwner ? "Settle it with that owner via hub_send before editing those paths." : `${task.owner ?? "Whoever takes it"} is told to settle it.`;
+    return `Overlaps ${hits.join("; ")}. ${who}`;
   }
 
   /** Same code as assignment, without doing it. */
@@ -103,7 +131,7 @@ export class Tasks {
 
   private declined = (task: Task) => task.history.filter((h) => h.event === "declined").map((h) => h.by);
 
-  private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; clearOnFail?: boolean; exclude?: PeerId[]; context?: string } = {}): Promise<Task> {
+  private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; claim?: boolean } = {}): Promise<Task> {
     const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}) });
     if (!a.owner) {
       this.d.notify(`task ${this.publicTitle(task)}: no peer can take it (${a.trace.filter((l) => l.includes("skipped")).length} skipped); assign with: ahub task assign ${task.id} <peer>`);
@@ -111,11 +139,18 @@ export class Tasks {
       return opts.clearOnFail && task.owner ? this.d.board.update(task.id, by, "unassigned", { owner: null }) : task;
     }
     const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}) }, opts.note ?? `to ${a.owner}`);
-    await this.sendTask(next, a, opts.context);
+    const overlap = this.overlaps(next, false);
+    if (overlap) this.d.notify(`task ${this.publicTitle(next)} (${next.owner}): ${overlap}`);
+    if (opts.claim && a.owner === by) {
+      const claimed = this.d.board.update(next.id, by, "accepted", { state: "in_progress" });
+      this.d.notify(`task ${this.publicTitle(claimed)} claimed by ${by}`);
+      return claimed;
+    }
+    await this.sendTask(next, a, opts.context, this.overlaps(next));
     return next;
   }
 
-  private async sendTask(task: Task, a: Assignment, context?: string): Promise<void> {
+  private async sendTask(task: Task, a: Assignment, context?: string, overlap = ""): Promise<void> {
     const pii = this.isPii(task);
     const brief = pii ? undefined : await this.d.briefs?.forTask(task.owner!, task).catch(() => undefined);
     const rejected = task.history.filter((h) => h.event === "changes_requested").map((h) => `- ${h.by}: ${h.note ?? ""}`);
@@ -124,11 +159,12 @@ export class Tasks {
       `Task #${task.id} [${task.class}] ${task.title}`,
       task.detail,
       `Facts: ${facts}`,
+      overlap,
       rejected.length ? `Earlier review notes:\n${rejected.join("\n")}` : "",
       brief ?? "",
       // What the previous owner left behind. Peer-written free text: never attached to a PII task.
       context && !pii ? `Handoff from the previous owner:\n${context.slice(0, 3000)}` : "",
-      `Take it with hub_task_accept {id: ${task.id}} or pass with hub_task_decline. When finished: hub_task_done {id: ${task.id}, summary, refs}.`,
+      `Take it with hub_task_accept {id: ${task.id}} or pass with hub_task_decline. When finished: hub_task_done {id: ${task.id}, summary: what changed, why, and the check you ran with its result, refs}.`,
     ].filter(Boolean).join("\n\n");
     this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner!], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id) }, ...(pii ? { private: true } : {}) }));
   }
@@ -273,10 +309,17 @@ export class Tasks {
     if (!text) throw new Error("text is required");
     const task = input.task !== undefined ? this.d.board.get(Number(input.task)) : undefined;
     if (task && this.isPii(task)) throw new Error("notes about a PII task are not saved: claude-mem processes what it stores with a cloud model");
+    // Shared with every other peer as well, so text that matches a PII pattern is refused like a note about a PII task.
+    const title = String(input.title ?? "").trim();
+    if (this.isPii({ signals: detectSignals({ title, detail: text, refs: {} }, this.d.routing(), this.d.cwd) })) throw new Error("this note matches a PII pattern and is not saved: claude-mem processes what it stores with a cloud model");
     if (!this.d.memory) return "memory is disabled; nothing saved";
-    const kind = ["decision", "finding", "contract"].includes(String(input.kind)) ? String(input.kind) : "finding";
-    const res = await this.d.memory.save({ text, ...(input.title ? { title: input.title } : {}), project: this.d.project, metadata: { peer: by, kind, ...(task ? { task: task.id } : {}) } });
-    return res ? "saved to shared memory" : "memory worker unavailable; nothing saved";
+    const kind = (NOTE_KINDS as readonly string[]).includes(String(input.kind)) ? String(input.kind) : "finding";
+    const res = await this.d.memory.save({ text, ...(title ? { title } : {}), project: this.d.project, metadata: { peer: by, kind, ...(task ? { task: task.id } : {}) } });
+    if (!res) return "memory worker unavailable; nothing saved";
+    const line = noteLine(by, kind, title ? `${title}: ${text}` : text);
+    this.d.notify(line);
+    this.d.share?.(by, line);
+    return "saved to shared memory; the other agents get it with their next message";
   }
 
   /** Auto notes: only transitions that carry content, never for PII. */

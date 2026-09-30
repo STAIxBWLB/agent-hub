@@ -44,10 +44,11 @@ async function setup(peerIds = ["claude", "codex", "kimi", "local"], observation
   cleanup.push(mem.stop);
   const memory = new MemoryClient(mem.url);
   const notices: string[] = [];
+  const shared: string[] = [];
   const board = new Board(join(dir, "hub.db"));
-  const tasks = new Tasks({ board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", memory, briefs: new Briefs(memory, "agent-hub"), notify: (l) => notices.push(l) });
+  const tasks = new Tasks({ board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", memory, briefs: new Briefs(memory, "agent-hub"), notify: (l) => notices.push(l), share: (by, line) => shared.push(`${by}|${line}`) });
   const saves = () => mem.calls.filter((c) => c.path === "/api/memory/save").map((c) => c.body as any);
-  return { dir, bus, peers, board, tasks, notices, mem, saves };
+  return { dir, bus, peers, board, tasks, notices, shared, mem, saves };
 }
 
 test("board: moves are validated, history records who did what, the file outlives the process", () => {
@@ -105,6 +106,7 @@ test("propose -> assigned by class -> accept -> done -> review envelope -> appro
   const offer = peers.local!.got.at(-1)!;
   expect(offer).toMatchObject({ from: HUB, kind: "task", priority: "important", refs: { task: "1" } });
   expect(offer.body).toContain("Task #1 [implement] add --json to ahub status");
+  expect(offer.body).toContain("hub_task_done {id: 1, summary: what changed, why, and the check you ran with its result, refs}");
   expect(peers.kimi!.got).toHaveLength(0);
 
   expect(() => tasks.accept("kimi", 1)).toThrow(/only its owner \(local\)/);
@@ -281,7 +283,7 @@ test("briefs: matching observations ride with the task; the same peer is not sho
 test("hub_remember carries peer, kind and task; with the worker down the board works and says memory is unavailable", async () => {
   const { tasks, saves, mem } = await setup();
   await tasks.propose("claude", { title: "t", class: "implement" });
-  expect(await tasks.remember("codex", { text: "use bun:sqlite, not a server", kind: "decision", task: 1 })).toBe("saved to shared memory");
+  expect(await tasks.remember("codex", { text: "use bun:sqlite, not a server", kind: "decision", task: 1 })).toBe("saved to shared memory; the other agents get it with their next message");
   expect(saves().at(-1)).toMatchObject({ text: "use bun:sqlite, not a server", project: "agent-hub", metadata: { peer: "codex", kind: "decision", task: 1 } });
   mem.stop();
   expect(await tasks.remember("codex", { text: "x" })).toBe("memory worker unavailable; nothing saved");
@@ -371,4 +373,67 @@ test("route explain runs the assignment code: same owner, skipped candidates nam
   expect(lines).toContain("owner: local");
   expect((await tasks.propose("claude", { title: "rename things", class: "implement" })).owner).toBe("local");
   expect(tasks.explain(1)[0]).toContain("#1 rename things (proposed, owner local)");
+});
+
+test("notes: fail is a kind, an unknown kind is a finding, every saved note is shared once, PII text is neither saved nor shared", async () => {
+  const { tasks, saves, shared, notices } = await setup();
+  await tasks.remember("codex", { title: "WAL mode", text: "breaks the test runner:\nthe db stays locked", kind: "fail" });
+  await tasks.remember("kimi", { text: "the fake ACP server echoes", kind: "gossip" });
+  expect(saves().map((s) => s.metadata.kind)).toEqual(["fail", "finding"]);
+  expect(shared).toEqual(["codex|note from codex [fail]: WAL mode: breaks the test runner: the db stays locked", "kimi|note from kimi [finding]: the fake ACP server echoes"]);
+  expect(notices).toContain("note from codex [fail]: WAL mode: breaks the test runner: the db stays locked");
+
+  await expect(tasks.remember("codex", { text: PII, kind: "fail" })).rejects.toThrow(/matches a PII pattern/);
+  await expect(tasks.remember("codex", { title: PII, text: "call back" })).rejects.toThrow(/matches a PII pattern/);
+  expect(saves()).toHaveLength(2);
+  expect(shared).toHaveLength(2);
+});
+
+test("a claim: naming yourself as owner starts the task in progress with its reviewer, and no offer comes back to you", async () => {
+  const { tasks, peers, board, notices } = await setup();
+  const t = await tasks.propose("codex", { title: "retry backoff", class: "implement", owner: "codex", refs: { paths: ["src/hub/bus.ts"] } });
+  await tick();
+  expect(t).toMatchObject({ owner: "codex", reviewer: "claude", state: "in_progress" });
+  expect(board.get(1)!.history.map((h) => `${h.by}:${h.event}`)).toEqual(["codex:proposed", "codex:assigned", "codex:accepted"]);
+  expect(peers.codex!.got).toHaveLength(0);
+  expect(notices).toContain("task #1 retry backoff claimed by codex");
+  // naming someone else is still an offer
+  await tasks.propose("claude", { title: "docs", class: "implement", owner: "kimi" });
+  await tick();
+  expect(board.get(2)!.state).toBe("proposed");
+  expect(peers.kimi!.got.at(-1)!.kind).toBe("task");
+});
+
+test("overlaps: open tasks of other owners on the same paths or a directory of them; the newcomer hears it, the other owner is not interrupted", async () => {
+  const { tasks, peers, notices } = await setup();
+  await tasks.propose("kimi", { title: "hub refactor", class: "implement", owner: "kimi", refs: { paths: ["src/hub/"] } });
+  const codex = await tasks.propose("codex", { title: "retry backoff", class: "implement", owner: "codex", refs: { paths: ["./src/hub/bus.ts", "README.md"] } });
+  expect(tasks.overlaps(codex)).toBe("Overlaps #1 (owner kimi) on ./src/hub/bus.ts. Settle it with that owner via hub_send before editing those paths.");
+  expect(tasks.overlaps(codex, false)).toBe("Overlaps #1 (owner kimi) on ./src/hub/bus.ts. codex is told to settle it.");
+  expect(notices).toContain("task #2 retry backoff (codex): Overlaps #1 (owner kimi) on ./src/hub/bus.ts. codex is told to settle it.");
+
+  const elsewhere = await tasks.propose("codex", { title: "x", class: "implement", owner: "codex", refs: { paths: ["src/hubx/a.ts"] } });
+  const noPaths = await tasks.propose("codex", { title: "y", class: "implement", owner: "codex" });
+  const sameOwner = await tasks.propose("kimi", { title: "z", class: "implement", owner: "kimi", refs: { paths: ["src/hub/envelope.ts"] } });
+  expect([elsewhere, noPaths, sameOwner].map((t) => tasks.overlaps(t))).toEqual(["", "", ""]);
+
+  // routed to another peer: the overlap rides in the offer
+  await tasks.propose("claude", { title: "bus docs", class: "implement", owner: "local", refs: { paths: ["src/hub/bus.ts"] } });
+  await tick();
+  const offer = peers.local!.got.at(-1)!.body;
+  expect(offer).toContain("Overlaps #1 (owner kimi) on src/hub/bus.ts; #2 (owner codex) on src/hub/bus.ts.");
+  expect(peers.kimi!.got).toHaveLength(0);
+
+  // a PII task is on neither side
+  // nobody can take it yet: whoever does is told when it is assigned
+  const unowned = await tasks.propose("claude", { title: "nobody", class: "implement", owner: "offline-peer", refs: { paths: ["src/hub/a.ts"] } });
+  expect(unowned.owner).toBeNull();
+  expect(tasks.overlaps(unowned, false)).toBe("Overlaps #1 (owner kimi) on src/hub/a.ts. Whoever takes it is told to settle it.");
+  // the project root holds everything
+  const root = await tasks.propose("claude", { title: "format all", class: "implement", owner: "claude", refs: { paths: ["./"] } });
+  expect(tasks.overlaps(root)).toContain("#1 (owner kimi) on ./");
+  const pii = await tasks.propose("claude", { title: PII, class: "implement", refs: { paths: ["src/hub/bus.ts"] } });
+  expect(pii).toMatchObject({ id: 9, owner: "local" });
+  expect(tasks.overlaps(codex)).not.toContain("#9");
+  expect(tasks.overlaps(pii)).toBe("");
 });

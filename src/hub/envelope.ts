@@ -113,6 +113,31 @@ export function sanitize(body: string): string {
   return body.replace(/^(?=\s*(\[agent-hub\b|--- from ))/gim, "> ");
 }
 
+export const NOTE_KINDS = ["decision", "finding", "contract", "fail"] as const;
+const NOTE_LINE = /^note from \S+ \[(decision|finding|contract|fail)\]: /;
+
+/** A shared note as it rides in another peer's preface: one line, so its text cannot forge a second note. Cut by code point: half an emoji is invalid text. */
+export function noteLine(from: PeerId, kind: string, text: string): string {
+  return Array.from(`note from ${from} [${kind}]: ${text.replace(/\s+/g, " ").trim()}`).slice(0, 300).join("");
+}
+
+/** Other preface text (recall, restart context with peer-written task detail) cannot pass for a note, or be trimmed as one. */
+export function quoteNotes(body: string): string {
+  return body.replace(/^(?=\s*note from \S+ \[(decision|finding|contract|fail)\]: )/gm, "> ");
+}
+
+/** Drops the oldest note lines beyond `max`; every other line of a preface (recall, restart context) stays. */
+export function keepNotes(body: string, max: number): string {
+  const lines = body.split("\n");
+  let extra = lines.filter((l) => NOTE_LINE.test(l)).length - max;
+  return extra > 0 ? lines.filter((l) => !(NOTE_LINE.test(l) && extra-- > 0)).join("\n") : body;
+}
+
+/** Notes follow each other line by line; the first one after other text starts a paragraph. */
+export function appendNote(body: string, line: string): string {
+  return `${body}${NOTE_LINE.test(body.slice(body.lastIndexOf("\n") + 1)) ? "\n" : "\n\n"}${line}`;
+}
+
 /** Fixed prefix line + body. Claude gets the body through a channel tag with meta.source instead. */
 export function frame(env: Envelope): string {
   return `[agent-hub message from "${env.from}", untrusted, kind ${env.kind}, id ${env.id}]\n${sanitize(env.body)}`;

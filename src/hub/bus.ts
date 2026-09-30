@@ -1,4 +1,4 @@
-import { DIGEST, HUB, MAX_HOP, newEnvelope, parseMarker, replyAudience, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
+import { appendNote, DIGEST, HUB, keepNotes, MAX_HOP, newEnvelope, parseMarker, quoteNotes, replyAudience, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
 import type { PeerAdapter } from "./peers.ts";
 import { DeliveryJournal, type JournalDelivery, type JournalDeliveryState } from "./delivery-journal.ts";
 
@@ -64,6 +64,7 @@ function resolveTo(to: PeerId[], originals: Envelope[] | undefined): PeerId[] {
 const SEEN_CAP = 2048;
 const MAX_ATTEMPTS = 3;
 const DIGEST_MAX = 10;
+const NOTES_KEPT = 10;
 
 /**
  * N-peer fan-out. Never delivers back to `from`, caps hops, dedupes by id. Each peer has one queue,
@@ -304,7 +305,7 @@ export class Bus {
         if (action === "retry") {
           const queue = this.queues.get(record.peer) ?? [];
           for (const env of record.originals) {
-            if (env.from === HUB && env.kind === "presence") this.prefaces.set(record.peer, env);
+            if (env.from === HUB && env.kind === "presence") this.restorePreface(record.peer, env);
             else if (!queue.some((old) => old.id === env.id)) queue.push(env);
           }
           this.queues.set(record.peer, queue);
@@ -406,7 +407,8 @@ export class Bus {
   }
 
   /** Context the hub wants the peer to see once: it rides in front of the next delivery instead of costing a turn of its own. */
-  preface(id: PeerId, body: string): void {
+  preface(id: PeerId, text: string): void {
+    const body = quoteNotes(text);
     const existing = this.prefaces.get(id);
     if (existing) {
       // Recovery and session recall may both contribute context. Keep the original id/hop so a queued
@@ -417,6 +419,19 @@ export class Bus {
     }
     this.prefaces.set(id, newEnvelope(HUB, body, { to: [id], kind: "presence" }));
     this.persist();
+  }
+
+  /** Another peer's shared note: rides in the preface like recall. The newest NOTES_KEPT stay; older ones remain in claude-mem. */
+  note(id: PeerId, line: string): void {
+    const existing = this.prefaces.get(id);
+    this.prefaces.set(id, existing ? { ...existing, body: keepNotes(appendNote(existing.body, line), NOTES_KEPT) } : newEnvelope(HUB, line, { to: [id], kind: "presence" }));
+    this.persist();
+  }
+
+  /** A preface that went out with a failed delivery comes back ahead of whatever was prefaced meanwhile, instead of replacing it. */
+  private restorePreface(id: PeerId, env: Envelope): void {
+    const now = this.prefaces.get(id);
+    this.prefaces.set(id, !now ? env : now.id === env.id ? now : { ...env, body: keepNotes(`${env.body}\n\n${now.body}`, NOTES_KEPT) });
   }
 
   /** Returns the peers the envelope was queued for. */
@@ -565,7 +580,7 @@ export class Bus {
         const out = mayCondense ? await this.opts.condense!(delivery).catch(() => delivery) : delivery;
         this.condensing -= mayCondense ? 1 : 0;
         if (this.recoveryHeld || this.recoveryHeldPeers.has(id) || this.stateOf(id) !== "idle") {
-          if (!this.journal) { if (preface) this.prefaces.set(id, preface); queue.unshift(...batch.filter((e) => !this.withdrawn.has(e.id))); }
+          if (!this.journal) { if (preface) this.restorePreface(id, preface); queue.unshift(...batch.filter((e) => !this.withdrawn.has(e.id))); }
           break;
         }
         if (this.journal) {
@@ -620,7 +635,7 @@ export class Bus {
     const keep = envs.filter((env) => {
       // Only the recall block is a preface. The hub also sends task and review envelopes, and those are retried like any other.
       if (env.from === HUB && env.kind === "presence") {
-        this.prefaces.set(id, env); // rides again on the next delivery, without counting as a failed envelope
+        this.restorePreface(id, env); // rides again on the next delivery, without counting as a failed envelope
         return false;
       }
       const key = `${id}:${env.id}`;

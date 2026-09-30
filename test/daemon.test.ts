@@ -542,6 +542,42 @@ test("task tools from every surface: Claude plugin, a tools-role client acting f
   c2.close();
 });
 
+test("a note from one peer rides on the others' next delivery, never its own; a claim's result names the open task it overlaps", async () => {
+  const mem = startFakeMemWorker();
+  cleanup.push(mem.stop);
+  const { stateDir, daemon, console_ } = await hub({ memoryUrl: mem.url });
+  const { client, channel } = await fakeClaude(stateDir);
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
+  await console_.request({ t: "start", peer: "kimi" });
+  let toKimi = "";
+  const kimi = daemon.bus.peers.get("kimi")!;
+  const deliver = kimi.deliver.bind(kimi);
+  kimi.deliver = (envs, deliveryId) => ((toKimi += envs.map((e) => e.body).join("\n")), deliver(envs, deliveryId));
+
+  const kimiTools = new Client({ name: "fake-kimi-mcp", version: "0" }, { capabilities: {} });
+  await kimiTools.connect(new StdioClientTransport({ command: "bun", args: [join(ROOT, "plugins/agent-hub/server.js")], env: { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: "kimi" }, stderr: "ignore" }));
+  cleanup.push(() => kimiTools.close());
+  const call = async (name: string, args: unknown) => ((await kimiTools.callTool({ name, arguments: args as any })) as any).content[0].text as string;
+  for (let i = 0; i < 50 && (await call("hub_task_list", {})).startsWith("hub is not running"); i++) await Bun.sleep(50);
+
+  expect(await call("hub_remember", { title: "WAL mode", text: "locks the test db", kind: "fail" })).toBe("saved to shared memory; the other agents get it with their next message");
+  await Bun.sleep(60);
+  expect(channel).toHaveLength(0); // no delivery of its own
+  await console_.request({ t: "send", body: "hello", to: ["claude"] });
+  await until(() => channel.length === 1, "delivery to claude");
+  expect(channel[0].params.content).toContain("note from kimi [fail]: WAL mode: locks the test db");
+  await console_.request({ t: "send", body: "hello", to: ["kimi"] });
+  await until(() => toKimi.includes("hello"), "delivery to kimi");
+  expect(toKimi).not.toContain("note from kimi"); // never back to its author
+
+  expect(await call("hub_task_propose", { title: "hub refactor", class: "implement", owner: "kimi", refs: { paths: ["src/hub"] } })).toBe("task #1: in_progress, owner kimi, reviewer claude");
+  const claimed: any = await client.callTool({ name: "hub_task_propose", arguments: { title: "bus docs", class: "plan", owner: "claude", refs: { paths: ["src/hub/bus.ts"] } } });
+  expect(claimed.content[0].text).toContain("task #2: in_progress, owner claude");
+  expect(claimed.content[0].text).toContain("Overlaps #1 (owner kimi) on src/hub/bus.ts. Settle it with that owner");
+  // proposed for someone else: the caller hears that the new owner was told, not to settle it itself
+  expect(await call("hub_task_propose", { title: "channel docs", class: "plan", owner: "claude", refs: { paths: ["src/hub/envelope.ts"] } })).toBe("task #3: proposed, owner claude, reviewer none\nOverlaps #1 (owner kimi) on src/hub/envelope.ts. claude is told to settle it.");
+});
+
 test("a PII task shows nowhere but the local console's task view: not on ahub tail, not in hub.log, not to cloud peers", async () => {
   // the worker tries to save a note and to spin off a task mid-turn: both would carry the PII out
   const model = startFakeModelServer({

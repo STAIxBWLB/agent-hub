@@ -309,6 +309,15 @@ export async function startDaemon(opts: DaemonOptions) {
     project: chain.at(-1)!,
     ...(config.memory.enabled ? { memory, briefs: new Briefs(memory, chain.at(-1)!, config.memory.brief_items) } : {}),
     notify,
+    // What a peer learned reaches the peers working now, on their next delivery, instead of at their next session (#68).
+    // Fail-open: the note is already saved, so a bus that cannot persist costs the sharing, not the tool call.
+    share: (by, line) => {
+      try {
+        for (const peer of bus.peers.keys()) if (peer !== by) bus.note(peer, line);
+      } catch (e) {
+        log(`note from ${by} not shared: ${(e as Error).message}`);
+      }
+    },
     triage: { classify: (title, detail) => inference?.triage(title, detail) ?? Promise.resolve(undefined), onCampus: () => onCampus() },
   });
   // ---- budget relay -------------------------------------------------------------------------------------------
@@ -413,8 +422,11 @@ export async function startDaemon(opts: DaemonOptions) {
     const onPrem = inProcess && by === "local";
     const line = (t: { id: number; state: string; owner: PeerId | null; reviewer: PeerId | null }) => `task #${t.id}: ${t.state}, owner ${t.owner ?? "none"}, reviewer ${t.reviewer ?? "none"}`;
     switch (op) {
-      case "hub_task_propose":
-        return line(await tasks.propose(by, a));
+      case "hub_task_propose": {
+        const t = await tasks.propose(by, a);
+        const overlap = tasks.overlaps(t, t.owner === by);
+        return overlap ? `${line(t)}\n${overlap}` : line(t);
+      }
       case "hub_task_accept":
         return line(tasks.accept(by, a.id));
       case "hub_task_decline":

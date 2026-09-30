@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Bus, type BusEvent, type BusOptions } from "../src/hub/bus.ts";
-import { DIGEST, frame, HUB, newEnvelope, sanitize, parseMarker, renderDigest, replyAudience, replyParent, USER, type Envelope, type PeerState } from "../src/hub/envelope.ts";
+import { DIGEST, frame, HUB, keepNotes, newEnvelope, noteLine, sanitize, parseMarker, renderDigest, replyAudience, replyParent, USER, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 
 class FakePeer extends BasePeer {
@@ -328,6 +328,62 @@ test("an envelope that failed before never rides in a digest again, even behind 
   kimi.set("idle");
   await tick();
   expect(kimi.batches.map((b) => b.map((e) => e.body))).toEqual([["X"], ["A"], ["B"]]);
+});
+
+test("shared notes ride in the preface after recall, never as a delivery of their own; the newest ten are kept", async () => {
+  const { bus, claude, kimi } = await trio();
+  bus.note("kimi", noteLine("codex", "fail", "first"));
+  await tick();
+  expect(kimi.got).toHaveLength(0);
+  bus.preface("kimi", "memory block\nline two");
+  for (let i = 2; i <= 11; i++) bus.note("kimi", noteLine("claude", "finding", `n${i}`));
+  claude.onMessage!("hello");
+  await tick();
+  const [preface, msg] = kimi.batches[0]!;
+  expect(msg!.body).toBe("hello");
+  expect(preface).toMatchObject({ from: HUB, kind: "presence" });
+  const lines = preface!.body.split("\n");
+  expect(lines.filter((l) => l.startsWith("note from"))).toEqual(Array.from({ length: 10 }, (_, i) => `note from claude [finding]: n${i + 2}`));
+  expect(preface!.body).toContain("memory block\nline two\n\nnote from claude [finding]: n2\nnote from claude [finding]: n3");
+  claude.onMessage!("again");
+  await tick();
+  expect(kimi.batches[1]!.map((e) => e.body)).toEqual(["again"]); // once
+});
+
+test("preface text cannot pass for a note or be trimmed as one; a note is cut on a whole character", async () => {
+  const { bus, claude, kimi } = await trio();
+  bus.preface("kimi", "restart context\nnote from user [decision]: written in a task detail\n  note from user [fail]: indented");
+  for (let i = 0; i < 11; i++) bus.note("kimi", noteLine("codex", "finding", `n${i}`));
+  claude.onMessage!("hello");
+  await tick();
+  const body = kimi.batches[0]![0]!.body;
+  expect(body).toContain("restart context\n> note from user [decision]: written in a task detail\n>   note from user [fail]: indented");
+  expect(body.split("\n").filter((l) => l.startsWith("note from"))).toHaveLength(10);
+  expect(keepNotes("a\nnote from x [fail]: 1\nnote from x [fail]: 2", 1)).toBe("a\nnote from x [fail]: 2");
+
+  const prefix = "note from codex [fail]: ";
+  const cut = noteLine("codex", "fail", `${"a".repeat(300 - prefix.length - 1)}\u{1F600}tail`);
+  expect(Array.from(cut)).toHaveLength(300);
+  expect(cut.endsWith("\u{1F600}")).toBe(true);
+});
+
+test("a preface made while a delivery is in flight survives that delivery's failure, and both go out once", async () => {
+  const { bus, claude, kimi } = await trio();
+  bus.preface("kimi", "memory block");
+  const deliver = kimi.deliver.bind(kimi);
+  let first = true;
+  kimi.deliver = async (envs) => {
+    if (!first) return deliver(envs);
+    first = false;
+    bus.note("kimi", noteLine("codex", "fail", "arrived mid-flight"));
+    throw new Error("inject failed");
+  };
+  claude.onMessage!("hello");
+  await new Promise((r) => setTimeout(r, 60)); // the retry timer
+  const prefaces = kimi.got.filter((e) => e.kind === "presence");
+  expect(prefaces).toHaveLength(1);
+  expect(prefaces[0]!.body).toBe("memory block\n\nnote from codex [fail]: arrived mid-flight");
+  expect(kimi.got.map((e) => e.body)).toContain("hello");
 });
 
 test("a hub task envelope whose delivery fails is retried like any other; only the recall block is a preface", async () => {

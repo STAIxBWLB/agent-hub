@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Shared notes reach the agents working now: `hub_remember` has a `fail` kind for approaches that do not work, and every saved note rides on the other peers' next delivery (newest 10, one line each) instead of waiting for their next session. A note that matches a PII pattern is refused. A preface returned by a failed delivery no longer overwrites one created meanwhile (#68).
+- Claims: `hub_task_propose` naming the caller as owner starts the task in progress without an offer back to the caller, and overlapping `refs.paths` with another owner's open task are named in the propose result, the offer and the console. Implementers are told to claim unassigned work and to report the check they ran in `hub_task_done` (#68).
+
 ## 0.7.5
 
 - A zero-turn Claude session no longer wedges an upgrade after restore either: the commit snapshot records whether the session ever persisted a transcript, coordinator verification re-derives persistence from the terminal binding exactly like the restore gate did, and daemon readiness tolerates a fresh session while the original transcript is absent (snapshots from older sources are re-derived from disk). A session with a transcript keeps the strict identity check in all three places. The status line tee now records the transcript path Claude reports (#64).
