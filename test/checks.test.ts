@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCheck } from "../src/hub/checks.ts";
@@ -28,6 +28,15 @@ const stateOf = async (pid: number) => {
   return stat;
 };
 const DEAD = /^(Z.*)?$/;
+/** Our own child, once Bun has collected it (after which its exit handler has fired or is about to). */
+const reaped = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch {
+    return true;
+  }
+};
 /** A process that leaves the check's process group and keeps its stdout; its pid lands in `pidFile`. */
 const escapee = (pidFile: string) => `python3 -c 'import os, time; os.setsid(); time.sleep(20)' & echo $! > ${pidFile};`;
 
@@ -89,8 +98,14 @@ test("a check stopped by the hub is interrupted, not failed", async () => {
       // not started or already gone
     }
   });
-  const finished = runCheck(`${escapee("esc.pid")} sleep 1; exit 3`, dir, 30_000, running);
-  await Bun.sleep(1150); // exited at about 1000 ms (the escapee has left the group by then); its result is held until about 1500 ms
+  // Sequenced, not timed (a slow runner starts python late): the escapee writes its pid only after leaving the group,
+  // the command exits only once that pid is there, and the stop comes only once the command has been reaped.
+  const leftGroup = `python3 -c 'import os, time; os.setsid(); open("esc.pid", "w").write(str(os.getpid())); time.sleep(20)' &`;
+  const waitForIt = "n=0; while [ ! -s esc.pid ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n+1)); done; [ -s esc.pid ] || exit 1"; // 5 s at most
+  const finished = runCheck(`${leftGroup} ${waitForIt}; echo $$ > leader.pid; exit 3`, dir, 30_000, running);
+  const leader = join(dir, "leader.pid");
+  for (let i = 0; i < 200 && !(existsSync(leader) && readFileSync(leader, "utf8").endsWith("\n") && reaped(Number(readFileSync(leader, "utf8")))); i++) await Bun.sleep(20);
+  await Bun.sleep(50); // the exit handler runs; the result is then held for the 500 ms drain (bounds: under bun's 5 s)
   expect(running.size).toBe(1);
   for (const stop of running) stop();
   expect(await finished).toMatchObject({ code: 3, timedOut: false });
