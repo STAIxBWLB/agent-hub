@@ -837,7 +837,15 @@ test("dashboard snapshots, allow/deny approvals, task actions, pauses and restri
   expect((await ui.post("snapshot")).tasks[0]).toMatchObject({ title: "Dashboard task", owner: "kimi" });
   await console_.request({ t: "budget", set: { peer: "kimi", used: 0.25, resetsInMs: 30_000 } });
   expect((await ui.post("snapshot")).budget.kimi.windows[0].used).toBe(0.25);
-  const snap = await ui.post("snapshot");
+  // Kimi is still answering the resumed message and its new task: let the hub go quiet before taking the cursor.
+  let snap = await ui.post("snapshot");
+  for (let i = 0; i < 40; i++) { // about 2 s, inside bun's 5 s test timeout: a hub that never goes quiet fails below
+    await Bun.sleep(50);
+    const again = await ui.post("snapshot");
+    const kimi = again.status.peers.kimi;
+    if (again.cursor === snap.cursor && kimi.state === "idle" && kimi.queued === 0) break;
+    snap = again;
+  }
   expect(snap.events.length).toBeGreaterThan(0);
   expect((await ui.post("snapshot", { after: snap.cursor })).events).toHaveLength(0);
   for (const action of ["task_show", "task", "ask", "kill", "start", "budget", "hub_remember", "shell"]) {
