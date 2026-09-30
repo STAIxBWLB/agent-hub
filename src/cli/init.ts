@@ -59,7 +59,11 @@ export function init(cwd: string): string[] {
   }
 
   const ignore = join(cwd, ".gitignore");
-  const lines = existsSync(ignore) ? readFileSync(ignore, "utf8") : "";
-  if (!lines.split("\n").includes(".agenthub/state/")) write(ignore, `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}.agenthub/state/\n`);
+  let lines = existsSync(ignore) ? readFileSync(ignore, "utf8") : "";
+  // The machine's own config: only a file nobody committed may choose commands and credential files (issue #17).
+  for (const entry of [".agenthub/state/", ".agenthub/config.local.json"]) {
+    if (!lines.split("\n").includes(entry)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${entry}\n`;
+  }
+  write(ignore, lines);
   return changed;
 }

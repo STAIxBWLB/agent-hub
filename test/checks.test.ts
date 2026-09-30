@@ -1,10 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checksRefusal, runCheck } from "../src/hub/checks.ts";
+import { runCheck } from "../src/hub/checks.ts";
 
-// issue #7: the completion check runner and the rule that only a config nobody committed chooses a command.
+// issue #7: the completion check runner. Which config may choose the command: test/config-trust.test.ts.
 const cleanup: (() => void)[] = [];
 afterEach(() => {
   for (const fn of cleanup.splice(0)) fn();
@@ -95,40 +95,4 @@ test("a check stopped by the hub is interrupted, not failed", async () => {
   for (const stop of running) stop();
   expect(await finished).toMatchObject({ code: 3, timedOut: false });
   expect((await finished).interrupted).toBeUndefined();
-});
-
-test("checks run only when git confirms nobody committed the config", () => {
-  const repo = () => {
-    const dir = tempDir();
-    const git = (...args: string[]) => Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@localhost", ...args]);
-    git("init", "-q");
-    return { dir, git };
-  };
-  expect(checksRefusal(tempDir())).toMatch(/could not confirm/); // not a repository: unknown is not untracked
-
-  const plain = repo();
-  mkdirSync(join(plain.dir, ".agenthub"));
-  writeFileSync(join(plain.dir, ".agenthub", "config.json"), "{}");
-  writeFileSync(join(plain.dir, ".agenthub", "routing.toml"), "");
-  plain.git("add", "-f", ".agenthub/routing.toml"); // -f: a global gitignore may cover .agenthub/
-  expect(checksRefusal(plain.dir)).toBeUndefined(); // config present but untracked; a committed routing.toml is fine
-  plain.git("add", "-f", ".agenthub/config.json");
-  expect(checksRefusal(plain.dir)).toMatch(/committed/);
-
-  const cased = repo(); // macOS opens .agenthub/config.json for this one
-  mkdirSync(join(cased.dir, ".agenthub"));
-  writeFileSync(join(cased.dir, ".agenthub", "Config.json"), "{}");
-  cased.git("add", "-f", ".agenthub/Config.json");
-  expect(checksRefusal(cased.dir)).toMatch(/committed/);
-
-  const linked = repo(); // a committed symlink puts a committed file behind the path
-  mkdirSync(join(linked.dir, "cfg"));
-  writeFileSync(join(linked.dir, "cfg", "config.json"), "{}");
-  symlinkSync("cfg", join(linked.dir, ".agenthub"));
-  linked.git("add", "-f", ".agenthub", "cfg/config.json");
-  expect(checksRefusal(linked.dir)).toMatch(/committed/);
-
-  const sub = repo(); // a submodule at .agenthub
-  sub.git("update-index", "--add", "--cacheinfo", `160000,${"1".repeat(40)},.agenthub`);
-  expect(checksRefusal(sub.dir)).toMatch(/committed/);
 });

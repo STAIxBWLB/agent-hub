@@ -96,6 +96,12 @@ try {
   } else selected = projectContext(process.cwd());
 } catch (error) { fail((error as Error).message); }
 const cwd = selected.root;
+/** The project config, saying on stderr which machine-local fields it had to ignore (issue #17). */
+const projectConfig = () => {
+  const config = loadConfig(cwd);
+  for (const line of config.ignored ?? []) console.error(`note: ${line}; only a config file nobody committed may set it`);
+  return config;
+};
 const stateDir = selected.stateDir;
 try { process.chdir(cwd); } catch { fail(`project directory is unavailable: ${cwd}`); }
 const unattendedEnv = process.env.AGENTHUB_UNATTENDED === "1";
@@ -472,7 +478,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (!res.ok) fail(res.error);
     const control = readControl(stateDir);
     if (control?.instanceId) await recordTerminalLaunch("codex", cwd, stateDir, control.instanceId);
-    const launch = buildLaunch("codex", args, { unattended: unattendedEnv, proxyUrl: res.proxyUrl, codexBin: loadConfig(cwd).codex_bin });
+    const launch = buildLaunch("codex", args, { unattended: unattendedEnv, proxyUrl: res.proxyUrl, codexBin: projectConfig().codex_bin });
     if (launch0.warning) console.error(launch0.warning);
     exec(launch.cmd, launch.args);
   },
@@ -517,7 +523,7 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   models: async () => {
     const action = args[0] ?? "status";
-    const configured = loadConfig(cwd).mlx;
+    const configured = projectConfig().mlx;
     const runtimeDir = configured.runtimeDir ? resolve(cwd, configured.runtimeDir) : join(homedir(), ".agenthub", "runtimes", "mlx");
     const modelPath = configured.modelPath ? resolve(cwd, configured.modelPath) : join(homedir(), ".agenthub", "models", "qwen3-8b-mlx");
     const mlxOptions = configured.provider === "ollama" ? configured : { ...configured, runtimeDir, modelPath };
@@ -757,13 +763,14 @@ const commands: Record<string, () => Promise<void> | void> = {
     row(plugin.state === "current", "claude plugin", plugin.state === "missing" ? "missing: run ahub setup" : plugin.state === "current" ? `agent-hub@agent-hub ${plugin.version}` : `agent-hub@agent-hub is stale (${plugin.why}): run ahub setup`);
 
     const config = loadConfig(cwd);
+    row(!config.ignored, "config", config.ignored ? `${config.ignored.join("; ")} (move them to .agenthub/config.local.json)` : "no machine-local field ignored");
     const omni = new OmniRoute(config.omniroute);
     const gateway = await omni.base();
-    row(!!gateway, "omniroute", gateway ? `${new URL(gateway).host} healthy` : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? "no candidate reachable (VPN off?); ahub local cannot run" : "not configured: set omniroute.urls in .agenthub/config.json (any OpenAI-compatible gateway); ahub local cannot run");
-    row(!!omni.apiKey(), "omniroute key", omni.apiKey() ? "present" : "missing: set OMNIROUTE_API_KEY or omniroute.api_key_file in .agenthub/config.json");
+    row(!!gateway, "omniroute", gateway ? `${new URL(gateway).host} healthy` : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? "no candidate reachable (VPN off?); ahub local cannot run" : "not configured: set omniroute.urls in .agenthub/config.local.json (any OpenAI-compatible gateway); ahub local cannot run");
+    row(!!omni.apiKey(), "omniroute key", omni.apiKey() ? "present" : "missing: set OMNIROUTE_API_KEY or omniroute.api_key_file in .agenthub/config.local.json");
     const sy = spawnSync(process.env.AGENTHUB_SWITCHYARD_BIN ?? "switchyard-server", ["--version"], { encoding: "utf8" });
     row(sy.status === 0 ? true : undefined, "switchyard", sy.status === 0 ? sy.stdout.trim() : "not installed: ahub local uses fixed_model on OmniRoute (cargo install --locked switchyard-server)");
-    const mlxConfig = loadConfig(cwd).mlx;
+    const mlxConfig = config.mlx;
     const mlx = await inspectMlx({ ...mlxConfig, runtimeDir: mlxConfig.runtimeDir ? resolve(cwd, mlxConfig.runtimeDir) : undefined, modelPath: mlxConfig.modelPath ? resolve(cwd, mlxConfig.modelPath) : undefined });
     row(mlx.state === "ready" || mlx.state === "stopped", "pi mlx", `${mlx.state}${mlx.model ? ` (${mlx.model})` : ""}${mlx.lastError ? `: ${mlx.lastError}` : ""}`);
 

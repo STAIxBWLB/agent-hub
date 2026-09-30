@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- A committed `.agenthub/config.json` can no longer choose what the hub runs, which files it sends as credentials, where task text goes, or how far the local worker's sandbox reaches: those machine-local fields (launch commands, checks, the legacy MLX binary and model directory, gateway URLs and key files, the memory endpoint, sandbox widening) apply only from a file git confirms nobody committed, such as the new `.agenthub/config.local.json`, and are otherwise ignored with a log line and a doctor row (#17).
+
 ## 0.7.8
 
 - README, the operations guide and the upgrade-recovery spec no longer describe protocol 10 and the queue commands as unreleased (#9).

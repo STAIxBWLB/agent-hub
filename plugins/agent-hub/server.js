@@ -15834,11 +15834,14 @@ var projectRoot2 = process.env.AGENTHUB_PROJECT_DIR ?? process.cwd();
 var peerId = process.env.AGENTHUB_PEER_ID ?? "claude";
 var toolsOnly = process.env.AGENTHUB_MODE === "tools";
 function roles() {
-  try {
-    return { ...DEFAULT_ROLES, ...JSON.parse(readFileSync3(join3(projectRoot2, ".agenthub", "config.json"), "utf8")).roles };
-  } catch {
-    return DEFAULT_ROLES;
-  }
+  const read = (name) => {
+    try {
+      return JSON.parse(readFileSync3(join3(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
+    } catch {
+      return {};
+    }
+  };
+  return { ...DEFAULT_ROLES, ...read("config.json"), ...read("config.local.json") };
 }
 var MAX_RECONNECT_DELAY_MS = 30000;
 var TERMINAL_CLOSES = {

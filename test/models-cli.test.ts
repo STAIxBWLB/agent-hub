@@ -25,6 +25,8 @@ test("models CLI uses the project MLX runtime configuration for start/status/sto
   const port = probe.port!; probe.stop(true);
   cleanup.push(async () => { await stopMlx({ runtimeDir, modelPath, port }); rmSync(project, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
   const binDir = join(runtimeDir, "bin");
+  // runtimeDir chooses the binary the hub starts: it applies only from a config git confirms is untracked (issue #17).
+  spawnSync("git", ["init", "-q", project]);
   mkdirSync(join(project, ".agenthub"), { recursive: true });
   mkdirSync(binDir, { recursive: true });
   mkdirSync(modelPath, { recursive: true });

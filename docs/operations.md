@@ -22,6 +22,19 @@ Run it after an upgrade when those blocks need refreshing. `ahub setup`
 updates the shared Claude plugin. Keep `ahub tail` open when a local worker
 may request an approval.
 
+`.agenthub/config.json` can be committed and shared. The fields that choose
+what the hub runs, which files it sends as credentials, where task text goes,
+or how far the local worker's sandbox reaches (`kimi_cmd`, `codex_bin`,
+`pi.cmd`, `checks`, `mlx.bin`, `mlx.runtimeDir`, `mlx.modelPath`, `omniroute.urls`,
+`omniroute.access_hosts`, the `omniroute` key files, `memory.worker_url`,
+`local.read_allow`, `local.bash_network`) are machine-local: they apply only
+from a file git confirms nobody committed. Put them in
+`.agenthub/config.local.json` (`ahub init` adds it to `.gitignore`), which is
+read after `config.json`; outside a git repository they keep their defaults, and
+an empty value always means the default.
+A committed value is ignored with a line in `hub.log`, a note from `ahub
+codex` and `ahub models`, and a row in `ahub doctor`.
+
 Managed launchers attach native peers to the project daemon:
 
 ```bash
@@ -64,9 +77,8 @@ marks such a task done, the tool answers at once, the hub runs the command in th
 project root (one at a time; what it left in its process group is killed when it
 exits, at the timeout or on shutdown), and then either
 sends the task to review with the command, exit code and output tail, or keeps it
-with its owner and tells it what failed. The hub runs `checks` only when git
-confirms that nobody committed `.agenthub/config.json`: a committed file must not
-choose commands the hub runs, and outside a git repository it runs none. Keys that
+with its owner and tells it what failed. `checks` is machine-local (see Install
+and start): a committed file must not choose commands the hub runs. Keys that
 are not task classes are ignored with a log line. A hub stopped mid-check leaves
 the task in progress (`check interrupted`); the owner marks it done again.
 
