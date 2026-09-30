@@ -824,3 +824,26 @@ are hub.log timestamps (UTC).
 - The request was rejected from the console; Kimi said so at 11:34:03.468Z and ran
   nothing.
 - The disposable hub was stopped and its registration removed after recording.
+
+## Overlap measurement (issue #8, from 2026-09-30)
+
+Whether per-task worktrees get built depends on this: two weeks of normal use with
+the claim overlap warnings (0.7.6 and later), then the owner decides in issue #8.
+
+- Count, from a checkout of this repository: `ahub projects --json | jq -r
+  '.[].stateDir + "/hub.log"' | tr '\n' '\0' | xargs -0 bun scripts/overlaps.ts
+  --since <start date>`. It reads only the hub's overlap notice lines and prints,
+  per week (Monday, UTC), the number of warnings and each pair of tasks once per
+  project, with its owners, shared paths, first warning and count. A registered
+  project without a hub.log is skipped with a note.
+- Per pair, decide whether it led to conflicting edits: from that project's root,
+  with its hub running, `ahub task show <id>` for both tasks, and `git log --since
+  <first warning> -- <shared paths>`. A conflicting edit is a commit that
+  overwrote or reverted the other task's change, a merge conflict between the two,
+  or a build or test run broken by the other task's half-done change.
+- Record only the numbers and the verdicts below. The script's output names tasks
+  and paths of private projects: it stays local.
+
+| Week of | Warnings | Task pairs | Pairs with a conflicting edit | Notes |
+|---|---|---|---|---|
+| 2026-09-28 | 0 | 0 | 0 | baseline counted on 2026-09-30 over every registered project; the issue #68 live run's project was already removed |
