@@ -781,3 +781,28 @@ branch. Times are hub.log timestamps (UTC).
   payload was complete. It was rejected; Kimi did not run it and said so at
   05:41:04.397Z.
 - The disposable hub was stopped and its registration removed after recording.
+
+## Upgrade sources for the operations guide (issue #75, 2026-09-30)
+
+Two disposable projects, each the only running registered project at the time,
+ran a released hub through `bunx --package @staix/agent-hub@<version> ahub up`:
+0.7.5 (hub.log `ahub up` at 05:43:12.894Z) and 0.6.4 (06:13:57.001Z).
+
+- From 0.7.5 (protocol 10): `bunx --package @staix/agent-hub@0.7.6 ahub upgrade
+  --to 0.7.6 --dry-run` exited 0 with plan `kind: upgrade`, `version: 0.7.6`, no
+  plan blockers; the project read as `running`, source 0.7.5, protocol 10, no
+  project blockers. The installed 0.7.6 CLI's dry-run showed the same project,
+  source and blockers (its `sourceRoot`, and so its fingerprint, differ).
+- From 0.6.4 (protocol 9): the same 0.7.6 dry-run exited 0 with no plan or
+  project blockers; the project read as `running`, source 0.6.4, protocol 9.
+- Nothing changed: each hub kept running, and its hub.log gained no line until it
+  was stopped for cleanup.
+- Code basis: `RECOVERY_SOURCE_PROTOCOLS = [9, PROTOCOL]`
+  (`src/hub/control-client.ts`) admits a running protocol-9 or protocol-10 source
+  (`makeUpgradePlan` in `src/cli/upgrade-runtime.ts`); an older one is refused as
+  `manual-bootstrap-required`; the staged target must report the coordinator's own
+  `PROTOCOL` (`stage` in the same file).
+- Not measured here: an applied (`--yes`) upgrade from either source (last proven
+  with the 0.7.0 coordinator, see above), and session or terminal planning: no peer
+  was attached, so `peers` and `terminals` were empty.
+- Both hubs were stopped and their registrations removed after recording.

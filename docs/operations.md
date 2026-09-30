@@ -178,17 +178,36 @@ Rows without a live process are stale registrations; forget them with
 
 ## Upgrade and crash recovery
 
-For an upgrade from 0.6.4 (protocol 9) or 0.7.0, use the patched coordinator without
-replacing the global CLI prematurely. Run from the project directory:
+Upgrade running projects with the target release's own coordinator. It accepts
+a running source on control protocol 9 (0.6.x) or 10 (0.7.0 and later) and only
+a target on its own protocol, so the target's coordinator fits every supported
+source and carries every recovery fix released up to it. Protocol 8 and older
+(0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
+project directory, without replacing the global CLI first:
 
 ```bash
 bunx --package @staix/agent-hub@0.7.6 ahub upgrade --to 0.7.6 --dry-run
 bunx --package @staix/agent-hub@0.7.6 ahub upgrade --to 0.7.6 --yes
 ```
 
+| Running now | Coordinator to use |
+| --- | --- |
+| 0.6.x (protocol 9) | the target's, through `bunx` as above |
+| 0.7.0 up to the release before the target (protocol 10) | the target's, through `bunx` as above |
+| any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
+| 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
+
+Do not use an older installed CLI as the coordinator. A 0.6.x CLI cannot target
+protocol 10: its plan does not check the target's protocol, so the dry-run shows
+no blocker, and `--yes` stops at staging ("target protocol requires a newer
+coordinator") with an operation left to clear by `ahub recovery abort <id>`. An
+older 0.7.x CLI may lack recovery fixes released after it. The
+[smoke ledger](smoke.md) records dry-runs from real 0.6.4 and 0.7.5 hubs (issue
+#75); an applied upgrade was last proven with the 0.7.0 coordinator.
+
 The coordinator verifies and retains the exact target package, preserves its
 own source, and promotes the global CLI only after restored projects pass
-readback. Do not use the old protocol-9 coordinator to target protocol 10.
+readback.
 
 Once the installed CLI is 0.7.6, review the current project or all registered
 projects first:
