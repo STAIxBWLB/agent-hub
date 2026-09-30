@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
@@ -20,8 +20,8 @@ const until = async (cond: () => boolean, what = "condition") => {
   if (!cond()) throw new Error(`timed out waiting for ${what}`);
 };
 
-async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number } = {}) {
-  const { memoryUrl, modelUrl, approvals, ...rest } = extra;
+async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks } = {}) {
+  const { memoryUrl, modelUrl, approvals, checks, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
     cwd: ROOT,
@@ -36,6 +36,7 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?:
       ...(modelUrl ? { omniroute: { urls: [modelUrl], access_hosts: [] } } : {}),
       memory: memoryUrl ? { enabled: true, worker_url: memoryUrl, inject_tokens: 40, brief_items: 8 } : { ...DEFAULT_CONFIG.memory, enabled: false },
       ...(approvals ? { approvals } : {}),
+      ...(checks ? { checks } : {}),
     },
     permissionTimeoutMs: 200,
     ...rest,
@@ -865,4 +866,43 @@ test("dashboard hides local permission contents, refuses allow and can deny", as
   expect(pending.options.map((o: any) => o.optionId)).toEqual(["deny"]);
   expect(await ui.post("action", { action: "permit", id: pending.id, option: "allow" })).toMatchObject({ ok: false });
   expect(await ui.post("action", { action: "permit", id: pending.id, option: "deny" })).toMatchObject({ ok: true });
+});
+
+// issue #7: the daemon's side of completion checks.
+test("completion checks: run where git vouches for the config, refused where it cannot, and none starts after the hub stops", async () => {
+  const project = (git: boolean) => {
+    const dir = mkdtempSync(join(tmpdir(), "agenthub-checks-"));
+    cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+    if (git) Bun.spawnSync(["git", "-C", dir, "init", "-q"]);
+    return dir;
+  };
+  const ops = (h: Awaited<ReturnType<typeof hub>>) => async (op: string, args: unknown) => (await h.console_.request({ t: "task", op, args })).text as string;
+
+  const ran = await hub({ cwd: project(true), checks: { timeout_s: 600, implement: "echo checked", nonsense: "true" } });
+  const op = ops(ran);
+  await op("hub_task_propose", { title: "fix", class: "implement" });
+  expect(await op("hub_task_done", { id: 1, summary: "fixed" })).toContain("its check is queued or running");
+  let shown = "";
+  for (let i = 0; i < 100 && !shown.includes("check passed"); i++) (shown = await op("task_show", { id: 1 })), await Bun.sleep(20);
+  expect(shown).toContain("echo checked -> exit 0");
+  expect(readFileSync(join(ran.stateDir, "hub.log"), "utf8")).toContain("checks ignored for nonsense: not a task class");
+
+  const refused = await hub({ cwd: project(false), checks: { timeout_s: 600, implement: "echo checked" } });
+  expect(readFileSync(join(refused.stateDir, "hub.log"), "utf8")).toContain("checks ignored: git could not confirm that .agenthub/config.json is untracked");
+  await ops(refused)("hub_task_propose", { title: "fix", class: "implement" });
+  expect(await ops(refused)("hub_task_done", { id: 1, summary: "fixed" })).not.toContain("check");
+
+  const dir = project(true);
+  const stopped = await hub({ cwd: dir, checks: { timeout_s: 600, implement: "echo $$ >> pids; sleep 30" } });
+  const sop = ops(stopped);
+  for (const id of [1, 2]) {
+    await sop("hub_task_propose", { title: `fix ${id}`, class: "implement" });
+    await sop("hub_task_done", { id, summary: "fixed" });
+  }
+  await until(() => existsSync(join(dir, "pids")), "the first check to start");
+  await stopped.daemon.stop();
+  await Bun.sleep(700); // past the drain window: the queued second check would have started by now
+  const pids = readFileSync(join(dir, "pids"), "utf8").trim().split("\n");
+  expect(pids).toHaveLength(1);
+  expect(() => process.kill(Number(pids[0]), 0)).toThrow();
 });
