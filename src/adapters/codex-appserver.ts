@@ -301,7 +301,15 @@ export class CodexPeer extends BasePeer {
     for (const ids of this.turnDeliveries.values()) for (const id of ids) this.delivery({ id, state: "needs_review", reason: "Codex TUI detached" });
     for (const id of this.unboundDeliveries) this.delivery({ id, state: "needs_review", reason: "Codex TUI detached" });
     this.turnDeliveries.clear(); this.unboundDeliveries.clear();
+    this.forgetTurn();
     this.setState("offline");
+  }
+
+  /** Nothing of an interrupted turn may address a later answer: a TUI that comes back starts its own. */
+  private forgetTurn(): void {
+    this.injected = undefined;
+    this.answering = [];
+    this.lastAnswer = "";
   }
 
   private fromTui(link: Link, raw: string): void {
@@ -333,6 +341,7 @@ export class CodexPeer extends BasePeer {
     this.link = link;
     this.threadId = threadId;
     this.activeTurns.clear();
+    this.forgetTurn();
     this.opts.log?.(`[${this.id}] thread ${threadId}`);
     this.setState("idle");
     this.readUsage();
@@ -394,7 +403,7 @@ export class CodexPeer extends BasePeer {
       this.answering = [];
       this.deltas.clear();
       // Addressed like every other adapter's answer (issue #3): each sender it answers, including one steered in;
-      // the bus maps a condensed delivery's `digest` back to the senders it replaced.
+      // the bus maps a condensed delivery's `digest` back to the senders it replaced, a steer beside it or not.
       if (this.lastAnswer) this.onMessage?.(this.lastAnswer, inReplyTo ? { inReplyTo, to } : {});
       this.lastAnswer = "";
       this.setState("idle");

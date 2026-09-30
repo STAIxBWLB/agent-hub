@@ -231,3 +231,43 @@ test("a sender steered into a running hub turn is answered too", async () => {
   expect(said[0]!.body).toBe("echo: start +steered: also this");
   expect([...(said[0]!.to ?? [])].sort()).toEqual(["claude", "kimi"]);
 });
+
+test("a condensed digest with a steer beside it is answered to the condensed senders and the steered one", async () => {
+  const { bus, peer, said, tui } = await setup(150, async (envs) => (envs.length < 2 ? envs : [newEnvelope(DIGEST, `condensed ${envs.length}`, { kind: "status" })]));
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => peer.state === "idle");
+  tui.send(JSON.stringify({ id: 3, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: "own work" }] } }));
+  await until(() => peer.state === "busy");
+  bus.publish(newEnvelope("claude", "question from claude"));
+  bus.publish(newEnvelope("kimi", "status from kimi"));
+  await until(() => said.length === 1); // the TUI's own turn ends; the condensed digest goes in next
+  await until(() => peer.state === "busy");
+  await Bun.sleep(40); // let turn/started announce the digest turn's id
+  bus.publish(newEnvelope("pi", "urgent from pi", { priority: "important", inReplyTo: { trace: "x", hop: 2 } }));
+  await until(() => said.length === 2);
+  expect(said[1]!.body).toBe("echo: condensed 2 +steered: urgent from pi");
+  expect([...(said[1]!.to ?? [])].sort()).toEqual(["claude", "kimi", "pi"]);
+});
+
+test("a TUI that detaches mid-turn and comes back does not answer the old turn's senders", async () => {
+  const { bus, peer, said, tui } = await setup(400);
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => peer.state === "idle");
+  bus.publish(newEnvelope("claude", "hub work", { priority: "important" }));
+  await until(() => peer.state === "busy");
+  await Bun.sleep(40); // the hub turn is running: its sender is who the turn answers
+  tui.close();
+  await until(() => peer.state === "offline");
+  const tui2 = new WebSocket(peer.proxyUrl);
+  await new Promise((r) => (tui2.onopen = r));
+  cleanup.push(() => tui2.close());
+  tui2.send(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "fake-tui" } } }));
+  tui2.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => peer.state === "idle");
+  await Bun.sleep(450); // the fake runs one turn at a time: let the abandoned hub turn finish first
+  tui2.send(JSON.stringify({ id: 3, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: "user typed this" }] } }));
+  await until(() => said.some((e) => e.body === "echo: user typed this"));
+  const answer = said.find((e) => e.body === "echo: user typed this")!;
+  expect(answer.to).toBeUndefined();
+  expect(answer.hop).toBe(0);
+});

@@ -130,9 +130,11 @@ export class Bus {
       const last = this.lastDelivery.get(peer.id);
       const answers = opts?.inReplyTo?.id !== undefined && last?.out.some((e) => e.id === opts.inReplyTo!.id);
       const originals = answers ? last!.originals : undefined;
+      // `digest` in the audience stands for the condensed delivery even when a steer, not the digest, is the parent.
+      const audienceOriginals = originals ?? (opts?.to?.includes(DIGEST) ? last?.originals : undefined);
       this.publish(newEnvelope(peer.id, body, {
         ...opts,
-        ...(opts?.to?.length ? { to: resolveTo(opts.to, originals) } : {}),
+        ...(opts?.to?.length ? { to: resolveTo(opts.to, audienceOriginals) } : {}),
         priority: opts?.priority ?? capPriority(peer, priority, opts?.inReplyTo, originals),
       }));
     };
