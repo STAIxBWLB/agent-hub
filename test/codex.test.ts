@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { CodexPeer } from "../src/adapters/codex-appserver.ts";
 import { Bus } from "../src/hub/bus.ts";
-import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
+import { DIGEST, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { startFakeAppServer } from "./fakes/app-server.ts";
 
 const cleanup: (() => unknown)[] = [];
@@ -13,9 +13,9 @@ const until = async (cond: () => boolean) => {
   expect(cond()).toBe(true);
 };
 
-async function setup(turnMs?: number) {
+async function setup(turnMs?: number, condense?: (envs: Envelope[]) => Promise<Envelope[]>) {
   const fake = startFakeAppServer(turnMs);
-  const bus = new Bus({ batchMs: 0 });
+  const bus = new Bus({ batchMs: 0, ...(condense ? { condense } : {}) });
   const said: Envelope[] = [];
   bus.tap((e) => e.t === "envelope" && e.env.from === "codex" && said.push(e.env));
   const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: fake.url, cwd: process.cwd() });
@@ -190,4 +190,44 @@ test("only one TUI can claim a hub, even before the first thread starts", async 
   expect(event.code).toBe(1013);
   expect(event.reason).toContain("already attached");
   tui.close();
+});
+
+// issue #3: Codex answered a digest to its highest-hop sender only; every other adapter answers them all.
+const busyThenDigest = async (condense?: (envs: Envelope[]) => Promise<Envelope[]>) => {
+  const ctx = await setup(120, condense);
+  ctx.tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => ctx.peer.state === "idle");
+  ctx.tui.send(JSON.stringify({ id: 3, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: "own work" }] } }));
+  await until(() => ctx.peer.state === "busy");
+  ctx.bus.publish(newEnvelope("claude", "question from claude"));
+  ctx.bus.publish(newEnvelope("kimi", "status from kimi"));
+  await until(() => ctx.said.length === 2); // the TUI's own turn, then the digest turn
+  await Bun.sleep(200);
+  expect(ctx.said).toHaveLength(2); // both messages went in one delivery
+  return ctx.said[1]!;
+};
+
+test("an answer to a digest reaches every sender in it", async () => {
+  const answer = await busyThenDigest();
+  expect(answer.body).toBe("echo: status from kimi"); // the fake echoes the digest's last line
+  expect([...(answer.to ?? [])].sort()).toEqual(["claude", "kimi"]);
+});
+
+test("an answer to a condensed digest reaches the senders the condensation replaced", async () => {
+  const answer = await busyThenDigest(async (envs) => (envs.length < 2 ? envs : [newEnvelope(DIGEST, `condensed ${envs.length}`, { kind: "status" })]));
+  expect(answer.body).toBe("echo: condensed 2");
+  expect([...(answer.to ?? [])].sort()).toEqual(["claude", "kimi"]);
+});
+
+test("a sender steered into a running hub turn is answered too", async () => {
+  const { bus, peer, said, tui } = await setup(150);
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => peer.state === "idle");
+  bus.publish(newEnvelope("claude", "start", { priority: "important" }));
+  await until(() => peer.state === "busy");
+  await Bun.sleep(40); // let turn/started announce the turn id
+  bus.publish(newEnvelope("kimi", "also this", { priority: "important" }));
+  await until(() => said.length === 1);
+  expect(said[0]!.body).toBe("echo: start +steered: also this");
+  expect([...(said[0]!.to ?? [])].sort()).toEqual(["claude", "kimi"]);
 });

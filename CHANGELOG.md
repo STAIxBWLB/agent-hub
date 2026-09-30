@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - README, the operations guide and the upgrade-recovery spec no longer describe protocol 10 and the queue commands as unreleased (#9).
+- Codex answers a digest to every sender in it, and a sender steered into its turn, like the other adapters; an answer to a condensed digest no longer goes to the reserved `digest` sender and reaches no peer (#3).
 
 ## 0.7.7
 
