@@ -63,6 +63,15 @@ external side effect happened unless the task's refs and a live readback show
 that effect. The hub can reassign after repeated review changes according to
 the routing configuration.
 
+An agent can claim work nobody assigned it by proposing a task with itself as
+owner; without a class, and with no model to name one, the claim is filed as
+`implement`. When a task's paths overlap another owner's open task, the newcomer
+is told to settle it and the earlier owner gets one line with its next message,
+at no turn of its own. An owner offline longer than `tasks.release_after_min`
+(default 30, `0` turns it off) in `.agenthub/config.json` loses its open tasks
+to a peer routing can give them to; with nobody to take them they stay, and a
+paused peer or a hub in a recovery operation is left alone.
+
 Use targeted messages for coordination:
 
 ```bash

@@ -45,10 +45,11 @@ async function setup(peerIds = ["claude", "codex", "kimi", "local"], observation
   const memory = new MemoryClient(mem.url);
   const notices: string[] = [];
   const shared: string[] = [];
+  const told: string[] = [];
   const board = new Board(join(dir, "hub.db"));
-  const tasks = new Tasks({ board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", memory, briefs: new Briefs(memory, "agent-hub"), notify: (l) => notices.push(l), share: (by, line) => shared.push(`${by}|${line}`) });
+  const tasks = new Tasks({ board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", memory, briefs: new Briefs(memory, "agent-hub"), notify: (l) => notices.push(l), share: (by, line) => shared.push(`${by}|${line}`), tell: (peer, line) => told.push(`${peer}|${line}`) });
   const saves = () => mem.calls.filter((c) => c.path === "/api/memory/save").map((c) => c.body as any);
-  return { dir, bus, peers, board, tasks, notices, shared, mem, saves };
+  return { dir, bus, peers, board, tasks, notices, shared, told, mem, saves };
 }
 
 test("board: moves are validated, history records who did what, the file outlives the process", () => {
@@ -436,4 +437,81 @@ test("overlaps: open tasks of other owners on the same paths or a directory of t
   expect(pii).toMatchObject({ id: 9, owner: "local" });
   expect(tasks.overlaps(codex)).not.toContain("#9");
   expect(tasks.overlaps(pii)).toBe("");
+});
+
+// issue #6: claims that do not fail on a field the caller cannot know, overlaps the earlier owner sees, owners that are gone.
+test("a self-claim without a class and without a triage answer is implementation; a proposal for someone else still needs one", async () => {
+  const { tasks, board } = await setup();
+  const t = await tasks.propose("kimi", { title: "add set()", owner: "kimi", refs: { paths: ["src/cache.ts"] } });
+  expect(t).toMatchObject({ class: "implement", owner: "kimi", state: "in_progress" });
+  expect(board.get(t.id)!.history.map((h) => h.event)).toContain("class defaulted");
+  await expect(tasks.propose("claude", { title: "docs", owner: "kimi" })).rejects.toThrow(/class is required/);
+});
+
+test("the earlier owner is told of an overlap through a ride-along line; the newcomer's claim is unchanged", async () => {
+  const { tasks, told, peers } = await setup();
+  await tasks.propose("kimi", { title: "hub refactor", class: "implement", owner: "kimi", refs: { paths: ["src/hub"] } });
+  await tasks.propose("codex", { title: "retry backoff", class: "implement", owner: "codex", refs: { paths: ["src/hub/bus.ts"] } });
+  await tick();
+  expect(told).toEqual(["kimi|note from hub [finding]: task #2 (owner codex) now overlaps your #1 on src/hub/bus.ts; codex is told to settle it"]);
+  expect(peers.kimi!.got).toHaveLength(0); // no envelope, no turn
+  await tasks.propose("codex", { title: "elsewhere", class: "implement", owner: "codex", refs: { paths: ["docs/x.md"] } });
+  expect(told).toHaveLength(1);
+});
+
+test("an owner that is gone loses its open tasks to a peer that can take them, and keeps them when nobody can", async () => {
+  const { tasks, board, peers, notices } = await setup(["claude", "codex", "kimi"]);
+  const t = await tasks.propose("kimi", { title: "half done", class: "implement", owner: "kimi" });
+  peers.kimi!.set("offline");
+  const moved = await tasks.releaseFromGone("kimi", 31);
+  expect(moved).toEqual([{ id: t.id, title: `#${t.id} half done`, to: "codex" }]);
+  const after = board.get(t.id)!;
+  expect(after.owner).toBe("codex");
+  expect(after.history.map((h) => `${h.event}:${h.note ?? ""}`)).toContain("released:owner kimi offline for 31 min");
+
+  const u = await tasks.propose("codex", { title: "codex only", class: "implement", owner: "codex" });
+  peers.codex!.set("offline");
+  peers.claude!.set("offline");
+  expect(await tasks.releaseFromGone("codex", 45)).toEqual([]);
+  expect(board.get(u.id)!.owner).toBe("codex");
+  expect(board.get(u.id)!.state).toBe("in_progress");
+  expect(board.get(u.id)!.history.map((h) => h.event)).not.toContain("released");
+  expect(notices.some((l) => l.includes("could not be released"))).toBe(false);
+});
+
+test("a released owner is told on its next delivery; a peer back online keeps its work", async () => {
+  const { tasks, board, peers, told } = await setup(["claude", "codex", "kimi"]);
+  const t = await tasks.propose("kimi", { title: "half done", class: "implement", owner: "kimi" });
+  expect(await tasks.releaseFromGone("kimi", 31)).toEqual([]); // kimi is still attached and idle
+  peers.kimi!.set("offline");
+  await tasks.releaseFromGone("kimi", 31);
+  expect(board.get(t.id)!.owner).toBe("codex");
+  expect(told).toContain(`kimi|note from hub [decision]: task #${t.id} moved to codex while you were offline; stop working on it`);
+});
+
+test("a release re-reads each task: one reassigned by the console meanwhile stays where it went", async () => {
+  const ctx = await setup(["claude", "codex", "kimi"]);
+  const slow = new Tasks({ board: ctx.board, bus: ctx.bus, routing: () => loadRouting(ctx.dir), cwd: ctx.dir, project: "agent-hub", notify: () => {}, briefs: { forTask: async () => (await new Promise((r) => setTimeout(r, 60)), undefined) } as any });
+  const a = await slow.propose("kimi", { title: "first", class: "implement", owner: "kimi" });
+  const b = await slow.propose("kimi", { title: "second", class: "implement", owner: "kimi" });
+  ctx.peers.kimi!.set("offline");
+  const run = slow.releaseFromGone("kimi", 31);
+  await tick(); // the first task's brief lookup is in flight
+  await slow.assignTo(b.id, "claude");
+  await run;
+  expect(ctx.board.get(a.id)!.owner).toBe("codex");
+  expect(ctx.board.get(b.id)!.owner).toBe("claude");
+});
+
+test("tasks of the owner being released are no one to settle an overlap with", async () => {
+  const { tasks, peers, told } = await setup(["claude", "codex", "kimi"]);
+  await tasks.propose("kimi", { title: "one", class: "implement", owner: "kimi", refs: { paths: ["src/hub"] } });
+  await tasks.propose("kimi", { title: "two", class: "implement", owner: "kimi", refs: { paths: ["src/hub/bus.ts"] } });
+  peers.kimi!.set("offline");
+  await tasks.releaseFromGone("kimi", 31);
+  await tick();
+  const offers = peers.codex!.got.filter((e) => e.kind === "task").map((e) => e.body);
+  expect(offers).toHaveLength(2);
+  expect(offers.some((b) => b.includes("owner kimi"))).toBe(false);
+  expect(told.filter((l) => l.includes("overlaps"))).toEqual([]);
 });

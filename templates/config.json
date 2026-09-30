@@ -24,5 +24,6 @@
     "cf_client_secret_file": ""
   },
   "local": { "deny": [], "bash_network": false, "max_steps": 30, "read_allow": [] },
-  "approvals": { "timeout_s": 120 }
+  "approvals": { "timeout_s": 120 },
+  "tasks": { "release_after_min": 30 }
 }
