@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
-import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { HUB, newEnvelope } from "../src/hub/envelope.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 import { startFakeModelServer, toolCall } from "./fakes/model-server.ts";
@@ -20,8 +20,8 @@ const until = async (cond: () => boolean, what = "condition") => {
   if (!cond()) throw new Error(`timed out waiting for ${what}`);
 };
 
-async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string } = {}) {
-  const { memoryUrl, modelUrl, ...rest } = extra;
+async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number } = {}) {
+  const { memoryUrl, modelUrl, approvals, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
     cwd: ROOT,
@@ -35,6 +35,7 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?:
       batch_ms: 30,
       ...(modelUrl ? { omniroute: { urls: [modelUrl], access_hosts: [] } } : {}),
       memory: memoryUrl ? { enabled: true, worker_url: memoryUrl, inject_tokens: 40, brief_items: 8 } : { ...DEFAULT_CONFIG.memory, enabled: false },
+      ...(approvals ? { approvals } : {}),
     },
     permissionTimeoutMs: 200,
     ...rest,
@@ -185,6 +186,35 @@ test("Kimi's requests for the hub's own tools are approved without a console pro
     console_.send({ t: "permit", id: next.id, option: "no" });
     await until(() => replies().length === n, `${body} reply`);
   }
+});
+
+// issue #5: a waiting approval reaches the desktop with the peer and the tool only; an unanswered one says so.
+test("a pending approval notifies once with peer and tool, never the payload; a timeout leaves a line", async () => {
+  const shown: string[] = [];
+  const { console_, events, stateDir } = await hub({ notifier: (_t, body) => shown.push(body), approvals: { timeout_s: 120, notify: true } });
+  await console_.request({ t: "start", peer: "kimi" });
+  const replies = () => events.filter((e) => e.t === "envelope" && e.env.from === "kimi");
+  await console_.request({ t: "send", body: "PERMISSION ANNOUNCED", to: ["kimi"] }); // title carries "rm -rf build && make"
+  await until(() => replies().length === 1, "cancelled reply");
+  expect(shown).toEqual(["kimi asks for approval: Bash (ahub tail)"]);
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toMatch(/permission \w+ from kimi was not answered within 0s and was cancelled/);
+});
+
+test("approvals.timeout_s outside 30-3600 falls back to 120 with a log line; notify off sends nothing", async () => {
+  const shown: string[] = [];
+  const { stateDir } = await hub({ notifier: (_t, body) => shown.push(body), approvals: { timeout_s: 5, notify: false } });
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("approvals.timeout_s 5 is outside 30-3600 seconds; using 120");
+  expect(shown).toEqual([]);
+});
+
+test("a project config turns approval notifications on for macOS unless it says otherwise", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-approvals-"));
+  expect(DEFAULT_CONFIG.approvals.notify).toBe(false);
+  mkdirSync(join(dir, ".agenthub"));
+  writeFileSync(join(dir, ".agenthub", "config.json"), "{}");
+  expect(loadConfig(dir).approvals).toEqual({ timeout_s: 120, notify: process.platform === "darwin" });
+  writeFileSync(join(dir, ".agenthub", "config.json"), JSON.stringify({ approvals: { notify: false, timeout_s: 600 } }));
+  expect(loadConfig(dir).approvals).toEqual({ timeout_s: 600, notify: false });
 });
 
 test("a peer cannot claim the console user's id or a hub-managed adapter's id", async () => {

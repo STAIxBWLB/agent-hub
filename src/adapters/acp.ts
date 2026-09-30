@@ -13,6 +13,8 @@ export interface PermissionRequest {
   peer: PeerId;
   title: string;
   options: PermissionOption[];
+  /** The tool's name alone, when the adapter knows it apart from the title (which can quote the payload). */
+  tool?: string;
 }
 
 export interface AcpOptions {
@@ -243,7 +245,8 @@ export class AcpPeer extends BasePeer {
     // An unknown payload is never dressed up as a description, and it must not buy a blanket grant.
     const title: string = raw === undefined ? `${call.title ?? "tool call"} (payload not reported by the agent)` : `${call.title ?? "tool call"}${input}`;
     const options: PermissionOption[] = (msg.params?.options ?? []).filter((o: PermissionOption) => (raw !== undefined && !cut) || o.kind !== "allow_always");
-    const picked = await this.opts.onPermission?.({ peer: this.id, title, options }).catch(() => undefined);
+    const tool = typeof call.title === "string" ? call.title.replace(/[^\w.:@-]/g, " ").trim().slice(0, 80) : undefined;
+    const picked = await this.opts.onPermission?.({ peer: this.id, title, options, ...(tool ? { tool } : {}) }).catch(() => undefined);
     const valid = options.some((o) => o.optionId === picked);
     this.send({
       jsonrpc: "2.0",

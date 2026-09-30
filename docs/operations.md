@@ -86,7 +86,12 @@ ahub permit <request-id> allow
 ```
 
 Use the exact option shown by `ahub tail`; do not approve an unresolved or
-unexpected request. `ahub pause <peer>` holds delivery and `ahub resume
+unexpected request. On macOS a waiting request also raises a desktop
+notification that names the peer and, for Kimi, the tool, never what it would
+run. An unanswered request is cancelled after `approvals.timeout_s` (default
+120, 30 to 3600) in `.agenthub/config.json`, and the console and log say so.
+Set `approvals.notify` to `false` to turn notifications off.
+`ahub pause <peer>` holds delivery and `ahub resume
 <peer>` releases a manual pause. Budget pauses are distinct:
 
 ```bash
