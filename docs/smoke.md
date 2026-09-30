@@ -693,3 +693,57 @@ cutover; it also exposed three recovery defects that became 0.7.3 and 0.7.4.
 
 Issue [#12](https://github.com/STAIxBWLB/agent-hub/issues/12) remains open
 for off-campus Access credentials and a natural near-limit budget pause.
+
+## Shared notes and claims live run (issue #68, 0.7.6, 2026-09-30)
+
+Measured against the released 0.7.6 package (global CLI and Claude plugin both
+0.7.6 after `ahub setup`) in a disposable git project, with real Kimi 2.1.1 under
+ACP and real Codex (codex-cli 0.156.1) behind the hub's app-server proxy. A script
+stood in for the Codex TUI (the `scripts/smoke-codex.ts` pattern, attached to the
+live daemon's proxy). No Claude peer was attached. No console message named a tool
+or a note kind; the role text and the AGENTS.md block in the peers' prompts do, by
+design. Times are hub.log timestamps (UTC).
+
+- Fail note, kind chosen by the model: asked at 03:07:24.886Z to "record this for
+  the other agents so nobody retries it" (a WeakMap cannot replace this
+  string-keyed Map), Codex called `hub_remember` with `kind: "fail"` on its own,
+  with a title and "Do not retry this replacement without a different key model
+  or new evidence". The log showed `note from codex [fail]: ...` at 03:07:32.331Z
+  (7.4 s); Codex closed with `[FYI]`, so nobody's turn was spent on the answer.
+- No turn of its own: Kimi was idle with nothing queued and made no `busy`
+  transition between the note and the next console message.
+- Ride-along, once: the next console question to Kimi at 03:07:48.827Z ("Should
+  src/cache.ts switch its Map to a WeakMap so entries can be garbage
+  collected? ...", without mentioning the note) was delivered with the note in the
+  same prompt. Kimi's session transcript has the note in the first of its three
+  turn prompts only. Kimi answered "No" at 03:08:06.398Z (17.6 s) and said the
+  answer "rests on the code itself plus codex's earlier recorded fail note". The
+  same first prompt also carried 1042 chars of claude-mem recall from an unrelated
+  earlier project: claude-mem keys a project by its directory name, and this one
+  was `proj`. Later runs should use a unique directory name.
+- Self-claim: told to claim unassigned work without editing, Kimi picked
+  `hub_task_propose` with `owner: kimi` and `refs: src/cache.ts` itself. Task #1
+  went straight to `in_progress` (`proposed` at 03:11:40.342Z, `claimed by kimi`
+  at 03:11:40.343Z, reviewer codex), and no task envelope came back to Kimi.
+- Overlap: Codex then claimed "everything under src/" (`owner: codex`,
+  `refs.paths: ["src/"]`). Its tool result carried `Overlaps #1 (owner kimi) on
+  src/. Settle it with that owner via hub_send before editing those paths.`, the
+  console printed `... Overlaps #1 (owner kimi) on src/. codex is told to settle
+  it.` at 03:12:01.494Z, and Kimi received nothing. Codex acknowledged the overlap
+  in its `[FYI]` answer (in Korean, translated: coordination is needed before
+  editing) and did not message Kimi in the claim turn: it had been told not to
+  edit yet, and the guidance asks for settlement before editing.
+- Environmental limit: Kimi 2.1.1 asked approval for both of its
+  `hub_task_propose` calls (its `Read` call asked for none), and sent no
+  `rawInput` before the approval, so unlike 2.0.1 the hub had nothing to show:
+  the console read `mcp__agent-hub__hub_task_propose (payload not reported by
+  the agent)` with `approve_once` / `reject` only (the always option is withheld,
+  as designed). Kimi's own transcript records the approval before its tool-call
+  event, so the arguments seem to arrive after the request (inferred, not
+  captured on the ACP stream). The first request (03:08:48.088Z) went unanswered,
+  was cancelled at the 120 s permission timeout, and the claim was lost; Kimi
+  reported that accurately at 03:10:58.585Z. Codex called the same tools without
+  an approval. A Kimi that should claim or record notes unattended needs a
+  tool-approval policy of its own for the agent-hub server; the hub does not
+  change it.
+- The disposable hub was stopped and its registration removed after recording.
