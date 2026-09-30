@@ -820,17 +820,21 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
 ## Amendment: machine-local config fields (issue #17)
 
 - Machine-local fields: `kimi_cmd`, `codex_bin`, `pi.cmd`, `checks`, `mlx.bin`,
-  `mlx.runtimeDir`, `omniroute.urls`, `omniroute.access_hosts`,
+  `mlx.runtimeDir`, `mlx.modelPath`, `omniroute.urls`, `omniroute.access_hosts`,
   `omniroute.api_key_file`, `omniroute.cf_client_id_file`,
   `omniroute.cf_client_secret_file`, `memory.worker_url`, `local.read_allow`,
   `local.bash_network` (`MACHINE_LOCAL` in `src/hub/config-trust.ts`).
 - `loadConfig` reads `.agenthub/config.json`, then `.agenthub/config.local.json`
-  over it block by block. In each file, a machine-local field set to something
-  other than its default or an empty value applies only when git confirms that
-  file is untracked (any letter case; `.agenthub` not a committed symlink or
-  submodule); otherwise it is dropped and the config's `ignored` list says which
-  and why. No repository or a git error refuses. A file that sets none of them
-  asks git nothing, so a committed copy of the template is quiet.
+  over it block by block. In each file, an empty machine-local value is dropped
+  (it means the default); one set to anything but its default applies only when
+  git confirms that file is untracked, matching tracked files under `.agenthub`
+  by identity (dev and inode) rather than by name, and `.agenthub` not a committed
+  symlink or submodule; otherwise it is dropped and the config's `ignored` list
+  says which and why. No repository or a git error refuses. A file that sets none
+  of them asks git nothing, so a committed copy of the template is quiet.
+  The containing repository answers "untracked": a checkout copied into an
+  unrelated repository is trusted (documented limit).
+- The Claude channel reads `roles` from both files in the same order.
 - This replaces the checks-only gate of issue #7: the daemon logs `ignored` at
   start, `ahub codex` and `ahub models` print it, `ahub doctor` shows a row.
   `ahub init` adds `.agenthub/config.local.json` to `.gitignore`.

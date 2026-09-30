@@ -25,12 +25,13 @@ may request an approval.
 `.agenthub/config.json` can be committed and shared. The fields that choose
 what the hub runs, which files it sends as credentials, where task text goes,
 or how far the local worker's sandbox reaches (`kimi_cmd`, `codex_bin`,
-`pi.cmd`, `checks`, `mlx.bin`, `mlx.runtimeDir`, `omniroute.urls`,
+`pi.cmd`, `checks`, `mlx.bin`, `mlx.runtimeDir`, `mlx.modelPath`, `omniroute.urls`,
 `omniroute.access_hosts`, the `omniroute` key files, `memory.worker_url`,
 `local.read_allow`, `local.bash_network`) are machine-local: they apply only
 from a file git confirms nobody committed. Put them in
 `.agenthub/config.local.json` (`ahub init` adds it to `.gitignore`), which is
-read after `config.json`; outside a git repository they keep their defaults.
+read after `config.json`; outside a git repository they keep their defaults, and
+an empty value always means the default.
 A committed value is ignored with a line in `hub.log`, a note from `ahub
 codex` and `ahub models`, and a row in `ahub doctor`.
 

@@ -100,7 +100,7 @@ const CONFIG_BLOCKS = ["memory", "roles", "budget", "inference", "omniroute", "l
 export function loadConfig(cwd: string): HubConfig {
   const ignored: string[] = [];
   const files = CONFIG_FILES.flatMap((name) => {
-    let file: Record<string, any>;
+    let file: Record<string, any>; // parsed JSON, checked field by field below
     try {
       file = JSON.parse(readFileSync(join(cwd, ".agenthub", name), "utf8"));
     } catch (error) {
@@ -120,8 +120,8 @@ export function loadConfig(cwd: string): HubConfig {
     throw new Error("legacy MLX configuration requires explicit mlx.provider=legacy; migrate to provider=ollama to avoid Python serving");
   }
   const mlx = { ...(file.mlx?.provider === "legacy" ? { provider: "legacy" as const, maxInputTokens: 16_000, maxTokens: 2048 } : DEFAULT_CONFIG.mlx), ...file.mlx };
-  if (typeof mlx.runtimeDir === "string") mlx.runtimeDir = resolve(cwd, mlx.runtimeDir);
-  if (typeof mlx.modelPath === "string") mlx.modelPath = resolve(cwd, mlx.modelPath);
+  if (typeof mlx.runtimeDir === "string" && mlx.runtimeDir) mlx.runtimeDir = resolve(cwd, mlx.runtimeDir);
+  if (typeof mlx.modelPath === "string" && mlx.modelPath) mlx.modelPath = resolve(cwd, mlx.modelPath);
   return {
     ...DEFAULT_CONFIG,
     ...file,

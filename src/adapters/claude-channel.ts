@@ -21,11 +21,15 @@ const peerId = process.env.AGENTHUB_PEER_ID ?? "claude";
 const toolsOnly = process.env.AGENTHUB_MODE === "tools";
 
 function roles(): Record<string, string[]> {
-  try {
-    return { ...DEFAULT_ROLES, ...JSON.parse(readFileSync(join(projectRoot, ".agenthub", "config.json"), "utf8")).roles };
-  } catch {
-    return DEFAULT_ROLES;
-  }
+  // The machine's own file overrides the shared one, as in loadConfig (issue #17).
+  const read = (name: string) => {
+    try {
+      return JSON.parse(readFileSync(join(projectRoot, ".agenthub", name), "utf8")).roles ?? {};
+    } catch {
+      return {};
+    }
+  };
+  return { ...DEFAULT_ROLES, ...read("config.json"), ...read("config.local.json") };
 }
 const MAX_RECONNECT_DELAY_MS = 30_000;
 /** Close codes a retry cannot fix: bad token, wrong project, reserved or taken id, wire version. */

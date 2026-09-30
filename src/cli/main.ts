@@ -766,8 +766,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     row(!config.ignored, "config", config.ignored ? `${config.ignored.join("; ")} (move them to .agenthub/config.local.json)` : "no machine-local field ignored");
     const omni = new OmniRoute(config.omniroute);
     const gateway = await omni.base();
-    row(!!gateway, "omniroute", gateway ? `${new URL(gateway).host} healthy` : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? "no candidate reachable (VPN off?); ahub local cannot run" : "not configured: set omniroute.urls in .agenthub/config.json (any OpenAI-compatible gateway); ahub local cannot run");
-    row(!!omni.apiKey(), "omniroute key", omni.apiKey() ? "present" : "missing: set OMNIROUTE_API_KEY or omniroute.api_key_file in .agenthub/config.json");
+    row(!!gateway, "omniroute", gateway ? `${new URL(gateway).host} healthy` : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? "no candidate reachable (VPN off?); ahub local cannot run" : "not configured: set omniroute.urls in .agenthub/config.local.json (any OpenAI-compatible gateway); ahub local cannot run");
+    row(!!omni.apiKey(), "omniroute key", omni.apiKey() ? "present" : "missing: set OMNIROUTE_API_KEY or omniroute.api_key_file in .agenthub/config.local.json");
     const sy = spawnSync(process.env.AGENTHUB_SWITCHYARD_BIN ?? "switchyard-server", ["--version"], { encoding: "utf8" });
     row(sy.status === 0 ? true : undefined, "switchyard", sy.status === 0 ? sy.stdout.trim() : "not installed: ahub local uses fixed_model on OmniRoute (cargo install --locked switchyard-server)");
     const mlxConfig = config.mlx;

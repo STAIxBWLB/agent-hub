@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- A committed `.agenthub/config.json` can no longer choose what the hub runs, which files it sends as credentials, where task text goes, or how far the local worker's sandbox reaches: those machine-local fields (launch commands, checks, the legacy MLX binary and model directory, gateway URLs and key files, the memory endpoint, sandbox widening) apply only from a file git confirms nobody committed, such as the new `.agenthub/config.local.json`, and are otherwise ignored with a log line and a doctor row (#17).
+
 ## 0.7.8
 
 - README, the operations guide and the upgrade-recovery spec no longer describe protocol 10 and the queue commands as unreleased (#9).
@@ -13,7 +15,6 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - A class can carry a completion check (`checks.<class>` in a `.agenthub/config.json` git confirms nobody committed; outside a repository none runs): marking such a task done runs it, sends the task to review with the result on success, and keeps it with its owner with the failure otherwise. A hub stop interrupts a check without a verdict (#7).
 - `scripts/overlaps.ts` counts the claim overlap warnings in hub logs per week and names the task pairs, for the two-week measurement that decides whether per-task worktrees are built. The procedure and the numbers go in `docs/smoke.md` (#8).
 - Releases publish to npm through trusted publishing (OIDC) instead of a stored token, and the workflows use the Node 24 releases of `actions/checkout` and `actions/setup-node` (#4).
-- A committed `.agenthub/config.json` can no longer choose what the hub runs, which files it sends as credentials, where task text goes, or how far the local worker's sandbox reaches: those machine-local fields (launch commands, checks, the legacy MLX binary, gateway URLs and key files, the memory endpoint, sandbox widening) apply only from a file git confirms nobody committed, such as the new `.agenthub/config.local.json`, and are otherwise ignored with a log line and a doctor row (#17).
 
 ## 0.7.7
 
