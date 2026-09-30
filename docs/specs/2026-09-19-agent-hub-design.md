@@ -615,6 +615,9 @@ M6 internal inference, packaging
   publicly with provenance and `NPM_TOKEN`. The token belongs to an authorized
   organization member. Organization conversion and credential provisioning are
   owner operations; this implementation does not perform them.
+- Amended 2026-09-30 (issue #4 of this repository): publishing uses npm trusted
+  publishing (OIDC) with no stored token; npm 11.5.1 or later publishes provenance by
+  itself. Registering the trusted publisher on npmjs.com is an owner operation.
 - The v0.4.0 release workflow completed registry publication with provenance.
   Registry metadata/provenance readback and real Claude setup from a clean registry
   installation remain to be verified.

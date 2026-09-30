@@ -14,19 +14,26 @@ The package is `@staix/agent-hub` in the `staix` npm organization. Bun >=1.3.0
 is required to run it; Node and npm are also needed for the development gate.
 The commands remain `ahub` and `agent-hub`.
 
-Before the first registry release, an organization member with publish permission
-must create a granular access token with the required package/scope write access
-and bypass-2FA permission for unattended publishing, and save it as the repository
-secret `NPM_TOKEN`. Organization management permission alone does not grant package
-publishing access ([npm token documentation](https://docs.npmjs.com/creating-and-viewing-access-tokens/)). For a new package, ensure the token permits its creation under
-`@staix`; after the first publish, narrow it to the package. Never commit the token.
+Publishing uses npm trusted publishing (OIDC); there is no npm token and no
+repository secret. A package owner registers the trusted publisher once on
+npmjs.com (package settings, trusted publisher: GitHub Actions, organization
+`STAIxBWLB`, repository `agent-hub`, workflow `release.yml`, no environment,
+allowed actions: `npm publish`; a stage-only publisher refuses the workflow's
+`npm publish`). Once the first trusted publish has succeeded, set the package to
+require two-factor authentication and disallow tokens, and revoke any older
+automation token. Only the workflow's publish job has `id-token: write`; npm
+11.5.1 or later publishes provenance by itself
+([npm trusted publishing](https://docs.npmjs.com/trusted-publishers)). Before
+renaming the repository or the workflow file, change the trusted publisher: edit
+it when the package has a single one, or add one for the new name and then
+delete the old one when several are allowed.
 
 Release only from GitHub Actions: bump `package.json`, run `bun run build`, update
 `CHANGELOG.md`, pass `scripts/check.sh`, merge the release change, then push
 `v<version>`. The release workflow checks the tag against `package.json`, runs the
-gate, publishes with `npm publish --provenance --access public`, then creates the
-GitHub Release. A mismatched tag or a failing gate prevents publication. Do not
-publish from a laptop or move an existing release tag.
+gate, publishes with `npm publish --access public` through trusted publishing,
+then creates the GitHub Release. A mismatched tag or a failing gate prevents
+publication. Do not publish from a laptop or move an existing release tag.
 
 After publishing, verify `npm view @staix/agent-hub@<version> dist.attestations`,
 install that version with `bun add -g @staix/agent-hub@<version>` in a clean
