@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.7.10
+
 - A `local.deny` entry, or a project path, containing `"` no longer breaks the local worker's sandbox profile (its bash and git tools stopped with a parse error); the deny rules are written as plain SBPL strings, which can hold a quote (#23).
 
 ## 0.7.9
