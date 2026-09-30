@@ -806,7 +806,9 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   and the output tail; shared memory gets the summary and the outcome line, never
   the output. Any other outcome: the task stays with its owner, who gets a task
   envelope with the command, outcome and tail; no reviewer turn is spent. A second
-  `done` while the check runs is refused. A task with any board event since the
+  `done` while the check runs is refused; a new owner who took the task meanwhile is
+  told to try again later, since the result reaches only the owner the check was
+  started for. A task with any board event since the
   `done` other than an answer or a reviewer change only records the result
   (`check finished late`); if it is in progress with the same owner again, that
   owner is asked to mark it done again. A check interrupted by a hub stop records

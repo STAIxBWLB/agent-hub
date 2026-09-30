@@ -584,8 +584,13 @@ test("a task that left and came back does not take its old check's result; its o
   const t = await tasks.propose("codex", { title: "fix", class: "implement", owner: "codex" });
   await tasks.done("codex", t.id, "fixed");
   await tasks.escalate(USER, t.id, "by hand");
+  const other = board.get(t.id)!.owner!;
+  expect(other).not.toBe("codex");
+  // Its check's result will not reach whoever took it meanwhile, so it is not promised one.
+  await expect(tasks.done(other, t.id, "mine now")).rejects.toThrow(/a check from before it changed hands is still running; call hub_task_done again/);
   await tasks.assignTo(t.id, "codex");
   expect(board.get(t.id)).toMatchObject({ state: "in_progress", owner: "codex" });
+  await expect(tasks.done("codex", t.id, "again")).rejects.toThrow(/its check is still running; its result comes as a task message/);
   release();
   await until(() => board.get(t.id)!.history.some((h) => h.event === "check finished late"));
   expect(board.get(t.id)!.state).toBe("in_progress");

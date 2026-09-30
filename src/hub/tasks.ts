@@ -259,7 +259,8 @@ export class Tasks {
     return this.assignOwner(back, HUB, { event: "reassigned", clearOnFail: true });
   }
 
-  private readonly checking = new Set<number>();
+  /** Tasks whose check is queued or running, and the owner it was started for. */
+  private readonly checking = new Map<number, PeerId | null>();
   private checkQueue: Promise<void> = Promise.resolve();
 
   /** Whether a completion check is still running for this task. */
@@ -269,12 +270,15 @@ export class Tasks {
     let task = this.need(id);
     this.mine(task, by, "owner");
     if (task.state === "in_review" || task.state === "approved") throw new Error(`task #${task.id} is already ${task.state}`);
-    if (this.checking.has(task.id)) throw new Error(`task #${task.id}: its check is still running; its result comes as a task message`);
+    if (this.checking.has(task.id)) {
+      // The result goes only to the owner the check was started for: anyone who took the task since hears nothing.
+      throw new Error(this.checking.get(task.id) === task.owner ? `task #${task.id}: its check is still running; its result comes as a task message` : `task #${task.id}: a check from before it changed hands is still running; call hub_task_done again in a few minutes`);
+    }
     if (task.state === "proposed" || task.state === "changes_requested") task = this.d.board.update(task.id, by, "accepted", { state: "in_progress" }); // done without a separate accept
     const command = this.d.runCheck ? this.d.check?.(task.class) : undefined;
     if (!command) return this.complete(task, by, summary, refs);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
-    this.checking.add(task.id);
+    this.checking.set(task.id, task.owner);
     const pending = this.d.board.update(task.id, by, "done (checking)", { refs: cleanRefs(refs) }, summary);
     this.d.notify(`task ${this.publicTitle(pending)} done by ${by}; its check is queued or running: ${command}`);
     const seen = { events: pending.history.length, owner: pending.owner };
