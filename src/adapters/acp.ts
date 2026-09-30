@@ -245,8 +245,12 @@ export class AcpPeer extends BasePeer {
     // An unknown payload is never dressed up as a description, and it must not buy a blanket grant.
     const title: string = raw === undefined ? `${call.title ?? "tool call"} (payload not reported by the agent)` : `${call.title ?? "tool call"}${input}`;
     const options: PermissionOption[] = (msg.params?.options ?? []).filter((o: PermissionOption) => (raw !== undefined && !cut) || o.kind !== "allow_always");
-    const tool = typeof call.title === "string" ? call.title.replace(/[^\w.:@-]/g, " ").trim().slice(0, 80) : undefined;
-    const picked = await this.opts.onPermission?.({ peer: this.id, title, options, ...(tool ? { tool } : {}) }).catch(() => undefined);
+    // Only a bare tool name travels on its own (a desktop notice shows it); anything prose-like stays in the title.
+    const tool = typeof call.title === "string" && /^[\w.:@-]{1,80}$/.test(call.title) ? call.title : undefined;
+    // Waiting for a person is not the agent going silent: keep the watchdog from cancelling the turn meanwhile.
+    const turn = this.turn;
+    const alive = setInterval(() => this.state === "busy" && turn === this.turn && this.touch(), Math.max(10, Math.min(30_000, Math.floor(this.watchdogMs / 3))));
+    const picked = await this.opts.onPermission?.({ peer: this.id, title, options, ...(tool ? { tool } : {}) }).catch(() => undefined).finally(() => clearInterval(alive));
     const valid = options.some((o) => o.optionId === picked);
     this.send({
       jsonrpc: "2.0",

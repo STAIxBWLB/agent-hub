@@ -104,7 +104,10 @@ export function loadConfig(cwd: string): HubConfig {
       omniroute: { ...DEFAULT_CONFIG.omniroute, ...file.omniroute },
       local: { ...DEFAULT_CONFIG.local, ...file.local },
       pi: { ...DEFAULT_CONFIG.pi, ...file.pi },
-      approvals: { ...DEFAULT_CONFIG.approvals, notify: process.platform === "darwin", ...file.approvals },
+      approvals: {
+        timeout_s: file.approvals?.timeout_s ?? DEFAULT_CONFIG.approvals.timeout_s,
+        notify: typeof file.approvals?.notify === "boolean" ? file.approvals.notify : process.platform === "darwin",
+      },
       mlx,
     };
   } catch (error) {
@@ -615,7 +618,7 @@ export async function startDaemon(opts: DaemonOptions) {
       notifierBroken = true;
     };
     child.on("error", (e: Error) => (clearTimeout(kill), failed(e.message)));
-    child.on("exit", (code: number | null) => (clearTimeout(kill), code ? failed(`osascript exit ${code}`) : undefined));
+    child.on("exit", (code: number | null, signal: string | null) => (clearTimeout(kill), code || signal ? failed(signal ? `osascript stopped by ${signal}` : `osascript exit ${code}`) : undefined));
   });
 
   async function onPermission(req: PermissionRequest): Promise<string | undefined> {
@@ -627,8 +630,11 @@ export async function startDaemon(opts: DaemonOptions) {
     const title = req.title.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
     // The title can quote what a PII turn is about to write. It is for the person approving, on the console; the log
     // (which `ahub ask` reads as evidence) only records that a request was made.
-    log(`permission ${id} requested by ${req.peer} (${title.length} chars, shown on the console)`);
-    const push = JSON.stringify({ t: "permission", id, ...req, title });
+    const timeoutMs = opts.permissionTimeoutMs ?? approvalTimeoutS * 1000;
+    log(`permission ${id} requested by ${req.peer} (${title.length} chars, shown on the console; cancelled after ${timeoutMs / 1000}s)`);
+    // The tool name is for the desktop notice only: the console push keeps its shape.
+    const { tool: _tool, ...shown } = req;
+    const push = JSON.stringify({ t: "permission", id, ...shown, title });
     for (const c of consoles) if (c.data.tail) c.send(push);
     if (config.approvals.notify) {
       try {
@@ -637,7 +643,6 @@ export async function startDaemon(opts: DaemonOptions) {
         // never let a notifier break the request itself
       }
     }
-    const timeoutMs = opts.permissionTimeoutMs ?? approvalTimeoutS * 1000;
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         notify(`permission ${id} from ${req.peer} was not answered within ${Math.round(timeoutMs / 1000)}s and was cancelled`);

@@ -762,4 +762,9 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   line) replaces the fixed 120 s; an unanswered request leaves a console and log
   line.
 - `approvals.notify` defaults to on for macOS when a project config file exists and
-  to off otherwise (tests, a hub without a config), so test runs raise nothing.
+  to off otherwise (tests, a hub without a config), so test runs raise nothing; a
+  non-boolean value is ignored.
+- The ACP adapter keeps its inactivity watchdog alive while a permission request
+  waits (as the local worker already did), so a timeout above `watchdog_ms` does
+  not cancel the turn. The tool name travels to the notifier only; the console
+  `permission` push keeps its shape, so the control protocol is unchanged.

@@ -163,6 +163,21 @@ test("the hub's own tools are approved once without asking; a lookalike name sti
   expect(said[1]!.body).toEndWith("permission=no");
 });
 
+// review of #13: an approval longer than the watchdog must not cancel the turn it belongs to.
+test("a pending approval keeps the turn alive past the watchdog", async () => {
+  const { bus, said } = await setup({
+    watchdogMs: 150,
+    onPermission: async () => {
+      await new Promise((r) => setTimeout(r, 600));
+      return "yes";
+    },
+  });
+  bus.publish(newEnvelope("user", "PERMISSION", { to: ["kimi"] }));
+  await until(() => said.length === 1);
+  expect(said[0]!.body).toBe("echo: PERMISSION permission=yes");
+  expect(peer!.state).not.toBe("offline");
+});
+
 test("a dead child goes offline", async () => {
   await setup();
   await peer!.stop();

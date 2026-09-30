@@ -197,14 +197,22 @@ test("a pending approval notifies once with peer and tool, never the payload; a 
   await console_.request({ t: "send", body: "PERMISSION ANNOUNCED", to: ["kimi"] }); // title carries "rm -rf build && make"
   await until(() => replies().length === 1, "cancelled reply");
   expect(shown).toEqual(["kimi asks for approval: Bash (ahub tail)"]);
-  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toMatch(/permission \w+ from kimi was not answered within 0s and was cancelled/);
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8").match(/permission \w+ from kimi was not answered within 0s and was cancelled/g)).toHaveLength(1);
 });
 
-test("approvals.timeout_s outside 30-3600 falls back to 120 with a log line; notify off sends nothing", async () => {
+test("approvals.timeout_s is what cancels a request; outside 30-3600 it falls back to 120; notify off sends nothing", async () => {
   const shown: string[] = [];
-  const { stateDir } = await hub({ notifier: (_t, body) => shown.push(body), approvals: { timeout_s: 5, notify: false } });
-  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("approvals.timeout_s 5 is outside 30-3600 seconds; using 120");
-  expect(shown).toEqual([]);
+  const set = await hub({ notifier: (_t, body) => shown.push(body), approvals: { timeout_s: 45, notify: false }, permissionTimeoutMs: undefined });
+  await set.console_.request({ t: "start", peer: "kimi" });
+  await set.console_.request({ t: "send", body: "PERMISSION", to: ["kimi"] });
+  await until(() => set.pushes.some((p) => p.t === "permission"), "request shown");
+  expect(readFileSync(join(set.stateDir, "hub.log"), "utf8")).toMatch(/permission \w+ requested by kimi .*cancelled after 45s\)/);
+  expect(set.pushes.find((p) => p.t === "permission").tool).toBeUndefined(); // the console push keeps its shape
+  expect(shown).toEqual([]); // notify off: a real request raised nothing
+  set.console_.send({ t: "permit", id: set.pushes.find((p) => p.t === "permission").id, option: "yes" });
+
+  const off = await hub({ approvals: { timeout_s: 5, notify: false } });
+  expect(readFileSync(join(off.stateDir, "hub.log"), "utf8")).toContain("approvals.timeout_s 5 is outside 30-3600 seconds; using 120");
 });
 
 test("a project config turns approval notifications on for macOS unless it says otherwise", () => {
@@ -215,6 +223,8 @@ test("a project config turns approval notifications on for macOS unless it says 
   expect(loadConfig(dir).approvals).toEqual({ timeout_s: 120, notify: process.platform === "darwin" });
   writeFileSync(join(dir, ".agenthub", "config.json"), JSON.stringify({ approvals: { notify: false, timeout_s: 600 } }));
   expect(loadConfig(dir).approvals).toEqual({ timeout_s: 600, notify: false });
+  writeFileSync(join(dir, ".agenthub", "config.json"), JSON.stringify({ approvals: { notify: "false" } }));
+  expect(loadConfig(dir).approvals.notify).toBe(process.platform === "darwin"); // a string is not a boolean
 });
 
 test("a peer cannot claim the console user's id or a hub-managed adapter's id", async () => {

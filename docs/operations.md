@@ -90,7 +90,10 @@ unexpected request. On macOS a waiting request also raises a desktop
 notification that names the peer and, for Kimi, the tool, never what it would
 run. An unanswered request is cancelled after `approvals.timeout_s` (default
 120, 30 to 3600) in `.agenthub/config.json`, and the console and log say so.
-Set `approvals.notify` to `false` to turn notifications off.
+Set `approvals.notify` to `false` to turn notifications off; a hub started
+without a project config file raises none. While Kimi waits for an answer its
+turn is kept alive, so a timeout longer than the inactivity watchdog does not
+cancel it.
 `ahub pause <peer>` holds delivery and `ahub resume
 <peer>` releases a manual pause. Budget pauses are distinct:
 
