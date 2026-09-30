@@ -20,8 +20,8 @@ const until = async (cond: () => boolean, what = "condition") => {
   if (!cond()) throw new Error(`timed out waiting for ${what}`);
 };
 
-async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks } = {}) {
-  const { memoryUrl, modelUrl, approvals, checks, ...rest } = extra;
+async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[] } = {}) {
+  const { memoryUrl, modelUrl, approvals, checks, ignored, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
     cwd: ROOT,
@@ -37,6 +37,7 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?:
       memory: memoryUrl ? { enabled: true, worker_url: memoryUrl, inject_tokens: 40, brief_items: 8 } : { ...DEFAULT_CONFIG.memory, enabled: false },
       ...(approvals ? { approvals } : {}),
       ...(checks ? { checks } : {}),
+      ...(ignored ? { ignored } : {}),
     },
     permissionTimeoutMs: 200,
     ...rest,
@@ -887,8 +888,13 @@ test("completion checks: run where git vouches for the config, refused where it 
   expect(shown).toContain("echo checked -> exit 0");
   expect(readFileSync(join(ran.stateDir, "hub.log"), "utf8")).toContain("checks ignored for nonsense: not a task class");
 
-  const refused = await hub({ cwd: project(false), checks: { timeout_s: 600, implement: "echo checked" } });
-  expect(readFileSync(join(refused.stateDir, "hub.log"), "utf8")).toContain("checks ignored: git could not confirm that .agenthub/config.json is untracked");
+  // Outside a repository the loader keeps the default checks (issue #17) and the daemon logs why.
+  const plain = project(false);
+  mkdirSync(join(plain, ".agenthub"));
+  writeFileSync(join(plain, ".agenthub", "config.json"), JSON.stringify({ checks: { implement: "echo checked" } }));
+  const loaded = loadConfig(plain);
+  const refused = await hub({ cwd: plain, checks: loaded.checks, ignored: loaded.ignored });
+  expect(readFileSync(join(refused.stateDir, "hub.log"), "utf8")).toContain("checks in .agenthub/config.json ignored: git could not confirm that .agenthub/config.json is untracked; only a config file nobody committed may set it");
   await ops(refused)("hub_task_propose", { title: "fix", class: "implement" });
   expect(await ops(refused)("hub_task_done", { id: 1, summary: "fixed" })).not.toContain("check");
 

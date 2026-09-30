@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { childEnv } from "./child-process.ts";
 
 export interface CheckResult {
@@ -15,22 +15,6 @@ const TAIL_CHARS = 4000;
 const KEEP_CHARS = 64 * 1024;
 /** How long output may still arrive after the command exited; a descendant that left the group can hold the pipes. */
 const DRAIN_MS = 500;
-
-/**
- * Why the completion checks of issue #7 must not run, or undefined when git confirms nobody committed the config.
- * A command a cloned repository ships would otherwise run on the owner's machine the first time an agent marks a task
- * done. Unknown is not untracked: no repository, no git, or a git error all refuse. The directory itself counts too (a
- * committed symlink or submodule at `.agenthub`), and so does any spelling of the path, since macOS opens either.
- */
-export function checksRefusal(cwd: string): string | undefined {
-  const r = spawnSync("git", ["-C", cwd, "ls-files", "-s", "-z", "--", ":(icase).agenthub"], { encoding: "utf8", env: childEnv(process.env) });
-  if (r.status !== 0) return "git could not confirm that .agenthub/config.json is untracked";
-  const tracked = r.stdout.split("\0").some((row) => {
-    const path = row.slice(row.indexOf("\t") + 1).toLowerCase();
-    return path === ".agenthub" || path === ".agenthub/config.json";
-  });
-  return tracked ? ".agenthub/config.json is committed to git" : undefined;
-}
 
 /** Runs one check command in the project root, in its own process group so a timeout stops what it started. */
 export function runCheck(command: string, cwd: string, timeoutMs: number, running?: Set<() => void>): Promise<CheckResult> {

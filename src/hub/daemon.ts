@@ -4,7 +4,8 @@ import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { childEnv } from "./child-process.ts";
-import { checksRefusal, runCheck } from "./checks.ts";
+import { runCheck } from "./checks.ts";
+import { stripUntrusted } from "./config-trust.ts";
 import type { ServerWebSocket } from "bun";
 import { AcpPeer, type PermissionRequest } from "../adapters/acp.ts";
 import { CodexPeer } from "../adapters/codex-appserver.ts";
@@ -62,6 +63,8 @@ export interface HubConfig {
   tasks: { release_after_min: number };
   /** A command per task class run when the owner marks the task done, and its timeout (issue #7). */
   checks: { timeout_s: number; [cls: string]: string | number };
+  /** Machine-local fields a config file set but git could not vouch for, and why (issue #17). */
+  ignored?: string[];
 }
 export const DEFAULT_CONFIG: HubConfig = {
   watchdog_ms: DEFAULT_WATCHDOG_MS,
@@ -90,39 +93,54 @@ export { stateDirFor };
 const RESERVED_IDS = new Set([USER, "codex", "kimi", "local", "pi", "hub", DIGEST]);
 const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
+/** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
+const CONFIG_FILES = ["config.json", "config.local.json"] as const;
+const CONFIG_BLOCKS = ["memory", "roles", "budget", "inference", "omniroute", "local", "pi", "approvals", "tasks", "checks", "mlx"];
+
 export function loadConfig(cwd: string): HubConfig {
-  try {
-    const file = JSON.parse(readFileSync(join(cwd, ".agenthub", "config.json"), "utf8"));
-    if (file.mlx != null && (typeof file.mlx !== "object" || Array.isArray(file.mlx))) throw new Error("mlx configuration must be an object");
-    if (file.mlx?.provider !== undefined && !["ollama", "legacy"].includes(file.mlx.provider)) throw new Error("mlx.provider must be ollama or legacy");
-    if (file.mlx?.provider === undefined && (file.mlx?.modelPath || file.mlx?.runtimeDir || file.mlx?.bin || file.mlx?.port)) {
-      throw new Error("legacy MLX configuration requires explicit mlx.provider=legacy; migrate to provider=ollama to avoid Python serving");
+  const ignored: string[] = [];
+  const files = CONFIG_FILES.flatMap((name) => {
+    let file: Record<string, any>;
+    try {
+      file = JSON.parse(readFileSync(join(cwd, ".agenthub", name), "utf8"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
     }
-    const mlx = { ...(file.mlx?.provider === "legacy" ? { provider: "legacy" as const, maxInputTokens: 16_000, maxTokens: 2048 } : DEFAULT_CONFIG.mlx), ...file.mlx };
-    if (typeof mlx.runtimeDir === "string") mlx.runtimeDir = resolve(cwd, mlx.runtimeDir);
-    if (typeof mlx.modelPath === "string") mlx.modelPath = resolve(cwd, mlx.modelPath);
-    return {
-      ...DEFAULT_CONFIG,
-      ...file,
-      memory: { ...DEFAULT_CONFIG.memory, ...file.memory },
-      roles: { ...DEFAULT_CONFIG.roles, ...file.roles },
-      budget: { ...DEFAULT_CONFIG.budget, ...file.budget },
-      inference: { ...DEFAULT_CONFIG.inference, ...file.inference },
-      omniroute: { ...DEFAULT_CONFIG.omniroute, ...file.omniroute },
-      local: { ...DEFAULT_CONFIG.local, ...file.local },
-      pi: { ...DEFAULT_CONFIG.pi, ...file.pi },
-      approvals: {
-        timeout_s: file.approvals?.timeout_s ?? DEFAULT_CONFIG.approvals.timeout_s,
-        notify: typeof file.approvals?.notify === "boolean" ? file.approvals.notify : process.platform === "darwin",
-      },
-      tasks: { ...DEFAULT_CONFIG.tasks, ...file.tasks },
-      checks: { ...DEFAULT_CONFIG.checks, ...file.checks },
-      mlx,
-    };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return DEFAULT_CONFIG;
-    throw error;
+    const why = stripUntrusted(file, DEFAULT_CONFIG, cwd, name);
+    if (why) ignored.push(why);
+    return [file];
+  });
+  if (!files.length) return DEFAULT_CONFIG;
+  const file = files.reduce((a, b) => ({ ...a, ...b, ...Object.fromEntries(CONFIG_BLOCKS.filter((k) => a[k] !== undefined && b[k] !== undefined).map((k) => [k, { ...a[k], ...b[k] }])) }));
+  delete file.ignored; // the hub's own record, never a file's
+  if (file.mlx != null && (typeof file.mlx !== "object" || Array.isArray(file.mlx))) throw new Error("mlx configuration must be an object");
+  if (file.mlx?.provider !== undefined && !["ollama", "legacy"].includes(file.mlx.provider)) throw new Error("mlx.provider must be ollama or legacy");
+  if (file.mlx?.provider === undefined && (file.mlx?.modelPath || file.mlx?.runtimeDir || file.mlx?.bin || file.mlx?.port)) {
+    throw new Error("legacy MLX configuration requires explicit mlx.provider=legacy; migrate to provider=ollama to avoid Python serving");
   }
+  const mlx = { ...(file.mlx?.provider === "legacy" ? { provider: "legacy" as const, maxInputTokens: 16_000, maxTokens: 2048 } : DEFAULT_CONFIG.mlx), ...file.mlx };
+  if (typeof mlx.runtimeDir === "string") mlx.runtimeDir = resolve(cwd, mlx.runtimeDir);
+  if (typeof mlx.modelPath === "string") mlx.modelPath = resolve(cwd, mlx.modelPath);
+  return {
+    ...DEFAULT_CONFIG,
+    ...file,
+    memory: { ...DEFAULT_CONFIG.memory, ...file.memory },
+    roles: { ...DEFAULT_CONFIG.roles, ...file.roles },
+    budget: { ...DEFAULT_CONFIG.budget, ...file.budget },
+    inference: { ...DEFAULT_CONFIG.inference, ...file.inference },
+    omniroute: { ...DEFAULT_CONFIG.omniroute, ...file.omniroute },
+    local: { ...DEFAULT_CONFIG.local, ...file.local },
+    pi: { ...DEFAULT_CONFIG.pi, ...file.pi },
+    approvals: {
+      timeout_s: file.approvals?.timeout_s ?? DEFAULT_CONFIG.approvals.timeout_s,
+      notify: typeof file.approvals?.notify === "boolean" ? file.approvals.notify : process.platform === "darwin",
+    },
+    tasks: { ...DEFAULT_CONFIG.tasks, ...file.tasks },
+    checks: { ...DEFAULT_CONFIG.checks, ...file.checks },
+    mlx,
+    ...(ignored.length ? { ignored } : {}),
+  };
 }
 
 export interface DaemonOptions {
@@ -326,9 +344,9 @@ export async function startDaemon(opts: DaemonOptions) {
   const checkCommands = Object.fromEntries(Object.entries(config.checks).filter(([k, v]) => (CLASSES as readonly string[]).includes(k) && typeof v === "string" && v.trim())) as Record<string, string>;
   const strayChecks = Object.keys(config.checks).filter((k) => k !== "timeout_s" && !(k in checkCommands));
   if (strayChecks.length) log(`checks ignored for ${strayChecks.join(", ")}: not a task class with a command (classes: ${CLASSES.join(", ")})`);
-  const checksRefused = Object.keys(checkCommands).length ? checksRefusal(opts.cwd) : undefined;
-  if (checksRefused) log(`checks ignored: ${checksRefused}, and only a file nobody committed may choose commands the hub runs`);
-  const checksAllowed = Object.keys(checkCommands).length > 0 && !checksRefused;
+  // Commands and the other machine-local fields came only from a file git vouched for (loadConfig, issue #17).
+  for (const line of config.ignored ?? []) log(`${line}; only a config file nobody committed may set it`);
+  const checksAllowed = Object.keys(checkCommands).length > 0;
   const checkTimeoutS = typeof config.checks.timeout_s === "number" && config.checks.timeout_s >= 1 ? Math.min(config.checks.timeout_s, 3600) : 600;
   const runningChecks = new Set<() => void>();
   let checksClosed = false; // set on stop: a check still queued then must not start and outlive the hub
