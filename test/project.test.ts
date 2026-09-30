@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { projectContext, projectRoot, realPath } from "../src/hub/project.ts";
@@ -82,4 +82,20 @@ test("realPath resolves paths with a backslash like realpathSync would, and stil
   expect(() => realPath(join(root, "dang\\ling"))).toThrow();
   expect(() => realPath(join(root, "nope"))).toThrow();
   expect(realPath(base)).toBe(realpathSync(base)); // ordinary paths take realpathSync's answer
+  // `..` after a directory is resolved on disk; a link through a missing directory is dangling, not "inside".
+  mkdirSync(join(root, "t"));
+  writeFileSync(join(root, "t", "x.txt"), "x");
+  // Raw strings: join() would collapse the `..` before realPath ever saw it.
+  expect(realPath(`${root}/sub/../t/x.txt`)).toBe(join(root, "t", "x.txt"));
+  symlinkSync(`${root}/gone/../a.txt`, join(root, "dot\\dot"));
+  expect(() => realPath(join(root, "dot\\dot"))).toThrow();
+  // Each component comes back as stored on disk: a case-insensitive file system opens other spellings of the same file.
+  mkdirSync(join(root, ".git"));
+  writeFileSync(join(root, ".git", "config"), "x");
+  writeFileSync(join(root, "id_rsa"), "x");
+  for (const [asked, stored] of [[".GIT/config", ".git/config"], ["id_rſa" /* long s, U+017F */, "id_rsa"]] as const) {
+    const folds = existsSync(join(root, asked));
+    if (folds) expect(realPath(join(root, asked))).toBe(join(root, stored));
+    else expect(() => realPath(join(root, asked))).toThrow();
+  }
 });

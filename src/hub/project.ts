@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -19,19 +19,20 @@ export function canonicalPath(path: string): string {
 
 /**
  * realpathSync, except that Bun 1.3.14 throws ENOENT for an existing path containing a backslash (issue #26). Such a
- * path is resolved a component at a time: the real parent, then the name, a symlink followed by hand. A missing path
- * or a dangling symlink still throws, which guardPath relies on. Other paths take realpathSync's answer unchanged.
+ * path goes to the system realpath, which handles it and returns every component as stored on disk: guardPath checks
+ * names, and on a case-insensitive disk `.GIT/config` or `id_rſa` would otherwise pass for another file. A missing
+ * path or a dangling symlink still throws, which guardPath relies on. Other paths take realpathSync's answer unchanged.
  */
-export function realPath(path: string, links = 0): string {
+export function realPath(path: string): string {
   try {
     return realpathSync(path);
   } catch (error) {
-    if (!path.includes("\\") || links > 40) throw error;
-    const absolute = resolve(path);
-    const stat = lstatSync(absolute); // a missing path throws here, as realpathSync did
-    const parent = dirname(absolute);
-    const here = join(parent === absolute ? absolute : realPath(parent, links), basename(absolute));
-    return stat.isSymbolicLink() ? realPath(resolve(dirname(here), readlinkSync(absolute)), links + 1) : here;
+    if (!path.includes("\\")) throw error;
+    // GNU realpath accepts a dangling last component unless told -e; the BSD one on macOS refuses it by default.
+    const argv = process.platform === "darwin" ? ["/bin/realpath", "--", resolve(path)] : ["realpath", "-e", "--", resolve(path)];
+    const r = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8" });
+    if (r.status !== 0 || !r.stdout.endsWith("\n")) throw error;
+    return r.stdout.slice(0, -1);
   }
 }
 

@@ -15537,7 +15537,7 @@ import { readFileSync as readFileSync2 } from "fs";
 import { join as join2 } from "path";
 
 // src/hub/project.ts
-import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from "fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "fs";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { spawnSync } from "child_process";
 var canonical = (path) => {

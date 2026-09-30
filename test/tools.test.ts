@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { profile, sandboxAvailable, sandboxedExec } from "../src/local/sandbox.ts";
@@ -153,6 +153,14 @@ test("guardPath in a project whose path has a backslash: inside reads pass, esca
   expect(() => guardPath(ctx, "../x", "read")).toThrow(/outside the project/);
   expect(() => guardPath(ctx, "out\\link/x", "read")).toThrow(/outside the project/);
   expect(() => guardPath(ctx, "dang\\ling", "write")).toThrow(/dangling symlink/);
+  // Names are checked as stored on disk: another spelling the file system opens as .git/config or .env is refused too.
+  mkdirSync(join(cwd, ".git"));
+  writeFileSync(join(cwd, ".git", "config"), "x");
+  writeFileSync(join(cwd, ".env"), "x");
+  writeFileSync(join(cwd, "id_rsa"), "x");
+  for (const [asked, mode] of [[".GIT/config", "write"], [".ENV", "read"], ["id_rſa" /* long s, U+017F */, "read"]] as const) {
+    if (existsSync(join(cwd, asked))) expect(() => guardPath(ctx, asked, mode)).toThrow(/denylist|not writable/);
+  }
 });
 
 test.skipIf(!sandboxAvailable())("the local worker's sandbox builds and works in a project whose path has a backslash (issue #26)", async () => {
