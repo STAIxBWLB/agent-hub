@@ -747,3 +747,37 @@ design. Times are hub.log timestamps (UTC).
   tool-approval policy of its own for the agent-hub server; the hub does not
   change it.
 - The disposable hub was stopped and its registration removed after recording.
+
+## Kimi approvals for the hub's own tools (issue #72, 2026-09-30)
+
+Kimi 2.1.1 under ACP. The capture used a small ACP client of its own with the hub's
+tools server; the live run used a disposable project and a hub built from the PR
+branch. Times are hub.log timestamps (UTC).
+
+- ACP stream, captured for `mcp__agent-hub__hub_task_list` (saved) and observed in a
+  second capture for `Bash` (`echo probe-72`; output not kept, and the live run
+  below shows the same command on the console): `tool_call` (`pending`) names the
+  tool and has no `rawInput`;
+  `tool_call_update` (`in_progress`) streams the argument JSON cumulatively as
+  `content` text (`{"command":"` ... `{"command":"echo probe-72"}`); then
+  `session/request_permission` arrives with no `rawInput` and Kimi's own line
+  (`Requesting approval to Running: echo probe-72`); `rawInput` appears only on the
+  update after the answer. Options: `approve_once`, `approve_always` ("Approve for
+  this session"), `reject`. `session/new` offers modes `default`, `plan`, `auto`,
+  `yolo` and nothing per server or tool.
+- Unattended claim and note: with no console tail open, one message at
+  05:40:04.837Z asked Kimi to claim unassigned work and record why a WeakMap cannot
+  replace the string-keyed Map. hub.log shows
+  `permission auto-approved for kimi: mcp__agent-hub__hub_task_propose`
+  (05:40:17.083Z), `... hub_remember` (05:40:17.104Z), the note
+  `note from kimi [fail]: ...` (05:40:17.126Z, kind chosen by Kimi), and a second
+  auto-approved `hub_task_propose` (05:40:22.741Z) that claimed task #1
+  (`claimed by kimi` at 05:40:22.749Z). Kimi's first propose had no `class`; this
+  hub had no triage model, so it answered `class is required` and Kimi retried with
+  `implement`. Kimi closed with `[FYI]` at 05:40:26.318Z. Nobody answered anything.
+- Other tools still ask, now with the arguments: asked to run `echo probe-72`, Kimi's
+  request reached the console at 05:40:58.696Z as `kimi asks permission: Bash:
+  {"command":"echo probe-72"}`, with `approve_always` offered again because the
+  payload was complete. It was rejected; Kimi did not run it and said so at
+  05:41:04.397Z.
+- The disposable hub was stopped and its registration removed after recording.

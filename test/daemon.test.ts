@@ -158,6 +158,35 @@ test("ACP permission requests reach the console; permit answers, silence cancels
   expect(unattended.events.find((e) => e.t === "envelope" && e.env.from === "kimi").env.body).toEndWith("permission=yes");
 });
 
+// issue #72: Kimi's requests for the hub's own tools no longer wait on the console; anything else still does.
+test("Kimi's requests for the hub's own tools are approved without a console prompt, and logged by name", async () => {
+  const { console_, pushes, events, stateDir } = await hub();
+  await console_.request({ t: "start", peer: "kimi" });
+  const replies = () => events.filter((e) => e.t === "envelope" && e.env.from === "kimi").map((e) => e.env.body);
+  await console_.request({ t: "send", body: "PERMISSION HUBTOOL", to: ["kimi"] });
+  await until(() => replies().length === 1, "hub tool reply");
+  expect(replies()[0]).toEndWith("permission=yes");
+  expect(pushes.some((p) => p.t === "permission")).toBe(false);
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("permission auto-approved for kimi: mcp__agent-hub__hub_task_list");
+
+  await console_.request({ t: "send", body: "PERMISSION STREAMED", to: ["kimi"] });
+  await until(() => pushes.some((p) => p.t === "permission"), "console prompt for Bash");
+  const ask = pushes.find((p) => p.t === "permission");
+  expect(ask.title).toBe('Bash: {"command":"make test"}');
+  console_.send({ t: "permit", id: ask.id, option: "no" });
+  await until(() => replies().length === 2, "bash reply");
+
+  // the daemon's own predicate: an exact name only, and only when allow_once is on offer
+  for (const [n, body] of [[3, "PERMISSION SPOOF"], [4, "PERMISSION NOONCE"]] as const) {
+    await console_.request({ t: "send", body, to: ["kimi"] });
+    await until(() => pushes.filter((p) => p.t === "permission").length === n - 1, `console prompt for ${body}`);
+    const next = pushes.filter((p) => p.t === "permission").at(-1);
+    expect(next.title).toStartWith(body.endsWith("SPOOF") ? "mcp__agent-hub__rm_rf" : "mcp__agent-hub__hub_task_list");
+    console_.send({ t: "permit", id: next.id, option: "no" });
+    await until(() => replies().length === n, `${body} reply`);
+  }
+});
+
 test("a peer cannot claim the console user's id or a hub-managed adapter's id", async () => {
   const { stateDir } = await hub();
   for (const peer of ["user", "codex", "kimi", "Bad Id"]) {

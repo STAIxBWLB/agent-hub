@@ -727,3 +727,27 @@ that need no new service and cost no peer an extra turn.
   envelope's closing line ask for what changed, why, and the check that was run with
   its result. The verifier role already asks for what passed and what did not, so it
   stays as it was.
+
+## Amendment: Kimi approvals for the hub's own tools (issue #72)
+
+Measured on Kimi 2.1.1 (ACP stream captured on 2026-09-30): a permission request
+carries no `rawInput`; the argument JSON streams before it as `content` text on
+`tool_call_update`, and `rawInput` arrives only after the answer. Kimi offers
+session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool.
+
+- Kimi's requests for exactly `mcp__agent-hub__<name>`, where `<name>` is
+  `hub_send` or a task tool, are answered with their `allow_once` option by the
+  hub, without a console prompt, and logged by tool name only. This matches the
+  `approval_mode = "approve"` Codex already gets for the same tools. Every other
+  request keeps the console path; `allow_always` is never chosen automatically.
+- For the other tools, the console payload falls back to the streamed argument
+  text once it is a complete JSON object. A partial stream stays unresolved and
+  keeps `allow_always` withheld.
+- For every ACP agent, `rawInput` included: a payload longer than the 600
+  characters the console shows is marked `[cut, N chars]` and withholds
+  `allow_always`, because the hidden tail can change what runs.
+- Name collisions (inferred from reading Kimi 2.1.1's bundled code, not tested
+  live): tool names are qualified as `mcp__<server>__<tool>` after replacing
+  anything outside `[a-zA-Z0-9_-]`, and a server passed in `session/new` shadows a
+  configured server of the same name, so only the hub's `agent-hub` server can
+  produce the approved names.

@@ -409,6 +409,10 @@ export async function startDaemon(opts: DaemonOptions) {
     return { ...e, env: { ...env, ...(task ? { refs: { task } } : {}), body: `[private${task ? `: task #${task}, see ahub task show ${task}` : ""}]` } };
   };
   const SERVER_JS = join(import.meta.dir, "..", "..", "plugins", "agent-hub", "server.js");
+  // What the hub's MCP server offers a native peer. Codex approves them in config, Kimi's requests for exactly these
+  // names are answered by the hub: no file or process is touched, and every call passes the hub's own checks.
+  const HUB_TOOLS = ["hub_send", ...TASK_TOOLS.map((t) => t.name)];
+  const HUB_TOOL_TITLES = new Set(HUB_TOOLS.map((name) => `mcp__agent-hub__${name}`));
   const toolEnv = (peer: PeerId) => ({ AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: opts.stateDir, AGENTHUB_PROJECT_DIR: opts.cwd });
 
   /** One entry point for the task tools, whoever calls them: MCP clients, the local worker, the console. */
@@ -691,6 +695,10 @@ export async function startDaemon(opts: DaemonOptions) {
         cwd: opts.cwd,
         watchdogMs: config.watchdog_ms,
         onPermission,
+        // The hub's own tools pass without a console prompt, as Codex's do (approval_mode below; issue #72). This
+        // relies on the agent putting the tool name in `title`, as Kimi does; an ACP agent that titles calls with
+        // model-written text must not be configured as kimi_cmd. A stopping hub approves nothing.
+        autoApprove: (title) => !stopping && HUB_TOOL_TITLES.has(title),
         log,
         onTokens: onKimiTokens,
         mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("kimi")).map(([name, value]) => ({ name, value })) }],
@@ -713,7 +721,7 @@ export async function startDaemon(opts: DaemonOptions) {
           ["command", '"bun"'],
           ["args", JSON.stringify(["run", SERVER_JS])],
           ["env", `{${Object.entries(toolEnv("codex")).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")}}`],
-          ...["hub_send", ...TASK_TOOLS.map((t) => t.name)].map((name) => [`tools.${name}.approval_mode`, '"approve"']),
+          ...HUB_TOOLS.map((name) => [`tools.${name}.approval_mode`, '"approve"']),
         ].flatMap(([k, v]) => ["-c", `mcp_servers.agent-hub.${k}=${v}`]),
         preamble: roleContract("codex", config.roles),
         onUsage: (rateLimits, hard) => budget.report("codex", codexWindows(rateLimits), hard),

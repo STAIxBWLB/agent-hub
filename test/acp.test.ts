@@ -113,6 +113,56 @@ test("a permission prompt with no resolvable payload says so and offers no sessi
   expect(said[0]!.body).toEndWith("permission=cancelled"); // an option that was withheld is not accepted
 });
 
+// issue #72: Kimi 2.1.1 sends no rawInput before the answer; the arguments stream as content text.
+test("Kimi 2.1.1: streamed argument JSON is the payload once complete; a partial stream stays unresolved", async () => {
+  const asked: { title: string; options: string[] }[] = [];
+  const { bus, said } = await setup({
+    onPermission: async (req) => {
+      asked.push({ title: req.title, options: req.options.map((o) => o.kind) });
+      return "yes";
+    },
+  });
+  bus.publish(newEnvelope("user", "PERMISSION STREAMED", { to: ["kimi"] }));
+  await until(() => said.length === 1);
+  expect(asked[0]).toEqual({ title: 'Bash: {"command":"make test"}', options: ["allow_once", "allow_always", "reject_once"] });
+  bus.publish(newEnvelope("user", "PERMISSION PARTIAL", { to: ["kimi"] }));
+  await until(() => said.length === 2);
+  expect(asked[1]!.title).toBe("Bash (payload not reported by the agent)");
+  expect(asked[1]!.options).not.toContain("allow_always");
+  // a payload the console cannot show whole is marked as cut and buys no session-wide grant
+  bus.publish(newEnvelope("user", "PERMISSION LONG", { to: ["kimi"] }));
+  await until(() => said.length === 3);
+  expect(asked[2]!.title).toMatch(/^Bash: \{"command":"echo x+ \[cut, \d+ chars\]$/);
+  expect(asked[2]!.options).not.toContain("allow_always");
+  // the same call id again, announced but with nothing streamed: the earlier call's JSON must not stand in
+  bus.publish(newEnvelope("user", "PERMISSION REUSED", { to: ["kimi"] }));
+  await until(() => said.length === 4);
+  expect(asked[3]!.title).toBe("Bash (payload not reported by the agent)");
+  expect(asked[3]!.options).not.toContain("allow_always");
+});
+
+test("the hub's own tools are approved once without asking; a lookalike name still asks", async () => {
+  const asked: string[] = [];
+  const logs: string[] = [];
+  const { bus, said } = await setup({
+    autoApprove: (title) => title === "mcp__agent-hub__hub_task_list",
+    log: (l) => logs.push(l),
+    onPermission: async (req) => {
+      asked.push(req.title);
+      return "no";
+    },
+  });
+  bus.publish(newEnvelope("user", "PERMISSION HUBTOOL", { to: ["kimi"] }));
+  await until(() => said.length === 1);
+  expect(said[0]!.body).toEndWith("permission=yes"); // the allow_once option, never allow_always
+  expect(asked).toEqual([]);
+  expect(logs).toContain("permission auto-approved for kimi: mcp__agent-hub__hub_task_list");
+  bus.publish(newEnvelope("user", "PERMISSION SPOOF", { to: ["kimi"] }));
+  await until(() => said.length === 2);
+  expect(asked).toEqual(["mcp__agent-hub__rm_rf: {}"]);
+  expect(said[1]!.body).toEndWith("permission=no");
+});
+
 test("a dead child goes offline", async () => {
   await setup();
   await peer!.stop();

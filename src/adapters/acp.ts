@@ -33,6 +33,8 @@ export interface AcpOptions {
   /** Resolve with an optionId, or undefined to cancel. Absent = every request is cancelled.
    *  A request whose payload could not be resolved is titled as such and carries no session-wide allow option. */
   onPermission?: (req: PermissionRequest) => Promise<string | undefined>;
+  /** Tool titles approved once without asking: the hub's own tools, as Codex gets them (issue #72). Exact names only. */
+  autoApprove?: (toolTitle: string) => boolean;
   log?: (line: string) => void;
 }
 
@@ -42,6 +44,16 @@ const TOOL_INPUT_CAP = 64;
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 
+/** Streamed argument text as a payload: a complete JSON object, or nothing (a partial stream is not what will run). */
+function jsonObject(text: string | undefined): object | undefined {
+  try {
+    const v = text === undefined ? undefined : JSON.parse(text);
+    return v !== null && typeof v === "object" && !Array.isArray(v) ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** ACP client (JSON-RPC 2.0, newline-delimited, over the child's stdio). One session, one prompt in flight. */
 export class AcpPeer extends BasePeer {
   private proc: ChildProcessWithoutNullStreams | undefined;
@@ -50,6 +62,7 @@ export class AcpPeer extends BasePeer {
   private readonly pending = new Map<number, Pending>();
   private chunks: string[] = [];
   private readonly toolInputs = new Map<string, unknown>();
+  private readonly toolText = new Map<string, string>(); // streamed argument text, per call, until it finishes
   private primed = false;
   private turn = 0; // generation: a prompt cancelled by the watchdog must not touch the turn that followed it
   private activeDeliveryId: string | undefined;
@@ -183,10 +196,15 @@ export class AcpPeer extends BasePeer {
       if (u?.sessionUpdate === "agent_message_chunk" && u.content?.type === "text") this.chunks.push(u.content.text);
       // The permission request that follows may carry no `rawInput` (Kimi 2.0.1 does not), and then the
       // console would be asked to approve a bare tool name. Keep what the call said it would run (issue #31).
+      // Kimi 2.1.1 sends no rawInput before the answer either: the argument JSON streams as content text (issue #72).
       else if ((u?.sessionUpdate === "tool_call" || u?.sessionUpdate === "tool_call_update") && typeof u.toolCallId === "string") {
+        // A new call starts clean, so a reused id can never show the arguments of the call before it.
+        if (u.sessionUpdate === "tool_call") (this.toolInputs.delete(u.toolCallId), this.toolText.delete(u.toolCallId));
         if (u.rawInput !== undefined) this.toolInputs.set(u.toolCallId, u.rawInput);
-        if (u.status === "completed" || u.status === "failed") this.toolInputs.delete(u.toolCallId);
-        while (this.toolInputs.size > TOOL_INPUT_CAP) this.toolInputs.delete(this.toolInputs.keys().next().value as string);
+        const text = Array.isArray(u.content) ? u.content.map((c: any) => (c?.type === "content" && c.content?.type === "text" ? String(c.content.text) : "")).join("") : "";
+        if (text) this.toolText.set(u.toolCallId, text);
+        if (u.status === "completed" || u.status === "failed") (this.toolInputs.delete(u.toolCallId), this.toolText.delete(u.toolCallId));
+        for (const map of [this.toolInputs, this.toolText]) while (map.size > TOOL_INPUT_CAP) map.delete(map.keys().next().value as string);
       }
       else if (u?.sessionUpdate === "usage_update" && this.opts.onTokens) {
         const f = { ...u, ...(typeof u.usage === "object" ? u.usage : {}) } as Record<string, unknown>;
@@ -208,13 +226,23 @@ export class AcpPeer extends BasePeer {
 
   private async answerPermission(msg: any): Promise<void> {
     const call = msg.params?.toolCall ?? {};
+    const once = (msg.params?.options ?? []).find((o: PermissionOption) => o.kind === "allow_once");
+    if (once && typeof call.title === "string" && this.opts.autoApprove?.(call.title)) {
+      this.opts.log?.(`permission auto-approved for ${this.id}: ${call.title}`); // the name only: arguments may quote a PII turn
+      return this.send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "selected", optionId: once.optionId } } });
+    }
     // The approver has to see what runs, not only the tool's name ("Bash"). The request itself carries it
-    // for some agents; for the rest it was on the `tool_call` update that announced the call.
-    const raw = call.rawInput ?? (typeof call.toolCallId === "string" ? this.toolInputs.get(call.toolCallId) : undefined);
-    const input = raw === undefined ? "" : `: ${(typeof raw === "string" ? raw : JSON.stringify(raw)).slice(0, 600)}`;
+    // for some agents; for the rest it was on the `tool_call` update that announced the call, as rawInput or,
+    // failing that, as streamed argument text that only counts once it is a complete JSON object.
+    const id = typeof call.toolCallId === "string" ? call.toolCallId : undefined;
+    const raw = call.rawInput ?? (id === undefined ? undefined : this.toolInputs.get(id) ?? jsonObject(this.toolText.get(id)));
+    const full = raw === undefined ? "" : typeof raw === "string" ? raw : JSON.stringify(raw);
+    // A cut payload hides its tail, and a tail can change what runs: it is marked and buys no session-wide grant.
+    const cut = full.length > 600;
+    const input = raw === undefined ? "" : `: ${cut ? `${full.slice(0, 600)} [cut, ${full.length} chars]` : full}`;
     // An unknown payload is never dressed up as a description, and it must not buy a blanket grant.
     const title: string = raw === undefined ? `${call.title ?? "tool call"} (payload not reported by the agent)` : `${call.title ?? "tool call"}${input}`;
-    const options: PermissionOption[] = (msg.params?.options ?? []).filter((o: PermissionOption) => raw !== undefined || o.kind !== "allow_always");
+    const options: PermissionOption[] = (msg.params?.options ?? []).filter((o: PermissionOption) => (raw !== undefined && !cut) || o.kind !== "allow_always");
     const picked = await this.opts.onPermission?.({ peer: this.id, title, options }).catch(() => undefined);
     const valid = options.some((o) => o.optionId === picked);
     this.send({
