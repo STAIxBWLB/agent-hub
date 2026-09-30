@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.7.11
+
 - A project whose path contains a backslash works with the local worker and Pi again: Bun 1.3.14's `realpathSync` throws for such paths, so the sandbox profile, the file tools' path guard and the Pi resume check now resolve paths through `realPath`, which then asks the system `realpath`; it returns each name as stored on disk, so another spelling of `.git/config` or `.env` is still refused (#26).
 
 ## 0.7.10
