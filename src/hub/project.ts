@@ -27,9 +27,10 @@ export function realPath(path: string): string {
   try {
     return realpathSync(path);
   } catch (error) {
-    if (!path.includes("\\")) throw error;
-    // GNU realpath accepts a dangling last component unless told -e; the BSD one on macOS refuses it by default.
-    const argv = process.platform === "darwin" ? ["/bin/realpath", "--", resolve(path)] : ["realpath", "-e", "--", resolve(path)];
+    if (!resolve(path).includes("\\")) throw error; // a relative path can sit under a backslash directory too
+    // The path as given: resolve() would fold a `..` after a symlink by text. GNU realpath accepts a dangling last
+    // component unless told -e; the BSD one on macOS refuses it by default.
+    const argv = process.platform === "darwin" ? ["/bin/realpath", "--", path] : ["realpath", "-e", "--", path];
     const r = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8" });
     if (r.status !== 0 || !r.stdout.endsWith("\n")) throw error;
     return r.stdout.slice(0, -1);

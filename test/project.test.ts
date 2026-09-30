@@ -82,10 +82,22 @@ test("realPath resolves paths with a backslash like realpathSync would, and stil
   expect(() => realPath(join(root, "dang\\ling"))).toThrow();
   expect(() => realPath(join(root, "nope"))).toThrow();
   expect(realPath(base)).toBe(realpathSync(base)); // ordinary paths take realpathSync's answer
+  // A relative path under a backslash directory takes the fallback too.
+  const cwd = process.cwd();
+  try {
+    process.chdir(root);
+    expect(realPath("a.txt")).toBe(join(root, "a.txt"));
+  } finally {
+    process.chdir(cwd);
+  }
   // `..` after a directory is resolved on disk; a link through a missing directory is dangling, not "inside".
   mkdirSync(join(root, "t"));
   writeFileSync(join(root, "t", "x.txt"), "x");
-  // Raw strings: join() would collapse the `..` before realPath ever saw it.
+  // Raw strings: join() would collapse the `..` before realPath ever saw it. Through a symlink, `..` is the parent
+  // of the link's target, not of the link.
+  mkdirSync(join(root, "d", "e"), { recursive: true });
+  symlinkSync(join(root, "d", "e"), join(root, "dl"));
+  expect(realPath(`${root}/dl/..`)).toBe(join(root, "d"));
   expect(realPath(`${root}/sub/../t/x.txt`)).toBe(join(root, "t", "x.txt"));
   symlinkSync(`${root}/gone/../a.txt`, join(root, "dot\\dot"));
   expect(() => realPath(join(root, "dot\\dot"))).toThrow();
