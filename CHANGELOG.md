@@ -4,7 +4,9 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- A committed `.agenthub/config.json` can no longer choose what the hub runs, which files it sends as credentials, where task text goes, or how far the local worker's sandbox reaches: those machine-local fields (launch commands, checks, the legacy MLX binary and model directory, gateway URLs and key files, the memory endpoint, sandbox widening) apply only from a file git confirms nobody committed, such as the new `.agenthub/config.local.json`, and are otherwise ignored with a log line and a doctor row (#17).
+## 0.7.9
+
+- A committed `.agenthub/config.json` can no longer choose what the hub runs, which files it sends as credentials, where task text goes, or how far the local worker's sandbox reaches: those machine-local fields (launch commands, checks, the legacy MLX binary and model directory, gateway URLs and key files, the memory endpoint, sandbox widening) apply only from a file git confirms nobody committed, such as the new `.agenthub/config.local.json`, and are otherwise ignored with a log line and a doctor row. A tracked file is recognised by identity, which also closes a way past the 0.7.8 completion-check gate: a committed file under a spelling macOS opens as `config.json` but git does not match (such as `ſ` for `s`) counted as uncommitted (#17).
 
 ## 0.7.8
 
