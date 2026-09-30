@@ -690,6 +690,8 @@ cutover; it also exposed three recovery defects that became 0.7.3 and 0.7.4.
   sourceRoot digest guard correctly refused a hand-patched receipt.
 - `ahub setup` is interactive (one confirmation gates all steps); piping an
   answer works, running it detached does not.
+  (Changed in 0.7.7: without a terminal it no longer reads a piped answer; use
+  `--yes`.)
 
 Issue [#1](https://github.com/STAIxBWLB/agent-hub/issues/1) remains open
 for off-campus Access credentials and a natural near-limit budget pause.

@@ -113,6 +113,12 @@ stopped with its matching CLI before a protocol-8 manager is launched.
 
 ## Current 0.7.0 correction and recovery contract
 
+Amended 2026-09-30: 0.7.0 shipped protocol 10 and the queue commands; protocol 10
+went into production with 0.7.0 and was verified there with 0.7.1, where
+`ahub queue list` read back live receipts ([smoke checklist](../smoke.md)). `ahub queue show` and `ahub queue resolve` are
+covered by tests, not by a live run. The paragraphs below keep the pre-release
+wording.
+
 The earlier sections record the protocol-8 implementation history. The current
 release is 0.6.4 with protocol 9; the next target is 0.7.0 with protocol 10.
 This correction supersedes the earlier protocol-8 source/target statement for
