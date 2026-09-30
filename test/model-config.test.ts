@@ -8,6 +8,8 @@ const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 function project(value?: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), "ahub-model-config-")); dirs.push(dir);
+  // The legacy paths choose what runs: they apply only from a config git confirms is untracked (issue #17).
+  Bun.spawnSync(["git", "init", "-q", dir]);
   mkdirSync(join(dir, ".agenthub"));
   if (value !== undefined) writeFileSync(join(dir, ".agenthub/config.json"), typeof value === "string" ? value : JSON.stringify(value));
   return dir;
