@@ -15,6 +15,10 @@ export interface TasksDeps {
   memory?: MemoryClient;
   /** a line for the human: console tail and hub.log */
   notify: (line: string) => void;
+  /** The completion check configured for a class, if any (local config only; issue #7). */
+  check?: (cls: TaskClass) => string | undefined;
+  /** Runs one check; the hub runs them one at a time. */
+  runCheck?: (command: string) => Promise<{ code: number | null; timedOut: boolean; interrupted?: boolean; tail: string }>;
   /** Hands a saved note to every other peer; it rides on their next delivery. */
   share?: (by: PeerId, line: string) => void;
   /** Hands one peer a line that rides on its next delivery, without a turn of its own (issue #6). */
@@ -25,6 +29,8 @@ export interface TasksDeps {
 
 const ESCALATE_AFTER = 2;
 const OPEN: Task["state"][] = ["proposed", "in_progress", "changes_requested"];
+/** Board events that leave a task where its completion check found it; any other event means it moved on meanwhile. */
+const QUIET_EVENTS = new Set(["answer", "reviewer changed"]);
 
 /** Same path, or one is a directory of the other; the project root (`.`) holds everything. */
 const samePlace = (a: string, b: string) => {
@@ -253,13 +259,64 @@ export class Tasks {
     return this.assignOwner(back, HUB, { event: "reassigned", clearOnFail: true });
   }
 
+  /** Tasks whose check is queued or running, and the owner it was started for. */
+  private readonly checking = new Map<number, PeerId | null>();
+  private checkQueue: Promise<void> = Promise.resolve();
+
+  /** Whether a completion check is still running for this task. */
+  isChecking = (id: number) => this.checking.has(id);
+
   async done(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs): Promise<Task> {
     let task = this.need(id);
     this.mine(task, by, "owner");
     if (task.state === "in_review" || task.state === "approved") throw new Error(`task #${task.id} is already ${task.state}`);
+    if (this.checking.has(task.id)) {
+      // The result goes only to the owner the check was started for: anyone who took the task since hears nothing.
+      throw new Error(this.checking.get(task.id) === task.owner ? `task #${task.id}: its check is still running; its result comes as a task message` : `task #${task.id}: a check from before it changed hands is still running; call hub_task_done again in a few minutes`);
+    }
     if (task.state === "proposed" || task.state === "changes_requested") task = this.d.board.update(task.id, by, "accepted", { state: "in_progress" }); // done without a separate accept
+    const command = this.d.runCheck ? this.d.check?.(task.class) : undefined;
+    if (!command) return this.complete(task, by, summary, refs);
+    // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
+    this.checking.set(task.id, task.owner);
+    const pending = this.d.board.update(task.id, by, "done (checking)", { refs: cleanRefs(refs) }, summary);
+    this.d.notify(`task ${this.publicTitle(pending)} done by ${by}; its check is queued or running: ${command}`);
+    const seen = { events: pending.history.length, owner: pending.owner };
+    this.checkQueue = this.checkQueue
+      .then(() => this.finishChecked(pending.id, by, summary, command, seen))
+      .catch((e: Error) => this.d.notify(`task #${pending.id}: its check result could not be recorded: ${e.message}`));
+    return pending;
+  }
+
+  private async finishChecked(id: number, by: PeerId, summary: string | undefined, command: string, seen: { events: number; owner: PeerId | null }): Promise<void> {
+    const result = await this.d.runCheck!(command).catch((e: Error) => ({ code: null, timedOut: false, interrupted: false, tail: e.message }));
+    this.checking.delete(id);
+    const task = this.d.board.get(id);
+    if (!task) return;
+    const outcome = `${command} -> ${result.interrupted ? "interrupted by a hub stop" : result.timedOut ? "timed out" : `exit ${result.code ?? "?"}`}`;
+    // Not a verdict on the work, and nobody is listening any more: the owner marks the task done again (spec).
+    if (result.interrupted) return void this.d.board.update(id, HUB, "check interrupted", {}, outcome);
+    const pii = this.isPii(task);
+    // Moved on meanwhile (escalated, reassigned, released, and maybe back again): the result is kept, nothing else changes.
+    if (task.state !== "in_progress" || task.history.slice(seen.events).some((h) => !QUIET_EVENTS.has(h.event))) {
+      this.d.board.update(id, HUB, "check finished late", {}, outcome);
+      if (task.state === "in_progress" && task.owner === seen.owner) this.tell(task, `Task #${id}: the check of your earlier hub_task_done finished after the task changed hands (${outcome}). Call hub_task_done again when it is ready.`, pii);
+      return;
+    }
+    if (result.code === 0 && !result.timedOut) {
+      this.d.board.update(id, HUB, "check passed", {}, `${outcome}\n${result.tail}`.trim());
+      // The output goes to the reviewer with the done note, not into shared memory: nobody screened it.
+      await this.complete(this.d.board.get(id)!, by, `${summary ?? ""}\nCheck: ${outcome}`.trim(), undefined, result.tail);
+      return;
+    }
+    this.d.board.update(id, HUB, "check failed", {}, `${outcome}\n${result.tail}`.trim());
+    this.d.notify(`task ${this.publicTitle(task)}: its check failed (${outcome}); it stays with ${task.owner ?? by}`);
+    this.tell(task, `Task #${id}: its check failed.\n$ ${outcome}${result.tail ? `\n${result.tail}` : ""}\nFix it and call hub_task_done again.`, pii);
+  }
+
+  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = ""): Promise<Task> {
     const reviewer = task.reviewer;
-    const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", refs: cleanRefs(refs) }, summary);
+    const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", refs: cleanRefs(refs) }, checkOutput ? `${summary ?? ""}\n${checkOutput}`.trim() : summary);
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`);
     if (!reviewer) this.d.notify(`task ${this.publicTitle(next)} done by ${by}, no reviewer: approved`);
     else if (reviewer === USER) this.d.notify(`task ${this.publicTitle(next)} done by ${by}: review it with ahub task show ${next.id}, then ahub review ${next.id} approved|changes_requested [note]`);

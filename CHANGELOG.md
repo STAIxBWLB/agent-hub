@@ -8,6 +8,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Codex answers a digest to every sender in it, and a sender steered into its turn, like the other adapters; an answer to a condensed digest no longer goes to the reserved `digest` sender and reaches no peer, also when a steer joined the turn (the bus now maps `digest` for any adapter). A TUI that detaches mid-turn and comes back no longer answers the old turn's senders (#3).
 - A waiting approval raises a macOS notification naming the peer and, for Kimi, the tool (never the payload); the approval timeout is configurable as `approvals.timeout_s`, and an unanswered request leaves a console and log line (#5).
 - Claims: a self-claim without a class is filed as `implement` when no model can name one; the earlier owner of an overlapping task hears of it with its next message; an owner offline past `tasks.release_after_min` (default 30) loses its open tasks to a peer that can take them (#6).
+- A class can carry a completion check (`checks.<class>` in a `.agenthub/config.json` git confirms nobody committed; outside a repository none runs): marking such a task done runs it, sends the task to review with the result on success, and keeps it with its owner with the failure otherwise. A hub stop interrupts a check without a verdict (#7).
 
 ## 0.7.7
 

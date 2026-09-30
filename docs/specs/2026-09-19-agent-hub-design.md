@@ -787,3 +787,29 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   recovery operation are skipped. A peer never seen attached counts from hub
   start. The gone owner gets a line on its next delivery naming where each task
   went. Reviewers are not moved by this.
+
+## Amendment: completion checks (issue #7)
+
+- `checks.<class>` in `.agenthub/config.json` names a command; `checks.timeout_s`
+  (default 600, 1 to 3600) bounds it. The hub runs `checks` only when git
+  confirms nobody committed that file (any letter case, nor a symlink or submodule
+  at `.agenthub`); without a repository or on a git error it runs none. Keys that
+  are not task classes are ignored with a log line.
+- `hub_task_done` on such a class records `done (checking)` and answers at once
+  (a check can outlast an agent's tool timeout); the task stays `in_progress`. The
+  hub runs checks one at a time in the project root, in their own process group,
+  killed at the timeout or on shutdown; a check still queued at shutdown never
+  starts. A check ends when its command exits: what it left in its process group
+  is killed then, and a descendant that left the group gets 0.5 s more to flush
+  output and is not waited for. Exit 0: the task
+  completes as before, the review envelope carrying `Check: <command> -> exit 0`
+  and the output tail; shared memory gets the summary and the outcome line, never
+  the output. Any other outcome: the task stays with its owner, who gets a task
+  envelope with the command, outcome and tail; no reviewer turn is spent. A second
+  `done` while the check runs is refused; a new owner who took the task meanwhile is
+  told to try again later, since the result reaches only the owner the check was
+  started for. A task with any board event since the
+  `done` other than an answer or a reviewer change only records the result
+  (`check finished late`); if it is in progress with the same owner again, that
+  owner is asked to mark it done again. A check interrupted by a hub stop records
+  `check interrupted`, is not resumed, and the owner marks the task done again.

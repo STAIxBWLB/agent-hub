@@ -58,6 +58,18 @@ ahub review <task-id> approved "verified against the requested behavior"
 ahub review <task-id> changes_requested "describe the required correction"
 ```
 
+A class can carry a completion check in `.agenthub/config.json`, for example
+`"checks": { "implement": "scripts/check.sh", "timeout_s": 600 }`. When the owner
+marks such a task done, the tool answers at once, the hub runs the command in the
+project root (one at a time; what it left in its process group is killed when it
+exits, at the timeout or on shutdown), and then either
+sends the task to review with the command, exit code and output tail, or keeps it
+with its owner and tells it what failed. The hub runs `checks` only when git
+confirms that nobody committed `.agenthub/config.json`: a committed file must not
+choose commands the hub runs, and outside a git repository it runs none. Keys that
+are not task classes are ignored with a log line. A hub stopped mid-check leaves
+the task in progress (`check interrupted`); the owner marks it done again.
+
 A task reaching `approved` is a board transition. It is not proof that an
 external side effect happened unless the task's refs and a live readback show
 that effect. The hub can reassign after repeated review changes according to

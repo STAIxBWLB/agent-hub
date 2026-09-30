@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { childEnv } from "./child-process.ts";
+import { checksRefusal, runCheck } from "./checks.ts";
 import type { ServerWebSocket } from "bun";
 import { AcpPeer, type PermissionRequest } from "../adapters/acp.ts";
 import { CodexPeer } from "../adapters/codex-appserver.ts";
@@ -18,7 +19,7 @@ import { Capture, skipTools } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
 import { Sidecar } from "../switchyard/sidecar.ts";
 import { Briefs } from "../memory/brief.ts";
-import { Board, type TaskClass } from "./board.ts";
+import { Board, CLASSES, type TaskClass } from "./board.ts";
 import { Budget, claudeWindows, codexWindows, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
 import { HUB } from "./envelope.ts";
 import { trimToTokens } from "../memory/recall.ts";
@@ -59,6 +60,8 @@ export interface HubConfig {
   approvals: { timeout_s: number; notify: boolean };
   /** An owner offline this long loses its open tasks back to routing; 0 turns it off (issue #6). */
   tasks: { release_after_min: number };
+  /** A command per task class run when the owner marks the task done, and its timeout (issue #7). */
+  checks: { timeout_s: number; [cls: string]: string | number };
 }
 export const DEFAULT_CONFIG: HubConfig = {
   watchdog_ms: DEFAULT_WATCHDOG_MS,
@@ -78,6 +81,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   // Off here, so tests and a hub without a config file stay silent; a project's config defaults it on for macOS.
   approvals: { timeout_s: 120, notify: false },
   tasks: { release_after_min: 30 },
+  checks: { timeout_s: 600 },
 };
 
 export { stateDirFor };
@@ -112,6 +116,7 @@ export function loadConfig(cwd: string): HubConfig {
         notify: typeof file.approvals?.notify === "boolean" ? file.approvals.notify : process.platform === "darwin",
       },
       tasks: { ...DEFAULT_CONFIG.tasks, ...file.tasks },
+      checks: { ...DEFAULT_CONFIG.checks, ...file.checks },
       mlx,
     };
   } catch (error) {
@@ -317,6 +322,17 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const board = new Board(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => board.close());
+  // Completion checks (issue #7): only from a config file git does not track, one at a time, killed on stop.
+  const checkCommands = Object.fromEntries(Object.entries(config.checks).filter(([k, v]) => (CLASSES as readonly string[]).includes(k) && typeof v === "string" && v.trim())) as Record<string, string>;
+  const strayChecks = Object.keys(config.checks).filter((k) => k !== "timeout_s" && !(k in checkCommands));
+  if (strayChecks.length) log(`checks ignored for ${strayChecks.join(", ")}: not a task class with a command (classes: ${CLASSES.join(", ")})`);
+  const checksRefused = Object.keys(checkCommands).length ? checksRefusal(opts.cwd) : undefined;
+  if (checksRefused) log(`checks ignored: ${checksRefused}, and only a file nobody committed may choose commands the hub runs`);
+  const checksAllowed = Object.keys(checkCommands).length > 0 && !checksRefused;
+  const checkTimeoutS = typeof config.checks.timeout_s === "number" && config.checks.timeout_s >= 1 ? Math.min(config.checks.timeout_s, 3600) : 600;
+  const runningChecks = new Set<() => void>();
+  let checksClosed = false; // set on stop: a check still queued then must not start and outlive the hub
+  const interrupted = { code: null, timedOut: false, interrupted: true, tail: "" };
   const tasks = new Tasks({
     board,
     bus,
@@ -325,6 +341,7 @@ export async function startDaemon(opts: DaemonOptions) {
     project: chain.at(-1)!,
     ...(config.memory.enabled ? { memory, briefs: new Briefs(memory, chain.at(-1)!, config.memory.brief_items) } : {}),
     notify,
+    ...(checksAllowed ? { check: (cls: string) => checkCommands[cls], runCheck: async (command: string) => (checksClosed ? interrupted : runCheck(command, opts.cwd, checkTimeoutS * 1000, runningChecks)) } : {}),
     // What a peer learned reaches the peers working now, on their next delivery, instead of at their next session (#68).
     // Fail-open: the note is already saved, so a bus that cannot persist costs the sharing, not the tool call.
     share: (by, line) => {
@@ -458,8 +475,10 @@ export async function startDaemon(opts: DaemonOptions) {
         return line(tasks.accept(by, a.id));
       case "hub_task_decline":
         return line(await tasks.decline(by, a.id, a.reason));
-      case "hub_task_done":
-        return line(await tasks.done(by, a.id, a.summary, a.refs));
+      case "hub_task_done": {
+        const t = await tasks.done(by, a.id, a.summary, a.refs);
+        return tasks.isChecking(t.id) ? `${line(t)}; its check is queued or running, and the result comes as a task message` : line(t);
+      }
       case "hub_review":
         return line(await tasks.review(by, a.id, a.verdict, a.note));
       case "hub_remember":
@@ -1368,6 +1387,8 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function stopOnce(): Promise<void> {
     stopping = true;
+    checksClosed = true;
+    for (const kill of runningChecks) kill();
     log("hub stopping");
     writeStatus();
     dashboard?.stop();

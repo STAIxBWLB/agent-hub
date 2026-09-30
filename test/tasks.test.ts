@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
-import { HUB, type Envelope, type PeerState } from "../src/hub/envelope.ts";
+import { HUB, USER, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { assign, currentRouting, detectSignals, loadRouting } from "../src/hub/routing.ts";
 import { Tasks } from "../src/hub/tasks.ts";
@@ -30,6 +30,10 @@ afterEach(() => {
   for (const fn of cleanup.splice(0)) fn();
 });
 const tick = () => new Promise((r) => setTimeout(r, 15));
+const until = async (cond: () => boolean) => {
+  for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
+  expect(cond()).toBe(true);
+};
 const PII = "patient 900101-1234567 needs a follow-up";
 
 async function setup(peerIds = ["claude", "codex", "kimi", "local"], observations?: Record<string, string[]>) {
@@ -514,4 +518,101 @@ test("tasks of the owner being released are no one to settle an overlap with", a
   expect(offers).toHaveLength(2);
   expect(offers.some((b) => b.includes("owner kimi"))).toBe(false);
   expect(told.filter((l) => l.includes("overlaps"))).toEqual([]);
+});
+
+// issue #7: a configured check decides whether a done task goes to review or back to its owner.
+async function checked(result: { code: number | null; timedOut: boolean; interrupted?: boolean; tail: string }) {
+  const ctx = await setup(["claude", "codex", "kimi"]);
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const ran: string[] = [];
+  const tasks = new Tasks({
+    board: ctx.board, bus: ctx.bus, routing: () => loadRouting(ctx.dir), cwd: ctx.dir, project: "agent-hub", notify: (l) => ctx.notices.push(l), memory: new MemoryClient(ctx.mem.url),
+    check: (cls) => (cls === "implement" ? "make test" : undefined),
+    runCheck: async (command) => (ran.push(command), await gate, result),
+  });
+  return { ...ctx, tasks, ran, release };
+}
+
+test("a passing check sends the task to review with the command and its tail", async () => {
+  const { tasks, board, peers, ran, release, saves } = await checked({ code: 0, timedOut: false, tail: "12 pass" });
+  const t = await tasks.propose("codex", { title: "fix", class: "implement", owner: "codex" });
+  const pending = await tasks.done("codex", t.id, "fixed the parser");
+  expect(pending.state).toBe("in_progress");
+  expect(tasks.isChecking(t.id)).toBe(true);
+  await expect(tasks.done("codex", t.id, "again")).rejects.toThrow(/check is still running/);
+  release();
+  await until(() => board.get(t.id)!.state === "in_review");
+  expect(ran).toEqual(["make test"]);
+  const review = peers.claude!.got.find((e) => e.kind === "review")!;
+  expect(review.body).toContain("fixed the parser\nCheck: make test -> exit 0\n12 pass");
+  expect(board.get(t.id)!.history.map((h) => h.event)).toEqual(expect.arrayContaining(["done (checking)", "check passed", "done"]));
+  // The output reaches the reviewer only: shared memory gets the summary and the outcome, nothing nobody screened.
+  await until(() => saves().some((s) => s.text.startsWith("Task #1 done by codex")));
+  const saved = saves().find((s) => s.text.startsWith("Task #1 done by codex"))!.text;
+  expect(saved).toContain("Check: make test -> exit 0");
+  expect(saved).not.toContain("12 pass");
+});
+
+test("a failing check keeps the task with its owner, tells it what failed, and asks no reviewer", async () => {
+  const { tasks, board, peers, notices, release } = await checked({ code: 2, timedOut: false, tail: "1 fail: parser" });
+  const t = await tasks.propose("codex", { title: "fix", class: "implement", owner: "codex" });
+  await tasks.done("codex", t.id, "fixed");
+  release();
+  await until(() => board.get(t.id)!.history.some((h) => h.event === "check failed"));
+  expect(board.get(t.id)!.state).toBe("in_progress");
+  expect(peers.claude!.got.some((e) => e.kind === "review")).toBe(false);
+  expect(peers.codex!.got.at(-1)!.body).toBe("Task #1: its check failed.\n$ make test -> exit 2\n1 fail: parser\nFix it and call hub_task_done again.");
+  expect(notices.at(-1)).toBe("task #1 fix: its check failed (make test -> exit 2); it stays with codex");
+  expect(tasks.isChecking(t.id)).toBe(false);
+});
+
+test("a class without a check completes at once; a task that moved on during its check only records the result", async () => {
+  const { tasks, board, release } = await checked({ code: 1, timedOut: true, tail: "" });
+  const docs = await tasks.propose("codex", { title: "docs", class: "summarize", owner: "codex" });
+  expect((await tasks.done("codex", docs.id, "written")).state).not.toBe("in_progress");
+  const t = await tasks.propose("codex", { title: "fix", class: "implement", owner: "codex" });
+  await tasks.done("codex", t.id, "fixed");
+  await tasks.escalate(USER, t.id, "by hand");
+  release();
+  await until(() => board.get(t.id)!.history.some((h) => h.event === "check finished late"));
+  expect(board.get(t.id)!.history.find((h) => h.event === "check finished late")!.note).toBe("make test -> timed out");
+});
+
+test("a task that left and came back does not take its old check's result; its owner is asked to mark it done again", async () => {
+  const { tasks, board, peers, release } = await checked({ code: 0, timedOut: false, tail: "" });
+  const t = await tasks.propose("codex", { title: "fix", class: "implement", owner: "codex" });
+  await tasks.done("codex", t.id, "fixed");
+  await tasks.escalate(USER, t.id, "by hand");
+  const other = board.get(t.id)!.owner!;
+  expect(other).not.toBe("codex");
+  // Its check's result will not reach whoever took it meanwhile, so it is not promised one.
+  await expect(tasks.done(other, t.id, "mine now")).rejects.toThrow(/a check from before it changed hands is still running; call hub_task_done again/);
+  await tasks.assignTo(t.id, "codex");
+  expect(board.get(t.id)).toMatchObject({ state: "in_progress", owner: "codex" });
+  await expect(tasks.done("codex", t.id, "again")).rejects.toThrow(/its check is still running; its result comes as a task message/);
+  release();
+  await until(() => board.get(t.id)!.history.some((h) => h.event === "check finished late"));
+  expect(board.get(t.id)!.state).toBe("in_progress");
+  expect(peers.claude!.got.some((e) => e.kind === "review")).toBe(false);
+  expect(peers.codex!.got.at(-1)!.body).toContain("finished after the task changed hands (make test -> exit 0). Call hub_task_done again");
+});
+
+test("the console user's done runs the check too; a hub stop interrupts it without a verdict", async () => {
+  const passed = await checked({ code: 0, timedOut: false, tail: "" });
+  const t = await passed.tasks.propose("codex", { title: "fix", class: "implement", owner: "codex" });
+  await passed.tasks.done(USER, t.id, "closed by hand");
+  passed.release();
+  await until(() => passed.board.get(t.id)!.state === "in_review");
+
+  const stopped = await checked({ code: null, timedOut: false, interrupted: true, tail: "" });
+  const u = await stopped.tasks.propose("codex", { title: "fix", class: "implement", owner: "codex" });
+  await stopped.tasks.done("codex", u.id, "fixed");
+  const told = stopped.peers.codex!.got.length;
+  stopped.release();
+  await until(() => stopped.board.get(u.id)!.history.some((h) => h.event === "check interrupted"));
+  expect(stopped.board.get(u.id)!.state).toBe("in_progress");
+  expect(stopped.board.get(u.id)!.history.at(-1)!.note).toBe("make test -> interrupted by a hub stop");
+  expect(stopped.peers.codex!.got).toHaveLength(told);
+  expect(stopped.tasks.isChecking(u.id)).toBe(false);
 });
