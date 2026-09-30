@@ -817,9 +817,10 @@ are hub.log timestamps (UTC).
 
 - Asked to run `echo notify-live-5`, Kimi's request was logged at 11:33:43.793Z as
   `permission 8743d41c requested by kimi (38 chars, shown on the console; cancelled
-  after 120s)`. The notifier ran: it logs a spawn error, a non-zero exit or its 5 s
-  kill, and none appeared. Whether the banner showed is visual and not captured
-  here; the owner confirms it on the next use.
+  after 120s)`. Notifications were on by the macOS default (the template sets no
+  `notify`), and no notifier failure line appeared (it logs a spawn error, a
+  non-zero exit or its 5 s kill). A clean exit does not prove a banner showed: that
+  is visual and not captured here, so the owner confirms it on the next use.
 - The request was rejected from the console; Kimi said so at 11:34:03.468Z and ran
   nothing.
 - The disposable hub was stopped and its registration removed after recording.

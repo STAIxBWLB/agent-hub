@@ -178,6 +178,16 @@ test("a pending approval keeps the turn alive past the watchdog", async () => {
   expect(peer!.state).not.toBe("offline");
 });
 
+test("only a bare tool name travels apart from the title", async () => {
+  const tools: (string | undefined)[] = [];
+  const { bus, said } = await setup({ onPermission: async (req) => (tools.push(req.tool), "yes") });
+  bus.publish(newEnvelope("user", "PERMISSION ANNOUNCED", { to: ["kimi"] })); // title "Bash"
+  await until(() => said.length === 1);
+  bus.publish(newEnvelope("user", "PERMISSION", { to: ["kimi"] })); // title "write file": prose, stays in the title
+  await until(() => said.length === 2);
+  expect(tools).toEqual(["Bash", undefined]);
+});
+
 test("a dead child goes offline", async () => {
   await setup();
   await peer!.stop();

@@ -250,7 +250,12 @@ export class AcpPeer extends BasePeer {
     // Waiting for a person is not the agent going silent: keep the watchdog from cancelling the turn meanwhile.
     const turn = this.turn;
     const alive = setInterval(() => this.state === "busy" && turn === this.turn && this.touch(), Math.max(10, Math.min(30_000, Math.floor(this.watchdogMs / 3))));
-    const picked = await this.opts.onPermission?.({ peer: this.id, title, options, ...(tool ? { tool } : {}) }).catch(() => undefined).finally(() => clearInterval(alive));
+    let picked: string | undefined;
+    try {
+      picked = await this.opts.onPermission?.({ peer: this.id, title, options, ...(tool ? { tool } : {}) }).catch(() => undefined);
+    } finally {
+      clearInterval(alive); // also when there is no handler at all
+    }
     const valid = options.some((o) => o.optionId === picked);
     this.send({
       jsonrpc: "2.0",

@@ -204,7 +204,7 @@ test("approvals.timeout_s is what cancels a request; outside 30-3600 it falls ba
   const shown: string[] = [];
   const set = await hub({ notifier: (_t, body) => shown.push(body), approvals: { timeout_s: 45, notify: false }, permissionTimeoutMs: undefined });
   await set.console_.request({ t: "start", peer: "kimi" });
-  await set.console_.request({ t: "send", body: "PERMISSION", to: ["kimi"] });
+  await set.console_.request({ t: "send", body: "PERMISSION ANNOUNCED", to: ["kimi"] }); // title "Bash": a bare tool name
   await until(() => set.pushes.some((p) => p.t === "permission"), "request shown");
   expect(readFileSync(join(set.stateDir, "hub.log"), "utf8")).toMatch(/permission \w+ requested by kimi .*cancelled after 45s\)/);
   expect(set.pushes.find((p) => p.t === "permission").tool).toBeUndefined(); // the console push keeps its shape
