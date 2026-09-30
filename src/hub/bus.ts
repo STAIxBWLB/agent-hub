@@ -390,6 +390,11 @@ export class Bus {
     return () => this.taps.delete(fn);
   }
 
+  /** Paused by the console or the budget relay, whatever the adapter's own state. */
+  isPaused(id: PeerId): boolean {
+    return this.paused.has(id);
+  }
+
   /** The adapter's state, or `paused` while the peer is held by `pause()`. */
   stateOf(id: PeerId): PeerState {
     const state = this.peers.get(id)?.state ?? "offline";

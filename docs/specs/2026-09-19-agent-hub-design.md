@@ -768,3 +768,22 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   waits (as the local worker already did), so a timeout above `watchdog_ms` does
   not cancel the turn. The tool name travels to the notifier only; the console
   `permission` push keeps its shape, so the control protocol is unchanged.
+
+## Amendment: claim robustness (issue #6)
+
+- A self-claim (`owner` equal to the caller) without a class, when triage names
+  none, is filed as `implement` and its history says so; a proposal for another
+  owner still needs a class.
+- When a new owner's paths overlap an open task of another owner, that earlier
+  owner gets one line through the preface path (`note from hub [finding]: task #N
+  (owner X) now overlaps your #M on <paths>; X is told to settle it`), capped with
+  shared notes, never a delivery of its own. PII tasks stay out on both sides.
+- An owner offline longer than `tasks.release_after_min` (default 30; 0 disables)
+  loses its open tasks, released and reassigned by class routing (not the budget
+  handoff's local-first list), but only when routing finds another owner;
+  otherwise the task stays. Each task is re-read before it moves, so one changed
+  meanwhile (reassigned, finished, owner back) is left alone; runs never overlap,
+  and a recovery commit waits for a run in progress. Paused peers and hubs in a
+  recovery operation are skipped. A peer never seen attached counts from hub
+  start. The gone owner gets a line on its next delivery naming where each task
+  went. Reviewers are not moved by this.

@@ -57,6 +57,8 @@ export interface HubConfig {
   local: { deny: string[]; bash_network: boolean; max_steps: number; read_allow: string[] };
   /** Pending permission requests: how long they wait, and whether the desktop is told (issue #5). */
   approvals: { timeout_s: number; notify: boolean };
+  /** An owner offline this long loses its open tasks back to routing; 0 turns it off (issue #6). */
+  tasks: { release_after_min: number };
 }
 export const DEFAULT_CONFIG: HubConfig = {
   watchdog_ms: DEFAULT_WATCHDOG_MS,
@@ -75,6 +77,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   local: { deny: [], bash_network: false, max_steps: 30, read_allow: [] },
   // Off here, so tests and a hub without a config file stay silent; a project's config defaults it on for macOS.
   approvals: { timeout_s: 120, notify: false },
+  tasks: { release_after_min: 30 },
 };
 
 export { stateDirFor };
@@ -108,6 +111,7 @@ export function loadConfig(cwd: string): HubConfig {
         timeout_s: file.approvals?.timeout_s ?? DEFAULT_CONFIG.approvals.timeout_s,
         notify: typeof file.approvals?.notify === "boolean" ? file.approvals.notify : process.platform === "darwin",
       },
+      tasks: { ...DEFAULT_CONFIG.tasks, ...file.tasks },
       mlx,
     };
   } catch (error) {
@@ -330,6 +334,13 @@ export async function startDaemon(opts: DaemonOptions) {
         log(`note from ${by} not shared: ${(e as Error).message}`);
       }
     },
+    tell: (peer, line) => {
+      try {
+        bus.note(peer, line);
+      } catch (e) {
+        log(`note for ${peer} not kept: ${(e as Error).message}`);
+      }
+    },
     triage: { classify: (title, detail) => inference?.triage(title, detail) ?? Promise.resolve(undefined), onCampus: () => onCampus() },
   });
   // ---- budget relay -------------------------------------------------------------------------------------------
@@ -493,8 +504,9 @@ export async function startDaemon(opts: DaemonOptions) {
     const r = budget.record(id); // one read per peer: status.json is rewritten on every bus event
     return r ? { paused: `budget: ${r.reason}, resets ${new Date(r.resetsAt).toLocaleTimeString()}` } : manualPaused.has(id) && bus.stateOf(id) === "offline" ? { paused: "manual" } : {};
   };
+  let releasing = false; // gone-owner release (#6): one run at a time, and a recovery commit waits for it
   const recoveryReady = () => {
-    if (!recoveryActive() || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;
+    if (!recoveryActive() || releasing || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;
     if (!recoveryPeerSnapshot) return true;
     const current = recoveryPeers();
     return recoveryPeerSnapshot.every((saved) => {
@@ -589,11 +601,43 @@ export async function startDaemon(opts: DaemonOptions) {
   // message and keeps a phantom `queued N` after the queue drains (measured on a live 0.6.3 hub).
   bus.onQueues = () => { if (!stopping) writeStatus(); };
 
+  // When each peer went offline; a peer never seen attached counts from hub start (issue #6).
+  const offlineSince = new Map<PeerId, number>();
+  const hubStartedAt = Date.now();
+  const releaseGoneOwners = async () => {
+    const limit = config.tasks.release_after_min;
+    if (!(limit > 0) || releasing || stopping || recoveryActive()) return;
+    releasing = true;
+    try {
+      await releaseOwners(limit);
+    } finally {
+      releasing = false;
+    }
+  };
+  const releaseOwners = async (limit: number) => {
+    const owners = new Set(board.list().filter((t) => t.owner && ["proposed", "in_progress", "changes_requested"].includes(t.state)).map((t) => t.owner!));
+    for (const owner of owners) {
+      if (stopping || recoveryActive()) return;
+      if (owner === USER || owner === "hub" || bus.isPaused(owner) || bus.stateOf(owner) !== "offline") continue;
+      const since = offlineSince.get(owner) ?? hubStartedAt;
+      if (Date.now() - since < limit * 60_000) continue;
+      const moved = await tasks.releaseFromGone(owner, Math.round((Date.now() - since) / 60_000)).catch((e) => (log(`releasing tasks of ${owner} failed: ${(e as Error).message}`), []));
+      for (const m of moved) notify(`task ${m.title} moved from ${owner} (offline) to ${m.to ?? "nobody"}`);
+    }
+  };
+  const releaseTimer = setInterval(() => void releaseGoneOwners(), 60_000);
+  releaseTimer.unref?.();
+  intervals.push(releaseTimer);
+
   bus.tap((e) => {
     e = redact(e);
     uiEvents.push({ seq: ++uiSequence, event: e });
     if (uiEvents.length > 200) uiEvents.shift();
-    if (e.t === "state") log(`state ${e.peer} -> ${e.state}`);
+    if (e.t === "state") {
+      log(`state ${e.peer} -> ${e.state}`);
+      if (e.state === "offline") offlineSince.set(e.peer, offlineSince.get(e.peer) ?? Date.now());
+      else offlineSince.delete(e.peer);
+    }
     else if (e.t === "undeliverable") log(`UNDELIVERABLE to ${e.peer} after retries: ${e.env.id} from ${e.env.from}`);
     else if (e.t === "overflow") log(`OVERFLOW ${e.peer}: dropped ${e.env.id} from ${e.env.from}`);
     else log(`msg ${e.env.from} -> ${e.env.to?.join(",") ?? "*"} ${e.env.priority} hop=${e.env.hop}${e.dropped ? ` NOT DELIVERED(${e.dropped})` : ""}: ${e.env.body.slice(0, 200)}`);

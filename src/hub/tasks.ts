@@ -17,6 +17,8 @@ export interface TasksDeps {
   notify: (line: string) => void;
   /** Hands a saved note to every other peer; it rides on their next delivery. */
   share?: (by: PeerId, line: string) => void;
+  /** Hands one peer a line that rides on its next delivery, without a turn of its own (issue #6). */
+  tell?: (peer: PeerId, line: string) => void;
   /** Optional: name a class for a task proposed without one. `onCampus` says whether the model call stays on campus. */
   triage?: { classify: (title: string, detail: string) => Promise<TaskClass | undefined>; onCampus: () => Promise<boolean> };
 }
@@ -90,10 +92,14 @@ export class Tasks {
       if (!pii || (await this.d.triage.onCampus().catch(() => false))) cls = await this.d.triage.classify(text.title, text.detail).catch(() => undefined);
       triaged = !!cls;
     }
+    // A claim is work the caller will do itself: without a class and a model to name one, it is implementation (#6).
+    const defaulted = !cls && input.owner === by;
+    if (defaulted) cls = "implement";
     if (!cls) throw new Error(`class is required (one of ${CLASSES.join(", ")}); the hub could not name one for you`);
     const draft = { ...text, class: cls };
     let task = this.d.board.propose(by, { ...draft, signals });
     if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
+    if (defaulted) task = this.d.board.update(task.id, "hub", "class defaulted", {}, "class implement for a claim without one");
     this.d.notify(`task ${this.publicTitle(task)} proposed by ${by} [${task.class}]${task.signals.length ? ` signals: ${task.signals.join(", ")}` : ""}`);
     // Naming yourself is a claim: the work is already yours, so no offer comes back to you (paper: Agensh CLAIM, #68).
     return this.assignOwner(task, by, input.owner ? { candidates: [input.owner], claim: input.owner === by } : {});
@@ -105,16 +111,63 @@ export class Tasks {
    * sides: their refs are hidden from cloud peers.
    */
   overlaps(task: Task, forOwner = true): string {
-    const mine = task.refs.paths ?? [];
-    if (!mine.length || this.isPii(task)) return "";
-    const hits = this.d.board.list().flatMap((t) => {
-      if (t.id === task.id || !t.owner || t.owner === task.owner || !OPEN.includes(t.state) || this.isPii(t)) return [];
-      const shared = mine.filter((p) => (t.refs.paths ?? []).some((q) => samePlace(p, q)));
-      return shared.length ? [`#${t.id} (owner ${t.owner}) on ${shared.join(", ")}`] : [];
-    });
+    const hits = this.overlapHits(task).map((h) => `#${h.task.id} (owner ${h.task.owner}) on ${h.paths.join(", ")}`);
     if (!hits.length) return "";
     const who = forOwner ? "Settle it with that owner via hub_send before editing those paths." : `${task.owner ?? "Whoever takes it"} is told to settle it.`;
     return `Overlaps ${hits.join("; ")}. ${who}`;
+  }
+
+  /** While a gone owner's tasks move, its other tasks are about to move too: they are no one to settle with. */
+  private releasing: PeerId | undefined;
+
+  private overlapHits(task: Task): { task: Task; paths: string[] }[] {
+    const mine = task.refs.paths ?? [];
+    if (!mine.length || this.isPii(task)) return [];
+    return this.d.board.list().flatMap((t) => {
+      if (t.id === task.id || !t.owner || t.owner === task.owner || t.owner === this.releasing || !OPEN.includes(t.state) || this.isPii(t)) return [];
+      const paths = mine.filter((p) => (t.refs.paths ?? []).some((q) => samePlace(p, q)));
+      return paths.length ? [{ task: t, paths }] : [];
+    });
+  }
+
+  /** The earlier owner hears of an overlap on its next delivery, costing it no turn; the newcomer settles it (#6). */
+  private tellEarlierOwners(task: Task): void {
+    if (!task.owner || !this.d.tell) return;
+    for (const hit of this.overlapHits(task)) {
+      if (hit.task.owner === USER || hit.task.owner === HUB) continue;
+      this.d.tell(hit.task.owner!, noteLine(HUB, "finding", `task #${task.id} (owner ${task.owner}) now overlaps your #${hit.task.id} on ${hit.paths.join(", ")}; ${task.owner} is told to settle it`));
+    }
+  }
+
+  /**
+   * An owner offline past the limit loses its open tasks back to routing, through the same path a budget pause uses.
+   * Only when some other peer can take a task: with nobody to hand it to, it stays with its owner.
+   */
+  async releaseFromGone(peer: PeerId, minutes: number): Promise<{ id: number; title: string; to: PeerId | null }[]> {
+    const moved: { id: number; title: string; to: PeerId | null }[] = [];
+    const why = `owner ${peer} offline for ${minutes} min`;
+    const ids = this.d.board.list().filter((t) => t.owner === peer && OPEN.includes(t.state)).map((t) => t.id);
+    this.releasing = peer;
+    try {
+      for (const id of ids) {
+        // Awaits run between tasks (briefs, memory): re-read, and stop for anything that changed meanwhile.
+        const task = this.d.board.get(id);
+        if (!task || task.owner !== peer || !OPEN.includes(task.state) || this.d.bus.stateOf(peer) !== "offline") continue;
+        if (!assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), peer] }).owner) continue;
+        try {
+          const back = task.state === "in_progress" ? this.d.board.update(task.id, HUB, "released", { state: "proposed" }, why) : task;
+          const next = await this.assignOwner(back, HUB, { exclude: [peer], event: "reassigned", note: why });
+          moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner });
+          // The gone owner hears it on its next delivery, if it comes back mid-work.
+          if (next.owner && next.owner !== peer) this.d.tell?.(peer, noteLine(HUB, "decision", `task #${task.id} moved to ${next.owner} while you were offline; stop working on it`));
+        } catch (e) {
+          this.d.notify(`task ${this.publicTitle(task)}: could not be released from ${peer}: ${(e as Error).message}`);
+        }
+      }
+    } finally {
+      this.releasing = undefined;
+    }
+    return moved;
   }
 
   /** Same code as assignment, without doing it. */
@@ -140,7 +193,10 @@ export class Tasks {
     }
     const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}) }, opts.note ?? `to ${a.owner}`);
     const overlap = this.overlaps(next, false);
-    if (overlap) this.d.notify(`task ${this.publicTitle(next)} (${next.owner}): ${overlap}`);
+    if (overlap) {
+      this.d.notify(`task ${this.publicTitle(next)} (${next.owner}): ${overlap}`);
+      this.tellEarlierOwners(next);
+    }
     if (opts.claim && a.owner === by) {
       const claimed = this.d.board.update(next.id, by, "accepted", { state: "in_progress" });
       this.d.notify(`task ${this.publicTitle(claimed)} claimed by ${by}`);
