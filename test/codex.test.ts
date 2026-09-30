@@ -243,7 +243,7 @@ test("a condensed digest with a steer beside it is answered to the condensed sen
   await until(() => said.length === 1); // the TUI's own turn ends; the condensed digest goes in next
   await until(() => peer.state === "busy");
   await Bun.sleep(40); // let turn/started announce the digest turn's id
-  bus.publish(newEnvelope("pi", "urgent from pi", { priority: "important", inReplyTo: { trace: "x", hop: 2 } }));
+  bus.publish(newEnvelope("pi", "urgent from pi", { priority: "important" }));
   await until(() => said.length === 2);
   expect(said[1]!.body).toBe("echo: condensed 2 +steered: urgent from pi");
   expect([...(said[1]!.to ?? [])].sort()).toEqual(["claude", "kimi", "pi"]);
