@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -49,5 +50,15 @@ for (const path of actual) {
     `Development files must not ship: ${path}`);
   assert(!/(^|\/)(\.env(?:\..*)?|\.npmrc|\.DS_Store)$|\.(?:test|spec)\.[^/]+$|\.(?:tgz|log)$/.test(path),
     `Unwanted npm package file: ${path}`);
+}
+// Nothing published may name an internal host (issue #74). The message gives the place, never the address:
+// CI logs are public too.
+// A sentence may end right after an address ("on <address>."): only a digit, or a dot followed by a digit,
+// continues a dotted number.
+const privateV4 = /(?<!\d\.?)(?:10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}(?!\.?\d)/;
+for (const path of actual) {
+  readFileSync(join(root, path), 'utf8').split('\n').forEach((line, i) => {
+    assert(!privateV4.test(line), `Private IPv4 address in a published file: ${path}:${i + 1}`);
+  });
 }
 console.log(`package: OK (${actual.size} files, ${manifest.name}@${manifest.version})`);

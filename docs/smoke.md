@@ -57,7 +57,7 @@ and the local worker:
 - Task #1 reached `approved` with its file written. The local worker served
   `sy/coding` through the switchyard on 127.0.0.1:4813
   (`vllm/deepseek-ai/DeepSeek-V4-Flash-0731`), and Pi's `dgx/coding` traffic
-  went through the gateway (omniroute gateway.internal:20128) as before.
+  went through the internal gateway as before.
 - Kimi stayed healthy through the run (KIMI-IDLE-AGAIN, KIMI-FINAL-MARKER
   markers, zero queued at the end). The disposable hub and manager were
   stopped after recording.

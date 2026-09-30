@@ -3,6 +3,7 @@
 ## Unreleased
 
 - `ahub setup` without a terminal and without `--yes` prints the step it would take and exits non-zero instead of waiting forever at its prompt, as `restart` and `upgrade` already did. A piped answer (`yes | ahub setup`) is no longer read: use `--yes` (#73).
+- The smoke ledger no longer names the internal gateway's address, and the package check fails when any published file contains a private IPv4 address, naming only the file and line (#74).
 
 ## 0.7.6
 
