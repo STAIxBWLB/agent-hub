@@ -140,7 +140,8 @@ The target console commands are `ahub queue list [--peer <id>] [--json]`,
 `ahub queue show <delivery-id>`, and `ahub queue resolve <delivery-id>
 --action completed|retry|discard --reason <text>`. They are a 0.7.0 target and
 remain unavailable in the released 0.6.4 CLI until implementation and live
-verification complete.
+verification complete. (Amended 2026-09-30: shipped in 0.7.0 and verified live;
+see the smoke ledger.)
 
 The documented verification sequence is: run a dry-run, verify package and
 session identity, manually confirm Claude recovery, read back version, session,

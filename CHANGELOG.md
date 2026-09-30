@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- README, the operations guide and the upgrade-recovery spec no longer describe protocol 10 and the queue commands as unreleased (#9).
+
 ## 0.7.7
 
 - `ahub setup` without a terminal and without `--yes` prints the step it would take and exits non-zero instead of waiting forever at its prompt, as `restart` and `upgrade` already did. A piped answer (`yes | ahub setup`) is no longer read: use `--yes` (#73).

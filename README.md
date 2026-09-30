@@ -113,8 +113,8 @@ A project has one managed Pi session owner. Mode changes require the agent to
 settle and preserve the session file. Before the first generation, a live source
 verified to be empty can instead retain its exact session ID without a file.
 Missing history from a nonempty session blocks handover. Protocol 9 adds Pi
-recovery metadata. Protocol 10 is the 0.7.0 target for durable delivery
-receipts and conservative queue recovery; it is pending live verification.
+recovery metadata. Protocol 10, released in 0.7.0, adds durable delivery receipts and
+conservative queue recovery; it is verified live (see the smoke ledger).
 Older protocol hubs still require their matching CLI and an attended bootstrap.
 
 ## Runtime

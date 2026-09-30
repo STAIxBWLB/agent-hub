@@ -114,11 +114,10 @@ ahub queue show <delivery-id>
 ahub queue resolve <delivery-id> --action completed|retry|discard --reason "<text>"
 ```
 
-These queue commands are part of 0.7.0 and are not available in the released
-0.6.4 CLI. Until protocol 10 is installed, use `ahub status`, `ahub tail`,
-and the task board. A known offline recipient may be queued explicitly once
-the 0.7.0 journal is active; broadcast and automatic assignment still require
-an attached peer.
+These queue commands ship with protocol 10 (0.7.0 and later). A hub still on
+protocol 9 (0.6.x) has only `ahub status`, `ahub tail` and the task board. A
+known offline recipient may be queued explicitly; broadcast and automatic
+assignment still require an attached peer.
 
 Resolution requires the current observed revision. A retry closes the old
 record and creates one linked attempt. Stale or conflicting resolutions fail.
