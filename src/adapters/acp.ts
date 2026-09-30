@@ -13,6 +13,8 @@ export interface PermissionRequest {
   peer: PeerId;
   title: string;
   options: PermissionOption[];
+  /** The tool's name alone, when the adapter knows it apart from the title (which can quote the payload). */
+  tool?: string;
 }
 
 export interface AcpOptions {
@@ -243,7 +245,17 @@ export class AcpPeer extends BasePeer {
     // An unknown payload is never dressed up as a description, and it must not buy a blanket grant.
     const title: string = raw === undefined ? `${call.title ?? "tool call"} (payload not reported by the agent)` : `${call.title ?? "tool call"}${input}`;
     const options: PermissionOption[] = (msg.params?.options ?? []).filter((o: PermissionOption) => (raw !== undefined && !cut) || o.kind !== "allow_always");
-    const picked = await this.opts.onPermission?.({ peer: this.id, title, options }).catch(() => undefined);
+    // Only a bare tool name travels on its own (a desktop notice shows it); anything prose-like stays in the title.
+    const tool = typeof call.title === "string" && /^[\w.:@-]{1,80}$/.test(call.title) ? call.title : undefined;
+    // Waiting for a person is not the agent going silent: keep the watchdog from cancelling the turn meanwhile.
+    const turn = this.turn;
+    const alive = setInterval(() => this.state === "busy" && turn === this.turn && this.touch(), Math.max(10, Math.min(30_000, Math.floor(this.watchdogMs / 3))));
+    let picked: string | undefined;
+    try {
+      picked = await this.opts.onPermission?.({ peer: this.id, title, options, ...(tool ? { tool } : {}) }).catch(() => undefined);
+    } finally {
+      clearInterval(alive); // also when there is no handler at all
+    }
     const valid = options.some((o) => o.optionId === picked);
     this.send({
       jsonrpc: "2.0",

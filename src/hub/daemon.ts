@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { spawn } from "node:child_process";
+import { childEnv } from "./child-process.ts";
 import type { ServerWebSocket } from "bun";
 import { AcpPeer, type PermissionRequest } from "../adapters/acp.ts";
 import { CodexPeer } from "../adapters/codex-appserver.ts";
@@ -53,6 +55,8 @@ export interface HubConfig {
   pi: { enabled: boolean; auto_start: boolean; cmd: string[]; backend: "auto" | "dgx" | "mlx"; dgx_coding: string; dgx_fast: string; max_steps: number };
   mlx: Pick<MlxOptions, "provider" | "host" | "runtimeDir" | "modelPath" | "port" | "model" | "sourceModel" | "contextWindow" | "maxInputTokens" | "maxTokens" | "maxConcurrency">;
   local: { deny: string[]; bash_network: boolean; max_steps: number; read_allow: string[] };
+  /** Pending permission requests: how long they wait, and whether the desktop is told (issue #5). */
+  approvals: { timeout_s: number; notify: boolean };
 }
 export const DEFAULT_CONFIG: HubConfig = {
   watchdog_ms: DEFAULT_WATCHDOG_MS,
@@ -69,6 +73,8 @@ export const DEFAULT_CONFIG: HubConfig = {
   pi: { enabled: false, auto_start: false, cmd: ["pi"], backend: "auto", dgx_coding: "coding", dgx_fast: "fast", max_steps: 30 },
   mlx: { provider: "ollama", model: "agenthub-fast-mlx:4b-8k", sourceModel: "qwen3.5:4b-mlx", contextWindow: 8192, maxInputTokens: 6000, maxTokens: 2048, maxConcurrency: 1 },
   local: { deny: [], bash_network: false, max_steps: 30, read_allow: [] },
+  // Off here, so tests and a hub without a config file stay silent; a project's config defaults it on for macOS.
+  approvals: { timeout_s: 120, notify: false },
 };
 
 export { stateDirFor };
@@ -98,6 +104,10 @@ export function loadConfig(cwd: string): HubConfig {
       omniroute: { ...DEFAULT_CONFIG.omniroute, ...file.omniroute },
       local: { ...DEFAULT_CONFIG.local, ...file.local },
       pi: { ...DEFAULT_CONFIG.pi, ...file.pi },
+      approvals: {
+        timeout_s: file.approvals?.timeout_s ?? DEFAULT_CONFIG.approvals.timeout_s,
+        notify: typeof file.approvals?.notify === "boolean" ? file.approvals.notify : process.platform === "darwin",
+      },
       mlx,
     };
   } catch (error) {
@@ -121,6 +131,8 @@ export interface DaemonOptions {
   /** Auto-approve ACP permission requests with the agent's allow_once option. */
   unattended?: boolean;
   permissionTimeoutMs?: number;
+  /** Tests replace the desktop notifier; the default posts a macOS notification when approvals.notify is on. */
+  notifier?: (title: string, body: string) => void;
   /** Called once when shutdown begins, however it was triggered; the lifecycle uses it to arm a hard deadline. */
   onShutdownStart?: () => void;
   /** How often the daemon checks that its project root and state dir still exist. Tests shrink this. */
@@ -588,6 +600,27 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!stopping) writeStatus();
   });
 
+  const approvalTimeoutS = (() => {
+    const s = config.approvals.timeout_s;
+    if (typeof s === "number" && s >= 30 && s <= 3600) return s;
+    log(`approvals.timeout_s ${JSON.stringify(s)} is outside 30-3600 seconds; using 120`);
+    return 120;
+  })();
+  let notifierBroken = false;
+  // Peer and tool name only: a title can quote what a PII turn is about to write (issue #5).
+  const desktop = opts.notifier ?? ((title: string, body: string) => {
+    const quote = (t: string) => `"${t.replace(/[\\"]/g, "\\$&")}"`;
+    const child = spawn("osascript", ["-e", `display notification ${quote(body)} with title ${quote(title)}`], { stdio: "ignore", env: childEnv(process.env) });
+    const kill = setTimeout(() => child.kill(), 5000);
+    kill.unref?.();
+    const failed = (why: string) => {
+      if (!notifierBroken) log(`desktop notification failed (${why}); later ones are not reported`);
+      notifierBroken = true;
+    };
+    child.on("error", (e: Error) => (clearTimeout(kill), failed(e.message)));
+    child.on("exit", (code: number | null, signal: string | null) => (clearTimeout(kill), code || signal ? failed(signal ? `osascript stopped by ${signal}` : `osascript exit ${code}`) : undefined));
+  });
+
   async function onPermission(req: PermissionRequest): Promise<string | undefined> {
     if (stopping) return undefined;
     if (opts.unattended) return req.options.find((o) => o.kind === "allow_once")?.optionId;
@@ -597,11 +630,24 @@ export async function startDaemon(opts: DaemonOptions) {
     const title = req.title.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
     // The title can quote what a PII turn is about to write. It is for the person approving, on the console; the log
     // (which `ahub ask` reads as evidence) only records that a request was made.
-    log(`permission ${id} requested by ${req.peer} (${title.length} chars, shown on the console)`);
-    const push = JSON.stringify({ t: "permission", id, ...req, title });
+    const timeoutMs = opts.permissionTimeoutMs ?? approvalTimeoutS * 1000;
+    log(`permission ${id} requested by ${req.peer} (${title.length} chars, shown on the console; cancelled after ${timeoutMs / 1000}s)`);
+    // The tool name is for the desktop notice only: the console push keeps its shape.
+    const { tool: _tool, ...shown } = req;
+    const push = JSON.stringify({ t: "permission", id, ...shown, title });
     for (const c of consoles) if (c.data.tail) c.send(push);
+    if (config.approvals.notify) {
+      try {
+        desktop("agent-hub", `${req.peer} asks for approval${req.tool ? `: ${req.tool}` : ""} (ahub tail)`);
+      } catch {
+        // never let a notifier break the request itself
+      }
+    }
     return new Promise((resolve) => {
-      const timer = setTimeout(() => done(undefined), opts.permissionTimeoutMs ?? 120_000);
+      const timer = setTimeout(() => {
+        notify(`permission ${id} from ${req.peer} was not answered within ${Math.round(timeoutMs / 1000)}s and was cancelled`);
+        done(undefined);
+      }, timeoutMs);
       const done = (optionId: string | undefined) => {
         clearTimeout(timer);
         permissions.delete(id);

@@ -751,3 +751,20 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   anything outside `[a-zA-Z0-9_-]`, and a server passed in `session/new` shadows a
   configured server of the same name, so only the hub's `agent-hub` server can
   produce the approved names.
+
+## Amendment: approval notifications and timeout (issue #5)
+
+- A waiting permission request raises one macOS notification (`osascript`) with
+  the peer and, when the adapter reports it apart from the title (ACP), the tool
+  name; never the title or payload, which can quote a PII turn. Failures are logged
+  once and never affect the request.
+- `approvals.timeout_s` (default 120, accepted 30 to 3600, otherwise 120 with a log
+  line) replaces the fixed 120 s; an unanswered request leaves a console and log
+  line.
+- `approvals.notify` defaults to on for macOS when a project config file exists and
+  to off otherwise (tests, a hub without a config), so test runs raise nothing; a
+  non-boolean value is ignored.
+- The ACP adapter keeps its inactivity watchdog alive while a permission request
+  waits (as the local worker already did), so a timeout above `watchdog_ms` does
+  not cancel the turn. The tool name travels to the notifier only; the console
+  `permission` push keeps its shape, so the control protocol is unchanged.
