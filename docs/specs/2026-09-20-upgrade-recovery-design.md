@@ -113,6 +113,12 @@ stopped with its matching CLI before a protocol-8 manager is launched.
 
 ## Current 0.7.0 correction and recovery contract
 
+Amended 2026-09-30: 0.7.0 shipped protocol 10 and the queue commands; protocol 10
+ran in production from 0.7.1, and `ahub queue list` read back live receipts there
+([smoke checklist](../smoke.md)). `ahub queue show` and `ahub queue resolve` are
+covered by tests, not by a live run. The paragraphs below keep the pre-release
+wording.
+
 The earlier sections record the protocol-8 implementation history. The current
 release is 0.6.4 with protocol 9; the next target is 0.7.0 with protocol 10.
 This correction supersedes the earlier protocol-8 source/target statement for
@@ -140,8 +146,7 @@ The target console commands are `ahub queue list [--peer <id>] [--json]`,
 `ahub queue show <delivery-id>`, and `ahub queue resolve <delivery-id>
 --action completed|retry|discard --reason <text>`. They are a 0.7.0 target and
 remain unavailable in the released 0.6.4 CLI until implementation and live
-verification complete. (Amended 2026-09-30: shipped in 0.7.0 and verified live;
-see the smoke ledger.)
+verification complete.
 
 The documented verification sequence is: run a dry-run, verify package and
 session identity, manually confirm Claude recovery, read back version, session,
