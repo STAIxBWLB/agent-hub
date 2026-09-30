@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.6
+
 - Shared notes reach the agents working now: `hub_remember` has a `fail` kind for approaches that do not work, and every saved note rides on the other peers' next delivery (newest 10, one line each) instead of waiting for their next session. A note that matches a PII pattern is refused. A preface returned by a failed delivery no longer overwrites one created meanwhile (#68).
 - Claims: `hub_task_propose` naming the caller as owner starts the task in progress without an offer back to the caller, and overlapping `refs.paths` with another owner's open task are named in the propose result, the offer and the console. Implementers are told to claim unassigned work and to report the check they ran in `hub_task_done` (#68).
 
