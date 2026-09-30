@@ -1,6 +1,6 @@
 # agent-hub design spec
 
-Date: 2026-09-19. Status: M1 to M5 merged; M6 implemented on `feat/m6-packaging-inference` (phase spec: issue #2 of the public repository). Version 0.1.0.
+Date: 2026-09-19. Status: M1 to M5 merged; M6 implemented on `feat/m6-packaging-inference` (phase spec: issue #2 of the first public repository, archived). Version 0.1.0.
 Owner: Young Joon Lee. Repo: STAIxBWLB/agent-hub.
 
 Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) or
@@ -565,7 +565,7 @@ M2 coordination
 
 M3 local worker and routing L2/L3
 - [x] Local worker agent loop with cwd-scoped tools, secrets denylist, approvals and seatbelt sandbox
-- [x] OmniRoute client with Cloudflare Access headers and the owner-issued inference key; the off-campus live path remains blocked in `docs/smoke.md` (#12)
+- [x] OmniRoute client with Cloudflare Access headers and the owner-issued inference key; the off-campus live path remains blocked in `docs/smoke.md` (#1)
 - [x] Switchyard sidecar: config generation, lifecycle, health, fallback to fixed model
 - [x] `ahub local`, smoke through OmniRoute with provider header check, and through the real sidecar
 - [x] Local worker capture into claude-mem (`sessions/init`, `observations`, `summarize`, `session-end`, skip list)
@@ -584,7 +584,7 @@ M5 budget relay
 - [x] Reassignment to local, one resume envelope, idempotency and restart recovery
 - [x] Handoff context (checkpoint summary or memory block) plus task briefs in the task envelope
 - [x] Live: the Claude status line tee in an interactive session (`docs/smoke.md`, 2026-09-19)
-- [ ] Live: a real pause driven by Codex's own numbers with a TUI attached; the natural near-limit prerequisite remains blocked by issue #12
+- [ ] Live: a real pause driven by Codex's own numbers with a TUI attached; the natural near-limit prerequisite remains blocked by issue #1
 
 M6 internal inference, packaging
 - [x] Status digests and triage through `sy/fast` (amended: optional and fail-open with a backoff. Only plain status

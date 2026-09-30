@@ -170,7 +170,7 @@ Verified on 2026-09-20, without upgrading the developer's running hubs:
 Still pending: a real Orca smoke with native Codex/Claude sessions after an
 attended protocol-8 bootstrap; actual registry package/plugin upgrade; production
 rollout. Fake terminal receipts do not establish native conversation restoration.
-Issue #12's Access and natural-quota prerequisites remain unchanged.
+Issue #1's Access and natural-quota prerequisites remain unchanged.
 
 ## Install
 
@@ -333,9 +333,9 @@ No production task or source file was used as a test target.
 | Claude task proposal and review tools | pass | The actual plugin `hub_task_propose` created scratch task #1, `ISSUE7-REVIEW-FLOW`, at 12:44:20 UTC, attributed to `claude`. The first assignment remained empty because the Codex peer had been detached; proposal success is separate from handoff success. Claude subsequently issued two actual `hub_review` calls with `changes_requested` at 12:47:50 and 12:47:59 UTC. |
 | Real Codex TUI queue and MCP tools | pass | With Codex 0.155.1 TUI attached, a typed user turn ran `sleep 30`; the status message showed `busy queued 1`, appeared in the transcript only after the user turn completed, and invoked the actual `hub_task_list` before replying `QUEUE-DELIVERED`. |
 | Real Codex TUI steer | pass | In a second typed user turn, the TUI prompt explicitly authorized a console marker update while `sleep 20` ran. An important message arrived at 12:48:15 UTC; queue remained 0; the same turn ended at 12:48:39 UTC with `STEER-VERIFIED` at hop 1. The first probe delivered its steer but the model retained the original user instruction, so that attempt was not counted as behavioral success. |
-| Unassisted Claude proposal -> Codex completion -> Claude review and escalation | fail, [#11](https://github.com/STAIxBWLB/agent-hub/issues/11) | Task #1 was delivered to Codex at 12:47:05 UTC; it replied `Task #1 noted; no action taken on the hub reference message.` and left the task proposed. Generated instructions classify every hub item as reference-only memory. After a corrective user prompt in the TUI, board history recorded Codex accepted/done, Claude changes_requested, Codex done, Claude changes_requested, and hub escalation to Kimi. Kimi then accepted/done through its real tools, and Claude approved the task. That assisted success does not erase the default-flow failure. |
-| Off-campus Cloudflare Access headers | blocked, [#12](https://github.com/STAIxBWLB/agent-hub/issues/12) | Internal gateway reachable; both Access credential-file settings empty; unauthenticated public models probe HTTP 403. Needs authorized Access credentials and an off-campus network. VPN was not disconnected. |
-| Natural Codex budget pause with TUI attached | blocked, [#12](https://github.com/STAIxBWLB/agent-hub/issues/12) | Actual TUI-connected weekly reading was approximately 12%, below the gate. No manual budget reading was injected. Needs a naturally near-limit account; parser and manual-injection tests are not this live leg. |
+| Unassisted Claude proposal -> Codex completion -> Claude review and escalation | fail, #11 (previous repository) | Task #1 was delivered to Codex at 12:47:05 UTC; it replied `Task #1 noted; no action taken on the hub reference message.` and left the task proposed. Generated instructions classify every hub item as reference-only memory. After a corrective user prompt in the TUI, board history recorded Codex accepted/done, Claude changes_requested, Codex done, Claude changes_requested, and hub escalation to Kimi. Kimi then accepted/done through its real tools, and Claude approved the task. That assisted success does not erase the default-flow failure. |
+| Off-campus Cloudflare Access headers | blocked, [#1](https://github.com/STAIxBWLB/agent-hub/issues/1) | Internal gateway reachable; both Access credential-file settings empty; unauthenticated public models probe HTTP 403. Needs authorized Access credentials and an off-campus network. VPN was not disconnected. |
+| Natural Codex budget pause with TUI attached | blocked, [#1](https://github.com/STAIxBWLB/agent-hub/issues/1) | Actual TUI-connected weekly reading was approximately 12%, below the gate. No manual budget reading was injected. Needs a naturally near-limit account; parser and manual-injection tests are not this live leg. |
 
 ### Environment findings
 
@@ -368,7 +368,7 @@ check: OK
 ```
 
 This gate covers type checking, bundle freshness, package contents and tests;
-it does not replace the live outcomes or unblock #11 and #12.
+it does not replace the live outcomes or unblock #11 (previous repository) and #1.
 
 ## Issue #11 default workflow retest (0.3.1)
 
@@ -400,7 +400,7 @@ instruction was entered into the Codex TUI. Real board history for
 
 This closes the default acceptance/review/escalation failure found in the
 0.3.0 issue #7 run. The earlier failure is retained above as historical evidence.
-The off-campus Access and natural budget-pause prerequisites in #12 remain open.
+The off-campus Access and natural budget-pause prerequisites in #1 remain open.
 
 Regression gate: `scripts/check.sh` completed with `159 pass`, `0 fail`,
 `1045 expect() calls`, `check: OK`. Added coverage exercises rendered workflow
@@ -492,7 +492,7 @@ The 0.7.0 protocol-10 durable-delivery implementation, source-9-to-target-10
 transition, queue CLI, receipt reconciliation, and attended Claude
 confirmation remain pending live verification. Do not claim a successful
 0.7.0 production cutover from package installation, tests, or synthetic
-approval alone. Issue [#12](https://github.com/STAIxBWLB/agent-hub/issues/12)
+approval alone. Issue [#1](https://github.com/STAIxBWLB/agent-hub/issues/1)
 remains open for off-campus Access credentials and a natural near-limit budget
 pause.
 
@@ -522,7 +522,7 @@ pause.
 - The synthetic Claude control peer acknowledged bridge receipt and replied
   with a correlated FYI. This does not establish a real Claude inference turn.
 - Production application, attended Claude restoration and post-deploy readback
-  remain pending until the tagged artifact is installed. Issue #12 remains open.
+  remain pending until the tagged artifact is installed. Issue #1 remains open.
 
 
 ## 0.7.0 attended production cutover and follow-up
@@ -569,7 +569,7 @@ The 0.7.1 attended repeat is recorded separately after application.
 - `ahub doctor` reported all configured checks healthy, including the delivery
   journal and Claude recovery identity. The hwp-cli hub remained stopped.
 - These are supervised live checks. Native confirmation screens, uncertain
-  delivery review, and the infrastructure prerequisites in #12 remain explicit
+  delivery review, and the infrastructure prerequisites in #1 remain explicit
   operator responsibilities; this does not certify unattended operation.
 
 
@@ -595,7 +595,7 @@ verified application; no daemon, plugin, terminal, or journal mutation.
   for the 0.7.1 application; no source change is present on HEAD.
 - Kimi reports 2.0.2 in doctor; earlier live legs on this page used 2.0.1.
 
-Issue [#12](https://github.com/STAIxBWLB/agent-hub/issues/12) remains open
+Issue [#1](https://github.com/STAIxBWLB/agent-hub/issues/1) remains open
 for off-campus Access credentials and a natural near-limit budget pause.
 
 
@@ -691,7 +691,7 @@ cutover; it also exposed three recovery defects that became 0.7.3 and 0.7.4.
 - `ahub setup` is interactive (one confirmation gates all steps); piping an
   answer works, running it detached does not.
 
-Issue [#12](https://github.com/STAIxBWLB/agent-hub/issues/12) remains open
+Issue [#1](https://github.com/STAIxBWLB/agent-hub/issues/1) remains open
 for off-campus Access credentials and a natural near-limit budget pause.
 
 ## Shared notes and claims live run (issue #68, 0.7.6, 2026-09-30)

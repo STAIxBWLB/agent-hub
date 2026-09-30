@@ -146,6 +146,6 @@ The documented verification sequence is: run a dry-run, verify package and
 session identity, manually confirm Claude recovery, read back version, session,
 queue, task, and budget state, then release the held queues. Do not claim a
 successful 0.7.0 cutover from tests, synthetic approvals, or package
-installation alone. Issue [#12](https://github.com/STAIxBWLB/agent-hub/issues/12)
+installation alone. Issue [#1](https://github.com/STAIxBWLB/agent-hub/issues/1)
 remains open for off-campus Access credentials and a natural near-limit budget
 pause.

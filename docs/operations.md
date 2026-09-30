@@ -264,7 +264,7 @@ peers and therefore did not show that backlog. No messages were deleted. The
 0.7.1 attended cutover and production readback verified queue visibility and
 completion receipts; see the final section of the smoke checklist.
 
-Issue [#12](https://github.com/STAIxBWLB/agent-hub/issues/12) remains open for
+Issue [#1](https://github.com/STAIxBWLB/agent-hub/issues/1) remains open for
 off-campus Access credentials and a natural near-limit budget pause. Tests,
 synthetic approvals, and an authenticated internal network do not close those
 prerequisites. Adapter acceptance is not task completion, and package

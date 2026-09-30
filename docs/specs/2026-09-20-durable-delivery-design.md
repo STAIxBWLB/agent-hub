@@ -8,7 +8,7 @@ Target: 0.7.0, protocol 10
 
 Make ahub suitable for supervised daily development: expose disconnected recipients' pending work, survive daemon termination without silently losing accepted queued messages, and make uncertain execution an explicit operator decision. Publish an English operations guide and verify the release before applying it to the current installation.
 
-The user chose conservative recovery and deployment through production application. Never automatically replay uncertain or partially executed work. Exactly-once external effects, automatic rollback, and unattended native approval handling remain outside this release. Infrastructure prerequisites in issue #12 remain pending unless independently available; never manufacture quota exhaustion or disconnect the user's network.
+The user chose conservative recovery and deployment through production application. Never automatically replay uncertain or partially executed work. Exactly-once external effects, automatic rollback, and unattended native approval handling remain outside this release. Infrastructure prerequisites in issue #1 remain pending unless independently available; never manufacture quota exhaustion or disconnect the user's network.
 
 ## Delivery model
 
