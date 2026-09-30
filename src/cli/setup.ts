@@ -1,5 +1,6 @@
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { realPath } from "../hub/project.ts";
 import { VERSION } from "../version.ts";
 
 export const PLUGIN = "agent-hub@agent-hub";
@@ -27,7 +28,7 @@ export function parseList<T>(json: string): T[] {
 
 const real = (p: string) => {
   try {
-    return realpathSync(p);
+    return realPath(p);
   } catch {
     return p;
   }

@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { projectContext, projectRoot } from "../src/hub/project.ts";
+import { projectContext, projectRoot, realPath } from "../src/hub/project.ts";
 
 const git = (dir: string) => {
   Bun.spawnSync(["git", "init", "-q", dir]);
@@ -62,4 +62,52 @@ test("worktrees and nested repositories do not inherit parent project config", (
   const child = join(nested, "child");
   git(child);
   expect(projectRoot(child)).toBe(realpathSync(child));
+});
+
+// issue #26: Bun 1.3.14's realpathSync throws ENOENT for an existing path with a backslash in it.
+test("realPath resolves paths with a backslash like realpathSync would, and still refuses missing ones", () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-realpath-")));
+  const root = join(base, "back\\slash");
+  mkdirSync(join(root, "sub"), { recursive: true });
+  writeFileSync(join(root, "a.txt"), "x");
+  symlinkSync(join(root, "sub"), join(root, "in\\link"));
+  symlinkSync("sub", join(root, "rel\\link"));
+  symlinkSync(base, join(root, "out\\link"));
+  symlinkSync(join(root, "missing"), join(root, "dang\\ling"));
+  expect(realPath(root)).toBe(root);
+  expect(realPath(join(root, "a.txt"))).toBe(join(root, "a.txt"));
+  expect(realPath(join(root, "in\\link"))).toBe(join(root, "sub"));
+  expect(realPath(join(root, "rel\\link"))).toBe(join(root, "sub"));
+  expect(realPath(join(root, "out\\link"))).toBe(base);
+  expect(() => realPath(join(root, "dang\\ling"))).toThrow();
+  expect(() => realPath(join(root, "nope"))).toThrow();
+  expect(realPath(base)).toBe(realpathSync(base)); // ordinary paths take realpathSync's answer
+  // A relative path under a backslash directory takes the fallback too.
+  const cwd = process.cwd();
+  try {
+    process.chdir(root);
+    expect(realPath("a.txt")).toBe(join(root, "a.txt"));
+  } finally {
+    process.chdir(cwd);
+  }
+  // `..` after a directory is resolved on disk; a link through a missing directory is dangling, not "inside".
+  mkdirSync(join(root, "t"));
+  writeFileSync(join(root, "t", "x.txt"), "x");
+  // Raw strings: join() would collapse the `..` before realPath ever saw it. Through a symlink, `..` is the parent
+  // of the link's target, not of the link.
+  mkdirSync(join(root, "d", "e"), { recursive: true });
+  symlinkSync(join(root, "d", "e"), join(root, "dl"));
+  expect(realPath(`${root}/dl/..`)).toBe(join(root, "d"));
+  expect(realPath(`${root}/sub/../t/x.txt`)).toBe(join(root, "t", "x.txt"));
+  symlinkSync(`${root}/gone/../a.txt`, join(root, "dot\\dot"));
+  expect(() => realPath(join(root, "dot\\dot"))).toThrow();
+  // Each component comes back as stored on disk: a case-insensitive file system opens other spellings of the same file.
+  mkdirSync(join(root, ".git"));
+  writeFileSync(join(root, ".git", "config"), "x");
+  writeFileSync(join(root, "id_rsa"), "x");
+  for (const [asked, stored] of [[".GIT/config", ".git/config"], ["id_rſa" /* long s, U+017F */, "id_rsa"]] as const) {
+    const folds = existsSync(join(root, asked));
+    if (folds) expect(realPath(join(root, asked))).toBe(join(root, stored));
+    else expect(() => realPath(join(root, asked))).toThrow();
+  }
 });

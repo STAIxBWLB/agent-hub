@@ -17,6 +17,26 @@ export function canonicalPath(path: string): string {
   return canonical(path);
 }
 
+/**
+ * realpathSync, except that Bun 1.3.14 throws ENOENT for an existing path containing a backslash (issue #26). Such a
+ * path goes to the system realpath, which handles it and returns every component as stored on disk: guardPath checks
+ * names, and on a case-insensitive disk `.GIT/config` or `id_rſa` would otherwise pass for another file. A missing
+ * path or a dangling symlink still throws, which guardPath relies on. Other paths take realpathSync's answer unchanged.
+ */
+export function realPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    if (!resolve(path).includes("\\")) throw error; // a relative path can sit under a backslash directory too
+    // The path as given: resolve() would fold a `..` after a symlink by text. GNU realpath accepts a dangling last
+    // component unless told -e; the BSD one on macOS refuses it by default.
+    const argv = process.platform === "darwin" ? ["/bin/realpath", "--", path] : ["realpath", "-e", "--", path];
+    const r = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8" });
+    if (r.status !== 0 || !r.stdout.endsWith("\n")) throw error;
+    return r.stdout.slice(0, -1);
+  }
+}
+
 function gitRoot(dir: string): string | undefined {
   const result = spawnSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
   if (result.status !== 0) return undefined;
