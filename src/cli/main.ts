@@ -404,6 +404,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     else {
       console.log(`ahub setup changes your Claude Code plugin configuration, one step at a time, re-checking after each. First step:\n  ${step.argv.join(" ")}\n      ${step.why}`);
       if (!args.includes("--yes")) {
+        // Nobody can answer without a terminal: waiting would hang a script forever (issue #73).
+        if (!process.stdin.isTTY) fail("not a terminal: nothing was changed; rerun with --yes to apply");
         const rl = createInterface({ input: process.stdin, output: process.stdout });
         const answer = (await rl.question("Proceed (this and the steps that follow from it)? [y/N] ")).trim().toLowerCase();
         rl.close();

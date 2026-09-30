@@ -200,3 +200,17 @@ test("ahub setup: one step at a time from the JSON listings; paths compared exac
   expect(step(plugin(VERSION), here)).toBe("uninstall agent-hub@agent-hub");
   expect(step([{ id: "agent-hub@agent-hub", version: "9.9.9" }], here)).toBe("uninstall agent-hub@agent-hub");
 });
+
+// issue #73: without a terminal the confirmation prompt waited forever; `restart` and `upgrade` already refused.
+test("ahub setup without a terminal and without --yes prints the step, changes nothing and exits non-zero", () => {
+  const bin = mkdtempSync(join(tmpdir(), "agenthub-setup-tty-"));
+  const calls = join(bin, "calls.log");
+  writeFileSync(join(bin, "claude"), `#!/bin/sh\necho "$@" >> "${calls}"\necho "[]"\n`, { mode: 0o755 });
+  // A hub home of its own: an operation running on this machine must not decide the test.
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, AGENTHUB_HOME: mkdtempSync(join(tmpdir(), "agenthub-setup-home-")) };
+  const res = Bun.spawnSync(["bun", "src/cli/main.ts", "setup"], { stdin: "ignore", env });
+  expect(res.exitCode).toBe(1);
+  expect(res.stdout.toString()).toContain("claude plugin marketplace add");
+  expect(res.stderr.toString()).toContain("not a terminal: nothing was changed; rerun with --yes to apply");
+  expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual(["plugin list --json", "plugin marketplace list --json"]); // listings only
+});

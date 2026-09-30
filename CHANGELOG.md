@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `ahub setup` without a terminal and without `--yes` prints the step it would take and exits non-zero instead of waiting forever at its prompt, as `restart` and `upgrade` already did. A piped answer (`yes | ahub setup`) is no longer read: use `--yes` (#73).
+
 ## 0.7.6
 
 - Shared notes reach the agents working now: `hub_remember` has a `fail` kind for approaches that do not work, and every saved note rides on the other peers' next delivery (newest 10, one line each) instead of waiting for their next session. A note that matches a PII pattern is refused. A preface returned by a failed delivery no longer overwrites one created meanwhile (#68).
