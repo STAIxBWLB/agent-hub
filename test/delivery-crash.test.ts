@@ -27,7 +27,8 @@ async function startRuntime(options: { noPeer?: boolean; stateDir?: string } = {
     rmSync(stateDir, { recursive: true, force: true });
   });
   await until(() => !!readControl(stateDir), "daemon control manifest");
-  await until(() => events(result).some((e) => e.type === "daemon-ready"), "runtime startup");
+  // The runtime attaches its claude peer after the daemon is up; a console send before that finds no such peer.
+  await until(() => events(result).some((e) => e.type === (options.noPeer ? "daemon-ready" : "peer-ready")), "runtime startup");
   return result;
 }
 
