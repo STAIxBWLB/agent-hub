@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Server, ServerWebSocket } from "bun";
-import { renderDigest, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
+import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { childEnv, stopOwnedProcess } from "../hub/child-process.ts";
 
@@ -54,6 +54,7 @@ export class CodexPeer extends BasePeer {
   private readonly pending = new Map<number, { resolve: (result?: any) => void; reject: (e: Error) => void; deliveryId?: string; kind?: "deliver" | "steer" }>();
   private usageTimer: ReturnType<typeof setInterval> | undefined;
   private injected: Envelope | undefined; // the hub envelope that started the current turn, if any
+  private answering: Envelope[] = []; // everything delivered or steered into the current turn: who its answer is for
   private lastAnswer = "";
   private readonly deltas = new Map<string, string[]>();
   private primed = false;
@@ -146,6 +147,7 @@ export class CodexPeer extends BasePeer {
         resolve: (result) => {
           this.primed = true;
           this.injected = replyParent(envs);
+          this.answering = [...envs];
           const nativeTurn = typeof result?.turn?.id === "string" ? result.turn.id : undefined;
           if (deliveryId) {
             if (nativeTurn) this.addTurnDelivery(nativeTurn, deliveryId);
@@ -188,6 +190,7 @@ export class CodexPeer extends BasePeer {
           this.primed = true;
           // The turn now answers these too; the highest hop wins so a steer cannot reset the hop cap.
           this.injected = replyParent(this.injected ? [this.injected, ...envs] : envs);
+          this.answering.push(...envs);
           if (deliveryId) {
             this.addTurnDelivery(expectedTurnId, deliveryId);
             this.delivery({ id: deliveryId, state: "accepted" });
@@ -216,6 +219,7 @@ export class CodexPeer extends BasePeer {
     for (const id of this.unboundDeliveries) this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout" });
     this.turnDeliveries.clear(); this.unboundDeliveries.clear();
     this.injected = undefined;
+    this.answering = [];
     this.lastAnswer = "";
     this.abandonSteers("turn went silent");
     super.onWatchdog();
@@ -297,7 +301,15 @@ export class CodexPeer extends BasePeer {
     for (const ids of this.turnDeliveries.values()) for (const id of ids) this.delivery({ id, state: "needs_review", reason: "Codex TUI detached" });
     for (const id of this.unboundDeliveries) this.delivery({ id, state: "needs_review", reason: "Codex TUI detached" });
     this.turnDeliveries.clear(); this.unboundDeliveries.clear();
+    this.forgetTurn();
     this.setState("offline");
+  }
+
+  /** Nothing of an interrupted turn may address a later answer: a TUI that comes back starts its own. */
+  private forgetTurn(): void {
+    this.injected = undefined;
+    this.answering = [];
+    this.lastAnswer = "";
   }
 
   private fromTui(link: Link, raw: string): void {
@@ -329,6 +341,7 @@ export class CodexPeer extends BasePeer {
     this.link = link;
     this.threadId = threadId;
     this.activeTurns.clear();
+    this.forgetTurn();
     this.opts.log?.(`[${this.id}] thread ${threadId}`);
     this.setState("idle");
     this.readUsage();
@@ -385,11 +398,13 @@ export class CodexPeer extends BasePeer {
         this.turnDeliveries.delete(nativeTurn);
       }
       const inReplyTo = this.injected;
+      const to = replyAudience(this.answering);
       this.injected = undefined;
+      this.answering = [];
       this.deltas.clear();
-      // ponytail: the reply is addressed to the highest-hop sender only (newEnvelope's default). A digest that
-      // mixed senders answers the last of them; track the audience alongside `injected` if that starts to matter.
-      if (this.lastAnswer) this.onMessage?.(this.lastAnswer, inReplyTo ? { inReplyTo } : {});
+      // Addressed like every other adapter's answer (issue #3): each sender it answers, including one steered in;
+      // the bus maps a condensed delivery's `digest` back to the senders it replaced, a steer beside it or not.
+      if (this.lastAnswer) this.onMessage?.(this.lastAnswer, inReplyTo ? { inReplyTo, to } : {});
       this.lastAnswer = "";
       this.setState("idle");
     }
