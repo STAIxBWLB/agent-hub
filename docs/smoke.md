@@ -368,7 +368,7 @@ check: OK
 ```
 
 This gate covers type checking, bundle freshness, package contents and tests;
-it does not replace the live outcomes or unblock #11 and #1.
+it does not replace the live outcomes or unblock #11 (previous repository) and #1.
 
 ## Issue #11 default workflow retest (0.3.1)
 
