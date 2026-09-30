@@ -1,6 +1,6 @@
 # Changelog
 
-Issue and pull request numbers up to #80 refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten (numbers restart here).
+Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
 ## Unreleased
 
@@ -93,7 +93,7 @@ Issue and pull request numbers up to #80 refer to the previous repository, archi
 ## 0.4.1 (included in 0.5.0)
 
 - Synchronize the daemon digest integration fixture without changing batching semantics or weakening digest/FYI assertions (#15).
-- Reconcile completed live smoke and npm publication evidence; infrastructure-dependent checks remain tracked in #12.
+- Reconcile completed live smoke and npm publication evidence; infrastructure-dependent checks remain tracked in #1 (formerly #12).
 
 ## 0.4.0
 
