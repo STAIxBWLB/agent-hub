@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.7
+
 - `ahub setup` without a terminal and without `--yes` prints the step it would take and exits non-zero instead of waiting forever at its prompt, as `restart` and `upgrade` already did. A piped answer (`yes | ahub setup`) is no longer read: use `--yes` (#73).
 - The smoke ledger no longer names the internal gateway's address, and the package check fails when any published file contains a private IPv4 address, naming only the file and line (#74).
 - Kimi's requests for the hub's own tools (`hub_send`, the task tools) are approved once without a console prompt, as Codex's already were, so a Kimi nobody watches can claim work and record notes. Kimi 2.1.1 approval prompts for other tools show the command again: the payload falls back to the streamed argument JSON when the request carries none. A payload too long to show whole is marked as cut and no longer offers a session-wide grant, for every ACP agent (#72).
