@@ -1,5 +1,7 @@
 # Changelog
 
+Issue and pull request numbers up to #80 refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten (numbers restart here).
+
 ## Unreleased
 
 ## 0.7.7

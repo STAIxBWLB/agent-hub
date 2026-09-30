@@ -1,6 +1,6 @@
 # agent-hub design spec
 
-Date: 2026-09-19. Status: M1 to M5 merged; M6 implemented on `feat/m6-packaging-inference` (phase spec: issue #2 of the public repository). Version 0.1.0.
+Date: 2026-09-19. Status: M1 to M5 merged; M6 implemented on `feat/m6-packaging-inference` (phase spec: issue #2 of the first public repository, archived). Version 0.1.0.
 Owner: Young Joon Lee. Repo: STAIxBWLB/agent-hub.
 
 Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) or
