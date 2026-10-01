@@ -27,7 +27,7 @@ what the hub runs, which files it sends as credentials, where task text goes,
 or how far the local worker's sandbox reaches (`kimi_cmd`, `codex_bin`,
 `pi.cmd`, `checks`, `mlx.bin`, `mlx.runtimeDir`, `mlx.modelPath`, `omniroute.urls`,
 `omniroute.access_hosts`, the `omniroute` key files, `memory.worker_url`,
-`local.read_allow`, `local.bash_network`, `local.sandbox`) are machine-local:
+`local.read_allow`, `local.bash_network`, `local.network_allow`, `local.sandbox`) are machine-local:
 they apply only from a file git confirms nobody committed. Put them in
 `.agenthub/config.local.json` (`ahub init` adds it to `.gitignore`), which is
 read after `config.json`; outside a git repository they keep their defaults, and
@@ -39,9 +39,22 @@ the selected Xcode or Command Line Tools dir (`xcode-select -p`; for an Xcode
 app, its whole `Contents`, whose `SharedFrameworks` its tools load), write the
 project and a temp dir of their own (`TMPDIR`, made for each command and
 removed when it ends; one left by a hub crash, named `ahub-cmd-*`, goes with
-the OS temp cleanup), and nothing else; the shared temp dirs are closed. With `local.bash_network` on they may also
-read the public CA bundles and Python's `certifi/cacert.pem`, which the `*.pem`
-key deny would otherwise hide.
+the OS temp cleanup), and nothing else; the shared temp dirs are closed.
+
+Network is off unless `local.bash_network` says otherwise. With `true` it goes
+only through the hub's egress proxy on a loopback port (0.11): commands get
+`HTTPS_PROXY` and the other proxy variables, the proxy opens HTTPS (`CONNECT`,
+port 443 unless an entry names one) to the hosts in `local.network_allow`, and
+the profile denies every other connection, direct egress and other loopback
+ports (claude-mem's, the Codex app-server's) included. A listed name also
+covers its subdomains; a name that resolves to a loopback or private address is
+refused, and so is plain HTTP. Every refusal is a `network: refused` line in
+`hub.log`. The default list holds the npm, PyPI, crates.io and Go module
+registries and GitHub's code hosts; set `local.network_allow` in
+`config.local.json` to replace it. `"direct"` keeps the open network of 0.10 and
+earlier for one release. With network on, commands may also read the public CA
+bundles and Python's `certifi/cacert.pem`, which the `*.pem` key deny would
+otherwise hide.
 `"local": { "sandbox": "allow-default" }` in `config.local.json` brings back the
 profile of 0.9 and earlier for one release, should a toolchain need a path the
 new one lacks; please report it. Newly closed outside home: `/Applications`

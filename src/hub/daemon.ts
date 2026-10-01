@@ -14,7 +14,8 @@ import { PiPeer } from "../adapters/pi.ts";
 import { startModelRelay, type ModelRelay } from "../models/relay.ts";
 import type { MlxOptions } from "../models/mlx.ts";
 import { PiToolReceipts } from "../pi/tool-receipts.ts";
-import { profile } from "../local/sandbox.ts";
+import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
+import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
 import { runTool, TOOL_SCHEMAS, type ToolContext } from "../local/tools.ts";
 import { LocalPeer } from "../adapters/local-worker.ts";
 import { Capture, skipTools } from "../memory/capture.ts";
@@ -63,7 +64,8 @@ export interface HubConfig {
   pi: { enabled: boolean; auto_start: boolean; cmd: string[]; backend: "auto" | "dgx" | "mlx"; dgx_coding: string; dgx_fast: string; max_steps: number };
   mlx: Pick<MlxOptions, "provider" | "host" | "runtimeDir" | "modelPath" | "port" | "model" | "sourceModel" | "contextWindow" | "maxInputTokens" | "maxTokens" | "maxConcurrency">;
   /** `sandbox`: "deny-default" (issue #39), or "allow-default", the profile of 0.9 and earlier, kept for one release. */
-  local: { deny: string[]; bash_network: boolean; max_steps: number; read_allow: string[]; sandbox: "deny-default" | "allow-default" };
+  /** `bash_network`: true is network through the egress proxy to `network_allow` (#65); "direct" is everything, for one release. */
+  local: { deny: string[]; bash_network: boolean | "direct"; network_allow: string[]; max_steps: number; read_allow: string[]; sandbox: "deny-default" | "allow-default" };
   /** Pending permission requests: how long they wait, and whether the desktop is told (issue #5). */
   approvals: { timeout_s: number; notify: boolean };
   /** An owner offline this long loses its open tasks back to routing; 0 turns it off (issue #6). */
@@ -97,7 +99,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   omniroute: DEFAULT_OMNIROUTE,
   pi: { enabled: false, auto_start: false, cmd: ["pi"], backend: "auto", dgx_coding: "coding", dgx_fast: "fast", max_steps: 30 },
   mlx: { provider: "ollama", model: "agenthub-fast-mlx:4b-8k", sourceModel: "qwen3.5:4b-mlx", contextWindow: 8192, maxInputTokens: 6000, maxTokens: 2048, maxConcurrency: 1 },
-  local: { deny: [], bash_network: false, max_steps: 30, read_allow: [], sandbox: "deny-default" },
+  local: { deny: [], bash_network: false, network_allow: DEFAULT_NETWORK_ALLOW, max_steps: 30, read_allow: [], sandbox: "deny-default" },
   // Off here, so tests and a hub without a config file stay silent; a project's config defaults it on for macOS.
   approvals: { timeout_s: 120, notify: false },
   tasks: { release_after_min: 30 },
@@ -335,6 +337,16 @@ export async function startDaemon(opts: DaemonOptions) {
     return [k, fallback];
   })) as unknown as LimitsConfig;
   const limiter = new Limiter(limits);
+  // The local worker's and Pi's commands reach the network only through this proxy (issue #65); "direct" keeps the
+  // open network of 0.10 and earlier for one release, anything else means none.
+  let egress: EgressProxy | undefined;
+  if (config.local.bash_network === true) {
+    const allow = Array.isArray(config.local.network_allow) ? config.local.network_allow.filter((h): h is string => typeof h === "string") : DEFAULT_NETWORK_ALLOW;
+    egress = await startEgressProxy({ allow, log });
+    startupCleanup.push(() => void egress?.close());
+    log(`network: egress proxy on 127.0.0.1:${egress.port}, ${allow.length} allowed host(s) (local.network_allow)`);
+  }
+  const sandboxNetwork: SandboxNetwork = config.local.bash_network === "direct" ? true : egress ? { proxyPort: egress.port } : false;
   const admit = (env: Envelope, parent?: string): string | undefined => {
     // [FYI] is recorded and costs nobody a turn: nothing to limit.
     if (env.from === USER || env.from === HUB || env.from === DIGEST || env.priority === "fyi") return undefined;
@@ -1204,7 +1216,8 @@ export async function startDaemon(opts: DaemonOptions) {
       let piReply: Envelope | undefined;
       const ctx: ToolContext = {
         cwd: opts.cwd, deny: config.local.deny,
-        sandboxProfile: profile(opts.cwd, config.local.bash_network, config.local.read_allow, config.local.deny, config.local.sandbox === "allow-default" ? "allow" : "deny"),
+        sandboxProfile: profile(opts.cwd, sandboxNetwork, config.local.read_allow, config.local.deny, config.local.sandbox === "allow-default" ? "allow" : "deny"),
+        sandboxEnv: proxyEnv(sandboxNetwork),
         permit: (title) => onPermission({ peer: "pi", title, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] }).then((picked) => picked === "allow" && pi.acceptingTools && bus.peers.get("pi") === pi),
         send: (text, to) => {
           if (to?.some((id) => !bus.peers.has(id) && id !== USER)) return "error: unknown peer";
@@ -1295,7 +1308,7 @@ export async function startDaemon(opts: DaemonOptions) {
         omni,
         ...(sidecar && route ? { sidecar, route } : {}),
         fixedModel: args.model ?? routing.local.fixed_model,
-        tools: { deny: config.local.deny, bashNetwork: config.local.bash_network, readAllow: config.local.read_allow, sandbox: config.local.sandbox, permit },
+        tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, sandbox: config.local.sandbox, permit },
         ...(capture ? { capture } : {}),
         taskTool: (name, a, turn) => taskOp("local", name, a, true, turn.pii),
         turnPolicy: (envs) => tasks.turnPolicy(envs),
@@ -1760,6 +1773,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // logged and shutdown finishes anyway, or the process ignores SIGTERM forever.
       for (const exit of exits) if (exit.status === "rejected") log(`peer stop failed during shutdown: ${(exit.reason as Error)?.message ?? exit.reason}`);
       await modelRelay?.close();
+      await egress?.close();
       await piReceipts?.close();
       budget.close();
       board.close();

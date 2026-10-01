@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { renderDigest, replyAudience, replyParent, STANDING_INSTRUCTION, USER, type Envelope, type EnvelopeOpts, type PeerId } from "../hub/envelope.ts";
 import { TASK_TOOL_NAMES, TASK_TOOLS } from "../hub/hub-tools.ts";
 import { BasePeer } from "../hub/peers.ts";
-import { profile } from "../local/sandbox.ts";
+import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { runTool, TOOL_SCHEMAS, touchedPaths, type ToolContext } from "../local/tools.ts";
 import type { Capture } from "../memory/capture.ts";
 import type { ChatMessage, ChatResult, OmniRoute } from "../omniroute/client.ts";
@@ -17,7 +17,7 @@ export interface LocalOptions {
   route?: string;
   /** Model id sent straight to OmniRoute when the sidecar is absent, unhealthy or fails a call. */
   fixedModel: string;
-  tools: { deny: string[]; permit: ToolContext["permit"]; bashNetwork?: boolean; readAllow?: string[]; sandbox?: "deny-default" | "allow-default" };
+  tools: { deny: string[]; permit: ToolContext["permit"]; bashNetwork?: SandboxNetwork; readAllow?: string[]; sandbox?: "deny-default" | "allow-default" };
   capture?: Capture;
   /** Runs a hub task tool (hub_task_*, hub_review, hub_remember) as this peer. Absent = the tools are not offered. */
   taskTool?: (name: string, args: Record<string, unknown>, turn: { pii: boolean }) => Promise<string>;
@@ -165,6 +165,7 @@ export class LocalPeer extends BasePeer {
       deny: this.opts.tools.deny,
       permit: this.opts.tools.permit,
       sandboxProfile: this.sandboxProfile,
+      sandboxEnv: proxyEnv(this.opts.tools.bashNetwork ?? false),
       send: (text, to) => {
         const refused = this.onMessage?.(text, policy?.pii ? reply : { inReplyTo: replyParent(envs), to: to?.length ? to : replyAudience(envs) });
         if (typeof refused === "string") return `not sent: ${refused}`;

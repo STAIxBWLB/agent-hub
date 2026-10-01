@@ -1096,8 +1096,8 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   stores, the denylist, `.agenthub`, git hooks and config) are shared by both
   bases.
 - The issue's allowlist proxy for `local.bash_network` is not built here: with
-  the flag on, network is allowed as in 0.9 and earlier. It is left for a
-  follow-up issue.
+  the flag on, network is allowed as in 0.9 and earlier. Issue #65 builds it
+  (amendment below).
 - `local.sandbox` ("deny-default" | "allow-default") is machine-local, since
   "allow-default" widens the sandbox.
 - Capabilities: `propose`, `assign` (a proposal naming another peer as owner),
@@ -1109,4 +1109,21 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   name are logged.
   `important` is checked where messages are admitted, the others in the task
   operations, so in-process tools (the local worker, Pi) are covered too.
+
+## Amendment: egress proxy for the local worker (issue #65)
+
+- With `local.bash_network: true` the daemon runs an HTTP `CONNECT` proxy on a
+  loopback port for the hub run (`src/local/proxy.ts`, built-ins only). The
+  profile allows outbound network only to that port, looks up TLS trust but no
+  DNS (the proxy resolves), and commands get the proxy variables.
+- The proxy opens a tunnel only to a host in `local.network_allow`
+  (machine-local): a name also covers its subdomains, an address only itself,
+  port 443 unless an entry names one (`host:port`). A name that resolves to a
+  loopback, private, link-local or carrier-grade NAT address is refused; an
+  address is reached only when listed. Plain HTTP is refused. No TLS
+  interception. Each refusal is logged with the host only.
+- Decisions recorded in the issue: the default list holds the npm, Yarn, PyPI,
+  crates.io and Go module registries and GitHub's code hosts, so a project that
+  already had network on keeps installing packages; `"direct"` keeps the open
+  network of 0.10 and earlier for one release.
 
