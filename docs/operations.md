@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.7.11 and control protocol 10. Live verification
+This guide describes ahub 0.8.0 and control protocol 10. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Install and start
@@ -140,6 +140,9 @@ through a temporary index, so your index, HEAD and branches stay as they are. Th
 files a turn changed are the difference between its two snapshots, which counts
 changes made by shell commands as well as edits. The last 20 turns per peer are
 kept (`"snapshots": { "enabled": true, "keep": 20 }` in `.agenthub/config.json`).
+Snapshots are on in any project with a config file, including one written before
+0.8.0 without a `snapshots` block, and off without one; set `"enabled": false`
+to opt out.
 
 ```bash
 ahub turns                        # recent turns of every peer and the files each changed
@@ -299,8 +302,8 @@ source and carries every recovery fix released up to it. Protocol 8 and older
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.7.11 ahub upgrade --to 0.7.11 --dry-run
-bunx --package @staix/agent-hub@0.7.11 ahub upgrade --to 0.7.11 --yes
+bunx --package @staix/agent-hub@0.8.0 ahub upgrade --to 0.8.0 --dry-run
+bunx --package @staix/agent-hub@0.8.0 ahub upgrade --to 0.8.0 --yes
 ```
 
 | Running now | Coordinator to use |
@@ -322,19 +325,19 @@ The coordinator verifies and retains the exact target package, preserves its
 own source, and promotes the global CLI only after restored projects pass
 readback.
 
-Once the installed CLI is 0.7.11, review the current project or all registered
+Once the installed CLI is 0.8.0, review the current project or all registered
 projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.7.11 --dry-run
+ahub upgrade --to 0.8.0 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.7.11 --yes
+ahub upgrade --to 0.8.0 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>
