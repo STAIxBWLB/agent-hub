@@ -52,4 +52,7 @@ test("demotion: a peer demoted for the class goes behind the others, and the tra
   expect(a.owner).toBe("kimi");
   expect(a.trace).toContain("  demoted for implement: codex (2.5 recent failures)");
   expect(assign(t, { codex: "idle", kimi: "offline" }, routing, { demoted: { codex: 2.5 } }).owner).toBe("codex"); // still better than nobody
+  // local keeps its place ahead of the cloud peers only while it is not demoted
+  expect(assign(t, { local: "idle", codex: "idle", kimi: "idle" }, routing).owner).toBe("local");
+  expect(assign(t, { local: "idle", codex: "idle", kimi: "idle" }, routing, { demoted: { local: 3 } }).owner).toBe("codex");
 });

@@ -160,7 +160,7 @@ export function assign(
     return undefined;
   };
 
-  /** Quota that resets soonest gets used first: headroom per hour left in the window. */
+  /** Quota that resets soonest gets used first: headroom per hour left in the window, at least 15 min (a task assigned that close to a reset mostly runs after it). */
   const drain = (p: PeerId): number | undefined => {
     const q = opts.quota?.[p];
     return q?.resetsAt === undefined ? undefined : q.headroom / Math.max((q.resetsAt - (opts.now ?? 0)) / 3_600_000, 0.25);
@@ -191,7 +191,8 @@ export function assign(
       if (!why) ok.push(peer);
     }
     const ranked = rank(ok, role);
-    const localTier = ranked.filter((p) => p === LOCAL || p === PI);
+    // Demotion applies to local and Pi too: a demoted one loses its place ahead of the cloud peers.
+    const localTier = ranked.filter((p) => (p === LOCAL || p === PI) && !(role === "owner" && opts.demoted?.[p]));
     if (localTier.length) return localTier.find((p) => states[p] === "idle") ?? localTier[0]; // local/Pi stays ahead of an idle cloud peer
     return ranked.find((p) => states[p] === "idle") ?? ranked[0];
   };

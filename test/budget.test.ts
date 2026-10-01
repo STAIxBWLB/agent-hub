@@ -260,13 +260,32 @@ test("wait or hand off: a reset within wait_max_min keeps the work, urgent tasks
   expect(soon.log).toContain("! budget: codex keeps its work and waits 10 min for its reset (wait_max_min 30)");
   const late = await run(120);
   expect(late.urgentOnly).toEqual([false]);
-  expect(late.reason).toBe("5h window at 95% (test)");
+  expect(late.reason).toBe("5h window at 95% (test); handed over: resets in 120 min, beyond wait_max_min 30");
 });
 
-test("headroom: the most used fresh window decides, the soonest reset is reported, stale readings say nothing", async () => {
+test("a wait is undone when the reset moves past wait_max_min: the next tick hands the work over in full", async () => {
+  const urgentOnly: boolean[] = [];
+  const s = setup({ handoff: async (_p, _ctx, only) => (urgentOnly.push(only), only ? [{ id: 1, title: "#1 hotfix", to: "kimi", role: "owner" }] : [{ id: 2, title: "#2 normal", to: "kimi", role: "owner" }]) }, undefined, { ...DEFAULT_BUDGET, wait_max_min: 30 });
+  s.budget.report("codex", [{ id: "5h", used: 0.95, resetsAt: s.clock.now + 10 * MIN, source: "test" }, { id: "week", used: 0.5, resetsAt: s.clock.now + 4200 * MIN, source: "test" }]);
+  await s.settle();
+  expect(urgentOnly).toEqual([true]);
+  // the shared account keeps going: the week window crosses the gate while codex waits
+  s.budget.report("codex", [{ id: "week", used: 0.92, resetsAt: s.clock.now + 4200 * MIN, source: "test" }]);
+  await s.settle();
+  expect(s.log).toContain("! budget: codex's reset moved to 4200 min, beyond wait_max_min 30: its work is handed over");
+  s.budget.tick();
+  await s.settle();
+  expect(urgentOnly).toEqual([true, false]);
+  const paused = s.budget.status().codex!.paused!;
+  expect(paused.reason).toBe("5h window at 95% (test); waited, then the reset moved to 4200 min, beyond wait_max_min 30");
+  expect(s.budget.record("codex")!.moved.map((m) => m.id)).toEqual([1, 2]); // both handoffs are on the record
+});
+
+test("headroom: the most used fresh window decides, with its own reset; stale readings say nothing", async () => {
   const { budget, clock } = setup();
   budget.report("codex", [{ id: "5h", used: 0.3, resetsAt: clock.now + 60 * MIN, source: "t" }, { id: "week", used: 0.6, resetsAt: clock.now + 3000 * MIN, source: "t" }]);
-  expect(budget.headroom()).toEqual({ codex: { headroom: 0.4, resetsAt: clock.now + 60 * MIN } });
+  // the week window bounds the headroom, and the 5 h reset gives none of it back
+  expect(budget.headroom()).toEqual({ codex: { headroom: 0.4, resetsAt: clock.now + 3000 * MIN } });
   clock.now += 31 * MIN; // past stale_min
   expect(budget.headroom()).toEqual({});
 });

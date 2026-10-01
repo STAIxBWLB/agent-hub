@@ -1,6 +1,6 @@
 import type { Briefs } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
-import { CLASSES, PLAN_KEYS, type Board, type Task, type TaskClass, type TaskPlan, type TaskRefs } from "./board.ts";
+import { CLASSES, OUTCOMES_KEPT_MS, PLAN_KEYS, type Board, type Task, type TaskClass, type TaskPlan, type TaskRefs } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import { assign, detectSignals, LOCAL, PI, type Assignment, type Routing } from "./routing.ts";
@@ -112,14 +112,14 @@ export class Tasks {
   /** Decayed failure weights of the peers demoted for a class: failures count half after a day (issue #36). */
   demoted(cls: TaskClass, now = Date.now()): Record<PeerId, number> {
     const sums = new Map<PeerId, { bad: number; good: number }>();
-    for (const o of this.d.board.outcomes(cls, now - 7 * DEMOTION_HALF_LIFE_MS)) {
+    for (const o of this.d.board.outcomes(cls, now - OUTCOMES_KEPT_MS)) {
       const w = 0.5 ** ((now - o.at) / DEMOTION_HALF_LIFE_MS);
       const s = sums.get(o.peer) ?? { bad: 0, good: 0 };
       if (o.ok) s.good += w;
       else s.bad += w;
       sums.set(o.peer, s);
     }
-    return Object.fromEntries([...sums].filter(([, s]) => s.bad >= DEMOTE_AT && s.bad >= s.good).map(([p, s]) => [p, s.bad]));
+    return Object.fromEntries([...sums].filter(([, s]) => s.bad >= DEMOTE_AT && s.bad > s.good).map(([p, s]) => [p, s.bad]));
   }
 
   /** What assignment weighs besides states and policy: quota and demotion. */
@@ -492,6 +492,7 @@ export class Tasks {
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`);
     this.tellCompleted(next, summary);
     if (!reviewer) {
+      if (next.owner) this.d.board.recordOutcome(next.owner, next.class, true); // approved without a review is a success too
       this.d.notify(`task ${this.publicTitle(next)} done by ${by}, no reviewer: approved`);
       await this.releaseDependents(next);
     }
@@ -569,7 +570,8 @@ export class Tasks {
     const list = this.d.routing().classes[task.class]?.escalate_to ?? [];
     if (task.state === "changes_requested") task = this.d.board.update(task.id, HUB, "reopened", { state: "in_progress" });
     const from = task.owner;
-    // The hub escalates after repeated changes_requested, each already counted; an escalation by hand counts on its own.
+    // The hub's own escalations are not counted: after repeated changes_requested each one already was, and after a
+    // Pi inference failure the backend failed, not the work. An escalation by hand counts on its own.
     if (from && by !== HUB) this.d.board.recordOutcome(from, task.class, false);
     const next = await this.assignOwner(task, by, { candidates: list, event: "escalated", note: `${why}; from ${from ?? "none"}`, context: why });
     if (next.owner && next.owner !== from) {
@@ -603,7 +605,7 @@ export class Tasks {
         moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner, role: "owner" });
       } else if (task.reviewer === peer && task.state !== "approved") {
         // No owner candidates: only the reviewer is wanted, and it must be neither the paused peer nor the task's owner.
-        const a = assign(task, this.states(), routing, { exclude: [peer], candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}) });
+        const a = assign(task, this.states(), routing, { exclude: [peer], candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}), ...this.weights(task.class) });
         const reviewer = a.reviewer && a.reviewer !== peer && a.reviewer !== task.owner ? a.reviewer : null;
         const next = this.d.board.update(task.id, HUB, "reviewer changed", { reviewer }, `budget pause of ${peer}`);
         moved.push({ id: task.id, title: this.publicTitle(task), to: reviewer, role: "reviewer" });

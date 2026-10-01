@@ -259,17 +259,21 @@ a pause or handoff.
 Quota also shapes routing and handoffs:
 
 - Among peers a task could go to, those with quota readings are ordered by
-  headroom per hour left until their soonest reset, so the window that resets
-  first is used first. Peers without readings, such as `local` and `pi`, keep
+  headroom per hour left until the reset of the window that bounds it (the most
+  used one, so a week window near its cap is not mistaken for a 5 h window about
+  to reset), so the window that resets first is used first. Peers without readings, such as `local` and `pi`, keep
   their place in `routing.toml`. `ahub route explain` shows the reordering.
-- When a paused peer's window resets within `budget.wait_max_min` (30 unless
-  `.agenthub/config.json` says otherwise, `0` always hands over), it keeps its work and only tasks proposed
-  with `urgent` (`ahub task propose ... --urgent`) move. `ahub budget` shows the
-  decision in the pause reason.
+- When a paused peer's window resets within `budget.wait_max_min` (30 once the
+  project has `.agenthub/config.json` or `config.local.json`, 0 without one; `0`
+  always hands over), it keeps its work and only tasks proposed with `urgent`
+  (`ahub task propose ... --urgent`) move. If the reset moves past the limit
+  while it waits (a week window crosses the gate), its work is handed over after
+  all. `ahub budget` shows each decision and why in the pause reason.
 - A peer whose recent failures in a class (failed checks, changes requested,
   escalations by hand) reach 1.5 after decay, and outweigh its recent
-  approvals there, goes behind the other candidates for that class. A failure
-  counts half after a day. `ahub route explain` names demoted peers.
+  approvals there (a task without a reviewer counts when done), goes behind the
+  other candidates in the same state for that class, `local` and `pi` included.
+  A failure counts half after a day. `ahub route explain` names demoted peers.
 
 ## Durable delivery and queue resolution
 

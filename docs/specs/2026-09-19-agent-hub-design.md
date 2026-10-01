@@ -972,19 +972,25 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
 
 ## Amendment: quota-aware routing, wait or hand off, demotion (issue #36)
 
-- `assign()` stays pure: quota (headroom and soonest reset per peer, from
-  `Budget.headroom()` over fresh readings), the clock and the demotion weights are
-  inputs. Demoted peers go behind the others (owner role only); within each
-  group, peers with readings swap places by headroom per hour to reset, and peers
-  without readings keep their configured place.
+- `assign()` stays pure: quota (per peer, the headroom of the most used fresh
+  window and that window's reset, from `Budget.headroom()`), the clock and the
+  demotion weights are inputs. Demoted peers go behind the others (owner role
+  only; local and Pi lose their place ahead of the cloud peers too); within each
+  group, peers with readings swap places by headroom per hour to reset (at least
+  15 min), and peers without readings keep their configured place. Idle still
+  comes before busy, so demotion orders peers in the same state.
 - Wait or hand off is decided at handoff time from the pause record's reset:
   within `budget.wait_max_min` the handoff moves only tasks whose signals include
   `urgent` (set by `hub_task_propose {urgent: true}`), and the pause reason says
-  so. `DEFAULT_BUDGET` has it off, like approvals.notify; any project config turns it
+  so; beyond it the reason says the work was handed over and why. A wait is
+  undone when a later reading moves the reset past the limit: the record is
+  unmarked and the next tick hands over the rest, keeping both lists of moved
+  tasks. `DEFAULT_BUDGET` has it off, like approvals.notify; any project config turns it
   on at 30 unless it sets another value.
-- Outcomes (`peer`, `class`, ok, time) are recorded in hub.db: approved counts
-  for the owner; changes requested, a failed check and an escalation by hand
-  count against it (the hub's own escalation after repeated changes requested is
-  not counted twice). Demotion: decayed failures reach 1.5 and outweigh decayed
+- Outcomes (`peer`, `class`, ok, time) are recorded in hub.db and kept a week:
+  approved counts for the owner, by review or done without a reviewer; changes
+  requested, a failed check and an escalation by hand count against it (the
+  hub's own escalations are not counted: after repeated changes requested each
+  one already was, and after a Pi inference failure the backend failed). Demotion: decayed failures reach 1.5 and outweigh decayed
   successes, half-life one day, fixed constants for now.
 

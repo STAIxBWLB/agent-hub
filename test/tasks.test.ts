@@ -920,6 +920,15 @@ test("repeated failures in a class demote a peer there; the effect decays and su
   expect(tasks.demoted("test", now)).toEqual({});
   for (let i = 0; i < 3; i++) board.recordOutcome("codex", "implement", true, now);
   expect(tasks.demoted("implement", now)).toEqual({});
+  // failures have to outweigh successes: a tie is no demotion
+  board.recordOutcome("kimi", "test", false, now);
+  board.recordOutcome("kimi", "test", false, now);
+  board.recordOutcome("kimi", "test", true, now);
+  board.recordOutcome("kimi", "test", true, now);
+  expect(tasks.demoted("test", now)).toEqual({});
+  // nothing older than the week demotion reads is kept
+  board.recordOutcome("kimi", "test", true, now + 8 * 86_400_000);
+  expect(board.outcomes("test", 0)).toHaveLength(1);
 });
 
 test("verdicts are recorded as outcomes of the owner: changes requested and a failed check count against, approval for", async () => {
@@ -930,6 +939,11 @@ test("verdicts are recorded as outcomes of the owner: changes requested and a fa
   await tasks.done("codex", t.id, "again");
   await tasks.review("claude", t.id, "approved");
   expect(board.outcomes("implement", 0).map((o) => `${o.peer}:${o.ok}`)).toEqual(["codex:0", "codex:1"]);
+  // a class without a reviewer is approved when done, and that counts for the owner too
+  const r = await tasks.propose("claude", { title: "z", class: "review", owner: "codex" });
+  await tasks.done("codex", r.id, "reviewed");
+  expect(board.get(r.id)!.state).toBe("approved");
+  expect(board.outcomes("review", 0).map((o) => `${o.peer}:${o.ok}`)).toEqual(["codex:1"]);
 });
 
 test("waiting out a short reset moves only urgent work", async () => {
