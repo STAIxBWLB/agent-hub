@@ -2,6 +2,42 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## Approval race live reproduction and candidate verification (#98)
+
+Measured on 2026-10-02 KST with installed 0.12.1 and the correction candidate,
+using real Kimi 2.1.1 and Pi 0.86.0 in disposable git projects:
+
+- Pi requested an edit of only `PI_MARKER`, and its allow-once approval waited.
+  Kimi changed the separate `KIMI_MARKER` line. Approving Pi restored the old
+  Kimi value (`pending`) while retaining `pi-live`. The hub emitted one concurrent
+  conflict event with both turn ids, so conflict detection worked while the tool
+  still overwrote unrelated current contents.
+- The candidate repeated the same real-agent interleaving and kept both
+  `kimi-live` and `pi-live`. One concurrent conflict was recorded, and Kimi's
+  reviewer role produced an actual `pi:accepted -> pi:done -> kimi:approved`
+  task history. This is the runtime fix included in 0.12.2.
+- Regression checks cover a fragment changed while approval waits and write/edit
+  paths changed into out-of-project symlinks during approval. Existing approval
+  denial and initial exact-match checks remain intact.
+- The same live acceptance session used real Codex 0.159.3 (reply `pong`, no hub
+  negative RPC ids leaked), the real local worker, and real Switchyard routes.
+  Controlled gateway 503s verified escalation, three-exhausted-delivery routing
+  exclusion, recovery after a completed delivery, and a post-write needs-review
+  hold with one notice and explicit resolution. Idle model/route replacements and
+  busy refusal were observed; doctor flagged an unserved fixed model.
+- Pi native session usage independently totalled 36,390 tokens, exactly matching
+  hub events. A candidate session's complete native and hub totals also matched
+  at 100,940 tokens. Real Kimi submitted a 1,430-character checkpoint summary and
+  handed open work to Pi after a controlled 95% reading.
+- The real Codex weekly reading was 2%, so natural near-limit pause remains
+  unverified (issue #1). The injected 95% empty-work check spent zero extra
+  checkpoint turns; it is separate evidence from the natural provider leg.
+
+The gateway outages, response barriers and manual quota readings were controlled
+fault inputs. Native/model replies were verified against files, task history,
+events and native session usage. Disposable test hubs were stopped and removed
+from the registry; credentials and raw conversations remain outside the ledger.
+
 ## Reliability and self-development run (#89-#95, 0.12.1)
 
 Measured on 2026-10-01 in an isolated worktree of this repository:

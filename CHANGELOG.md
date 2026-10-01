@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## 0.12.2
+
+- An edit approved after another peer changed the file now applies its fragment replacement to current contents. It rechecks that the old fragment still matches exactly once and refuses a stale match. Both write and edit revalidate their paths after approval, so a path replaced with an escaping symlink during the wait is refused (#98).
+
 ## 0.12.1
 
 - Exhausted task deliveries escalate with the last error and notify the console. Three consecutive exhausted deliveries exclude a peer from routing until a delivery completes. A local worker validates its gateway, model inventory and a minimal availability call before attaching; doctor flags an unserved fixed model (#89).
