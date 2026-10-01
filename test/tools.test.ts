@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { profile, sandboxAvailable, sandboxedExec } from "../src/local/sandbox.ts";
@@ -231,10 +231,21 @@ test.skipIf(!sandboxAvailable())("network on: the public CA bundle is readable d
 });
 
 test.skipIf(!sandboxAvailable())("the selected developer dir is in the profile, so the /usr/bin shims can run what it holds", () => {
-  const dev = Bun.spawnSync(["xcode-select", "-p"], { stdout: "pipe" }).stdout.toString().trim();
+  const selected = Bun.spawnSync(["xcode-select", "-p"], { stdout: "pipe" }).stdout.toString().trim();
+  const dev = selected && existsSync(selected) ? realpathSync(selected) : "";
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-devdir-")));
-  if (dev) expect(profile(cwd, false)).toContain(dev);
+  // for an Xcode app, its whole Contents: the tools load SharedFrameworks next to Developer
+  const app = /^(.*\.app\/Contents)\/Developer\/?$/.exec(dev)?.[1];
+  if (dev) expect(profile(cwd, false)).toContain(`(subpath "${app ?? dev}")`);
 });
+
+// Apple's python3 is an xcrun shim: with a full Xcode selected it loads Xcode's SharedFrameworks (issue #63, macOS CI).
+// Its first run can take seconds, hence a test of its own with room for that.
+test.skipIf(!sandboxAvailable() || Bun.spawnSync(["/usr/bin/python3", "-c", "pass"]).exitCode !== 0)("deny-default: Apple's python3 runs and takes the command's own temp dir", async () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-python3-")));
+  const py = (await sandboxedExec(["/bin/sh", "-c", `echo "own=$TMPDIR"; /usr/bin/python3 -c 'import tempfile; print("py=" + tempfile.gettempdir())'`], { cwd, profile: profile(cwd, false) })).output;
+  expect(py).toContain(`py=${py.match(/own=(\S+)/)![1]!.replace(/\/$/, "")}`);
+}, 30_000);
 
 // issue #64: Python's own CA bundle (certifi, also vendored by pip) is readable with network on, like the system's.
 test.skipIf(!sandboxAvailable())("network on: a certifi cacert.pem is readable, other .pem files are not", async () => {
@@ -252,4 +263,31 @@ test.skipIf(!sandboxAvailable())("network on: a certifi cacert.pem is readable, 
   mkdirSync(state, { recursive: true });
   writeFileSync(join(state, "cacert.pem"), "secret\n");
   expect(await read(join(state, "cacert.pem"), true)).toBe("blocked");
+});
+
+// issue #63: each command gets a temp dir of its own; the shared ones are closed under deny-default.
+test.skipIf(!sandboxAvailable())("a command cannot read what other processes left in the shared temp dirs, and its own temp dir goes when it ends", async () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-owntmp-")));
+  const shared = join(tmpdir(), `agenthub-left-${process.pid}.txt`);
+  const tmp = `/private/tmp/agenthub-left-${process.pid}.txt`;
+  writeFileSync(shared, "LEFT_BY_ANOTHER_TOOL");
+  writeFileSync(tmp, "LEFT_IN_PRIVATE_TMP");
+  try {
+    const run = (command: string, timeoutMs?: number) => sandboxedExec(["/bin/sh", "-c", command], { cwd, profile: profile(cwd, false), ...(timeoutMs ? { timeoutMs } : {}) });
+    const out = (await run(`cat '${shared}' '${tmp}' 2>&1; echo "own=$TMPDIR"; echo hi > "$TMPDIR/x" && cat "$TMPDIR/x"`)).output;
+    expect(out).not.toContain("LEFT_BY_ANOTHER_TOOL");
+    expect(out).not.toContain("LEFT_IN_PRIVATE_TMP");
+    expect(out).toContain("hi"); // its own temp dir works
+    const own = out.match(/own=(\S+)/)![1]!;
+    expect(own).not.toBe(`${realpathSync(tmpdir())}/`);
+    expect(existsSync(own)).toBe(false); // removed when the command ended
+    const slow = (await run(`echo "own=$TMPDIR"; sleep 5`, 300)).output;
+    expect(existsSync(slow.match(/own=(\S+)/)![1]!)).toBe(false); // also after a timeout
+    const locked = (await run(`echo "own=$TMPDIR"; touch "$TMPDIR/locked" && chflags uchg "$TMPDIR/locked" && echo LOCKED`)).output;
+    expect(locked).toContain("LOCKED"); // the command could make a file the plain remove cannot delete
+    expect(existsSync(locked.match(/own=(\S+)/)![1]!)).toBe(false); // and the command still ended, its temp dir gone
+  } finally {
+    rmSync(shared, { force: true });
+    rmSync(tmp, { force: true });
+  }
 });

@@ -1085,7 +1085,9 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   (`/usr`, `/bin`, `/sbin`, `/System`, `/Library`, `/opt`, `/private/etc`, the
   dyld and timezone databases), the toolchain directories in home, `read_allow`,
   the project, its external git dirs, the selected developer dir (`xcode-select
-  -p`) and temp; writes as before; a short list of mach services (directory
+  -p`) and a temp dir made for each command (issue #63; the shared user temp
+  dir and `/private/tmp` are not open); writes to the project, its git dirs and
+  that temp dir; a short list of mach services (directory
   lookups, logging, notifications), plus name resolution and TLS trust when
   network is on, the trust being the public CA bundles allowed by exact path
   after the denies (the `*.pem` key deny matches them), and any path ending in
