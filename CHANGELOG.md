@@ -2,15 +2,14 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
-## Unreleased
-
 ## 0.9.0
 
 - Early conflict detection: in a git work tree, a turn that changes a file another owner's open task changed earlier warns both owners (and the console, and `events.jsonl`), once per file and task, marked concurrent when another peer worked meanwhile. `ahub check-path` and the PreToolUse hook template `templates/claude-hooks.json` give Claude the same warning before an edit, without blocking it (#32).
 - Task dependencies: `hub_task_propose` takes `after: [ids]`; a task waits, offered to nobody and not claimable, until those are approved, then goes through assignment (a task the hub stopped before offering is offered once it runs again). `hub_task_list {ready: true}` and `ahub board --ready` show the ready queue, and existing boards gain the column on open (#34).
-- Quota-aware routing: candidates with quota readings are ordered by headroom per hour to their reset, so the window that resets first is drained first; a paused peer whose window resets within `budget.wait_max_min` (30 with a project config) keeps its work unless a task is `urgent`; and a peer whose recent failures in a class outweigh its approvals there is demoted for that class, with a one-day half-life. `ahub route explain` shows both (#36).
+- Quota-aware routing: candidates with quota readings are ordered by headroom per hour to their reset, so the window that resets first is drained first; a paused peer whose window resets within `budget.wait_max_min` (30 with a project config) keeps its work unless a task is `urgent`; and a peer whose recent failures in a class outweigh its approvals there is demoted for that class, with a one-day half-life. `ahub route explain` shows both, and `ahub task propose ... --urgent` marks a task urgent (#36).
 - Per-sender limits on what agents send: token buckets per sender, per recipient and for `[IMPORTANT]`, plus dropping the same text to the same recipients, answering the same message, within a window. A refused `hub_send` answers with the reason and the seconds to wait; a turn answer over the important budget goes out as status, and one over a rate limit is dropped, the agent hearing why with its next delivery. `[FYI]` and the console user are never limited (#38).
-- An upgrade or controlled restart waits for completion checks and console task operations still in flight; one that finished after the commit used to leave the operation blocked at verification, unable to resume or abort (#50).
+- An upgrade or controlled restart from a 0.9.0 or later source waits for completion checks and console task operations still in flight; one that finished after the commit used to leave the operation blocked at verification, unable to resume or abort. A 0.8.x source cannot report them: wait for its checks by hand before upgrading (see the operations guide) (#50).
+- Upgrading a running 0.8.x hub with tasks on its board verifies the board although 0.9.0 adds the `deps` column, like 0.8.1 did for `plan` (#50).
 - Turn snapshots no longer miss an edit that keeps a file's size and lands in the second git last wrote the index: the snapshot's copy of the index now keeps the original's time, which git's racy-entry check compares against in whole seconds. A missed edit could leave a file out of `ahub undo`, let undo restore over another agent's later change, or skip an early conflict warning (#60).
 
 ## 0.8.1

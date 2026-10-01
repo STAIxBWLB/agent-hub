@@ -434,7 +434,17 @@ ahub recovery abort <operation-id>
 The coordinator commits only once the source is quiet: no turn running, no
 approval pending, no completion check queued or running. It waits up to 10
 minutes and then aborts, leaving the source running; upgrade between long
-checks.
+checks. A 0.8.x or older source does not report completion checks or console
+task commands in flight, so the coordinator cannot wait for them: before
+`--yes`, wait until `hub.log` shows the result of every check it reported as
+queued or running, and no `ahub task` command is still running. A check the
+commit's stop kills writes to the board after verification has read it, and
+the operation stays blocked.
+
+0.9.0 turns on for every project with a config file, whether or not it has the
+block: `limits` (12 messages a minute per sender, 6 per recipient, 6
+`[IMPORTANT]` an hour, 120 s repeats) and `budget.wait_max_min` (30). Set them
+to 0 to opt out.
 
 The 0.7.0 transition stages the verified package and runs a retained
 coordinator from the source tree. It accepts a verified protocol-9 source and
