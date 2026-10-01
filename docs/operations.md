@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.11.0 and control protocol 10. Live verification
+This guide describes ahub 0.12.0 and control protocol 10. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Install and start
@@ -63,8 +63,8 @@ doctor` say so. With network on, commands may also read the public CA
 bundles and Python's `certifi/cacert.pem`, which the `*.pem` key deny would
 otherwise hide.
 The allow-default profile of 0.9 and earlier was removed in 0.12.0: a
-`local.sandbox` setting is ignored, with a note in `hub.log` and `ahub doctor`,
-and a toolchain the profile lacks goes in `local.read_allow`. Newly closed outside home: `/Applications`
+`local.sandbox` setting is ignored (`"allow-default"` with a note in `hub.log`
+and `ahub doctor`), and a toolchain the profile lacks goes in `local.read_allow`. Newly closed outside home: `/Applications`
 (an app's bundled CLI), `/nix`, `/Volumes` and `/Users/Shared`. A toolchain
 there, or elsewhere in your home (a CI tool cache, a version manager the profile
 does not list), needs its directory in `local.read_allow`, for example
@@ -449,8 +449,8 @@ source and carries every recovery fix released up to it. Protocol 8 and older
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.11.0 ahub upgrade --to 0.11.0 --dry-run
-bunx --package @staix/agent-hub@0.11.0 ahub upgrade --to 0.11.0 --yes
+bunx --package @staix/agent-hub@0.12.0 ahub upgrade --to 0.12.0 --dry-run
+bunx --package @staix/agent-hub@0.12.0 ahub upgrade --to 0.12.0 --yes
 ```
 
 | Running now | Coordinator to use |
@@ -473,28 +473,29 @@ no blocker, and `--yes` stops at staging ("target protocol requires a newer
 coordinator") with an operation left to clear by `ahub recovery abort <id>`. An
 older 0.7.x CLI may lack recovery fixes released after it. The
 [smoke ledger](smoke.md) records dry-runs from real 0.6.4 and 0.7.5 hubs (issue
-#75) and these applied upgrades: one with the 0.7.0 coordinator, one with the
-0.9.0 coordinator from a running 0.8.1 hub with tasks and a budget pause, and
-one with the 0.10.0 coordinator from a 0.9.0 hub with one completion check
-running and one queued.
+#75) and these applied upgrades: one with the 0.7.0 coordinator; one with the
+0.9.0 coordinator from a running 0.8.1 hub with tasks and a budget pause; one
+with the 0.10.0 coordinator from a 0.9.0 hub (one completion check running and
+one queued); and one with the 0.11.0 coordinator from a 0.10.0 hub with
+`local.bash_network` on.
 
 The coordinator verifies and retains the exact target package, preserves its
 own source, and promotes the global CLI only after restored projects pass
 readback.
 
-Once the installed CLI is 0.11.0, review the current project or all registered
+Once the installed CLI is 0.12.0, review the current project or all registered
 projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.11.0 --dry-run
+ahub upgrade --to 0.12.0 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.11.0 --yes
+ahub upgrade --to 0.12.0 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>

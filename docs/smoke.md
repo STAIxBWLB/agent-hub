@@ -964,3 +964,30 @@ was attached. Times are UTC.
   check.
 - The coordinator promoted the global CLI to 0.10.0, and `ahub setup --yes`
   installed the 0.10.0 plugin.
+
+## 0.10.0 to 0.11.0 attended upgrade (2026-10-01)
+
+A scratch project (a git work tree initialized by the 0.10.0 `ahub init`) ran a
+0.10.0 hub with `"local": { "bash_network": true }` in
+`.agenthub/config.local.json`, two tasks (#1 with the path spelled `./a.txt`),
+and an open budget pause: a peer had attached once and gone offline, and `ahub
+budget set` fed it a 95% reading. No peer was attached at the upgrade. Times are
+UTC, from `hub.log` and the operation record.
+
+- 0.11.0 was published at 08:43:45 (the registry's `time` field); a
+  cache-busting registry read, observed at the console at 08:43:58, showed it
+  as `latest`. `bunx --package @staix/agent-hub@0.11.0 ahub
+  upgrade --to 0.11.0 --dry-run` then listed one project, source 0.10.0, protocol
+  10, no blockers.
+- `--yes` created the operation at 08:44:19.4. The source committed at 08:44:19.5
+  and stopped; the 0.11.0 hub started its egress proxy (13 allowed hosts) at
+  08:44:19.7, found the pause still open with its reset time, and was up at
+  08:44:19.7. The operation, global install and plugin install included,
+  completed at 08:44:27.7.
+- The tasks' refs and history and the pause row's columns, dumped with `sqlite3`
+  before and after (the latter once the 0.11.0 hub was up), were byte-identical: #1 still reads `./a.txt` (0.11.0 normalizes paths only on new
+  writes).
+- Through the proxy, `curl` reached registry.npmjs.org (200, observed at the
+  console: the proxy logs no successes) and was refused example.com, logged as `network: refused example.com:443 (example.com:443 is
+  not in local.network_allow)`.
+- After `ahub setup --yes`, `claude plugin list` showed the 0.11.0 plugin.
