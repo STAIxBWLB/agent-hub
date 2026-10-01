@@ -124,6 +124,40 @@ ahub export --since 24h         # the raw events as JSON lines, for your own ana
 `ahub report` counts the same overlap warnings as `scripts/overlaps.ts`, from the
 structured events instead of log lines.
 
+## Turns and undo
+
+In a git work tree the hub snapshots the tracked and unignored files when a peer
+turns busy and again when it stops. The snapshots are git tree objects written
+through a temporary index, so your index, HEAD and branches stay as they are. The
+files a turn changed are the difference between its two snapshots, which counts
+changes made by shell commands as well as edits. The last 20 turns per peer are
+kept (`"snapshots": { "enabled": true, "keep": 20 }` in `.agenthub/config.json`).
+
+```bash
+ahub turns                        # recent turns of every peer and the files each changed
+ahub turns codex --limit 5
+ahub undo <turn>                  # lists what it would restore; changes nothing
+ahub undo <turn> --yes            # puts those files back as they were when the turn started
+ahub undo <turn> --yes --context  # Codex's latest turn: also drop it from Codex's conversation
+```
+
+- `ahub undo` refuses, naming the files, when any file the turn changed has
+  changed again since the turn ended, by another peer or by you: restoring it
+  would lose that work. Nothing is restored then.
+- A file the turn created is deleted; a file it deleted comes back.
+- Undo while the peers are idle: a change made during another peer's turn counts
+  as part of that turn.
+- `--context` asks Codex (`thread/revert`) to drop the turn, and every later one,
+  from its conversation history before the files are restored. It changes no
+  file itself, works only on Codex's latest recorded turn while Codex is idle,
+  and is logged in hub.log.
+- Claude's turns are not recorded: its channel shows the hub no turn boundary.
+  Claude Code's own checkpoints cover its edits, though not its shell commands.
+- The snapshots are unreferenced objects in the repository's own object store, so
+  `git gc` prunes them after `gc.pruneExpire` (two weeks by default); undoing an
+  older turn says so.
+- Each `turn_end` event carries `files` and `snapshotMs` (`ahub export`).
+
 ## Approvals and pauses
 
 Inspect permission requests in the terminal:

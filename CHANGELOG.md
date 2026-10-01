@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Per-turn snapshots and undo: in a git work tree the hub snapshots the files at each turn boundary, `ahub turns` lists the files each turn changed (shell-made changes included), and `ahub undo <turn>` restores them, refusing any file that changed again since; `--context` also drops a Codex turn from its conversation (#33).
 - Structured telemetry: the hub writes `events.jsonl` (envelopes without bodies, peer states, turns with per-turn tokens for Kimi and Codex, board changes, overlaps, quota readings), and `ahub export` and `ahub report` read it (#40).
 
 ## 0.7.11

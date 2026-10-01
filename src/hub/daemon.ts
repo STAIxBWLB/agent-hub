@@ -41,6 +41,7 @@ import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
 import { MemoryClient, workerUrl } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { projectChain, recallFor } from "../memory/recall.ts";
+import { changedPaths, repoOf, snapshot, Turns } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 
 export interface HubConfig {
@@ -64,6 +65,8 @@ export interface HubConfig {
   tasks: { release_after_min: number };
   /** A command per task class run when the owner marks the task done, and its timeout (issue #7). */
   checks: { timeout_s: number; [cls: string]: string | number };
+  /** A git tree at each turn boundary for `ahub turns` and `ahub undo`, the last `keep` per peer (issue #33). */
+  snapshots: { enabled: boolean; keep: number };
   /** Machine-local fields a config file set but git could not vouch for, and why (issue #17). */
   ignored?: string[];
 }
@@ -86,6 +89,8 @@ export const DEFAULT_CONFIG: HubConfig = {
   approvals: { timeout_s: 120, notify: false },
   tasks: { release_after_min: 30 },
   checks: { timeout_s: 600 },
+  // Off here like approvals.notify, so tests (whose cwd is this repository) write no objects; a project's config turns it on.
+  snapshots: { enabled: false, keep: 20 },
 };
 
 export { stateDirFor };
@@ -96,7 +101,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = ["config.json", "config.local.json"] as const;
-const CONFIG_BLOCKS = ["memory", "roles", "budget", "inference", "omniroute", "local", "pi", "approvals", "tasks", "checks", "mlx"];
+const CONFIG_BLOCKS = ["memory", "roles", "budget", "inference", "omniroute", "local", "pi", "approvals", "tasks", "checks", "snapshots", "mlx"];
 
 export function loadConfig(cwd: string): HubConfig {
   const ignored: string[] = [];
@@ -139,6 +144,7 @@ export function loadConfig(cwd: string): HubConfig {
     },
     tasks: { ...DEFAULT_CONFIG.tasks, ...file.tasks },
     checks: { ...DEFAULT_CONFIG.checks, ...file.checks },
+    snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
     mlx,
     ...(ignored.length ? { ignored } : {}),
   };
@@ -433,7 +439,24 @@ export async function startDaemon(opts: DaemonOptions) {
   // Turns and their tokens for telemetry (issue #40). Turn ids carry the hub run, so they stay unique across restarts.
   const runId = Date.now().toString(36);
   let turnSeq = 0;
-  const turns = new Map<PeerId, { id: string; start: number; tokens: number }>();
+  const turns = new Map<PeerId, { id: string; start: number; tokens: number; tree?: string; snapshotMs?: number }>();
+  // Per-turn snapshots (issue #33): a git tree at both turn boundaries, recorded in hub.db for `ahub turns` and `ahub undo`.
+  const repo = config.snapshots.enabled ? repoOf(opts.cwd) : undefined;
+  if (config.snapshots.enabled && !repo) log("snapshots: the project is not in a git work tree, so turns are not recorded");
+  const turnLog = repo ? new Turns(join(opts.stateDir, "hub.db")) : undefined;
+  if (turnLog) startupCleanup.push(() => turnLog.close());
+  /** A snapshot that fails costs the undo record of that turn and nothing else: delivery never waits on it. */
+  const snap = (what: string): { tree?: string; ms: number } => {
+    const t0 = performance.now();
+    let tree: string | undefined;
+    try {
+      tree = repo && snapshot(repo);
+      if (repo && !tree) log(`snapshot failed at ${what}`);
+    } catch (error) {
+      log(`snapshot failed at ${what}: ${(error as Error).message}`);
+    }
+    return { tree, ms: Math.round(performance.now() - t0) };
+  };
   const delta = tokenDeltas();
   /** Tokens a peer used, as increments: Kimi reports a session total (turned into increments below), Codex increments. */
   const addTokens = (peer: PeerId, n: number): number => {
@@ -537,6 +560,18 @@ export async function startDaemon(opts: DaemonOptions) {
         return line(await tasks.escalate(USER, a.id));
       case "route_explain":
         return tasks.explain(a.id !== undefined ? Number(a.id) : { title: String(a.title ?? ""), class: a.class as TaskClass }).join("\n");
+      case "turn_revert": {
+        // `ahub undo --context` (issue #33): the conversation half of an undo; the CLI restores the files itself.
+        const turn = turnLog?.get(String(a.turn));
+        if (!turn) throw new Error(`no turn ${a.turn} recorded`);
+        if (turn.peer !== "codex" || !turn.native) throw new Error(`turn ${turn.id} has no Codex conversation turn to revert`);
+        if (turnLog!.latest("codex")?.id !== turn.id) throw new Error(`turn ${turn.id} is not Codex's latest turn; reverting it would drop the later ones too`);
+        const codex = bus.peers.get("codex");
+        if (!(codex instanceof CodexPeer)) throw new Error("codex is not attached");
+        await codex.revert(turn.native);
+        log(`turn_revert ${turn.id}: Codex conversation reverted to before ${turn.native}`);
+        return `Codex's conversation no longer holds turn ${turn.id}`;
+      }
     }
     throw new Error(`unknown task operation ${op}`);
   }
@@ -694,11 +729,22 @@ export async function startDaemon(opts: DaemonOptions) {
       const busy = (bus.peers.get(e.peer)?.state ?? e.state) === "busy";
       if (busy && !open) {
         const id = `${e.peer}#${runId}.${++turnSeq}`;
-        turns.set(e.peer, { id, start: Date.now(), tokens: 0 });
+        const start = turnLog ? snap(`the start of ${id}`) : undefined; // before the peer is handed anything: the tap runs inside setState
+        try { turnLog?.begin(id, e.peer, start?.tree); } catch (error) { log(`turn record ${id}: ${(error as Error).message}`); }
+        turns.set(e.peer, { id, start: Date.now(), tokens: 0, ...(start ? { tree: start.tree, snapshotMs: start.ms } : {}) });
         event({ type: "turn_start", peer: e.peer, turn: id });
       } else if (!busy && open) {
         turns.delete(e.peer);
-        event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...(open.tokens ? { tokens: open.tokens } : {}) });
+        let files: number | undefined;
+        let snapshotMs = open.snapshotMs;
+        if (turnLog) {
+          const end = snap(`the end of ${open.id}`);
+          const changed = open.tree && end.tree ? changedPaths(repo!.top, open.tree, end.tree) : [];
+          files = changed.length;
+          snapshotMs = (snapshotMs ?? 0) + end.ms;
+          try { turnLog.end(open.id, end.tree, changed, Math.max(1, Number(config.snapshots.keep) || 20)); } catch (error) { log(`turn record ${open.id}: ${(error as Error).message}`); }
+        }
+        event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}) });
       }
       if (e.state === "offline") offlineSince.set(e.peer, offlineSince.get(e.peer) ?? Date.now());
       else offlineSince.delete(e.peer);
@@ -873,6 +919,10 @@ export async function startDaemon(opts: DaemonOptions) {
     if (peer === "codex") {
       const codex = new CodexPeer("codex", {
         onTokens: (added) => void addTokens("codex", added),
+        onTurn: (native) => {
+          const open = turns.get("codex");
+          if (open) turnLog?.native(open.id, native);
+        },
         appPort: opts.codexAppPort,
         proxyPort: opts.codexProxyPort,
         bin: config.codex_bin,
@@ -1459,6 +1509,7 @@ export async function startDaemon(opts: DaemonOptions) {
       await piReceipts?.close();
       budget.close();
       board.close();
+      turnLog?.close();
       server.stop(true);
       try { bus.closeJournal(); } catch { /* the state dir is gone; the journal went with it */ }
     } finally {

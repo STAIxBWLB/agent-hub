@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
@@ -24,8 +24,8 @@ const until = async (cond: () => boolean, what = "condition") => {
   if (!cond()) throw new Error(`timed out waiting for ${what}`);
 };
 
-async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[] } = {}) {
-  const { memoryUrl, modelUrl, approvals, checks, ignored, ...rest } = extra;
+async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots } = {}) {
+  const { memoryUrl, modelUrl, approvals, checks, ignored, snapshots, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
     cwd: ROOT,
@@ -42,6 +42,7 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?:
       ...(approvals ? { approvals } : {}),
       ...(checks ? { checks } : {}),
       ...(ignored ? { ignored } : {}),
+      ...(snapshots ? { snapshots } : {}),
     },
     permissionTimeoutMs: 200,
     ...rest,
@@ -987,4 +988,62 @@ test("telemetry: pausing a busy peer does not split its turn, and sizes are UTF-
   expect(events.filter((e) => e.type === "state" && e.peer === "slow").map((e) => (e as { state: string }).state)).toContain("paused");
   const sent = events.find((e) => e.type === "envelope" && e.from === "user" && e.to?.includes("slow")) as { bytes: number };
   expect(sent.bytes).toBe(Buffer.byteLength("héllo 안녕"));
+});
+
+// issue #33: a turn's files are known from snapshots, not from tool events, so a shell-made change counts too.
+test("snapshots: a turn records what it changed, and ahub undo restores it unless the file changed since", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-snaprepo-")));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...a: string[]) => Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@localhost", ...a]);
+  git("init", "-q");
+  writeFileSync(join(dir, "a.txt"), "one\n");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const { stateDir, daemon, console_ } = await hub({ cwd: dir, snapshots: { enabled: true, keep: 20 } });
+  class Editor extends BasePeer {
+    async start() { this.setState("idle"); }
+    async deliver() {
+      this.setState("busy");
+      writeFileSync(join(dir, "a.txt"), "edited\n"); // what a shell command does: no tool event says so
+      writeFileSync(join(dir, "made.txt"), "new\n");
+      setTimeout(() => this.setState("idle"), 5);
+    }
+    async stop() { this.setState("offline"); }
+  }
+  const editor = new Editor("editor");
+  daemon.bus.add(editor);
+  await editor.start();
+  expect((await console_.request({ t: "send", body: "edit please", to: ["editor"] })).ok).toBe(true);
+  const file = join(stateDir, "events.jsonl");
+  await until(() => readEvents(file).some((e) => e.type === "turn_end" && e.peer === "editor"), "the editor's turn");
+  const ended = readEvents(file).find((e) => e.type === "turn_end" && e.peer === "editor") as { files?: number; snapshotMs?: number };
+  expect(ended.files).toBe(2);
+  expect(ended.snapshotMs).toBeGreaterThanOrEqual(0);
+
+  // Async: the hub runs in this process, and a blocking spawn would keep it from answering the CLI.
+  const cli = async (...a: string[]) => {
+    const p = Bun.spawn([process.execPath, join(ROOT, "src/cli/main.js"), ...a], { cwd: dir, env: { ...process.env, AGENTHUB_STATE_DIR: stateDir }, stdout: "pipe", stderr: "pipe" });
+    const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    return { code, out, err };
+  };
+  const listed = await cli("turns", "editor");
+  expect(listed.out).toContain("2 files: a.txt, made.txt");
+  const turn = listed.out.split(/\s/)[0]!;
+  expect((await cli("undo", turn)).out).toContain("add --yes"); // a dry run by default
+  expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("edited\n");
+  writeFileSync(join(dir, "a.txt"), "somebody else's work\n");
+  const refused = await cli("undo", turn, "--yes");
+  expect(refused.code).toBe(1);
+  expect(refused.err).toContain("a.txt");
+  expect(existsSync(join(dir, "made.txt"))).toBe(true); // nothing was touched
+  writeFileSync(join(dir, "a.txt"), "edited\n");
+  const noContext = await cli("undo", turn, "--yes", "--context"); // the conversation half goes first, so a refusal leaves the files
+  expect(noContext.code).toBe(1);
+  expect(noContext.err).toContain("no Codex conversation turn");
+  expect(existsSync(join(dir, "made.txt"))).toBe(true);
+  const undone = await cli("undo", turn, "--yes");
+  expect(undone.code).toBe(0);
+  expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("one\n");
+  expect(existsSync(join(dir, "made.txt"))).toBe(false);
+  expect(git("status", "--porcelain").stdout.toString()).toBe(""); // back to the committed state, index untouched
 });

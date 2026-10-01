@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { CodexPeer } from "../src/adapters/codex-appserver.ts";
+import { CodexPeer, type CodexOptions } from "../src/adapters/codex-appserver.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { DIGEST, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { startFakeAppServer } from "./fakes/app-server.ts";
@@ -13,12 +13,12 @@ const until = async (cond: () => boolean) => {
   expect(cond()).toBe(true);
 };
 
-async function setup(turnMs?: number, condense?: (envs: Envelope[]) => Promise<Envelope[]>, onTokens?: (total: number) => void) {
+async function setup(turnMs?: number, condense?: (envs: Envelope[]) => Promise<Envelope[]>, extra: Partial<CodexOptions> = {}) {
   const fake = startFakeAppServer(turnMs);
   const bus = new Bus({ batchMs: 0, ...(condense ? { condense } : {}) });
   const said: Envelope[] = [];
   bus.tap((e) => e.t === "envelope" && e.env.from === "codex" && said.push(e.env));
-  const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: fake.url, cwd: process.cwd(), ...(onTokens ? { onTokens } : {}) });
+  const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: fake.url, cwd: process.cwd(), ...extra });
   bus.add(peer);
   await peer.start();
   cleanup.push(fake.stop, () => peer.stop());
@@ -30,7 +30,7 @@ async function setup(turnMs?: number, condense?: (envs: Envelope[]) => Promise<E
   await new Promise((r) => (tui.onopen = r));
   cleanup.push(() => tui.close());
   tui.send(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "fake-tui" } } }));
-  return { bus, peer, said, tui, seen };
+  return { bus, peer, said, tui, seen, fake };
 }
 
 test("offline until the TUI starts a thread, then idle", async () => {
@@ -275,7 +275,7 @@ test("a TUI that detaches mid-turn and comes back does not answer the old turn's
 // issue #40: Codex reports a running thread total per turn; the adapter passes it on for telemetry.
 test("tokens are the thread total's growth: a fresh thread counts from zero, a resumed one from its replayed total, compaction adds none", async () => {
   const added: number[] = [];
-  const { bus, peer, tui } = await setup(undefined, undefined, (n) => added.push(n));
+  const { bus, peer, tui } = await setup(undefined, undefined, { onTokens: (n) => added.push(n) });
   tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
   await until(() => peer.state === "idle");
   bus.publish(newEnvelope("user", "one", { to: ["codex"] }));
@@ -292,4 +292,28 @@ test("tokens are the thread total's growth: a fresh thread counts from zero, a r
   bus.publish(newEnvelope("user", "three", { to: ["codex"] }));
   await until(() => added.length === 3);
   expect(added).toEqual([100, 100, 100]);
+});
+
+// issue #33: the hub learns each native turn id, and `ahub undo --context` reverts the conversation through the TUI's link.
+test("native turn ids reach onTurn, and revert drops a turn from the thread without reaching the TUI as a response", async () => {
+  const native: string[] = [];
+  const { bus, peer, tui, seen, fake } = await setup(undefined, undefined, { onTurn: (id) => native.push(id) });
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => peer.state === "idle");
+  bus.publish(newEnvelope("user", "one", { to: ["codex"] }));
+  await until(() => native.length === 1 && peer.state === "idle");
+  expect(native).toEqual(["turn1"]);
+  await peer.revert("turn1");
+  expect(fake.reverted).toEqual([{ threadId: "th1", beforeTurnId: "turn1" }]);
+  await until(() => seen.some((m) => m.method === "thread/reverted")); // the TUI hears about it
+  expect(seen.some((m) => typeof m.id === "number" && m.id < 0)).toBe(false);
+});
+
+test("revert is refused while a turn runs", async () => {
+  const { bus, peer, tui } = await setup(200);
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => peer.state === "idle");
+  bus.publish(newEnvelope("user", "busy now", { to: ["codex"] }));
+  await until(() => peer.state === "busy");
+  await expect(peer.revert("turn1")).rejects.toThrow("not idle");
 });

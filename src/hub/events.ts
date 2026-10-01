@@ -12,7 +12,7 @@ export type HubEvent =
   | { type: "overflow" | "undeliverable"; id: string; from: string; peer: string }
   | { type: "state"; peer: string; state: string }
   | { type: "turn_start"; peer: string; turn: string }
-  | { type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number }
+  | { type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number }
   | { type: "tokens"; peer: string; n: number }
   | { type: "task"; id: number; event: string; by: string; state: string; owner: string | null; reviewer: string | null; class: string; pii: boolean }
   | { type: "overlap"; task: number; owner: string; others: { task: number; owner: string; paths: string[] }[] }

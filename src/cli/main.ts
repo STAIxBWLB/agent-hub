@@ -30,6 +30,7 @@ import { setupOllamaModel } from "./models-setup.ts";
 import { backendLine, peerLine, type BackendRow, type PeerRow } from "./status-lines.ts";
 import { parseSince, readEvents } from "../hub/events.ts";
 import { formatReport, summarize } from "../hub/report.ts";
+import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 
 /** `--since 7d|24h|<iso>` for export and report; everything when absent. */
 const since = (): number => {
@@ -85,6 +86,9 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub status | logs [-f] | doctor | kill
   ahub export [--since 7d|<iso>]  structured events (events.jsonl) as JSON lines; never message bodies
   ahub report [--since 7d|<iso>] [--json]  turns, tokens, messages, overlaps and task events per period
+  ahub turns [peer] [--limit N]  recent turns and the files each changed (a git work tree only)
+  ahub undo <turn> [--yes] [--context]  put back the files a turn changed; refuses files changed since.
+                               Without --yes it only lists them; --context also drops a Codex turn from its conversation
   ahub doctor --orphans [--kill]  list registrations whose project root is gone; --kill stops their
                                daemons (SIGTERM, then SIGKILL) only after the process identity checks out`;
 
@@ -293,6 +297,22 @@ async function taskOp(op: string, a: Record<string, unknown>): Promise<string> {
 }
 
 /** `--flag value` pairs pulled out of an argument list; the rest keeps its order. */
+/** Reads hub.db's turn records; `none` when the hub never kept one (snapshots off, no git work tree, an older hub). */
+function turnRecords<T>(read: (turns: Turns) => T, none: T): T {
+  const db = join(stateDir, "hub.db");
+  if (!existsSync(db)) return none;
+  let turns: Turns | undefined;
+  try {
+    turns = new Turns(db, true);
+    return read(turns);
+  } catch (error) {
+    if (/no such table/.test((error as Error).message)) return none;
+    throw error;
+  } finally {
+    turns?.close();
+  }
+}
+
 function takeFlags(argv: string[], single: string[], repeated: string[]) {
   const one: Record<string, string> = {};
   const many: Record<string, string[]> = {};
@@ -735,6 +755,31 @@ const commands: Record<string, () => Promise<void> | void> = {
   report: () => {
     const r = summarize(readEvents(join(stateDir, "events.jsonl"), since()));
     console.log(args.includes("--json") ? JSON.stringify(r, null, 2) : formatReport(r).join("\n"));
+  },
+  turns: () => {
+    const { one, rest } = takeFlags(args, ["--limit"], []);
+    const rows = turnRecords((t) => t.list(rest[0], Number(one["--limit"]) || 20), []);
+    if (!rows.length) return console.log("no turns recorded (they need a git work tree and snapshots.enabled)");
+    for (const r of rows) {
+      const files = r.changed.length ? `: ${r.changed.slice(0, 5).join(", ")}${r.changed.length > 5 ? ", ..." : ""}` : "";
+      console.log(`${r.id}  ${new Date(r.started).toLocaleString()}${r.ended ? "" : " (running)"}  ${r.changed.length} files${files}`);
+    }
+  },
+  undo: async () => {
+    const id = args.find((a) => !a.startsWith("--")) ?? fail("usage: ahub undo <turn> [--yes] [--context]");
+    const turn = turnRecords((t) => t.get(id), undefined) ?? fail(`no turn ${id} recorded (ahub turns lists them)`);
+    if (!turn.ended) fail(`turn ${id} is still running`);
+    const { start_tree: startTree, end_tree: endTree } = turn;
+    if (!startTree || !endTree) fail(`turn ${id} has no snapshot to restore from (see hub.log)`);
+    const top = repoOf(cwd)?.top ?? fail(`${cwd} is not in a git work tree`);
+    if (!hasTree(top, startTree) || !hasTree(top, endTree)) fail(`turn ${id}'s snapshots are gone from the git object store (git gc prunes them after two weeks)`);
+    const plan = planUndo(top, { start_tree: startTree, end_tree: endTree, changed: turn.changed });
+    if (plan.conflicts.length) fail(`refusing to undo ${id}: these files changed again after it ended, and restoring them would lose that work:\n  ${plan.conflicts.join("\n  ")}`);
+    console.log(plan.restore.length ? `turn ${id} changed:\n  ${plan.restore.join("\n  ")}` : `turn ${id} changed no files`);
+    if (!args.includes("--yes")) return console.log("nothing was changed; add --yes to restore these files");
+    if (args.includes("--context")) console.log(await taskOp("turn_revert", { turn: id }));
+    restore(top, startTree, plan.restore);
+    if (plan.restore.length) console.log(`restored to their state before ${id}`);
   },
 
   kill: async () => {

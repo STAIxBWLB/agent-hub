@@ -860,3 +860,24 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
 - Not in schema 1: per-delivery events and delivery-journal transitions, which
   the issue's design listed. `ahub queue list` and hub.log keep them; a later
   schema version can add them without changing the meaning of a field.
+
+## Amendment: per-turn snapshots and undo (issue #33)
+
+- Backend: git tree objects only, written through a copy of the index
+  (`GIT_INDEX_FILE`) with `add -A` minus `.agenthub/state`, then `write-tree`. The
+  user's index, HEAD and refs are untouched. The issue's APFS `clonefile` and
+  reflink backends were not built: on this repository a snapshot takes 17 ms
+  (median) and a three-file turn adds 68 KiB of loose objects, and git objects
+  already deduplicate unchanged files.
+- Snapshots are taken inside the state transition, before the peer is handed its
+  prompt. Turn records (`turns` table in hub.db) keep the last `snapshots.keep`
+  per peer. `DEFAULT_CONFIG` has snapshots off, like approvals.notify; a project
+  config turns them on.
+- `ahub undo` refuses the whole turn when any of its files changed since it
+  ended (a file-by-file partial undo would leave a mixed state).
+- Codex: the method is `thread/revert {threadId, beforeTurnId}` (codex-cli
+  0.156.1; there is no `thread/rollback`). It changes conversation history only.
+  The CLI asks for it with `--context` (off by default) through the console task
+  op `turn_revert`, a new op name on an existing message shape.
+- Claude's turns are not recorded: the channel has no turn boundary.
+

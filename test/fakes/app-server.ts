@@ -6,6 +6,7 @@ export function startFakeAppServer(delayMs = 30) {
   let active = false;
   let activeTurnId = "";
   let steered: string[] = [];
+  const reverted: { threadId: string; beforeTurnId: string }[] = [];
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -27,6 +28,11 @@ export function startFakeAppServer(delayMs = 30) {
           return note("thread/tokenUsage/updated", { threadId: msg.params.threadId, turnId: "old", tokenUsage: { total: usage(threadTotal), last: usage(800) } });
         }
         if (msg.method === "account/rateLimits/read") return reply({ rateLimits: { primary: { usedPercent: 93, windowDurationMins: 300, resetsAt: 1_900_000_000 }, secondary: null } });
+        if (msg.method === "thread/revert") {
+          reverted.push(msg.params);
+          reply({ thread: { id: msg.params.threadId, turns: [] }, itemsBackwardsCursor: null, turnsBackwardsCursor: null });
+          return note("thread/reverted", { threadId: msg.params.threadId });
+        }
         if (msg.method === "turn/steer") {
           if (!active || msg.params.expectedTurnId !== activeTurnId) {
             return void ws.send(JSON.stringify({ id: msg.id, error: { code: -32000, message: "no active turn to steer" } }));
@@ -69,5 +75,5 @@ export function startFakeAppServer(delayMs = 30) {
       },
     },
   });
-  return { url: `ws://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
+  return { url: `ws://127.0.0.1:${server.port}`, stop: () => server.stop(true), reverted };
 }

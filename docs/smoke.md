@@ -847,3 +847,13 @@ the claim overlap warnings (0.7.6 and later), then the owner decides in issue #8
 | Week of | Warnings | Task pairs | Pairs with a conflicting edit | Notes |
 |---|---|---|---|---|
 | 2026-09-28 | 0 | 0 | 0 | baseline counted on 2026-09-30 over every registered project; the issue #68 live run's project was already removed |
+
+## Per-turn snapshots (issue #33, 2026-10-01)
+
+- AC1, measured on a clone of this repository (156 tracked files; Apple M5 Max,
+  git 2.55.0) with 10 turns that each change three files: a snapshot takes 16.8 ms
+  median, 47.6 ms max; each turn adds 68 KiB of loose objects. A turn that changes
+  nothing writes no objects.
+- Live leg, pending: `ahub undo <turn> --yes --context` against a real Codex TUI,
+  checking that the TUI drops the reverted turn from its view on `thread/reverted`.
+
