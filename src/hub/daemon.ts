@@ -673,11 +673,21 @@ export async function startDaemon(opts: DaemonOptions) {
     return [id, row];
   }));
   const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-  const integrity = () => {
+  // `prePlan`: the board as a hub from before the plan column (#31, 0.8.0) digested it. An empty plan is left out, so an
+  // upgrade from such a hub still verifies the board it was handed; a real plan never matches that shape.
+  const integrity = (prePlan = false) => {
     const queues = Object.fromEntries(Object.keys(bus.snapshot().queues).sort().map((id) => [id, bus.queueIds(id)]));
-    const boardState = board.list().sort((a, b) => a.id - b.id);
+    const tasks = board.list().sort((a, b) => a.id - b.id);
+    const boardState = prePlan ? tasks.map(({ plan, ...t }) => (plan && Object.keys(plan).length ? { ...t, plan } : t)) : tasks;
     const budgetState = budget.persistedPauseDigestRows().sort((a, b) => a.peer.localeCompare(b.peer));
     return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState) };
+  };
+  /** The integrity in the shape `expected` was recorded in: the current one unless only the pre-plan shape matches. */
+  const integrityAs = (expected: unknown) => {
+    const now = integrity();
+    if (!expected || JSON.stringify(expected) === JSON.stringify(now)) return now;
+    const old = integrity(true);
+    return JSON.stringify(expected) === JSON.stringify(old) ? old : now;
   };
   const status = () => ({
     projectId,
@@ -1200,7 +1210,7 @@ export async function startDaemon(opts: DaemonOptions) {
       ...([...bus.peers].filter(([, peer]) => peer.state === "busy").map(([id]) => `${id} is busy`)),
       ...(permissions.size ? ["pending approvals"] : []),
     ],
-    integrity: { current: integrity(), ...(restored?.integrity ? { expected: restored.integrity } : {}) },
+    integrity: { current: integrityAs(restored?.integrity), ...(restored?.integrity ? { expected: restored.integrity } : {}) },
     peers: Object.fromEntries([...(recoveryPeerSnapshot ?? []), ...Object.values(recoveryPeers()).filter((peer) => !(recoveryPeerSnapshot ?? []).some((saved) => saved.id === peer.id))].map((peer) => {
       const now = recoveryPeers()[peer.id];
       if (recoveryPhase === "restored" || recoveryPhase === "released") return [peer.id, now ?? { id: peer.id, state: "offline", queueIds: bus.queueIds(peer.id) }];
@@ -1298,7 +1308,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const missing = (recoveryPeerSnapshot ?? []).filter((saved) => saved.state !== "offline" && !manualPaused.has(saved.id) && !budget.record(saved.id) && (!current[saved.id] || current[saved.id]!.state === "offline"));
       if (missing.length) return recoveryError(`required peers are not attached: ${missing.map((peer) => peer.id).join(", ")}`);
       if (!recoveryReady()) return recoveryError("required peers or approvals are not ready");
-      if (!restored?.integrity || JSON.stringify(restored.integrity) !== JSON.stringify(integrity())) {
+      if (!restored?.integrity || JSON.stringify(restored.integrity) !== JSON.stringify(integrityAs(restored.integrity))) {
         return recoveryError("queue, pause, task board or budget integrity changed during recovery");
       }
       archiveRestartSnapshot(opts.stateDir, op);
