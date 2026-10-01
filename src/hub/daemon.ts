@@ -63,9 +63,8 @@ export interface HubConfig {
   omniroute: OmniRouteConfig;
   pi: { enabled: boolean; auto_start: boolean; cmd: string[]; backend: "auto" | "dgx" | "mlx"; dgx_coding: string; dgx_fast: string; max_steps: number };
   mlx: Pick<MlxOptions, "provider" | "host" | "runtimeDir" | "modelPath" | "port" | "model" | "sourceModel" | "contextWindow" | "maxInputTokens" | "maxTokens" | "maxConcurrency">;
-  /** `sandbox`: "deny-default" (issue #39), or "allow-default", the profile of 0.9 and earlier, kept for one release. */
-  /** `bash_network`: true is network through the egress proxy to `network_allow` (#65); "direct" is everything, for one release. */
-  local: { deny: string[]; bash_network: boolean | "direct"; network_allow: string[]; max_steps: number; read_allow: string[]; sandbox: "deny-default" | "allow-default" };
+  /** `bash_network`: true is network through the egress proxy to `network_allow` (#65); "direct" is everything, until 0.13.0 (#83). */
+  local: { deny: string[]; bash_network: boolean | "direct"; network_allow: string[]; max_steps: number; read_allow: string[] };
   /** Pending permission requests: how long they wait, and whether the desktop is told (issue #5). */
   approvals: { timeout_s: number; notify: boolean };
   /** An owner offline this long loses its open tasks back to routing; 0 turns it off (issue #6). */
@@ -84,6 +83,8 @@ export interface HubConfig {
   capabilities: Record<string, string[]>;
   /** Machine-local fields a config file set but git could not vouch for, and why (issue #17). */
   ignored?: string[];
+  /** Settings that were removed or are about to be (issue #83): what each does now, for `hub.log` and `ahub doctor`. */
+  retired?: string[];
 }
 export const DEFAULT_CONFIG: HubConfig = {
   watchdog_ms: DEFAULT_WATCHDOG_MS,
@@ -99,7 +100,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   omniroute: DEFAULT_OMNIROUTE,
   pi: { enabled: false, auto_start: false, cmd: ["pi"], backend: "auto", dgx_coding: "coding", dgx_fast: "fast", max_steps: 30 },
   mlx: { provider: "ollama", model: "agenthub-fast-mlx:4b-8k", sourceModel: "qwen3.5:4b-mlx", contextWindow: 8192, maxInputTokens: 6000, maxTokens: 2048, maxConcurrency: 1 },
-  local: { deny: [], bash_network: false, network_allow: DEFAULT_NETWORK_ALLOW, max_steps: 30, read_allow: [], sandbox: "deny-default" },
+  local: { deny: [], bash_network: false, network_allow: DEFAULT_NETWORK_ALLOW, max_steps: 30, read_allow: [] },
   // Off here, so tests and a hub without a config file stay silent; a project's config defaults it on for macOS.
   approvals: { timeout_s: 120, notify: false },
   tasks: { release_after_min: 30 },
@@ -139,6 +140,16 @@ export function loadConfig(cwd: string): HubConfig {
   if (!files.length) return DEFAULT_CONFIG;
   const file = files.reduce((a, b) => ({ ...a, ...b, ...Object.fromEntries(CONFIG_BLOCKS.filter((k) => a[k] !== undefined && b[k] !== undefined).map((k) => [k, { ...a[k], ...b[k] }])) }));
   delete file.ignored; // the hub's own record, never a file's
+  delete file.retired;
+  // Escape hatches with a stated end (issue #83). A removed one is ignored, never an error: an old config.local.json
+  // must not stop a hub from starting.
+  const retired: string[] = [];
+  if (file.local?.sandbox !== undefined) {
+    if (file.local.sandbox === "allow-default") retired.push('local.sandbox "allow-default" was removed in 0.12.0: the deny-default sandbox applies (local.read_allow adds paths)');
+    file.local = { ...file.local };
+    delete file.local.sandbox;
+  }
+  if (file.local?.bash_network === "direct") retired.push('local.bash_network "direct" (the open network) goes in 0.13.0: set it to true and list the hosts in local.network_allow');
   if (file.mlx != null && (typeof file.mlx !== "object" || Array.isArray(file.mlx))) throw new Error("mlx configuration must be an object");
   if (file.mlx?.provider !== undefined && !["ollama", "legacy"].includes(file.mlx.provider)) throw new Error("mlx.provider must be ollama or legacy");
   if (file.mlx?.provider === undefined && (file.mlx?.modelPath || file.mlx?.runtimeDir || file.mlx?.bin || file.mlx?.port)) {
@@ -170,6 +181,7 @@ export function loadConfig(cwd: string): HubConfig {
     capabilities: { ...file.capabilities },
     mlx,
     ...(ignored.length ? { ignored } : {}),
+    ...(retired.length ? { retired } : {}),
   };
 }
 
@@ -338,7 +350,7 @@ export async function startDaemon(opts: DaemonOptions) {
   })) as unknown as LimitsConfig;
   const limiter = new Limiter(limits);
   // The local worker's and Pi's commands reach the network only through this proxy (issue #65); "direct" keeps the
-  // open network of 0.10 and earlier for one release, anything else means none.
+  // open network of 0.10 and earlier until 0.13.0 (issue #83), anything else means none.
   let egress: EgressProxy | undefined;
   if (config.local.bash_network === true) {
     const allow = Array.isArray(config.local.network_allow) ? config.local.network_allow.filter((h): h is string => typeof h === "string") : DEFAULT_NETWORK_ALLOW;
@@ -435,6 +447,7 @@ export async function startDaemon(opts: DaemonOptions) {
   if (strayChecks.length) log(`checks ignored for ${strayChecks.join(", ")}: not a task class with a command (classes: ${CLASSES.join(", ")})`);
   // Commands and the other machine-local fields came only from a file git vouched for (loadConfig, issue #17).
   for (const line of config.ignored ?? []) log(`${line}; only a config file nobody committed may set it`);
+  for (const line of config.retired ?? []) log(`config: ${line}`);
   const checksAllowed = Object.keys(checkCommands).length > 0;
   const checkTimeoutS = typeof config.checks.timeout_s === "number" && config.checks.timeout_s >= 1 ? Math.min(config.checks.timeout_s, 3600) : 600;
   const runningChecks = new Set<() => void>();
@@ -1216,7 +1229,7 @@ export async function startDaemon(opts: DaemonOptions) {
       let piReply: Envelope | undefined;
       const ctx: ToolContext = {
         cwd: opts.cwd, deny: config.local.deny,
-        sandboxProfile: profile(opts.cwd, sandboxNetwork, config.local.read_allow, config.local.deny, config.local.sandbox === "allow-default" ? "allow" : "deny"),
+        sandboxProfile: profile(opts.cwd, sandboxNetwork, config.local.read_allow, config.local.deny),
         sandboxEnv: proxyEnv(sandboxNetwork),
         permit: (title) => onPermission({ peer: "pi", title, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] }).then((picked) => picked === "allow" && pi.acceptingTools && bus.peers.get("pi") === pi),
         send: (text, to) => {
@@ -1308,7 +1321,7 @@ export async function startDaemon(opts: DaemonOptions) {
         omni,
         ...(sidecar && route ? { sidecar, route } : {}),
         fixedModel: args.model ?? routing.local.fixed_model,
-        tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, sandbox: config.local.sandbox, permit },
+        tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, permit },
         ...(capture ? { capture } : {}),
         taskTool: (name, a, turn) => taskOp("local", name, a, true, turn.pii),
         turnPolicy: (envs) => tasks.turnPolicy(envs),

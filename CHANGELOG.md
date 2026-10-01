@@ -6,6 +6,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - The egress proxy logs every refusal: an oversized request header and an unreachable listed host now leave a `network: refused` line too, the latter with its error code, never the error text; a failure after the tunnel opened closes the connection instead of writing an HTTP answer into it (#81).
 - Behind NAT64 with the well-known prefix `64:ff9b::/96`, the egress proxy judges an answer by the IPv4 address it carries, so a listed name that resolves to an internal IPv4 host through DNS64 is refused; the local-use prefix `64:ff9b:1::/48` is refused outright, and a scoped IPv6 address (`fe80::1%en0`) counts as internal. A network-specific NAT64 prefix is not recognised (#82).
+- `local.sandbox: "allow-default"` is removed: the local worker's and Pi's commands always run under the deny-default sandbox, and a project that still sets it starts normally with a note in `hub.log` and `ahub doctor` (paths a toolchain needs go in `local.read_allow`). `local.bash_network: "direct"` still works until 0.13.0, with the same note naming that release (#83).
 
 ## 0.11.0
 

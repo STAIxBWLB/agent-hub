@@ -1099,7 +1099,9 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   the flag on, network is allowed as in 0.9 and earlier. Issue #65 builds it
   (amendment below).
 - `local.sandbox` ("deny-default" | "allow-default") is machine-local, since
-  "allow-default" widens the sandbox.
+  "allow-default" widens the sandbox. Removed in 0.12.0 (issue #83): the field is
+  ignored with a note in `hub.log` and `ahub doctor`, and is no longer
+  machine-local because nothing reads it.
 - Capabilities: `propose`, `assign` (a proposal naming another peer as owner),
   `remember`, `important`. A peer not listed in `capabilities` has all of them,
   which keeps today's behaviour, and a listed peer whose value is not a list has
@@ -1125,5 +1127,5 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
 - Decisions recorded in the issue: the default list holds the npm, Yarn, PyPI,
   crates.io and Go module registries and GitHub's code hosts, so a project that
   already had network on keeps installing packages; `"direct"` keeps the open
-  network of 0.10 and earlier for one release.
+  network of 0.10 and earlier until 0.13.0 (issue #83).
 

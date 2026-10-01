@@ -59,21 +59,20 @@ const NETWORK_MACH_SERVICES = ["com.apple.dnssd.service", "com.apple.trustd", "c
 const PROXY_MACH_SERVICES = ["com.apple.trustd", "com.apple.trustd.agent"];
 
 /**
- * Network for the commands: none, direct (`local.bash_network: "direct"`, everything, kept for one release), or only
+ * Network for the commands: none, direct (`local.bash_network: "direct"`, everything, until 0.13.0), or only
  * the hub's egress proxy on a loopback port (#65), which opens allowlisted hosts.
  */
 export type SandboxNetwork = boolean | { proxyPort: number };
 
 /**
- * `base` "deny" (issue #39) starts from `(deny default)` and allows only what commands need: running and reading the
- * system, toolchain and project directories, writing the project and temp. "allow" is the profile of 0.9 and earlier,
- * kept for one release behind `local.sandbox: "allow-default"`. The denies at the end apply to both.
+ * Starts from `(deny default)` (issue #39) and allows only what commands need: running and reading the system,
+ * toolchain and project directories, writing the project and a temp dir of their own. The allow-default profile of
+ * 0.9 and earlier was removed in 0.12.0 (issue #83).
  */
-export function profile(cwd: string, network: SandboxNetwork, readAllow: string[] = [], deny: string[] = [], base: "deny" | "allow" = "deny"): string {
+export function profile(cwd: string, network: SandboxNetwork, readAllow: string[] = [], deny: string[] = []): string {
   const home = homedir();
   const inHome = (p: string) => (p.startsWith("~/") ? join(home, p.slice(2)) : p);
   const root = realPath(cwd);
-  const tmp = realPath(tmpdir());
   const gitDirs = externalGitDirs(root);
   const creds = [".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube", ".docker", ".netrc", ".npmrc", ".omniroute", ".claude", ".codex", ".kimi-code", "Library/Keychains"];
   const dev = developerDir();
@@ -81,38 +80,28 @@ export function profile(cwd: string, network: SandboxNetwork, readAllow: string[
   const subpaths = (paths: string[]) => paths.map((p) => `(subpath ${q(p)})`).join(" ");
   const globals = (names: string[]) => names.map((n) => `(global-name ${q(n)})`).join(" ");
   const proxy = typeof network === "object" ? `(allow network-outbound (remote ip ${q(`localhost:${network.proxyPort}`)}))` : undefined;
-  const start = base === "deny"
-    ? [
-        "(deny default)",
-        "(allow process-fork)",
-        // Runs from the system, toolchain and project directories only; a script runs through an allowed interpreter.
-        // The user's temp dir and /private/tmp are shared with every other process: each command gets its own (#63).
-        `(allow process-exec ${subpaths([...SYSTEM_READABLE, ...readable])})`,
-        "(allow signal (target same-sandbox))",
-        "(allow process-info* (target same-sandbox))",
-        "(allow sysctl-read)",
-        `(allow mach-lookup ${globals([...MACH_SERVICES, ...(proxy ? PROXY_MACH_SERVICES : network ? NETWORK_MACH_SERVICES : [])])})`,
-        '(allow ipc-posix-shm-read-data ipc-posix-shm-read-metadata (ipc-posix-name "apple.shm.notification_center"))',
-        "(allow file-read-metadata)",
-        `(allow file-read* (literal "/") ${subpaths([...SYSTEM_READABLE, "/dev"])} ${subpaths(readable)})`,
-        '(allow file-ioctl (regex #"^/dev/"))',
-        ...(proxy ? [proxy] : network ? ["(allow network*)"] : []),
-      ]
-    : [
-        "(allow default)",
-        ...(network === true ? [] : ["(deny network*)", ...(proxy ? [proxy] : [])]),
-        // Home is default-deny for reads: whatever a command reads can end up in the model's answer, and that answer
-        // is shared with agents that run on cloud subscriptions (~/.claude.json, app tokens, browser profiles ...).
-        `(deny file-read* (subpath ${q(home)}))`,
-        `(allow file-read-metadata (subpath ${q(home)}))`,
-        `(allow file-read* ${subpaths(readable)})`,
-      ];
+  const start = [
+    "(deny default)",
+    "(allow process-fork)",
+    // Runs from the system, toolchain and project directories only; a script runs through an allowed interpreter.
+    // The user's temp dir and /private/tmp are shared with every other process: each command gets its own (#63).
+    `(allow process-exec ${subpaths([...SYSTEM_READABLE, ...readable])})`,
+    "(allow signal (target same-sandbox))",
+    "(allow process-info* (target same-sandbox))",
+    "(allow sysctl-read)",
+    `(allow mach-lookup ${globals([...MACH_SERVICES, ...(proxy ? PROXY_MACH_SERVICES : network ? NETWORK_MACH_SERVICES : [])])})`,
+    '(allow ipc-posix-shm-read-data ipc-posix-shm-read-metadata (ipc-posix-name "apple.shm.notification_center"))',
+    "(allow file-read-metadata)",
+    `(allow file-read* (literal "/") ${subpaths([...SYSTEM_READABLE, "/dev"])} ${subpaths(readable)})`,
+    '(allow file-ioctl (regex #"^/dev/"))',
+    ...(proxy ? [proxy] : network ? ["(allow network*)"] : []),
+  ];
   const places = `${creds.map((c) => `(subpath ${q(join(home, c))})`).join(" ")} ${denyRegexes(root, deny, false).join(" ")}`;
   return [
     "(version 1)",
     ...start,
     "(deny file-write*)",
-    `(allow file-write* (subpath ${q(root)}) ${base === "deny" ? "" : `(subpath ${q(tmp)}) (subpath "/private/tmp") `}(regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`,
+    `(allow file-write* (subpath ${q(root)}) (regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`,
     // Inside cwd: nothing that runs later outside the sandbox, nothing that reconfigures the hub.
     `(deny file-write* (subpath ${q(join(root, ".agenthub"))}) ${[join(root, ".git"), ...gitDirs].map((d) => `(subpath ${q(join(d, "hooks"))}) (literal ${q(join(d, "config"))})`).join(" ")})`,
     `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join(home, c))})`).join(" ")})`,
