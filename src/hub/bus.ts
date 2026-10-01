@@ -1,4 +1,4 @@
-import { appendNote, DIGEST, HUB, keepNotes, MAX_HOP, newEnvelope, parseMarker, quoteNotes, replyAudience, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
+import { appendNote, DIGEST, HUB, keepNotes, MAX_HOP, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
 import type { PeerAdapter } from "./peers.ts";
 import { DeliveryJournal, type JournalDelivery, type JournalDeliveryState } from "./delivery-journal.ts";
 
@@ -24,6 +24,11 @@ export interface BusOptions {
   /** Optional: rewrite a delivery before it goes out (M6 digest condensation). Must return its input on any failure. */
   condense?: (envs: Envelope[]) => Promise<Envelope[]>;
   journal?: DeliveryJournal;
+  /**
+   * Optional: may an agent send this envelope now (issue #38)? `parent` is the id of what it answers. A reason refuses
+   * it, and the sender hears it on its next delivery.
+   */
+  admit?: (env: Envelope, parent?: string) => string | undefined;
 }
 
 /** Serializable delivery state used by the controlled restart coordinator. Bodies stay in the private daemon file. */
@@ -133,11 +138,24 @@ export class Bus {
       // `digest` in the audience stands for the condensed delivery even when a steer, not the digest, is the parent.
       const condensed = !!last?.out.some((e) => e.from === DIGEST);
       const audienceOriginals = originals ?? (opts?.to?.includes(DIGEST) && condensed ? last?.originals : undefined);
-      this.publish(newEnvelope(peer.id, body, {
-        ...opts,
-        ...(opts?.to?.length ? { to: resolveTo(opts.to, audienceOriginals) } : {}),
-        priority: opts?.priority ?? capPriority(peer, priority, opts?.inReplyTo, originals),
-      }));
+      const to = opts?.to?.length ? resolveTo(opts.to, audienceOriginals) : undefined;
+      let env = newEnvelope(peer.id, body, { ...opts, ...(to ? { to } : {}), priority: opts?.priority ?? capPriority(peer, priority, opts?.inReplyTo, originals) });
+      // Limits count what is sent: the envelope as built (a reply goes to its parent's sender, `digest` is resolved,
+      // the priority is capped), never the raw `to`.
+      const parent = opts?.inReplyTo?.id;
+      let refused = this.opts.admit?.(env, parent);
+      // A turn answer has no caller to refuse: over its important budget it goes out as status, not at all.
+      if (refused && env.priority === "important" && !this.opts.admit?.({ ...env, priority: "status" }, parent)) {
+        // It went out, so the advice on how to send it does not apply.
+        this.note(peer.id, noteLine(HUB, "decision", `your [IMPORTANT] message went out as status: ${refused.replace(/[;:] (retry after \d+ s, or )?send it without \[IMPORTANT\]$/, "")}`));
+        env = { ...env, priority: "status" };
+        refused = undefined;
+      }
+      if (refused) {
+        this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered: ${refused}`));
+        return refused;
+      }
+      this.publish(env);
     };
     peer.onFailed = (envs) => {
       // The adapter got the condensed list; what has to come back is what that list replaced.

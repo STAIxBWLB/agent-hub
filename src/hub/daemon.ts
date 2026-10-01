@@ -36,12 +36,13 @@ import { Bus } from "./bus.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
 import { startDashboard } from "./ui.ts";
 import { PROTOCOL, stateDirFor } from "./control-client.ts";
-import { newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId } from "./envelope.ts";
+import { newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
 import { MemoryClient, workerUrl } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { projectChain, recallFor } from "../memory/recall.ts";
 import { conflictsOf } from "./conflicts.ts";
+import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
 import { changedPaths, repoOf, snapshot, Turns } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 
@@ -68,6 +69,8 @@ export interface HubConfig {
   checks: { timeout_s: number; [cls: string]: string | number };
   /** A git tree at each turn boundary for `ahub turns` and `ahub undo`, the last `keep` per peer (issue #33). */
   snapshots: { enabled: boolean; keep: number };
+  /** Per-sender rate limits and repeat suppression for what agents send (issue #38). */
+  limits: LimitsConfig;
   /** Machine-local fields a config file set but git could not vouch for, and why (issue #17). */
   ignored?: string[];
 }
@@ -92,6 +95,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   checks: { timeout_s: 600 },
   // Off here like approvals.notify, so tests (whose cwd is this repository) write no objects; a project's config turns it on.
   snapshots: { enabled: false, keep: 20 },
+  limits: DEFAULT_LIMITS,
 };
 
 export { stateDirFor };
@@ -102,7 +106,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = ["config.json", "config.local.json"] as const;
-const CONFIG_BLOCKS = ["memory", "roles", "budget", "inference", "omniroute", "local", "pi", "approvals", "tasks", "checks", "snapshots", "mlx"];
+const CONFIG_BLOCKS = ["memory", "roles", "budget", "inference", "omniroute", "local", "pi", "approvals", "tasks", "checks", "snapshots", "limits", "mlx"];
 
 export function loadConfig(cwd: string): HubConfig {
   const ignored: string[] = [];
@@ -146,6 +150,7 @@ export function loadConfig(cwd: string): HubConfig {
     tasks: { ...DEFAULT_CONFIG.tasks, ...file.tasks },
     checks: { ...DEFAULT_CONFIG.checks, ...file.checks },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
+    limits: { ...PROJECT_LIMITS, ...file.limits }, // on with any project config (issue #38)
     mlx,
     ...(ignored.length ? { ignored } : {}),
   };
@@ -278,7 +283,24 @@ export async function startDaemon(opts: DaemonOptions) {
   // The hub's own model calls (digest condensation, task triage) are wired below, once the gateway client exists.
   let inference: Inference | undefined;
   const journal = new DeliveryJournal({ file: join(opts.stateDir, "hub.db"), projectRoot: opts.cwd, projectId, instanceId, operationId: recoveryOperation });
-  const bus = new Bus({ journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs) });
+  // Agents only: the console user and the hub itself are never limited (issue #38).
+  // A typo such as "12/min" would read as 0, which turns a limit off without a word: the project default instead.
+  for (const k of Object.keys(config.limits)) if (!(k in PROJECT_LIMITS)) log(`limits.${k} is not a known limit; ignored`);
+  const limits = Object.fromEntries(Object.entries(PROJECT_LIMITS).map(([k, fallback]) => {
+    const v = config.limits[k as keyof LimitsConfig];
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) return [k, v];
+    log(`limits.${k}: ${JSON.stringify(v)} is not a number of 0 or more; using ${fallback}`);
+    return [k, fallback];
+  })) as unknown as LimitsConfig;
+  const limiter = new Limiter(limits);
+  const admit = (env: Envelope, parent?: string): string | undefined => {
+    // [FYI] is recorded and costs nobody a turn: nothing to limit.
+    if (env.from === USER || env.from === HUB || env.from === DIGEST || env.priority === "fyi") return undefined;
+    const refused = limiter.admit(env.from, env.to, env.priority, env.body, parent);
+    if (refused) log(`limits: ${env.from}: ${refused}`);
+    return refused;
+  };
+  const bus = new Bus({ journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit });
   startupCleanup.push(() => bus.closeJournal());
   const manualPaused = new Set<PeerId>(bus.manualPausedPeers()); // recovery never lifts an operator's pause
   let recoveryOperationId: string | undefined;
@@ -1064,7 +1086,8 @@ export async function startDaemon(opts: DaemonOptions) {
         permit: (title) => onPermission({ peer: "pi", title, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] }).then((picked) => picked === "allow" && pi.acceptingTools && bus.peers.get("pi") === pi),
         send: (text, to) => {
           if (to?.some((id) => !bus.peers.has(id) && id !== USER)) return "error: unknown peer";
-          pi.onMessage?.(text, { inReplyTo: piReply, ...(to?.length ? { to } : {}) }); return "sent";
+          const refused = pi.onMessage?.(text, { inReplyTo: piReply, ...(to?.length ? { to } : {}) });
+          return typeof refused === "string" ? `not sent: ${refused}` : "sent";
         },
       };
       const routing = currentRouting(opts.cwd, log);
@@ -1461,11 +1484,15 @@ export async function startDaemon(opts: DaemonOptions) {
         // A human at the console should not wait out the batch window; agents default to status.
         const { priority, body } = parseMarker(String(msg.body ?? ""), c.peer ? "status" : "important");
         if (!body) return void reply({ t: "sent", ok: false, error: "empty body" });
-        const to: PeerId[] | undefined = Array.isArray(msg.to) && msg.to.length ? msg.to.map(String) : undefined;
+        const to: PeerId[] | undefined = Array.isArray(msg.to) && msg.to.length ? [...new Set<string>(msg.to.map(String))] : undefined;
         const unknown = to?.filter((id) => !bus.knownPeers().includes(id)) ?? [];
         if (unknown.length) return void reply({ t: "sent", ok: false, error: `unknown peer: ${unknown.join(", ")}` });
         const inReplyTo = msg.reply_to ? bus.get(String(msg.reply_to)) : undefined;
-        const targets = bus.publish(newEnvelope(c.peer ?? USER, body, { priority, ...(to ? { to } : {}), ...(inReplyTo ? { inReplyTo } : {}) }));
+        // Built first: limits count the audience it really has (a reply goes to the parent's sender).
+        const env = newEnvelope(c.peer ?? USER, body, { priority, ...(to ? { to } : {}), ...(inReplyTo ? { inReplyTo } : {}) });
+        const refused = c.peer ? admit(env, inReplyTo?.id) : undefined;
+        if (refused) return void reply({ t: "sent", ok: false, error: refused });
+        const targets = bus.publish(env);
         if (c.peer && inReplyTo) bus.completeReply(c.peer, inReplyTo.id);
         return void reply({ t: "sent", ok: true, targets, recorded: priority === "fyi" });
       }

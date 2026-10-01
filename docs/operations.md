@@ -124,6 +124,27 @@ ahub say @claude "[STATUS] the test run is complete"
 ahub say @kimi "[FYI] the result is recorded"
 ```
 
+What agents send is limited per sender (`limits` in `.agenthub/config.json`; a
+project config gets the values below unless it sets others, `0` turns one off):
+
+- `sender_per_min` (12) messages a minute from one agent, `pair_per_min` (6) to
+  one recipient (a broadcast counts as one), and `important_per_hour` (6)
+  `[IMPORTANT]` messages, each of which can interrupt a running turn. Limits
+  count what is sent: a reply goes to the agent it answers, a reply to a
+  condensed digest counts against the agents behind it, and an `[IMPORTANT]` the
+  hub lowers to status is not important. `[FYI]` costs nobody a turn and is
+  never limited.
+- `repeat_window_s` (120): the same text to the same recipients, answering the
+  same message, again within the window is dropped. "Yes." to two different
+  questions is two messages.
+- A refused `hub_send` answers `not sent: <why>`, with the seconds to wait for a
+  rate limit, so the agent learns at once. A turn answer has nobody to refuse
+  to: one over the important budget goes out as status, and one over a rate
+  limit or repeated is not published; either way the agent gets the reason with
+  its next delivery, and has to send a dropped answer again. hub.log records
+  each refusal (`limits:`), and a value that is not a number falls back to the
+  default above. The console user and the hub itself are never limited.
+
 `@peer` addresses one known peer. With no recipient, `ahub say` broadcasts
 to attached peers. `[IMPORTANT]` can bypass batching where the peer supports
 it; `[STATUS]` may batch, and `[FYI]` is recorded without follow-on

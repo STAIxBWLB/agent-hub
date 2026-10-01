@@ -18,7 +18,7 @@ export interface PeerAdapter {
   start(): Promise<void>;
   stop(): Promise<void>;
   /** Set by the bus. The peer said something worth sharing. */
-  onMessage?: (body: string, opts?: EnvelopeOpts) => void;
+  onMessage?: (body: string, opts?: EnvelopeOpts) => unknown;
   /** Set by the bus. */
   onState?: (state: PeerState) => void;
   /** Set by the bus. A delivery that had resolved turned out not to reach the agent: put it back. */
@@ -33,7 +33,8 @@ export const DEFAULT_WATCHDOG_MS = 300_000;
 
 /** State holder with a per-turn inactivity watchdog: a busy peer that goes silent is forced back to idle. */
 export abstract class BasePeer implements PeerAdapter {
-  onMessage?: (body: string, opts?: EnvelopeOpts) => void;
+  /** Returns a reason (a string) when the hub refused the message (issue #38). */
+  onMessage?: (body: string, opts?: EnvelopeOpts) => unknown;
   onState?: (state: PeerState) => void;
   onFailed?: (envs: Envelope[]) => void;
   onDelivery?: (receipt: DeliveryReceipt) => void;
