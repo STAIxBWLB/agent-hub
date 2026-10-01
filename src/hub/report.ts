@@ -57,7 +57,7 @@ export function summarize(events: StampedEvent[]): Report {
 
 export function formatReport(r: Report): string[] {
   const lines = [`period: ${r.from ?? "-"} .. ${r.to ?? "-"}`];
-  for (const [id, p] of Object.entries(r.peers).sort()) lines.push(`peer ${id}: ${p.turns} turns, ${p.busyMinutes} busy minutes, ${p.tokens || "-"} tokens`);
+  for (const [id, p] of Object.entries(r.peers).sort(([a], [b]) => a.localeCompare(b))) lines.push(`peer ${id}: ${p.turns} turn${p.turns === 1 ? "" : "s"}, ${p.busyMinutes} busy minutes, ${p.tokens || "-"} tokens`);
   const dropped = Object.entries(r.messages.dropped).map(([k, n]) => `${n} ${k}`).join(", ");
   lines.push(`messages: ${r.messages.total} (dropped: ${dropped || "none"}; overflow ${r.messages.overflow}; undeliverable ${r.messages.undeliverable}); ${r.messages.perTask} per task that had any`);
   lines.push(`overlap warnings: ${r.overlaps.warnings}, task pairs: ${r.overlaps.pairs}`);

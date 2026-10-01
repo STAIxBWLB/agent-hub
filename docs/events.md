@@ -12,7 +12,7 @@ marked `private: true`, and PII tasks `pii: true`.
 
 | type | fields |
 |---|---|
-| `envelope` | `id`, `from`, `to` (absent for broadcast), `priority`, `hop`, `kind`, `task` (task id from refs), `bytes` (UTF-8 size of the body), `private`, `dropped` (`hop` or `fyi` when not delivered) |
+| `envelope` | `id`, `from`, `to` (absent for broadcast), `priority`, `hop`, `kind`, `task` (task id from refs), `bytes` (UTF-8 size of the body; absent on a private envelope, whose size would say something about the PII text), `private`, `dropped` (`hop` or `fyi` when not delivered) |
 | `overflow`, `undeliverable` | `id`, `from`, `peer` |
 | `state` | `peer`, `state` |
 | `turn_start` | `peer`, `turn` (`<peer>#<hub run>.<n>`, unique across restarts). A turn follows the adapter: pausing a busy peer does not end it |
@@ -20,7 +20,7 @@ marked `private: true`, and PII tasks `pii: true`.
 | `tokens` | `peer`, `n` (tokens added since the previous report) |
 | `task` | `id`, `event` (the board history event, e.g. `proposed`, `assigned`, `done`, `check failed`), `by`, `state`, `owner`, `reviewer`, `class`, `pii` |
 | `overlap` | `task`, `owner`, `others` (`task`, `owner`, `paths`), the structured twin of the console notice |
-| `quota` | `peer`, `windows` (`id`, `used`, `resetsAt`), `hard` |
+| `quota` | `peer`, `windows` (`id`, `used`, `resetsAt`), `hard`, `measuredAt` (when the reading was taken, if not when it arrived: Claude's numbers come through a file) |
 
 Token usage by adapter:
 

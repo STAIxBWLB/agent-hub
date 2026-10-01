@@ -273,7 +273,7 @@ test("a TUI that detaches mid-turn and comes back does not answer the old turn's
 });
 
 // issue #40: Codex reports a running thread total per turn; the adapter passes it on for telemetry.
-test("thread token totals reach onTokens once per turn", async () => {
+test("each update's added tokens reach onTokens once per turn; a resumed thread's history is not counted again", async () => {
   const totals: number[] = [];
   const { bus, peer, tui } = await setup(undefined, undefined, (t) => totals.push(t));
   tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
@@ -282,5 +282,5 @@ test("thread token totals reach onTokens once per turn", async () => {
   await until(() => totals.length === 1 && peer.state === "idle");
   bus.publish(newEnvelope("user", "two", { to: ["codex"] }));
   await until(() => totals.length === 2);
-  expect(totals).toEqual([100, 200]);
+  expect(totals).toEqual([100, 100]); // the fake thread's total starts at 5100
 });

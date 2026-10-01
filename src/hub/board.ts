@@ -48,8 +48,11 @@ const JSON_COLS = ["refs", "signals", "history"] as const;
 /** Task board in `.agenthub/state/hub.db`. It outlives the hub process: `ahub kill` leaves the file. */
 export class Board {
   private readonly db: Database;
-  /** Every recorded change, as it lands (telemetry, issue #40). Must not throw. */
+  /** Every recorded change, as it lands (telemetry, issue #40). */
   onChange?: (task: Task, entry: HistoryEntry) => void;
+  private changed(task: Task, entry: HistoryEntry): void {
+    try { this.onChange?.(task, entry); } catch { /* never throw after a board write */ }
+  }
 
   constructor(path: string) {
     this.db = new Database(path, { create: true });
@@ -67,7 +70,7 @@ export class Board {
       .query("INSERT INTO tasks (title, detail, class, state, refs, signals, history, created, updated) VALUES (?, ?, ?, 'proposed', ?, ?, ?, ?, ?)")
       .run(t.title, t.detail ?? "", t.class, JSON.stringify(t.refs ?? {}), JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now);
     const task = this.get(Number(lastInsertRowid))!;
-    this.onChange?.(task, history[0]!);
+    this.changed(task, history[0]!);
     return task;
   }
 
@@ -100,7 +103,7 @@ export class Board {
       .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, refs = ?, rejections = ?, history = ?, updated = ? WHERE id = ?")
       .run(next.state, next.owner, next.reviewer, JSON.stringify(next.refs), next.rejections, JSON.stringify(history), Date.now(), id);
     const updated = this.get(id)!;
-    this.onChange?.(updated, history.at(-1)!);
+    this.changed(updated, history.at(-1)!);
     return updated;
   }
 

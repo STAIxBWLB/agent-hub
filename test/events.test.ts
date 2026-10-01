@@ -27,13 +27,15 @@ test("summarize counts turns, tokens, messages, overlaps, task events and quota 
   expect(r.overlaps).toEqual({ warnings: 2, pairs: 1 }); // the same two tasks warned twice
   expect(r.tasks).toEqual({ proposed: 1 });
   expect(r.quota).toEqual({ readings: 1, hard: 1 });
-  expect(formatReport(r)[1]).toBe("peer kimi: 1 turns, 0.5 busy minutes, 120 tokens");
+  expect(formatReport(r)[1]).toBe("peer kimi: 1 turn, 0.5 busy minutes, 120 tokens");
 });
 
 test("--since takes durations and ISO dates", () => {
   const now = Date.UTC(2026, 9, 8);
   expect(parseSince("7d", now)).toBe(Date.UTC(2026, 9, 1));
   expect(parseSince("90m", now)).toBe(now - 90 * 60_000);
+  expect(parseSince("7")).toBeUndefined(); // Date.parse would read a year
+  expect(parseSince("10/1")).toBeUndefined();
   expect(parseSince("2026-10-01T00:00:00Z", now)).toBe(Date.UTC(2026, 9, 1));
   expect(parseSince("soon", now)).toBeUndefined();
 });

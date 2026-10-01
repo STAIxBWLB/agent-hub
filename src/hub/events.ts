@@ -8,7 +8,7 @@ export const EVENTS_SCHEMA = 1;
  * ids, routing and sizes, tasks carry ids and states, so the file can be exported without leaking what agents wrote.
  */
 export type HubEvent =
-  | { type: "envelope"; id: string; from: string; to?: string[]; priority: string; hop: number; kind?: string; task?: string; bytes: number; private?: boolean; dropped?: string }
+  | { type: "envelope"; id: string; from: string; to?: string[]; priority: string; hop: number; kind?: string; task?: string; bytes?: number; private?: boolean; dropped?: string }
   | { type: "overflow" | "undeliverable"; id: string; from: string; peer: string }
   | { type: "state"; peer: string; state: string }
   | { type: "turn_start"; peer: string; turn: string }
@@ -16,7 +16,7 @@ export type HubEvent =
   | { type: "tokens"; peer: string; n: number }
   | { type: "task"; id: number; event: string; by: string; state: string; owner: string | null; reviewer: string | null; class: string; pii: boolean }
   | { type: "overlap"; task: number; owner: string; others: { task: number; owner: string; paths: string[] }[] }
-  | { type: "quota"; peer: string; windows: { id: string; used: number; resetsAt?: number }[]; hard: boolean };
+  | { type: "quota"; peer: string; windows: { id: string; used: number; resetsAt?: number }[]; hard: boolean; measuredAt?: string };
 
 export type StampedEvent = HubEvent & { v: number; at: string };
 
@@ -64,7 +64,10 @@ export function tokenDeltas(): (peer: string, total: number, session: string) =>
   };
 }
 
-/** Events at or after `since` (ms), skipping lines a crash cut short. */
+/**
+ * Events at or after `since` (ms), skipping lines a crash cut short.
+ * ponytail: reads the whole file, which is never rotated; rotate by month or index by time when it gets large.
+ */
 export function readEvents(file: string, since = 0): StampedEvent[] {
   if (!existsSync(file)) return [];
   return readFileSync(file, "utf8").split("\n").flatMap((line) => {
@@ -82,6 +85,7 @@ export function readEvents(file: string, since = 0): StampedEvent[] {
 export function parseSince(text: string, now = Date.now()): number | undefined {
   const m = /^(\d+)([dhm])$/.exec(text);
   if (m) return now - Number(m[1]) * { d: 86_400_000, h: 3_600_000, m: 60_000 }[m[2] as "d" | "h" | "m"];
-  const t = Date.parse(text);
+  // ISO dates only: Date.parse also takes "7" (a year in 2001), which would silently mean everything.
+  const t = /^\d{4}-\d\d-\d\d/.test(text) ? Date.parse(text) : NaN;
   return Number.isNaN(t) ? undefined : t;
 }

@@ -236,3 +236,11 @@ test("window parsers: Codex rateLimits and Claude status line", () => {
     { id: "week", used: 0.07, windowMins: 10_080, source: "claude status line" },
   ]);
 });
+
+// issue #40 review: the telemetry hook gets the time a reading was measured, not only when it arrived.
+test("the reading hook carries the reading's own time", async () => {
+  const seen: number[] = [];
+  const { budget, clock } = setup({ reading: (_p, _w, _h, at) => void seen.push(at) });
+  budget.report("claude", [{ id: "5h", used: 0.2, source: "file" }], false, clock.now - 60_000);
+  expect(seen).toEqual([clock.now - 60_000]);
+});

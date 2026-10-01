@@ -418,7 +418,8 @@ export async function startDaemon(opts: DaemonOptions) {
     // Somebody other than the paused peer has to be there, or the handoff would only leave its tasks without an owner.
     canHandOff: (peer) => [...bus.peers.keys()].some((id) => id !== peer && ["idle", "busy"].includes(bus.stateOf(id))),
     handoff: (peer, context) => tasks.reassignForPause(peer, context),
-    reading: (peer, windows, hard) => event({ type: "quota", peer, windows: windows.map((w) => ({ id: w.id, used: w.used, ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}) })), hard }),
+    // A reading that arrived through a file carries the file's time; a stale one must not look fresh in the export.
+    reading: (peer, windows, hard, at) => event({ type: "quota", peer, windows: windows.map((w) => ({ id: w.id, used: w.used, ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}) })), hard, ...(Math.abs(Date.now() - at) > 1000 ? { measuredAt: new Date(at).toISOString() } : {}) }),
     resumed: (record) => {
       if (record.peer === "kimi") kimiTokens.length = 0; // a new window: the old counts would pause it again at once
       const moved = record.moved.length ? `While you were paused these moved: ${record.moved.map((m) => `${m.title} (${m.role} -> ${m.to ?? "nobody"})`).join("; ")}. They stay where they are; ask the user if you should take one back.` : "Nothing was moved while you were paused.";
@@ -434,8 +435,8 @@ export async function startDaemon(opts: DaemonOptions) {
   let turnSeq = 0;
   const turns = new Map<PeerId, { id: string; start: number; tokens: number }>();
   const delta = tokenDeltas();
-  const addTokens = (peer: PeerId, total: number, session: string): number => {
-    const n = delta(peer, total, session);
+  /** Tokens a peer used, as increments: Kimi reports a session total (turned into increments below), Codex increments. */
+  const addTokens = (peer: PeerId, n: number): number => {
     if (n > 0) {
       event({ type: "tokens", peer, n });
       const turn = turns.get(peer);
@@ -444,7 +445,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return n;
   };
   const onKimiTokens = (total: number, session: string) => {
-    const n = addTokens("kimi", total, session);
+    const n = addTokens("kimi", delta("kimi", total, session));
     if (!config.budget.kimi_tokens_5h || !n) return;
     const now = Date.now();
     kimiTokens.push({ at: now, n });
@@ -708,7 +709,7 @@ export async function startDaemon(opts: DaemonOptions) {
     } else {
       log(`msg ${e.env.from} -> ${e.env.to?.join(",") ?? "*"} ${e.env.priority} hop=${e.env.hop}${e.dropped ? ` NOT DELIVERED(${e.dropped})` : ""}: ${e.env.body.slice(0, 200)}`);
       const env = e.env;
-      event({ type: "envelope", id: env.id, from: env.from, ...(env.to ? { to: env.to } : {}), priority: env.priority, hop: env.hop, ...(env.kind ? { kind: env.kind } : {}), ...(env.refs?.task ? { task: env.refs.task } : {}), bytes: Buffer.byteLength(env.body), ...(env.private ? { private: true } : {}), ...(e.dropped ? { dropped: e.dropped } : {}) });
+      event({ type: "envelope", id: env.id, from: env.from, ...(env.to ? { to: env.to } : {}), priority: env.priority, hop: env.hop, ...(env.kind ? { kind: env.kind } : {}), ...(env.refs?.task ? { task: env.refs.task } : {}), ...(env.private ? {} : { bytes: Buffer.byteLength(env.body) }), ...(env.private ? { private: true } : {}), ...(e.dropped ? { dropped: e.dropped } : {}) });
     }
     if (!stopping) writeStatus();
   });
@@ -871,7 +872,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (peer === "codex") {
       const codex = new CodexPeer("codex", {
-        onTokens: (total, thread) => void addTokens("codex", total, thread),
+        onTokens: (added) => void addTokens("codex", added),
         appPort: opts.codexAppPort,
         proxyPort: opts.codexProxyPort,
         bin: config.codex_bin,

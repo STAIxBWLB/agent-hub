@@ -943,6 +943,7 @@ test("telemetry: a scripted hub's events give the known counts, match the overla
   expect(r.overlaps).toEqual({ warnings: 1, pairs: 1 });
   expect(r.tasks.proposed).toBe(3);
   expect(r.peers.kimi!.turns).toBeGreaterThanOrEqual(1);
+  expect(r.peers.kimi!.tokens).toBe(50 * r.peers.kimi!.turns); // the fake's usage_update: a session total, 50 per prompt
   expect(r.messages.total).toBeGreaterThanOrEqual(1);
   // The same notice the human sees, counted by scripts/overlaps.ts from hub.log.
   expect(parseOverlaps(readFileSync(join(stateDir, "hub.log"), "utf8")).length).toBe(r.overlaps.warnings);
@@ -972,10 +973,19 @@ test("telemetry: pausing a busy peer does not split its turn, and sizes are UTF-
   daemon.bus.pause("slow");
   daemon.bus.resume("slow");
   finish();
+  // and a turn that finishes while its peer is paused (what a budget pause does) ends then
+  const file0 = join(stateDir, "events.jsonl");
+  await until(() => readEvents(file0).some((e) => e.type === "turn_end" && e.peer === "slow"), "the first turn's end");
+  expect((await console_.request({ t: "send", body: "again", to: ["slow"] })).ok).toBe(true);
+  await until(() => slow.state === "busy", "the second turn");
+  daemon.bus.pause("slow");
+  finish();
+  await until(() => readEvents(file0).filter((e) => e.type === "turn_end" && e.peer === "slow").length === 2, "the paused turn's end");
+  daemon.bus.resume("slow");
   const file = join(stateDir, "events.jsonl");
   await until(() => readEvents(file).some((e) => e.type === "turn_end" && e.peer === "slow"), "the turn's end");
   const events = readEvents(file);
-  expect(events.filter((e) => e.type === "turn_start" && e.peer === "slow")).toHaveLength(1);
+  expect(events.filter((e) => e.type === "turn_start" && e.peer === "slow")).toHaveLength(2);
   expect(events.filter((e) => e.type === "state" && e.peer === "slow").map((e) => (e as { state: string }).state)).toContain("paused");
   const sent = events.find((e) => e.type === "envelope" && e.from === "user" && e.to?.includes("slow")) as { bytes: number };
   expect(sent.bytes).toBe(Buffer.byteLength("héllo 안녕"));
