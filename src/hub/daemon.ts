@@ -736,10 +736,11 @@ export async function startDaemon(opts: DaemonOptions) {
   const hubStartedAt = Date.now();
   const releaseGoneOwners = async () => {
     const limit = config.tasks.release_after_min;
-    if (!(limit > 0) || releasing || stopping || recoveryActive()) return;
+    if (releasing || stopping || recoveryActive()) return;
     releasing = true;
     try {
-      await releaseOwners(limit);
+      await tasks.releaseReady(); // #34: dependents a stop cut off between an approval and their assignment
+      if (limit > 0) await releaseOwners(limit);
     } finally {
       releasing = false;
     }

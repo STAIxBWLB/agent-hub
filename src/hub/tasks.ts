@@ -145,9 +145,11 @@ export class Tasks {
     if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
     if (defaulted) task = this.d.board.update(task.id, "hub", "class defaulted", {}, "class implement for a claim without one");
     this.d.notify(`task ${this.publicTitle(task)} proposed by ${by} [${task.class}]${task.signals.length ? ` signals: ${task.signals.join(", ")}` : ""}`);
-    if (waits.length) {
-      this.d.notify(`task ${this.publicTitle(task)} waits for ${waits.map((id) => `#${id}`).join(", ")}; it is offered once they are approved`);
-      return this.d.board.update(task.id, HUB, "blocked", {}, `waits for ${waits.map((id) => `#${id}`).join(", ")}`);
+    // Re-read: a dependency approved while triage was awaited looked for its dependents before this row existed.
+    const still = this.waitsFor(task);
+    if (still.length) {
+      this.d.notify(`task ${this.publicTitle(task)} waits for ${still.map((id) => `#${id}`).join(", ")}; it is offered once they are approved`);
+      return this.d.board.update(task.id, HUB, "blocked", {}, `waits for ${still.map((id) => `#${id}`).join(", ")}`);
     }
     // Naming yourself is a claim: the work is already yours, so no offer comes back to you (paper: Agensh CLAIM, #68).
     return this.assignOwner(task, by, input.owner ? { candidates: [input.owner], claim: input.owner === by } : {});
@@ -316,10 +318,31 @@ export class Tasks {
   private async releaseDependents(approved: Task): Promise<void> {
     for (const t of this.d.board.list("proposed")) {
       if (!t.deps?.includes(approved.id) || t.owner || this.waitsFor(t).length) continue;
-      const ready = this.d.board.update(t.id, HUB, "ready", {}, `#${approved.id} approved`);
-      this.d.notify(`task ${this.publicTitle(ready)} is ready: what it waited for is approved`);
-      await this.assignOwner(ready, HUB).catch((e: Error) => this.d.notify(`task ${this.publicTitle(ready)}: could not be assigned: ${e.message}`));
+      await this.offerReady(t, `#${approved.id} approved`);
     }
+  }
+
+  private readonly offered = new Set<number>(); // ready tasks offered in this hub run
+
+  /**
+   * A stop between an approval and the assignment of its dependents (both are saved on their own) leaves them ownerless
+   * with nothing left to wait for, and no later approval to offer them. The daemon calls this on its release timer:
+   * each such task is offered once per hub run, and only once somebody is attached to take it.
+   */
+  async releaseReady(): Promise<void> {
+    if (!Object.values(this.states()).some((s) => s === "idle" || s === "busy")) return;
+    for (const t of this.d.board.list("proposed")) {
+      const last = t.history.at(-1)?.event;
+      if (!t.deps?.length || t.owner || this.offered.has(t.id) || (last !== "blocked" && last !== "ready") || this.waitsFor(t).length) continue;
+      await this.offerReady(t, "what it waited for was approved before the hub stopped");
+    }
+  }
+
+  private async offerReady(t: Task, why: string): Promise<void> {
+    this.offered.add(t.id);
+    const ready = t.history.at(-1)?.event === "ready" ? t : this.d.board.update(t.id, HUB, "ready", {}, why);
+    this.d.notify(`task ${this.publicTitle(ready)} is ready: what it waited for is approved`);
+    await this.assignOwner(ready, HUB).catch((e: Error) => this.d.notify(`task ${this.publicTitle(ready)}: could not be assigned: ${e.message}`));
   }
 
   private mine(task: Task, by: PeerId, role: "owner" | "reviewer"): void {

@@ -798,6 +798,42 @@ test("after names existing tasks only, so no cycle can form; ready lists propose
   expect((await tasks.propose("claude", { title: "no deps", class: "implement", after: null })).deps).toEqual([]); // models send null for "none"
 });
 
+test("a dependency approved while a proposal waits for triage does not leave the new task blocked", async () => {
+  const base = await setup();
+  let answer!: (cls: "implement") => void;
+  const tasks = new Tasks({
+    board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: () => {},
+    triage: { classify: () => new Promise((r) => (answer = r)), onCampus: async () => true },
+  });
+  const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+  const pending = tasks.propose("claude", { title: "client", after: [a.id] });
+  await until(() => !!answer);
+  await tasks.done(base.board.get(a.id)!.owner!, a.id, "done");
+  await tasks.review(base.board.get(a.id)!.reviewer!, a.id, "approved");
+  answer("implement");
+  const c = await pending;
+  expect(c.owner).not.toBeNull();
+  expect(c.history.map((h) => h.event)).not.toContain("blocked");
+});
+
+test("dependents a stop cut off between an approval and their assignment are offered once the hub runs again", async () => {
+  const { tasks, board, peers } = await setup();
+  const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+  const c = await tasks.propose("claude", { title: "client", class: "implement", after: [a.id] });
+  await tasks.done(board.get(a.id)!.owner!, a.id, "done");
+  board.update(a.id, board.get(a.id)!.reviewer!, "approved", { state: "approved" }); // saved, then the hub stopped
+  expect(board.get(c.id)!.owner).toBeNull();
+  await tasks.releaseReady();
+  const ready = board.get(c.id)!;
+  expect(ready.owner).not.toBeNull();
+  expect(ready.history.map((h) => h.event).slice(-2)).toEqual(["ready", "assigned"]);
+  expect(peers[ready.owner!]!.got.some((e) => e.kind === "task" && e.refs?.task === String(c.id))).toBe(true);
+  // once per hub run: a ready task nobody could take is left to `ahub task assign`, not offered every minute
+  board.update(c.id, HUB, "ready", { owner: null });
+  await tasks.releaseReady();
+  expect(board.get(c.id)!.owner).toBeNull();
+});
+
 test("a board from before plans and dependencies opens with its tasks intact", () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-migrate-"));
   const file = join(dir, "hub.db");
