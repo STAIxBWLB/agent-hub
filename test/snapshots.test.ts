@@ -68,7 +68,7 @@ test("hub state stays out of a snapshot even when the user's index tracks it", (
 
 test("a same-size edit in the second the index was written is seen: the index copy keeps the index's mtime", () => {
   const { top, git, r } = repo();
-  git("config", "core.trustctime", "false"); // as if ctime, like mtime, only had whole seconds (a CI runner did)
+  git("config", "core.trustctime", "false"); // so an add and an edit whose ctimes fall in different seconds cannot hide the race
   const second = new Date(Math.floor(Date.now() / 1000) * 1000 - 5000);
   utimesSync(join(top, "a.txt"), second, second);
   git("add", "a.txt"); // the index records a.txt at that second

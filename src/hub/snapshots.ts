@@ -53,10 +53,11 @@ export function snapshot(repo: Repo): string | undefined {
     const env = { GIT_INDEX_FILE: join(tmp, "index") };
     const index = join(repo.dir, "index");
     if (existsSync(index)) {
-      copyFileSync(index, env.GIT_INDEX_FILE);
-      // git trusts an entry's stat only when the entry is older than the index file. A copy written now makes an edit
-      // in the second the index was written look clean (same size, and whole-second times); keep the original's time.
+      // git trusts an entry's stat only when the entry is older than the index file, and compares in whole seconds. A
+      // copy written now makes a same-size edit in the second the index was written look clean: keep the original's
+      // time. Taken before the copy, so an index replaced in between gives the copy an earlier time (safe), not later.
       const { atime, mtime } = statSync(index);
+      copyFileSync(index, env.GIT_INDEX_FILE);
       utimesSync(env.GIT_INDEX_FILE, atime, mtime);
     }
     if (git(repo.top, ["add", "-A", "--", scope(repo), ":(exclude,glob)**/.agenthub/state/**"], env).status !== 0) return undefined;
