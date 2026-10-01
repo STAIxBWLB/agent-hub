@@ -37,8 +37,11 @@ export interface BudgetConfig {
   poll_min: number;
   checkpoint_timeout_s: number;
   kimi_tokens_5h: number;
+  /** A paused peer whose window resets within this many minutes keeps its work, urgent tasks aside; 0 always hands over (issue #36). */
+  wait_max_min: number;
 }
-export const DEFAULT_BUDGET: BudgetConfig = { gate: 0.9, stale_min: 30, poll_min: 10, checkpoint_timeout_s: 90, kimi_tokens_5h: 0 };
+// wait_max_min is off here, as approvals.notify is: a project config turns it on (30 unless it says otherwise).
+export const DEFAULT_BUDGET: BudgetConfig = { gate: 0.9, stale_min: 30, poll_min: 10, checkpoint_timeout_s: 90, kimi_tokens_5h: 0, wait_max_min: 0 };
 
 export interface BudgetHooks {
   pause(peer: PeerId): void;
@@ -52,8 +55,8 @@ export interface BudgetHooks {
   attached(peer: PeerId): boolean;
   /** Is anybody attached who could take work over? Without one a handoff would only strip the tasks of their owner. */
   canHandOff(peer: PeerId): boolean;
-  /** Move the peer's open work. */
-  handoff(peer: PeerId, context: string | undefined): Promise<Moved[]>;
+  /** Move the peer's open work; with `urgentOnly`, only tasks marked urgent (the peer waits for its reset). */
+  handoff(peer: PeerId, context: string | undefined, urgentOnly: boolean): Promise<Moved[]>;
   resumed(record: PauseRecord): void;
   /** Every reading as it arrives, with the time it was measured (telemetry, issue #40). */
   reading?(peer: PeerId, windows: UsageWindow[], hard: boolean, at: number): void;
@@ -215,15 +218,21 @@ export class Budget {
 
   private async handOff(peer: PeerId, summary: string | undefined): Promise<void> {
     const context = summary ?? (await this.hooks.platformContext(peer).catch(() => undefined));
+    // Wait or hand off (issue #36): a handoff costs the next peer the whole context, so a short wait can be cheaper.
+    const resetsAt = this.record(peer)?.resetsAt;
+    const waitMin = resetsAt === undefined ? Infinity : Math.max(0, Math.ceil((resetsAt - this.now()) / 60_000));
+    const wait = this.cfg.wait_max_min > 0 && waitMin <= this.cfg.wait_max_min;
     let moved: Moved[];
     try {
-      moved = await this.hooks.handoff(peer, context);
+      moved = await this.hooks.handoff(peer, context, wait);
     } catch (e) {
       // Left unmarked on purpose: the next tick, or the next hub run, tries again. The peer stays paused either way.
       return this.hooks.notify(`budget: handing over ${peer}'s work failed, will retry: ${(e as Error).message}`);
     }
     if (this.closed) return;
-    this.db.query("UPDATE budget_pauses SET handed_off = 1, moved = ? WHERE peer = ?").run(JSON.stringify(moved), peer);
+    const why = wait ? `; keeps its work: resets in ${waitMin} min, within wait_max_min ${this.cfg.wait_max_min}` : "";
+    this.db.query("UPDATE budget_pauses SET handed_off = 1, moved = ?, reason = reason || ? WHERE peer = ?").run(JSON.stringify(moved), why, peer);
+    if (wait) this.hooks.notify(`budget: ${peer} keeps its work and waits ${waitMin} min for its reset (wait_max_min ${this.cfg.wait_max_min})${moved.length ? "; urgent work moves" : ""}`);
     if (moved.length) this.hooks.notify(`budget: moved from ${peer}: ${moved.map((m) => `#${m.id} ${m.role} -> ${m.to ?? "nobody"}`).join(", ")}`);
   }
 
@@ -254,6 +263,16 @@ export class Budget {
     this.hooks.resumed(record);
     this.hooks.resume(peer);
     this.hooks.notify(`budget: ${peer} resumed (${why})`);
+  }
+
+  /** For routing (issue #36): per peer, the headroom of its most used fresh window and the soonest reset among them. */
+  headroom(): Record<PeerId, { headroom: number; resetsAt?: number }> {
+    return Object.fromEntries([...this.readings.keys()].flatMap((peer) => {
+      const fresh = this.fresh(peer);
+      if (!fresh.length) return [];
+      const resets = fresh.map((r) => r.resetsAt).filter((t): t is number => t !== undefined);
+      return [[peer, { headroom: 1 - Math.max(...fresh.map((r) => r.used)), ...(resets.length ? { resetsAt: Math.min(...resets) } : {}) }]];
+    }));
   }
 
   status(): Record<PeerId, { windows: (Reading & { stale: boolean })[]; paused?: { reason: string; resetsAt: number; since: number } }> {

@@ -134,7 +134,7 @@ export function loadConfig(cwd: string): HubConfig {
     ...file,
     memory: { ...DEFAULT_CONFIG.memory, ...file.memory },
     roles: { ...DEFAULT_CONFIG.roles, ...file.roles },
-    budget: { ...DEFAULT_CONFIG.budget, ...file.budget },
+    budget: { ...DEFAULT_CONFIG.budget, wait_max_min: 30, ...file.budget }, // on with any project config (issue #36)
     inference: { ...DEFAULT_CONFIG.inference, ...file.inference },
     omniroute: { ...DEFAULT_CONFIG.omniroute, ...file.omniroute },
     local: { ...DEFAULT_CONFIG.local, ...file.local },
@@ -387,6 +387,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
     },
     triage: { classify: (title, detail) => inference?.triage(title, detail) ?? Promise.resolve(undefined), onCampus: () => onCampus() },
+    quota: (): ReturnType<Budget["headroom"]> => budget.headroom(), // budget is built below; this runs at assignment time
   });
   board.onChange = (t, h) => event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, pii: tasks.isPii(t) });
   // ---- budget relay -------------------------------------------------------------------------------------------
@@ -424,9 +425,9 @@ export async function startDaemon(opts: DaemonOptions) {
     attached: (peer) => bus.peers.has(peer),
     // Somebody other than the paused peer has to be there, or the handoff would only leave its tasks without an owner.
     canHandOff: (peer) => [...bus.peers.keys()].some((id) => id !== peer && ["idle", "busy"].includes(bus.stateOf(id))),
-    handoff: (peer, context) => tasks.reassignForPause(peer, context),
     // A reading that arrived through a file carries the file's time; a stale one must not look fresh in the export.
     reading: (peer, windows, hard, at) => event({ type: "quota", peer, windows: windows.map((w) => ({ id: w.id, used: w.used, ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}) })), hard, ...(Math.abs(Date.now() - at) > 1000 ? { measuredAt: new Date(at).toISOString() } : {}) }),
+    handoff: (peer, context, urgentOnly) => tasks.reassignForPause(peer, context, urgentOnly),
     resumed: (record) => {
       if (record.peer === "kimi") kimiTokens.length = 0; // a new window: the old counts would pause it again at once
       const moved = record.moved.length ? `While you were paused these moved: ${record.moved.map((m) => `${m.title} (${m.role} -> ${m.to ?? "nobody"})`).join("; ")}. They stay where they are; ask the user if you should take one back.` : "Nothing was moved while you were paused.";

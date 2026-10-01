@@ -30,3 +30,26 @@ test("Pi backend values are validated and class routing exposes MLX/DGX limits",
   writeFileSync(join(bad, ".agenthub", "routing.toml"), "[local]\nfixed_model=\"m\"\n[classes.implement]\npeers=[\"pi\"]\npi_backend=\"bad\"\n");
   expect(() => loadRouting(bad)).toThrow(/pi_backend/);
 });
+
+// issue #36: quota that resets soonest is used first; demoted peers go behind the rest.
+test("quota: the eligible peer whose headroom resets soonest goes first; a peer without readings keeps its place", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-route-")));
+  const t = { class: "implement" as const, signals: [] };
+  const states = { codex: "idle", kimi: "idle" } as const;
+  expect(assign(t, states, routing).owner).toBe("codex"); // the configured order
+  const now = 1_800_000_000_000;
+  const quota = { codex: { headroom: 0.8, resetsAt: now + 240 * 60_000 }, kimi: { headroom: 0.4, resetsAt: now + 30 * 60_000 } };
+  const a = assign(t, states, routing, { now, quota });
+  expect(a.owner).toBe("kimi");
+  expect(a.trace).toContain("  quota first: kimi 40% left, resets in 30 min; codex 80% left, resets in 240 min");
+  expect(assign(t, { ...states, local: "idle" }, routing, { now, quota }).owner).toBe("local");
+});
+
+test("demotion: a peer demoted for the class goes behind the others, and the trace names it", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-route-")));
+  const t = { class: "implement" as const, signals: [] };
+  const a = assign(t, { codex: "idle", kimi: "idle" }, routing, { demoted: { codex: 2.5 } });
+  expect(a.owner).toBe("kimi");
+  expect(a.trace).toContain("  demoted for implement: codex (2.5 recent failures)");
+  expect(assign(t, { codex: "idle", kimi: "offline" }, routing, { demoted: { codex: 2.5 } }).owner).toBe("codex"); // still better than nobody
+});

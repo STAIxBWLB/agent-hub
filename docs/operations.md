@@ -256,6 +256,21 @@ A budget pause remains authoritative until the budget command explicitly
 overrides it or the window resets. Check `ahub status` and `ahub board` after
 a pause or handoff.
 
+Quota also shapes routing and handoffs:
+
+- Among peers a task could go to, those with quota readings are ordered by
+  headroom per hour left until their soonest reset, so the window that resets
+  first is used first. Peers without readings, such as `local` and `pi`, keep
+  their place in `routing.toml`. `ahub route explain` shows the reordering.
+- When a paused peer's window resets within `budget.wait_max_min` (30 unless
+  `.agenthub/config.json` says otherwise, `0` always hands over), it keeps its work and only tasks proposed
+  with `urgent` (`ahub task propose ... --urgent`) move. `ahub budget` shows the
+  decision in the pause reason.
+- A peer whose recent failures in a class (failed checks, changes requested,
+  escalations by hand) reach 1.5 after decay, and outweigh its recent
+  approvals there, goes behind the other candidates for that class. A failure
+  counts half after a day. `ahub route explain` names demoted peers.
+
 ## Durable delivery and queue resolution
 
 Protocol 10 records each recipient delivery in the private project journal.

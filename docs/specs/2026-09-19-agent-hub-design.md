@@ -970,3 +970,21 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   checks queued or running: both can write the board after its integrity digest
   (a check the commit's stop kills records `check interrupted`).
 
+## Amendment: quota-aware routing, wait or hand off, demotion (issue #36)
+
+- `assign()` stays pure: quota (headroom and soonest reset per peer, from
+  `Budget.headroom()` over fresh readings), the clock and the demotion weights are
+  inputs. Demoted peers go behind the others (owner role only); within each
+  group, peers with readings swap places by headroom per hour to reset, and peers
+  without readings keep their configured place.
+- Wait or hand off is decided at handoff time from the pause record's reset:
+  within `budget.wait_max_min` the handoff moves only tasks whose signals include
+  `urgent` (set by `hub_task_propose {urgent: true}`), and the pause reason says
+  so. `DEFAULT_BUDGET` has it off, like approvals.notify; any project config turns it
+  on at 30 unless it sets another value.
+- Outcomes (`peer`, `class`, ok, time) are recorded in hub.db: approved counts
+  for the owner; changes requested, a failed check and an escalation by hand
+  count against it (the hub's own escalation after repeated changes requested is
+  not counted twice). Demotion: decayed failures reach 1.5 and outweigh decayed
+  successes, half-life one day, fixed constants for now.
+

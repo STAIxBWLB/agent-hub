@@ -7,6 +7,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Early conflict detection: in a git work tree, a turn that changes a file another owner's open task changed earlier warns both owners (and the console, and `events.jsonl`), once per file and task, marked concurrent when another peer worked meanwhile. `ahub check-path` and the PreToolUse hook template `templates/claude-hooks.json` give Claude the same warning before an edit, without blocking it (#32).
 - An upgrade or controlled restart waits for completion checks and console task operations still in flight; one that finished after the commit used to leave the operation blocked at verification, unable to resume or abort.
 - Task dependencies: `hub_task_propose` takes `after: [ids]`; a task waits, offered to nobody and not claimable, until those are approved, then goes through assignment (a task the hub stopped before offering is offered once it runs again). `hub_task_list {ready: true}` and `ahub board --ready` show the ready queue, and existing boards gain the column on open (#34).
+- Quota-aware routing: candidates with quota readings are ordered by headroom per hour to their reset, so the window that resets first is drained first; a paused peer whose window resets within `budget.wait_max_min` (30 by default) keeps its work unless a task is `urgent`; and a peer whose recent failures in a class outweigh its approvals there is demoted for that class, with a one-day half-life. `ahub route explain` shows both (#36).
 
 ## 0.8.1
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Budget, claudeWindows, codexWindows, DEFAULT_BUDGET, type BudgetHooks, type Moved, type PauseRecord } from "../src/hub/budget.ts";
 
-function setup(over: Partial<BudgetHooks> = {}, db = join(mkdtempSync(join(tmpdir(), "agenthub-budget-")), "hub.db")) {
+function setup(over: Partial<BudgetHooks> = {}, db = join(mkdtempSync(join(tmpdir(), "agenthub-budget-")), "hub.db"), cfg = DEFAULT_BUDGET) {
   const clock = { now: 1_800_000_000_000 };
   const log: string[] = [];
   const resumed: PauseRecord[] = [];
@@ -20,7 +20,7 @@ function setup(over: Partial<BudgetHooks> = {}, db = join(mkdtempSync(join(tmpdi
     notify: (l) => log.push(`! ${l}`),
     ...over,
   };
-  const budget = new Budget(db, DEFAULT_BUDGET, hooks, () => clock.now);
+  const budget = new Budget(db, cfg, hooks, () => clock.now);
   const settle = () => new Promise((r) => setTimeout(r, 10));
   return { budget, clock, log, resumed, settle, db, hooks };
 }
@@ -243,4 +243,30 @@ test("the reading hook carries the reading's own time", async () => {
   const { budget, clock } = setup({ reading: (_p, _w, _h, at) => void seen.push(at) });
   budget.report("claude", [{ id: "5h", used: 0.2, source: "file" }], false, clock.now - 60_000);
   expect(seen).toEqual([clock.now - 60_000]);
+});
+
+// issue #36: a handoff costs the next peer the whole context, so a short wait for the reset can be cheaper.
+test("wait or hand off: a reset within wait_max_min keeps the work, urgent tasks aside; a later reset hands it over", async () => {
+  const run = async (resetInMin: number) => {
+    const urgentOnly: boolean[] = [];
+    const s = setup({ handoff: async (_p, _ctx, only) => (urgentOnly.push(only), []) }, undefined, { ...DEFAULT_BUDGET, wait_max_min: 30 });
+    s.budget.report("codex", [{ id: "5h", used: 0.95, resetsAt: s.clock.now + resetInMin * MIN, source: "test" }]);
+    await s.settle();
+    return { urgentOnly, log: s.log, reason: s.budget.status().codex!.paused!.reason };
+  };
+  const soon = await run(10);
+  expect(soon.urgentOnly).toEqual([true]);
+  expect(soon.reason).toBe("5h window at 95% (test); keeps its work: resets in 10 min, within wait_max_min 30");
+  expect(soon.log).toContain("! budget: codex keeps its work and waits 10 min for its reset (wait_max_min 30)");
+  const late = await run(120);
+  expect(late.urgentOnly).toEqual([false]);
+  expect(late.reason).toBe("5h window at 95% (test)");
+});
+
+test("headroom: the most used fresh window decides, the soonest reset is reported, stale readings say nothing", async () => {
+  const { budget, clock } = setup();
+  budget.report("codex", [{ id: "5h", used: 0.3, resetsAt: clock.now + 60 * MIN, source: "t" }, { id: "week", used: 0.6, resetsAt: clock.now + 3000 * MIN, source: "t" }]);
+  expect(budget.headroom()).toEqual({ codex: { headroom: 0.4, resetsAt: clock.now + 60 * MIN } });
+  clock.now += 31 * MIN; // past stale_min
+  expect(budget.headroom()).toEqual({});
 });

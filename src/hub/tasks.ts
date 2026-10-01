@@ -25,11 +25,18 @@ export interface TasksDeps {
   tell?: (peer: PeerId, line: string) => void;
   /** Structured overlap records for telemetry (issue #40); the notice line stays for the human. */
   recordOverlap?: (task: number, owner: PeerId, others: { task: number; owner: PeerId; paths: string[]; symbols?: string[] }[]) => void;
+  /** Quota per peer from fresh readings (issue #36): routing drains the windows that reset soonest first. */
+  quota?: () => Record<PeerId, { headroom: number; resetsAt?: number }>;
   /** Optional: name a class for a task proposed without one. `onCampus` says whether the model call stays on campus. */
   triage?: { classify: (title: string, detail: string) => Promise<TaskClass | undefined>; onCampus: () => Promise<boolean> };
 }
 
 const ESCALATE_AFTER = 2;
+// Demotion (issue #36): a failure counts half after a day. A peer is demoted for a class once its decayed failures
+// reach 1.5 (two within about half a day, three within two days) and outweigh its decayed successes there.
+// ponytail: fixed constants; make them config when someone needs to tune them.
+const DEMOTION_HALF_LIFE_MS = 24 * 3_600_000;
+const DEMOTE_AT = 1.5;
 const OPEN: Task["state"][] = ["proposed", "in_progress", "changes_requested"];
 /** Board events that leave a task where its completion check found it; any other event means it moved on meanwhile. */
 const QUIET_EVENTS = new Set(["answer", "reviewer changed"]);
@@ -102,7 +109,27 @@ export class Tasks {
   /** Dependencies of a task that are not approved yet: while there are any, it is offered to nobody (issue #34). */
   waitsFor = (task: Pick<Task, "deps">): number[] => (task.deps ?? []).filter((id) => this.d.board.get(id)?.state !== "approved");
 
-  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown }): Promise<Task> {
+  /** Decayed failure weights of the peers demoted for a class: failures count half after a day (issue #36). */
+  demoted(cls: TaskClass, now = Date.now()): Record<PeerId, number> {
+    const sums = new Map<PeerId, { bad: number; good: number }>();
+    for (const o of this.d.board.outcomes(cls, now - 7 * DEMOTION_HALF_LIFE_MS)) {
+      const w = 0.5 ** ((now - o.at) / DEMOTION_HALF_LIFE_MS);
+      const s = sums.get(o.peer) ?? { bad: 0, good: 0 };
+      if (o.ok) s.good += w;
+      else s.bad += w;
+      sums.set(o.peer, s);
+    }
+    return Object.fromEntries([...sums].filter(([, s]) => s.bad >= DEMOTE_AT && s.bad >= s.good).map(([p, s]) => [p, s.bad]));
+  }
+
+  /** What assignment weighs besides states and policy: quota and demotion. */
+  private weights(cls: TaskClass) {
+    const now = Date.now();
+    const quota = this.d.quota?.();
+    return { now, demoted: this.demoted(cls, now), ...(quota ? { quota } : {}) };
+  }
+
+  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown }): Promise<Task> {
     // Callers are models: a title is one line (it is part of console and hub.log lines), not a document.
     const title = String(input.title ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
     if (!title) throw new Error("title is required");
@@ -128,6 +155,8 @@ export class Tasks {
     const plan = cleanPlan(input.plan);
     // The plan reaches other owners, so a PII pattern in it makes the task a PII task like one in the detail would.
     const signals = detectSignals({ ...text, detail: [text.detail, planText(plan)].join("\n") }, this.d.routing(), this.d.cwd);
+    // Urgent work is handed over even when its paused owner's window resets soon (issue #36).
+    if (input.urgent === true && !signals.includes("urgent")) signals.push("urgent");
     let cls = given as TaskClass | undefined;
     let triaged = false;
     if (!cls && this.d.triage) {
@@ -252,17 +281,17 @@ export class Tasks {
     if (typeof target === "number") {
       const task = this.d.board.get(target);
       if (!task) throw new Error(`no task #${target}`);
-      return [`task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"})`, "if it were assigned now:", ...assign(task, this.states(), routing, { exclude: this.declined(task), waitsFor: this.waitsFor(task) }).trace];
+      return [`task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"})`, "if it were assigned now:", ...assign(task, this.states(), routing, { exclude: this.declined(task), waitsFor: this.waitsFor(task), ...this.weights(task.class) }).trace];
     }
     const draft = { title: target.title, detail: target.detail ?? "", refs: target.refs ?? {} };
-    return assign({ class: target.class, signals: detectSignals(draft, routing, this.d.cwd) }, this.states(), routing).trace;
+    return assign({ class: target.class, signals: detectSignals(draft, routing, this.d.cwd) }, this.states(), routing, this.weights(target.class)).trace;
   }
 
   private declined = (task: Task) => task.history.filter((h) => h.event === "declined").map((h) => h.by);
 
   private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; claim?: boolean } = {}): Promise<Task> {
     const waits = this.waitsFor(task);
-    const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits });
+    const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class) });
     if (waits.length) {
       this.d.notify(`task ${this.publicTitle(task)} waits for ${waits.map((id) => `#${id}`).join(", ")}; it is offered once they are approved`);
       return task;
@@ -452,6 +481,7 @@ export class Tasks {
       return;
     }
     this.d.board.update(id, HUB, "check failed", {}, `${outcome}\n${result.tail}`.trim());
+    if (task.owner) this.d.board.recordOutcome(task.owner, task.class, false);
     this.d.notify(`task ${this.publicTitle(task)}: its check failed (${outcome}); it stays with ${task.owner ?? by}`);
     this.tell(task, `Task #${id}: its check failed.\n$ ${outcome}${result.tail ? `\n${result.tail}` : ""}\nFix it and call hub_task_done again.`, pii);
   }
@@ -512,12 +542,14 @@ export class Tasks {
     const pii = this.isPii(task);
     if (verdict === "approved") {
       const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0 }, note);
+      if (next.owner) this.d.board.recordOutcome(next.owner, next.class, true);
       this.note(next, by, "decision", `Task #${next.id} approved by ${by}: ${next.title}\n${note ?? ""}`);
       this.tell(next, `Task #${next.id} approved by ${by}.${note ? ` ${note}` : ""}`, pii);
       await this.releaseDependents(next);
       return next;
     }
     const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: task.rejections + 1 }, note);
+    if (rejected.owner) this.d.board.recordOutcome(rejected.owner, rejected.class, false);
     this.note(rejected, by, "decision", `Task #${rejected.id} changes requested by ${by}: ${rejected.title}\n${note ?? ""}`);
     if (rejected.rejections >= ESCALATE_AFTER) {
       const moved = await this.escalate(HUB, rejected.id, `${rejected.rejections} consecutive changes_requested`);
@@ -537,6 +569,8 @@ export class Tasks {
     const list = this.d.routing().classes[task.class]?.escalate_to ?? [];
     if (task.state === "changes_requested") task = this.d.board.update(task.id, HUB, "reopened", { state: "in_progress" });
     const from = task.owner;
+    // The hub escalates after repeated changes_requested, each already counted; an escalation by hand counts on its own.
+    if (from && by !== HUB) this.d.board.recordOutcome(from, task.class, false);
     const next = await this.assignOwner(task, by, { candidates: list, event: "escalated", note: `${why}; from ${from ?? "none"}`, context: why });
     if (next.owner && next.owner !== from) {
       this.d.notify(`task ${this.publicTitle(next)} escalated from ${from} to ${next.owner} (${why})`);
@@ -555,10 +589,12 @@ export class Tasks {
    * Budget relay: a paused peer's open work moves on. `local` first (it has no quota), then the class list, all through
    * the usual constraints. Tasks it was reviewing get another reviewer. Moves are reported, never taken back automatically.
    */
-  async reassignForPause(peer: PeerId, context: string | undefined): Promise<{ id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]> {
+  async reassignForPause(peer: PeerId, context: string | undefined, urgentOnly = false): Promise<{ id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[]> {
     const moved: { id: number; title: string; to: PeerId | null; role: "owner" | "reviewer" }[] = [];
     const routing = this.d.routing();
     for (const task of this.d.board.list()) {
+      // Waiting out a window that resets soon (issue #36): only urgent work moves.
+      if (urgentOnly && !task.signals.includes("urgent")) continue;
       if (task.owner === peer && OPEN.includes(task.state)) {
         const pii = this.isPii(task);
         const candidates = [pii ? LOCAL : PI, pii ? undefined : LOCAL, ...(routing.classes[task.class]?.peers ?? []).filter((p) => p !== LOCAL && p !== PI)].filter((p): p is PeerId => !!p);
