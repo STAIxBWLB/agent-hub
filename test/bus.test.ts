@@ -642,5 +642,5 @@ test("a turn answer over its important budget goes out as status, and the sender
   expect(claude.got.map((e) => `${e.priority}:${e.body}`)).toEqual(["important:main is red", "status:I reverted the bad commit; rebase now"]);
   bus.publish(newEnvelope("claude", "ok", { to: ["codex"] }));
   await tick();
-  expect(codex.got[0]!.body).toContain("your [IMPORTANT] message went out as status: rate limited: too many important messages from codex");
+  expect(codex.got[0]!.body).toMatch(/your \[IMPORTANT\] message went out as status: rate limited: too many important messages from codex$/m); // no advice on how to send it
 });

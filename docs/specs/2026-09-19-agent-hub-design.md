@@ -1006,9 +1006,11 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   parent's sender, `digest` is resolved to the senders it replaced, and the
   priority is capped. The repeat key includes the id of what the message
   answers. `fyi` is never limited: it reaches no peer.
-- An `important` hub_send over its budget is refused, not downgraded, and the
-  reason says to send it without `[IMPORTANT]`. A turn answer has no caller to
-  refuse: over its important budget it is lowered to status and delivered, and
+- An `important` hub_send through the control WS (Claude, and Codex and Kimi
+  through the tools server) over its budget is refused, not downgraded, and the
+  reason says to send it without `[IMPORTANT]`. On the bus path (turn answers,
+  and the hub_send of Pi and the local worker) there is no caller to refuse:
+  over its important budget a message is lowered to status and delivered, and
   the sender is told.
 - A refusal consumes no token and does not count as a send for repeat
   suppression. Limits are off in `DEFAULT_CONFIG` and on with any project config

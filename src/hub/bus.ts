@@ -146,7 +146,8 @@ export class Bus {
       let refused = this.opts.admit?.(env, parent);
       // A turn answer has no caller to refuse: over its important budget it goes out as status, not at all.
       if (refused && env.priority === "important" && !this.opts.admit?.({ ...env, priority: "status" }, parent)) {
-        this.note(peer.id, noteLine(HUB, "decision", `your [IMPORTANT] message went out as status: ${refused}`));
+        // It went out, so the advice on how to send it does not apply.
+        this.note(peer.id, noteLine(HUB, "decision", `your [IMPORTANT] message went out as status: ${refused.replace(/[;:] (retry after \d+ s, or )?send it without \[IMPORTANT\]$/, "")}`));
         env = { ...env, priority: "status" };
         refused = undefined;
       }

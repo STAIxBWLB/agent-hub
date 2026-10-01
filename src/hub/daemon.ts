@@ -285,9 +285,10 @@ export async function startDaemon(opts: DaemonOptions) {
   const journal = new DeliveryJournal({ file: join(opts.stateDir, "hub.db"), projectRoot: opts.cwd, projectId, instanceId, operationId: recoveryOperation });
   // Agents only: the console user and the hub itself are never limited (issue #38).
   // A typo such as "12/min" would read as 0, which turns a limit off without a word: the project default instead.
-  const limits = Object.fromEntries(Object.entries(config.limits).map(([k, v]) => {
+  for (const k of Object.keys(config.limits)) if (!(k in PROJECT_LIMITS)) log(`limits.${k} is not a known limit; ignored`);
+  const limits = Object.fromEntries(Object.entries(PROJECT_LIMITS).map(([k, fallback]) => {
+    const v = config.limits[k as keyof LimitsConfig];
     if (typeof v === "number" && Number.isFinite(v) && v >= 0) return [k, v];
-    const fallback = PROJECT_LIMITS[k as keyof LimitsConfig];
     log(`limits.${k}: ${JSON.stringify(v)} is not a number of 0 or more; using ${fallback}`);
     return [k, fallback];
   })) as unknown as LimitsConfig;
