@@ -918,6 +918,38 @@ test("a board written before #67 reads back unchanged: paths as written, history
   again.close();
 });
 
+// issue #69: model-written text that matches a PII pattern stays on this machine, also on an ordinary task.
+test("a done summary, review note or unmet item matching a PII pattern reaches neither claude-mem nor a cloud peer", async () => {
+  const { tasks, board, peers, saves, notices } = await setup(["claude", "codex", "local"]);
+  const t = await tasks.propose("claude", { title: "follow-up list", class: "implement", owner: "codex" });
+  expect(board.get(t.id)!.reviewer).toBe("claude");
+  await tasks.done("codex", t.id, `exported the list; ${PII}`);
+  await tick();
+  const review = peers.claude!.got.find((e) => e.kind === "review")!.body;
+  expect(review).toContain(`Done by codex: [summary withheld: it matches a PII pattern; ahub task show ${t.id}]`);
+  expect(review).not.toContain("900101");
+  expect(board.get(t.id)!.history.find((h) => h.event === "done")!.note).toContain("900101"); // the console still reads it
+  await tasks.review("claude", t.id, "changes_requested", "fine otherwise", [PII]);
+  await tick();
+  const told = peers.codex!.got.at(-1)!.body;
+  expect(told).toContain(`[review note withheld: it matches a PII pattern; ahub task show ${t.id}]`);
+  expect(told).not.toContain("900101");
+  await until(() => saves().length > 0 || notices.some((n) => n.includes("not saved to shared memory")));
+  await tick();
+  expect(saves().some((s: any) => JSON.stringify(s).includes("900101"))).toBe(false);
+  expect(notices).toContain(`task #${t.id}: a finding note was not saved to shared memory (it matches a PII pattern)`);
+  expect(notices.some((n) => n.includes("900101"))).toBe(false);
+  // the on-prem worker gets the text as written; a summary without a match is unchanged for everyone
+  board.update(t.id, HUB, "reviewer changed", { reviewer: "local" });
+  await tasks.done("codex", t.id, `again; ${PII}`);
+  await tick();
+  expect(peers.local!.got.filter((e) => e.kind === "review").at(-1)!.body).toContain("900101");
+  const plain = await tasks.propose("claude", { title: "plain", class: "implement", owner: "codex" });
+  await tasks.done("codex", plain.id, "added the flag");
+  await tick();
+  expect(peers.claude!.got.filter((e) => e.kind === "review").at(-1)!.body).toContain("Done by codex: added the flag");
+});
+
 test("a board from before plans and dependencies opens with its tasks intact", () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-migrate-"));
   const file = join(dir, "hub.db");
