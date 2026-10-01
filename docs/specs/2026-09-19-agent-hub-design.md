@@ -966,6 +966,7 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   so the daemon's 60 s release timer sweeps for ownerless tasks whose last event
   is `blocked` or `ready` and that wait for nothing: each is offered once per hub
   run, once an attached peer can take it, outside recovery operations.
-- A recovery commit also waits for task operations in flight: they can write the
-  board across awaits, after its integrity digest.
+- A recovery commit also waits for task operations in flight and for completion
+  checks queued or running: both can write the board after its integrity digest
+  (a check the commit's stop kills records `check interrupted`).
 

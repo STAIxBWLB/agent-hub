@@ -521,7 +521,8 @@ export async function startDaemon(opts: DaemonOptions) {
 
   /** One entry point for the task tools, whoever calls them: MCP clients, the local worker, the console. */
   // A task op can write the board across awaits (triage, briefs, the dependents an approval releases): a recovery
-  // commit waits for those in flight, or its integrity digest misses their later writes.
+  // commit waits for those in flight, or its integrity digest misses their later writes. Completion checks outlive
+  // their op, so recoveryReady() also waits for `tasks.checksPending()`: a check the commit's stop kills would write.
   let taskOpsInFlight = 0;
   const taskOp = async (...args: Parameters<typeof taskOpBody>): Promise<string> => {
     taskOpsInFlight++;
@@ -628,7 +629,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   let releasing = false; // gone-owner release (#6) and the ready sweep (#34): one run at a time, and a recovery commit waits for it
   const recoveryReady = () => {
-    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;
+    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;
     if (!recoveryPeerSnapshot) return true;
     const current = recoveryPeers();
     return recoveryPeerSnapshot.every((saved) => {
@@ -1334,7 +1335,7 @@ export async function startDaemon(opts: DaemonOptions) {
       return { t: "recovery", ok: true, aborted: true, recovery: recoveryView() };
     }
     if (msg.op === "commit") {
-      if ((recoveryPhase !== "prepared" && recoveryPhase !== "preparing") || !recoveryReady()) return recoveryError("recovery is not ready; inspect until peers are idle and approvals are complete");
+      if ((recoveryPhase !== "prepared" && recoveryPhase !== "preparing") || !recoveryReady()) return recoveryError("recovery is not ready; inspect until peers are idle, approvals are complete and completion checks have finished");
       recoveryPhase = "prepared";
       recoveryPeerSnapshot ??= Object.values(recoveryPeers());
       const currentPeers = recoveryPeers();

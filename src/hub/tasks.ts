@@ -398,6 +398,9 @@ export class Tasks {
   /** Tasks whose check is queued or running, and the owner it was started for. */
   private readonly checking = new Map<number, PeerId | null>();
   private checkQueue: Promise<void> = Promise.resolve();
+  private pendingChecks = 0;
+  /** Checks queued or running, until their result is on the board: a recovery commit waits for them. */
+  checksPending = () => this.pendingChecks;
 
   /** Whether a completion check is still running for this task. */
   isChecking = (id: number) => this.checking.has(id);
@@ -419,9 +422,11 @@ export class Tasks {
     const pending = this.d.board.update(task.id, by, "done (checking)", { refs: cleanRefs(refs) }, summary);
     this.d.notify(`task ${this.publicTitle(pending)} done by ${by}; its check is queued or running: ${command}`);
     const seen = { events: pending.history.length, owner: pending.owner };
+    this.pendingChecks++;
     this.checkQueue = this.checkQueue
       .then(() => this.finishChecked(pending.id, by, summary, command, seen))
-      .catch((e: Error) => this.d.notify(`task #${pending.id}: its check result could not be recorded: ${e.message}`));
+      .catch((e: Error) => this.d.notify(`task #${pending.id}: its check result could not be recorded: ${e.message}`))
+      .finally(() => this.pendingChecks--);
     return pending;
   }
 

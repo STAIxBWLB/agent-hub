@@ -123,6 +123,24 @@ test("recovery RPC is console-only, fences sends, commits, restores and releases
   void status;
 });
 
+test("a recovery commit waits for a completion check, whose result would land after the commit's board digest", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "agenthub-recovery-check-"));
+  const config = { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, checks: { timeout_s: 60, review: "sleep 1" } };
+  const hub = await startDaemon({ cwd: process.cwd(), projectId: "project-1", instanceId: "instance-1", stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
+  const console_ = await ControlClient.connect(stateDir, { role: "console" });
+  await console_.request({ t: "task", op: "hub_task_propose", args: { title: "x", class: "review" } });
+  expect((await console_.request({ t: "task", op: "hub_task_done", args: { id: 1, summary: "s" } })).text).toContain("its check is queued or running");
+  const op = (o: string) => console_.request({ t: "recovery", op: o, operationId: "op-check", expectedInstanceId: "instance-1" });
+  await op("prepare");
+  expect((await op("commit")).error).toContain("completion checks have finished");
+  let committed: any;
+  for (let n = 0; n < 100 && !(committed = await op("commit")).committed; n++) await Bun.sleep(50);
+  expect(committed.committed).toBe(true);
+  expect(readRestartSnapshot(stateDir, { projectRoot: process.cwd(), projectId: "project-1", operationId: "op-check" })).toBeDefined();
+  await hub.stopped;
+  console_.close();
+});
+
 test("a present corrupt restart snapshot blocks daemon startup", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-recovery-corrupt-"));
   writeFileSync(join(stateDir, "restart.json"), "not-json", { mode: 0o600 });
