@@ -991,3 +991,79 @@ UTC, from `hub.log` and the operation record.
   console: the proxy logs no successes) and was refused example.com, logged as `network: refused example.com:443 (example.com:443 is
   not in local.network_allow)`.
 - After `ahub setup --yes`, `claude plugin list` showed the 0.11.0 plugin.
+
+## 0.11.0 to 0.12.0 attended upgrade (2026-10-01)
+
+A scratch git project ran a 0.11.0 hub whose `.agenthub/config.local.json` set
+both settings 0.12.0 retires, `"local": { "sandbox": "allow-default",
+"bash_network": "direct" }`, with two tasks and an open budget pause (a peer had attached once and gone offline, and
+`ahub budget set` fed it a 95% reading). No peer was attached at the upgrade.
+Times are UTC, from `hub.log`, the operation record and saved command output.
+
+- 0.12.0 was published at 10:35:02 (the registry's `time` field); a saved
+  cache-busting registry read at 10:35:17 showed it as `latest` with SLSA
+  provenance.
+- `bunx --package @staix/agent-hub@0.12.0 ahub upgrade --to 0.12.0 --dry-run`
+  listed one project, source 0.11.0, protocol 10, no blockers.
+- `--yes` (10:35:35) created the operation at 10:35:36.0; the source committed at
+  10:35:36.1 and stopped. The 0.12.0 hub logged both notes at
+  10:35:36.3 (`local.sandbox "allow-default" was removed in 0.12.0 ...` and
+  `local.bash_network "direct" ... goes in 0.13.0 ...`), found the pause still
+  open with its reset time, and was up at 10:35:36.4. It started no egress
+  proxy, as `"direct"` asks. The operation, global and plugin install included,
+  completed at 10:35:44.2.
+- The tasks' refs and history and the pause row's columns, dumped with `sqlite3`
+  before and after, were byte-identical.
+- `ahub doctor` in the project showed both notes as `--  retired setting` rows,
+  and after `ahub setup --yes`, `claude plugin list` showed the 0.12.0 plugin.
+
+## 0.12.0 live use with real agents (2026-10-01)
+
+A disposable git project (`textkit`: `slugify` with three failing tests, `mean` without `median`) ran the released
+0.12.0 hub with real Kimi 2.1.1 under ACP, Pi 0.86.0 headless on the DGX backend, the local worker and real
+codex-cli 0.156.1 behind the hub's app-server proxy. A script stood in for the Codex TUI, and another for the console
+approver: it answered each relayed permission with allow once. No Claude peer was attached. The console proposed the
+work. Times are `hub.log` UTC. Issues #89-#95 come from this run.
+
+- **Codex's own quota reading paused it.** Its `rateLimits` read the week window at 95%. The hub sent the checkpoint request at
+  12:47:42.1, paused Codex at 12:48:00.3 with "checkpoint received", and recorded the hand-off (reset in 3208 min,
+  beyond `wait_max_min` 30). That one checkpoint turn cost 172,176 tokens (#95).
+- **Without a gateway the local worker attached, failed and kept its task.** No model gateway was configured for
+  the project, yet `ahub local` printed "attached" (observed at the console). Its first task envelope (#2) failed
+  three times and was given up at 12:48:09.2 (`hub.log` and the console tail say so), and the task stayed with
+  `local`, not escalated (#89).
+- **Pi's failed turn was escalated.** It failed for the same reason, and #1 moved to Kimi at 12:48:23.2.
+- **Unanswered approvals were cancelled.** Kimi's two `bun test` approvals went unanswered: the approver script had not
+  subscribed to permission pushes yet, a harness error. They were cancelled after 120 s, and Kimi reported that it
+  could not run the tests. #1's completion check (`bun test`) passed, and #1 was approved with no reviewer at
+  12:53:34.6: Claude was absent, Codex paused, and Kimi owned it. Kimi's `reviewer` role in `config.json` counted
+  only once `routing.toml` listed it in the review class, which was edited mid-run (12:49); that is why Pi's #2, #3
+  and #5 got Kimi as reviewer (#92).
+- **A controlled restart carried the queues.** After the gateway settings were added, `ahub restart --yes` with
+  Kimi, Pi and local attached took 13:02:26 to 13:02:30, project verified. Pi's queued and needs_review deliveries
+  carried over.
+- **The pinned model was not served.** With the gateway reachable, the template's `[local] fixed_model` was answered
+  with HTTP 401 ("No active credentials for provider"). #2 was given up again at 13:03:05.8 and 13:04:31.6.
+  `ahub local --model coding` answered "already attached" (observed at the console; #93).
+- **A needs_review delivery held Pi's queue.** #2, reassigned to Pi, waited behind it until the console discarded
+  it (#90). Pi then accepted #2 at 13:07:13, its check passed, and Kimi approved it at 13:07:43.9 with a review
+  note against the plan.
+- **The dependent task became ready, and went to a failing peer.** #3, after #1 and #2, became ready at 13:07:44.0 and
+  was assigned to `local`, whose delivery was given up at 13:07:45.3 (#89). Reassigned to Pi, it was done and
+  approved by Kimi at 13:11:39.6.
+- **The overlap was settled by the agents.** #5 (Pi) was proposed while #4 (Kimi) claimed the same two files, and
+  the claim warned at 13:09:22.3. Pi sent Kimi its plan before editing. Kimi proposed a shared options object and
+  Pi agreed. Both landed, and the suite passed with 18 tests. The hop cap stopped their acknowledgements at hop 4.
+- **The concurrent edit went undetected.** The two turns overlapped on those files, and no conflict was logged:
+  `ahub report` shows `edit conflicts: 0` (#91).
+- **The egress proxy held.** In a Pi turn, `curl` reached registry.npmjs.org (200, in Pi's answer). example.com got
+  "CONNECT tunnel failed, response 403", logged at 13:12:01.0 as `network: refused example.com:443`.
+- **Undo worked both ways** (observed at the console; `ahub undo` writes nothing to `hub.log`). It refused a turn
+  whose files changed later, and listed, then restored, a safe one.
+- **Crash recovery brought the peers back.** `kill -9` hit the daemon while Kimi was in a turn (its turn started
+  at 13:17:56.7; the kill at 13:17:59 was observed at the console). At 13:18:11.6 the next start reported one in-flight delivery in needs_review. Kimi resumed by ACP `session/load` at
+  13:18:12.5, Pi from its session file at 13:18:12.8, and local started fresh; a process check at the console found
+  no orphan from the killed run.
+  Retried from the console, the question reached Kimi led by the loss notice ("The hub stopped unexpectedly ...",
+  with the delivery id), and Kimi answered at 13:19:26.6.
+- **Pi's tokens were missing from the report** (#94).
