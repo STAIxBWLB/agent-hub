@@ -48,8 +48,8 @@ port 443 unless an entry names one) to the hosts in `local.network_allow`, and
 the profile denies every other connection, direct egress and other loopback
 ports (claude-mem's, the Codex app-server's) included. A listed name also
 covers its subdomains; a name that resolves to a loopback or private address is
-refused, and so is plain HTTP. Every refusal is a `network: refused` line in
-`hub.log`. The default list holds the npm, PyPI, crates.io and Go module
+refused, and so is plain HTTP. Each such refusal is a `network: refused` line
+in `hub.log`, by method and host. The default list holds the npm, PyPI, crates.io and Go module
 registries and GitHub's code hosts; set `local.network_allow` in
 `config.local.json` to replace it. `"direct"` keeps the open network of 0.10 and
 earlier for one release. With network on, commands may also read the public CA
@@ -466,9 +466,10 @@ no blocker, and `--yes` stops at staging ("target protocol requires a newer
 coordinator") with an operation left to clear by `ahub recovery abort <id>`. An
 older 0.7.x CLI may lack recovery fixes released after it. The
 [smoke ledger](smoke.md) records dry-runs from real 0.6.4 and 0.7.5 hubs (issue
-#75), an applied upgrade with the 0.7.0 coordinator, and one from a running
-0.8.1 hub with tasks and a budget pause with the 0.9.0 coordinator, and one
-with the 0.10.0 coordinator from a 0.9.0 hub with two completion checks running.
+#75) and these applied upgrades: one with the 0.7.0 coordinator, one with the
+0.9.0 coordinator from a running 0.8.1 hub with tasks and a budget pause, and
+one with the 0.10.0 coordinator from a 0.9.0 hub with one completion check
+running and one queued.
 
 The coordinator verifies and retains the exact target package, preserves its
 own source, and promotes the global CLI only after restored projects pass
@@ -520,9 +521,11 @@ by the next start.
 0.11.0 changes what `local.bash_network: true` means: the local worker's and
 Pi's commands reach the network only through the hub's egress proxy, to the
 hosts in `local.network_allow` (package registries and GitHub's code hosts by
-default). A project that needs another host lists it there; `"direct"` keeps
-the open network of 0.10.0 for one release. Under deny-default each command
-gets a temp dir of its own, and the shared temp dirs are closed.
+default). `local.network_allow` is machine-local and replaces the default list:
+a project that needs another host sets it in `config.local.json` with the
+defaults it still needs. `"direct"` keeps the open network of 0.10.0 for one
+release. Each command gets a temp dir of its own, and under deny-default the
+shared temp dirs are closed.
 
 The 0.7.0 transition stages the verified package and runs a retained
 coordinator from the source tree. It accepts a verified protocol-9 source and

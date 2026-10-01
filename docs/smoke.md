@@ -947,16 +947,17 @@ was attached. Times are UTC.
 
 - At 05:54:46 the console marked task #1 done, which started its 40 s check.
   `bunx --package @staix/agent-hub@0.10.0 ahub upgrade --to 0.10.0 --yes` right
-  after, about a minute after the publish, failed with "registry metadata
+  after, about 90 s after the publish, failed with "registry metadata
   unavailable for @staix/agent-hub@0.10.0" and scheduled nothing; the 0.9.0 hub
   kept running. This is the registry lag from the 0.9.0 entry, met here as an
-  error instead of a stale `npm view`; a `--dry-run` at that time printed no
-  plan either.
-- At 05:55:03 the console marked task #3 done, starting a second check, and
-  `--yes` was applied in the same second. Its plan listed one project, source
-  0.9.0, no blockers. The project stayed `pending` while both checks ran: #1's
-  passed at 05:55:26 and #3's at 05:56:07. The project moved on at 05:56:09
-  and was `verified` at 05:56:16.
+  error instead of a stale `npm view`.
+- At 05:55:03 the console marked task #3 done, which queued its check behind
+  #1's (checks run one at a time), and `--yes` was applied in the same second.
+  Its plan listed one project, source 0.9.0, no blockers. The source did not
+  commit while a check was running or queued: #1's passed at 05:55:26 and #3's
+  at 05:56:07, the source committed and stopped at 05:56:07.1, and the 0.10.0
+  hub was up at 05:56:07.7. The operation, global install included, completed
+  at 05:56:15.
 - After release the hub ran 0.10.0 under a new instance id. All three tasks
   were on the board with their full history (#1 and #3 approved by their
   checks, #2 still proposed), and no history entry recorded an interrupted
