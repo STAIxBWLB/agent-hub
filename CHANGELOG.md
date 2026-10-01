@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- The egress proxy logs every refusal: an oversized request header and an unreachable listed host now leave a `network: refused` line too, the latter with its error code only; a failure after the tunnel opened closes the connection instead of writing an HTTP answer into it (#81).
+
 ## 0.11.0
 
 - Task operations settle model-written arguments before anything reaches the board: an `owner` or `peer` that is not a peer id, or a task id that is not a whole number, is refused with a clear message instead of leaving an ownerless task behind after a database error; `null` and an empty owner mean no owner (#70).
