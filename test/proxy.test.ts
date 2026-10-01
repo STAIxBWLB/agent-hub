@@ -87,3 +87,32 @@ test("the hub runs the proxy only with bash_network true, and closes it when it 
     await off.daemon.stop();
   }
 });
+
+// issue #81: the two refusals that wrote nothing to hub.log, each logged once and without request content.
+test("an oversized header and an unreachable allowlisted target are refused with one log line each", async () => {
+  const closed = await new Promise<number>((resolve) => {
+    const s = createServer();
+    s.listen(0, "127.0.0.1", () => { const port = (s.address() as { port: number }).port; s.close(() => resolve(port)); });
+  });
+  const lines: string[] = [];
+  const proxy = await startEgressProxy({ allow: [`127.0.0.1:${closed}`], log: (l) => lines.push(l) });
+  cleanup.push(() => proxy.close());
+  // the header arrives in many chunks and never ends: one refusal, one line, nothing of the header in it
+  const big = await new Promise<string>((resolve) => {
+    // half-open, as a client that keeps sending after the answer would be
+    const sock = connect({ port: proxy.port, host: "127.0.0.1", allowHalfOpen: true });
+    let got = "";
+    sock.on("data", (d) => (got += d.toString()));
+    sock.on("close", () => resolve(got));
+    sock.on("error", () => resolve(got));
+    // apart, so each chunk is its own data event: past the limit, every one of them would refuse again
+    let i = 0;
+    const send = () => { if (i < 6 && !sock.destroyed) sock.write(`X-Token-${i++}: SECRET-${"z".repeat(3000)}\r\n`, () => setTimeout(send, 30)); };
+    send();
+    setTimeout(() => (sock.destroy(), resolve(got)), 1500);
+  });
+  expect(big).toContain("431");
+  expect(await talk(proxy, `CONNECT 127.0.0.1:${closed} HTTP/1.1\r\n\r\n`)).toContain(`127.0.0.1:${closed} is unreachable, ECONNREFUSED`);
+  expect(lines).toEqual(["network: refused a request (request header too large)", `network: refused 127.0.0.1:${closed} (127.0.0.1:${closed} is unreachable, ECONNREFUSED)`]);
+  expect(lines.join("\n")).not.toContain("SECRET");
+});

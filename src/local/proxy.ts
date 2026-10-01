@@ -75,7 +75,8 @@ export function startEgressProxy(opts: { allow: string[]; log: (line: string) =>
       head = Buffer.concat([head, chunk]);
       const end = head.indexOf("\r\n\r\n");
       if (end < 0) {
-        if (head.length > 8192) refuse(client, 431, "request header too large");
+        // Once: later chunks of the same request must not refuse (and log) again. Nothing of the header is logged.
+        if (head.length > 8192) client.off("data", onData), refuse(client, 431, "request header too large", "a request");
         return;
       }
       client.off("data", onData);
@@ -114,14 +115,22 @@ export function startEgressProxy(opts: { allow: string[]; log: (line: string) =>
     const upstream = connect({ host: address, port, allowHalfOpen: true });
     sockets.add(upstream);
     upstream.on("close", () => sockets.delete(upstream));
+    let open = false;
     upstream.once("connect", () => {
+      open = true;
       client.write(`${http} 200 Connection Established\r\n\r\n`);
       if (rest.length) upstream.write(rest);
       client.pipe(upstream);
       upstream.pipe(client);
       client.resume();
     });
-    upstream.on("error", () => (client.writable && !client.destroyed ? refuse(client, 403, `${host}:${port} is unreachable`) : client.destroy()));
+    // Before the tunnel opens a failure is a refusal, logged with the error code only (never its text). After, the
+    // stream is the client's TLS: an HTTP answer would corrupt it, so the client is just closed.
+    upstream.on("error", (e: NodeJS.ErrnoException) => {
+      if (open || !client.writable || client.destroyed) return void client.destroy();
+      const code = /^E[A-Z]{2,20}$/.test(e.code ?? "") ? `, ${e.code}` : "";
+      refuse(client, 403, `${host}:${port} is unreachable${code}`, `${host}:${port}`);
+    });
     client.on("close", () => upstream.destroy());
   };
 
