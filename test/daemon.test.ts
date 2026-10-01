@@ -8,6 +8,7 @@ import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { HUB, newEnvelope } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
+import { Turns } from "../src/hub/snapshots.ts";
 import { readEvents } from "../src/hub/events.ts";
 import { summarize } from "../src/hub/report.ts";
 import { parse as parseOverlaps } from "../scripts/overlaps.ts";
@@ -24,8 +25,8 @@ const until = async (cond: () => boolean, what = "condition") => {
   if (!cond()) throw new Error(`timed out waiting for ${what}`);
 };
 
-async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots } = {}) {
-  const { memoryUrl, modelUrl, approvals, checks, ignored, snapshots, ...rest } = extra;
+async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number } = {}) {
+  const { memoryUrl, modelUrl, approvals, checks, ignored, snapshots, codex_bin, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
     cwd: ROOT,
@@ -43,6 +44,7 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?:
       ...(checks ? { checks } : {}),
       ...(ignored ? { ignored } : {}),
       ...(snapshots ? { snapshots } : {}),
+      ...(codex_bin ? { codex_bin } : {}),
     },
     permissionTimeoutMs: 200,
     ...rest,
@@ -1046,4 +1048,43 @@ test("snapshots: a turn records what it changed, and ahub undo restores it unles
   expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("one\n");
   expect(existsSync(join(dir, "made.txt"))).toBe(false);
   expect(git("status", "--porcelain").stdout.toString()).toBe(""); // back to the committed state, index untouched
+});
+
+// Review of #47 (F9): the daemon side of `ahub undo --context`, with Codex on the fake app-server.
+test("snapshots: a Codex turn records its native id, and turn_revert reverts the thread while holding Codex's deliveries", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-revert-")));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+  const record = join(dir, "..", `${dir.split("/").at(-1)}-reverts.jsonl`);
+  cleanup.push(() => rmSync(record, { force: true }));
+  const bin = join(dir, "..", `${dir.split("/").at(-1)}-codex.sh`);
+  writeFileSync(bin, `#!/bin/sh\nexec bun ${join(ROOT, "test/fakes/codex-bin.ts")} --record ${record} "$@"\n`, { mode: 0o755 });
+  cleanup.push(() => rmSync(bin, { force: true }));
+  const freePort = () => { const s = Bun.serve({ port: 0, fetch: () => new Response() }); const p = s.port as number; s.stop(true); return p; };
+  const [appPort, proxyPort] = [freePort(), freePort()];
+  const { stateDir, daemon, console_ } = await hub({ cwd: dir, snapshots: { enabled: true, keep: 20 }, codex_bin: bin, codexAppPort: appPort, codexProxyPort: proxyPort });
+  expect((await console_.request({ t: "start", peer: "codex" })).ok).toBe(true);
+  const tui = new WebSocket(`ws://127.0.0.1:${proxyPort}`);
+  cleanup.push(() => tui.close());
+  await new Promise((r) => (tui.onopen = r));
+  tui.send(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "fake-tui" } } }));
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => daemon.bus.stateOf("codex") === "idle", "codex thread");
+  expect((await console_.request({ t: "send", body: "do it", to: ["codex"] })).ok).toBe(true);
+  const file = join(stateDir, "events.jsonl");
+  await until(() => readEvents(file).some((e) => e.type === "turn_end" && e.peer === "codex"), "the codex turn");
+  await until(() => daemon.bus.stateOf("codex") === "idle" && daemon.bus.queued("codex") === 0, "a quiet codex");
+  const records = new Turns(join(stateDir, "hub.db"), true);
+  const latest = records.latest("codex")!;
+  records.close();
+  expect(latest.native).toMatch(/^turn\d+$/);
+  const turn = latest.id;
+  const states: string[] = [];
+  const off = daemon.bus.tap((e) => void (e.t === "state" && e.peer === "codex" && states.push(e.state)));
+  const reverted = await console_.request({ t: "task", op: "turn_revert", args: { turn } });
+  off();
+  expect(reverted).toMatchObject({ ok: true, text: `Codex's conversation no longer holds turn ${turn}` });
+  expect(readFileSync(record, "utf8").trim().split("\n").map((l) => JSON.parse(l))).toEqual([{ threadId: "th1", beforeTurnId: latest.native }]);
+  expect(states).toEqual(["paused", "idle"]); // held during the revert, released after
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain(`turn_revert ${turn}: Codex conversation reverted to before ${latest.native}`);
 });

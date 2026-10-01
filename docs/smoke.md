@@ -855,5 +855,7 @@ the claim overlap warnings (0.7.6 and later), then the owner decides in issue #8
   median, 47.6 ms max; each turn adds 68 KiB of loose objects. A turn that changes
   nothing writes no objects.
 - Live leg, pending: `ahub undo <turn> --yes --context` against a real Codex TUI,
-  checking that the TUI drops the reverted turn from its view on `thread/reverted`.
+  checking that the TUI drops the reverted turn from its view on `thread/reverted`,
+  and that Codex's running session no longer knows the turn (ask it about the
+  reverted turn): the schema says `thread/revert` changes only the saved history.
 

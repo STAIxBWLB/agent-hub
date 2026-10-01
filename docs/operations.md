@@ -126,7 +126,8 @@ structured events instead of log lines.
 
 ## Turns and undo
 
-In a git work tree the hub snapshots the tracked and unignored files when a peer
+In a git work tree the hub snapshots the project's tracked and unignored files (the
+project directory only, when it is part of a larger repository) when a peer
 turns busy and again when it stops. The snapshots are git tree objects written
 through a temporary index, so your index, HEAD and branches stay as they are. The
 files a turn changed are the difference between its two snapshots, which counts
@@ -141,16 +142,26 @@ ahub undo <turn> --yes            # puts those files back as they were when the 
 ahub undo <turn> --yes --context  # Codex's latest turn: also drop it from Codex's conversation
 ```
 
-- `ahub undo` refuses, naming the files, when any file the turn changed has
-  changed again since the turn ended, by another peer or by you: restoring it
-  would lose that work. Nothing is restored then.
+- A turn's files are everything that changed in the project while it ran,
+  whoever changed them: the hub cannot tell Claude's or your edits made during
+  the turn from the peer's own.
+- `ahub undo` refuses the whole turn, naming the files, when a file it changed
+  has changed again since the turn ended (by anyone; modes, symlinks and a
+  directory in a deleted file's place count), or when another peer's turn that
+  ran at the same time changed it too, so the change may be theirs. Nothing is
+  restored then. It plans again right before restoring and stops if anything
+  moved meanwhile. A turn that is already undone says so.
 - A file the turn created is deleted; a file it deleted comes back.
-- Undo while the peers are idle: a change made during another peer's turn counts
-  as part of that turn.
 - `--context` asks Codex (`thread/revert`) to drop the turn, and every later one,
-  from its conversation history before the files are restored. It changes no
-  file itself, works only on Codex's latest recorded turn while Codex is idle,
-  and is logged in hub.log.
+  from its thread's saved history before the files are restored; Codex receives
+  nothing while that runs. It changes no file itself, works only on Codex's
+  latest recorded turn while Codex is idle, and is logged in hub.log. Whether
+  Codex's running session also forgets the turn, or only its saved history, is
+  still to be checked against a live Codex (docs/smoke.md).
+- A turn of a peer working on a PII task is not snapshotted, so it cannot be
+  undone: its content would otherwise stay in git's object store until gc.
+- A turn the hub stopped in the middle of shows as `(no end snapshot)` and
+  cannot be undone.
 - Claude's turns are not recorded: its channel shows the hub no turn boundary.
   Claude Code's own checkpoints cover its edits, though not its shell commands.
 - The snapshots are unreferenced objects in the repository's own object store, so

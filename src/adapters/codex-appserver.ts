@@ -339,7 +339,7 @@ export class CodexPeer extends BasePeer {
     if (typeof msg.id === "number" && msg.id < 0 && !msg.method) {
       const p = this.pending.get(msg.id);
       this.pending.delete(msg.id);
-      if (msg.error) p?.reject(new Error(msg.error.message ?? "turn/start rejected"));
+      if (msg.error) p?.reject(new Error(msg.error.message ?? "app-server rejected the request"));
       else p?.resolve(msg.result);
       return; // ours: the TUI never asked for it
     }

@@ -880,4 +880,15 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   The CLI asks for it with `--context` (off by default) through the console task
   op `turn_revert`, a new op name on an existing message shape.
 - Claude's turns are not recorded: the channel has no turn boundary.
+- Not built from the issue's design: a disk cap (the objects stay until `git gc`;
+  `snapshots.keep` prunes only the records) and 0700 snapshots (the objects carry
+  the repository's own permissions).
+- After review: the undo plan reads the current state with one more snapshot
+  and refuses a path when anything at or under it differs from the turn's end
+  tree, or when another peer's turn that overlapped this one in time changed it;
+  paths reach git as `:(literal)` pathspecs; the plan is made again right before
+  restoring; snapshots cover the project prefix only and run with a 10 s git
+  timeout; turns of a peer with a PII task in progress are not snapshotted; turns
+  left open by a stopped hub are closed without an end snapshot; Codex receives
+  nothing while `thread/revert` runs.
 

@@ -1,5 +1,5 @@
 // Fake `codex app-server` (v2 shapes from codex-cli 0.154.0 generate-json-schema). One thread, echo turns.
-export function startFakeAppServer(delayMs = 30) {
+export function startFakeAppServer(delayMs = 30, port = 0, onRevert?: (params: { threadId: string; beforeTurnId: string }) => void) {
   let turnSeq = 0;
   let threadTotal = 0; // the thread's running token total, as Codex keeps it
   const usage = (n: number) => ({ totalTokens: n, inputTokens: n - 10, outputTokens: 10, cachedInputTokens: 0, reasoningOutputTokens: 0 });
@@ -9,7 +9,7 @@ export function startFakeAppServer(delayMs = 30) {
   const reverted: { threadId: string; beforeTurnId: string }[] = [];
   const server = Bun.serve({
     hostname: "127.0.0.1",
-    port: 0,
+    port,
     fetch(req, srv) {
       if (new URL(req.url).pathname === "/healthz") return new Response("ok");
       return srv.upgrade(req) ? undefined : new Response("no", { status: 400 });
@@ -30,6 +30,7 @@ export function startFakeAppServer(delayMs = 30) {
         if (msg.method === "account/rateLimits/read") return reply({ rateLimits: { primary: { usedPercent: 93, windowDurationMins: 300, resetsAt: 1_900_000_000 }, secondary: null } });
         if (msg.method === "thread/revert") {
           reverted.push(msg.params);
+          onRevert?.(msg.params);
           reply({ thread: { id: msg.params.threadId, turns: [] }, itemsBackwardsCursor: null, turnsBackwardsCursor: null });
           return note("thread/reverted", { threadId: msg.params.threadId });
         }

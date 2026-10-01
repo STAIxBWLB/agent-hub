@@ -439,13 +439,16 @@ export async function startDaemon(opts: DaemonOptions) {
   // Turns and their tokens for telemetry (issue #40). Turn ids carry the hub run, so they stay unique across restarts.
   const runId = Date.now().toString(36);
   let turnSeq = 0;
-  const turns = new Map<PeerId, { id: string; start: number; tokens: number; tree?: string; snapshotMs?: number }>();
+  const turns = new Map<PeerId, { id: string; start: number; tokens: number; tree?: string; snapshotMs?: number; private?: boolean }>();
   // Per-turn snapshots (issue #33): a git tree at both turn boundaries, recorded in hub.db for `ahub turns` and `ahub undo`.
   const repo = config.snapshots.enabled ? repoOf(opts.cwd) : undefined;
   if (config.snapshots.enabled && !repo) log("snapshots: the project is not in a git work tree, so turns are not recorded");
   const turnLog = repo ? new Turns(join(opts.stateDir, "hub.db")) : undefined;
   if (turnLog) startupCleanup.push(() => turnLog.close());
-  /** A snapshot that fails costs the undo record of that turn and nothing else: delivery never waits on it. */
+  /**
+   * A snapshot that fails costs the undo record of that turn and nothing else. The peer's prompt waits for it (it
+   * runs inside the state change), at most the git timeout in snapshots.ts.
+   */
   const snap = (what: string): { tree?: string; ms: number } => {
     const t0 = performance.now();
     let tree: string | undefined;
@@ -568,7 +571,14 @@ export async function startDaemon(opts: DaemonOptions) {
         if (turnLog!.latest("codex")?.id !== turn.id) throw new Error(`turn ${turn.id} is not Codex's latest turn; reverting it would drop the later ones too`);
         const codex = bus.peers.get("codex");
         if (!(codex instanceof CodexPeer)) throw new Error("codex is not attached");
-        await codex.revert(turn.native);
+        // Nothing may reach Codex while its history is rewritten: a turn started meanwhile would go with the reverted ones.
+        const held = bus.stateOf("codex") !== "paused";
+        if (held) bus.pause("codex");
+        try {
+          await codex.revert(turn.native);
+        } finally {
+          if (held && !manualPaused.has("codex") && !budget.record("codex")) bus.resume("codex");
+        }
         log(`turn_revert ${turn.id}: Codex conversation reverted to before ${turn.native}`);
         return `Codex's conversation no longer holds turn ${turn.id}`;
       }
@@ -729,18 +739,20 @@ export async function startDaemon(opts: DaemonOptions) {
       const busy = (bus.peers.get(e.peer)?.state ?? e.state) === "busy";
       if (busy && !open) {
         const id = `${e.peer}#${runId}.${++turnSeq}`;
-        const start = turnLog ? snap(`the start of ${id}`) : undefined; // before the peer is handed anything: the tap runs inside setState
-        try { turnLog?.begin(id, e.peer, start?.tree); } catch (error) { log(`turn record ${id}: ${(error as Error).message}`); }
-        turns.set(e.peer, { id, start: Date.now(), tokens: 0, ...(start ? { tree: start.tree, snapshotMs: start.ms } : {}) });
+        // A turn on a PII task is not snapshotted: what it writes would stay in git's object store until gc.
+        const pii = board.list("in_progress").some((t) => t.owner === e.peer && tasks.isPii(t));
+        const start = turnLog && !pii ? snap(`the start of ${id}`) : undefined; // before the peer is handed anything: the tap runs inside setState
+        if (!pii) try { turnLog?.begin(id, e.peer, start?.tree); } catch (error) { log(`turn record ${id}: ${(error as Error).message}`); }
+        turns.set(e.peer, { id, start: Date.now(), tokens: 0, ...(start ? { tree: start.tree, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
         event({ type: "turn_start", peer: e.peer, turn: id });
       } else if (!busy && open) {
         turns.delete(e.peer);
         let files: number | undefined;
         let snapshotMs = open.snapshotMs;
-        if (turnLog) {
+        if (turnLog && !open.private) {
           const end = snap(`the end of ${open.id}`);
-          const changed = open.tree && end.tree ? changedPaths(repo!.top, open.tree, end.tree) : [];
-          files = changed.length;
+          const changed = open.tree && end.tree ? changedPaths(repo!, open.tree, end.tree) : [];
+          if (open.tree && end.tree) files = changed.length; // unknown, not zero, when a snapshot failed
           snapshotMs = (snapshotMs ?? 0) + end.ms;
           try { turnLog.end(open.id, end.tree, changed, Math.max(1, Number(config.snapshots.keep) || 20)); } catch (error) { log(`turn record ${open.id}: ${(error as Error).message}`); }
         }

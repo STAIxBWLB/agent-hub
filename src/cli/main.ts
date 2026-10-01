@@ -296,7 +296,6 @@ async function taskOp(op: string, a: Record<string, unknown>): Promise<string> {
   return res.text;
 }
 
-/** `--flag value` pairs pulled out of an argument list; the rest keeps its order. */
 /** Reads hub.db's turn records; `none` when the hub never kept one (snapshots off, no git work tree, an older hub). */
 function turnRecords<T>(read: (turns: Turns) => T, none: T): T {
   const db = join(stateDir, "hub.db");
@@ -313,6 +312,7 @@ function turnRecords<T>(read: (turns: Turns) => T, none: T): T {
   }
 }
 
+/** `--flag value` pairs pulled out of an argument list; the rest keeps its order. */
 function takeFlags(argv: string[], single: string[], repeated: string[]) {
   const one: Record<string, string> = {};
   const many: Record<string, string[]> = {};
@@ -761,8 +761,12 @@ const commands: Record<string, () => Promise<void> | void> = {
     const rows = turnRecords((t) => t.list(rest[0], Number(one["--limit"]) || 20), []);
     if (!rows.length) return console.log("no turns recorded (they need a git work tree and snapshots.enabled)");
     for (const r of rows) {
-      const files = r.changed.length ? `: ${r.changed.slice(0, 5).join(", ")}${r.changed.length > 5 ? ", ..." : ""}` : "";
-      console.log(`${r.id}  ${new Date(r.started).toLocaleString()}${r.ended ? "" : " (running)"}  ${r.changed.length} files${files}`);
+      const shown = r.changed.slice(0, 5).join(", ") + (r.changed.length > 5 ? ", ..." : "");
+      const files = r.changed.length ? `: ${shown}` : "";
+      let status = "";
+      if (!r.ended) status = " (running)";
+      else if (!r.end_tree) status = " (no end snapshot)";
+      console.log(`${r.id}  ${new Date(r.started).toLocaleString()}${status}  ${r.changed.length} files${files}`);
     }
   },
   undo: async () => {
@@ -770,17 +774,34 @@ const commands: Record<string, () => Promise<void> | void> = {
     const turn = turnRecords((t) => t.get(id), undefined) ?? fail(`no turn ${id} recorded (ahub turns lists them)`);
     if (!turn.ended) fail(`turn ${id} is still running`);
     const { start_tree: startTree, end_tree: endTree } = turn;
-    if (!startTree || !endTree) fail(`turn ${id} has no snapshot to restore from (see hub.log)`);
-    const top = repoOf(cwd)?.top ?? fail(`${cwd} is not in a git work tree`);
-    if (!hasTree(top, startTree) || !hasTree(top, endTree)) fail(`turn ${id}'s snapshots are gone from the git object store (git gc prunes them after two weeks)`);
-    const plan = planUndo(top, { start_tree: startTree, end_tree: endTree, changed: turn.changed });
-    if (plan.conflicts.length) fail(`refusing to undo ${id}: these files changed again after it ended, and restoring them would lose that work:\n  ${plan.conflicts.join("\n  ")}`);
-    console.log(plan.restore.length ? `turn ${id} changed:\n  ${plan.restore.join("\n  ")}` : `turn ${id} changed no files`);
+    if (!startTree || !endTree) fail(`turn ${id} has no ${startTree ? "end" : "start"} snapshot: the hub stopped during it, or a snapshot failed (see hub.log)`);
+    const repo = repoOf(cwd) ?? fail(`${cwd} is not in a git work tree`);
+    if (!hasTree(repo.top, startTree) || !hasTree(repo.top, endTree)) fail(`turn ${id}'s snapshots are gone from the git object store (git gc prunes them after two weeks)`);
+    // Another peer's turn that overlapped this one in time has its changes in this turn's diff as well.
+    const overlapping = turnRecords((t) => t.overlapping(turn), [] as string[]);
+    const plan = () => {
+      const p = planUndo(repo, { start_tree: startTree, end_tree: endTree, changed: turn.changed }, overlapping);
+      if (p.undone) return p;
+      const why = [
+        p.changedSince.length ? `these files changed again after it ended, and restoring them would lose that work:\n  ${p.changedSince.join("\n  ")}` : "",
+        p.concurrent.length ? `these files were also changed by another peer's turn running at the same time, so the change may be theirs:\n  ${p.concurrent.join("\n  ")}` : "",
+      ].filter(Boolean);
+      if (why.length) fail(`refusing to undo ${id}: ${why.join("\n")}`);
+      return p;
+    };
+    const first = plan();
+    if (first.undone) return console.log(`turn ${id} is already undone: its files are as they were before it started`);
+    console.log(first.restore.length ? `turn ${id} changed:\n  ${first.restore.join("\n  ")}` : `turn ${id} changed no files`);
+    console.log("(every change made in the project during the turn counts as its own, including any by Claude or by you)");
     if (!args.includes("--yes")) return console.log("nothing was changed; add --yes to restore these files");
     if (args.includes("--context")) console.log(await taskOp("turn_revert", { turn: id }));
-    restore(top, startTree, plan.restore);
-    if (plan.restore.length) console.log(`restored to their state before ${id}`);
+    // A peer may have written meanwhile (the revert alone can take seconds): plan again right before restoring.
+    const second = plan();
+    if (second.restore.join("\0") !== first.restore.join("\0")) fail("the project changed while undoing; nothing was restored, run ahub undo again");
+    restore(repo, startTree, second.restore);
+    if (second.restore.length) console.log(`restored to their state before ${id}`);
   },
+
 
   kill: async () => {
     const registry = new Registry();
