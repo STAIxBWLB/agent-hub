@@ -2,7 +2,9 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { profile, sandboxAvailable, sandboxedExec } from "../src/local/sandbox.ts";
+import { profile, proxyEnv, sandboxAvailable, sandboxedExec } from "../src/local/sandbox.ts";
+import { startEgressProxy } from "../src/local/proxy.ts";
+import { createServer } from "node:net";
 import { guardPath, isDenied, runTool, type ToolContext } from "../src/local/tools.ts";
 
 function project(permit = true) {
@@ -289,5 +291,30 @@ test.skipIf(!sandboxAvailable())("a command cannot read what other processes lef
   } finally {
     rmSync(shared, { force: true });
     rmSync(tmp, { force: true });
+  }
+});
+
+// issue #65: with network on, the only way out is the hub's egress proxy; a direct connection, or one to another
+// loopback port (where claude-mem and the Codex app-server listen), is denied by the profile.
+test.skipIf(!sandboxAvailable())("network through the proxy: an allowed target only via the proxy; direct and other loopback ports denied", async () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-egress-")));
+  const listen = () => new Promise<{ port: number; close: () => void }>((resolve) => {
+    const server = createServer((c) => c.on("data", (d) => c.write(d)));
+    server.listen(0, "127.0.0.1", () => resolve({ port: (server.address() as { port: number }).port, close: () => server.close() }));
+  });
+  const [target, other] = [await listen(), await listen()];
+  const proxy = await startEgressProxy({ allow: [`127.0.0.1:${target.port}`], log: () => {} });
+  try {
+    const network = { proxyPort: proxy.port };
+    const run = async (command: string) => (await sandboxedExec(["/bin/sh", "-c", command], { cwd, profile: profile(cwd, network), env: proxyEnv(network) })).output.trim();
+    // macOS nc quits when its stdin ends, so stdin stays open for the echo to come back
+    expect(await run(`(printf ping; sleep 1) | /usr/bin/nc -w 2 -X connect -x 127.0.0.1:${proxy.port} 127.0.0.1 ${target.port}`)).toBe("ping");
+    expect(await run(`printf ping | /usr/bin/nc -w 2 127.0.0.1 ${target.port} 2>/dev/null; echo "exit=$?"`)).toBe("exit=1");
+    expect(await run(`printf ping | /usr/bin/nc -w 2 127.0.0.1 ${other.port} 2>/dev/null; echo "exit=$?"`)).toBe("exit=1");
+    expect(await run(`echo "$HTTPS_PROXY $NO_PROXY."`)).toBe(`${proxy.url} .`);
+  } finally {
+    await proxy.close();
+    target.close();
+    other.close();
   }
 });

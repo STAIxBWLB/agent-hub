@@ -55,13 +55,21 @@ const SYSTEM_READABLE = ["/usr", "/bin", "/sbin", "/System", "/Library", "/opt",
  */
 const MACH_SERVICES = ["com.apple.system.opendirectoryd.libinfo", "com.apple.system.DirectoryService.libinfo_v1", "com.apple.system.logger", "com.apple.system.notification_center"];
 const NETWORK_MACH_SERVICES = ["com.apple.dnssd.service", "com.apple.trustd", "com.apple.trustd.agent", "com.apple.networkd"];
+/** Through the egress proxy (#65) the proxy resolves names: only TLS trust is looked up here, no DNS that could carry data. */
+const PROXY_MACH_SERVICES = ["com.apple.trustd", "com.apple.trustd.agent"];
+
+/**
+ * Network for the commands: none, direct (`local.bash_network: "direct"`, everything, kept for one release), or only
+ * the hub's egress proxy on a loopback port (#65), which opens allowlisted hosts.
+ */
+export type SandboxNetwork = boolean | { proxyPort: number };
 
 /**
  * `base` "deny" (issue #39) starts from `(deny default)` and allows only what commands need: running and reading the
  * system, toolchain and project directories, writing the project and temp. "allow" is the profile of 0.9 and earlier,
  * kept for one release behind `local.sandbox: "allow-default"`. The denies at the end apply to both.
  */
-export function profile(cwd: string, network: boolean, readAllow: string[] = [], deny: string[] = [], base: "deny" | "allow" = "deny"): string {
+export function profile(cwd: string, network: SandboxNetwork, readAllow: string[] = [], deny: string[] = [], base: "deny" | "allow" = "deny"): string {
   const home = homedir();
   const inHome = (p: string) => (p.startsWith("~/") ? join(home, p.slice(2)) : p);
   const root = realPath(cwd);
@@ -72,6 +80,7 @@ export function profile(cwd: string, network: boolean, readAllow: string[] = [],
   const readable = [root, ...HOME_READABLE.map((p) => join(home, p)), ...readAllow.map(inHome), ...gitDirs, ...(dev ? [dev] : [])];
   const subpaths = (paths: string[]) => paths.map((p) => `(subpath ${q(p)})`).join(" ");
   const globals = (names: string[]) => names.map((n) => `(global-name ${q(n)})`).join(" ");
+  const proxy = typeof network === "object" ? `(allow network-outbound (remote ip ${q(`localhost:${network.proxyPort}`)}))` : undefined;
   const start = base === "deny"
     ? [
         "(deny default)",
@@ -82,16 +91,16 @@ export function profile(cwd: string, network: boolean, readAllow: string[] = [],
         "(allow signal (target same-sandbox))",
         "(allow process-info* (target same-sandbox))",
         "(allow sysctl-read)",
-        `(allow mach-lookup ${globals([...MACH_SERVICES, ...(network ? NETWORK_MACH_SERVICES : [])])})`,
+        `(allow mach-lookup ${globals([...MACH_SERVICES, ...(proxy ? PROXY_MACH_SERVICES : network ? NETWORK_MACH_SERVICES : [])])})`,
         '(allow ipc-posix-shm-read-data ipc-posix-shm-read-metadata (ipc-posix-name "apple.shm.notification_center"))',
         "(allow file-read-metadata)",
         `(allow file-read* (literal "/") ${subpaths([...SYSTEM_READABLE, "/dev"])} ${subpaths(readable)})`,
         '(allow file-ioctl (regex #"^/dev/"))',
-        ...(network ? ["(allow network*)"] : []),
+        ...(proxy ? [proxy] : network ? ["(allow network*)"] : []),
       ]
     : [
         "(allow default)",
-        ...(network ? [] : ["(deny network*)"]),
+        ...(network === true ? [] : ["(deny network*)", ...(proxy ? [proxy] : [])]),
         // Home is default-deny for reads: whatever a command reads can end up in the model's answer, and that answer
         // is shared with agents that run on cloud subscriptions (~/.claude.json, app tokens, browser profiles ...).
         `(deny file-read* (subpath ${q(home)}))`,
@@ -120,14 +129,14 @@ export interface ExecResult {
 }
 
 /** Run argv under seatbelt with a scrubbed environment. Never runs unsandboxed: no sandbox, no exec. */
-export function sandboxedExec(argv: string[], opts: { cwd: string; profile: string; timeoutMs?: number }): Promise<ExecResult> {
+export function sandboxedExec(argv: string[], opts: { cwd: string; profile: string; timeoutMs?: number; env?: Record<string, string> }): Promise<ExecResult> {
   if (!sandboxAvailable()) return Promise.resolve({ code: null, output: "error: command execution needs macOS sandbox-exec and is disabled on this host" });
   return new Promise((resolve) => {
     // A temp dir of its own (#63): the user's is shared with every other process, and what a command reads can reach
     // an answer shown to cloud peers. Allowed after the profile's denies, and gone when the command ends.
     const own = realPath(mkdtempSync(join(tmpdir(), "ahub-cmd-")));
     const sandbox = `${opts.profile}\n(allow file-read* file-write* process-exec (subpath ${q(own)}))`;
-    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", TMPDIR: `${own}/` };
+    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...opts.env, TMPDIR: `${own}/` };
     // Own process group: a timeout has to take the grandchildren too, or they keep the pipes open and the project writable.
     const child = spawn(SANDBOX_EXEC, ["-p", sandbox, ...argv], { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let output = "";
@@ -165,4 +174,11 @@ export function sandboxedExec(argv: string[], opts: { cwd: string; profile: stri
     // `close` waits for every holder of the pipes; after `exit` give stragglers a moment, then stop waiting and reap them.
     child.on("exit", (code, signal) => setTimeout(() => (killGroup(), finish(code, signal)), 500).unref());
   });
+}
+
+/** The environment that sends a command's HTTPS through the egress proxy (#65); empty without one. */
+export function proxyEnv(network: SandboxNetwork): Record<string, string> {
+  if (typeof network !== "object") return {};
+  const url = `http://127.0.0.1:${network.proxyPort}`;
+  return { HTTPS_PROXY: url, https_proxy: url, HTTP_PROXY: url, http_proxy: url, ALL_PROXY: url, all_proxy: url, NO_PROXY: "", no_proxy: "" };
 }
