@@ -969,6 +969,13 @@ test("the review envelope carries a checklist against the plan and the check res
   expect(board.get(t.id)!.history.find((h) => h.event === "changes_requested")!.note).toBe("close\nUnmet: set() does not take a value; no test for overwrite");
   await tick();
   expect(peers.codex!.got.at(-1)!.body).toContain("Unmet: set() does not take a value; no test for overwrite");
+  // without a plan the detail is the contract, so the request carries it
+  const bare = await tasks.propose("codex", { title: "evict", detail: "evict the oldest key when full", class: "implement", owner: "codex" });
+  await tasks.done("codex", bare.id, "added evict");
+  release();
+  await until(() => board.get(bare.id)!.state === "in_review");
+  const second = peers.claude!.got.filter((e) => e.kind === "review").at(-1)!.body;
+  expect(second).toContain("Task detail:\nevict the oldest key when full\nChecklist:\n- Map the changed signatures and call sites to the task detail above,");
 });
 
 test("review outcomes: approvals, caught changes, contradicted approvals (once) and escalations are recorded per task", async () => {

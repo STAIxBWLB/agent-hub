@@ -603,7 +603,9 @@ test("task tools from every surface: Claude plugin, a tools-role client acting f
 
   const verdict: any = await client.callTool({ name: "hub_review", arguments: { id: 1, verdict: "approved", note: "fine" } });
   expect(verdict.content[0].text).toContain("approved");
-  expect((await first.console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text).toContain('"event": "approved"');
+  const shown = JSON.parse((await first.console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text);
+  expect(shown.history.map((h: { event: string }) => h.event)).toContain("approved");
+  expect(shown.reviews).toEqual([expect.objectContaining({ implementer: "kimi", reviewer: "claude", class: "test", kind: "approved", task: 1 })]); // #35
   expect((await first.console_.request({ t: "status" })).status.tasks).toEqual({ approved: 1 });
   const peerOnly: any = await client.callTool({ name: "hub_task_list", arguments: {} });
   expect(JSON.parse(peerOnly.content[0].text)).toHaveLength(1);
@@ -1309,15 +1311,4 @@ test("limits: a hub_send burst is refused with the retry time, a repeat is dropp
 test("limits: a value that is not a number falls back to the project default, with a line in hub.log", async () => {
   const { stateDir } = await hub({ limits: { ...DEFAULT_CONFIG.limits, sender_per_min: "12/min" as unknown as number } });
   expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain('limits.sender_per_min: "12/min" is not a number of 0 or more; using 12');
-});
-
-// issue #35: ahub task show includes the task's review outcomes.
-test("task show lists the task's recorded review outcomes", async () => {
-  const { console_ } = await hub();
-  const op = async (o: string, args: unknown) => console_.request({ t: "task", op: o, args });
-  await op("hub_task_propose", { title: "x", class: "implement", owner: "user" });
-  await op("hub_task_done", { id: 1, summary: "done" });
-  const shown = JSON.parse((await op("task_show", { id: 1 })).text);
-  expect(shown.reviews).toEqual([]);
-  expect(shown.title).toBe("x");
 });

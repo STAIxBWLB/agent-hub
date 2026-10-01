@@ -1018,6 +1018,10 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
 
 ## Amendment: review checklists and outcomes (issue #35)
 
+- A review request carries a checklist: map the changed signatures and call
+  sites to the task's plan, or without a plan to the task detail, which the
+  request then includes; the result of the class's check, or that none ran; and
+  `hub_review`'s `unmet`, one item each, which is appended to the verdict note.
 - Review outcomes live in a `reviews` table in hub.db: implementer, reviewer,
   class, kind, task, time. Kinds: `approved`; `caught` (each reviewer who asked
   for changes on a task that was then approved); `contradicted` (an approval,

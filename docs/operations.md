@@ -88,7 +88,8 @@ that effect. The hub can reassign after repeated review changes according to
 the routing configuration.
 
 A review request carries a checklist: map the changed signatures and call sites
-to the task's plan (or its detail), read the check result, and list what is
+to the task's plan (without one, to its detail, which the request then
+includes), read the check result, and list what is
 unmet (`hub_review` takes `unmet`, `ahub review ... --unmet <item>`). The hub
 records how each review turned out, per implementer, reviewer and class:
 approved; caught (changes were requested and the redo was approved);

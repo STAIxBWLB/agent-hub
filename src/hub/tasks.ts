@@ -577,11 +577,11 @@ export class Tasks {
     const check = [...task.history].reverse().find((h) => h.event === "check passed");
     const checklist = [
       "Checklist:",
-      `- Map the changed signatures and call sites to ${plan ? `the plan (${plan})` : "the task detail"}, and name each one that does not match.`,
+      `- Map the changed signatures and call sites to ${plan ? `the plan (${plan})` : task.detail ? "the task detail above" : "the task title"}, and name each one that does not match.`,
       `- ${check ? `Check result: ${(check.note ?? "").split("\n")[0]}` : "No check ran for this class: run the affected tests yourself."}`,
       `- List what is unmet in hub_review's unmet, one item each.`,
     ].join("\n");
-    const body = `Review task #${task.id} [${task.class}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${last?.note ?? "(no summary)"}\n${where ? `Where: ${where}\n` : ""}${why ? `${why}\n` : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
+    const body = `Review task #${task.id} [${task.class}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${last?.note ?? "(no summary)"}\n${where ? `Where: ${where}\n` : ""}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
     this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, task: String(task.id) }, ...(this.isPii(task) ? { private: true } : {}) }));
   }
 
