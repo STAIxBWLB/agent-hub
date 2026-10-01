@@ -272,6 +272,14 @@ test.skipIf(!sandboxAvailable())("a command cannot read what other processes lef
     expect(existsSync(own)).toBe(false); // removed when the command ended
     const slow = (await run(`echo "own=$TMPDIR"; sleep 5`, 300)).output;
     expect(existsSync(slow.match(/own=(\S+)/)![1]!)).toBe(false); // also after a timeout
+    const locked = (await run(`echo "own=$TMPDIR"; touch "$TMPDIR/locked" && chflags uchg "$TMPDIR/locked" && echo LOCKED`)).output;
+    expect(locked).toContain("LOCKED"); // the command could make a file the plain remove cannot delete
+    expect(existsSync(locked.match(/own=(\S+)/)![1]!)).toBe(false); // and the command still ended, its temp dir gone
+    // Apple's python3 (an xcrun shim) runs under deny-default and takes its own temp dir, where it is installed
+    if (Bun.spawnSync(["/usr/bin/python3", "-c", "pass"]).exitCode === 0) {
+      const py = (await run(`echo "own=$TMPDIR"; /usr/bin/python3 -c 'import tempfile; print("py=" + tempfile.gettempdir())'`)).output;
+      expect(py).toContain(`py=${py.match(/own=(\S+)/)![1]!.replace(/\/$/, "")}`);
+    }
   } finally {
     rmSync(shared, { force: true });
     rmSync(tmp, { force: true });

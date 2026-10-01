@@ -37,7 +37,8 @@ The local worker's commands run under a sandbox that starts from deny default
 (0.10): they may run and read the system, toolchain and project directories and
 the selected Xcode or Command Line Tools dir (`xcode-select -p`), write the
 project and a temp dir of their own (`TMPDIR`, made for each command and
-removed when it ends), and nothing else; the shared temp dirs are closed. With `local.bash_network` on they may also
+removed when it ends; one left by a hub crash, named `ahub-cmd-*`, goes with
+the OS temp cleanup), and nothing else; the shared temp dirs are closed. With `local.bash_network` on they may also
 read the public CA bundles and Python's `certifi/cacert.pem`, which the `*.pem`
 key deny would otherwise hide.
 `"local": { "sandbox": "allow-default" }` in `config.local.json` brings back the

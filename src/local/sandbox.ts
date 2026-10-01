@@ -137,17 +137,24 @@ export function sandboxedExec(argv: string[], opts: { cwd: string; profile: stri
         child.kill("SIGKILL");
       }
     };
+    // Best effort, never in the way of the result: a command can mark its files immutable (`chflags uchg`), and then
+    // the plain remove throws. What still fails is left to the OS temp cleanup.
+    const dropOwn = () => {
+      try { rmSync(own, { recursive: true, force: true }); } catch {
+        try { spawnSync("chflags", ["-R", "nouchg", own]); rmSync(own, { recursive: true, force: true }); } catch { /* left behind */ }
+      }
+    };
     const timer = setTimeout(killGroup, opts.timeoutMs ?? 120_000);
     let done = false;
     const finish = (code: number | null, signal: NodeJS.Signals | null) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      rmSync(own, { recursive: true, force: true });
+      dropOwn();
       const clipped = output.length >= OUTPUT_CAP ? `${output.slice(0, OUTPUT_CAP)}\n(output truncated)` : output;
       resolve({ code, output: signal ? `${clipped}\n(killed: ${signal}, timeout?)` : clipped });
     };
-    child.on("error", (e) => (done || ((done = true), rmSync(own, { recursive: true, force: true }), resolve({ code: null, output: `error: ${e.message}` }))));
+    child.on("error", (e) => (done || ((done = true), dropOwn(), resolve({ code: null, output: `error: ${e.message}` }))));
     child.on("close", finish);
     // `close` waits for every holder of the pipes; after `exit` give stragglers a moment, then stop waiting and reap them.
     child.on("exit", (code, signal) => setTimeout(() => (killGroup(), finish(code, signal)), 500).unref());
