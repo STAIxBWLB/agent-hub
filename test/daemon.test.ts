@@ -1277,3 +1277,15 @@ test("conflicts: a long turn spanning another peer's edit does not make that pee
   const seq = readEvents(file).filter((e) => (e.type === "turn_start" || e.type === "turn_end") && e.peer === "kimi").map((e) => e.type);
   for (let i = 1; i < seq.length; i++) expect(seq[i]).not.toBe(seq[i - 1]);
 });
+
+// issue #34: the ready queue as agents and the console see it.
+test("hub_task_list ready: proposed tasks with nothing left to wait for", async () => {
+  const { console_ } = await hub();
+  const op = async (o: string, args: unknown) => console_.request({ t: "task", op: o, args });
+  await op("hub_task_propose", { title: "first", class: "implement" });
+  await op("hub_task_propose", { title: "second", class: "implement", after: [1] });
+  const ready = JSON.parse((await op("hub_task_list", { ready: true })).text) as { id: number }[];
+  expect(ready.map((t) => t.id)).toEqual([1]);
+  const all = JSON.parse((await op("hub_task_list", {})).text) as { id: number; deps: number[] }[];
+  expect(all.find((t) => t.id === 2)!.deps).toEqual([1]);
+});

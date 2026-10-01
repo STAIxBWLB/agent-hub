@@ -946,3 +946,27 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   overlap mentions (#31): notices and the console line count such files, the
   event leaves them out.
 
+## Amendment: task dependencies (issue #34)
+
+- `deps` is a JSON column of task ids, set from `after` when a task is proposed
+  and never changed. It may name only tasks that exist, so the new task closes no
+  cycle (nothing can depend on it yet); the issue's cycle check at propose holds
+  by construction, and unknown ids are refused.
+- A task waits while any dependency is not approved. Waiting is an input to
+  `assign()` (`waitsFor`), which then returns no owner and says why, so `ahub
+  route explain` and assignment agree. Accept and done refuse a waiting task,
+  for the console user too.
+- A proposal that names an owner (a claim, or an owner for someone else) and
+  would wait is refused: the owner of waiting work is chosen when it is ready,
+  by routing or by `ahub task assign`.
+- Approval, by review or by a class without a reviewer, releases the
+  dependents that wait for nothing else; each is recorded as `ready` and assigned.
+  A proposal re-reads what it waits for after its insert, since triage may have
+  awaited an approval. An approval is saved before its dependents are assigned,
+  so the daemon's 60 s release timer sweeps for ownerless tasks whose last event
+  is `blocked` or `ready` and that wait for nothing: each is offered once per hub
+  run, once an attached peer can take it, outside recovery operations.
+- A recovery commit also waits for task operations in flight and for completion
+  checks queued or running: both can write the board after its integrity digest
+  (a check the commit's stop kills records `check interrupted`).
+

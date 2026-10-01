@@ -184,7 +184,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
           if (live.recovery.ready) { sourceRoster(live, planned); break; }
           if (driver.now() >= deadline) {
             await driver.abort(project, id, planned.source.instanceId!);
-            throw new Error(`${project.id}: active turns or approvals did not finish; source runtime left running`);
+            throw new Error(`${project.id}: active turns, approvals or completion checks did not finish; source runtime left running`);
           }
           await driver.sleep(250);
         }

@@ -32,6 +32,8 @@ export interface Task {
   refs: TaskRefs;
   /** Absent only on tasks built outside the board (tests); the board always returns one, `{}` when none was given. */
   plan?: TaskPlan;
+  /** Tasks that must be approved before this one is offered (issue #34); fixed when it is proposed. */
+  deps?: number[];
   signals: string[];
   /** consecutive changes_requested verdicts */
   rejections: number;
@@ -49,7 +51,7 @@ const MOVES: Record<TaskState, TaskState[]> = {
   approved: [],
 };
 
-const JSON_COLS = ["refs", "plan", "signals", "history"] as const;
+const JSON_COLS = ["refs", "plan", "deps", "signals", "history"] as const;
 
 /** Task board in `.agenthub/state/hub.db`. It outlives the hub process: `ahub kill` leaves the file. */
 export class Board {
@@ -67,18 +69,19 @@ export class Board {
       id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', class TEXT NOT NULL,
       owner TEXT, reviewer TEXT, state TEXT NOT NULL, refs TEXT NOT NULL DEFAULT '{}', signals TEXT NOT NULL DEFAULT '[]',
       rejections INTEGER NOT NULL DEFAULT 0, history TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL)`);
-    // Boards from before issue #31 have no plan column.
-    if (!(this.db.query("PRAGMA table_info(tasks)").all() as { name: string }[]).some((c) => c.name === "plan")) {
-      this.db.run("ALTER TABLE tasks ADD COLUMN plan TEXT NOT NULL DEFAULT '{}'");
+    // Boards from before issues #31 and #34 lack these columns; existing rows get the defaults.
+    const have = new Set((this.db.query("PRAGMA table_info(tasks)").all() as { name: string }[]).map((c) => c.name));
+    for (const [col, empty] of [["plan", "{}"], ["deps", "[]"]] as const) {
+      if (!have.has(col)) this.db.run(`ALTER TABLE tasks ADD COLUMN ${col} TEXT NOT NULL DEFAULT '${empty}'`);
     }
   }
 
-  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; refs?: TaskRefs; plan?: TaskPlan; signals?: string[] }): Task {
+  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; signals?: string[] }): Task {
     const now = Date.now();
     const history: HistoryEntry[] = [{ at: now, by, event: "proposed" }];
     const { lastInsertRowid } = this.db
-      .query("INSERT INTO tasks (title, detail, class, state, refs, plan, signals, history, created, updated) VALUES (?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?)")
-      .run(t.title, t.detail ?? "", t.class, JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now);
+      .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, signals, history, created, updated) VALUES (?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?, ?)")
+      .run(t.title, t.detail ?? "", t.class, JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now);
     const task = this.get(Number(lastInsertRowid))!;
     this.changed(task, history[0]!);
     return task;

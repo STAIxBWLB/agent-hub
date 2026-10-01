@@ -520,7 +520,19 @@ export async function startDaemon(opts: DaemonOptions) {
   const toolEnv = (peer: PeerId) => ({ AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: opts.stateDir, AGENTHUB_PROJECT_DIR: opts.cwd });
 
   /** One entry point for the task tools, whoever calls them: MCP clients, the local worker, the console. */
-  async function taskOp(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
+  // A task op can write the board across awaits (triage, briefs, the dependents an approval releases): a recovery
+  // commit waits for those in flight, or its integrity digest misses their later writes. Completion checks outlive
+  // their op, so recoveryReady() also waits for `tasks.checksPending()`: a check the commit's stop kills would write.
+  let taskOpsInFlight = 0;
+  const taskOp = async (...args: Parameters<typeof taskOpBody>): Promise<string> => {
+    taskOpsInFlight++;
+    try {
+      return await taskOpBody(...args);
+    } finally {
+      taskOpsInFlight--;
+    }
+  };
+  async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
     if (piiTurn && (op === "hub_remember" || op === "hub_task_propose")) throw new Error(`${op} is not available while working on a PII task: its text must not leave this machine`);
@@ -564,7 +576,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return "checkpoint received; you will be paused now and resumed when your window resets";
       }
       case "hub_task_list":
-        return JSON.stringify(board.list(a.state).map((t) => (onPrem ? t : tasks.publicView(t))).map(({ history: _h, ...t }) => t));
+        return JSON.stringify(board.list(a.ready === true ? "proposed" : a.state).filter((t) => a.ready !== true || !tasks.waitsFor(t).length).map((t) => (onPrem ? t : tasks.publicView(t))).map(({ history: _h, ...t }) => t));
     }
     if (by !== USER) throw new Error(`${op} is a console command`);
     switch (op) {
@@ -615,9 +627,9 @@ export async function startDaemon(opts: DaemonOptions) {
     const r = budget.record(id); // one read per peer: status.json is rewritten on every bus event
     return r ? { paused: `budget: ${r.reason}, resets ${new Date(r.resetsAt).toLocaleTimeString()}` } : manualPaused.has(id) && bus.stateOf(id) === "offline" ? { paused: "manual" } : {};
   };
-  let releasing = false; // gone-owner release (#6): one run at a time, and a recovery commit waits for it
+  let releasing = false; // gone-owner release (#6) and the ready sweep (#34): one run at a time, and a recovery commit waits for it
   const recoveryReady = () => {
-    if (!recoveryActive() || releasing || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;
+    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;
     if (!recoveryPeerSnapshot) return true;
     const current = recoveryPeers();
     return recoveryPeerSnapshot.every((saved) => {
@@ -674,21 +686,30 @@ export async function startDaemon(opts: DaemonOptions) {
     return [id, row];
   }));
   const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-  // `prePlan`: the board as a hub from before the plan column (#31, 0.8.0) digested it. An empty plan is left out, so an
-  // upgrade from such a hub still verifies the board it was handed; a real plan never matches that shape.
-  const integrity = (prePlan = false) => {
+  // Task columns added since a source may have recorded its digest, newest first, with their empty values. A hub from
+  // before them digested its rows without them (0.8.x: no deps, #34; 0.7.x: no plan either, #31). `older` leaves out
+  // the newest `older` of them while they are empty, so an upgrade from such a hub verifies the board it was handed; a
+  // filled one stays in the row and never matches.
+  const ADDED_COLUMNS = [["deps", "[]"], ["plan", "{}"]] as const;
+  const integrity = (older = 0) => {
     const queues = Object.fromEntries(Object.keys(bus.snapshot().queues).sort().map((id) => [id, bus.queueIds(id)]));
-    const tasks = board.list().sort((a, b) => a.id - b.id);
-    const boardState = prePlan ? tasks.map(({ plan, ...t }) => (plan && Object.keys(plan).length ? { ...t, plan } : t)) : tasks;
+    const boardState = board.list().sort((a, b) => a.id - b.id).map((t) => {
+      const row: Record<string, unknown> = { ...t };
+      for (const [col, empty] of ADDED_COLUMNS.slice(0, older)) if (JSON.stringify(row[col]) === empty) delete row[col];
+      return row;
+    });
     const budgetState = budget.persistedPauseDigestRows().sort((a, b) => a.peer.localeCompare(b.peer));
     return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState) };
   };
-  /** The integrity in the shape `expected` was recorded in: the current one unless only the pre-plan shape matches. */
+  /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
     const now = integrity();
     if (!expected || JSON.stringify(expected) === JSON.stringify(now)) return now;
-    const old = integrity(true);
-    return JSON.stringify(expected) === JSON.stringify(old) ? old : now;
+    for (let older = 1; older <= ADDED_COLUMNS.length; older++) {
+      const then = integrity(older);
+      if (JSON.stringify(expected) === JSON.stringify(then)) return then;
+    }
+    return now;
   };
   const status = () => ({
     projectId,
@@ -727,10 +748,11 @@ export async function startDaemon(opts: DaemonOptions) {
   const hubStartedAt = Date.now();
   const releaseGoneOwners = async () => {
     const limit = config.tasks.release_after_min;
-    if (!(limit > 0) || releasing || stopping || recoveryActive()) return;
+    if (releasing || stopping || recoveryActive()) return;
     releasing = true;
     try {
-      await releaseOwners(limit);
+      await tasks.releaseReady(); // #34: dependents a stop cut off between an approval and their assignment
+      if (limit > 0) await releaseOwners(limit);
     } finally {
       releasing = false;
     }
@@ -1313,7 +1335,7 @@ export async function startDaemon(opts: DaemonOptions) {
       return { t: "recovery", ok: true, aborted: true, recovery: recoveryView() };
     }
     if (msg.op === "commit") {
-      if ((recoveryPhase !== "prepared" && recoveryPhase !== "preparing") || !recoveryReady()) return recoveryError("recovery is not ready; inspect until peers are idle and approvals are complete");
+      if ((recoveryPhase !== "prepared" && recoveryPhase !== "preparing") || !recoveryReady()) return recoveryError("recovery is not ready; inspect until peers are idle, approvals are complete and completion checks have finished");
       recoveryPhase = "prepared";
       recoveryPeerSnapshot ??= Object.values(recoveryPeers());
       const currentPeers = recoveryPeers();

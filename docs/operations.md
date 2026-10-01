@@ -98,7 +98,20 @@ task is done (after its check passes, when one is configured), the owners of
 open tasks on the same paths or symbols get a message with the changed files,
 the plan's signatures and the first line of the summary, each left out when it
 matches a PII pattern; nobody else does. PII
-tasks are left out on both sides. An owner offline longer than `tasks.release_after_min`
+tasks are left out on both sides.
+
+A task can wait for others: `hub_task_propose` takes `after: [ids]` (`ahub task
+propose ... --after <id>`). Until every one of them is approved, the task is
+offered to nobody, cannot be claimed, accepted or marked done, and `ahub route
+explain <id>` says what it waits for. When the last one is approved, the task
+goes through assignment like a new one; if the hub stopped before it got that
+far, the task is offered within a minute of a peer that can take it attaching
+to the next run.
+`ahub board --ready` and
+`hub_task_list {ready: true}` list the proposed tasks with nothing left to wait
+for. Dependencies are fixed when a task is proposed and can only name tasks that
+already exist, so they cannot form a cycle. A waiting task cannot name an owner;
+use `ahub task assign` once it is ready. An owner offline longer than `tasks.release_after_min`
 (default 30, `0` turns it off) in `.agenthub/config.json` loses its open tasks
 to a peer routing can give them to; with nobody to take them they stay, and a
 paused peer or a hub in a recovery operation is left alone.
@@ -346,7 +359,9 @@ its verification never matches the board and the operation stays blocked (fixed
 in 0.8.1). Such a blocked operation can neither resume nor abort, and its lock
 refuses `up` and `kill` for every project; the [smoke ledger](smoke.md) (0.7.11
 to 0.8.0) records the manual cleanup. Do not use an older installed CLI as the
-coordinator. A 0.6.x CLI cannot target
+coordinator. After an upgrade, do not start an older hub on the same project: it
+does not know the newer task columns, and its board readback breaks a later
+upgrade. A 0.6.x CLI cannot target
 protocol 10: its plan does not check the target's protocol, so the dry-run shows
 no blocker, and `--yes` stops at staging ("target protocol requires a newer
 coordinator") with an operation left to clear by `ahub recovery abort <id>`. An
@@ -375,6 +390,11 @@ ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>
 ```
+
+The coordinator commits only once the source is quiet: no turn running, no
+approval pending, no completion check queued or running. It waits up to 10
+minutes and then aborts, leaving the source running; upgrade between long
+checks.
 
 The 0.7.0 transition stages the verified package and runs a retained
 coordinator from the source tree. It accepts a verified protocol-9 source and
