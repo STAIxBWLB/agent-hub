@@ -381,3 +381,18 @@ test("claude-mem capture: init, one observation per tool call, summarize, sessio
   down.bus.publish(newEnvelope("user", "go", { priority: "important" }));
   await until(() => down.said.length === 1, "answer with memory down");
 });
+
+// issue #68: a hub_send the bus refuses comes back to the model in the same turn, as `not sent: <why>`.
+test("a hub_send the bus refuses answers the model with not sent and the reason", async () => {
+  const script: Script = (body) => {
+    const tools = body.messages.filter((m) => m.role === "tool");
+    if (!tools.length) return { tool_calls: [toolCall("hub_send", { text: "status: halfway", to: ["claude"] })] };
+    return { content: `seen: ${tools[0]!.content}` };
+  };
+  const ctx = await setup(script);
+  const deliver = ctx.peer.onMessage!;
+  ctx.peer.onMessage = (text, opts) => (text.includes("halfway") ? "rate limited: too many messages from local; retry after 20 s" : deliver(text, opts));
+  ctx.bus.publish(newEnvelope("user", "work", { priority: "important" }));
+  await until(() => ctx.said.some((e) => e.body.startsWith("seen:")), "answer");
+  expect(ctx.said.find((e) => e.body.startsWith("seen:"))!.body).toBe("seen: not sent: rate limited: too many messages from local; retry after 20 s");
+});

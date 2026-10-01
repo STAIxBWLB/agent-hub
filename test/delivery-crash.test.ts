@@ -14,7 +14,7 @@ const until = async (cond: () => boolean, what: string) => {
 };
 
 type Runtime = { stateDir: string; marker: string; process: Bun.Subprocess };
-async function startRuntime(options: { noPeer?: boolean; stateDir?: string; kimi?: boolean; autoResume?: boolean } = {}): Promise<Runtime> {
+async function startRuntime(options: { noPeer?: boolean; stateDir?: string; kimi?: boolean; pi?: boolean | "enabled"; autoResume?: boolean } = {}): Promise<Runtime> {
   const stateDir = options.stateDir ?? mkdtempSync(join(tmpdir(), "agenthub-delivery-crash-"));
   const marker = join(stateDir, "runtime-events.jsonl");
   const projectId = "delivery-crash-project";
@@ -22,6 +22,7 @@ async function startRuntime(options: { noPeer?: boolean; stateDir?: string; kimi
   if (options.noPeer) args.push("--no-peer");
   if (options.kimi) args.push("--kimi");
   if (options.autoResume) args.push("--auto-resume");
+  if (options.pi) args.push(options.pi === "enabled" ? "--pi-enabled" : "--pi");
   const child = Bun.spawn(["bun", ...args], { cwd: ROOT, stdout: "ignore", stderr: "inherit" });
   const result = { stateDir, marker, process: child };
   cleanup.push(async () => {
@@ -32,6 +33,7 @@ async function startRuntime(options: { noPeer?: boolean; stateDir?: string; kimi
   // The runtime attaches its claude peer after the daemon is up; a console send before that finds no such peer.
   await until(() => events(result).some((e) => e.type === (options.noPeer ? "daemon-ready" : "peer-ready")), "runtime startup");
   if (options.kimi) await until(() => events(result).some((e) => e.type === "kimi-started"), "kimi start");
+  if (options.pi === true) await until(() => events(result).some((e) => e.type === "pi-started"), "pi start");
   return result;
 }
 
@@ -177,4 +179,26 @@ test("a run that recovered from a crash removes the session record on a clean st
   second.process.kill("SIGTERM");
   await second.process.exited;
   expect(existsSync(join(second.stateDir, "sessions.json"))).toBe(false);
+});
+
+// issue #68: a running hub records Pi's session file, and after kill -9 the next run loads that same session.
+test("after a crash, a headless Pi is resumed on the session file the dead run recorded", async () => {
+  const first = await startRuntime({ noPeer: true, pi: true });
+  expect(events(first).find((e) => e.type === "pi-started")?.ok).toBe(true);
+  await until(() => {
+    try { return !!JSON.parse(readFileSync(join(first.stateDir, "sessions.json"), "utf8")).peers.find((p: any) => p.peer === "pi")?.meta.sessionFile; } catch { return false; }
+  }, "pi in the session record");
+  const recorded = JSON.parse(readFileSync(join(first.stateDir, "sessions.json"), "utf8")).peers.find((p: any) => p.peer === "pi").meta;
+  expect(recorded.sessionId).toBe("fake-session");
+  await crash(first);
+  rmSync(join(first.stateDir, "status.json"), { force: true });
+  rmSync(join(first.stateDir, "control-token"), { force: true });
+  const second = await startRuntime({ noPeer: true, stateDir: first.stateDir, autoResume: true, pi: "enabled" }); // recovery starts it
+  const log = () => readFileSync(join(second.stateDir, "hub.log"), "utf8");
+  await until(() => log().includes("crash recovery: pi resumed"), "pi resumed");
+  const after = await consoleClient(second.stateDir);
+  expect((await after.request({ t: "status" })).status.peers.pi.state).toBe("idle");
+  after.close();
+  const now = JSON.parse(readFileSync(join(second.stateDir, "sessions.json"), "utf8")).peers.find((p: any) => p.peer === "pi").meta;
+  expect([now.sessionId, now.sessionFile]).toEqual([recorded.sessionId, recorded.sessionFile]);
 });

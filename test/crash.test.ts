@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ControlClient } from "../src/hub/control-client.ts";
 import { crashPlan, lossNotice, readSessions, removeSessions, writeSessions } from "../src/hub/crash.ts";
+import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 
 // issue #37: what comes back after a crash, and what each peer is told it lost.
@@ -47,4 +49,22 @@ test("the session record is removed only by the run that wrote it", () => {
   writeSessions(dir, { instanceId: "source", at: 1, peers: [] });
   removeSessions(dir); // a controlled restart's target clears whatever a cut-short source left
   expect(existsSync(join(dir, "sessions.json"))).toBe(false);
+});
+
+// issue #68: the report a hub writes when it finds a crashed run's record, for the peers it cannot resume.
+test("a hub that finds a crashed run's record reports Codex's thread and Claude's reconnect in ahub status", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "agenthub-crash-report-"));
+  writeSessions(stateDir, { instanceId: "crashed", at: Date.now(), peers: [{ peer: "codex", meta: { threadId: "th-42" } }, { peer: "claude", meta: {} }] });
+  const daemon = await startDaemon({ cwd: process.cwd(), projectId: "crash-report", instanceId: "after-crash", stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } });
+  const console_ = await ControlClient.connect(stateDir, { role: "console" });
+  let crash: string[] = [];
+  for (let i = 0; i < 100 && crash.length < 3; i++) { crash = (await console_.request({ t: "status" })).status.crash ?? []; await Bun.sleep(10); }
+  expect(crash).toEqual([
+    "the previous hub run stopped without shutting down",
+    "codex: its app-server died with the hub; run ahub codex again (its conversation was thread th-42)",
+    "claude: the Claude Code plugin reconnects by itself while that session is still open",
+  ]);
+  console_.close();
+  await daemon.stop();
+  expect(existsSync(join(stateDir, "sessions.json"))).toBe(false); // adopted, then removed by the clean stop
 });
