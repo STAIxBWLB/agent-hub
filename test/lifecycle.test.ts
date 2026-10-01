@@ -1,8 +1,10 @@
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
+import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { stopProject } from "../src/hub/lifecycle.ts";
 import { Registry } from "../src/hub/registry.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli", "main.ts");
@@ -152,6 +154,32 @@ test("incompatible manifest refuses the wrong kill and preserves project state",
     if (row?.pid) { try { process.kill(row.pid, "SIGTERM"); } catch {} }
     registry.close();
   } finally { await stopAll(); }
+});
+
+// `ahub kill` returns only once the hub let go of its registry claim: a `projects remove` or `up` right after it must not
+// meet a claim whose process is still on its way out (the CI flake of "removing a running project is refused").
+test("stopProject waits for the registry claim, not only for the control files", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-claim-")));
+  const previous = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = HUB_HOME;
+  const registry = new Registry();
+  try {
+    const project = registry.register(root);
+    mkdirSync(project.stateDir, { recursive: true });
+    expect(registry.claim(project.id, "held", process.pid)).toBe(true);
+    const daemon = await startDaemon({ cwd: root, stateDir: project.stateDir, projectId: project.id, instanceId: "held", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+      config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
+    // The claim outlives the control files by 300 ms here; the real daemon process releases it a moment after them.
+    let released = false;
+    void daemon.stopped.then(() => setTimeout(() => { released = true; registry.release(project.id, "held"); }, 300));
+    await stopProject(registry.get(project.id)!);
+    expect(released).toBe(true);
+    registry.remove(project.id); // throws while a live claim is held
+  } finally {
+    registry.close();
+    if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 afterAll(async () => {
