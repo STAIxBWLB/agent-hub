@@ -58,3 +58,10 @@ test("after a crash cut the last line short, the next event still lands on a lin
   expect(readEvents(file).map((e) => (e as { n: number }).n)).toEqual([1, 5, 6]);
   rmSync(dir, { recursive: true, force: true });
 });
+
+// Review of #49: edit conflicts are counted in the report.
+test("summarize counts conflict events, and the report says so", () => {
+  const r = summarize([ev(0, { type: "conflict", peer: "codex", task: 2, other: 1, owner: "kimi", paths: ["a.ts"], concurrent: false }), ev(1, { type: "conflict", peer: "kimi", other: 2, owner: "codex", paths: ["b.ts"], concurrent: true })]);
+  expect(r.conflicts).toBe(2);
+  expect(formatReport(r).join("\n")).toContain("edit conflicts: 2");
+});

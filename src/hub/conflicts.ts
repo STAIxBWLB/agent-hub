@@ -54,7 +54,8 @@ export function pathWarnings(dbFile: string, peer: string, file: { project: stri
       const changed = touches.some((t) => t.task === r.id);
       if (!claims && !changed) return [];
       const how = [changed ? "changed it" : "", claims ? "claims it" : ""].filter(Boolean).join(" and ");
-      return [`task #${r.id} "${String(r.title).slice(0, 100)}" (owner ${r.owner}, ${r.state}) ${how}`];
+      // The title is another agent's text: quoted as a JSON string, so a line break in it cannot start a line of its own.
+      return [`task #${r.id} ${JSON.stringify(String(r.title).slice(0, 100))} (owner ${r.owner}, ${r.state}) ${how}`];
     });
   } finally {
     db.close();

@@ -1210,3 +1210,66 @@ test("conflicts: a turn changing another owner's file warns both, once; a file o
   await until(() => turnsOf("codex") === before + 1, "codex's second edit");
   expect(readEvents(file).filter((e) => e.type === "conflict")).toHaveLength(1);
 });
+
+// Review of #49 (F1): another peer's edit made during a long turn is not stored as this peer's touch.
+test("conflicts: a long turn spanning another peer's edit does not make that peer's later edit a conflict", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-overlapturn-")));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...a: string[]) => Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...a]);
+  git("init", "-q");
+  writeFileSync(join(dir, "codex.txt"), "base\n");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const { stateDir, daemon, console_ } = await hub({ cwd: dir, snapshots: { enabled: true, keep: 20 } });
+  class Scripted extends BasePeer {
+    hold = false;
+    work: (() => void) | undefined;
+    finish: (() => void) | undefined;
+    async start() { this.setState("idle"); }
+    async deliver() {
+      this.setState("busy");
+      const w = this.work;
+      this.work = undefined;
+      w?.();
+      if (this.hold) this.finish = () => this.setState("idle");
+      else setTimeout(() => this.setState("idle"), 5);
+    }
+    async stop() { this.setState("offline"); }
+  }
+  const kimi = new Scripted("kimi");
+  const codex = new Scripted("codex");
+  for (const p of [kimi, codex]) {
+    daemon.bus.add(p);
+    await p.start();
+  }
+  const op = async (o: string, args: unknown) => console_.request({ t: "task", op: o, args });
+  await op("hub_task_propose", { title: "refactor", class: "implement", owner: "kimi" });
+  await op("hub_task_propose", { title: "retry", class: "implement", owner: "codex" });
+  await until(() => kimi.state === "idle" && codex.state === "idle" && daemon.bus.queued("kimi") === 0 && daemon.bus.queued("codex") === 0, "the offers");
+  await op("hub_task_accept", { id: 1 });
+  await op("hub_task_accept", { id: 2 });
+  const file = join(stateDir, "events.jsonl");
+  const ends = (peer: string) => readEvents(file).filter((e) => e.type === "turn_end" && e.peer === peer).length;
+  // kimi starts a long turn and writes nothing; codex edits codex.txt and ends while kimi still works
+  kimi.hold = true;
+  await console_.request({ t: "send", body: "long", to: ["kimi"] });
+  await until(() => kimi.state === "busy", "kimi's long turn");
+  const codexBefore = ends("codex");
+  codex.work = () => writeFileSync(join(dir, "codex.txt"), "codex\n");
+  await console_.request({ t: "send", body: "edit", to: ["codex"] });
+  await until(() => ends("codex") === codexBefore + 1, "codex's edit");
+  const kimiBefore = ends("kimi");
+  kimi.hold = false;
+  kimi.finish!();
+  await until(() => ends("kimi") === kimiBefore + 1, "kimi's end");
+  await until(() => kimi.state === "idle" && codex.state === "idle" && daemon.bus.queued("kimi") === 0 && daemon.bus.queued("codex") === 0, "quiet peers");
+  // codex edits its own file again, alone: only codex ever touched it, so nobody is told of a conflict
+  const before = ends("codex");
+  codex.work = () => writeFileSync(join(dir, "codex.txt"), "codex again\n");
+  await console_.request({ t: "send", body: "again", to: ["codex"] });
+  await until(() => ends("codex") === before + 1, "codex's second edit");
+  expect(readEvents(file).filter((e) => e.type === "conflict" && e.peer === "codex")).toEqual([]);
+  // and the turn_end of each turn comes before the next turn of that peer starts
+  const seq = readEvents(file).filter((e) => (e.type === "turn_start" || e.type === "turn_end") && e.peer === "kimi").map((e) => e.type);
+  for (let i = 1; i < seq.length; i++) expect(seq[i]).not.toBe(seq[i - 1]);
+});

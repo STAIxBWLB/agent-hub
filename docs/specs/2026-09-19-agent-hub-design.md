@@ -938,4 +938,8 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   read-only and answers with `hookSpecificOutput.additionalContext` and a
   `systemMessage`, never a `permissionDecision`. Claude Code adds that context
   with the tool result, so it warns after the edit is allowed, not before.
+- After review: a turn's touches leave out files an overlapping turn of another
+  peer changed (#33's `Turns.overlapping`), and none are recorded while such a
+  turn's changes are unknown; detection runs after the `turn_end` event; the
+  hook quotes task titles as JSON strings and says they are agents' text.
 
