@@ -1016,3 +1016,17 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   suppression. Limits are off in `DEFAULT_CONFIG` and on with any project config
   (12/min per sender, 6/min per recipient, 6 important an hour, 120 s repeats).
 
+## Amendment: review checklists and outcomes (issue #35)
+
+- Review outcomes live in a `reviews` table in hub.db: implementer, reviewer,
+  class, kind, task, time. Kinds: `approved`; `caught` (each reviewer who asked
+  for changes on a task that was then approved); `contradicted` (an approval,
+  within seven days, of a task on the same paths or symbols as one whose check
+  failed or whose review asked for changes; once per approval; console approvals
+  are not judged); `escalated`.
+- A reviewer's record with an implementer in a class: n = approved + caught +
+  escalated, held = (n - contradicted) / n. `assign()` takes the records as input
+  and always shows them in its trace; with `review.adaptive` it orders reviewer
+  candidates that have at least `min_reviews` by held, others keep their place,
+  and the implementer is never a candidate.
+

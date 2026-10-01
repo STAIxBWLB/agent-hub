@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- Review checklists and review outcomes: review requests ask the reviewer to map signatures and call sites to the plan, read the check result and list unmet items (`hub_review {unmet}`); the hub records approved, caught, contradicted and escalated reviews per implementer, reviewer and class, shown by `ahub task show` and `ahub route explain`, and `review.adaptive` (off by default) orders reviewers by that record (#35).
+
 ## 0.9.0
 
 - Early conflict detection: in a git work tree, a turn that changes a file another owner's open task changed earlier warns both owners (and the console, and `events.jsonl`), once per file and task, marked concurrent when another peer worked meanwhile. `ahub check-path` and the PreToolUse hook template `templates/claude-hooks.json` give Claude the same warning before an edit, without blocking it (#32).

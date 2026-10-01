@@ -955,3 +955,38 @@ test("waiting out a short reset moves only urgent work", async () => {
   expect(board.get(normal.id)!.owner).toBe("codex");
   expect(board.get(hot.id)!.owner).not.toBe("codex");
 });
+
+// issue #35: the review checklist, unmet items, and recorded review outcomes.
+test("the review envelope carries a checklist against the plan and the check result; unmet items reach the owner", async () => {
+  const { tasks, board, peers, release } = await checked({ code: 0, timedOut: false, tail: "12 pass" });
+  const t = await tasks.propose("codex", { title: "cache", class: "implement", owner: "codex", plan: { signatures: ["set(key: string): void"] } });
+  await tasks.done("codex", t.id, "added set");
+  release();
+  await until(() => board.get(t.id)!.state === "in_review");
+  const review = peers.claude!.got.find((e) => e.kind === "review")!.body;
+  expect(review).toContain("Checklist:\n- Map the changed signatures and call sites to the plan (signatures: set(key: string): void), and name each one that does not match.\n- Check result: make test -> exit 0\n- List what is unmet in hub_review's unmet, one item each.");
+  await tasks.review("claude", t.id, "changes_requested", "close", ["set() does not take a value", "no test for overwrite"]);
+  expect(board.get(t.id)!.history.find((h) => h.event === "changes_requested")!.note).toBe("close\nUnmet: set() does not take a value; no test for overwrite");
+  await tick();
+  expect(peers.codex!.got.at(-1)!.body).toContain("Unmet: set() does not take a value; no test for overwrite");
+});
+
+test("review outcomes: approvals, caught changes, contradicted approvals (once) and escalations are recorded per task", async () => {
+  const { tasks, board } = await setup(["claude", "codex", "kimi"]);
+  const a = await tasks.propose("codex", { title: "a", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
+  await tasks.done("codex", a.id, "first");
+  await tasks.review("claude", a.id, "changes_requested", "no");
+  await tasks.done("codex", a.id, "second");
+  await tasks.review("claude", a.id, "approved");
+  expect(board.reviews({ task: a.id }).map((r) => `${r.implementer}/${r.reviewer}:${r.kind}`)).toEqual(["codex/claude:approved", "codex/claude:caught"]);
+  // later work on the same file fails review twice: claude's approval of a is contradicted, once
+  const b = await tasks.propose("kimi", { title: "b", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  await tasks.done("kimi", b.id, "x");
+  await tasks.review(board.get(b.id)!.reviewer!, b.id, "changes_requested", "broken");
+  await tasks.done("kimi", b.id, "y");
+  await tasks.review(board.get(b.id)!.reviewer!, b.id, "changes_requested", "still broken");
+  expect(board.reviews({ task: a.id }).filter((r) => r.kind === "contradicted")).toHaveLength(1);
+  expect(board.reviews({ task: b.id }).some((r) => r.kind === "escalated")).toBe(true);
+  expect(tasks.reviewRecord("implement").codex!.claude).toEqual({ score: 0.5, n: 2 });
+  expect(tasks.explain({ title: "c", class: "implement" }).join("\n")).toContain("review record with");
+});

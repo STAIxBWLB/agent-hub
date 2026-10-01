@@ -73,7 +73,7 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub task propose [--class <c> | <class>] <title...> [--owner <peer>] [--path <p>]... [--after <id>]... [--urgent] [--detail <text>]
   ahub task show|escalate <id>  full task with history (PII text included) / hand it to the next peer in escalate_to
   ahub task assign <id> <peer>  give a task to a peer yourself
-  ahub review <id> approved|changes_requested [note...]
+  ahub review <id> approved|changes_requested [note...] [--unmet <item>]...
   ahub remember <text...>       save a note to the memory all agents share
   ahub ask [--remember] <question...>   answer from the task board, shared memory and this run's log, with the ids it rests on
   ahub route explain <id>       why a task went where it went
@@ -693,9 +693,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   review: async () => {
-    const [id, verdict, ...note] = args;
-    if (!id || !verdict) fail("usage: ahub review <id> approved|changes_requested [note...]");
-    console.log(await taskOp("hub_review", { id: Number(id), verdict, note: note.join(" ") }));
+    const { many, rest } = takeFlags(args, [], ["--unmet"]);
+    const [id, verdict, ...note] = rest;
+    if (!id || !verdict) fail("usage: ahub review <id> approved|changes_requested [note...] [--unmet <item>]...");
+    console.log(await taskOp("hub_review", { id: Number(id), verdict, note: note.join(" "), ...(many["--unmet"]?.length ? { unmet: many["--unmet"] } : {}) }));
   },
 
   remember: async () => console.log(await taskOp("hub_remember", { text: freeText(args, "ahub remember <text>") })),

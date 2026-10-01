@@ -135,6 +135,9 @@ export function assign(
     now?: number;
     /** Peers demoted for this task's class, with their recent failure weight (issue #36). */
     demoted?: Record<PeerId, number>;
+    /** Review record per implementer, then per reviewer, for this class (issue #35); followed only when `adaptive`. */
+    reviews?: Record<PeerId, Record<PeerId, { score: number; n: number }>>;
+    adaptive?: { min: number };
   } = {},
 ): Assignment {
   const policy = routing.classes[task.class];
@@ -177,7 +180,21 @@ export function assign(
     return out;
   };
   /** Demoted peers go behind the rest for this class (owners only); each group is then ordered by quota. */
-  const rank = (ok: PeerId[], role: "owner" | "reviewer"): PeerId[] => {
+  /** Reviewers with enough recorded reviews of this owner's work swap places by how those reviews held up. */
+  const byRecord = (list: PeerId[], owner: PeerId | undefined): PeerId[] => {
+    const record = owner ? opts.reviews?.[owner] : undefined;
+    if (!record || !Object.keys(record).length) return list;
+    trace.push(`  review record with ${owner} in ${task.class}: ${Object.entries(record).map(([r, s]) => `${r} ${s.n} reviews, ${Math.round(s.score * 100)}% held`).join("; ")}${opts.adaptive ? "" : " (review.adaptive is off)"}`);
+    if (!opts.adaptive) return list;
+    const known = (p: PeerId) => (record[p] && record[p].n >= opts.adaptive!.min ? record[p].score : undefined);
+    const slots = list.flatMap((p, i) => (known(p) === undefined ? [] : [i]));
+    const sorted = slots.map((i) => list[i]!).sort((a, b) => known(b)! - known(a)!);
+    const out = [...list];
+    slots.forEach((i, k) => (out[i] = sorted[k]!));
+    return out;
+  };
+  const rank = (ok: PeerId[], role: "owner" | "reviewer", owner?: PeerId): PeerId[] => {
+    if (role === "reviewer") ok = byRecord(ok, owner);
     const down = role === "owner" ? ok.filter((p) => opts.demoted?.[p]) : [];
     if (down.length) trace.push(`  demoted for ${task.class}: ${down.map((p) => `${p} (${opts.demoted![p]!.toFixed(1)} recent failures)`).join(", ")}`);
     return [...byDrain(ok.filter((p) => !down.includes(p))), ...byDrain(down)];
@@ -190,7 +207,7 @@ export function assign(
       trace.push(`  ${role} candidate ${peer}: ${why ? `skipped, ${why}` : states[peer]}`);
       if (!why) ok.push(peer);
     }
-    const ranked = rank(ok, role);
+    const ranked = rank(ok, role, not);
     // Demotion applies to local and Pi too: a demoted one loses its place ahead of the cloud peers.
     const localTier = ranked.filter((p) => (p === LOCAL || p === PI) && !(role === "owner" && opts.demoted?.[p]));
     if (localTier.length) return localTier.find((p) => states[p] === "idle") ?? localTier[0]; // local/Pi stays ahead of an idle cloud peer

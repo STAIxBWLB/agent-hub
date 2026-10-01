@@ -71,6 +71,8 @@ export interface HubConfig {
   snapshots: { enabled: boolean; keep: number };
   /** Per-sender rate limits and repeat suppression for what agents send (issue #38). */
   limits: LimitsConfig;
+  /** Reviewer choice from recorded review outcomes, once a reviewer has `min_reviews` of an implementer (issue #35). */
+  review: { adaptive: boolean; min_reviews: number };
   /** Machine-local fields a config file set but git could not vouch for, and why (issue #17). */
   ignored?: string[];
 }
@@ -96,6 +98,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   // Off here like approvals.notify, so tests (whose cwd is this repository) write no objects; a project's config turns it on.
   snapshots: { enabled: false, keep: 20 },
   limits: DEFAULT_LIMITS,
+  review: { adaptive: false, min_reviews: 5 },
 };
 
 export { stateDirFor };
@@ -106,7 +109,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = ["config.json", "config.local.json"] as const;
-const CONFIG_BLOCKS = ["memory", "roles", "budget", "inference", "omniroute", "local", "pi", "approvals", "tasks", "checks", "snapshots", "limits", "mlx"];
+const CONFIG_BLOCKS = ["memory", "roles", "budget", "inference", "omniroute", "local", "pi", "approvals", "tasks", "checks", "snapshots", "limits", "review", "mlx"];
 
 export function loadConfig(cwd: string): HubConfig {
   const ignored: string[] = [];
@@ -151,6 +154,7 @@ export function loadConfig(cwd: string): HubConfig {
     checks: { ...DEFAULT_CONFIG.checks, ...file.checks },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
     limits: { ...PROJECT_LIMITS, ...file.limits }, // on with any project config (issue #38)
+    review: { ...DEFAULT_CONFIG.review, ...file.review },
     mlx,
     ...(ignored.length ? { ignored } : {}),
   };
@@ -410,6 +414,7 @@ export async function startDaemon(opts: DaemonOptions) {
     },
     triage: { classify: (title, detail) => inference?.triage(title, detail) ?? Promise.resolve(undefined), onCampus: () => onCampus() },
     quota: (): ReturnType<Budget["headroom"]> => budget.headroom(), // budget is built below; this runs at assignment time
+    review: config.review,
   });
   board.onChange = (t, h) => event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, pii: tasks.isPii(t) });
   // ---- budget relay -------------------------------------------------------------------------------------------
@@ -588,7 +593,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return tasks.isChecking(t.id) ? `${line(t)}; its check is queued or running, and the result comes as a task message` : line(t);
       }
       case "hub_review":
-        return line(await tasks.review(by, a.id, a.verdict, a.note));
+        return line(await tasks.review(by, a.id, a.verdict, a.note, a.unmet));
       case "hub_remember":
         return tasks.remember(by, a);
       case "hub_checkpoint": {
@@ -604,7 +609,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (by !== USER) throw new Error(`${op} is a console command`);
     switch (op) {
       case "task_show":
-        return JSON.stringify(board.get(Number(a.id)) ?? `no task #${a.id}`, null, 2);
+        return JSON.stringify(board.get(Number(a.id)) ? { ...board.get(Number(a.id)), reviews: board.reviews({ task: Number(a.id) }) } : `no task #${a.id}`, null, 2);
       case "task_assign":
         return line(await tasks.assignTo(a.id, String(a.peer)));
       case "task_escalate":
