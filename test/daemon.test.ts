@@ -1161,6 +1161,7 @@ test("conflicts: a turn changing another owner's file warns both, once; a file o
   git("add", "-A");
   git("commit", "-qm", "base");
   const { stateDir, daemon, console_ } = await hub({ cwd: dir, snapshots: { enabled: true, keep: 20 } });
+  const pii = join(dir, "900101-1234567.txt"); // a file name that matches a PII pattern: a conflict on it is never named
   // A scripted agent: each delivery is a turn, and `work` (once) is what the turn does to the tree.
   class Scripted extends BasePeer {
     got: string[] = [];
@@ -1191,16 +1192,18 @@ test("conflicts: a turn changing another owner's file warns both, once; a file o
   const file = join(stateDir, "events.jsonl");
   const turnsOf = (peer: string) => readEvents(file).filter((e) => e.type === "turn_end" && e.peer === peer).length;
 
-  kimi.work = () => writeFileSync(join(dir, "shared.txt"), "kimi\n");
+  kimi.work = () => (writeFileSync(join(dir, "shared.txt"), "kimi\n"), writeFileSync(pii, "kimi\n"));
   await console_.request({ t: "send", body: "go", to: ["kimi"] });
   await until(() => turnsOf("kimi") === 2 && kimi.state === "idle", "kimi's edit");
-  codex.work = () => (writeFileSync(join(dir, "shared.txt"), "codex\n"), writeFileSync(join(dir, "own.txt"), "codex only\n"));
+  codex.work = () => (writeFileSync(join(dir, "shared.txt"), "codex\n"), writeFileSync(pii, "codex\n"), writeFileSync(join(dir, "own.txt"), "codex only\n"));
   await console_.request({ t: "send", body: "go", to: ["codex"] });
   await until(() => readEvents(file).some((e) => e.type === "conflict"), "the conflict");
   const conflict = readEvents(file).find((e) => e.type === "conflict");
   expect(conflict).toMatchObject({ peer: "codex", task: 2, other: 1, owner: "kimi", paths: ["shared.txt"], concurrent: false });
   await until(() => codex.got.some((b) => b.includes("Your last turn (task #2) changed shared.txt")) && kimi.got.some((b) => b.includes("codex's last turn (task #2) changed shared.txt, which your open task #1 changed before it")), "both notices");
   expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("conflict: codex (task #2) changed shared.txt, which #1 (owner kimi) changed before");
+  const said = [readFileSync(join(stateDir, "hub.log"), "utf8"), JSON.stringify(readEvents(file).filter((e) => e.type === "conflict")), ...kimi.got, ...codex.got].join("\n");
+  expect(said).not.toContain("900101");
 
   // The same file again: already told. A file only codex touched: nothing.
   await until(() => kimi.state === "idle" && codex.state === "idle", "quiet peers");

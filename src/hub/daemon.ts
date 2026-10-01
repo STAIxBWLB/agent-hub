@@ -777,9 +777,11 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!paths.length) continue;
       for (const p of paths) conflictSeen.add(`${peer}\0${task.id}\0${p}`);
       const owner = task.owner!;
-      const files = paths.join(", ");
+      // As with overlaps (#31): a file name that matches a PII pattern is never named to peers, the log or telemetry.
+      const named = paths.filter(tasks.nameable);
+      const files = named.length ? named.join(", ") : "a file whose name is withheld (it matches a PII pattern)";
       notify(`conflict: ${peer}${ours} changed ${files}, which #${task.id} (owner ${owner}) changed before${others.length ? ` (concurrent: ${others.join(", ")})` : ""}`);
-      event({ type: "conflict", peer, ...(mine[0] ? { task: mine[0].id } : {}), other: task.id, owner, paths, concurrent: others.length > 0 });
+      event({ type: "conflict", peer, ...(mine[0] ? { task: mine[0].id } : {}), other: task.id, owner, paths: named, concurrent: others.length > 0 });
       bus.publish(newEnvelope(HUB, `Your last turn${ours} changed ${files}, which ${owner}'s open task ${tasks.publicTitle(task)} changed before it. Check that you did not overwrite that work, and settle it with ${owner} via hub_send.${concurrent}`, { to: [peer], kind: "task", ...(mine[0] ? { refs: { task: String(mine[0].id) } } : {}) }));
       if (owner !== USER && owner !== HUB) bus.publish(newEnvelope(HUB, `${peer}'s last turn${ours} changed ${files}, which your open task #${task.id} changed before it. Check that your work there is intact.${concurrent}`, { to: [owner], kind: "task", refs: { task: String(task.id) } }));
     }
