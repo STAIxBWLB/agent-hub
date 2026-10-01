@@ -91,9 +91,12 @@ export function planUndo(repo: Repo, turn: { start_tree: string; end_tree: strin
   const hit = (paths: string[], p: string) => paths.some((d) => d === p || d.startsWith(`${p}/`));
   const sinceEnd = changedPaths(repo, turn.end_tree, now);
   const sinceStart = changedPaths(repo, turn.start_tree, now);
-  const shared = new Set(overlapping);
-  const plan: UndoPlan = { restore: [], changedSince: [], concurrent: [], undone: turn.changed.every((p) => !hit(sinceStart, p)) };
-  for (const p of turn.changed) (hit(sinceEnd, p) ? plan.changedSince : shared.has(p) ? plan.concurrent : plan.restore).push(p);
+  const plan: UndoPlan = { restore: [], changedSince: [], concurrent: [], undone: turn.changed.length > 0 && turn.changed.every((p) => !hit(sinceStart, p)) };
+  for (const p of turn.changed) {
+    if (hit(sinceEnd, p)) plan.changedSince.push(p);
+    else if (hit(overlapping, p)) plan.concurrent.push(p);
+    else plan.restore.push(p);
+  }
   return plan;
 }
 
@@ -102,10 +105,12 @@ export function planUndo(repo: Repo, turn: { start_tree: string; end_tree: strin
  * plan refuses a path with anything under it). The index is untouched.
  */
 export function restore(repo: Repo, startTree: string, paths: string[]): void {
-  for (const path of paths) {
-    if (inTree(repo.top, startTree, path)) {
-      if (git(repo.top, ["restore", `--source=${startTree}`, "--worktree", "--", literal(path)]).status !== 0) throw new Error(`could not restore ${path}`);
-    } else rmSync(join(repo.top, path), { force: true });
+  // Removals first: after a case-only rename on a case-insensitive disk, `Foo.ts` and `foo.ts` are one file, and
+  // removing the created spelling after restoring the old one would delete it.
+  const back = paths.filter((p) => inTree(repo.top, startTree, p));
+  for (const path of paths.filter((p) => !back.includes(p))) rmSync(join(repo.top, path), { force: true });
+  for (const path of back) {
+    if (git(repo.top, ["restore", `--source=${startTree}`, "--worktree", "--", literal(path)]).status !== 0) throw new Error(`could not restore ${path}`);
   }
 }
 
@@ -129,8 +134,9 @@ export class Turns {
     this.db.run("PRAGMA journal_mode = WAL");
     this.db.run(`CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY, peer TEXT NOT NULL, started INTEGER NOT NULL, ended INTEGER,
       start_tree TEXT, end_tree TEXT, changed TEXT NOT NULL DEFAULT '[]', native TEXT)`);
-    // Opened by a starting hub: a turn still open was cut short when the last run stopped. It has no end snapshot.
-    this.db.run("UPDATE turns SET ended = started WHERE ended IS NULL");
+    // Opened by a starting hub: a turn still open was cut short when the last run stopped. It has no end snapshot, and
+    // it may have run until now, so its window ends now (other turns that overlapped it stay unknowable).
+    this.db.query("UPDATE turns SET ended = ? WHERE ended IS NULL").run(Date.now());
   }
   begin(id: string, peer: string, startTree: string | undefined): void {
     this.db.query("INSERT OR REPLACE INTO turns (id, peer, started, start_tree) VALUES (?, ?, ?, ?)").run(id, peer, Date.now(), startTree ?? null);
@@ -154,10 +160,14 @@ export class Turns {
     const r = this.db.query("SELECT * FROM turns WHERE id = ?").get(id) as (Omit<TurnRecord, "changed"> & { changed: string }) | null;
     return r ? { ...r, changed: JSON.parse(r.changed) as string[] } : undefined;
   }
-  /** What other peers' turns that overlapped this one in time changed: their changes are in this turn's diff too. */
-  overlapping(turn: TurnRecord): string[] {
-    const rows = this.db.query("SELECT changed FROM turns WHERE id != ? AND peer != ? AND started < ? AND (ended IS NULL OR ended > ?)").all(turn.id, turn.peer, turn.ended ?? Date.now(), turn.started) as { changed: string }[];
-    return [...new Set(rows.flatMap((r) => JSON.parse(r.changed) as string[]))];
+  /**
+   * Other peers' turns that overlapped this one in time: their changes are in this turn's diff too. `unknown` lists
+   * those whose changes cannot be known (still running, cut short by a stop, a failed snapshot, a PII turn).
+   */
+  overlapping(turn: TurnRecord): { paths: string[]; unknown: string[] } {
+    const rows = this.db.query("SELECT id, changed, ended, end_tree FROM turns WHERE id != ? AND peer != ? AND started < ? AND (ended IS NULL OR ended > ?)").all(turn.id, turn.peer, turn.ended ?? Date.now(), turn.started) as { id: string; changed: string; ended: number | null; end_tree: string | null }[];
+    const known = rows.filter((r) => r.ended !== null && r.end_tree !== null);
+    return { paths: [...new Set(known.flatMap((r) => JSON.parse(r.changed) as string[]))], unknown: rows.filter((r) => !known.includes(r)).map((r) => r.id) };
   }
 
   /** The latest turn of a peer: a conversation can only be reverted from its latest turn. */

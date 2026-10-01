@@ -148,8 +148,9 @@ ahub undo <turn> --yes --context  # Codex's latest turn: also drop it from Codex
 - `ahub undo` refuses the whole turn, naming the files, when a file it changed
   has changed again since the turn ended (by anyone; modes, symlinks and a
   directory in a deleted file's place count), or when another peer's turn that
-  ran at the same time changed it too, so the change may be theirs. Nothing is
-  restored then. It plans again right before restoring and stops if anything
+  ran at the same time changed it too, so the change may be theirs. It also
+  refuses while such an overlapping turn's changes are unknown (still running,
+  cut short by a stop, a failed snapshot, a PII turn). Nothing is restored then. It plans again right before restoring and stops if anything
   moved meanwhile. A turn that is already undone says so.
 - A file the turn created is deleted; a file it deleted comes back.
 - `--context` asks Codex (`thread/revert`) to drop the turn, and every later one,
@@ -158,8 +159,10 @@ ahub undo <turn> --yes --context  # Codex's latest turn: also drop it from Codex
   latest recorded turn while Codex is idle, and is logged in hub.log. Whether
   Codex's running session also forgets the turn, or only its saved history, is
   still to be checked against a live Codex (docs/smoke.md).
-- A turn of a peer working on a PII task is not snapshotted, so it cannot be
-  undone: its content would otherwise stay in git's object store until gc.
+- A turn of a peer that holds an open PII task (assigned, accepted or sent
+  back) is not snapshotted, so it cannot be undone, and what it writes and
+  removes again stays out of git's object store. A PII file left in the project
+  is snapshotted by the next turn like any other file.
 - A turn the hub stopped in the middle of shows as `(no end snapshot)` and
   cannot be undone.
 - Claude's turns are not recorded: its channel shows the hub no turn boundary.

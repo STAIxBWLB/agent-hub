@@ -447,8 +447,10 @@ export async function startDaemon(opts: DaemonOptions) {
   if (turnLog) startupCleanup.push(() => turnLog.close());
   /**
    * A snapshot that fails costs the undo record of that turn and nothing else. The peer's prompt waits for it (it
-   * runs inside the state change), at most the git timeout in snapshots.ts.
+   * runs inside the state change): two or three git calls, each with the 10 s timeout in snapshots.ts.
    */
+  /** Whether a peer has a PII task open in any state: assigned and not yet accepted counts. */
+  const holdsPii = (peer: PeerId) => board.list().some((t) => t.owner === peer && t.state !== "approved" && t.state !== "in_review" && tasks.isPii(t));
   const snap = (what: string): { tree?: string; ms: number } => {
     const t0 = performance.now();
     let tree: string | undefined;
@@ -739,17 +741,20 @@ export async function startDaemon(opts: DaemonOptions) {
       const busy = (bus.peers.get(e.peer)?.state ?? e.state) === "busy";
       if (busy && !open) {
         const id = `${e.peer}#${runId}.${++turnSeq}`;
-        // A turn on a PII task is not snapshotted: what it writes would stay in git's object store until gc.
-        const pii = board.list("in_progress").some((t) => t.owner === e.peer && tasks.isPii(t));
+        // A turn of a peer with a PII task open is not snapshotted: what it writes would stay in git's object store until
+        // gc. It is still recorded, without trees, so an overlapping turn's undo knows its changes are unknown.
+        const pii = holdsPii(e.peer);
         const start = turnLog && !pii ? snap(`the start of ${id}`) : undefined; // before the peer is handed anything: the tap runs inside setState
-        if (!pii) try { turnLog?.begin(id, e.peer, start?.tree); } catch (error) { log(`turn record ${id}: ${(error as Error).message}`); }
+        try { turnLog?.begin(id, e.peer, start?.tree); } catch (error) { log(`turn record ${id}: ${(error as Error).message}`); }
         turns.set(e.peer, { id, start: Date.now(), tokens: 0, ...(start ? { tree: start.tree, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
         event({ type: "turn_start", peer: e.peer, turn: id });
       } else if (!busy && open) {
         turns.delete(e.peer);
         let files: number | undefined;
         let snapshotMs = open.snapshotMs;
-        if (turnLog && !open.private) {
+        if (turnLog && (open.private || holdsPii(e.peer))) {
+          try { turnLog.end(open.id, undefined, [], Math.max(1, Number(config.snapshots.keep) || 20)); } catch (error) { log(`turn record ${open.id}: ${(error as Error).message}`); }
+        } else if (turnLog) {
           const end = snap(`the end of ${open.id}`);
           const changed = open.tree && end.tree ? changedPaths(repo!, open.tree, end.tree) : [];
           if (open.tree && end.tree) files = changed.length; // unknown, not zero, when a snapshot failed

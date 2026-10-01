@@ -114,6 +114,7 @@ test("files another peer's overlapping turn changed are refused as concurrent; a
   expect(planUndo(r, t, ["b.txt"])).toMatchObject({ restore: ["a.txt"], concurrent: ["b.txt"], changedSince: [], undone: false });
   restore(r, t.start_tree, t.changed);
   expect(planUndo(r, t).undone).toBe(true);
+  expect(planUndo(r, turn(r, () => {})).undone).toBe(false); // a turn that changed nothing was never done
 });
 
 test("a project in a subdirectory snapshots only its own files (F7)", () => {
@@ -140,12 +141,53 @@ test("turn records keep the last N per peer, close turns a stopped hub left open
   expect(turns.list("kimi").map((t) => t.id)).toEqual(["kimi#r.4", "kimi#r.3"]);
   expect(turns.get("codex#r.9")).toMatchObject({ native: "turn7", ended: null });
   expect(turns.latest("codex")?.id).toBe("codex#r.9");
-  expect(turns.overlapping(turns.get("kimi#r.4")!)).toEqual([]); // codex's turn is open but changed nothing yet
   turns.close();
   turns = new Turns(join(dir, "hub.db")); // the next hub run
   expect(turns.get("codex#r.9")).toMatchObject({ end_tree: null });
   expect(turns.get("codex#r.9")!.ended).not.toBeNull();
   turns.close();
+});
+
+test("an overlapping turn whose changes are not known yet is reported as unknown, then as paths once it ends (R1)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-overlap-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const turns = new Turns(join(dir, "hub.db"));
+  turns.begin("kimi#r.1", "kimi", "t0");
+  await Bun.sleep(5);
+  turns.begin("codex#r.1", "codex", "t0"); // starts while kimi works, still running when kimi ends
+  await Bun.sleep(5);
+  turns.end("kimi#r.1", "t1", ["a.txt", "b.txt"], 20);
+  expect(turns.overlapping(turns.get("kimi#r.1")!)).toEqual({ paths: [], unknown: ["codex#r.1"] });
+  turns.end("codex#r.1", "t2", ["b.txt"], 20);
+  expect(turns.overlapping(turns.get("kimi#r.1")!)).toEqual({ paths: ["b.txt"], unknown: [] });
+  turns.begin("pi#r.1", "pi", "t0");
+  await Bun.sleep(5);
+  turns.begin("local#r.1", "local", undefined); // a PII turn during pi's: recorded without trees
+  turns.end("local#r.1", undefined, [], 20);
+  await Bun.sleep(5);
+  turns.end("pi#r.1", "t3", ["c.txt"], 20);
+  expect(turns.overlapping(turns.get("pi#r.1")!).unknown).toEqual(["local#r.1"]);
+  turns.close();
+});
+
+// R2: on a case-insensitive disk (macOS by default) `Foo.ts` and `foo.ts` are one file.
+const caseInsensitive = (() => {
+  const d = mkdtempSync(join(tmpdir(), "agenthub-case-"));
+  writeFileSync(join(d, "Aa"), "");
+  const yes = existsSync(join(d, "aA"));
+  rmSync(d, { recursive: true, force: true });
+  return yes;
+})();
+test.skipIf(!caseInsensitive)("undoing a case-only rename puts the old spelling back instead of deleting the file (R2)", () => {
+  const { top, git, r } = repo();
+  writeFileSync(join(top, "Foo.ts"), "export const x = 1;\n");
+  git("add", "Foo.ts");
+  git("commit", "-qm", "foo");
+  const t = turn(r, () => void git("mv", "Foo.ts", "foo.ts"));
+  expect(t.changed).toEqual(["Foo.ts", "foo.ts"]);
+  const plan = planUndo(r, t);
+  restore(r, t.start_tree, plan.restore);
+  expect(readFileSync(join(top, "Foo.ts"), "utf8")).toBe("export const x = 1;\n");
 });
 
 test("outside a repository there is nothing to snapshot", () => {

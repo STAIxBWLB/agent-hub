@@ -1088,3 +1088,31 @@ test("snapshots: a Codex turn records its native id, and turn_revert reverts the
   expect(states).toEqual(["paused", "idle"]); // held during the revert, released after
   expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain(`turn_revert ${turn}: Codex conversation reverted to before ${latest.native}`);
 });
+
+// Review of #47 (R3): a peer with a PII task open, accepted or not, is not snapshotted; its turn is recorded without trees.
+test("snapshots: a turn of a peer holding an unaccepted PII task is recorded without snapshots", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-piisnap-")));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+  const { stateDir, daemon, console_ } = await hub({ cwd: dir, snapshots: { enabled: true, keep: 20 } });
+  class Worker extends BasePeer {
+    async start() { this.setState("idle"); }
+    async deliver() {
+      this.setState("busy");
+      writeFileSync(join(dir, "record.txt"), "900101-1234567\n");
+      setTimeout(() => this.setState("idle"), 5);
+    }
+    async stop() { this.setState("offline"); }
+  }
+  const local = new Worker("local");
+  daemon.bus.add(local);
+  await local.start();
+  expect((await console_.request({ t: "task", op: "hub_task_propose", args: { title: "fix the entry for 900101-1234567", class: "implement" } })).text).toContain("owner local");
+  const file = join(stateDir, "events.jsonl");
+  await until(() => readEvents(file).some((e) => e.type === "turn_end" && e.peer === "local"), "the PII offer's turn");
+  const ended = readEvents(file).find((e) => e.type === "turn_end" && e.peer === "local") as { files?: number };
+  expect(ended.files).toBeUndefined();
+  const records = new Turns(join(stateDir, "hub.db"), true);
+  expect(records.latest("local")).toMatchObject({ start_tree: null, end_tree: null, changed: [] });
+  records.close();
+});

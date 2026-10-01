@@ -778,15 +778,17 @@ const commands: Record<string, () => Promise<void> | void> = {
     const repo = repoOf(cwd) ?? fail(`${cwd} is not in a git work tree`);
     if (!hasTree(repo.top, startTree) || !hasTree(repo.top, endTree)) fail(`turn ${id}'s snapshots are gone from the git object store (git gc prunes them after two weeks)`);
     // Another peer's turn that overlapped this one in time has its changes in this turn's diff as well.
-    const overlapping = turnRecords((t) => t.overlapping(turn), [] as string[]);
+    const overlapping = turnRecords((t) => t.overlapping(turn), { paths: [] as string[], unknown: [] as string[] });
+    if (overlapping.unknown.length) fail(`refusing to undo ${id}: these turns of other peers ran at the same time and their changes are not known (still running, cut short, or not snapshotted): ${overlapping.unknown.join(", ")}`);
+    let reverted = false;
     const plan = () => {
-      const p = planUndo(repo, { start_tree: startTree, end_tree: endTree, changed: turn.changed }, overlapping);
+      const p = planUndo(repo, { start_tree: startTree, end_tree: endTree, changed: turn.changed }, overlapping.paths);
       if (p.undone) return p;
       const why = [
         p.changedSince.length ? `these files changed again after it ended, and restoring them would lose that work:\n  ${p.changedSince.join("\n  ")}` : "",
         p.concurrent.length ? `these files were also changed by another peer's turn running at the same time, so the change may be theirs:\n  ${p.concurrent.join("\n  ")}` : "",
       ].filter(Boolean);
-      if (why.length) fail(`refusing to undo ${id}: ${why.join("\n")}`);
+      if (why.length) fail(`refusing to undo ${id}: ${why.join("\n")}${reverted ? "\nCodex's conversation was already reverted; restore the files later with ahub undo without --context" : ""}`);
       return p;
     };
     const first = plan();
@@ -794,14 +796,16 @@ const commands: Record<string, () => Promise<void> | void> = {
     console.log(first.restore.length ? `turn ${id} changed:\n  ${first.restore.join("\n  ")}` : `turn ${id} changed no files`);
     console.log("(every change made in the project during the turn counts as its own, including any by Claude or by you)");
     if (!args.includes("--yes")) return console.log("nothing was changed; add --yes to restore these files");
-    if (args.includes("--context")) console.log(await taskOp("turn_revert", { turn: id }));
+    if (args.includes("--context")) {
+      console.log(await taskOp("turn_revert", { turn: id }));
+      reverted = true;
+    }
     // A peer may have written meanwhile (the revert alone can take seconds): plan again right before restoring.
     const second = plan();
-    if (second.restore.join("\0") !== first.restore.join("\0")) fail("the project changed while undoing; nothing was restored, run ahub undo again");
+    if (second.restore.join("\0") !== first.restore.join("\0")) fail(`the project changed while undoing; nothing was restored, run ahub undo again${reverted ? " without --context (Codex's conversation was already reverted)" : ""}`);
     restore(repo, startTree, second.restore);
     if (second.restore.length) console.log(`restored to their state before ${id}`);
   },
-
 
   kill: async () => {
     const registry = new Registry();

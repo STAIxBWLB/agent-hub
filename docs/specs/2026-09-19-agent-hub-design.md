@@ -888,7 +888,10 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   tree, or when another peer's turn that overlapped this one in time changed it;
   paths reach git as `:(literal)` pathspecs; the plan is made again right before
   restoring; snapshots cover the project prefix only and run with a 10 s git
-  timeout; turns of a peer with a PII task in progress are not snapshotted; turns
-  left open by a stopped hub are closed without an end snapshot; Codex receives
-  nothing while `thread/revert` runs.
+  timeout; turns of a peer holding an open PII task (any state before review)
+  are recorded without snapshots; turns left open by a stopped hub are closed at
+  the next start without an end snapshot; undo refuses while an overlapping
+  turn's changes are unknown; removals run before restorations (a case-only
+  rename on a case-insensitive disk); Codex receives nothing while
+  `thread/revert` runs.
 
