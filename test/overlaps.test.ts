@@ -36,7 +36,7 @@ test("overlaps: parses the notice Tasks really writes, and not the task envelope
     "2026-09-28T10:00:00.100Z msg hub -> codex important hop=0: Task #2 [implement] retry (backoff)",
     "Overlaps #1 (owner kimi) on ./src/hub/bus.ts. Settle it with that owner via hub_send before editing those paths.",
   ].join("\n");
-  expect(parse(log, "a")).toEqual([{ source: "a", at: "2026-09-28T10:00:00.000Z", task: 2, owner: "codex", others: [{ task: 1, owner: "kimi", paths: ["./src/hub/bus.ts"] }] }]);
+  expect(parse(log, "a")).toEqual([{ source: "a", at: "2026-09-28T10:00:00.000Z", task: 2, owner: "codex", others: [{ task: 1, owner: "kimi", paths: ["src/hub/bus.ts"] }] }]);
 });
 
 test("overlaps: per week, each pair of tasks once per project, a reassigned task keeping its pair", () => {
