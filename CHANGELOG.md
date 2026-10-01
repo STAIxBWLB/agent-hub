@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Plans and completed-change notices: `hub_task_propose` and `hub_task_accept` take a `plan` (paths, symbols, signatures, insertion points), overlaps also count plan paths and shared symbols, the owners of overlapping tasks get the plan as a ride-along line, and when a task is done they get a notice of the changed files, signatures and summary. PII tasks are left out on both sides, and a plan matching a PII pattern makes a new task a PII task or is refused on an ordinary one. During a PII turn the local worker can no longer finish, review or accept-with-plan an ordinary task, which would carry its words to other peers and claude-mem (#31).
 - Per-turn snapshots and undo: in a git work tree the hub snapshots the files at each turn boundary, `ahub turns` lists the files each turn changed (shell-made changes included), and `ahub undo <turn>` restores them, refusing any file that changed again since; `--context` also drops a Codex turn from its conversation (#33).
 - Structured telemetry: the hub writes `events.jsonl` (envelopes without bodies, peer states, turns with per-turn tokens for Kimi and Codex, board changes, overlaps, quota readings), and `ahub export` and `ahub report` read it (#40).
 

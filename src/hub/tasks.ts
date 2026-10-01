@@ -1,6 +1,6 @@
 import type { Briefs } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
-import { CLASSES, type Board, type Task, type TaskClass, type TaskRefs } from "./board.ts";
+import { CLASSES, PLAN_KEYS, type Board, type Task, type TaskClass, type TaskPlan, type TaskRefs } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import { assign, detectSignals, LOCAL, PI, type Assignment, type Routing } from "./routing.ts";
@@ -24,7 +24,7 @@ export interface TasksDeps {
   /** Hands one peer a line that rides on its next delivery, without a turn of its own (issue #6). */
   tell?: (peer: PeerId, line: string) => void;
   /** Structured overlap records for telemetry (issue #40); the notice line stays for the human. */
-  recordOverlap?: (task: number, owner: PeerId, others: { task: number; owner: PeerId; paths: string[] }[]) => void;
+  recordOverlap?: (task: number, owner: PeerId, others: { task: number; owner: PeerId; paths: string[]; symbols?: string[] }[]) => void;
   /** Optional: name a class for a task proposed without one. `onCampus` says whether the model call stays on campus. */
   triage?: { classify: (title: string, detail: string) => Promise<TaskClass | undefined>; onCampus: () => Promise<boolean> };
 }
@@ -41,16 +41,30 @@ const samePlace = (a: string, b: string) => {
   return x === "." || y === "." || x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
 };
 
+/** One line of model-written text: whitespace (newlines included) collapses, so it can never start a forged log line. */
+const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.replace(/\s+/g, " ").trim().slice(0, 300) : undefined);
+/** A list of short strings; a lone string counts as a list of one. */
+const textList = (v: unknown) => (Array.isArray(v) ? v : typeof v === "string" ? [v] : []).map(text).filter((p): p is string => !!p).slice(0, 50);
+const fields = (input: unknown) => (input && typeof input === "object" && !Array.isArray(input) ? input : {}) as Record<string, unknown>;
+
 /** Tool callers are models: inputSchema is not enforced on the way in, so refs are normalized before they reach the board. */
 function cleanRefs(input: unknown): TaskRefs {
-  const r = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
-  const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim().slice(0, 300) : undefined);
-  const paths = (Array.isArray(r.paths) ? r.paths : typeof r.paths === "string" ? [r.paths] : []).map(text).filter((p): p is string => !!p).slice(0, 50);
+  const r = fields(input);
+  const paths = textList(r.paths);
   const out: TaskRefs = {};
   for (const k of ["repo", "branch", "commit"] as const) if (text(r[k])) out[k] = text(r[k])!;
   if (paths.length) out.paths = paths;
   return out;
 }
+
+/** The same for a plan (issue #31): only its four lists, each of short strings. */
+function cleanPlan(input: unknown): TaskPlan {
+  const r = fields(input);
+  return Object.fromEntries(PLAN_KEYS.map((k) => [k, textList(r[k])] as const).filter(([, v]) => v.length));
+}
+
+/** A plan as one line for other owners; the whole plan is on the board. */
+const planText = (plan: TaskPlan = {}) => PLAN_KEYS.filter((k) => plan[k]?.length).map((k) => `${k.replace("_", " ")}: ${plan[k]!.join("; ")}`).join(" | ");
 
 /**
  * The task flow. Adapters and tools never touch the board: every change comes through here, where assignment,
@@ -78,20 +92,23 @@ export class Tasks {
   /** A task as a cloud peer may see it. */
   publicView(task: Task): Record<string, unknown> {
     const { title, detail, history, ...rest } = task;
-    return this.isPii(task) ? { ...rest, refs: {}, title: "[pii]", detail: "[pii]" } : { ...rest, title, detail, history: history.slice(-5) };
+    return this.isPii(task) ? { ...rest, refs: {}, plan: {}, title: "[pii]", detail: "[pii]" } : { ...rest, title, detail, history: history.slice(-5) };
   }
 
   private states(): Record<PeerId, PeerState> {
     return Object.fromEntries([...this.d.bus.peers.keys()].map((id) => [id, this.d.bus.stateOf(id)]));
   }
 
-  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; refs?: TaskRefs; owner?: PeerId }): Promise<Task> {
-    const title = String(input.title ?? "").trim().slice(0, 300); // callers are models: a title is a line, not a document
+  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId }): Promise<Task> {
+    // Callers are models: a title is one line (it is part of console and hub.log lines), not a document.
+    const title = String(input.title ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
     if (!title) throw new Error("title is required");
     const given = input.class === undefined || input.class === "" ? undefined : input.class;
     if (given !== undefined && !CLASSES.includes(given as TaskClass)) throw new Error(`class must be one of ${CLASSES.join(", ")}`);
     const text = { title, detail: String(input.detail ?? "").slice(0, 8000), refs: cleanRefs(input.refs) };
-    const signals = detectSignals(text, this.d.routing(), this.d.cwd);
+    const plan = cleanPlan(input.plan);
+    // The plan reaches other owners, so a PII pattern in it makes the task a PII task like one in the detail would.
+    const signals = detectSignals({ ...text, detail: [text.detail, planText(plan)].join("\n") }, this.d.routing(), this.d.cwd);
     let cls = given as TaskClass | undefined;
     let triaged = false;
     if (!cls && this.d.triage) {
@@ -105,7 +122,7 @@ export class Tasks {
     if (defaulted) cls = "implement";
     if (!cls) throw new Error(`class is required (one of ${CLASSES.join(", ")}); the hub could not name one for you`);
     const draft = { ...text, class: cls };
-    let task = this.d.board.propose(by, { ...draft, signals });
+    let task = this.d.board.propose(by, { ...draft, plan, signals });
     if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
     if (defaulted) task = this.d.board.update(task.id, "hub", "class defaulted", {}, "class implement for a claim without one");
     this.d.notify(`task ${this.publicTitle(task)} proposed by ${by} [${task.class}]${task.signals.length ? ` signals: ${task.signals.join(", ")}` : ""}`);
@@ -118,8 +135,8 @@ export class Tasks {
    * only the new owner reads "settle it"; anyone else learns that the owner was told. PII tasks are left out on both
    * sides: their refs are hidden from cloud peers.
    */
-  overlaps(task: Task, forOwner = true): string {
-    const hits = this.overlapHits(task).map((h) => `#${h.task.id} (owner ${h.task.owner}) on ${h.paths.join(", ")}`);
+  overlaps(task: Task, forOwner = true, found = this.overlapHits(task)): string {
+    const hits = found.map((h) => `#${h.task.id} (owner ${h.task.owner}) on ${this.where(h)}`);
     if (!hits.length) return "";
     const who = forOwner ? "Settle it with that owner via hub_send before editing those paths." : `${task.owner ?? "Whoever takes it"} is told to settle it.`;
     return `Overlaps ${hits.join("; ")}. ${who}`;
@@ -128,22 +145,48 @@ export class Tasks {
   /** While a gone owner's tasks move, its other tasks are about to move too: they are no one to settle with. */
   private releasing: PeerId | undefined;
 
-  private overlapHits(task: Task): { task: Task; paths: string[] }[] {
-    const mine = task.refs.paths ?? [];
-    if (!mine.length || this.isPii(task)) return [];
+  /** Whether a model-written name may be shown to other peers and in the log: one matching a PII pattern may be PII. */
+  private nameable = (t: string): boolean => !this.isPii({ signals: detectSignals({ title: "", detail: t, refs: {} }, this.d.routing(), this.d.cwd) });
+
+  /** Where two tasks meet: shared paths, then shared symbols, leaving out any name that matches a PII pattern. */
+  private where(hit: { paths: string[]; symbols: string[] }): string {
+    const shown = [...hit.paths.filter(this.nameable), ...hit.symbols.filter(this.nameable).map((s) => `symbol ${s}`)];
+    return shown.length ? shown.join(", ") : "a path whose name is withheld (it matches a PII pattern)";
+  }
+
+  /** Paths from refs and plan, symbols from the plan: the places a task says it touches (issue #31). */
+  private places(task: Task): { paths: string[]; symbols: string[] } {
+    return { paths: [...new Set([...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])])], symbols: task.plan?.symbols ?? [] };
+  }
+
+  private overlapHits(task: Task): { task: Task; paths: string[]; symbols: string[] }[] {
+    const mine = this.places(task);
+    if ((!mine.paths.length && !mine.symbols.length) || this.isPii(task)) return [];
     return this.d.board.list().flatMap((t) => {
       if (t.id === task.id || !t.owner || t.owner === task.owner || t.owner === this.releasing || !OPEN.includes(t.state) || this.isPii(t)) return [];
-      const paths = mine.filter((p) => (t.refs.paths ?? []).some((q) => samePlace(p, q)));
-      return paths.length ? [{ task: t, paths }] : [];
+      const theirs = this.places(t);
+      const paths = mine.paths.filter((p) => theirs.paths.some((q) => samePlace(p, q)));
+      const symbols = mine.symbols.filter((x) => theirs.symbols.includes(x));
+      return paths.length || symbols.length ? [{ task: t, paths, symbols }] : [];
     });
   }
 
-  /** The earlier owner hears of an overlap on its next delivery, costing it no turn; the newcomer settles it (#6). */
-  private tellEarlierOwners(task: Task): void {
+  /** The console notice and the telemetry record of an overlap; the two are counted against each other (issue #40). */
+  private announceOverlap(task: Task, hits: ReturnType<Tasks["overlapHits"]>): void {
+    this.d.notify(`task ${this.publicTitle(task)} (${task.owner}): ${this.overlaps(task, false, hits)}`);
+    this.d.recordOverlap?.(task.id, task.owner!, hits.map((h) => ({ task: h.task.id, owner: h.task.owner!, paths: h.paths.filter(this.nameable), ...(h.symbols.length ? { symbols: h.symbols.filter(this.nameable) } : {}) })));
+  }
+
+  /**
+   * The earlier owners hear of an overlap on their next delivery, costing them no turn; the newcomer settles it (#6).
+   * Its plan rides along, so they know what it will touch (issue #31).
+   */
+  private tellEarlierOwners(task: Task, hits = this.overlapHits(task)): void {
     if (!task.owner || !this.d.tell) return;
-    for (const hit of this.overlapHits(task)) {
+    const plan = planText(task.plan);
+    for (const hit of hits) {
       if (hit.task.owner === USER || hit.task.owner === HUB) continue;
-      this.d.tell(hit.task.owner!, noteLine(HUB, "finding", `task #${task.id} (owner ${task.owner}) now overlaps your #${hit.task.id} on ${hit.paths.join(", ")}; ${task.owner} is told to settle it`));
+      this.d.tell(hit.task.owner!, noteLine(HUB, "finding", `task #${task.id} (owner ${task.owner}) now overlaps your #${hit.task.id} on ${this.where(hit)}; ${task.owner} is told to settle it${plan ? `. Its plan (full: hub_task_list): ${plan}` : ""}`));
     }
   }
 
@@ -200,18 +243,17 @@ export class Tasks {
       return opts.clearOnFail && task.owner ? this.d.board.update(task.id, by, "unassigned", { owner: null }) : task;
     }
     const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}) }, opts.note ?? `to ${a.owner}`);
-    const overlap = this.overlaps(next, false);
-    if (overlap) {
-      this.d.notify(`task ${this.publicTitle(next)} (${next.owner}): ${overlap}`);
-      this.d.recordOverlap?.(next.id, next.owner!, this.overlapHits(next).map((h) => ({ task: h.task.id, owner: h.task.owner!, paths: h.paths })));
-      this.tellEarlierOwners(next);
+    const hits = this.overlapHits(next);
+    if (hits.length) {
+      this.announceOverlap(next, hits);
+      this.tellEarlierOwners(next, hits);
     }
     if (opts.claim && a.owner === by) {
       const claimed = this.d.board.update(next.id, by, "accepted", { state: "in_progress" });
       this.d.notify(`task ${this.publicTitle(claimed)} claimed by ${by}`);
       return claimed;
     }
-    await this.sendTask(next, a, opts.context, this.overlaps(next));
+    await this.sendTask(next, a, opts.context, this.overlaps(next, true, hits));
     return next;
   }
 
@@ -220,16 +262,18 @@ export class Tasks {
     const brief = pii ? undefined : await this.d.briefs?.forTask(task.owner!, task).catch(() => undefined);
     const rejected = task.history.filter((h) => h.event === "changes_requested").map((h) => `- ${h.by}: ${h.note ?? ""}`);
     const facts = [`class ${task.class}`, a.owner === PI ? `backend pi/${a.piBackend ?? "dgx"}` : "", task.refs.paths?.length ? `paths ${task.refs.paths.join(", ")}` : "", task.refs.branch ? `branch ${task.refs.branch}` : "", a.reviewer ? `reviewer ${a.reviewer}` : "no reviewer"].filter(Boolean).join("; ");
+    const plan = planText(task.plan);
     const body = [
       `Task #${task.id} [${task.class}] ${task.title}`,
       task.detail,
       `Facts: ${facts}`,
+      plan ? `Plan so far: ${plan}` : "",
       overlap,
       rejected.length ? `Earlier review notes:\n${rejected.join("\n")}` : "",
       brief ?? "",
       // What the previous owner left behind. Peer-written free text: never attached to a PII task.
       context && !pii ? `Handoff from the previous owner:\n${context.slice(0, 3000)}` : "",
-      `Take it with hub_task_accept {id: ${task.id}} or pass with hub_task_decline. When finished: hub_task_done {id: ${task.id}, summary: what changed, why, and the check you ran with its result, refs}.`,
+      `Take it with hub_task_accept {id: ${task.id}, plan: {paths, symbols, signatures, insertion_points}} (what you will change, before you start${pii ? "" : "; owners of overlapping tasks see it"}) or pass with hub_task_decline. When finished: hub_task_done {id: ${task.id}, summary: what changed, why, and the check you ran with its result, refs}.`,
     ].filter(Boolean).join("\n\n");
     this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner!], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id) }, ...(pii ? { private: true } : {}) }));
   }
@@ -246,11 +290,29 @@ export class Tasks {
     return task;
   }
 
-  accept(by: PeerId, id: unknown): Task {
+  /**
+   * With a plan, the owners of overlapping tasks get it as a ride-along line, and an overlap only the plan reveals is
+   * announced like one found at assignment (issue #31).
+   */
+  accept(by: PeerId, id: unknown, plan?: unknown): Task {
     const task = this.need(id);
     this.mine(task, by, "owner");
-    const next = this.d.board.update(task.id, by, "accepted", { state: "in_progress" });
+    // Models send null or {} for an optional field they leave empty: neither replaces a plan.
+    const given = plan == null ? undefined : cleanPlan(plan);
+    const cleaned = given && Object.keys(given).length ? given : undefined;
+    // A task's signals are fixed when it is proposed: text that matches a PII pattern cannot be let in afterwards.
+    if (cleaned && !this.isPii(task) && this.isPii({ signals: detectSignals({ title: "", detail: planText(cleaned), refs: {} }, this.d.routing(), this.d.cwd) })) {
+      throw new Error("this plan matches a PII pattern and is not kept: other owners would see it");
+    }
+    const before = new Set(this.overlapHits(task).map((h) => h.task.id));
+    const next = this.d.board.update(task.id, by, "accepted", { state: "in_progress", ...(cleaned ? { plan: cleaned } : {}) });
     this.d.notify(`task ${this.publicTitle(next)} accepted by ${by}`);
+    if (cleaned) {
+      const hits = this.overlapHits(next);
+      const fresh = hits.filter((h) => !before.has(h.task.id));
+      if (fresh.length) this.announceOverlap(next, fresh);
+      this.tellEarlierOwners(next, hits);
+    }
     return next;
   }
 
@@ -321,10 +383,36 @@ export class Tasks {
     const reviewer = task.reviewer;
     const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", refs: cleanRefs(refs) }, checkOutput ? `${summary ?? ""}\n${checkOutput}`.trim() : summary);
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`);
+    this.tellCompleted(next, summary);
     if (!reviewer) this.d.notify(`task ${this.publicTitle(next)} done by ${by}, no reviewer: approved`);
     else if (reviewer === USER) this.d.notify(`task ${this.publicTitle(next)} done by ${by}: review it with ahub task show ${next.id}, then ahub review ${next.id} approved|changes_requested [note]`);
     else this.sendReview(next, reviewer);
     return next;
+  }
+
+  /**
+   * "Passes alone, fails together": the owners of open tasks on the same places hear what changed under them, once the
+   * work is done (after its check, when one runs), and nobody else does (issue #31). A message of its own, not a
+   * ride-along line: an owner in the middle of those files needs it before its next task arrives.
+   */
+  private tellCompleted(task: Task, summary?: string): void {
+    const hits = this.overlapHits(task).filter((h) => h.task.owner !== USER && h.task.owner !== HUB);
+    if (!hits.length) return;
+    // Files, signatures and the summary are the owner's own words (paths given at done included): any item that
+    // matches a PII pattern is left out of what other owners get.
+    const paths = this.places(task).paths.filter(this.nameable);
+    const signatures = (task.plan?.signatures ?? []).filter(this.nameable);
+    const first = (summary ?? "").split("\n").find((l) => l.trim())?.trim().slice(0, 300);
+    const line = first && this.nameable(first) ? first : undefined;
+    for (const hit of hits) {
+      const body = [
+        `Task #${task.id} (owner ${task.owner}) is done and touches your open #${hit.task.id} on ${this.where(hit)}. Check your work against it before you go on.`,
+        paths.length ? `Changed files: ${paths.join(", ")}` : "",
+        signatures.length ? `New or changed signatures: ${signatures.join("; ")}` : "",
+        line ? `Summary: ${line}` : "",
+      ].filter(Boolean).join("\n");
+      this.d.bus.publish(newEnvelope(HUB, body, { to: [hit.task.owner!], kind: "task", refs: { task: String(hit.task.id) } }));
+    }
   }
 
   /** The one place a review request is written: the first reviewer and a replacement get the same text, refs and privacy. */

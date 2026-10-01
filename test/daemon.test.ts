@@ -1116,3 +1116,37 @@ test("snapshots: a turn of a peer holding an unaccepted PII task is recorded wit
   expect(records.latest("local")).toMatchObject({ start_tree: null, end_tree: null, changed: [] });
   records.close();
 });
+
+// Review of #48 (H1): a PII turn cannot carry the worker's words onto an ordinary task (plan, summary, review note).
+test("during a PII turn the local worker cannot accept with a plan, finish or review an ordinary task", async () => {
+  const model = startFakeModelServer({
+    key: "k",
+    script: (body) => {
+      const text = JSON.stringify(body.messages);
+      const tools = body.messages.filter((m) => m.role === "tool");
+      if (!text.includes("900101")) return { content: "noted" }; // the ordinary offer: no tools
+      if (tools.length === 0) return { tool_calls: [toolCall("hub_task_accept", { id: 1, plan: { signatures: ["callBack(patientId)"] } }), toolCall("hub_task_done", { id: 1, summary: "called the patient back" }), toolCall("hub_review", { id: 1, verdict: "approved", note: "fine" })] };
+      return { content: `tools said: ${tools.map((t) => t.content).join(" | ")}` };
+    },
+  });
+  cleanup.push(model.stop);
+  process.env.OMNIROUTE_API_KEY = "k";
+  cleanup.push(() => delete process.env.OMNIROUTE_API_KEY);
+  const { console_ } = await hub({ modelUrl: model.url });
+  await console_.request({ t: "start", peer: "local", args: { model: "vllm/x" } });
+  const op = async (o: string, args: unknown) => console_.request({ t: "task", op: o, args });
+  expect((await op("hub_task_propose", { title: "ordinary cleanup", class: "implement", owner: "local" })).text).toContain("task #1");
+  await until(() => model.requests.length >= 1, "the ordinary turn");
+  expect((await op("hub_task_propose", { title: "fix the entry for 900101-1234567", class: "implement" })).text).toContain("task #2");
+  await until(() => model.requests.some((r) => r.body.messages.some((m: { role: string }) => m.role === "tool")), "the PII turn's tools");
+  // the turn's answer, with the tools' refusals, is filed on the PII task after the last request
+  let answer = "";
+  for (let i = 0; i < 300 && !answer.includes("hub_review on task #1"); i++) {
+    answer = (await op("task_show", { id: 2 })).text;
+    if (!answer.includes("hub_review on task #1")) await Bun.sleep(10);
+  }
+  const shown = JSON.parse((await op("task_show", { id: 1 })).text);
+  expect(shown.plan).toEqual({});
+  expect(shown.state).toBe("proposed");
+  for (const name of ["hub_task_accept", "hub_task_done", "hub_review"]) expect(answer).toContain(`${name} on task #1 is not available while working on a PII task`);
+});

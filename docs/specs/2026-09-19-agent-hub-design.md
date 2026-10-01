@@ -895,3 +895,29 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   rename on a case-insensitive disk); Codex receives nothing while
   `thread/revert` runs.
 
+## Amendment: plans and completed-change notices (issue #31)
+
+- A plan is a JSON column on `tasks` (`paths`, `symbols`, `signatures`,
+  `insertion_points`, each a list of short strings), not part of `refs`: refs ride
+  on every task envelope. A plan on accept replaces the old one whole. Boards
+  from before 0.8 get the column on open.
+- A plan's text counts for PII detection when a task is proposed. On accept the
+  task's signals are fixed, so a plan that matches a PII pattern is refused for
+  an ordinary task.
+- Overlap: paths from refs and plan (same file or a directory of it), or the
+  same symbol named in both plans. An overlap that only the new plan reveals on
+  accept is announced like one found at assignment (console notice and overlap
+  event); one already announced is not announced again, but the other owner
+  still gets the new plan.
+- The completed-change notice is a normal-priority `task` envelope of its own,
+  not a ride-along line: an owner in the middle of those files needs it before
+  its next task arrives. It lists the files from refs and plan and the plan's
+  signatures, as declared; the hub does not read the diff.
+- After review: during a PII turn, `hub_task_done`, `hub_review` and
+  `hub_task_accept` with a plan are refused for an ordinary task (its plan,
+  summary or note would reach other peers and claude-mem), as `hub_remember`
+  and `hub_task_propose` already were. Model-written refs and plan items are one
+  line (whitespace collapses), so none can forge a hub.log line; a `null` or
+  empty plan on accept keeps the plan there is. The completed-change notice
+  leaves out any file, signature or summary line that matches a PII pattern.
+

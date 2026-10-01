@@ -11,6 +11,10 @@ export interface TaskRefs {
   commit?: string;
   paths?: string[];
 }
+/** What an owner says it will change, before it starts (issue #31). Each list holds short free-text items. */
+export const PLAN_KEYS = ["paths", "symbols", "signatures", "insertion_points"] as const;
+export type TaskPlan = Partial<Record<(typeof PLAN_KEYS)[number], string[]>>;
+
 export interface HistoryEntry {
   at: number;
   by: PeerId;
@@ -26,6 +30,8 @@ export interface Task {
   reviewer: PeerId | null;
   state: TaskState;
   refs: TaskRefs;
+  /** Absent only on tasks built outside the board (tests); the board always returns one, `{}` when none was given. */
+  plan?: TaskPlan;
   signals: string[];
   /** consecutive changes_requested verdicts */
   rejections: number;
@@ -43,7 +49,7 @@ const MOVES: Record<TaskState, TaskState[]> = {
   approved: [],
 };
 
-const JSON_COLS = ["refs", "signals", "history"] as const;
+const JSON_COLS = ["refs", "plan", "signals", "history"] as const;
 
 /** Task board in `.agenthub/state/hub.db`. It outlives the hub process: `ahub kill` leaves the file. */
 export class Board {
@@ -61,14 +67,18 @@ export class Board {
       id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', class TEXT NOT NULL,
       owner TEXT, reviewer TEXT, state TEXT NOT NULL, refs TEXT NOT NULL DEFAULT '{}', signals TEXT NOT NULL DEFAULT '[]',
       rejections INTEGER NOT NULL DEFAULT 0, history TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL)`);
+    // Boards from before issue #31 have no plan column.
+    if (!(this.db.query("PRAGMA table_info(tasks)").all() as { name: string }[]).some((c) => c.name === "plan")) {
+      this.db.run("ALTER TABLE tasks ADD COLUMN plan TEXT NOT NULL DEFAULT '{}'");
+    }
   }
 
-  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; refs?: TaskRefs; signals?: string[] }): Task {
+  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; refs?: TaskRefs; plan?: TaskPlan; signals?: string[] }): Task {
     const now = Date.now();
     const history: HistoryEntry[] = [{ at: now, by, event: "proposed" }];
     const { lastInsertRowid } = this.db
-      .query("INSERT INTO tasks (title, detail, class, state, refs, signals, history, created, updated) VALUES (?, ?, ?, 'proposed', ?, ?, ?, ?, ?)")
-      .run(t.title, t.detail ?? "", t.class, JSON.stringify(t.refs ?? {}), JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now);
+      .query("INSERT INTO tasks (title, detail, class, state, refs, plan, signals, history, created, updated) VALUES (?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?)")
+      .run(t.title, t.detail ?? "", t.class, JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now);
     const task = this.get(Number(lastInsertRowid))!;
     this.changed(task, history[0]!);
     return task;
@@ -91,7 +101,8 @@ export class Board {
   }
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "refs" | "rejections">>, note?: string): Task {
+  /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "refs" | "plan" | "rejections">>, note?: string): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (patch.state && patch.state !== task.state && !MOVES[task.state].includes(patch.state)) {
@@ -100,8 +111,8 @@ export class Board {
     const next = { ...task, ...patch, refs: { ...task.refs, ...patch.refs } };
     const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}) }];
     this.db
-      .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, refs = ?, rejections = ?, history = ?, updated = ? WHERE id = ?")
-      .run(next.state, next.owner, next.reviewer, JSON.stringify(next.refs), next.rejections, JSON.stringify(history), Date.now(), id);
+      .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, refs = ?, plan = ?, rejections = ?, history = ?, updated = ? WHERE id = ?")
+      .run(next.state, next.owner, next.reviewer, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(history), Date.now(), id);
     const updated = this.get(id)!;
     this.changed(updated, history.at(-1)!);
     return updated;

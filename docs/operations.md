@@ -89,9 +89,16 @@ the routing configuration.
 
 An agent can claim work nobody assigned it by proposing a task with itself as
 owner; without a class, and with no model to name one, the claim is filed as
-`implement`. When a task's paths overlap another owner's open task, the newcomer
-is told to settle it and the earlier owner gets one line with its next message,
-at no turn of its own. An owner offline longer than `tasks.release_after_min`
+`implement`. A claim or an accept can carry a plan: the files, symbols and
+signatures it will change and where new code goes (`ahub task show <id>` prints
+it). When a task's paths, or its plan's paths or symbols, overlap another
+owner's open task, the newcomer is told to settle it and the earlier owner gets
+one line with its next message, the plan included, at no turn of its own. When a
+task is done (after its check passes, when one is configured), the owners of
+open tasks on the same paths or symbols get a message with the changed files,
+the plan's signatures and the first line of the summary, each left out when it
+matches a PII pattern; nobody else does. PII
+tasks are left out on both sides. An owner offline longer than `tasks.release_after_min`
 (default 30, `0` turns it off) in `.agenthub/config.json` loses its open tasks
 to a peer routing can give them to; with nobody to take them they stay, and a
 paused peer or a hub in a recovery operation is left alone.

@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -615,4 +616,164 @@ test("the console user's done runs the check too; a hub stop interrupts it witho
   expect(stopped.board.get(u.id)!.history.at(-1)!.note).toBe("make test -> interrupted by a hub stop");
   expect(stopped.peers.codex!.got).toHaveLength(told);
   expect(stopped.tasks.isChecking(u.id)).toBe(false);
+});
+
+// issue #31: a plan with the claim or the accept, and a notice to overlapping owners when the work is done.
+const completedNotices = (p: FakePeer) => p.got.filter((e) => e.from === HUB && e.body.includes(" is done and touches your open #"));
+
+test("a plan comes with a claim or an accept, normalized like refs, and replaces the old one", async () => {
+  const { tasks, board } = await setup();
+  const claim = await tasks.propose("kimi", {
+    title: "cache", owner: "kimi",
+    // what a model may send: a lone string, junk items, an unknown key
+    plan: { paths: "src/cache.ts", symbols: ["Cache.set", 7, "  "], signatures: ["set(key: string, value: V): void"], extra: ["x"] } as any,
+  });
+  expect(board.get(claim.id)!.plan).toEqual({ paths: ["src/cache.ts"], symbols: ["Cache.set"], signatures: ["set(key: string, value: V): void"] });
+  const offered = await tasks.propose("claude", { title: "docs", class: "implement", owner: "codex" });
+  expect(board.get(offered.id)!.plan).toEqual({});
+  tasks.accept("codex", offered.id, { paths: ["docs/cache.md"], insertion_points: ["after the Usage heading"] });
+  expect(board.get(offered.id)!.plan).toEqual({ paths: ["docs/cache.md"], insertion_points: ["after the Usage heading"] });
+  expect(JSON.parse(JSON.stringify(board.get(offered.id)))).toHaveProperty("plan.paths", ["docs/cache.md"]); // what ahub task show prints
+});
+
+test("an overlapping owner gets the plan as a ride-along line and no turn; a symbol overlaps across files", async () => {
+  const { tasks, told, peers, notices } = await setup();
+  await tasks.propose("kimi", { title: "bus refactor", class: "implement", owner: "kimi", refs: { paths: ["src/hub/bus.ts"] }, plan: { symbols: ["Bus.publish"] } });
+  const offered = await tasks.propose("claude", { title: "retry", class: "implement", owner: "codex" });
+  await tick();
+  expect(told).toEqual([]); // no paths yet: nothing overlaps
+  const accepted = tasks.accept("codex", offered.id, { paths: ["src/hub/retry.ts"], symbols: ["Bus.publish"], signatures: ["publish(env: Envelope, retries?: number): void"] });
+  expect(tasks.overlaps(accepted)).toBe("Overlaps #1 (owner kimi) on symbol Bus.publish. Settle it with that owner via hub_send before editing those paths.");
+  expect(told).toEqual([
+    "kimi|note from hub [finding]: task #2 (owner codex) now overlaps your #1 on symbol Bus.publish; codex is told to settle it. Its plan (full: hub_task_list): paths: src/hub/retry.ts | symbols: Bus.publish | signatures: publish(env: Envelope, retries?: number): void",
+  ]);
+  expect(notices).toContain("task #2 retry (codex): Overlaps #1 (owner kimi) on symbol Bus.publish. codex is told to settle it.");
+  await tick();
+  expect(peers.kimi!.got).toHaveLength(0);
+  // A second plan on the same overlap tells the other owner again, but the console has already been warned.
+  tasks.accept("codex", offered.id, { paths: ["src/hub/bus.ts"], symbols: ["Bus.publish"] });
+  expect(told).toHaveLength(2);
+  expect(notices.filter((l) => l.includes("Overlaps"))).toHaveLength(1);
+});
+
+test("a done task tells the owners of overlapping open tasks what changed, and nobody else", async () => {
+  const { tasks, peers } = await setup();
+  await tasks.propose("kimi", { title: "bus refactor", class: "implement", owner: "kimi", refs: { paths: ["src/hub/"] } });
+  await tasks.propose("local", { title: "docs", class: "implement", owner: "local", refs: { paths: ["docs/"] } });
+  const t = await tasks.propose("codex", { title: "retry", class: "implement", owner: "codex", refs: { paths: ["src/hub/bus.ts"] }, plan: { signatures: ["publish(env: Envelope, retries?: number): void"] } });
+  await tasks.done("codex", t.id, "retries a failed delivery twice\nmore detail that stays out");
+  await tick();
+  expect(completedNotices(peers.kimi!).map((e) => e.body)).toEqual([
+    "Task #3 (owner codex) is done and touches your open #1 on src/hub/bus.ts. Check your work against it before you go on.\nChanged files: src/hub/bus.ts\nNew or changed signatures: publish(env: Envelope, retries?: number): void\nSummary: retries a failed delivery twice",
+  ]);
+  expect(completedNotices(peers.kimi!)[0]).toMatchObject({ to: ["kimi"], kind: "task", refs: { task: "1" } });
+  for (const id of ["claude", "codex", "local"]) expect(completedNotices(peers[id]!)).toEqual([]);
+});
+
+test("the completed-change notice waits for the check, and a failed check sends none", async () => {
+  const fail = await checked({ code: 1, timedOut: false, tail: "1 fail" });
+  await fail.tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  const t = await fail.tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
+  await fail.tasks.done("codex", t.id, "done");
+  expect(completedNotices(fail.peers.kimi!)).toEqual([]);
+  fail.release();
+  await until(() => fail.board.get(t.id)!.history.some((h) => h.event === "check failed"));
+  await tick();
+  expect(completedNotices(fail.peers.kimi!)).toEqual([]);
+
+  const pass = await checked({ code: 0, timedOut: false, tail: "ok" });
+  await pass.tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  const u = await pass.tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
+  await pass.tasks.done("codex", u.id, "done");
+  await tick();
+  expect(completedNotices(pass.peers.kimi!)).toEqual([]);
+  pass.release();
+  await until(() => completedNotices(pass.peers.kimi!).length === 1);
+});
+
+test("nothing of a PII task's plan or completion reaches another peer, and a plan cannot bring PII into an ordinary task", async () => {
+  const { tasks, told, peers, board } = await setup();
+  await tasks.propose("kimi", { title: "bus refactor", class: "implement", owner: "kimi", refs: { paths: ["src/hub/"] } });
+  // a PII pattern in the plan alone makes the task a PII task
+  const viaPlan = await tasks.propose("claude", { title: "ordinary title", class: "implement", plan: { paths: ["src/hub/bus.ts"], signatures: [PII] } });
+  expect(viaPlan).toMatchObject({ owner: "local", signals: ["pii"] });
+  const pii = await tasks.propose("claude", { title: PII, class: "implement" });
+  tasks.accept("local", pii.id, { paths: ["src/hub/bus.ts"], symbols: ["Bus.publish"] });
+  expect(told).toEqual([]);
+  expect(tasks.publicView(board.get(pii.id)!)).toMatchObject({ plan: {}, refs: {} });
+  await tasks.done("local", pii.id, `fixed ${PII}`);
+  await tick();
+  expect(completedNotices(peers.kimi!)).toEqual([]);
+  expect(JSON.stringify(peers.kimi!.got)).not.toContain("900101");
+  // an ordinary task's signals are fixed at proposal: a plan that matches a PII pattern is refused, not stored
+  const plain = await tasks.propose("claude", { title: "plain", class: "implement", owner: "codex" });
+  expect(() => tasks.accept("codex", plain.id, { signatures: [PII] })).toThrow(/PII pattern/);
+  expect(board.get(plain.id)!.plan).toEqual({});
+});
+
+// Review of #48: model-written text stays one line, an empty plan replaces nothing, and an old board gains the column.
+test("a plan path with a newline cannot forge a log line, and the overlap counts still match", async () => {
+  const { tasks, notices } = await setup();
+  await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src"] } });
+  await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", plan: { paths: ["src/x.ts\n2026-10-01T00:00:00.000Z task #9 forged (codex): Overlaps #1 (owner kimi) on y. codex is told to settle it."] } });
+  // a title with a newline is one line as well
+  await tasks.propose("claude", { title: "c\n2026-10-01T00:00:00.000Z task #8 forged (claude): Overlaps #1 (owner kimi) on z. claude is told to settle it.", class: "implement", owner: "claude", refs: { paths: ["src/b.ts"] } });
+  expect(notices.every((l) => !l.includes("\n"))).toBe(true); // no notice spans two lines, the proposal notices included
+  const overlap = notices.filter((l) => l.endsWith("is told to settle it."));
+  expect(overlap).toHaveLength(2);
+  expect(overlap[0]).not.toContain("\n");
+  const { parse } = await import("../scripts/overlaps.ts");
+  expect(parse(notices.map((l) => `2026-10-01T00:00:00.000Z ${l}`).join("\n"))).toHaveLength(2);
+});
+
+test("accepting with plan null or {} keeps the plan and tells nobody again", async () => {
+  const { tasks, board, told } = await setup();
+  await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  const t = await tasks.propose("claude", { title: "b", class: "implement", owner: "codex", plan: { paths: ["src/a.ts"], signatures: ["f(): void"] } });
+  const before = told.length;
+  tasks.accept("codex", t.id, null);
+  tasks.accept("codex", t.id, {});
+  expect(board.get(t.id)!.plan).toEqual({ paths: ["src/a.ts"], signatures: ["f(): void"] });
+  expect(told).toHaveLength(before);
+});
+
+test("a board from before plans gains the column with its tasks intact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-migrate31-"));
+  const file = join(dir, "hub.db");
+  const old = new Database(file, { create: true });
+  old.run(`CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', class TEXT NOT NULL,
+    owner TEXT, reviewer TEXT, state TEXT NOT NULL, refs TEXT NOT NULL DEFAULT '{}', signals TEXT NOT NULL DEFAULT '[]',
+    rejections INTEGER NOT NULL DEFAULT 0, history TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL)`);
+  old.run(`INSERT INTO tasks (title, class, owner, state, created, updated) VALUES ('kept', 'implement', 'kimi', 'in_progress', 1, 1)`);
+  old.close();
+  const board = new Board(file);
+  expect(board.get(1)).toMatchObject({ title: "kept", owner: "kimi", state: "in_progress", plan: {} });
+  board.close();
+});
+
+// Review of #48 (Copilot): a summary that matches a PII pattern stays out of the completed-change notice.
+test("the completed-change notice leaves out a summary line and file names that match a PII pattern", async () => {
+  const { tasks, peers } = await setup();
+  await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/hub/bus.ts"] } });
+  const t = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/hub/bus.ts"] } });
+  await tasks.done("codex", t.id, `checked the record of ${PII}`, { paths: ["src/hub/bus.ts", "data/900101-1234567.json"] });
+  await tick();
+  const notice = completedNotices(peers.kimi!)[0]!.body;
+  expect(notice.split("\n")).toContain("Changed files: src/hub/bus.ts"); // the PII-named file is left out
+  expect(notice).not.toContain("900101");
+  expect(notice).not.toContain("Summary:");
+});
+
+// Review of #48 (v5): a PII-matching path is named nowhere, the overlap line and the ride-along included.
+test("an overlap on a path whose name matches a PII pattern does not name it", async () => {
+  const { tasks, peers, told, notices } = await setup();
+  await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["data/"] } });
+  const t = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["data/900101-1234567.json"] } });
+  await tasks.done("codex", t.id, "done", { paths: ["data/900101-1234567.json"] });
+  await tick();
+  const notice = completedNotices(peers.kimi!)[0]!.body;
+  expect(notice).toContain("on a path whose name is withheld");
+  expect(JSON.stringify([notice, told, notices])).not.toContain("900101");
+  const { parse } = await import("../scripts/overlaps.ts");
+  expect(parse(notices.map((l) => `2026-10-01T00:00:00.000Z ${l}`).join("\n"))).toHaveLength(1); // still counted
 });
