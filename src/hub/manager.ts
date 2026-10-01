@@ -22,7 +22,7 @@ type Manifest = { port: number; protocol: number; instanceId: string; pid: numbe
 const active = new Map<string, { handle: ManagerHandle; issue(): string }>();
 const CONTROL_TIMEOUT = 3000;
 // A current CLI may authenticate the previous protocol-9 manager while
-// refreshing it, then launch the protocol-10 manager implementation.
+// refreshing it, then launch the current manager implementation.
 const SUPPORTED_MANAGER_PROTOCOLS = new Set<number>(RECOVERY_SOURCE_PROTOCOLS);
 const safeError = (error: unknown) => error instanceof Error ? error.message.slice(0, 300) : "operation failed";
 
@@ -230,11 +230,11 @@ export async function openManager(options: ManagerOptions = {}): Promise<string>
   throw new Error(`manager readiness not confirmed: ${safeError(error)}; see ${join(f.dir, "manager.log")}`);
 }
 
-/** Refresh an explicitly supported protocol-9 manager onto the current CLI after upgrade. */
+/** Refresh a supported older manager onto the current CLI after upgrade. */
 export async function refreshManager(options: ManagerOptions = {}): Promise<string> {
   const home = options.home ?? hubHome();
   const manifest = readManifest(home);
-  if (manifest && manifest.protocol === RECOVERY_SOURCE_PROTOCOLS[0]) {
+  if (manifest && manifest.protocol !== PROTOCOL && RECOVERY_SOURCE_PROTOCOLS.includes(manifest.protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number])) {
     await managerRequest(home, "/stop");
     const deadline = Date.now() + CONTROL_TIMEOUT;
     while (Date.now() < deadline && readManifest(home)) await Bun.sleep(25);

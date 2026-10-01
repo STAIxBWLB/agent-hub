@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { currentRouting } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -550,6 +551,9 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   local: async () => {
     const opt = (flag: string) => (args.includes(flag) ? args[args.indexOf(flag) + 1] ?? fail(`${flag} needs a value`) : undefined);
+    for (const flag of ["--route", "--model"]) if (args.includes(flag) && (!opt(flag) || opt(flag)!.startsWith("--"))) fail(`${flag} needs a value`);
+    if (args.includes("--route") && args.includes("--model")) fail("use --route or --model, not both");
+    if (args.some((a, i) => i % 2 === 0 && !["--route", "--model"].includes(a))) fail("usage: ahub local [--route <id> | --model <id>]");
     const hub = await connect();
     const res = await hub.request({ t: "start", peer: "local", args: { route: opt("--route"), model: opt("--model") }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
     hub.close();
@@ -897,6 +901,13 @@ const commands: Record<string, () => Promise<void> | void> = {
     const gateway = await omni.base();
     row(!!gateway, "omniroute", gateway ? `${new URL(gateway).host} healthy` : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? "no candidate reachable (VPN off?); ahub local cannot run" : "not configured: set omniroute.urls in .agenthub/config.local.json (any OpenAI-compatible gateway); ahub local cannot run");
     row(!!omni.apiKey(), "omniroute key", omni.apiKey() ? "present" : "missing: set OMNIROUTE_API_KEY or omniroute.api_key_file in .agenthub/config.local.json");
+    if (gateway && omni.apiKey()) {
+      try {
+        const fixed = currentRouting(cwd).local.fixed_model;
+        const served = (await omni.models()).includes(fixed);
+        row(served, "local fixed_model", served ? `${fixed} served` : `${fixed} is not served by the gateway`);
+      } catch { row(false, "local fixed_model", "could not read the gateway model inventory"); }
+    }
     const sy = spawnSync(process.env.AGENTHUB_SWITCHYARD_BIN ?? "switchyard-server", ["--version"], { encoding: "utf8" });
     row(sy.status === 0 ? true : undefined, "switchyard", sy.status === 0 ? sy.stdout.trim() : "not installed: ahub local uses fixed_model on OmniRoute (cargo install --locked switchyard-server)");
     const mlxConfig = config.mlx;

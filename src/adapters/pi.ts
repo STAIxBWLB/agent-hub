@@ -16,6 +16,8 @@ export interface PiOptions {
   relay: PiRelay; executeTool: (name: string, args: unknown, toolCallId: string, sessionId?: string) => Promise<string>; tools: PiToolSchema[];
   preamble?: string;
   selectModel?: (envs: Envelope[]) => Promise<string | undefined>; maxSteps?: number;
+  /** Reported message usage as increments, before agent_settled releases the turn. */
+  onTokens?: (added: number) => void;
   onTurnFailure?: (envs: Envelope[], reason: string) => Promise<void>;
   watchdogMs?: number; log?: (line: string) => void;
   /** How long stop() waits for a graceful TUI owner exit before verified teardown. Tests shrink this. */
@@ -42,6 +44,7 @@ export class PiPeer extends BasePeer {
   private buffer = "";
   private seq = 0;
   private readonly pending = new Map<string, { resolve: (m: RpcMessage) => void; reject: (e: Error) => void }>();
+  private readonly usageSeen = new Set<string>();
   private settledText = "";
   private settledError = "";
   private settledCancelled = false;
@@ -337,8 +340,13 @@ export class PiPeer extends BasePeer {
       this.startOwnerMonitor(); if (this.opts.mode === "tui") this.setState("idle");
     }
     if (event.type === "session_shutdown") { this.stopping = true; this.ownerClaimed = false; this.clearOwnerMonitor(); this.resolveTuiExit?.(); this.resolveTuiExit = undefined; this.fail(new Error("Pi session shut down before settlement")); }
-    if (event.type === "agent_start") { this.noteActivity(); this.agentRunning = true; this.setState("busy"); }
+    if (event.type === "agent_start") { this.usageSeen.clear(); this.noteActivity(); this.agentRunning = true; this.setState("busy"); }
     if (event.type === "activity" && this.state === "busy") this.touch();
+    if (event.type === "tokens" && this.state === "busy" && typeof event.id === "string" && event.id.length <= 100 && Number.isSafeInteger(event.tokens) && event.tokens >= 0 && !this.usageSeen.has(event.id)) {
+      this.usageSeen.add(event.id);
+      if (this.usageSeen.size > 1000) this.usageSeen.delete(this.usageSeen.values().next().value!);
+      if (event.tokens > 0) this.opts.onTokens?.(event.tokens);
+    }
     if (event.type === "agent_end") {
       this.settledText = typeof event.text === "string" ? event.text : "";
       this.settledCancelled = event.cancelled === true;

@@ -73,5 +73,38 @@ test("adaptive review: with enough record, the reviewer whose reviews held up go
   const now = 1_800_000_000_000;
   const quota = { claude: { headroom: 0.6, resetsAt: now + 60 * 60_000 }, codex: { headroom: 0.6, resetsAt: now + 300 * 60_000 } };
   expect(assign(t, states, routing, { candidates: ["kimi"], reviews, quota, now }).reviewer).toBe("claude"); // quota alone: claude's window resets first
-  expect(assign(t, states, routing, { candidates: ["kimi"], reviews, quota, now, adaptive: { min: 5 } }).reviewer).toBe("codex");
+  const a = assign(t, states, routing, { candidates: ["kimi"], reviews, quota, now, adaptive: { min: 5 } });
+  expect(a.reviewer).toBe("codex");
+});
+
+// issue #92: reviewer candidates are the review class's peers, then peers holding the reviewer role, deduped, never the owner.
+test("reviewer roles: config roles add reviewer candidates after the review class, deduped, never the owner", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-route-")));
+  const t = { class: "implement" as const, signals: [] };
+  // the review class's peers (claude, codex) are not attached; kimi holds the reviewer role in config
+  const a = assign(t, { local: "idle", kimi: "idle" }, routing, { candidates: ["local"], roles: { kimi: ["implementer", "reviewer"] } });
+  expect(a).toMatchObject({ owner: "local", reviewer: "kimi" });
+  expect(a.trace).toContain("  reviewer candidates: [classes.review] peers claude, codex; reviewer role kimi");
+  // the owner never reviews its own work, role or not
+  const own = assign(t, { kimi: "idle" }, routing, { candidates: ["kimi"], roles: { kimi: ["reviewer"] } });
+  expect(own.reviewer).toBeUndefined();
+  expect(own.trace.join("\n")).toContain("reviewer candidate kimi: skipped, is the owner");
+  // a role peer already in the review class is listed once
+  const dup = assign(t, { claude: "idle", codex: "idle" }, routing, { roles: { claude: ["reviewer", "planner"] } });
+  expect(dup.trace.filter((l) => l.includes("reviewer candidate claude")).length).toBe(1);
+  expect(dup.reviewer).toBe("claude"); // the class order decides before the role order
+});
+
+// issues #89/#90: failing peers are skipped with the reason; held peers stay eligible and the hold is explained.
+test("failing peers are skipped; held peers stay eligible and the trace names the hold", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-route-")));
+  const t = { class: "implement" as const, signals: [] };
+  const a = assign(t, { local: "idle", codex: "idle" }, routing, { failing: { local: "3 undeliverable deliveries" } });
+  expect(a.owner).toBe("codex");
+  expect(a.trace.join("\n")).toContain("owner candidate local: skipped, failing: 3 undeliverable deliveries");
+  const held = assign(t, { local: "idle", codex: "idle" }, routing, { held: { local: "needs_review delivery d1" } });
+  expect(held.owner).toBe("local"); // held is not rejected
+  expect(held.trace).toContain("  hold: local's queue is held: needs_review delivery d1 (it receives the task once the hold is resolved)");
+  const both = assign(t, { local: "idle", codex: "idle", claude: "idle" }, routing, { failing: { local: "x" }, held: { codex: "needs_review delivery d2" } });
+  expect(both).toMatchObject({ owner: "codex", reviewer: "claude" });
 });

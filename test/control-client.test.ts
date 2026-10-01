@@ -63,7 +63,7 @@ test("manifest identity mismatch refuses before opening a socket", async () => {
 });
 
 test("matching source protocol can be selected explicitly for upgrade preflight", async () => {
-  expect(PROTOCOL).toBe(10);
+  expect(PROTOCOL).toBe(11);
   const stateDir = mkdtempSync(join(tmpdir(), "agent-hub-control-legacy-"));
   const srv = Bun.serve<{ }>( {
     hostname: "127.0.0.1",

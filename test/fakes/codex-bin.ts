@@ -8,7 +8,8 @@ const arg = (name: string) => {
   return i >= 0 ? process.argv[i + 1] : undefined;
 };
 const record = arg("--record");
+// Daemon integration tests exercise pause behavior separately; start this fake below the default quota gate.
 startFakeAppServer(30, Number(new URL(arg("--listen") ?? "ws://127.0.0.1:0").port), (params) => {
   if (record) appendFileSync(record, `${JSON.stringify(params)}\n`);
-});
+}, 50);
 await new Promise(() => {}); // until the hub stops it

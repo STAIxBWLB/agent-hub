@@ -1126,3 +1126,45 @@ test("a handoff that matches a PII pattern reaches the next owner as a stub", as
   expect(handed).toContain("[handoff withheld: it matches a PII pattern");
   expect(handed).not.toContain("900101");
 });
+
+
+// issue #92: reviewer candidates also come from the config roles, and a task with no possible reviewer says so.
+test("reviewer roles from config join the candidates; with nobody left, the notice and the facts say done approves directly", async () => {
+  const base = await setup(["claude", "codex", "kimi", "local"]);
+  const tasks = new Tasks({
+    board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub",
+    notify: (l) => base.notices.push(l), roles: { kimi: ["implementer", "reviewer"] },
+  });
+  base.peers.claude!.set("busy");
+  const t = await tasks.propose("claude", { title: "add a flag", class: "implement", owner: "codex" });
+  // claude (busy) and codex (the owner) are out: kimi reviews, from its role, not the review class
+  expect(t.reviewer).toBe("kimi");
+  expect(tasks.resultLine(t)).toBe(`task #${t.id}: proposed, owner codex, reviewer kimi`); // a reviewer: nothing added
+
+  const none = await setup(["local", "kimi"]);
+  const n = await none.tasks.propose("kimi", { title: "plain change", class: "implement" });
+  expect(n).toMatchObject({ owner: "local", reviewer: null });
+  const why = "no reviewer: done will approve directly (skipped: claude (not attached); codex (not attached))";
+  expect(none.notices).toContain(`task #${n.id} plain change: ${why}`);
+  expect(none.tasks.resultLine(n)).toBe(`task #${n.id}: proposed, owner local, reviewer none; ${why}`);
+  await tick();
+  expect(none.peers.local!.got.find((e) => e.refs?.task === String(n.id))!.body).toContain(`Facts: class implement; ${why}`);
+});
+
+// issues #89/#90: Tasks feeds failing and held into routing; the assign notices name the hold.
+test("failing peers are skipped by assignment, and a held owner queue is named in the notice and the explanation", async () => {
+  const base = await setup(["local", "codex", "claude"]);
+  const tasks = new Tasks({
+    board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub",
+    notify: (l) => base.notices.push(l),
+    failing: () => ({ local: "3 undeliverable deliveries" }),
+    held: () => ({ codex: "needs_review delivery d7" }),
+  });
+  const t = await tasks.propose("claude", { title: "held work", class: "implement" });
+  expect(t.owner).toBe("codex"); // local is failing, so it is skipped
+  expect(base.notices).toContain(`task #${t.id} held work: codex's queue is held (needs_review delivery d7); the task arrives once the hold is resolved`);
+  expect(tasks.resultLine(t)).toBe(`task #${t.id}: proposed, owner codex, reviewer claude; codex's queue is held (needs_review delivery d7); it receives the task once the hold is resolved`);
+  const explained = tasks.explain(t.id).join("\n");
+  expect(explained).toContain("owner candidate local: skipped, failing: 3 undeliverable deliveries");
+  expect(explained).toContain("hold: codex's queue is held: needs_review delivery d7");
+});

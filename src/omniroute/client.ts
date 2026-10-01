@@ -124,6 +124,29 @@ export class OmniRoute {
     return undefined;
   }
 
+  /** Authenticated model inventory; upstream response bodies never enter diagnostics. */
+  async models(): Promise<string[]> {
+    const base = await this.base();
+    if (!base) throw new Error("no model gateway is configured or reachable (see ahub doctor)");
+    const key = this.apiKey();
+    if (!key) throw new Error("no OmniRoute API key (see ahub doctor)");
+    const response = await fetch(`${base}/models`, { headers: { authorization: `Bearer ${key}`, ...this.accessHeaders(base) }, signal: AbortSignal.timeout(4000) });
+    if (!response.ok) throw new Error(`model inventory failed: HTTP ${response.status}`);
+    const body = await response.json() as { data?: { id?: unknown }[] };
+    if (!Array.isArray(body.data)) throw new Error("model inventory returned no model list");
+    return body.data.flatMap((m) => typeof m?.id === "string" ? [m.id] : []);
+  }
+
+  /** A listed model can still lack provider credentials: prove it accepts a minimal call before attaching. */
+  async checkModel(model: string, inventory?: string[]): Promise<void> {
+    if (!(inventory ?? await this.models()).includes(model)) throw new Error(`model ${model} is not served by the gateway`);
+    try {
+      await this.chat({ model, messages: [{ role: "user", content: "agent-hub model availability check: reply OK" }], max_tokens: 1 }, { signal: AbortSignal.timeout(10_000) });
+    } catch {
+      throw new Error(`model ${model} is not usable (availability call failed; check gateway credentials and provider health)`);
+    }
+  }
+
   async chat(body: { model: string; messages: ChatMessage[]; tools?: unknown[]; max_tokens?: number }, opts: ChatOptions = {}): Promise<ChatResult> {
     const base = opts.via ?? (await this.base());
     if (!base) throw new Error("no model gateway is configured or reachable (omniroute.urls in .agenthub/config.json; see ahub doctor)");

@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.0 and control protocol 10. Live verification
+This guide describes ahub 0.12.1 and control protocol 11. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Install and start
@@ -94,12 +94,43 @@ ahub codex
 ahub kimi
 ahub pi --mode headless --backend auto
 ahub local
+ahub local --model <served-model-id>
 ```
 
 Start only the peers configured for the project. A launcher records and checks
 its project and session identity; do not start a second terminal by guessing
 from a process name. For multiple projects, use the explicit selector before
 the command, for example `ahub --project /path/to/project codex`.
+
+An attached local worker switches to an explicit `--model` or `--route` when idle.
+A busy worker refuses with `local is busy; retry when it is idle`. With no selection
+flag the command reports that it is already attached. Before attaching or replacing
+it, the hub reads the authenticated model inventory and makes a one-token availability
+call to the selected models (route targets and its fallback included). A failed check
+keeps the existing worker; `ahub doctor` flags a fixed model absent from the inventory.
+Controlled recovery may restore a manually paused local worker without a reachable
+gateway, preserving its queued work. Its manual resume validates the restored model
+choice before releasing that pause.
+
+Three consecutive deliveries that exhaust retries mark a peer as failing. Automatic
+assignment skips it until a delivery completes; inspect `ahub route explain` for the
+reason. A task owned by a peer whose task delivery exhausts retries is escalated with
+that delivery's error, and the console is notified.
+
+A delivery in `needs_review` holds later deliveries to that peer. The console announces
+the hold once, and status, task assignment and route explanations name its delivery id.
+Inspect it with `ahub queue show <id>` and explicitly choose `completed`, `retry` or
+`discard` through `ahub queue resolve`. Reassignment or approval of its task never
+resolves an uncertain delivery automatically.
+
+Reviewer candidates follow `[classes.review].peers`, then attached peers with a
+`reviewer` role in `roles`. The owner cannot review its own task. If none is available,
+the assignment output and console notice say that `done` will approve without review
+and give the skipped-candidate reasons.
+
+Pi 0.86 assistant usage is forwarded at `message_end`, including tool-loop messages,
+and recorded before settlement. If a model supplies no usable count, `ahub report`
+says `tokens not reported`; the hub does not estimate usage from text length.
 
 ## A two-agent task and review
 
@@ -442,21 +473,22 @@ Rows without a live process are stale registrations; forget them with
 ## Upgrade and crash recovery
 
 Upgrade running projects with the target release's own coordinator. It accepts
-a running source on control protocol 9 (0.6.x) or 10 (0.7.0 and later) and only
+a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
+or 11 (0.12.1) and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.0 ahub upgrade --to 0.12.0 --dry-run
-bunx --package @staix/agent-hub@0.12.0 ahub upgrade --to 0.12.0 --yes
+bunx --package @staix/agent-hub@0.12.1 ahub upgrade --to 0.12.1 --dry-run
+bunx --package @staix/agent-hub@0.12.1 ahub upgrade --to 0.12.1 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 up to the release before the target (protocol 10) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -488,14 +520,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.0 --dry-run
+ahub upgrade --to 0.12.1 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.0 --yes
+ahub upgrade --to 0.12.1 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>

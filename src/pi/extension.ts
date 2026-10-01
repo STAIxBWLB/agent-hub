@@ -1,3 +1,4 @@
+import { assistantTokens } from "./usage.ts";
 type ExtensionAPI = any;
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -15,6 +16,7 @@ const models = (() => {
 let pollStarted = false;
 let toolSteps = 0;
 let lastActivity = 0;
+let usageSeq = 0;
 let forcedFailure = "";
 const maxSteps = Number(process.env.AGENTHUB_PI_MAX_STEPS ?? 30);
 let shutdown: (() => void) | undefined;
@@ -88,6 +90,13 @@ export default function(pi: ExtensionAPI): void {
     const failed = !!forcedFailure || message?.stopReason === "error";
     const cancelled = !forcedFailure && message?.stopReason === "aborted";
     await post("/event", { type: "agent_end", text: text ?? "", failed, cancelled, ...(failed ? { error: forcedFailure || message?.errorMessage || message?.stopReason } : {}) });
+  });
+  pi.on("message_end", async (event: any) => {
+    const tokens = assistantTokens(event.message);
+    if (tokens === undefined) return;
+    // Message-end is the sole usage source: agent_end carries those same messages again.
+    try { await post("/event", { type: "tokens", id: `usage-${++usageSeq}`, tokens }); }
+    catch { /* telemetry must not break a native turn */ }
   });
   pi.on("message_update", async () => {
     const now = Date.now();

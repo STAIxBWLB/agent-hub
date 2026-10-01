@@ -104,7 +104,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
   if (existsSync(managerFile)) {
     try {
       const manager = JSON.parse(readFileSync(managerFile, "utf8"));
-      if (!RECOVERY_SOURCE_PROTOCOLS.includes(manager.protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number])) body.blockers.push("manager requires manual bootstrap with its matching CLI before protocol-10 recovery");
+      if (!RECOVERY_SOURCE_PROTOCOLS.includes(manager.protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number])) body.blockers.push("manager requires manual bootstrap with its matching CLI before current-protocol recovery");
     } catch { body.blockers.push("manager ownership manifest is unreadable"); }
   }
   for (const project of projects) {
@@ -114,7 +114,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
     catch { source = { state: "unavailable", peers: [], blockers: ["source recovery metadata could not be authenticated"] }; }
     if (source.state === "stopped" || source.state === "missing") continue;
     const blockers = [...source.blockers];
-    if (!RECOVERY_SOURCE_PROTOCOLS.includes(source.protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]) || source.state !== "running") blockers.push("manual-bootstrap-required: an authenticated protocol-9 or protocol-10 source is required");
+    if (!RECOVERY_SOURCE_PROTOCOLS.includes(source.protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]) || source.state !== "running") blockers.push("manual-bootstrap-required: an authenticated protocol-9, protocol-10 or protocol-11 source is required");
     if (source.recovery?.operationId && source.recovery.phase !== "released") blockers.push(`existing recovery operation ${source.recovery.operationId} must be resolved first`);
     const sessions: { codex?: string; claude?: string; pi?: SessionRef } = {};
     for (const peer of source.peers) {

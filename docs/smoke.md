@@ -2,6 +2,17 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## Reliability and self-development run (#89-#95, 0.12.1)
+
+Measured on 2026-10-01 in an isolated worktree of this repository:
+
+- Started the installed 0.12.0 hub, with real Kimi 2.1.1 and Pi 0.86.0 peers. The console created tasks, agents accepted them with plans, and the hub recorded completion. Kimi implemented reviewer routing and delivery-health inputs; Pi located the installed usage contracts. The console completed Pi integration after stopping its prolonged exploration and inspected/discarded the superseded uncertain deliveries explicitly.
+- The initial fake-based gate passed 560 tests with `check: OK`; the final review also adds coverage for self-claims made during a running turn. Coverage includes task escalation, failing-peer routing and recovery, queue-hold notices/status/assignment/explanation, reviewer roles, idle local model replacement and busy refusal, concurrent edits and in-review overwrites, Pi bridge usage dedupe, and owner/reviewer checkpoint behavior.
+- `bun scripts/smoke-recovery-09-10.ts` ran the real published 0.6.4 package (protocol 9) into the working tree (protocol 11), preserving queued envelope ids, task identity/state digest and manual pauses. Operation `7acefb22-2eef-4f28-a241-73990ffbee88` completed with queue readback.
+- The target coordinator then restarted the actual development hub from 0.12.0/protocol 10 into 0.12.1/protocol 11. Operation `d42beca5-856b-46f8-8cb9-7694213eb799` completed with its project verified and the board/queues retained.
+- A real Pi DGX probe answered as FYI and reported 42,967 tokens in `ahub report`. Its usage was forwarded from native `message_end` events; the earlier 0.12.0 Pi turn had no recorded token count. This proves accounting, not a comparison of model efficiency.
+- Manually paused local recovery can retain its queue while the gateway is unavailable. Manual resume validates its model choice before lifting the pause. Native Claude/Codex account smoke legs remain separate from this Kimi/Pi run.
+
 ## Hub collaboration measurement (issues #29-#32, 0.6.2)
 
 Measured on 2026-09-20 against a live 0.6.1 hub and a disposable project, before the fixes:

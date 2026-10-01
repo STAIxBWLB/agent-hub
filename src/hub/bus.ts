@@ -11,7 +11,7 @@ export interface DeliveryReceipt {
 export type BusEvent =
   | { t: "envelope"; env: Envelope; dropped?: "hop" | "fyi" }
   | { t: "overflow"; env: Envelope; peer: PeerId }
-  | { t: "undeliverable"; env: Envelope; peer: PeerId }
+  | { t: "undeliverable"; env: Envelope; peer: PeerId; reason?: string }
   | { t: "state"; peer: PeerId; state: PeerState };
 
 export interface BusOptions {
@@ -91,6 +91,8 @@ export class Bus {
   private readonly withdrawn = new Set<string>();
   /** What each peer was last handed, next to what it stands for: an adapter that reports a failure later hands back the former. */
   private readonly lastDelivery = new Map<PeerId, { out: Envelope[]; originals: Envelope[] }>();
+  private readonly failureStreak = new Map<PeerId, number>();
+  private readonly lastFailure = new Map<PeerId, string>();
   private readonly attempts = new Map<string, number>(); // `${peer}:${envelope id}` -> failed deliveries
   /** Correlates each native receipt independently; a peer can have a steer and a delivery in flight. */
   private readonly activeDeliveries = new Map<string, PeerId>();
@@ -166,8 +168,7 @@ export class Bus {
           if (owner !== peer.id) continue;
           const row = this.journal.get(deliveryId);
           if (row && row.originals.some((e) => envs.some((incoming) => incoming.id === e.id))) {
-            this.journal.transition(deliveryId, "needs_review", "adapter reported delivery failure without safe-failure evidence");
-            this.activeDeliveries.delete(deliveryId);
+            this.deliveryReceipt(peer.id, { id: deliveryId, state: "needs_review", reason: "adapter reported delivery failure without safe-failure evidence" });
           }
         }
       } else this.failed(peer.id, same ? last.originals : envs);
@@ -339,12 +340,14 @@ export class Bus {
     void this.drain(record.peer);
   }
 
-  queueSummary(peer: string): { needsReview: number; oldestQueuedAt?: number } {
+  queueSummary(peer: string): { needsReview: number; heldBy?: string; oldestQueuedAt?: number } {
     const rows = this.storageError ? [] : this.queueList(peer);
     const queued = this.queues.get(peer) ?? [];
-    const needsReview = rows.filter((r) => r.state === "needs_review").length;
+    const review = rows.filter((r) => r.state === "needs_review");
+    const needsReview = review.length;
+    const hold = review[0] ? { heldBy: review[0].id } : {};
     const oldest = queued.reduce<number | undefined>((a, r) => a === undefined ? r.ts : Math.min(a, r.ts), undefined);
-    return oldest === undefined ? { needsReview } : { needsReview, oldestQueuedAt: oldest };
+    return oldest === undefined ? { needsReview, ...hold } : { needsReview, ...hold, oldestQueuedAt: oldest };
   }
 
   manualPausedPeers(): string[] { return [...this.manualPaused].sort(); }
@@ -365,8 +368,9 @@ export class Bus {
     const state: JournalDeliveryState = receipt.state === "accepted" ? "accepted" : receipt.state === "completed" ? "completed" : receipt.state === "failed_safe" ? "failed" : "needs_review";
     this.journal.transition(id, state, receipt.reason);
     if (state === "failed") {
-      if (before) this.failed(peer, before.originals);
+      if (before) this.failed(peer, before.originals, before.originals.some((e) => e.private) ? "private delivery failed" : receipt.reason);
     }
+    if (state === "completed") { this.failureStreak.delete(peer); this.lastFailure.delete(peer); }
     if (state === "completed" || state === "failed" || state === "needs_review") this.activeDeliveries.delete(id);
     if (state === "completed" || state === "failed") { this.refreshRecoveryHold(peer); void this.drain(peer); }
     if (state === "needs_review") this.recoveryHeldPeers.add(peer);
@@ -657,7 +661,20 @@ export class Bus {
   }
 
   /** At-least-once: back to the queue head and retried after a pause; given up after MAX_ATTEMPTS so one poison envelope cannot block the peer. */
-  private failed(id: PeerId, envs: Envelope[]): void {
+  /** Delivery health is independent of task outcome: only a completed delivery clears the streak. */
+  failingPeers(): Record<PeerId, string> {
+    return Object.fromEntries([...this.failureStreak].filter(([, n]) => n >= 3).map(([peer]) => [peer, this.lastFailure.get(peer) ?? "delivery retries exhausted"]));
+  }
+
+  hasInFlight(peer: PeerId): boolean {
+    return [...this.activeDeliveries.values()].includes(peer) || this.draining.has(peer);
+  }
+
+  private failed(id: PeerId, envs: Envelope[], reason = "delivery failed without an error detail"): void {
+    this.lastFailure.set(id, reason.replace(/\s+/g, " ").slice(0, 300));
+    if (envs.some((env) => !(env.from === HUB && env.kind === "presence") && (this.attempts.get(`${id}:${env.id}`) ?? 0) + 1 >= MAX_ATTEMPTS)) {
+      this.failureStreak.set(id, (this.failureStreak.get(id) ?? 0) + 1);
+    }
     const keep = envs.filter((env) => {
       // Only the recall block is a preface. The hub also sends task and review envelopes, and those are retried like any other.
       if (env.from === HUB && env.kind === "presence") {
@@ -668,7 +685,7 @@ export class Bus {
       const n = (this.attempts.get(key) ?? 0) + 1;
       if (n < MAX_ATTEMPTS) return this.attempts.set(key, n);
       this.attempts.delete(key);
-      this.emit({ t: "undeliverable", env, peer: id });
+      this.emit({ t: "undeliverable", env, peer: id, reason: this.lastFailure.get(id) });
       return false;
     });
     this.queues.get(id)!.unshift(...keep);

@@ -1,5 +1,10 @@
 // Fake `codex app-server` (v2 shapes from codex-cli 0.154.0 generate-json-schema). One thread, echo turns.
-export function startFakeAppServer(delayMs = 30, port = 0, onRevert?: (params: { threadId: string; beforeTurnId: string }) => void) {
+export function startFakeAppServer(
+  delayMs = 30,
+  port = 0,
+  onRevert?: (params: { threadId: string; beforeTurnId: string }) => void,
+  usedPercent = 93,
+) {
   let turnSeq = 0;
   let threadTotal = 0; // the thread's running token total, as Codex keeps it
   const usage = (n: number) => ({ totalTokens: n, inputTokens: n - 10, outputTokens: 10, cachedInputTokens: 0, reasoningOutputTokens: 0 });
@@ -27,7 +32,7 @@ export function startFakeAppServer(delayMs = 30, port = 0, onRevert?: (params: {
           reply({ thread: { id: msg.params.threadId }, model: "fake" });
           return note("thread/tokenUsage/updated", { threadId: msg.params.threadId, turnId: "old", tokenUsage: { total: usage(threadTotal), last: usage(800) } });
         }
-        if (msg.method === "account/rateLimits/read") return reply({ rateLimits: { primary: { usedPercent: 93, windowDurationMins: 300, resetsAt: 1_900_000_000 }, secondary: null } });
+        if (msg.method === "account/rateLimits/read") return reply({ rateLimits: { primary: { usedPercent, windowDurationMins: 300, resetsAt: 1_900_000_000 }, secondary: null } });
         if (msg.method === "thread/revert") {
           reverted.push(msg.params);
           onRevert?.(msg.params);
