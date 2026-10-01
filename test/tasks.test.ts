@@ -752,14 +752,14 @@ test("a board from before plans gains the column with its tasks intact", () => {
 });
 
 // Review of #48 (Copilot): a summary that matches a PII pattern stays out of the completed-change notice.
-test("the completed-change notice leaves out a summary line that matches a PII pattern", async () => {
+test("the completed-change notice leaves out a summary line and file names that match a PII pattern", async () => {
   const { tasks, peers } = await setup();
   await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/hub/bus.ts"] } });
   const t = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/hub/bus.ts"] } });
-  await tasks.done("codex", t.id, `checked the record of ${PII}`);
+  await tasks.done("codex", t.id, `checked the record of ${PII}`, { paths: ["src/hub/bus.ts", "data/900101-1234567.json"] });
   await tick();
   const notice = completedNotices(peers.kimi!)[0]!.body;
-  expect(notice).toContain("Changed files: src/hub/bus.ts");
+  expect(notice.split("\n")).toContain("Changed files: src/hub/bus.ts"); // the PII-named file is left out
   expect(notice).not.toContain("900101");
   expect(notice).not.toContain("Summary:");
 });

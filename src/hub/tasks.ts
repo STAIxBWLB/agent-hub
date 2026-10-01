@@ -391,11 +391,13 @@ export class Tasks {
   private tellCompleted(task: Task, summary?: string): void {
     const hits = this.overlapHits(task).filter((h) => h.task.owner !== USER && h.task.owner !== HUB);
     if (!hits.length) return;
-    const { paths } = this.places(task);
-    const signatures = task.plan?.signatures ?? [];
+    // Files, signatures and the summary are the owner's own words (paths given at done included): any item that
+    // matches a PII pattern is left out of what other owners get.
+    const clean = (t: string) => !this.isPii({ signals: detectSignals({ title: "", detail: t, refs: {} }, this.d.routing(), this.d.cwd) });
+    const paths = this.places(task).paths.filter(clean);
+    const signatures = (task.plan?.signatures ?? []).filter(clean);
     const first = (summary ?? "").split("\n").find((l) => l.trim())?.trim().slice(0, 300);
-    // The summary is the owner's own words: one that matches a PII pattern is left out of what other owners get.
-    const line = first && !this.isPii({ signals: detectSignals({ title: "", detail: first, refs: {} }, this.d.routing(), this.d.cwd) }) ? first : undefined;
+    const line = first && clean(first) ? first : undefined;
     for (const hit of hits) {
       const body = [
         `Task #${task.id} (owner ${task.owner}) is done and touches your open #${hit.task.id} on ${where(hit)}. Check your work against it before you go on.`,

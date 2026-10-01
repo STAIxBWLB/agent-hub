@@ -96,7 +96,8 @@ owner's open task, the newcomer is told to settle it and the earlier owner gets
 one line with its next message, the plan included, at no turn of its own. When a
 task is done (after its check passes, when one is configured), the owners of
 open tasks on the same paths or symbols get a message with the changed files,
-the plan's signatures and the first line of the summary; nobody else does. PII
+the plan's signatures and the first line of the summary, each left out when it
+matches a PII pattern; nobody else does. PII
 tasks are left out on both sides. An owner offline longer than `tasks.release_after_min`
 (default 30, `0` turns it off) in `.agenthub/config.json` loses its open tasks
 to a peer routing can give them to; with nobody to take them they stay, and a

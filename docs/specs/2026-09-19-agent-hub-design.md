@@ -918,5 +918,6 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   summary or note would reach other peers and claude-mem), as `hub_remember`
   and `hub_task_propose` already were. Model-written refs and plan items are one
   line (whitespace collapses), so none can forge a hub.log line; a `null` or
-  empty plan on accept keeps the plan there is.
+  empty plan on accept keeps the plan there is. The completed-change notice
+  leaves out any file, signature or summary line that matches a PII pattern.
 
