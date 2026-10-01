@@ -1141,3 +1141,13 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
 - Pi assistant usage is forwarded through the authenticated bridge and recorded before settlement, without counting the same message both at `message_end` and `agent_end`.
 - An idle peer with no open owner/reviewer task and no queued or active delivery skips the quota checkpoint turn; the pause proceeds immediately and the log records the skip.
 - Control protocol 11 adds queue hold metadata; the current coordinator supports authenticated protocol 9, 10 and 11 recovery sources.
+
+
+## Approval-time file validation, 0.12.2 (#98)
+
+The hub-native write and edit tools validate paths before requesting approval and
+again after approval, at mutation time. Edit retains its early exact-fragment
+check, then reads current contents after approval and requires the old fragment
+to occur exactly once. The approved replacement applies to those current bytes,
+so another peer's unrelated edits made during the wait are retained. A changed
+fragment or an escaping path returns an error without a write.

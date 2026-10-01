@@ -116,19 +116,25 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         return out.length > OUTPUT_CAP ? `${out.slice(0, OUTPUT_CAP)}\n(truncated: read again with offset/limit)` : out;
       }
       case "write": {
-        const file = guardPath(ctx, String(a.path), "write");
+        let file = guardPath(ctx, String(a.path), "write");
         const content = String(a.content ?? "");
         if (!(await ctx.permit(`write ${a.path} (${content.length} chars):\n${preview(content)}`))) return "error: the user did not approve this write";
+        file = guardPath(ctx, String(a.path), "write");
         mkdirSync(dirname(file), { recursive: true });
         writeFileSync(file, content);
         return `wrote ${a.path}`;
       }
       case "edit": {
-        const file = guardPath(ctx, String(a.path), "write");
-        const text = readFileSync(file, "utf8");
-        const count = text.split(String(a.old)).length - 1;
+        let file = guardPath(ctx, String(a.path), "write");
+        let text = readFileSync(file, "utf8");
+        let count = text.split(String(a.old)).length - 1;
         if (!a.old || count !== 1) return `error: \`old\` must match exactly once, it matched ${count} times`;
         if (!(await ctx.permit(`edit ${a.path}:\n- ${preview(String(a.old), 600)}\n+ ${preview(String(a.new ?? ""), 600)}`))) return "error: the user did not approve this edit";
+        // Approval can outlive another peer's edit or a path change. Apply only the approved fragment to current bytes.
+        file = guardPath(ctx, String(a.path), "write");
+        text = readFileSync(file, "utf8");
+        count = text.split(String(a.old)).length - 1;
+        if (count !== 1) return `error: file changed during approval; \`old\` must match exactly once, it matched ${count} times`;
         writeFileSync(file, text.replace(String(a.old), () => String(a.new ?? "")));
         return `edited ${a.path}`;
       }

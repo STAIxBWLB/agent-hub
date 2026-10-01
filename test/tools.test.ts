@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { profile, proxyEnv, sandboxAvailable, sandboxedExec } from "../src/local/sandbox.ts";
@@ -317,4 +317,32 @@ test.skipIf(!sandboxAvailable())("network through the proxy: an allowed target o
     target.close();
     other.close();
   }
+});
+
+
+test("an edit awaiting approval preserves another peer's unrelated edit", async () => {
+  const { cwd, ctx } = project();
+  let release!: (allowed: boolean) => void;
+  ctx.permit = () => new Promise<boolean>((resolve) => release = resolve);
+  const pending = call(ctx, "edit", { path: "a.txt", old: "two", new: "2" });
+  writeFileSync(join(cwd, "a.txt"), "ONE\ntwo\nthree\n");
+  release(true);
+  expect(await pending).toBe("edited a.txt");
+  expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("ONE\n2\nthree\n");
+});
+
+test("an edit awaiting approval refuses a fragment another peer already changed", async () => {
+  const { cwd, ctx } = project();
+  ctx.permit = async () => { writeFileSync(join(cwd, "a.txt"), "one\nOTHER\nthree\n"); return true; };
+  expect(await call(ctx, "edit", { path: "a.txt", old: "two", new: "2" })).toContain("file changed during approval");
+  expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("one\nOTHER\nthree\n");
+});
+
+for (const tool of ["write", "edit"]) test(`${tool} rechecks a path replaced with an escaping symlink during approval`, async () => {
+  const { cwd, ctx } = project();
+  const outside = mkdtempSync(join(tmpdir(), "agenthub-approval-outside-"));
+  const target = join(outside, "outside.txt"); writeFileSync(target, "OUTSIDE\n");
+  ctx.permit = async () => { unlinkSync(join(cwd, "a.txt")); symlinkSync(target, join(cwd, "a.txt")); return true; };
+  expect(await call(ctx, tool, { path: "a.txt", content: "overwrite", old: "two", new: "2" })).toMatch(/^error: .*outside the project/);
+  expect(readFileSync(target, "utf8")).toBe("OUTSIDE\n");
 });

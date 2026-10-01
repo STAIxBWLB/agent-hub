@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.1 and control protocol 11. Live verification
+This guide describes ahub 0.12.2 and control protocol 11. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Install and start
@@ -481,8 +481,8 @@ source and carries every recovery fix released up to it. Protocol 8 and older
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.1 ahub upgrade --to 0.12.1 --dry-run
-bunx --package @staix/agent-hub@0.12.1 ahub upgrade --to 0.12.1 --yes
+bunx --package @staix/agent-hub@0.12.2 ahub upgrade --to 0.12.2 --dry-run
+bunx --package @staix/agent-hub@0.12.2 ahub upgrade --to 0.12.2 --yes
 ```
 
 | Running now | Coordinator to use |
@@ -520,14 +520,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.1 --dry-run
+ahub upgrade --to 0.12.2 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.1 --yes
+ahub upgrade --to 0.12.2 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>
