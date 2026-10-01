@@ -102,7 +102,8 @@ export class Tasks {
   }
 
   async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId }): Promise<Task> {
-    const title = String(input.title ?? "").trim().slice(0, 300); // callers are models: a title is a line, not a document
+    // Callers are models: a title is one line (it is part of console and hub.log lines), not a document.
+    const title = String(input.title ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
     if (!title) throw new Error("title is required");
     const given = input.class === undefined || input.class === "" ? undefined : input.class;
     if (given !== undefined && !CLASSES.includes(given as TaskClass)) throw new Error(`class must be one of ${CLASSES.join(", ")}`);

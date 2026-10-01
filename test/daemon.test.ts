@@ -1139,10 +1139,14 @@ test("during a PII turn the local worker cannot accept with a plan, finish or re
   await until(() => model.requests.length >= 1, "the ordinary turn");
   expect((await op("hub_task_propose", { title: "fix the entry for 900101-1234567", class: "implement" })).text).toContain("task #2");
   await until(() => model.requests.some((r) => r.body.messages.some((m: { role: string }) => m.role === "tool")), "the PII turn's tools");
-  await Bun.sleep(80); // the turn's answer is filed on the PII task after the last request
+  // the turn's answer, with the tools' refusals, is filed on the PII task after the last request
+  let answer = "";
+  for (let i = 0; i < 300 && !answer.includes("hub_review on task #1"); i++) {
+    answer = (await op("task_show", { id: 2 })).text;
+    if (!answer.includes("hub_review on task #1")) await Bun.sleep(10);
+  }
   const shown = JSON.parse((await op("task_show", { id: 1 })).text);
   expect(shown.plan).toEqual({});
   expect(shown.state).toBe("proposed");
-  const answer = (await op("task_show", { id: 2 })).text;
   for (const name of ["hub_task_accept", "hub_task_done", "hub_review"]) expect(answer).toContain(`${name} on task #1 is not available while working on a PII task`);
 });
