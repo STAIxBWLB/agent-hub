@@ -69,4 +69,9 @@ test("adaptive review: with enough record, the reviewer whose reviews held up go
   expect(assign(t, states, routing, { candidates: ["kimi"], reviews, adaptive: { min: 5 } }).reviewer).toBe("codex");
   expect(assign(t, states, routing, { candidates: ["kimi"], reviews, adaptive: { min: 7 } }).reviewer).toBe("claude"); // not enough record yet
   expect(assign(t, states, routing, { candidates: ["codex"], reviews: { codex: { codex: { score: 1, n: 9 } } }, adaptive: { min: 1 } }).reviewer).toBe("claude"); // never the implementer
+  // with quota readings for both, the record still decides between them: idle, then record, then quota
+  const now = 1_800_000_000_000;
+  const quota = { claude: { headroom: 0.6, resetsAt: now + 60 * 60_000 }, codex: { headroom: 0.6, resetsAt: now + 300 * 60_000 } };
+  expect(assign(t, states, routing, { candidates: ["kimi"], reviews, quota, now }).reviewer).toBe("claude"); // quota alone: claude's window resets first
+  expect(assign(t, states, routing, { candidates: ["kimi"], reviews, quota, now, adaptive: { min: 5 } }).reviewer).toBe("codex");
 });

@@ -76,6 +76,9 @@ export class Board {
     this.db.run("CREATE INDEX IF NOT EXISTS outcomes_class_at ON outcomes (class, at)");
     // How reviews turned out, per (implementer, reviewer, class) (issue #35): approved, contradicted later, caught, escalated.
     this.db.run("CREATE TABLE IF NOT EXISTS reviews (implementer TEXT NOT NULL, reviewer TEXT NOT NULL, class TEXT NOT NULL, kind TEXT NOT NULL, task INTEGER NOT NULL, at INTEGER NOT NULL)");
+    // ponytail: kept for good (a record is the whole history); prune by age if it ever grows large.
+    this.db.run("CREATE INDEX IF NOT EXISTS reviews_class ON reviews (class)");
+    this.db.run("CREATE INDEX IF NOT EXISTS reviews_task ON reviews (task)");
     // Boards from before issues #31 and #34 lack these columns; existing rows get the defaults.
     const have = new Set((this.db.query("PRAGMA table_info(tasks)").all() as { name: string }[]).map((c) => c.name));
     for (const [col, empty] of [["plan", "{}"], ["deps", "[]"]] as const) {

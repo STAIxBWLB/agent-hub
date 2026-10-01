@@ -128,20 +128,27 @@ export class Tasks {
 
   /** How each reviewer's reviews of each implementer's work in a class held up (issue #35). */
   reviewRecord(cls: TaskClass): Record<PeerId, Record<PeerId, { score: number; n: number }>> {
-    const c = new Map<string, { approved: number; contradicted: number; caught: number; escalated: number }>();
+    // Counted per task: a review that asked for changes and then approved is one review, not two.
+    const c = new Map<string, { reviewed: Set<number>; contradicted: Set<number> }>();
     for (const r of this.d.board.reviews({ class: cls })) {
       const key = `${r.implementer}\0${r.reviewer}`;
-      const s = c.get(key) ?? { approved: 0, contradicted: 0, caught: 0, escalated: 0 };
-      s[r.kind]++;
+      const s = c.get(key) ?? { reviewed: new Set<number>(), contradicted: new Set<number>() };
+      (r.kind === "contradicted" ? s.contradicted : s.reviewed).add(r.task);
       c.set(key, s);
     }
     const out: Record<PeerId, Record<PeerId, { score: number; n: number }>> = {};
     for (const [key, s] of c) {
       const [implementer, reviewer] = key.split("\0") as [PeerId, PeerId];
-      const n = s.approved + s.caught + s.escalated;
-      if (n) (out[implementer] ??= {})[reviewer] = { score: (n - Math.min(s.contradicted, s.approved)) / n, n };
+      const n = s.reviewed.size;
+      if (n) (out[implementer] ??= {})[reviewer] = { score: (n - [...s.contradicted].filter((t) => s.reviewed.has(t)).length) / n, n };
     }
     return out;
+  }
+
+  /** Who asked for changes on the current owner's work: requests made before the task changed hands were about someone else's. */
+  private requestedChanges(task: Task): Set<PeerId> {
+    const since = task.history.findLastIndex((h) => ["assigned", "escalated", "reassigned", "unassigned"].includes(h.event));
+    return new Set(task.history.slice(since + 1).filter((h) => h.event === "changes_requested").map((h) => h.by));
   }
 
   /** What assignment weighs besides states and policy: quota, demotion and the review record. */
@@ -156,6 +163,7 @@ export class Tasks {
    * within the window were contradicted. Each approval counts once.
    */
   private contradict(failed: Task): void {
+    if (this.isPii(failed)) return; // its places are left out everywhere else too
     const now = Date.now();
     const mine = this.places(failed);
     for (const t of this.d.board.list("approved")) {
@@ -163,7 +171,8 @@ export class Tasks {
       const approval = [...t.history].reverse().find((h) => h.event === "approved");
       if (!approval || now - approval.at > CONTRADICTION_WINDOW_MS || approval.by === USER) continue;
       const theirs = this.places(t);
-      const same = mine.paths.some((p) => theirs.paths.some((q) => samePlace(p, q))) || mine.symbols.some((x) => theirs.symbols.includes(x));
+      // Blame needs the same file or symbol: a directory or `.` would contradict every approval under it.
+      const same = mine.paths.some((p) => theirs.paths.includes(p)) || mine.symbols.some((x) => theirs.symbols.includes(x));
       if (!same || this.d.board.reviews({ task: t.id }).some((r) => r.kind === "contradicted")) continue;
       this.d.board.recordReview({ implementer: t.owner, reviewer: approval.by, class: t.class, kind: "contradicted", task: t.id });
     }
@@ -598,8 +607,8 @@ export class Tasks {
       if (next.owner) {
         this.d.board.recordOutcome(next.owner, next.class, true);
         this.d.board.recordReview({ implementer: next.owner, reviewer: by, class: next.class, kind: "approved", task: next.id });
-        // Changes requested earlier and the redo passed: those reviews caught something.
-        for (const r of new Set(task.history.filter((h) => h.event === "changes_requested").map((h) => h.by))) {
+        // Changes requested on this owner's work and the redo passed: those reviews caught something.
+        for (const r of this.requestedChanges(task)) {
           this.d.board.recordReview({ implementer: next.owner, reviewer: r, class: next.class, kind: "caught", task: next.id });
         }
       }
@@ -633,7 +642,8 @@ export class Tasks {
     // The hub's own escalations are not counted: after repeated changes_requested each one already was, and after a
     // Pi inference failure the backend failed, not the work. An escalation by hand counts on its own.
     if (from && by !== HUB) this.d.board.recordOutcome(from, task.class, false);
-    if (from && task.reviewer && task.reviewer !== USER) this.d.board.recordReview({ implementer: from, reviewer: task.reviewer, class: task.class, kind: "escalated", task: task.id });
+    // Only a reviewer that asked for changes on this work saw it fail: not an escalation of unreviewed work (a Pi failure).
+    if (from && task.reviewer && task.reviewer !== USER && this.requestedChanges(task).has(task.reviewer)) this.d.board.recordReview({ implementer: from, reviewer: task.reviewer, class: task.class, kind: "escalated", task: task.id });
     const next = await this.assignOwner(task, by, { candidates: list, event: "escalated", note: `${why}; from ${from ?? "none"}`, context: why });
     if (next.owner && next.owner !== from) {
       this.d.notify(`task ${this.publicTitle(next)} escalated from ${from} to ${next.owner} (${why})`);

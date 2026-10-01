@@ -194,10 +194,11 @@ export function assign(
     return out;
   };
   const rank = (ok: PeerId[], role: "owner" | "reviewer", owner?: PeerId): PeerId[] => {
-    if (role === "reviewer") ok = byRecord(ok, owner);
     const down = role === "owner" ? ok.filter((p) => opts.demoted?.[p]) : [];
     if (down.length) trace.push(`  demoted for ${task.class}: ${down.map((p) => `${p} (${opts.demoted![p]!.toFixed(1)} recent failures)`).join(", ")}`);
-    return [...byDrain(ok.filter((p) => !down.includes(p))), ...byDrain(down)];
+    const ranked = [...byDrain(ok.filter((p) => !down.includes(p))), ...byDrain(down)];
+    // The review record comes after quota, so it decides among reviewers that have one: idle, then record, then quota.
+    return role === "reviewer" ? byRecord(ranked, owner) : ranked;
   };
 
   const pick = (list: PeerId[], role: "owner" | "reviewer", not?: PeerId): PeerId | undefined => {

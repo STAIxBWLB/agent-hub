@@ -994,6 +994,35 @@ test("review outcomes: approvals, caught changes, contradicted approvals (once) 
   await tasks.review(board.get(b.id)!.reviewer!, b.id, "changes_requested", "still broken");
   expect(board.reviews({ task: a.id }).filter((r) => r.kind === "contradicted")).toHaveLength(1);
   expect(board.reviews({ task: b.id }).some((r) => r.kind === "escalated")).toBe(true);
-  expect(tasks.reviewRecord("implement").codex!.claude).toEqual({ score: 0.5, n: 2 });
+  expect(tasks.reviewRecord("implement").codex!.claude).toEqual({ score: 0, n: 1 }); // one task reviewed, and contradicted
   expect(tasks.explain({ title: "c", class: "implement" }).join("\n")).toContain("review record with");
+});
+
+test("review outcomes are credited to the work they judged: blame needs the same file, a catch belongs to the owner it caught", async () => {
+  const { tasks, board } = await setup(["claude", "codex", "kimi"]);
+  const outcomes = (id: number) => board.reviews({ task: id }).map((r) => `${r.implementer}/${r.reviewer}:${r.kind}`);
+  // an approval of src/a.ts is not contradicted by a failure on `.`, only by one on the same file
+  const a = await tasks.propose("codex", { title: "a", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
+  await tasks.done("codex", a.id, "done");
+  await tasks.review("claude", a.id, "approved");
+  const wide = await tasks.propose("kimi", { title: "wide", class: "implement", owner: "kimi", refs: { paths: ["."] } });
+  await tasks.done("kimi", wide.id, "x");
+  await tasks.review(board.get(wide.id)!.reviewer!, wide.id, "changes_requested", "no");
+  expect(outcomes(a.id)).toEqual(["codex/claude:approved"]);
+  // changes requested twice on kimi's work, escalated, redone by someone else and approved: the catch was of kimi's work
+  const b = await tasks.propose("claude", { title: "b", class: "implement", owner: "kimi", refs: { paths: ["src/b.ts"] } });
+  const reviewer = board.get(b.id)!.reviewer!;
+  for (const n of [1, 2]) {
+    await tasks.done("kimi", b.id, `try ${n}`);
+    await tasks.review(reviewer, b.id, "changes_requested", "no");
+  }
+  const next = board.get(b.id)!;
+  expect(next.owner).not.toBe("kimi");
+  await tasks.done(next.owner!, b.id, "redone");
+  await tasks.review(reviewer, b.id, "approved");
+  expect(outcomes(b.id)).toEqual([`kimi/${reviewer}:escalated`, `${next.owner}/${reviewer}:approved`]);
+  // the hub escalating work nobody reviewed (a Pi failure) says nothing about its reviewer
+  const c = await tasks.propose("claude", { title: "c", class: "implement", owner: "codex", refs: { paths: ["src/c.ts"] } });
+  await tasks.escalate(HUB, c.id, "pi inference failed");
+  expect(outcomes(c.id)).toEqual([]);
 });
