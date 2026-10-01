@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.9.0 and control protocol 10. Live verification
+This guide describes ahub 0.10.0 and control protocol 10. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Install and start
@@ -425,8 +425,8 @@ source and carries every recovery fix released up to it. Protocol 8 and older
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.9.0 ahub upgrade --to 0.9.0 --dry-run
-bunx --package @staix/agent-hub@0.9.0 ahub upgrade --to 0.9.0 --yes
+bunx --package @staix/agent-hub@0.10.0 ahub upgrade --to 0.10.0 --dry-run
+bunx --package @staix/agent-hub@0.10.0 ahub upgrade --to 0.10.0 --yes
 ```
 
 | Running now | Coordinator to use |
@@ -449,25 +449,26 @@ no blocker, and `--yes` stops at staging ("target protocol requires a newer
 coordinator") with an operation left to clear by `ahub recovery abort <id>`. An
 older 0.7.x CLI may lack recovery fixes released after it. The
 [smoke ledger](smoke.md) records dry-runs from real 0.6.4 and 0.7.5 hubs (issue
-#75); an applied upgrade was last proven with the 0.7.0 coordinator.
+#75), an applied upgrade with the 0.7.0 coordinator, and one from a running
+0.8.1 hub with tasks and a budget pause with the 0.9.0 coordinator.
 
 The coordinator verifies and retains the exact target package, preserves its
 own source, and promotes the global CLI only after restored projects pass
 readback.
 
-Once the installed CLI is 0.9.0, review the current project or all registered
+Once the installed CLI is 0.10.0, review the current project or all registered
 projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.9.0 --dry-run
+ahub upgrade --to 0.10.0 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.9.0 --yes
+ahub upgrade --to 0.10.0 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>
@@ -489,6 +490,14 @@ commit has recorded it, and the operation stays blocked.
 block: `limits` (12 messages a minute per sender, 6 per recipient, 6
 `[IMPORTANT]` an hour, 120 s repeats) and `budget.wait_max_min` (30). Set them
 to 0 to opt out.
+
+0.10.0 changes every project's local worker: its commands run under the
+deny-default sandbox described above, and a toolchain outside the listed
+directories needs `local.read_allow`; `"local": { "sandbox": "allow-default" }`
+in `config.local.json` restores the old profile for one release. Off unless set:
+`review.adaptive`, `recovery.auto_resume_after_crash` and `capabilities`. A hub
+before 0.10.0 keeps no session record, so a crash of one is not reported as such
+by the next start.
 
 The 0.7.0 transition stages the verified package and runs a retained
 coordinator from the source tree. It accepts a verified protocol-9 source and
