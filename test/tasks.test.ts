@@ -877,6 +877,13 @@ test("a contradiction matches a file in any spelling, never `.`; a reassignment 
   await tasks.done("kimi", root.id, "x");
   await tasks.review(board.get(root.id)!.reviewer!, root.id, "changes_requested", "no");
   expect(outcomes(a.id)).toEqual(["codex/claude:approved"]); // `.` blames nobody
+  const wide = await tasks.propose("codex", { title: "wide", class: "implement", owner: "codex", refs: { paths: ["."] } });
+  await tasks.done("codex", wide.id, "done");
+  await tasks.review("claude", wide.id, "approved");
+  const wider = await tasks.propose("kimi", { title: "wider", class: "implement", owner: "kimi", refs: { paths: ["./"] } });
+  await tasks.done("kimi", wider.id, "x");
+  await tasks.review(board.get(wider.id)!.reviewer!, wider.id, "changes_requested", "no");
+  expect(outcomes(wide.id)).toEqual(["codex/claude:approved"]); // not even an approval on `.` itself
   board.update(a.id, HUB, "reopened", { refs: { paths: ["./src/a.ts"] } }); // a row stored as written, before #67
   const same = await tasks.propose("kimi", { title: "same", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
   await tasks.done("kimi", same.id, "x");
@@ -892,6 +899,23 @@ test("a contradiction matches a file in any spelling, never `.`; a reassignment 
   await tasks.done("codex", b.id, "again");
   await tasks.review(reviewer, b.id, "approved");
   expect(outcomes(b.id)).toEqual([`codex/${reviewer}:approved`, `codex/${reviewer}:caught`]);
+});
+
+test("a board written before #67 reads back unchanged: paths as written, history without owners (the recovery digest)", () => {
+  const file = join(mkdtempSync(join(tmpdir(), "agenthub-board-0100-")), "hub.db");
+  const db = new Database(file);
+  db.run("CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, detail TEXT, class TEXT NOT NULL, owner TEXT, reviewer TEXT, state TEXT NOT NULL, refs TEXT NOT NULL DEFAULT '{}', signals TEXT NOT NULL DEFAULT '[]', rejections INTEGER NOT NULL DEFAULT 0, history TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL, plan TEXT NOT NULL DEFAULT '{}', deps TEXT NOT NULL DEFAULT '[]')");
+  const history = [{ at: 1, by: "claude", event: "proposed" }, { at: 2, by: "hub", event: "assigned", note: "to codex" }, { at: 3, by: "user", event: "reassigned", note: "to codex" }];
+  db.query("INSERT INTO tasks (title, class, owner, state, refs, history, created, updated) VALUES ('old', 'implement', 'codex', 'proposed', ?, ?, 1, 3)").run(JSON.stringify({ paths: ["./src/a.ts"] }), JSON.stringify(history));
+  db.close();
+  const board = new Board(file);
+  const once = JSON.stringify(board.list());
+  board.close();
+  const again = new Board(file);
+  expect(JSON.stringify(again.list())).toBe(once);
+  expect(again.get(1)!.refs.paths).toEqual(["./src/a.ts"]);
+  expect(again.get(1)!.history).toEqual(history);
+  again.close();
 });
 
 test("a board from before plans and dependencies opens with its tasks intact", () => {

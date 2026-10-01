@@ -1039,6 +1039,10 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   busy, then the record, then quota.
 - Task paths are stored in one spelling (issue #67): no leading `./`, no repeated
   or trailing `/`, the root as `.`; older rows are compared in that spelling.
+  Blame needs the same path, so a directory never blames the files under it,
+  though two tasks that both claim the same directory still blame each other: a
+  path does not say whether it is a directory. Existing rows are never
+  rewritten.
   Ownership events (`assigned`, `escalated`, `reassigned`, `unassigned`) record
   the owner they leave, so a reassignment to the same owner does not end the
   window in which a catch counts; rows written before keep the old rule.
