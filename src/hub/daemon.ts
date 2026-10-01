@@ -601,6 +601,13 @@ export async function startDaemon(opts: DaemonOptions) {
       taskOpsInFlight--;
     }
   };
+  /** A model-written peer argument: a peer id, or nothing for absent, null or "". Anything else is refused. */
+  const peerArg = (v: unknown, name: string): PeerId | undefined => {
+    if (v == null || v === "") return undefined;
+    const id = typeof v === "string" ? v.trim() : undefined;
+    if (!id || !PEER_ID.test(id)) throw new Error(`${name} must be a peer id, not ${JSON.stringify(v).slice(0, 60)}`);
+    return id;
+  };
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
@@ -621,9 +628,11 @@ export async function startDaemon(opts: DaemonOptions) {
       log(`capabilities: ${by} may not ${what} (${op})`);
       throw new Error(`${by} may not ${what} (no "${cap}" in capabilities.${by} in .agenthub/config.json)`);
     };
+    // Tool callers are models (#70): `owner` is a peer id or nothing, settled before anything reaches the board.
     if (op === "hub_task_propose") {
+      a = { ...a, owner: peerArg(a.owner, "owner") };
       need("propose", "propose tasks");
-      if (typeof a.owner === "string" && a.owner && a.owner !== by) need("assign", "hand tasks to other peers");
+      if (a.owner && a.owner !== by) need("assign", "hand tasks to other peers");
     }
     if (op === "hub_remember") need("remember", "save notes to shared memory");
     switch (op) {
@@ -661,8 +670,11 @@ export async function startDaemon(opts: DaemonOptions) {
     switch (op) {
       case "task_show":
         return JSON.stringify(board.get(Number(a.id)) ? { ...board.get(Number(a.id)), reviews: board.reviews({ task: Number(a.id) }) } : `no task #${a.id}`, null, 2);
-      case "task_assign":
-        return line(await tasks.assignTo(a.id, String(a.peer)));
+      case "task_assign": {
+        const peer = peerArg(a.peer, "peer");
+        if (!peer) throw new Error("peer is required");
+        return line(await tasks.assignTo(a.id, peer));
+      }
       case "task_escalate":
         return line(await tasks.escalate(USER, a.id));
       case "route_explain":

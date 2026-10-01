@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- Task operations settle model-written arguments before anything reaches the board: an `owner` or `peer` that is not a peer id, or a task id that is not a whole number, is refused with a clear message instead of leaving an ownerless task behind after a database error; `null` and an empty owner mean no owner (#70).
+
 ## 0.10.0
 
 - Review checklists and review outcomes: review requests ask the reviewer to map signatures and call sites to the plan, read the check result and list unmet items (`hub_review {unmet}`); the hub records approved, caught, contradicted and escalated reviews per implementer, reviewer and class, shown by `ahub task show` and `ahub route explain`, and `review.adaptive` (off by default) orders reviewers by that record, after idle before busy and ahead of quota. A record counts tasks, a catch belongs to the owner whose work was caught, and only a failure on the same file or symbol contradicts an approval (#35).
