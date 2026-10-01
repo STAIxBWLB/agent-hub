@@ -62,7 +62,8 @@ export interface HubConfig {
   omniroute: OmniRouteConfig;
   pi: { enabled: boolean; auto_start: boolean; cmd: string[]; backend: "auto" | "dgx" | "mlx"; dgx_coding: string; dgx_fast: string; max_steps: number };
   mlx: Pick<MlxOptions, "provider" | "host" | "runtimeDir" | "modelPath" | "port" | "model" | "sourceModel" | "contextWindow" | "maxInputTokens" | "maxTokens" | "maxConcurrency">;
-  local: { deny: string[]; bash_network: boolean; max_steps: number; read_allow: string[] };
+  /** `sandbox`: "deny-default" (issue #39), or "allow-default", the 0.7 profile, kept for one release. */
+  local: { deny: string[]; bash_network: boolean; max_steps: number; read_allow: string[]; sandbox: "deny-default" | "allow-default" };
   /** Pending permission requests: how long they wait, and whether the desktop is told (issue #5). */
   approvals: { timeout_s: number; notify: boolean };
   /** An owner offline this long loses its open tasks back to routing; 0 turns it off (issue #6). */
@@ -77,6 +78,8 @@ export interface HubConfig {
   review: { adaptive: boolean; min_reviews: number };
   /** After an unplanned stop, start Kimi, Pi and the local worker again with their recorded sessions (issue #37). */
   recovery: { auto_resume_after_crash: boolean };
+  /** Per peer, the hub-tool capabilities it has (issue #39); a peer not listed has all of them. */
+  capabilities: Record<string, string[]>;
   /** Machine-local fields a config file set but git could not vouch for, and why (issue #17). */
   ignored?: string[];
 }
@@ -94,7 +97,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   omniroute: DEFAULT_OMNIROUTE,
   pi: { enabled: false, auto_start: false, cmd: ["pi"], backend: "auto", dgx_coding: "coding", dgx_fast: "fast", max_steps: 30 },
   mlx: { provider: "ollama", model: "agenthub-fast-mlx:4b-8k", sourceModel: "qwen3.5:4b-mlx", contextWindow: 8192, maxInputTokens: 6000, maxTokens: 2048, maxConcurrency: 1 },
-  local: { deny: [], bash_network: false, max_steps: 30, read_allow: [] },
+  local: { deny: [], bash_network: false, max_steps: 30, read_allow: [], sandbox: "deny-default" },
   // Off here, so tests and a hub without a config file stay silent; a project's config defaults it on for macOS.
   approvals: { timeout_s: 120, notify: false },
   tasks: { release_after_min: 30 },
@@ -104,6 +107,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   limits: DEFAULT_LIMITS,
   review: { adaptive: false, min_reviews: 5 },
   recovery: { auto_resume_after_crash: false },
+  capabilities: {},
 };
 
 export { stateDirFor };
@@ -114,7 +118,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = ["config.json", "config.local.json"] as const;
-const CONFIG_BLOCKS = ["memory", "roles", "budget", "inference", "omniroute", "local", "pi", "approvals", "tasks", "checks", "snapshots", "limits", "review", "recovery", "mlx"];
+const CONFIG_BLOCKS = ["memory", "roles", "budget", "inference", "omniroute", "local", "pi", "approvals", "tasks", "checks", "snapshots", "limits", "review", "recovery", "capabilities", "mlx"];
 
 export function loadConfig(cwd: string): HubConfig {
   const ignored: string[] = [];
@@ -161,6 +165,7 @@ export function loadConfig(cwd: string): HubConfig {
     limits: { ...PROJECT_LIMITS, ...file.limits }, // on with any project config (issue #38)
     review: { ...DEFAULT_CONFIG.review, ...file.review },
     recovery: { ...DEFAULT_CONFIG.recovery, ...file.recovery },
+    capabilities: { ...file.capabilities },
     mlx,
     ...(ignored.length ? { ignored } : {}),
   };
@@ -306,6 +311,19 @@ export async function startDaemon(opts: DaemonOptions) {
   // What the crash left in flight, per recipient: opening the journal just marked these needs_review.
   const lost = new Map<PeerId, JournalDelivery[]>();
   if (crashed) for (const d of journal.list()) if (d.state === "needs_review" && d.reason === "daemon stopped during delivery" && d.updatedAt >= startedAt) lost.set(d.peer, [...(lost.get(d.peer) ?? []), d]);
+  // Capabilities (issue #39): enforced here and in taskOp, never by role text alone. Unlisted peers keep everything.
+  // A listed peer whose value is not a list gets nothing: whoever listed it meant to narrow it.
+  const may = (peer: PeerId, cap: "propose" | "assign" | "remember" | "important"): boolean => {
+    if (peer === USER || peer === HUB || !Object.hasOwn(config.capabilities, peer)) return true;
+    const list = config.capabilities[peer];
+    return Array.isArray(list) && list.includes(cap);
+  };
+  const CAPABILITIES = ["propose", "assign", "remember", "important"];
+  for (const [peer, list] of Object.entries(config.capabilities)) {
+    if (!PEER_ID.test(peer)) log(`capabilities.${peer} is not a peer id; ignored (capabilities is an object of lists, one per peer)`);
+    else if (!Array.isArray(list)) log(`capabilities.${peer} is not a list: ${peer} gets no capabilities`);
+    else for (const c of list) if (!CAPABILITIES.includes(c)) log(`capabilities.${peer}: ${JSON.stringify(c)} is not a capability (${CAPABILITIES.join(", ")}); it grants nothing`);
+  }
   // Agents only: the console user and the hub itself are never limited (issue #38).
   // A typo such as "12/min" would read as 0, which turns a limit off without a word: the project default instead.
   for (const k of Object.keys(config.limits)) if (!(k in PROJECT_LIMITS)) log(`limits.${k} is not a known limit; ignored`);
@@ -319,6 +337,10 @@ export async function startDaemon(opts: DaemonOptions) {
   const admit = (env: Envelope, parent?: string): string | undefined => {
     // [FYI] is recorded and costs nobody a turn: nothing to limit.
     if (env.from === USER || env.from === HUB || env.from === DIGEST || env.priority === "fyi") return undefined;
+    if (env.priority === "important" && !may(env.from, "important")) {
+      log(`capabilities: ${env.from} may not send important messages`);
+      return `${env.from} may not send important messages (no "important" in capabilities.${env.from}): send it without [IMPORTANT]`;
+    }
     const refused = limiter.admit(env.from, env.to, env.priority, env.body, parent);
     if (refused) log(`limits: ${env.from}: ${refused}`);
     return refused;
@@ -594,6 +616,16 @@ export async function startDaemon(opts: DaemonOptions) {
     // console reads a PII task's text deliberately, with `ahub task show <id>`.
     const onPrem = inProcess && by === "local";
     const line = (t: { id: number; state: string; owner: PeerId | null; reviewer: PeerId | null }) => `task #${t.id}: ${t.state}, owner ${t.owner ?? "none"}, reviewer ${t.reviewer ?? "none"}`;
+    const need = (cap: "propose" | "assign" | "remember", what: string) => {
+      if (may(by, cap)) return;
+      log(`capabilities: ${by} may not ${what} (${op})`);
+      throw new Error(`${by} may not ${what} (no "${cap}" in capabilities.${by} in .agenthub/config.json)`);
+    };
+    if (op === "hub_task_propose") {
+      need("propose", "propose tasks");
+      if (typeof a.owner === "string" && a.owner && a.owner !== by) need("assign", "hand tasks to other peers");
+    }
+    if (op === "hub_remember") need("remember", "save notes to shared memory");
     switch (op) {
       case "hub_task_propose": {
         const t = await tasks.propose(by, a);
@@ -1145,7 +1177,7 @@ export async function startDaemon(opts: DaemonOptions) {
       let piReply: Envelope | undefined;
       const ctx: ToolContext = {
         cwd: opts.cwd, deny: config.local.deny,
-        sandboxProfile: profile(opts.cwd, config.local.bash_network, config.local.read_allow, config.local.deny),
+        sandboxProfile: profile(opts.cwd, config.local.bash_network, config.local.read_allow, config.local.deny, config.local.sandbox === "allow-default" ? "allow" : "deny"),
         permit: (title) => onPermission({ peer: "pi", title, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] }).then((picked) => picked === "allow" && pi.acceptingTools && bus.peers.get("pi") === pi),
         send: (text, to) => {
           if (to?.some((id) => !bus.peers.has(id) && id !== USER)) return "error: unknown peer";
@@ -1236,7 +1268,7 @@ export async function startDaemon(opts: DaemonOptions) {
         omni,
         ...(sidecar && route ? { sidecar, route } : {}),
         fixedModel: args.model ?? routing.local.fixed_model,
-        tools: { deny: config.local.deny, bashNetwork: config.local.bash_network, readAllow: config.local.read_allow, permit },
+        tools: { deny: config.local.deny, bashNetwork: config.local.bash_network, readAllow: config.local.read_allow, sandbox: config.local.sandbox, permit },
         ...(capture ? { capture } : {}),
         taskTool: (name, a, turn) => taskOp("local", name, a, true, turn.pii),
         turnPolicy: (envs) => tasks.turnPolicy(envs),

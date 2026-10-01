@@ -17,7 +17,7 @@ export interface LocalOptions {
   route?: string;
   /** Model id sent straight to OmniRoute when the sidecar is absent, unhealthy or fails a call. */
   fixedModel: string;
-  tools: { deny: string[]; permit: ToolContext["permit"]; bashNetwork?: boolean; readAllow?: string[] };
+  tools: { deny: string[]; permit: ToolContext["permit"]; bashNetwork?: boolean; readAllow?: string[]; sandbox?: "deny-default" | "allow-default" };
   capture?: Capture;
   /** Runs a hub task tool (hub_task_*, hub_review, hub_remember) as this peer. Absent = the tools are not offered. */
   taskTool?: (name: string, args: Record<string, unknown>, turn: { pii: boolean }) => Promise<string>;
@@ -67,7 +67,7 @@ export class LocalPeer extends BasePeer {
     private readonly opts: LocalOptions,
   ) {
     super(id, opts.watchdogMs);
-    this.sandboxProfile = profile(opts.cwd, opts.tools.bashNetwork ?? false, opts.tools.readAllow, opts.tools.deny);
+    this.sandboxProfile = profile(opts.cwd, opts.tools.bashNetwork ?? false, opts.tools.readAllow, opts.tools.deny, opts.tools.sandbox === "allow-default" ? "allow" : "deny");
   }
 
   recoveryMetadata(): Record<string, unknown> {

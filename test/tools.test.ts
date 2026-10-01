@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { profile, sandboxAvailable, sandboxedExec } from "../src/local/sandbox.ts";
 import { guardPath, isDenied, runTool, type ToolContext } from "../src/local/tools.ts";
 
@@ -189,4 +189,49 @@ test.skipIf(!sandboxAvailable())("git: read-only subcommands run without asking,
   const tree = await sandboxedExec(["/bin/bash", "-c", "(sleep 30 &) ; sleep 30"], { cwd, profile: ctx.sandboxProfile, timeoutMs: 300 });
   expect(tree.output).toContain("killed");
   expect(Date.now() - t0).toBeLessThan(5000);
+});
+
+// issue #39: the deny-default profile still runs the toolchains, and reads less than the old allow-default one.
+test.skipIf(!sandboxAvailable())("deny-default: bun, node and git work; outside the system, toolchain and project dirs nothing is readable", async () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-denydefault-")));
+  writeFileSync(join(cwd, "a.test.ts"), 'import { expect, test } from "bun:test";\ntest("t", () => expect(1).toBe(1));\n');
+  Bun.spawnSync(["git", "init", "-q"], { cwd }); // outside: init writes .git/hooks, which the sandbox denies in both profiles
+  // A node installed elsewhere in home (the CI runner's tool cache) is outside the listed toolchain dirs: that is what
+  // local.read_allow is for. Its install prefix goes there, as a user would put it.
+  const node = realpathSync(Bun.which("node")!);
+  const readAllow = node.startsWith(`${homedir()}/`) ? [dirname(dirname(node))] : [];
+  const run = (command: string, base: "deny" | "allow" = "deny") => sandboxedExec(["/bin/sh", "-c", command], { cwd, profile: profile(cwd, false, readAllow, [], base) });
+  const tools = await run([
+    "node -e 'console.log(\"node-ok\")'",
+    "bun -e 'console.log(\"bun-ok\")'",
+    "bun test a.test.ts >/dev/null 2>&1 && echo bun-test-ok",
+    "git add a.test.ts && git -c user.name=t -c user.email=t@localhost -c commit.gpgsign=false commit -q -m x && git log --oneline | wc -l | tr -d ' ' && echo git-ok",
+  ].join("; "));
+  for (const expected of ["node-ok", "bun-ok", "bun-test-ok", "git-ok"]) expect(tools.output).toContain(expected);
+  const probe = "(ls /private/var/log >/dev/null 2>&1) && echo READ-VAR-LOG || echo blocked-var-log";
+  expect((await run(probe)).output).toContain("blocked-var-log");
+  expect((await run(probe, "allow")).output).toContain("READ-VAR-LOG"); // what the old profile let through
+});
+
+test("no mach broker that acts outside the sandbox: LaunchServices (open starts apps), SecurityServer (Keychain)", () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-brokers-")));
+  for (const network of [false, true]) {
+    const p = profile(cwd, network);
+    for (const broker of ["coreservicesd", "launchservicesd", "SecurityServer"]) expect(p).not.toContain(broker);
+  }
+});
+
+test.skipIf(!sandboxAvailable())("network on: the public CA bundle is readable despite the .pem deny, a key in the project is not", async () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-cabundle-")));
+  writeFileSync(join(cwd, "id.pem"), "-----BEGIN PRIVATE KEY-----\n");
+  const read = async (path: string, network: boolean) => (await sandboxedExec(["/bin/sh", "-c", `head -c 5 '${path}' >/dev/null 2>&1 && echo READ || echo blocked`], { cwd, profile: profile(cwd, network) })).output.trim();
+  expect(await read("/etc/ssl/cert.pem", true)).toBe("READ"); // TLS for curl, git and python3 needs it
+  expect(await read("/etc/ssl/cert.pem", false)).toBe("blocked");
+  expect(await read(join(cwd, "id.pem"), true)).toBe("blocked");
+});
+
+test.skipIf(!sandboxAvailable())("the selected developer dir is in the profile, so the /usr/bin shims can run what it holds", () => {
+  const dev = Bun.spawnSync(["xcode-select", "-p"], { stdout: "pipe" }).stdout.toString().trim();
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-devdir-")));
+  if (dev) expect(profile(cwd, false)).toContain(dev);
 });

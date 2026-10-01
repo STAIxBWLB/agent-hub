@@ -24,6 +24,7 @@ export const MACHINE_LOCAL = [
   "memory.worker_url",
   "local.read_allow",
   "local.bash_network",
+  "local.sandbox", // "allow-default" widens what the worker's commands may do
 ] as const;
 
 /**
