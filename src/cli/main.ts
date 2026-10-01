@@ -745,6 +745,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (args.includes("--json")) return console.log(JSON.stringify(status, null, 2));
     console.log(`hub pid ${status.pid}, control 127.0.0.1:${status.controlPort}, ${status.cwd}`);
     if (status.deliveryError) console.log(`  delivery storage: ${status.deliveryError}; dispatch is stopped`);
+    for (const line of (status as { crash?: string[] }).crash ?? []) console.log(`  crash recovery: ${line}`);
     const peers = Object.entries(status.peers as Record<string, PeerRow>);
     for (const [id, p] of peers) console.log(peerLine(id, p));
     const models = (status as any).models?.backends as BackendRow[] | undefined;

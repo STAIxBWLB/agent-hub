@@ -42,6 +42,8 @@ import { MemoryClient, workerUrl } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { projectChain, recallFor } from "../memory/recall.ts";
 import { conflictsOf } from "./conflicts.ts";
+import { crashPlan, lossNotice, readSessions, removeSessions, writeSessions, type SessionsFile } from "./crash.ts";
+import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
 import { changedPaths, repoOf, snapshot, Turns } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
@@ -73,6 +75,8 @@ export interface HubConfig {
   limits: LimitsConfig;
   /** Reviewer choice from recorded review outcomes, once a reviewer has `min_reviews` of an implementer (issue #35). */
   review: { adaptive: boolean; min_reviews: number };
+  /** After an unplanned stop, start Kimi, Pi and the local worker again with their recorded sessions (issue #37). */
+  recovery: { auto_resume_after_crash: boolean };
   /** Machine-local fields a config file set but git could not vouch for, and why (issue #17). */
   ignored?: string[];
 }
@@ -99,6 +103,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   snapshots: { enabled: false, keep: 20 },
   limits: DEFAULT_LIMITS,
   review: { adaptive: false, min_reviews: 5 },
+  recovery: { auto_resume_after_crash: false },
 };
 
 export { stateDirFor };
@@ -109,7 +114,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = ["config.json", "config.local.json"] as const;
-const CONFIG_BLOCKS = ["memory", "roles", "budget", "inference", "omniroute", "local", "pi", "approvals", "tasks", "checks", "snapshots", "limits", "review", "mlx"];
+const CONFIG_BLOCKS = ["memory", "roles", "budget", "inference", "omniroute", "local", "pi", "approvals", "tasks", "checks", "snapshots", "limits", "review", "recovery", "mlx"];
 
 export function loadConfig(cwd: string): HubConfig {
   const ignored: string[] = [];
@@ -155,6 +160,7 @@ export function loadConfig(cwd: string): HubConfig {
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
     limits: { ...PROJECT_LIMITS, ...file.limits }, // on with any project config (issue #38)
     review: { ...DEFAULT_CONFIG.review, ...file.review },
+    recovery: { ...DEFAULT_CONFIG.recovery, ...file.recovery },
     mlx,
     ...(ignored.length ? { ignored } : {}),
   };
@@ -284,9 +290,22 @@ export async function startDaemon(opts: DaemonOptions) {
     : undefined;
   if ((restartFilePresent && !restored) || (recoveryOperation && !restored)) throw new Error("restart state is unreadable, missing, or does not match this project and recovery operation");
 
+  // A session record left by a run that never shut down means it crashed (issue #37). A controlled restart has its own.
+  const crashed = !recoveryOperation && !restartFilePresent ? readSessions(opts.stateDir) : undefined;
+  // A controlled restart's source may have been cut short before it removed its record: this run is not a crash, and
+  // a record left now would make the next ordinary start look like one.
+  if (recoveryOperation || restartFilePresent) try { removeSessions(opts.stateDir); } catch { /* nothing to remove */ }
+  const autoResume = config.recovery.auto_resume_after_crash === true; // a string "false" is not a yes
+  const startedAt = Date.now();
+  /** What crash recovery did or asks the user to do, for `ahub status`. */
+  const crashReport: string[] = [];
+
   // The hub's own model calls (digest condensation, task triage) are wired below, once the gateway client exists.
   let inference: Inference | undefined;
   const journal = new DeliveryJournal({ file: join(opts.stateDir, "hub.db"), projectRoot: opts.cwd, projectId, instanceId, operationId: recoveryOperation });
+  // What the crash left in flight, per recipient: opening the journal just marked these needs_review.
+  const lost = new Map<PeerId, JournalDelivery[]>();
+  if (crashed) for (const d of journal.list()) if (d.state === "needs_review" && d.reason === "daemon stopped during delivery" && d.updatedAt >= startedAt) lost.set(d.peer, [...(lost.get(d.peer) ?? []), d]);
   // Agents only: the console user and the hub itself are never limited (issue #38).
   // A typo such as "12/min" would read as 0, which turns a limit off without a word: the project default instead.
   for (const k of Object.keys(config.limits)) if (!(k in PROJECT_LIMITS)) log(`limits.${k} is not a known limit; ignored`);
@@ -740,6 +759,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return now;
   };
   const status = () => ({
+    ...(crashReport.length ? { crash: crashReport } : {}),
     projectId,
     instanceId,
     version: VERSION,
@@ -838,6 +858,36 @@ export async function startDaemon(opts: DaemonOptions) {
     }
   };
 
+  // Session identities of the attached peers, kept current for crash recovery (issue #37); a clean stop removes them.
+  let sessionsWritten = "";
+  const recordSessions = () => {
+    if (stopping) return;
+    const peers = [...bus.peers.values()].filter((p) => p.state !== "offline").map((p) => {
+      let meta: Record<string, unknown> = {};
+      try { meta = (p as { recoveryMetadata?: () => Record<string, unknown> }).recoveryMetadata?.() ?? {}; } catch { /* not ready yet: the id alone */ }
+      return { peer: p.id, meta };
+    });
+    const text = JSON.stringify(peers);
+    if (text === sessionsWritten) return;
+    sessionsWritten = text;
+    try { writeSessions(opts.stateDir, { instanceId, at: Date.now(), peers }); } catch (error) { log(`session record not written: ${(error as Error).message}`); }
+  };
+  const recoverAfterCrash = async (prev: SessionsFile) => {
+    const report = (line: string) => (crashReport.push(line), notify(`crash recovery: ${line}`));
+    const lostCount = [...lost.values()].reduce((n, l) => n + l.length, 0);
+    report(`the previous hub run stopped without shutting down${lostCount ? `; ${lostCount} deliveries it had in flight are in needs_review (ahub queue list)` : ""}`);
+    for (const step of crashPlan(prev.peers)) {
+      if (!step.resume || !autoResume) {
+        const fresh = step.peer === "pi" && config.pi.enabled && config.pi.auto_start ? "; pi.auto_start starts a fresh session" : "";
+        report(`${step.how}${step.resume ? " (recovery.auto_resume_after_crash is off)" : ""}${fresh}`);
+        continue;
+      }
+      const r = await startPeer(step.peer, step.resume as Parameters<typeof startPeer>[1]).catch((e: Error) => ({ ok: false, error: e.message }));
+      report(r.ok ? `${step.peer} resumed: ${step.how}` : `${step.peer} not resumed (${String(r.error)}); ${step.how}`);
+    }
+    writeStatus();
+  };
+
   bus.tap((e) => {
     e = redact(e);
     uiEvents.push({ seq: ++uiSequence, event: e });
@@ -878,6 +928,13 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       if (e.state === "offline") offlineSince.set(e.peer, offlineSince.get(e.peer) ?? Date.now());
       else offlineSince.delete(e.peer);
+      // After a crash, a peer's first attach brings the loss notice: it leads its next delivery (issue #37).
+      if (e.state !== "offline" && lost.has(e.peer)) {
+        const still = lost.get(e.peer)!.filter((d) => { try { return journal.get(d.id)?.state === "needs_review"; } catch { return false; } });
+        lost.delete(e.peer);
+        if (still.length) bus.preface(e.peer, lossNotice(still, (id) => { const t = board.get(id); return t ? tasks.publicTitle(t) : undefined; }));
+      }
+      recordSessions();
     }
     else if (e.t === "undeliverable" || e.t === "overflow") {
       log(e.t === "undeliverable" ? `UNDELIVERABLE to ${e.peer} after retries: ${e.env.id} from ${e.env.from}` : `OVERFLOW ${e.peer}: dropped ${e.env.id} from ${e.env.from}`);
@@ -1028,6 +1085,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const kimi = new AcpPeer("kimi", {
         cmd,
         ...(args.model ? { launchModel: args.model } : {}),
+        ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}),
         cwd: opts.cwd,
         watchdogMs: config.watchdog_ms,
         onPermission,
@@ -1624,6 +1682,8 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function stopOnce(): Promise<void> {
     stopping = true;
+    // A stop someone asked for is not a crash, even if it then runs past the shutdown deadline: forget the sessions now.
+    try { removeSessions(opts.stateDir, instanceId); } catch { /* the state dir is gone */ }
     checksClosed = true;
     for (const kill of runningChecks) kill();
     log("hub stopping");
@@ -1679,7 +1739,14 @@ export async function startDaemon(opts: DaemonOptions) {
   writeStatus();
   log(`${RUN_START}${process.pid} control=127.0.0.1:${server.port} cwd=${opts.cwd}`);
   ready = true;
-  if (config.pi.enabled && config.pi.auto_start && !recoveryActive()) void startPeer("pi", {}).catch((error) => log(`Pi auto-start failed: ${error.message}`));
+  if (crashed) {
+    // This run owns the record now, so its clean stop removes it even if no peer attaches to rewrite it.
+    try { if (readSessions(opts.stateDir)?.instanceId === crashed.instanceId) writeSessions(opts.stateDir, { ...crashed, instanceId, at: Date.now() }); } catch (error) { log(`session record not adopted: ${(error as Error).message}`); }
+    void recoverAfterCrash(crashed).catch((error) => log(`crash recovery failed: ${(error as Error).message}`));
+  }
+  // Skipped only when crash recovery itself starts Pi again on its recorded session.
+  const piResumes = !!crashed && autoResume && crashPlan(crashed.peers).some((s) => s.peer === "pi" && s.resume);
+  if (config.pi.enabled && config.pi.auto_start && !recoveryActive() && !piResumes) void startPeer("pi", {}).catch((error) => log(`Pi auto-start failed: ${error.message}`));
   return { bus, token, port: server.port as number, stop, stopped: new Promise<void>((r) => (onStop = r)) };
   } finally {
     if (!ready) for (const cleanup of startupCleanup.reverse()) { try { cleanup(); } catch { /* preserve startup error */ } }

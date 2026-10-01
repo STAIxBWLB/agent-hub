@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Review checklists and review outcomes: review requests ask the reviewer to map signatures and call sites to the plan, read the check result and list unmet items (`hub_review {unmet}`); the hub records approved, caught, contradicted and escalated reviews per implementer, reviewer and class, shown by `ahub task show` and `ahub route explain`, and `review.adaptive` (off by default) orders reviewers by that record (#35).
+- Recovery after an unplanned stop: the hub keeps each attached peer's session identity while it runs; a hub started after a crash reports what happened to each peer in `ahub status`, resumes Kimi (ACP `session/load`), Pi and the local worker when `recovery.auto_resume_after_crash` is on, and gives each peer a notice of its deliveries left in `needs_review` with its next delivery (#37).
 
 ## 0.9.0
 

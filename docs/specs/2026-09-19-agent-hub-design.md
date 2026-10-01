@@ -1038,3 +1038,29 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   a candidate. The record is applied after quota, so the order is idle before
   busy, then the record, then quota.
 
+## Amendment: recovery after an unplanned stop (issue #37)
+
+- The continuous record is `sessions.json` (instance id, time, and each attached
+  peer's `recoveryMetadata()`), rewritten when a peer's state changes and
+  removed when a stop of the run that wrote it begins (a stop that then runs past
+  the shutdown deadline is still not a crash). Found at start, with no
+  controlled-restart state in play, it means the previous run crashed; the new
+  run takes the record over at once, so its own clean stop removes it even when
+  no peer attaches. A controlled restart's target removes any record it finds.
+- Limits: a second crash before the peers attach loses their loss notices (the
+  journal rows stay in `needs_review`, shown by `ahub queue list`), and the first
+  attach rewrites the record with only the attached peers. A Pi in TUI mode is
+  reported with its command, not resumed: the CLI runs its terminal.
+- Resume goes through the same start path as `ahub kimi` / `ahub pi` / `ahub
+  local`: Kimi with `sessionId` (ACP `session/load`, refused when the agent does
+  not offer `loadSession`), Pi with its session file, the local worker afresh.
+  Codex and Claude are reported, not resumed: the TUI and the Claude session live
+  outside the hub. The issue's Codex `thread/resume` needs the TUI, so the report
+  names the thread instead.
+- Loss notices use the bus preface, not an envelope: a peer's `needs_review`
+  rows block its later deliveries, so a notice queued behind them would arrive
+  only after they are resolved anyway; the preface leads that next delivery. Only
+  rows still in `needs_review` when the peer attaches are listed.
+- `recovery.auto_resume_after_crash` is off by default, also with a project
+  config: an automatic start spends quota the user did not ask for.
+
