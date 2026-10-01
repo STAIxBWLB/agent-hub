@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.11.0 and control protocol 10. Live verification
+This guide describes ahub 0.12.0 and control protocol 10. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Install and start
@@ -449,8 +449,8 @@ source and carries every recovery fix released up to it. Protocol 8 and older
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.11.0 ahub upgrade --to 0.11.0 --dry-run
-bunx --package @staix/agent-hub@0.11.0 ahub upgrade --to 0.11.0 --yes
+bunx --package @staix/agent-hub@0.12.0 ahub upgrade --to 0.12.0 --dry-run
+bunx --package @staix/agent-hub@0.12.0 ahub upgrade --to 0.12.0 --yes
 ```
 
 | Running now | Coordinator to use |
@@ -476,25 +476,26 @@ older 0.7.x CLI may lack recovery fixes released after it. The
 #75) and these applied upgrades: one with the 0.7.0 coordinator, one with the
 0.9.0 coordinator from a running 0.8.1 hub with tasks and a budget pause, and
 one with the 0.10.0 coordinator from a 0.9.0 hub with one completion check
-running and one queued.
+running and one queued, and one with the 0.11.0 coordinator from a 0.10.0 hub
+with `local.bash_network` on.
 
 The coordinator verifies and retains the exact target package, preserves its
 own source, and promotes the global CLI only after restored projects pass
 readback.
 
-Once the installed CLI is 0.11.0, review the current project or all registered
+Once the installed CLI is 0.12.0, review the current project or all registered
 projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.11.0 --dry-run
+ahub upgrade --to 0.12.0 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.11.0 --yes
+ahub upgrade --to 0.12.0 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>

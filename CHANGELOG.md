@@ -2,7 +2,7 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
-## Unreleased
+## 0.12.0
 
 - The egress proxy logs every refusal: an oversized request header and an unreachable listed host now leave a `network: refused` line too, the latter with its error code, never the error text; a failure after the tunnel opened closes the connection instead of writing an HTTP answer into it (#81).
 - Behind NAT64 with the well-known prefix `64:ff9b::/96`, the egress proxy judges an answer by the IPv4 address it carries, so a listed name that resolves to an internal IPv4 host through DNS64 is refused; the local-use prefix `64:ff9b:1::/48` is refused outright, and a scoped IPv6 address (`fe80::1%en0`) counts as internal. A network-specific NAT64 prefix is not recognised (#82).
