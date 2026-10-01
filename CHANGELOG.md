@@ -2,7 +2,7 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
-## Unreleased
+## 0.11.0
 
 - Task operations settle model-written arguments before anything reaches the board: an `owner` or `peer` that is not a peer id, or a task id that is not a whole number, is refused with a clear message instead of leaving an ownerless task behind after a database error; `null` and an empty owner mean no owner (#70).
 - Review outcomes are credited to the work they judged in more cases: task paths are stored in one spelling (`./src/a.ts` and `src/a.ts` are one file for blame, and `.` blames nobody), and handing a task to the owner it already has keeps an earlier catch; ownership events now record the owner in the task history (#67).
@@ -12,7 +12,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - With `local.bash_network` on, the local worker's commands can read Python's own CA bundle (`certifi/cacert.pem`, also vendored by pip), so `pip install` and `requests` work over HTTPS; every other `.pem` stays denied (#64).
 - Each command the local worker runs gets a temp dir of its own (`TMPDIR`), removed when it ends, a timeout or kill included; under deny-default the shared temp dirs (the user's and `/private/tmp`) are closed, so a command can no longer read what other tools left there (#63).
 - Under deny-default, Apple's `/usr/bin` shims (python3 among them) work with a full Xcode selected: the sandbox opens the app's whole `Contents`, since its tools load `SharedFrameworks`; 0.10.0 opened only `Contents/Developer`, so they worked with the Command Line Tools only.
-- With `local.bash_network: true` the local worker's and Pi's commands reach the network only through the hub's egress proxy: HTTPS to the hosts in `local.network_allow` (machine-local; by default the npm, PyPI, crates.io and Go module registries and GitHub), with names that resolve to internal addresses refused and every refusal logged; direct egress and loopback to claude-mem or the Codex app-server are denied. `"direct"` keeps the open network for one release (#65).
+- With `local.bash_network: true` the local worker's and Pi's commands reach the network only through the hub's egress proxy: HTTPS to the hosts in `local.network_allow` (machine-local; by default the npm, PyPI, crates.io and Go module registries and GitHub), with names that resolve to internal addresses refused and each policy refusal logged by method and host; direct egress and loopback to claude-mem or the Codex app-server are denied. `"direct"` keeps the open network for one release (#65).
 
 ## 0.10.0
 
