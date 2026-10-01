@@ -15,7 +15,7 @@ export type HubEvent =
   | { type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number }
   | { type: "tokens"; peer: string; n: number }
   | { type: "task"; id: number; event: string; by: string; state: string; owner: string | null; reviewer: string | null; class: string; pii: boolean }
-  | { type: "overlap"; task: number; owner: string; others: { task: number; owner: string; paths: string[] }[] }
+  | { type: "overlap"; task: number; owner: string; others: { task: number; owner: string; paths: string[]; symbols?: string[] }[] }
   | { type: "quota"; peer: string; windows: { id: string; used: number; resetsAt?: number }[]; hard: boolean; measuredAt?: string };
 
 export type StampedEvent = HubEvent & { v: number; at: string };

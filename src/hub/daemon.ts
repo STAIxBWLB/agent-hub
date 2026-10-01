@@ -534,8 +534,11 @@ export async function startDaemon(opts: DaemonOptions) {
         const overlap = tasks.overlaps(t, t.owner === by);
         return overlap ? `${line(t)}\n${overlap}` : line(t);
       }
-      case "hub_task_accept":
-        return line(tasks.accept(by, a.id));
+      case "hub_task_accept": {
+        const t = tasks.accept(by, a.id, a.plan);
+        const overlap = a.plan === undefined ? "" : tasks.overlaps(t);
+        return overlap ? `${line(t)}\n${overlap}` : line(t);
+      }
       case "hub_task_decline":
         return line(await tasks.decline(by, a.id, a.reason));
       case "hub_task_done": {

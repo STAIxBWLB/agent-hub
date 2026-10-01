@@ -15797,14 +15797,26 @@ var refs = {
   properties: { branch: str, commit: str, paths: { type: "array", items: str } },
   additionalProperties: false
 };
+var list = (description) => ({ type: "array", items: str, description });
+var plan = {
+  type: "object",
+  description: "what you will change, before you start (issue #31). Owners of open tasks on the same files or symbols see it, and get a notice when your task is done.",
+  properties: {
+    paths: list("files you will edit or create"),
+    symbols: list("functions, types or other names you will change, as they appear in code (e.g. Bus.publish)"),
+    signatures: list("new or changed signatures, as you will write them"),
+    insertion_points: list("where new code goes (file and the function or line it follows)")
+  },
+  additionalProperties: false
+};
 var tool = (name, description, properties, required2 = []) => ({
   name,
   description,
   inputSchema: { type: "object", properties, required: required2, additionalProperties: false }
 });
 var TASK_TOOLS = [
-  tool("hub_task_propose", "Put a piece of work on the shared task board. The hub assigns an owner by class (routing.toml) unless you name one. Classes: plan, implement, bulk_edit, test, review, summarize, triage. Name the class when you know it; without one the hub tries to pick it. Name yourself as owner to claim work nobody assigned you: it starts in progress. Put the paths the work touches in refs; the hub says when they overlap another open task.", { title: str, class: { type: "string", enum: ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] }, detail: str, refs, owner: { type: "string", description: "peer id; yours to claim the work, omit to let the hub route it" } }, ["title"]),
-  tool("hub_task_accept", "Take a task that was assigned to you.", { id }, ["id"]),
+  tool("hub_task_propose", "Put a piece of work on the shared task board. The hub assigns an owner by class (routing.toml) unless you name one. Classes: plan, implement, bulk_edit, test, review, summarize, triage. Name the class when you know it; without one the hub tries to pick it. Name yourself as owner to claim work nobody assigned you: it starts in progress. Put the paths the work touches in refs, and when you claim work, a plan; the hub says when they overlap another open task.", { title: str, class: { type: "string", enum: ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] }, detail: str, refs, plan, owner: { type: "string", description: "peer id; yours to claim the work, omit to let the hub route it" } }, ["title"]),
+  tool("hub_task_accept", "Take a task that was assigned to you, with your plan for it.", { id, plan }, ["id"]),
   tool("hub_task_decline", "Pass on a task assigned to you; the hub offers it to the next peer.", { id, reason: str }, ["id"]),
   tool("hub_task_done", "Mark your task finished. It goes to its reviewer with your summary and refs. When the project configures a check for its class, the hub runs it first and the result comes as a task message: a failed check keeps the task with you.", { id, summary: { type: "string", description: "what changed, why, and the check you ran with its result" }, refs }, ["id", "summary"]),
   tool("hub_task_list", "The task board. PII tasks show as [pii].", { state: { type: "string", enum: ["proposed", "in_progress", "in_review", "approved", "changes_requested"] } }),
@@ -15815,7 +15827,7 @@ var TASK_TOOLS = [
 var TASK_TOOL_NAMES = new Set(TASK_TOOLS.map((t) => t.name));
 var ROLE_TEXT = {
   planner: "planner: break work into tasks with hub_task_propose (one outcome each, the right class, paths in refs) instead of doing everything yourself.",
-  implementer: "implementer: accept tasks assigned to you, do them, and finish with hub_task_done (summary: what changed, why, and the check you ran with its result; refs). Decline what you cannot do. Before starting work nobody assigned you, claim it with hub_task_propose naming yourself as owner, with the paths in refs.",
+  implementer: "implementer: accept tasks assigned to you, do them, and finish with hub_task_done (summary: what changed, why, and the check you ran with its result; refs). Decline what you cannot do. Before starting work nobody assigned you, claim it with hub_task_propose naming yourself as owner, with the paths in refs. With a claim or an accept, give a plan: the files, symbols and signatures you will change and where new code goes.",
   verifier: "verifier: run the checks a task names and report what passed and what did not in hub_task_done.",
   reviewer: "reviewer: when asked to review, read the change itself, then hub_review with approved or changes_requested and a note that says what to fix."
 };
