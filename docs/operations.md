@@ -105,7 +105,8 @@ propose ... --after <id>`). Until every one of them is approved, the task is
 offered to nobody, cannot be claimed, accepted or marked done, and `ahub route
 explain <id>` says what it waits for. When the last one is approved, the task
 goes through assignment like a new one; if the hub stopped before it got that
-far, the task is offered within a minute of a peer attaching to the next run.
+far, the task is offered within a minute of a peer that can take it attaching
+to the next run.
 `ahub board --ready` and
 `hub_task_list {ready: true}` list the proposed tasks with nothing left to wait
 for. Dependencies are fixed when a task is proposed and can only name tasks that

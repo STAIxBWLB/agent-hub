@@ -834,6 +834,37 @@ test("dependents a stop cut off between an approval and their assignment are off
   expect(board.get(c.id)!.owner).toBeNull();
 });
 
+test("the sweep offers a cut-off dependent only once an attached peer can take it", async () => {
+  const { tasks, board, peers } = await setup(["claude", "codex"]); // implement goes to codex, not claude
+  const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+  const c = await tasks.propose("claude", { title: "client", class: "implement", after: [a.id] });
+  await tasks.done(board.get(a.id)!.owner!, a.id, "done");
+  board.update(a.id, board.get(a.id)!.reviewer!, "approved", { state: "approved" }); // saved, then the hub stopped
+  peers.codex!.set("offline"); // after the restart only claude is back
+  await tasks.releaseReady();
+  expect(board.get(c.id)!.history.at(-1)!.event).toBe("blocked"); // not offered, so not used up
+  peers.codex!.set("idle");
+  await tasks.releaseReady();
+  expect(board.get(c.id)!.owner).toBe("codex");
+});
+
+test("an approval and the sweep releasing the same dependents at once offer each of them once", async () => {
+  const { tasks, board, peers } = await setup();
+  const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+  const c1 = await tasks.propose("claude", { title: "client", class: "implement", after: [a.id] });
+  const c2 = await tasks.propose("claude", { title: "server", class: "implement", after: [a.id] });
+  await tasks.done(board.get(a.id)!.owner!, a.id, "done");
+  const approving = tasks.review(board.get(a.id)!.reviewer!, a.id, "approved"); // now awaiting c1's brief
+  const sweeping = tasks.releaseReady(); // takes c2 before the approval's loop gets to it
+  await Promise.all([approving, sweeping]);
+  await tick();
+  for (const id of [c1.id, c2.id]) {
+    const events = board.get(id)!.history.map((h) => h.event);
+    expect([events.filter((e) => e === "ready").length, events.filter((e) => e === "assigned").length]).toEqual([1, 1]);
+    expect(Object.values(peers).flatMap((p) => p.got).filter((e) => e.kind === "task" && e.refs?.task === String(id))).toHaveLength(1);
+  }
+});
+
 test("a board from before plans and dependencies opens with its tasks intact", () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-migrate-"));
   const file = join(dir, "hub.db");

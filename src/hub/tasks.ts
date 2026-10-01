@@ -327,18 +327,21 @@ export class Tasks {
   /**
    * A stop between an approval and the assignment of its dependents (both are saved on their own) leaves them ownerless
    * with nothing left to wait for, and no later approval to offer them. The daemon calls this on its release timer:
-   * each such task is offered once per hub run, and only once somebody is attached to take it.
+   * each such task is offered once per hub run, once an attached peer can take it (peers attach one by one).
    */
   async releaseReady(): Promise<void> {
-    if (!Object.values(this.states()).some((s) => s === "idle" || s === "busy")) return;
     for (const t of this.d.board.list("proposed")) {
       const last = t.history.at(-1)?.event;
       if (!t.deps?.length || t.owner || this.offered.has(t.id) || (last !== "blocked" && last !== "ready") || this.waitsFor(t).length) continue;
-      await this.offerReady(t, "what it waited for was approved before the hub stopped");
+      if (!assign(t, this.states(), this.d.routing(), { exclude: this.declined(t) }).owner) continue; // nobody attached can take it yet
+      await this.offerReady(t, "nothing left to wait for");
     }
   }
 
-  private async offerReady(t: Task, why: string): Promise<void> {
+  /** Callers hold a list read before an await: re-read, or a task the other caller offered meanwhile is offered twice. */
+  private async offerReady(stale: Task, why: string): Promise<void> {
+    const t = this.d.board.get(stale.id);
+    if (!t || t.state !== "proposed" || t.owner || this.offered.has(t.id)) return;
     this.offered.add(t.id);
     const ready = t.history.at(-1)?.event === "ready" ? t : this.d.board.update(t.id, HUB, "ready", {}, why);
     this.d.notify(`task ${this.publicTitle(ready)} is ready: what it waited for is approved`);

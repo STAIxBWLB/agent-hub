@@ -520,7 +520,18 @@ export async function startDaemon(opts: DaemonOptions) {
   const toolEnv = (peer: PeerId) => ({ AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: opts.stateDir, AGENTHUB_PROJECT_DIR: opts.cwd });
 
   /** One entry point for the task tools, whoever calls them: MCP clients, the local worker, the console. */
-  async function taskOp(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
+  // A task op can write the board across awaits (triage, briefs, the dependents an approval releases): a recovery
+  // commit waits for those in flight, or its integrity digest misses their later writes.
+  let taskOpsInFlight = 0;
+  const taskOp = async (...args: Parameters<typeof taskOpBody>): Promise<string> => {
+    taskOpsInFlight++;
+    try {
+      return await taskOpBody(...args);
+    } finally {
+      taskOpsInFlight--;
+    }
+  };
+  async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
     if (piiTurn && (op === "hub_remember" || op === "hub_task_propose")) throw new Error(`${op} is not available while working on a PII task: its text must not leave this machine`);
@@ -615,9 +626,9 @@ export async function startDaemon(opts: DaemonOptions) {
     const r = budget.record(id); // one read per peer: status.json is rewritten on every bus event
     return r ? { paused: `budget: ${r.reason}, resets ${new Date(r.resetsAt).toLocaleTimeString()}` } : manualPaused.has(id) && bus.stateOf(id) === "offline" ? { paused: "manual" } : {};
   };
-  let releasing = false; // gone-owner release (#6): one run at a time, and a recovery commit waits for it
+  let releasing = false; // gone-owner release (#6) and the ready sweep (#34): one run at a time, and a recovery commit waits for it
   const recoveryReady = () => {
-    if (!recoveryActive() || releasing || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;
+    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;
     if (!recoveryPeerSnapshot) return true;
     const current = recoveryPeers();
     return recoveryPeerSnapshot.every((saved) => {

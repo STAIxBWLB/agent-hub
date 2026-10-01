@@ -961,4 +961,11 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   by routing or by `ahub task assign`.
 - Approval, by review or by a class without a reviewer, releases the
   dependents that wait for nothing else; each is recorded as `ready` and assigned.
+  A proposal re-reads what it waits for after its insert, since triage may have
+  awaited an approval. An approval is saved before its dependents are assigned,
+  so the daemon's 60 s release timer sweeps for ownerless tasks whose last event
+  is `blocked` or `ready` and that wait for nothing: each is offered once per hub
+  run, once an attached peer can take it, outside recovery operations.
+- A recovery commit also waits for task operations in flight: they can write the
+  board across awaits, after its integrity digest.
 
