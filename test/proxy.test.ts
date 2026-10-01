@@ -47,7 +47,7 @@ test("internal addresses: loopback, private, link-local, CGNAT and their IPv6 fo
   for (const a of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.1.1", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:127.0.0.1", "::ffff:7f00:1", "::127.0.0.1", "fec0::1", "224.0.0.1", "255.255.255.255", "198.18.0.1"]) expect(isInternal(a)).toBe(true);
   for (const a of ["140.82.112.3", "172.32.0.1", "100.128.0.1", "2606:4700::1111"]) expect(isInternal(a)).toBe(false);
   // issue #82: behind the well-known NAT64 prefix the embedded IPv4 address counts; the local-use prefix is refused
-  for (const a of ["64:ff9b::a00:1", "64:ff9b::7f00:1", "64:ff9b::127.0.0.1", "64:ff9b:0:0:0:0:c0a8:101", "64:ff9b::", "64:ff9b:1::808:808", "64:ff9b:1:ffff::1"]) expect(isInternal(a)).toBe(true);
+  for (const a of ["64:ff9b::a00:1", "64:ff9b::7f00:1", "64:ff9b::127.0.0.1", "64:ff9b:0:0:0:0:c0a8:101", "64:ff9b::", "64:ff9b:1::808:808", "64:ff9b:1:ffff::1", "fe80::1%en0", "::1%lo0", "ff02::1%en0"]) expect(isInternal(a)).toBe(true);
   for (const a of ["64:ff9b::808:808", "64:ff9b::8c52:7003", "64:ff9b:0:0:0:0:808:808"]) expect(isInternal(a)).toBe(false);
 });
 

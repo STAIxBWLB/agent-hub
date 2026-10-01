@@ -66,6 +66,8 @@ function lastIPv4(v6: string): string {
 
 /** Loopback, private, link-local, site-local, unspecified, carrier-grade NAT, benchmark, multicast or reserved. */
 export function isInternal(address: string): boolean {
+  // Only a non-global address carries a zone (`fe80::1%en0`, `::1%lo0`), and BlockList cannot parse one: internal.
+  if (address.includes("%")) return true;
   const family = isIP(address);
   if (family === 6 && NAT64.check(address, "ipv6")) return isInternal(lastIPv4(address));
   return family !== 0 && INTERNAL.check(address, family === 6 ? "ipv6" : "ipv4");
