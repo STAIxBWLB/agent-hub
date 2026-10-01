@@ -3,6 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
@@ -195,6 +196,45 @@ test("restored fresh local sessions retain manual pause and queued work before r
     expect(daemon.bus.stateOf("local")).toBe("paused");
     expect(daemon.bus.queueIds("local")).toEqual([queued.id]);
   } finally { client.close(); await daemon.stop(); }
+});
+
+// A 0.7.x hub digested its board before tasks had a plan column (#31): an upgrade from it must still verify the board,
+// and so must one from a hub whose digest already holds the empty plan. A board that changed since still fails.
+test("a board digested before or after the plan column verifies after the restart; a changed one does not", async () => {
+  for (const shape of ["pre-plan", "with plan", "changed"]) {
+    const stateDir = mkdtempSync(join(tmpdir(), "agenthub-board-digest-"));
+    const board = new Board(join(stateDir, "hub.db"));
+    board.propose("user", { title: "carried across the upgrade", class: "implement" });
+    const rows = board.list().map(({ plan, ...t }) => (shape === "with plan" ? { ...t, plan } : t));
+    if (shape === "changed") board.propose("user", { title: "added after the source recorded its digest", class: "implement" });
+    board.close();
+    const sha = (v: string) => createHash("sha256").update(v).digest("hex");
+    writeRestartSnapshot(stateDir, {
+      schemaVersion: 1, projectRoot: stateDir, projectId: "digest-project", sourceInstanceId: "old", operationId: "digest-op", committedAt: Date.now(),
+      bus: { schemaVersion: 1, queues: {}, prefaces: {}, seen: [], attempts: {}, withdrawn: [] }, manualPaused: [], peers: [],
+      integrity: { queues: {}, manualPaused: [], boardDigest: sha(JSON.stringify(rows)), budgetDigest: sha("[]") },
+    });
+    const previous = process.env.AGENTHUB_RECOVERY_OPERATION;
+    process.env.AGENTHUB_RECOVERY_OPERATION = "digest-op";
+    let daemon: Awaited<ReturnType<typeof startDaemon>>;
+    try {
+      daemon = await startDaemon({ cwd: stateDir, stateDir, projectId: "digest-project", instanceId: "new", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+        config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
+    } finally { if (previous === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION; else process.env.AGENTHUB_RECOVERY_OPERATION = previous; }
+    const client = await ControlClient.connect(stateDir, { role: "console" });
+    try {
+      const { integrity } = (await client.request({ t: "recovery", op: "inspect", expectedInstanceId: "new" })).recovery;
+      const released = await client.request({ t: "recovery", op: "release", operationId: "digest-op", expectedInstanceId: "new" });
+      if (shape === "changed") {
+        expect(integrity.current).not.toEqual(integrity.expected);
+        expect(released.ok).toBe(false);
+        expect(released.error).toContain("integrity changed during recovery");
+      } else {
+        expect(integrity.current, shape).toEqual(integrity.expected);
+        expect(released.ok, shape).toBe(true);
+      }
+    } finally { client.close(); await daemon.stop(); }
+  }
 });
 
 // issue #21: a TUI that exits after prepare must not wedge readiness forever, and a peer
