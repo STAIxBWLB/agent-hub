@@ -199,13 +199,14 @@ test("restored fresh local sessions retain manual pause and queued work before r
 });
 
 // A 0.7.x hub digested its board before tasks had a plan column (#31): an upgrade from it must still verify the board,
-// and so must one from a hub whose digest already holds the empty plan.
-test("a board digested before or after the plan column verifies after the restart", async () => {
-  for (const shape of ["pre-plan", "with plan"]) {
+// and so must one from a hub whose digest already holds the empty plan. A board that changed since still fails.
+test("a board digested before or after the plan column verifies after the restart; a changed one does not", async () => {
+  for (const shape of ["pre-plan", "with plan", "changed"]) {
     const stateDir = mkdtempSync(join(tmpdir(), "agenthub-board-digest-"));
     const board = new Board(join(stateDir, "hub.db"));
     board.propose("user", { title: "carried across the upgrade", class: "implement" });
-    const rows = board.list().map(({ plan, ...t }) => (shape === "pre-plan" ? t : { ...t, plan }));
+    const rows = board.list().map(({ plan, ...t }) => (shape === "with plan" ? { ...t, plan } : t));
+    if (shape === "changed") board.propose("user", { title: "added after the source recorded its digest", class: "implement" });
     board.close();
     const sha = (v: string) => createHash("sha256").update(v).digest("hex");
     writeRestartSnapshot(stateDir, {
@@ -223,8 +224,15 @@ test("a board digested before or after the plan column verifies after the restar
     const client = await ControlClient.connect(stateDir, { role: "console" });
     try {
       const { integrity } = (await client.request({ t: "recovery", op: "inspect", expectedInstanceId: "new" })).recovery;
-      expect(integrity.current, shape).toEqual(integrity.expected);
-      expect((await client.request({ t: "recovery", op: "release", operationId: "digest-op", expectedInstanceId: "new" })).ok, shape).toBe(true);
+      const released = await client.request({ t: "recovery", op: "release", operationId: "digest-op", expectedInstanceId: "new" });
+      if (shape === "changed") {
+        expect(integrity.current).not.toEqual(integrity.expected);
+        expect(released.ok).toBe(false);
+        expect(released.error).toContain("integrity changed during recovery");
+      } else {
+        expect(integrity.current, shape).toEqual(integrity.expected);
+        expect(released.ok, shape).toBe(true);
+      }
     } finally { client.close(); await daemon.stop(); }
   }
 });
