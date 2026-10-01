@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { changedPaths, planUndo, repoOf, restore, snapshot, Turns, type Repo } from "../src/hub/snapshots.ts";
@@ -64,6 +64,18 @@ test("hub state stays out of a snapshot even when the user's index tracks it", (
   expect(tree).toContain("a.txt");
   expect(tree).not.toContain(".agenthub/state");
   expect(git("diff", "--cached", "--name-only").stdout.toString()).toContain(".agenthub/state/hub.db"); // the user's index keeps it
+});
+
+test("a same-size edit in the second the index was written is seen: the index copy keeps the index's mtime", () => {
+  const { top, git, r } = repo();
+  git("config", "core.trustctime", "false"); // so an add and an edit whose ctimes fall in different seconds cannot hide the race
+  const second = new Date(Math.floor(Date.now() / 1000) * 1000 - 5000);
+  utimesSync(join(top, "a.txt"), second, second);
+  git("add", "a.txt"); // the index records a.txt at that second
+  utimesSync(join(top, ".git", "index"), second, second); // and was written in it, so git has to read a.txt again
+  writeFileSync(join(top, "a.txt"), "two\n"); // same size as "one\n", same second
+  utimesSync(join(top, "a.txt"), second, second);
+  expect(git("show", `${snapshot(r)}:a.txt`).stdout.toString()).toBe("two\n");
 });
 
 test("undo puts a turn's files back, and refuses files somebody changed afterwards", () => {

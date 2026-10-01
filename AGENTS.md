@@ -74,6 +74,7 @@ Run this before reporting any task complete, and paste the output. A failing tes
 - SBPL strings go through `sbplString` (the plain `"..."` form). In the raw `#"..."` form a backslash escapes nothing, so a `"` in a path ends the literal and the whole profile fails to parse.
 - One denylist, `src/local/deny.ts`: the path guard, the seatbelt profile and the memory filter all read it. Seatbelt sees absolute paths, so `local.deny` entries are anchored under the project root (a bare `private/` once denied all of `/private/var`).
 - Resolve real paths with `realPath` (`src/hub/project.ts`), not `realpathSync`: Bun 1.3.14 throws ENOENT for an existing path that contains a backslash. Never rebuild a real path from the names you were given: guardPath checks names, and a case-insensitive disk opens `.GIT/config` as `.git/config`.
+- A copy of the git index keeps the original's mtime (`snapshot()`): git's racy-entry check compares entries with the index file's time in whole seconds, and a fresh copy makes a same-size edit look clean.
 - `guardPath` walks with `lstat`: `existsSync` follows symlinks, so a dangling link looked like a new file and the write landed at its target.
 - git arguments never pass through `guardPath`; `gitArgsProblem` refuses absolute paths, `..`, `--no-index` and denylisted `rev:path` forms.
 - A worker turn builds its messages in a local array and joins the history only as a whole. Never push to `history` mid-turn: one tool call without its result poisons every later request.

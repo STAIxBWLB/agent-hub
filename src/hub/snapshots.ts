@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { childEnv } from "./child-process.ts";
@@ -51,7 +51,15 @@ export function snapshot(repo: Repo): string | undefined {
   const tmp = mkdtempSync(join(tmpdir(), "ahub-snap-"));
   try {
     const env = { GIT_INDEX_FILE: join(tmp, "index") };
-    if (existsSync(join(repo.dir, "index"))) copyFileSync(join(repo.dir, "index"), env.GIT_INDEX_FILE);
+    const index = join(repo.dir, "index");
+    if (existsSync(index)) {
+      // git trusts an entry's stat only when the entry is older than the index file, and compares in whole seconds. A
+      // copy written now makes a same-size edit in the second the index was written look clean: keep the original's
+      // time. Taken before the copy, so an index replaced in between gives the copy an earlier time (safe), not later.
+      const { atime, mtime } = statSync(index);
+      copyFileSync(index, env.GIT_INDEX_FILE);
+      utimesSync(env.GIT_INDEX_FILE, atime, mtime);
+    }
     if (git(repo.top, ["add", "-A", "--", scope(repo), ":(exclude,glob)**/.agenthub/state/**"], env).status !== 0) return undefined;
     // The copy starts from the user's index: hub state somebody tracked or staged is still in it, and the exclude above
     // only keeps `add` from touching it. Take it out explicitly; -f because staged state the hub has rewritten since
