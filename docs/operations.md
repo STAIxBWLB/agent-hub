@@ -435,11 +435,13 @@ The coordinator commits only once the source is quiet: no turn running, no
 approval pending, no completion check queued or running. It waits up to 10
 minutes and then aborts, leaving the source running; upgrade between long
 checks. A 0.8.x or older source does not report completion checks or console
-task commands in flight, so the coordinator cannot wait for them: before
-`--yes`, wait until `hub.log` shows the result of every check it reported as
-queued or running, and no `ahub task` command is still running. A check the
-commit's stop kills writes to the board after verification has read it, and
-the operation stays blocked.
+task commands in flight, so the coordinator cannot wait for them. Before
+`--yes`, for each task whose check `hub.log` reported as "queued or running",
+wait until `ahub task show <id>` has `check passed`, `check failed` or `check
+finished late` after `done (checking)` (a pass with a peer reviewer writes no
+line of its own to `hub.log`), and until no task command or dashboard action is
+still running. A check the commit's stop kills writes to the board after the
+commit has recorded it, and the operation stays blocked.
 
 0.9.0 turns on for every project with a config file, whether or not it has the
 block: `limits` (12 messages a minute per sender, 6 per recipient, 6
