@@ -231,12 +231,21 @@ test.skipIf(!sandboxAvailable())("network on: the public CA bundle is readable d
 });
 
 test.skipIf(!sandboxAvailable())("the selected developer dir is in the profile, so the /usr/bin shims can run what it holds", () => {
-  const dev = Bun.spawnSync(["xcode-select", "-p"], { stdout: "pipe" }).stdout.toString().trim();
+  const selected = Bun.spawnSync(["xcode-select", "-p"], { stdout: "pipe" }).stdout.toString().trim();
+  const dev = selected && existsSync(selected) ? realpathSync(selected) : "";
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-devdir-")));
   // for an Xcode app, its whole Contents: the tools load SharedFrameworks next to Developer
   const app = /^(.*\.app\/Contents)\/Developer\/?$/.exec(dev)?.[1];
   if (dev) expect(profile(cwd, false)).toContain(`(subpath "${app ?? dev}")`);
 });
+
+// Apple's python3 is an xcrun shim: with a full Xcode selected it loads Xcode's SharedFrameworks (issue #63, macOS CI).
+// Its first run can take seconds, hence a test of its own with room for that.
+test.skipIf(!sandboxAvailable() || Bun.spawnSync(["/usr/bin/python3", "-c", "pass"]).exitCode !== 0)("deny-default: Apple's python3 runs and takes the command's own temp dir", async () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-python3-")));
+  const py = (await sandboxedExec(["/bin/sh", "-c", `echo "own=$TMPDIR"; /usr/bin/python3 -c 'import tempfile; print("py=" + tempfile.gettempdir())'`], { cwd, profile: profile(cwd, false) })).output;
+  expect(py).toContain(`py=${py.match(/own=(\S+)/)![1]!.replace(/\/$/, "")}`);
+}, 30_000);
 
 // issue #64: Python's own CA bundle (certifi, also vendored by pip) is readable with network on, like the system's.
 test.skipIf(!sandboxAvailable())("network on: a certifi cacert.pem is readable, other .pem files are not", async () => {
@@ -277,11 +286,6 @@ test.skipIf(!sandboxAvailable())("a command cannot read what other processes lef
     const locked = (await run(`echo "own=$TMPDIR"; touch "$TMPDIR/locked" && chflags uchg "$TMPDIR/locked" && echo LOCKED`)).output;
     expect(locked).toContain("LOCKED"); // the command could make a file the plain remove cannot delete
     expect(existsSync(locked.match(/own=(\S+)/)![1]!)).toBe(false); // and the command still ended, its temp dir gone
-    // Apple's python3 (an xcrun shim) runs under deny-default and takes its own temp dir, where it is installed
-    if (Bun.spawnSync(["/usr/bin/python3", "-c", "pass"]).exitCode === 0) {
-      const py = (await run(`echo "own=$TMPDIR"; /usr/bin/python3 -c 'import tempfile; print("py=" + tempfile.gettempdir())'`)).output;
-      expect(py).toContain(`py=${py.match(/own=(\S+)/)![1]!.replace(/\/$/, "")}`);
-    }
   } finally {
     rmSync(shared, { force: true });
     rmSync(tmp, { force: true });

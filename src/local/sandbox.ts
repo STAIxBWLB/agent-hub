@@ -32,7 +32,9 @@ const CA_BUNDLES = ["/private/etc/ssl/cert.pem", "/opt/homebrew/etc/ca-certifica
  */
 function developerDir(): string | undefined {
   const out = spawnSync("xcode-select", ["-p"], { encoding: "utf8" });
-  const dir = out.status === 0 ? out.stdout.trim() : "";
+  let dir = out.status === 0 ? out.stdout.trim() : "";
+  // Seatbelt matches real paths: an Xcode selected through a symlink (`Xcode.app` -> `Xcode-26.0.app`) needs its target.
+  try { dir = dir && realPath(dir); } catch { /* gone since it was selected: nothing the shims could run either */ }
   return dir ? dir.replace(/(\.app\/Contents)\/Developer\/?$/, "$1") : undefined;
 }
 
