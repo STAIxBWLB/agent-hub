@@ -85,14 +85,19 @@ export async function gather(question: string, d: AskDeps): Promise<{ evidence: 
 
   // Matching tasks first, then the most recently touched; PII rows keep their place with a stub, so counts stay right.
   const tasks = d.board.list().sort((a, b) => hit(b.title) - hit(a.title) || b.updated - a.updated).slice(0, MAX_TASKS);
-  const anyPii = tasks.some((t) => d.isPii(t));
+  // An ordinary task's last note is model-written (a summary, a review note): one that matches a PII pattern is shown
+  // only on campus, like a PII task (#69).
+  const notePii = (t: (typeof tasks)[number]) => !d.isPii(t) && !!t.history.at(-1)?.note && (d.isPiiText?.(t.history.at(-1)!.note!) ?? false);
+  const anyPii = tasks.some((t) => d.isPii(t) || notePii(t));
   const showPii = anyPii ? await onCampus() : false;
   let piiShown = false;
   const taskRows: Evidence[] = tasks.map((t) => {
     const secret = d.isPii(t);
     if (secret && showPii) piiShown = true;
     const last = t.history.at(-1);
-    const text = secret && !showPii ? "[pii] (its text is shown only when the model is reached on campus)" : `${t.title}${last ? ` | last: ${last.event} by ${last.by}${last.note ? ` (${last.note})` : ""}` : ""}`;
+    if (notePii(t) && showPii) piiShown = true;
+    const note = last?.note && notePii(t) && !showPii ? "its note is shown only when the model is reached on campus" : last?.note;
+    const text = secret && !showPii ? "[pii] (its text is shown only when the model is reached on campus)" : `${t.title}${last ? ` | last: ${last.event} by ${last.by}${note ? ` (${note})` : ""}` : ""}`;
     return { id: `task #${t.id}`, kind: "task", text: `[${t.class}] ${t.state}, owner ${t.owner ?? "none"}, reviewer ${t.reviewer ?? "none"}: ${text}`.slice(0, ITEM_CHARS) };
   });
 

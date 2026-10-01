@@ -267,12 +267,13 @@ export class Tasks {
   nameable = (t: string): boolean => !this.isPii({ signals: detectSignals({ title: "", detail: t, refs: {} }, this.d.routing(), this.d.cwd) });
 
   /**
-   * Model-written free text about an ordinary task (a done summary, a review note with its unmet items) that matches
-   * a PII pattern stays on this machine (#69): a peer other than the on-prem worker gets a stub, and the board keeps
-   * the text for `ahub task show`. A PII task's messages are private already.
+   * Model-written free text about an ordinary task (a done summary, a review note with its unmet items, a handoff)
+   * that matches a PII pattern stays on this machine (#69): every peer gets a stub, `local` too, which handles an
+   * ordinary task's turn like any other (gateway off campus allowed, memory capture on). The board keeps the text for
+   * `ahub task show`. A PII task's messages are private already.
    */
   private screen(task: Task, text: string, what: string, to: PeerId | null | undefined): string {
-    if (!text || this.isPii(task) || to === LOCAL || to === USER || this.nameable(text)) return text;
+    if (!text || this.isPii(task) || to === USER || this.nameable(text)) return text;
     this.d.notify(`task #${task.id}: the ${what} was withheld from ${to ?? "a peer"} (it matches a PII pattern)`);
     return `[${what} withheld: it matches a PII pattern; ahub task show ${task.id}]`;
   }
@@ -406,7 +407,7 @@ export class Tasks {
       rejected.length ? `Earlier review notes:\n${rejected.join("\n")}` : "",
       brief ?? "",
       // What the previous owner left behind. Peer-written free text: never attached to a PII task.
-      context && !pii ? `Handoff from the previous owner:\n${context.slice(0, 3000)}` : "",
+      context && !pii ? `Handoff from the previous owner:\n${this.screen(task, context.slice(0, 3000), "handoff", a.owner)}` : "",
       `Take it with hub_task_accept {id: ${task.id}, plan: {paths, symbols, signatures, insertion_points}} (what you will change, before you start${pii ? "" : "; owners of overlapping tasks see it"}) or pass with hub_task_decline. When finished: hub_task_done {id: ${task.id}, summary: what changed, why, and the check you ran with its result, refs}.`,
     ].filter(Boolean).join("\n\n");
     this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner!], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id) }, ...(pii ? { private: true } : {}) }));

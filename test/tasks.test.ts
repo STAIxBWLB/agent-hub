@@ -939,11 +939,13 @@ test("a done summary, review note or unmet item matching a PII pattern reaches n
   expect(saves().some((s: any) => JSON.stringify(s).includes("900101"))).toBe(false);
   expect(notices).toContain(`task #${t.id}: a finding note was not saved to shared memory (it matches a PII pattern)`);
   expect(notices.some((n) => n.includes("900101"))).toBe(false);
-  // the on-prem worker gets the text as written; a summary without a match is unchanged for everyone
+  // the local worker gets the stub too: it runs an ordinary task's turn like any other; a summary without a match is
+  // unchanged for everyone
   board.update(t.id, HUB, "reviewer changed", { reviewer: "local" });
   await tasks.done("codex", t.id, `again; ${PII}`);
   await tick();
-  expect(peers.local!.got.filter((e) => e.kind === "review").at(-1)!.body).toContain("900101");
+  expect(peers.local!.got.filter((e) => e.kind === "review").at(-1)!.body).toContain("[summary withheld");
+  expect(peers.local!.got.filter((e) => e.kind === "review").at(-1)!.body).not.toContain("900101");
   const plain = await tasks.propose("claude", { title: "plain", class: "implement", owner: "codex" });
   await tasks.done("codex", plain.id, "added the flag");
   await tick();
