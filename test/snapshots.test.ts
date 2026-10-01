@@ -48,6 +48,17 @@ test("a snapshot sees shell-made changes, leaves the index alone and skips ignor
   expect(git("status", "--porcelain").stdout.toString()).toContain("?? new.txt"); // still untracked for the user
 });
 
+test("hub state stays out of a snapshot even when the user's index tracks it", () => {
+  const { top, git, r } = repo();
+  mkdirSync(join(top, ".agenthub", "state"), { recursive: true });
+  writeFileSync(join(top, ".agenthub", "state", "hub.db"), "v1");
+  git("add", "-f", ".agenthub/state/hub.db"); // staged by mistake
+  const t = turn(r, () => writeFileSync(join(top, ".agenthub", "state", "hub.db"), "v2"));
+  expect(t.changed).toEqual([]);
+  expect(git("ls-tree", "-r", "--name-only", t.end_tree).stdout.toString()).not.toContain(".agenthub/state");
+  expect(git("diff", "--cached", "--name-only").stdout.toString()).toContain(".agenthub/state/hub.db"); // the user's index keeps it
+});
+
 test("undo puts a turn's files back, and refuses files somebody changed afterwards", () => {
   const { top, r } = repo();
   const t = turn(r, () => {

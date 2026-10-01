@@ -52,6 +52,9 @@ export function snapshot(repo: Repo): string | undefined {
     const env = { GIT_INDEX_FILE: join(tmp, "index") };
     if (existsSync(join(repo.dir, "index"))) copyFileSync(join(repo.dir, "index"), env.GIT_INDEX_FILE);
     if (git(repo.top, ["add", "-A", "--", scope(repo), ":(exclude,glob)**/.agenthub/state/**"], env).status !== 0) return undefined;
+    // The copy starts from the user's index: hub state somebody tracked or staged is still in it, and the exclude above
+    // only keeps `add` from touching it. Take it out explicitly.
+    if (git(repo.top, ["rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--", ":(glob)**/.agenthub/state/**"], env).status !== 0) return undefined;
     const r = git(repo.top, ["write-tree"], env);
     return r.status === 0 ? r.stdout.trim() : undefined;
   } finally {
@@ -165,6 +168,9 @@ export class Turns {
    * those whose changes cannot be known (still running, cut short by a stop, a failed snapshot, a PII turn), and a
    * peer whose `keep` records all start after this turn: its turns from then may have been pruned.
    */
+  // ponytail: pruning is inferred from `keep` as the CLI reads it now; a `keep` raised while the hub runs (which prunes
+  // with the value it started with) can hide a pruned overlap until the hub restarts. Record a per-peer "pruned
+  // before" time in Turns.end if that ever matters.
   overlapping(turn: TurnRecord, keep: number): { paths: string[]; unknown: string[] } {
     const rows = this.db.query("SELECT id, changed, ended, start_tree, end_tree FROM turns WHERE id != ? AND peer != ? AND started < ? AND (ended IS NULL OR ended > ?)").all(turn.id, turn.peer, turn.ended ?? Date.now(), turn.started) as { id: string; changed: string; ended: number | null; start_tree: string | null; end_tree: string | null }[];
     const known = rows.filter((r) => r.ended !== null && r.start_tree !== null && r.end_tree !== null);
