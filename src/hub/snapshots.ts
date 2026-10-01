@@ -144,6 +144,7 @@ export class Turns {
     this.db.query("UPDATE turns SET ended = ? WHERE ended IS NULL").run(Date.now());
     // ponytail: rows of finished tasks stay (a few per file per task); prune by task state if hub.db ever grows.
     this.db.run("CREATE TABLE IF NOT EXISTS touches (task INTEGER NOT NULL, peer TEXT NOT NULL, path TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (task, peer, path))");
+    this.db.run("CREATE INDEX IF NOT EXISTS touches_path ON touches (path)"); // the PreToolUse hook looks up one path
   }
   begin(id: string, peer: string, startTree: string | undefined): void {
     this.db.query("INSERT OR REPLACE INTO turns (id, peer, started, start_tree) VALUES (?, ?, ?, ?)").run(id, peer, Date.now(), startTree ?? null);

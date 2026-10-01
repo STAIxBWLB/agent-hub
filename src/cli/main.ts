@@ -771,8 +771,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       }
       if (!target) return hook ? undefined : fail("usage: ahub check-path <file> [--peer <id>]");
       // Claude passes absolute paths; the board holds them relative to the project, snapshots relative to the top level.
+      // An existing file resolves whole, so a symlink to a claimed file counts as that file; a new one through its folder.
       const abs = resolve(cwd, target);
-      const real = existsSync(dirname(abs)) ? join(realPath(dirname(abs)), basename(abs)) : abs;
+      let real = abs;
+      if (existsSync(abs)) real = realPath(abs);
+      else if (existsSync(dirname(abs))) real = join(realPath(dirname(abs)), basename(abs));
       const top = repoOf(cwd)?.top;
       const warnings = pathWarnings(join(stateDir, "hub.db"), peer, { project: relative(cwd, real), ...(top ? { repo: relative(top, real) } : {}) });
       if (!warnings.length) return;

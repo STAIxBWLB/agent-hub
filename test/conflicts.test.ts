@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board, type Task } from "../src/hub/board.ts";
@@ -78,6 +78,11 @@ test("the PreToolUse hook prints context for Claude and a line for the user, and
   expect(out.systemMessage).toBe("agent-hub: src/hub/bus.ts belongs to other open work:");
   expect(hook(JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(root, "README.md") } }))).toEqual({ code: 0, out: "" });
   expect(hook("not json")).toEqual({ code: 0, out: "" });
+  // Review of #49: editing through a symlink is editing the claimed file it points to.
+  mkdirSync(join(root, "src/hub"), { recursive: true });
+  writeFileSync(join(root, "src/hub/bus.ts"), "");
+  symlinkSync("src/hub/bus.ts", join(root, "alias.ts"));
+  expect(JSON.parse(hook(JSON.stringify({ tool_name: "Edit", tool_input: { file_path: join(root, "alias.ts") } })).out).systemMessage).toBe("agent-hub: src/hub/bus.ts belongs to other open work:");
 });
 
 // Review of #49 (F2): another agent's title reaches Claude's context as one quoted line.
