@@ -179,6 +179,15 @@ export async function startProject(project: Project, options: { unattended?: boo
   } finally { registry.close(); }
 }
 
+/** Whether `instanceId` still holds the project's registry claim, counted as held while its process may be alive. */
+function claimHeld(id: string, instanceId: string): boolean {
+  const registry = new Registry();
+  try {
+    const row = registry.get(id);
+    return row?.instanceId === instanceId && (row.pid === null || processAlive(row.pid) !== false);
+  } finally { registry.close(); }
+}
+
 export async function stopProject(project: Project, expectedInstance?: string): Promise<void> {
   assertLifecycleAvailable();
   const inspection = await inspectProject(project);
@@ -194,8 +203,10 @@ export async function stopProject(project: Project, expectedInstance?: string): 
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     const current = readControl(project.stateDir);
-    if (!current) return; // daemon removes its manifest only after owned children stop
-    if (current.instanceId !== instanceId) throw new Error("a new hub instance started; it was not stopped");
+    // The daemon removes its manifest only after owned children stop; its process releases the registry claim just
+    // after that. Until then `projects remove` refuses and `up` reads the project as starting, so wait for both.
+    if (!current && !claimHeld(project.id, instanceId)) return;
+    if (current && current.instanceId !== instanceId) throw new Error("a new hub instance started; it was not stopped");
     await Bun.sleep(100);
   }
   throw new Error("shutdown is still pending; state and ownership were retained");
