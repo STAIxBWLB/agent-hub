@@ -247,4 +247,9 @@ test.skipIf(!sandboxAvailable())("network on: a certifi cacert.pem is readable, 
   expect(await read(join(bundle, "cacert.pem"), true)).toBe("READ");
   expect(await read(join(bundle, "cacert.pem"), false)).toBe("blocked");
   expect(await read(join(bundle, "key.pem"), true)).toBe("blocked");
+  // a certifi/cacert.pem inside a denied place stays denied: the allow overrides only the .pem name rule
+  const state = join(cwd, ".agenthub", "state", "certifi");
+  mkdirSync(state, { recursive: true });
+  writeFileSync(join(state, "cacert.pem"), "secret\n");
+  expect(await read(join(state, "cacert.pem"), true)).toBe("blocked");
 });
