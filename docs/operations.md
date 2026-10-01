@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.8.1 and control protocol 10. Live verification
+This guide describes ahub 0.9.0 and control protocol 10. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Install and start
@@ -383,8 +383,8 @@ source and carries every recovery fix released up to it. Protocol 8 and older
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.8.1 ahub upgrade --to 0.8.1 --dry-run
-bunx --package @staix/agent-hub@0.8.1 ahub upgrade --to 0.8.1 --yes
+bunx --package @staix/agent-hub@0.9.0 ahub upgrade --to 0.9.0 --dry-run
+bunx --package @staix/agent-hub@0.9.0 ahub upgrade --to 0.9.0 --yes
 ```
 
 | Running now | Coordinator to use |
@@ -413,19 +413,19 @@ The coordinator verifies and retains the exact target package, preserves its
 own source, and promotes the global CLI only after restored projects pass
 readback.
 
-Once the installed CLI is 0.8.1, review the current project or all registered
+Once the installed CLI is 0.9.0, review the current project or all registered
 projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.8.1 --dry-run
+ahub upgrade --to 0.9.0 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.8.1 --yes
+ahub upgrade --to 0.9.0 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>
@@ -434,7 +434,19 @@ ahub recovery abort <operation-id>
 The coordinator commits only once the source is quiet: no turn running, no
 approval pending, no completion check queued or running. It waits up to 10
 minutes and then aborts, leaving the source running; upgrade between long
-checks.
+checks. A 0.8.x or older source does not report completion checks or console
+task commands in flight, so the coordinator cannot wait for them. Before
+`--yes`, for each task whose check `hub.log` reported as "queued or running",
+wait until `ahub task show <id>` has `check passed`, `check failed` or `check
+finished late` after `done (checking)` (a pass with a peer reviewer writes no
+line of its own to `hub.log`), and until no task command or dashboard action is
+still running. A check the commit's stop kills writes to the board after the
+commit has recorded it, and the operation stays blocked.
+
+0.9.0 turns on for every project with a config file, whether or not it has the
+block: `limits` (12 messages a minute per sender, 6 per recipient, 6
+`[IMPORTANT]` an hour, 120 s repeats) and `budget.wait_max_min` (30). Set them
+to 0 to opt out.
 
 The 0.7.0 transition stages the verified package and runs a retained
 coordinator from the source tree. It accepts a verified protocol-9 source and
