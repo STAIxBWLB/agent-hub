@@ -15800,7 +15800,7 @@ var refs = {
 var list = (description) => ({ type: "array", items: str, description });
 var plan = {
   type: "object",
-  description: "what you will change, before you start (issue #31). Owners of open tasks on the same files or symbols see it, and get a notice when your task is done.",
+  description: "what you will change, before you start. Owners of open tasks on the same files or symbols see it, and get a notice when your task is done.",
   properties: {
     paths: list("files you will edit or create"),
     symbols: list("functions, types or other names you will change, as they appear in code (e.g. Bus.publish)"),

@@ -41,7 +41,8 @@ const samePlace = (a: string, b: string) => {
   return x === "." || y === "." || x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
 };
 
-const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim().slice(0, 300) : undefined);
+/** One line of model-written text: whitespace (newlines included) collapses, so it can never start a forged log line. */
+const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.replace(/\s+/g, " ").trim().slice(0, 300) : undefined);
 /** A list of short strings; a lone string counts as a list of one. */
 const textList = (v: unknown) => (Array.isArray(v) ? v : typeof v === "string" ? [v] : []).map(text).filter((p): p is string => !!p).slice(0, 50);
 const fields = (input: unknown) => (input && typeof input === "object" && !Array.isArray(input) ? input : {}) as Record<string, unknown>;
@@ -244,7 +245,7 @@ export class Tasks {
       this.d.notify(`task ${this.publicTitle(claimed)} claimed by ${by}`);
       return claimed;
     }
-    await this.sendTask(next, a, opts.context, this.overlaps(next));
+    await this.sendTask(next, a, opts.context, this.overlaps(next, true, hits));
     return next;
   }
 
@@ -264,7 +265,7 @@ export class Tasks {
       brief ?? "",
       // What the previous owner left behind. Peer-written free text: never attached to a PII task.
       context && !pii ? `Handoff from the previous owner:\n${context.slice(0, 3000)}` : "",
-      `Take it with hub_task_accept {id: ${task.id}, plan: {paths, symbols, signatures, insertion_points}} (what you will change, before you start; owners of overlapping tasks see it) or pass with hub_task_decline. When finished: hub_task_done {id: ${task.id}, summary: what changed, why, and the check you ran with its result, refs}.`,
+      `Take it with hub_task_accept {id: ${task.id}, plan: {paths, symbols, signatures, insertion_points}} (what you will change, before you start${pii ? "" : "; owners of overlapping tasks see it"}) or pass with hub_task_decline. When finished: hub_task_done {id: ${task.id}, summary: what changed, why, and the check you ran with its result, refs}.`,
     ].filter(Boolean).join("\n\n");
     this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner!], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id) }, ...(pii ? { private: true } : {}) }));
   }
@@ -288,7 +289,9 @@ export class Tasks {
   accept(by: PeerId, id: unknown, plan?: unknown): Task {
     const task = this.need(id);
     this.mine(task, by, "owner");
-    const cleaned = plan === undefined ? undefined : cleanPlan(plan);
+    // Models send null or {} for an optional field they leave empty: neither replaces a plan.
+    const given = plan == null ? undefined : cleanPlan(plan);
+    const cleaned = given && Object.keys(given).length ? given : undefined;
     // A task's signals are fixed when it is proposed: text that matches a PII pattern cannot be let in afterwards.
     if (cleaned && !this.isPii(task) && this.isPii({ signals: detectSignals({ title: "", detail: planText(cleaned), refs: {} }, this.d.routing(), this.d.cwd) })) {
       throw new Error("this plan matches a PII pattern and is not kept: other owners would see it");

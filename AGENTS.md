@@ -68,7 +68,7 @@ Run this before reporting any task complete, and paste the output. A failing tes
 - The status line tee must never fail or slow the render: no throw, original command run with the same stdin, 5 s cap.
 - The hub itself sends envelopes (`from: hub`, kinds `task` and `review`). Code that special-cases hub envelopes keys on `kind`, not on the sender: only `kind: presence` is the recall preface.
 - Tool callers are models: MCP `inputSchema` is not enforced on the way in. Normalize at the boundary (`cleanRefs`) before anything reaches the board, and never throw after a board write.
-- During a PII turn the worker's own words may carry the PII: `hub_remember` and `hub_task_propose` are refused for that turn, and its answers are filed on the board because the bus shows only a stub.
+- During a PII turn the worker's own words may carry the PII: `hub_remember` and `hub_task_propose` are refused for that turn, and so are `hub_task_done`, `hub_review` and `hub_task_accept` with a plan on an ordinary task (they would carry its words to the reviewer, the owner, overlapping owners and claude-mem). Its answers are filed on the board because the bus shows only a stub.
 - `assign()` never defaults to the task's current owner, or a decline can only come back to the decliner.
 - The state machine allows `in_progress -> approved` only for classes without a reviewer; `review()` checks `in_review` itself.
 - SBPL strings go through `sbplString` (the plain `"..."` form). In the raw `#"..."` form a backslash escapes nothing, so a `"` in a path ends the literal and the whole profile fails to parse.

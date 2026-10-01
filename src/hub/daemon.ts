@@ -523,6 +523,12 @@ export async function startDaemon(opts: DaemonOptions) {
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
     if (piiTurn && (op === "hub_remember" || op === "hub_task_propose")) throw new Error(`${op} is not available while working on a PII task: its text must not leave this machine`);
+    // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
+    // completed-change notice) and claude-mem. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
+    if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && a.plan != null))) {
+      const target = board.get(Number(a.id));
+      if (target && !tasks.isPii(target)) throw new Error(`${op} on task #${target.id} is not available while working on a PII task: its text would reach other peers; do it in a turn without the PII task`);
+    }
     // Lists are redacted for everyone but the on-prem worker, and only when it calls from inside this process: over the
     // control WS anyone holding the token can claim to be "local". A board on a shared screen is a leak too, so the
     // console reads a PII task's text deliberately, with `ahub task show <id>`.
@@ -536,7 +542,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "hub_task_accept": {
         const t = tasks.accept(by, a.id, a.plan);
-        const overlap = a.plan === undefined ? "" : tasks.overlaps(t);
+        const overlap = a.plan == null ? "" : tasks.overlaps(t);
         return overlap ? `${line(t)}\n${overlap}` : line(t);
       }
       case "hub_task_decline":

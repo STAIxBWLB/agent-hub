@@ -913,4 +913,10 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   not a ride-along line: an owner in the middle of those files needs it before
   its next task arrives. It lists the files from refs and plan and the plan's
   signatures, as declared; the hub does not read the diff.
+- After review: during a PII turn, `hub_task_done`, `hub_review` and
+  `hub_task_accept` with a plan are refused for an ordinary task (its plan,
+  summary or note would reach other peers and claude-mem), as `hub_remember`
+  and `hub_task_propose` already were. Model-written refs and plan items are one
+  line (whitespace collapses), so none can forge a hub.log line; a `null` or
+  empty plan on accept keeps the plan there is.
 
