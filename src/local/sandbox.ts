@@ -18,7 +18,19 @@ const q = sbplString;
  * no network unless asked. In SBPL the last matching rule wins, so the denies come last.
  */
 /** Toolchains and git identity: the only parts of the home directory a sandboxed command may read besides the project. */
-const HOME_READABLE = [".bun", ".cargo", ".rustup", ".local", ".npm", ".cache", ".pyenv", ".nvm", ".deno", "go", ".gitconfig", ".config/git", "Library/Caches"];
+const HOME_READABLE = [".bun", ".cargo", ".rustup", ".local", ".npm", ".cache", ".pyenv", ".nvm", ".deno", "go", ".gitconfig", ".config/git", "Library/Caches", ".volta", ".asdf", ".nodenv", ".rbenv", ".sdkman", "Library/Application Support/fnm", "Library/pnpm"];
+
+/**
+ * Public CA bundles: the name denies (`*.pem` for keys) also match these, and TLS needs them once network is on.
+ * Allowed after the denies, by exact path.
+ */
+const CA_BUNDLES = ["/private/etc/ssl/cert.pem", "/opt/homebrew/etc/ca-certificates/cert.pem", "/opt/homebrew/etc/openssl@3/cert.pem", "/usr/local/etc/ca-certificates/cert.pem", "/usr/local/etc/openssl@3/cert.pem"];
+
+/** The selected Xcode or Command Line Tools dir: the `/usr/bin` shims (git, clang, make, python3) run what is in it. */
+function developerDir(): string | undefined {
+  const out = spawnSync("xcode-select", ["-p"], { encoding: "utf8" });
+  return out.status === 0 && out.stdout.trim() ? out.stdout.trim() : undefined;
+}
 
 /** A submodule or worktree keeps its git dir outside the project; git needs it, minus the parts that execute or reconfigure. */
 function externalGitDirs(root: string): string[] {
@@ -40,7 +52,7 @@ const NETWORK_MACH_SERVICES = ["com.apple.dnssd.service", "com.apple.trustd", "c
 
 /**
  * `base` "deny" (issue #39) starts from `(deny default)` and allows only what commands need: running and reading the
- * system, toolchain and project directories, writing the project and temp. "allow" is the profile of 0.7 and earlier,
+ * system, toolchain and project directories, writing the project and temp. "allow" is the profile of 0.9 and earlier,
  * kept for one release behind `local.sandbox: "allow-default"`. The denies at the end apply to both.
  */
 export function profile(cwd: string, network: boolean, readAllow: string[] = [], deny: string[] = [], base: "deny" | "allow" = "deny"): string {
@@ -50,7 +62,8 @@ export function profile(cwd: string, network: boolean, readAllow: string[] = [],
   const tmp = realPath(tmpdir());
   const gitDirs = externalGitDirs(root);
   const creds = [".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube", ".docker", ".netrc", ".npmrc", ".omniroute", ".claude", ".codex", ".kimi-code", "Library/Keychains"];
-  const readable = [root, ...HOME_READABLE.map((p) => join(home, p)), ...readAllow.map(inHome), ...gitDirs];
+  const dev = developerDir();
+  const readable = [root, ...HOME_READABLE.map((p) => join(home, p)), ...readAllow.map(inHome), ...gitDirs, ...(dev ? [dev] : [])];
   const subpaths = (paths: string[]) => paths.map((p) => `(subpath ${q(p)})`).join(" ");
   const globals = (names: string[]) => names.map((n) => `(global-name ${q(n)})`).join(" ");
   const start = base === "deny"
@@ -87,6 +100,7 @@ export function profile(cwd: string, network: boolean, readAllow: string[] = [],
     `(deny file-write* (subpath ${q(join(root, ".agenthub"))}) ${[join(root, ".git"), ...gitDirs].map((d) => `(subpath ${q(join(d, "hooks"))}) (literal ${q(join(d, "config"))})`).join(" ")})`,
     `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join(home, c))})`).join(" ")})`,
     `(deny file-read* file-write* ${denyRegexes(root, deny).join(" ")})`,
+    ...(network ? [`(allow file-read* ${CA_BUNDLES.map((p) => `(literal ${q(p)})`).join(" ")})`] : []),
   ].join("\n");
 }
 

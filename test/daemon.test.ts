@@ -1328,12 +1328,16 @@ test("capabilities: a peer without one is refused that tool and told why; unlist
 });
 
 test("capabilities: a listed peer whose value is not a list gets none, and hub.log says so", async () => {
-  const { stateDir, daemon } = await hub({ capabilities: { claude: "propose" } as unknown as Record<string, string[]> });
+  const { stateDir, daemon } = await hub({ capabilities: { claude: "propose", "0": ["local"], codex: ["propse"] } as unknown as Record<string, string[]> });
   const { client } = await fakeClaude(stateDir);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
   const text = ((await client.callTool({ name: "hub_task_propose", arguments: { title: "mine", class: "implement", owner: "claude" } })) as { content: { text: string }[] }).content[0]!.text;
   expect(text).toContain('claude may not propose tasks (no "propose" in capabilities.claude');
-  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("capabilities.claude is not a list: claude gets no capabilities");
+  const log = readFileSync(join(stateDir, "hub.log"), "utf8");
+  expect(log).toContain("capabilities.claude is not a list: claude gets no capabilities");
+  expect(log).toContain("capabilities.0 is not a peer id; ignored"); // a list where an object belongs
+  expect(log).toContain('capabilities.codex: "propse" is not a capability');
+  expect(log).toContain("capabilities: claude may not propose tasks (hub_task_propose)"); // the refusal itself is on record
 });
 
 test("a peer can never answer a permission request: not over the control link, not by message", async () => {

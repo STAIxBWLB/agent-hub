@@ -1069,20 +1069,26 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
 - The deny-default profile allows exec and reads of the system directories
   (`/usr`, `/bin`, `/sbin`, `/System`, `/Library`, `/opt`, `/private/etc`, the
   dyld and timezone databases), the toolchain directories in home, `read_allow`,
-  the project, its external git dirs and temp; writes as before; a short list
-  of mach services (directory lookups, logging, notifications), plus name
-  resolution and TLS trust when network is on; no brokers that act outside the
-  sandbox (LaunchServices, SecurityServer). The denies at the end (credential
+  the project, its external git dirs, the selected developer dir (`xcode-select
+  -p`) and temp; writes as before; a short list of mach services (directory
+  lookups, logging, notifications), plus name resolution and TLS trust when
+  network is on, the trust being the public CA bundles allowed by exact path
+  after the denies (the `*.pem` key deny matches them); no brokers that act
+  outside the sandbox (LaunchServices, SecurityServer). The denies at the end (credential
   stores, the denylist, `.agenthub`, git hooks and config) are shared by both
   bases.
 - The issue's allowlist proxy for `local.bash_network` is not built here: with
-  the flag on, network is allowed as in 0.7. It moves to a follow-up issue.
+  the flag on, network is allowed as in 0.9 and earlier. It is left for a
+  follow-up issue.
 - `local.sandbox` ("deny-default" | "allow-default") is machine-local, since
   "allow-default" widens the sandbox.
 - Capabilities: `propose`, `assign` (a proposal naming another peer as owner),
   `remember`, `important`. A peer not listed in `capabilities` has all of them,
   which keeps today's behaviour, and a listed peer whose value is not a list has
-  none; the console user and the hub are never limited.
+  none; the console user and the hub are never limited. `remember` gates the
+  `hub_remember` tool only, not the notes the hub keeps of done summaries and
+  review verdicts. Every refusal, a malformed entry and an unknown capability
+  name are logged.
   `important` is checked where messages are admitted, the others in the task
   operations, so in-process tools (the local worker, Pi) are covered too.
 

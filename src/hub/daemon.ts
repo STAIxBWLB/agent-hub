@@ -318,7 +318,12 @@ export async function startDaemon(opts: DaemonOptions) {
     const list = config.capabilities[peer];
     return Array.isArray(list) && list.includes(cap);
   };
-  for (const [peer, list] of Object.entries(config.capabilities)) if (!Array.isArray(list)) log(`capabilities.${peer} is not a list: ${peer} gets no capabilities`);
+  const CAPABILITIES = ["propose", "assign", "remember", "important"];
+  for (const [peer, list] of Object.entries(config.capabilities)) {
+    if (!PEER_ID.test(peer)) log(`capabilities.${peer} is not a peer id; ignored (capabilities is an object of lists, one per peer)`);
+    else if (!Array.isArray(list)) log(`capabilities.${peer} is not a list: ${peer} gets no capabilities`);
+    else for (const c of list) if (!CAPABILITIES.includes(c)) log(`capabilities.${peer}: ${JSON.stringify(c)} is not a capability (${CAPABILITIES.join(", ")}); it grants nothing`);
+  }
   // Agents only: the console user and the hub itself are never limited (issue #38).
   // A typo such as "12/min" would read as 0, which turns a limit off without a word: the project default instead.
   for (const k of Object.keys(config.limits)) if (!(k in PROJECT_LIMITS)) log(`limits.${k} is not a known limit; ignored`);
@@ -332,7 +337,10 @@ export async function startDaemon(opts: DaemonOptions) {
   const admit = (env: Envelope, parent?: string): string | undefined => {
     // [FYI] is recorded and costs nobody a turn: nothing to limit.
     if (env.from === USER || env.from === HUB || env.from === DIGEST || env.priority === "fyi") return undefined;
-    if (env.priority === "important" && !may(env.from, "important")) return `${env.from} may not send important messages (no "important" in capabilities.${env.from}): send it without [IMPORTANT]`;
+    if (env.priority === "important" && !may(env.from, "important")) {
+      log(`capabilities: ${env.from} may not send important messages`);
+      return `${env.from} may not send important messages (no "important" in capabilities.${env.from}): send it without [IMPORTANT]`;
+    }
     const refused = limiter.admit(env.from, env.to, env.priority, env.body, parent);
     if (refused) log(`limits: ${env.from}: ${refused}`);
     return refused;
@@ -609,7 +617,9 @@ export async function startDaemon(opts: DaemonOptions) {
     const onPrem = inProcess && by === "local";
     const line = (t: { id: number; state: string; owner: PeerId | null; reviewer: PeerId | null }) => `task #${t.id}: ${t.state}, owner ${t.owner ?? "none"}, reviewer ${t.reviewer ?? "none"}`;
     const need = (cap: "propose" | "assign" | "remember", what: string) => {
-      if (!may(by, cap)) throw new Error(`${by} may not ${what} (no "${cap}" in capabilities.${by} in .agenthub/config.json)`);
+      if (may(by, cap)) return;
+      log(`capabilities: ${by} may not ${what} (${op})`);
+      throw new Error(`${by} may not ${what} (no "${cap}" in capabilities.${by} in .agenthub/config.json)`);
     };
     if (op === "hub_task_propose") {
       need("propose", "propose tasks");

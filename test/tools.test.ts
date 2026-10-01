@@ -220,3 +220,18 @@ test("no mach broker that acts outside the sandbox: LaunchServices (open starts 
     for (const broker of ["coreservicesd", "launchservicesd", "SecurityServer"]) expect(p).not.toContain(broker);
   }
 });
+
+test.skipIf(!sandboxAvailable())("network on: the public CA bundle is readable despite the .pem deny, a key in the project is not", async () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-cabundle-")));
+  writeFileSync(join(cwd, "id.pem"), "-----BEGIN PRIVATE KEY-----\n");
+  const read = async (path: string, network: boolean) => (await sandboxedExec(["/bin/sh", "-c", `head -c 5 '${path}' >/dev/null 2>&1 && echo READ || echo blocked`], { cwd, profile: profile(cwd, network) })).output.trim();
+  expect(await read("/etc/ssl/cert.pem", true)).toBe("READ"); // TLS for curl, git and python3 needs it
+  expect(await read("/etc/ssl/cert.pem", false)).toBe("blocked");
+  expect(await read(join(cwd, "id.pem"), true)).toBe("blocked");
+});
+
+test.skipIf(!sandboxAvailable())("the selected developer dir is in the profile, so the /usr/bin shims can run what it holds", () => {
+  const dev = Bun.spawnSync(["xcode-select", "-p"], { stdout: "pipe" }).stdout.toString().trim();
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-devdir-")));
+  if (dev) expect(profile(cwd, false)).toContain(dev);
+});
