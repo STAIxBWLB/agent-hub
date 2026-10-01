@@ -315,7 +315,10 @@ bunx --package @staix/agent-hub@0.8.1 ahub upgrade --to 0.8.1 --yes
 
 Do not use the 0.8.0 coordinator for a running 0.7.x hub with tasks on its board:
 its verification never matches the board and the operation stays blocked (fixed
-in 0.8.1). Do not use an older installed CLI as the coordinator. A 0.6.x CLI cannot target
+in 0.8.1). Such a blocked operation can neither resume nor abort, and its lock
+refuses `up` and `kill` for every project; the [smoke ledger](smoke.md) (0.7.11
+to 0.8.0) records the manual cleanup. Do not use an older installed CLI as the
+coordinator. A 0.6.x CLI cannot target
 protocol 10: its plan does not check the target's protocol, so the dry-run shows
 no blocker, and `--yes` stops at staging ("target protocol requires a newer
 coordinator") with an operation left to clear by `ahub recovery abort <id>`. An
