@@ -18,7 +18,7 @@ marked `private: true`, and PII tasks `pii: true`.
 | `turn_start` | `peer`, `turn` (`<peer>#<hub run>.<n>`, unique across restarts). A turn follows the adapter: pausing a busy peer does not end it |
 | `turn_end` | `peer`, `turn`, `ms`, `tokens` (when the adapter reported any during the turn), `files` and `snapshotMs` (when snapshots are on: how many files the turn changed, and the time both snapshots took) |
 | `tokens` | `peer`, `n` (tokens added since the previous report) |
-| `task` | `id`, `event` (the board history event, e.g. `proposed`, `assigned`, `done`, `check failed`), `by`, `state`, `owner`, `reviewer`, `class`, `pii` |
+| `task` | `id`, `event` (the board history event, e.g. `proposed`, `assigned`, `done`, `check failed`, `blocked`, `ready`), `by`, `state`, `owner`, `reviewer`, `class`, `pii` |
 | `overlap` | `task`, `owner`, `others` (`task`, `owner`, `paths`, and `symbols` when plans name the same symbol; a name that matches a PII pattern is left out, so either list can be empty), the structured twin of the console notice |
 | `quota` | `peer`, `windows` (`id`, `used`, `resetsAt`), `hard`, `measuredAt` (when the reading was taken, if not when it arrived: Claude's numbers come through a file) |
 | `conflict` | `peer`, `task` (its task in progress, when it had one), `other` (the other owner's open task), `owner`, `paths` (names that match a PII pattern left out, so it can be empty), `concurrent` (another peer worked during the turn) |

@@ -107,8 +107,17 @@ export class Tasks {
     const title = String(input.title ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
     if (!title) throw new Error("title is required");
     // Dependencies can only name tasks that exist, so the new task closes no cycle: nothing can depend on it yet.
-    const deps = [...new Set((Array.isArray(input.after) ? input.after : input.after === undefined ? [] : [input.after]).map(Number))];
-    for (const id of deps) if (!Number.isInteger(id) || !this.d.board.get(id)) throw new Error(`after: no task #${id}`);
+    // Callers are models: a missing or null `after` is no dependency, and an id is an integer or a digit string.
+    let afterIds: unknown[] = [];
+    if (Array.isArray(input.after)) afterIds = input.after;
+    else if (input.after != null) afterIds = [input.after];
+    const deps: number[] = [];
+    for (const v of afterIds) {
+      const id = typeof v === "number" || (typeof v === "string" && /^\s*\d+\s*$/.test(v)) ? Number(v) : NaN;
+      if (!Number.isInteger(id)) throw new Error(`after: ${JSON.stringify(v)} is not a task id`);
+      if (!this.d.board.get(id)) throw new Error(`after: no task #${id}`);
+      if (!deps.includes(id)) deps.push(id);
+    }
     const waits = this.waitsFor({ deps });
     if (waits.length && input.owner) {
       throw new Error(`this task would wait for ${waits.map((id) => `#${id}`).join(", ")}, not approved yet: ${input.owner === by ? "claim it once they are" : "propose it without an owner; routing offers it when they are approved"}`);

@@ -748,6 +748,7 @@ test("a board from before plans gains the column with its tasks intact", () => {
   old.close();
   const board = new Board(file);
   expect(board.get(1)).toMatchObject({ title: "kept", owner: "kimi", state: "in_progress", plan: {} });
+  board.close();
 });
 
 // issue #34: dependencies and the ready queue.
@@ -787,12 +788,14 @@ test("a task that waits is offered to nobody and cannot be claimed or worked; ap
 test("after names existing tasks only, so no cycle can form; ready lists proposed tasks with nothing left to wait for", async () => {
   const { tasks, board } = await setup();
   await expect(tasks.propose("claude", { title: "x", class: "implement", after: [99] })).rejects.toThrow("after: no task #99");
-  await expect(tasks.propose("claude", { title: "x", class: "implement", after: ["two"] })).rejects.toThrow("after: no task #NaN");
+  await expect(tasks.propose("claude", { title: "x", class: "implement", after: ["two"] })).rejects.toThrow('after: "two" is not a task id');
+  await expect(tasks.propose("claude", { title: "x", class: "implement", after: true })).rejects.toThrow("after: true is not a task id");
   const a = await tasks.propose("claude", { title: "a", class: "implement" });
   const b = await tasks.propose("claude", { title: "b", class: "implement", after: [a.id, a.id] });
   expect(board.get(b.id)!.deps).toEqual([a.id]);
   const ready = board.list("proposed").filter((t) => !tasks.waitsFor(t).length).map((t) => t.id);
   expect(ready).toEqual([a.id]);
+  expect((await tasks.propose("claude", { title: "no deps", class: "implement", after: null })).deps).toEqual([]); // models send null for "none"
 });
 
 test("a board from before plans and dependencies opens with its tasks intact", () => {

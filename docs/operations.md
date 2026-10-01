@@ -356,7 +356,9 @@ its verification never matches the board and the operation stays blocked (fixed
 in 0.8.1). Such a blocked operation can neither resume nor abort, and its lock
 refuses `up` and `kill` for every project; the [smoke ledger](smoke.md) (0.7.11
 to 0.8.0) records the manual cleanup. Do not use an older installed CLI as the
-coordinator. A 0.6.x CLI cannot target
+coordinator. After an upgrade, do not start an older hub on the same project: it
+does not know the newer task columns, and its board readback breaks a later
+upgrade. A 0.6.x CLI cannot target
 protocol 10: its plan does not check the target's protocol, so the dry-run shows
 no blocker, and `--yes` stops at staging ("target protocol requires a newer
 coordinator") with an operation left to clear by `ahub recovery abort <id>`. An
