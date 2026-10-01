@@ -193,6 +193,17 @@ export class Turns {
     return { paths: [...new Set(known.flatMap((r) => JSON.parse(r.changed) as string[]))], unknown: [...rows.filter((r) => !known.includes(r)).map((r) => r.id), ...pruned] };
   }
 
+  /** Other peers' completed, snapshotted turns that overlapped this turn and changed at least one of the same files. */
+  concurrentWith(turn: TurnRecord): TurnRecord[] {
+    if (turn.ended === null || turn.start_tree === null || turn.end_tree === null || !turn.changed.length) return [];
+    const rows = this.db.query(`SELECT * FROM turns WHERE id != ? AND peer != ? AND started < ? AND ended > ?
+      AND start_tree IS NOT NULL AND end_tree IS NOT NULL ORDER BY started, rowid`)
+      .all(turn.id, turn.peer, turn.ended, turn.started) as (Omit<TurnRecord, "changed"> & { changed: string })[];
+    const changed = new Set(turn.changed);
+    return rows.map((r) => ({ ...r, changed: JSON.parse(r.changed) as string[] }))
+      .filter((other) => other.changed.some((path) => changed.has(path)));
+  }
+
   /** Files a peer's turn changed while it owned `task` in progress (issue #32). */
   touch(task: number, peer: string, paths: string[]): void {
     const at = Date.now();

@@ -210,6 +210,30 @@ test("an overlapping turn whose changes are not known yet is reported as unknown
   turns.close();
 });
 
+test("concurrentWith returns completed other-peer turns that overlap in time and share changed files", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-concurrent-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const turns = new Turns(join(dir, "hub.db"));
+  turns.begin("kimi#r.1", "kimi", "t0");
+  await Bun.sleep(5);
+  turns.begin("codex#r.1", "codex", "t0");
+  await Bun.sleep(5);
+  turns.begin("pi#r.1", "pi", "t0"); // overlaps, but changes a different file
+  await Bun.sleep(5);
+  turns.begin("kimi#r.2", "kimi", "t0"); // same peer, so not a peer conflict
+  turns.end("kimi#r.2", "t1", ["shared.ts"], 20);
+  turns.end("kimi#r.1", "t1", ["shared.ts", "mine.ts"], 20);
+  turns.end("codex#r.1", "t2", ["shared.ts", "theirs.ts"], 20);
+  turns.end("pi#r.1", "t3", ["elsewhere.ts"], 20);
+  turns.begin("local#r.1", "local", undefined); // a PII turn has no known snapshots
+  turns.end("local#r.1", undefined, ["shared.ts"], 20);
+
+  expect(turns.concurrentWith(turns.get("kimi#r.1")!)).toMatchObject([
+    { id: "codex#r.1", peer: "codex", changed: ["shared.ts", "theirs.ts"] },
+  ]);
+  turns.close();
+});
+
 // R2: on a case-insensitive disk (macOS by default) `Foo.ts` and `foo.ts` are one file.
 const caseInsensitive = (() => {
   const d = mkdtempSync(join(tmpdir(), "agenthub-case-"));

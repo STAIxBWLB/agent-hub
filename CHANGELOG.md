@@ -2,6 +2,17 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## 0.12.1
+
+- Exhausted task deliveries escalate with the last error and notify the console. Three consecutive exhausted deliveries exclude a peer from routing until a delivery completes. A local worker validates its gateway, model inventory and a minimal availability call before attaching; doctor flags an unserved fixed model (#89).
+- A `needs_review` delivery announces the queue hold once with inspection and resolution commands. Status, task assignment and route explanations identify the held delivery; the operator still decides its outcome (#90).
+- Conflict detection includes tasks in review and reports shared files in overlapping completed turns to both owners, once per task pair and file, with their turn ids and without attributing the changes (#91).
+- Reviewer candidates include attached peers with the `reviewer` role after the review class's preference list. A task assigned without a reviewer explicitly says that completion approves directly and lists the skipped candidates (#92).
+- An idle local worker can be restarted on an explicit model or route; a busy worker refuses the change with a reason, and a failed model validation keeps the existing worker (#93).
+- Pi's reported assistant usage reaches turn records and `ahub report`, including tool-loop messages, before the turn settles (#94).
+- An idle peer with no open owner or reviewer work and no queued or active delivery is paused without spending a checkpoint turn (#95).
+- Control protocol 11 adds queue hold diagnostics. Its recovery coordinator authenticates protocol 9, 10 and 11 sources; upgrade using the target release's coordinator.
+
 ## 0.12.0
 
 - The egress proxy logs every refusal: an oversized request header and an unreachable listed host now leave a `network: refused` line too, the latter with its error code, never the error text; a failure after the tunnel opened closes the connection instead of writing an HTTP answer into it (#81).

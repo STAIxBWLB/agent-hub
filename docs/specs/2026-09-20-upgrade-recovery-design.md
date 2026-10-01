@@ -155,3 +155,11 @@ successful 0.7.0 cutover from tests, synthetic approvals, or package
 installation alone. Issue [#1](https://github.com/STAIxBWLB/agent-hub/issues/1)
 remains open for off-campus Access credentials and a natural near-limit budget
 pause.
+
+
+### Protocol 11 follow-up (0.12.1)
+
+The target coordinator accepts authenticated protocol 9, 10 and 11 sources, then
+uses protocol 11 after startup. Older supported managers are refreshed onto the
+current implementation. The real 0.6.4/protocol-9 transition and the 0.12.0/protocol-10
+development-hub transition are recorded in `docs/smoke.md`.

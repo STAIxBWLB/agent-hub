@@ -29,6 +29,12 @@ export interface TasksDeps {
   quota?: () => Record<PeerId, { headroom: number; resetsAt?: number }>;
   /** Reviewer choice from recorded review outcomes (issue #35); off unless the project config turns it on. */
   review?: { adaptive: boolean; min_reviews: number };
+  /** Peers whose recent deliveries all failed, with the reason (issue #89); routing skips them. */
+  failing?: () => Record<PeerId, string>;
+  /** Peers whose queue a needs_review delivery holds, with the hold detail (issue #90); routing explains the hold, never rejects. */
+  held?: () => Record<PeerId, string>;
+  /** Roles from `.agenthub/config.json` (issue #92): peers with the reviewer role join the reviewer candidates. */
+  roles?: Record<string, string[]>;
   /** Optional: name a class for a task proposed without one. `onCampus` says whether the model call stays on campus. */
   triage?: { classify: (title: string, detail: string) => Promise<TaskClass | undefined>; onCampus: () => Promise<boolean> };
 }
@@ -111,6 +117,17 @@ export class Tasks {
     return this.isPii(task) ? { ...rest, refs: {}, plan: {}, title: "[pii]", detail: "[pii]" } : { ...rest, title, detail, history: history.slice(-5) };
   }
 
+  /** Console results expose direct approval and delivery holds, not just the chosen peer ids. */
+  resultLine(task: Task): string {
+    const base = `task #${task.id}: ${task.state}, owner ${task.owner ?? "none"}, reviewer ${task.reviewer ?? "none"}`;
+    const noReview = task.class !== "review" && !task.reviewer && OPEN.includes(task.state) && !this.waitsFor(task).length
+      ? this.noReviewer(assign(task, this.states(), this.d.routing(), { candidates: task.owner ? [task.owner] : [], notReviewer: task.owner ?? undefined, ...this.weights(task.class) }))
+      : undefined;
+    const held = task.owner ? this.d.held?.()[task.owner] : undefined;
+    const holdText = held ? `${task.owner}'s queue is held (${held}); it receives the task once the hold is resolved` : undefined;
+    return [base, noReview, holdText].filter(Boolean).join("; ");
+  }
+
   private states(): Record<PeerId, PeerState> {
     return Object.fromEntries([...this.d.bus.peers.keys()].map((id) => [id, this.d.bus.stateOf(id)]));
   }
@@ -164,11 +181,18 @@ export class Tasks {
     return new Set(task.history.slice(since + 1).filter((h) => h.event === "changes_requested").map((h) => h.by));
   }
 
+  /** Peer health and roles the daemon feeds routing (issues #89, #90, #92): failing peers are skipped, held queues explained. */
+  private health() {
+    const failing = this.d.failing?.();
+    const held = this.d.held?.();
+    return { ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
+  }
+
   /** What assignment weighs besides states and policy: quota, demotion and the review record. */
   private weights(cls: TaskClass) {
     const now = Date.now();
     const quota = this.d.quota?.();
-    return { now, demoted: this.demoted(cls, now), reviews: this.reviewRecord(cls), ...(quota ? { quota } : {}), ...(this.d.review?.adaptive ? { adaptive: { min: this.d.review.min_reviews } } : {}) };
+    return { ...this.health(), now, demoted: this.demoted(cls, now), reviews: this.reviewRecord(cls), ...(quota ? { quota } : {}), ...(this.d.review?.adaptive ? { adaptive: { min: this.d.review.min_reviews } } : {}) };
   }
 
   /**
@@ -334,7 +358,7 @@ export class Tasks {
         // Awaits run between tasks (briefs, memory): re-read, and stop for anything that changed meanwhile.
         const task = this.d.board.get(id);
         if (!task || task.owner !== peer || !OPEN.includes(task.state) || this.d.bus.stateOf(peer) !== "offline") continue;
-        if (!assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), peer] }).owner) continue;
+        if (!assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), peer], ...this.health() }).owner) continue;
         try {
           const back = task.state === "in_progress" ? this.d.board.update(task.id, HUB, "released", { state: "proposed" }, why) : task;
           const next = await this.assignOwner(back, HUB, { exclude: [peer], event: "reassigned", note: why });
@@ -365,6 +389,21 @@ export class Tasks {
 
   private declined = (task: Task) => task.history.filter((h) => h.event === "declined").map((h) => h.by);
 
+  /** Why the task will approve directly at done: no reviewer could be picked, and who was skipped (issue #92). */
+  private noReviewer(a: Assignment): string {
+    const skipped = a.trace.flatMap((l) => {
+      const m = /^ {2}reviewer candidate (\S+): skipped, (.*)$/.exec(l);
+      return m ? [`${m[1]} (${m[2]})`] : [];
+    });
+    return `no reviewer: done will approve directly${skipped.length ? ` (skipped: ${skipped.join("; ")})` : ""}`;
+  }
+
+  private announceRouting(task: Task, a: Assignment): void {
+    if (task.class !== "review" && !a.reviewer) this.d.notify(`task ${this.publicTitle(task)}: ${this.noReviewer(a)}`);
+    const hold = a.owner ? this.d.held?.()[a.owner] : undefined;
+    if (hold) this.d.notify(`task ${this.publicTitle(task)}: ${a.owner}'s queue is held (${hold}); the task arrives once the hold is resolved`);
+  }
+
   private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; claim?: boolean } = {}): Promise<Task> {
     const waits = this.waitsFor(task);
     const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class) });
@@ -383,6 +422,7 @@ export class Tasks {
       this.announceOverlap(next, hits);
       this.tellEarlierOwners(next, hits);
     }
+    this.announceRouting(next, a);
     if (opts.claim && a.owner === by) {
       const claimed = this.d.board.update(next.id, by, "accepted", { state: "in_progress" });
       this.d.notify(`task ${this.publicTitle(claimed)} claimed by ${by}`);
@@ -396,7 +436,7 @@ export class Tasks {
     const pii = this.isPii(task);
     const brief = pii ? undefined : await this.d.briefs?.forTask(task.owner!, task).catch(() => undefined);
     const rejected = task.history.filter((h) => h.event === "changes_requested").map((h) => `- ${h.by}: ${this.screen(task, h.note ?? "", "review note", a.owner)}`);
-    const facts = [`class ${task.class}`, a.owner === PI ? `backend pi/${a.piBackend ?? "dgx"}` : "", task.refs.paths?.length ? `paths ${task.refs.paths.join(", ")}` : "", task.refs.branch ? `branch ${task.refs.branch}` : "", a.reviewer ? `reviewer ${a.reviewer}` : "no reviewer"].filter(Boolean).join("; ");
+    const facts = [`class ${task.class}`, a.owner === PI ? `backend pi/${a.piBackend ?? "dgx"}` : "", task.refs.paths?.length ? `paths ${task.refs.paths.join(", ")}` : "", task.refs.branch ? `branch ${task.refs.branch}` : "", a.reviewer ? `reviewer ${a.reviewer}` : task.class === "review" ? "no reviewer" : this.noReviewer(a)].filter(Boolean).join("; ");
     const plan = planText(task.plan);
     const body = [
       `Task #${task.id} [${task.class}] ${task.title}`,
@@ -438,7 +478,7 @@ export class Tasks {
     for (const t of this.d.board.list("proposed")) {
       const last = t.history.at(-1)?.event;
       if (!t.deps?.length || t.owner || this.offered.has(t.id) || (last !== "blocked" && last !== "ready") || this.waitsFor(t).length) continue;
-      if (!assign(t, this.states(), this.d.routing(), { exclude: this.declined(t) }).owner) continue; // nobody attached can take it yet
+      if (!assign(t, this.states(), this.d.routing(), { exclude: this.declined(t), ...this.health() }).owner) continue; // nobody attached can take it yet
       await this.offerReady(t, "nothing left to wait for");
     }
   }

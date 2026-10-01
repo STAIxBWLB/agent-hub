@@ -138,6 +138,12 @@ export function assign(
     /** Review record per implementer, then per reviewer, for this class (issue #35); followed only when `adaptive`. */
     reviews?: Record<PeerId, Record<PeerId, { score: number; n: number }>>;
     adaptive?: { min: number };
+    /** Peers whose recent deliveries all failed, with the reason (issue #89): skipped until a delivery succeeds. */
+    failing?: Record<PeerId, string>;
+    /** Peers whose queue a needs_review delivery holds, with the hold detail (issue #90): eligible, but the hold is explained. */
+    held?: Record<PeerId, string>;
+    /** Roles from `.agenthub/config.json` (issue #92): peers with the reviewer role join the reviewer candidates after the review class's. */
+    roles?: Record<string, string[]>;
   } = {},
 ): Assignment {
   const policy = routing.classes[task.class];
@@ -151,6 +157,7 @@ export function assign(
     if (opts.exclude?.includes(peer)) return "excluded (declined or replaced)";
     if (states[peer] === "offline") return "offline";
     if (states[peer] === "paused" && routing.constraints.budget_paused === "skip_peer") return "paused";
+    if (opts.failing?.[peer]) return `failing: ${opts.failing[peer]}`;
     if (pii && peer !== LOCAL) return "pii: on-prem peers only";
     if (peer === LOCAL && policy?.local_allowed === false) return "local_allowed = false for this class";
     if (peer === PI && policy?.local_allowed === false) return "local_allowed = false also excludes pi for this class";
@@ -219,13 +226,19 @@ export function assign(
   const wanted = opts.candidates ?? policy?.peers ?? [];
   const owner = pick(wanted, "owner");
   trace.push(owner ? `owner: ${owner}` : "owner: none available, task stays proposed (ahub task assign <id> <peer>)");
+  if (owner && opts.held?.[owner]) trace.push(`  hold: ${owner}'s queue is held: ${opts.held[owner]} (it receives the task once the hold is resolved)`);
 
   let reviewer: PeerId | undefined;
   if (task.class !== "review") {
     if (pii) trace.push("reviewer: user (pii: no second on-prem peer; ahub review <id> <verdict>)");
     else {
-      reviewer = pick(routing.classes.review?.peers ?? [], "reviewer", owner ?? opts.notReviewer);
+      // Reviewer candidates (issue #92): the review class's peers first, then peers holding the reviewer role, deduped.
+      const classPeers = routing.classes.review?.peers ?? [];
+      const rolePeers = Object.keys(opts.roles ?? {}).filter((p) => opts.roles![p]!.includes("reviewer"));
+      trace.push(`  reviewer candidates: [classes.review] peers ${classPeers.join(", ") || "none"}${rolePeers.length ? `; reviewer role ${rolePeers.join(", ")}` : ""}`);
+      reviewer = pick([...new Set([...classPeers, ...rolePeers])], "reviewer", owner ?? opts.notReviewer);
       trace.push(reviewer ? `reviewer: ${reviewer}` : "reviewer: none, done will approve directly");
+      if (reviewer && opts.held?.[reviewer]) trace.push(`  hold: ${reviewer}'s queue is held: ${opts.held[reviewer]} (it receives the review once the hold is resolved)`);
     }
   }
   const route = policy?.route ?? routing.local.route;

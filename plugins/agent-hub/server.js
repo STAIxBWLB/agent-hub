@@ -15615,8 +15615,8 @@ function projectContext(cwd, env = process.env) {
 function stateDirFor(cwd) {
   return projectContext(cwd).stateDir;
 }
-var PROTOCOL = 10;
-var RECOVERY_SOURCE_PROTOCOLS = [9, PROTOCOL];
+var PROTOCOL = 11;
+var RECOVERY_SOURCE_PROTOCOLS = [9, 10, PROTOCOL];
 function readControl(stateDir) {
   try {
     const status = JSON.parse(readFileSync2(join2(stateDir, "status.json"), "utf8"));
@@ -15727,7 +15727,7 @@ class ControlClient {
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
-  version: "0.12.0",
+  version: "0.12.1",
   description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
   license: "MIT",
   type: "module",

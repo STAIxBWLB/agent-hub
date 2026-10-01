@@ -39,7 +39,7 @@ export function pathWarnings(dbFile: string, peer: string, file: { project: stri
   if (!existsSync(dbFile)) return [];
   const db = new Database(dbFile, { readonly: true });
   try {
-    const rows = db.query("SELECT * FROM tasks WHERE owner IS NOT NULL AND owner != ? AND state IN ('proposed', 'in_progress', 'changes_requested') ORDER BY id").all(peer) as Record<string, string | number | null>[];
+    const rows = db.query("SELECT * FROM tasks WHERE owner IS NOT NULL AND owner != ? AND state IN ('proposed', 'in_progress', 'in_review', 'changes_requested') ORDER BY id").all(peer) as Record<string, string | number | null>[];
     let touches: Touch[] = [];
     try {
       if (file.repo) touches = db.query("SELECT * FROM touches WHERE path = ? AND peer != ?").all(file.repo, peer) as Touch[];

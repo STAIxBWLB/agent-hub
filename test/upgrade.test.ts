@@ -278,14 +278,14 @@ test("target daemons use their captured account homes and each Claude store is u
   }
 });
 
-test("protocol-9 source recovery stages only a protocol-10 target", async () => {
+test("protocol-9 source recovery stages only a protocol-11 target", async () => {
   const f = fixture("restart");
   f.operation.sourceRoot = PACKAGE_ROOT;
   f.operation.plan.sourceRoot = PACKAGE_ROOT;
   f.operation.plan.version = JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version;
   f.operation.plan.sourceDigest = packageDigest(PACKAGE_ROOT);
   const driver = makeRecoveryDriver(async (argv) => argv[1] === "-e"
-    ? { code: 0, stdout: "10\n", stderr: "" }
+    ? { code: 0, stdout: "11\n", stderr: "" }
     : { code: 0, stdout: "", stderr: "" });
   const target = await driver.stage(f.operation);
   expect(target.root).toBe(PACKAGE_ROOT);

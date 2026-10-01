@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Disposable 0.6.4 (protocol 9) -> working tree (protocol 10) recovery smoke.
+ * Disposable 0.6.4 (protocol 9) -> working tree (current protocol) recovery smoke.
  *
  * This intentionally uses a real published 0.6.4 subprocess and an isolated
  * AGENTHUB_HOME. It never touches the user's registry, manager, projects, or
@@ -44,7 +44,7 @@ async function waitForControl(stateDir: string, projectRoot: string, protocol: n
 }
 
 async function stopOwnedDaemon(): Promise<void> {
-  for (const protocol of [10, 9]) {
+  for (const protocol of [PROTOCOL, 10, 9]) {
     try {
       const client = await ControlClient.connect(stateDir, { role: "console", projectRoot: project }, 1_000, protocol);
       const status = await client.request({ t: "status" }, 2_000);
@@ -91,7 +91,7 @@ let oldRoot = "";
 let sourceClient: ControlClient | undefined;
 
 async function main(): Promise<void> {
-  if (PROTOCOL !== 10) throw new Error(`working tree target must speak protocol 10, got ${PROTOCOL}`);
+  if (Number(PROTOCOL) < 10) throw new Error(`working tree target must speak protocol 10 or newer, got ${PROTOCOL}`);
   if (!existsSync(join(PACKAGE_ROOT, "package.json"))) throw new Error("working tree package is unavailable");
   mkdirSync(project, { recursive: true });
   mkdirSync(home, { recursive: true });
@@ -154,10 +154,10 @@ async function main(): Promise<void> {
     await Bun.sleep(250);
   }
   assert(recovery?.phase === "completed", `recovery did not complete: ${JSON.stringify(recovery)}`);
-  const target = await waitForControl(stateDir, project, 10, baseEnv);
+  const target = await waitForControl(stateDir, project, PROTOCOL, baseEnv);
   try {
     const targetStatus = await target.request({ t: "status" });
-    assert(targetStatus.status?.protocol === 10, `target did not report protocol 10: ${JSON.stringify(targetStatus.status)}`);
+    assert(targetStatus.status?.protocol === PROTOCOL, `target did not report current protocol: ${JSON.stringify(targetStatus.status)}`);
     assert(targetStatus.status?.instanceId !== sourceState.instanceId, "target reused the source instance identity");
     const queue = await target.request({ t: "queue", op: "list", peer: "claude" });
     const targetQueueIds = [...new Set((queue.deliveries ?? []).flatMap((row: any) => row.envelopeIds ?? []).map(String))].sort();
@@ -169,7 +169,7 @@ async function main(): Promise<void> {
     assert(targetTasksDigest === sourceTasksDigest, `task identity/state digest changed across recovery: ${sourceTasksDigest} -> ${targetTasksDigest}`);
     const inspected = await target.request({ t: "recovery", op: "inspect", expectedInstanceId: targetStatus.status.instanceId });
     assert(inspected.ok === true && inspected.recovery?.phase === "released", `target recovery was not released: ${JSON.stringify(inspected)}`);
-    console.log(JSON.stringify({ sourceProtocol: 9, targetProtocol: 10, sourceInstanceId: sourceState.instanceId, targetInstanceId: targetStatus.status.instanceId, operationId, queuePreserved: true, taskDigest: targetTasksDigest, targetDigest: packageDigest(PACKAGE_ROOT) }, null, 2));
+    console.log(JSON.stringify({ sourceProtocol: 9, targetProtocol: PROTOCOL, sourceInstanceId: sourceState.instanceId, targetInstanceId: targetStatus.status.instanceId, operationId, queuePreserved: true, taskDigest: targetTasksDigest, targetDigest: packageDigest(PACKAGE_ROOT) }, null, 2));
   } finally { target.close(); }
 }
 

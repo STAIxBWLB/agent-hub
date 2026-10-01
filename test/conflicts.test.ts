@@ -60,6 +60,11 @@ test("check-path names other owners' open tasks that claim or changed a file, ne
     'task #5 "touched" (owner pi, proposed) changed it',
   ]);
   expect(pathWarnings(db, "claude", { project: "docs/x.md", repo: "docs/x.md" })).toEqual([]);
+  board.update(other.id, "pi", "accepted", { state: "in_progress" });
+  board.update(other.id, "pi", "done", { state: "in_review", refs: { commit: "abc123" } });
+  expect(pathWarnings(db, "claude", { project: "src/hub/bus.ts", repo: "src/hub/bus.ts" })).toContain(
+    'task #5 "touched" (owner pi, in_review) changed it',
+  );
 });
 
 test("the PreToolUse hook prints context for Claude and a line for the user, and stays silent and harmless otherwise", () => {

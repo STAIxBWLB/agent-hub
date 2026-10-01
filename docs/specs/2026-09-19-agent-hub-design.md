@@ -1129,3 +1129,15 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   already had network on keeps installing packages; `"direct"` keeps the open
   network of 0.10 and earlier until 0.13.0 (issue #83).
 
+
+
+## Reliability follow-ups, 0.12.1 (#89-#95)
+
+- Delivery retries exhausted for an owned open task trigger escalation through `Tasks`, with a redacted reason and a console notice. Delivery health skips peers after three consecutive exhausted deliveries until a completed delivery clears the streak.
+- `needs_review` continues to hold a peer's queue. Console notices, status and assignment explanations identify the hold and operator commands; moved or approved task references are context for the operator, never automatic discard authorization.
+- Local attach and idle model/route replacement require a reachable authenticated gateway, served models and successful minimal availability calls. Busy workers refuse replacement; validation failure leaves the current worker intact. Controlled recovery can reconstruct a manually paused local worker without gateway availability, but manual resume validates its restored choice before lifting the pause. Doctor checks the fixed model against the inventory.
+- Reviewer routing appends attached peers holding `roles.reviewer` after the review class's candidates. Without a reviewer, task results and console notices explain direct approval and the skipped candidates.
+- Conflict detection includes `in_review` work. Completed overlapping snapshots that share files generate one concurrent-edit notice per task pair/file, containing both turn ids and attributing the changes to neither peer. Private tasks and sensitive file names remain redacted.
+- Pi assistant usage is forwarded through the authenticated bridge and recorded before settlement, without counting the same message both at `message_end` and `agent_end`.
+- An idle peer with no open owner/reviewer task and no queued or active delivery skips the quota checkpoint turn; the pause proceeds immediately and the log records the skip.
+- Control protocol 11 adds queue hold metadata; the current coordinator supports authenticated protocol 9, 10 and 11 recovery sources.

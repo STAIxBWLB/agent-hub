@@ -9,7 +9,7 @@ export const toolCall = (name: string, args: unknown, id = `call_${name}_${Math.
   function: { name, arguments: typeof args === "string" ? args : JSON.stringify(args) },
 });
 
-export function startFakeModelServer(opts: { key?: string; script?: Script; healthy?: boolean } = {}) {
+export function startFakeModelServer(opts: { key?: string; script?: Script; healthy?: boolean; models?: string[] } = {}) {
   const requests: { headers: Record<string, string>; body: any }[] = [];
   const state = { healthy: opts.healthy ?? true, script: opts.script ?? ((b) => ({ content: `echo: ${b.messages.at(-1)?.content}` })) };
   const server = Bun.serve({
@@ -17,11 +17,14 @@ export function startFakeModelServer(opts: { key?: string; script?: Script; heal
     port: 0,
     async fetch(req) {
       const url = new URL(req.url);
-      if (url.pathname === "/v1/models") return state.healthy ? Response.json({ data: [] }) : new Response("down", { status: 503 });
+      if (url.pathname === "/v1/models") return state.healthy ? Response.json({ data: (opts.models ?? ["m", "vllm/pinned", "vllm/x", "vllm/test", "vllm/next"]).map((id) => ({ id })) }) : new Response("down", { status: 503 });
       if (url.pathname !== "/v1/chat/completions") return new Response("not found", { status: 404 });
       const body = (await req.json()) as any;
-      requests.push({ headers: Object.fromEntries(req.headers), body });
       if (opts.key && req.headers.get("authorization") !== `Bearer ${opts.key}`) return new Response("invalid api key", { status: 401 });
+      if (body.messages?.[0]?.content === "agent-hub model availability check: reply OK") {
+        return Response.json({ choices: [{ message: { role: "assistant", content: "OK" } }] });
+      }
+      requests.push({ headers: Object.fromEntries(req.headers), body });
       let scripted: Partial<ChatMessage>;
       try {
         scripted = await state.script(body, requests.length);
