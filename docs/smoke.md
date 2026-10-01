@@ -859,3 +859,27 @@ the claim overlap warnings (0.7.6 and later), then the owner decides in issue #8
   and that Codex's running session no longer knows the turn (ask it about the
   reverted turn): the schema says `thread/revert` changes only the saved history.
 
+## 0.7.11 to 0.8.0 attended upgrade (2026-10-01)
+
+A scratch project (a git work tree whose `.agenthub/config.json` predates 0.8.0
+and has no `snapshots` block) ran a 0.7.11 hub with one proposed task and no
+peers attached.
+
+- `bunx --package @staix/agent-hub@0.8.0 ahub upgrade --to 0.8.0 --dry-run`
+  exited 0: one project, source 0.7.11, protocol 10, no blockers.
+- `--yes` prepared and committed the source, started the 0.8.0 target and
+  reached the restored-peers phase (no peers were attached), then stopped at
+  verification: `phase: blocked`, "queue,
+  manual pause, task board or budget preservation was not verified". The
+  global CLI stayed at 0.7.11.
+- Cause: the 0.7.11 source digested its task rows without `plan`, and the
+  0.8.0 target's rows carry `plan: {}` after the #31 migration, so any board
+  with a task failed the check. Fixed in 0.8.1 (#57).
+- The blocked operation could not resume (the same target fails the same
+  check) or abort (the source was already stopped), and its recovery lock
+  refused `up` and `kill` for every project. The scratch hub was stopped under
+  the operation's environment, and the operation was marked cancelled with its
+  lock released: an operator step, not a designed path.
+- The release gate for v0.8.0 (Actions run 36807880478) failed once on
+  "removing a running project is refused"; the rerun passed and published. Cause: `ahub kill` returned before
+  the hub released its registry claim. Fixed in 0.8.1 (#58).

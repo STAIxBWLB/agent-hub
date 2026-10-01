@@ -2,6 +2,11 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## 0.8.1
+
+- Upgrading a running 0.7.x hub that has a task on its board no longer stops at verification ("queue, manual pause, task board or budget preservation was not verified"): the 0.8.0 target digested its tasks with the new `plan` field, which the 0.7.x source never had. The target now also accepts the digest in the source's shape while every plan is empty; any real change to the board still fails the check. Use the 0.8.1 coordinator, not 0.8.0's, for such an upgrade (#57).
+- `ahub kill` returns only once the hub has released its registry claim, so an `ahub projects remove` right after it no longer refuses, and an `ahub up` right after it no longer reads the project as starting and starts nothing (#58).
+
 ## 0.8.0
 
 - Plans and completed-change notices: `hub_task_propose` and `hub_task_accept` take a `plan` (paths, symbols, signatures, insertion points), overlaps also count plan paths and shared symbols, the owners of overlapping tasks get the plan as a ride-along line, and when a task is done they get a notice of the changed files, signatures and summary. PII tasks are left out on both sides, and a plan matching a PII pattern makes a new task a PII task or is refused on an ordinary one. Overlap mentions, ride-alongs, completed-change notices and overlap events leave out any name that matches a PII pattern, and model-written titles, refs and plan items are folded onto one line. During a PII turn the local worker can no longer finish, review or accept-with-plan an ordinary task, which would carry its words to other peers and claude-mem (#31).

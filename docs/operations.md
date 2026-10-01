@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.8.0 and control protocol 10. Live verification
+This guide describes ahub 0.8.1 and control protocol 10. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Install and start
@@ -302,8 +302,8 @@ source and carries every recovery fix released up to it. Protocol 8 and older
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.8.0 ahub upgrade --to 0.8.0 --dry-run
-bunx --package @staix/agent-hub@0.8.0 ahub upgrade --to 0.8.0 --yes
+bunx --package @staix/agent-hub@0.8.1 ahub upgrade --to 0.8.1 --dry-run
+bunx --package @staix/agent-hub@0.8.1 ahub upgrade --to 0.8.1 --yes
 ```
 
 | Running now | Coordinator to use |
@@ -313,7 +313,12 @@ bunx --package @staix/agent-hub@0.8.0 ahub upgrade --to 0.8.0 --yes
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
-Do not use an older installed CLI as the coordinator. A 0.6.x CLI cannot target
+Do not use the 0.8.0 coordinator for a running 0.7.x hub with tasks on its board:
+its verification never matches the board and the operation stays blocked (fixed
+in 0.8.1). Such a blocked operation can neither resume nor abort, and its lock
+refuses `up` and `kill` for every project; the [smoke ledger](smoke.md) (0.7.11
+to 0.8.0) records the manual cleanup. Do not use an older installed CLI as the
+coordinator. A 0.6.x CLI cannot target
 protocol 10: its plan does not check the target's protocol, so the dry-run shows
 no blocker, and `--yes` stops at staging ("target protocol requires a newer
 coordinator") with an operation left to clear by `ahub recovery abort <id>`. An
@@ -325,19 +330,19 @@ The coordinator verifies and retains the exact target package, preserves its
 own source, and promotes the global CLI only after restored projects pass
 readback.
 
-Once the installed CLI is 0.8.0, review the current project or all registered
+Once the installed CLI is 0.8.1, review the current project or all registered
 projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.8.0 --dry-run
+ahub upgrade --to 0.8.1 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.8.0 --yes
+ahub upgrade --to 0.8.1 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>
