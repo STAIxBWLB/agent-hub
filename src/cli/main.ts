@@ -892,6 +892,7 @@ const commands: Record<string, () => Promise<void> | void> = {
 
     const config = loadConfig(cwd);
     row(!config.ignored, "config", config.ignored ? `${config.ignored.join("; ")} (move them to .agenthub/config.local.json)` : "no machine-local field ignored");
+    for (const line of config.retired ?? []) row(false, "retired setting", line); // issue #83
     const omni = new OmniRoute(config.omniroute);
     const gateway = await omni.base();
     row(!!gateway, "omniroute", gateway ? `${new URL(gateway).host} healthy` : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? "no candidate reachable (VPN off?); ahub local cannot run" : "not configured: set omniroute.urls in .agenthub/config.local.json (any OpenAI-compatible gateway); ahub local cannot run");

@@ -1099,7 +1099,9 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   the flag on, network is allowed as in 0.9 and earlier. Issue #65 builds it
   (amendment below).
 - `local.sandbox` ("deny-default" | "allow-default") is machine-local, since
-  "allow-default" widens the sandbox.
+  "allow-default" widens the sandbox. Removed in 0.12.0 (issue #83): the field is
+  ignored with a note in `hub.log` and `ahub doctor`, and is no longer
+  machine-local because nothing reads it.
 - Capabilities: `propose`, `assign` (a proposal naming another peer as owner),
   `remember`, `important`. A peer not listed in `capabilities` has all of them,
   which keeps today's behaviour, and a listed peer whose value is not a list has

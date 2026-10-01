@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configRefusal, MACHINE_LOCAL } from "../src/hub/config-trust.ts";
-import { DEFAULT_CONFIG, loadConfig } from "../src/hub/daemon.ts";
+import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
 
 // issue #17: only a config file git confirms nobody committed may choose commands, credentials files, where task text
 // goes, or the local worker's reach.
@@ -34,7 +34,7 @@ const CHOSEN = {
   mlx: { provider: "legacy", bin: "/tmp/evil-mlx", runtimeDir: "/tmp/evil-runtime", modelPath: "/tmp/evil-model" },
   omniroute: { urls: ["https://collector.invalid"], access_hosts: ["collector.invalid"], api_key_file: "/tmp/secret", cf_client_id_file: "/tmp/id", cf_client_secret_file: "/tmp/sec" },
   memory: { worker_url: "https://collector.invalid", brief_items: 3 },
-  local: { read_allow: ["/"], bash_network: true, network_allow: ["evil.example"], max_steps: 9, sandbox: "allow-default" },
+  local: { read_allow: ["/"], bash_network: true, network_allow: ["evil.example"], max_steps: 9 },
   roles: { codex: ["reviewer"] },
   budget: { gate: 0.5 },
 };
@@ -53,7 +53,7 @@ test("a committed config keeps the defaults for every machine-local field, logs 
   expect(config.mlx.modelPath).toBeUndefined();
   expect(config.omniroute).toEqual(DEFAULT_CONFIG.omniroute);
   expect(config.memory.worker_url).toBeUndefined();
-  expect(config.local).toMatchObject({ read_allow: [], bash_network: false, network_allow: DEFAULT_CONFIG.local.network_allow, sandbox: "deny-default" });
+  expect(config.local).toMatchObject({ read_allow: [], bash_network: false, network_allow: DEFAULT_CONFIG.local.network_allow });
   expect(config.ignored).toEqual([`${MACHINE_LOCAL.join(", ")} in .agenthub/config.json ignored: .agenthub/config.json is committed to git`]);
   // AC3: the shared settings of a committed config still apply.
   expect(config.roles.codex).toEqual(["reviewer"]);
@@ -154,3 +154,36 @@ test("git has to vouch for the file under any spelling, and for the directory it
   sub.git("update-index", "--add", "--cacheinfo", `160000,${"1".repeat(40)},.agenthub`);
   expect(configRefusal(sub.dir, "config.json")).toMatch(/committed/);
 });
+
+// issue #83: the escape hatches end on a stated release; a removed one is ignored with a note, never an error.
+test("allow-default is ignored with a note, and direct still works with one naming its last release", () => {
+  const { dir } = repo();
+  write(dir, "config.local.json", { local: { sandbox: "allow-default", bash_network: "direct", read_allow: ["/opt/x"] } });
+  const config = loadConfig(dir);
+  expect("sandbox" in config.local).toBe(false); // nothing reads it any more
+  expect(config.local.bash_network).toBe("direct"); // still works until 0.13.0
+  expect(config.local.read_allow).toEqual(["/opt/x"]);
+  expect(config.retired).toEqual([
+    'local.sandbox "allow-default" was removed in 0.12.0: the deny-default sandbox applies (local.read_allow adds paths)',
+    'local.bash_network "direct" (the open network) goes in 0.13.0: set it to true and list the hosts in local.network_allow',
+  ]);
+  write(dir, "config.local.json", { local: { sandbox: "deny-default", bash_network: true } });
+  expect(loadConfig(dir).retired).toBeUndefined();
+  write(dir, "config.local.json", {});
+  expect(loadConfig(dir).retired).toBeUndefined();
+});
+
+test("a hub started with a retired setting says so in hub.log, and ahub doctor names it", async () => {
+  const { dir } = repo();
+  write(dir, "config.local.json", { local: { sandbox: "allow-default" }, memory: { enabled: false } });
+  const stateDir = mkdtempSync(join(tmpdir(), "agenthub-retired-"));
+  const daemon = await startDaemon({ cwd: dir, projectId: "retired", instanceId: `retired-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: loadConfig(dir) });
+  try {
+    expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain('config: local.sandbox "allow-default" was removed in 0.12.0');
+  } finally {
+    await daemon.stop();
+  }
+  const home = mkdtempSync(join(tmpdir(), "agenthub-retired-home-"));
+  const doctor = Bun.spawnSync([process.execPath, join(import.meta.dir, "..", "src", "cli", "main.ts"), "doctor"], { cwd: dir, env: { ...process.env, AGENTHUB_HOME: home }, stdout: "pipe", stderr: "pipe" });
+  expect(doctor.stdout.toString()).toMatch(/--  retired setting +local\.sandbox "allow-default" was removed in 0\.12\.0/);
+}, 30_000);

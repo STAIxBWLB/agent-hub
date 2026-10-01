@@ -193,16 +193,16 @@ test.skipIf(!sandboxAvailable())("git: read-only subcommands run without asking,
   expect(Date.now() - t0).toBeLessThan(5000);
 });
 
-// issue #39: the deny-default profile still runs the toolchains, and reads less than the old allow-default one.
+// issue #39: the deny-default profile still runs the toolchains; outside the listed dirs nothing is readable.
 test.skipIf(!sandboxAvailable())("deny-default: bun, node and git work; outside the system, toolchain and project dirs nothing is readable", async () => {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-denydefault-")));
   writeFileSync(join(cwd, "a.test.ts"), 'import { expect, test } from "bun:test";\ntest("t", () => expect(1).toBe(1));\n');
-  Bun.spawnSync(["git", "init", "-q"], { cwd }); // outside: init writes .git/hooks, which the sandbox denies in both profiles
+  Bun.spawnSync(["git", "init", "-q"], { cwd }); // outside: init writes .git/hooks, which the sandbox denies
   // A node installed elsewhere in home (the CI runner's tool cache) is outside the listed toolchain dirs: that is what
   // local.read_allow is for. Its install prefix goes there, as a user would put it.
   const node = realpathSync(Bun.which("node")!);
   const readAllow = node.startsWith(`${homedir()}/`) ? [dirname(dirname(node))] : [];
-  const run = (command: string, base: "deny" | "allow" = "deny") => sandboxedExec(["/bin/sh", "-c", command], { cwd, profile: profile(cwd, false, readAllow, [], base) });
+  const run = (command: string) => sandboxedExec(["/bin/sh", "-c", command], { cwd, profile: profile(cwd, false, readAllow, []) });
   const tools = await run([
     "node -e 'console.log(\"node-ok\")'",
     "bun -e 'console.log(\"bun-ok\")'",
@@ -212,7 +212,6 @@ test.skipIf(!sandboxAvailable())("deny-default: bun, node and git work; outside 
   for (const expected of ["node-ok", "bun-ok", "bun-test-ok", "git-ok"]) expect(tools.output).toContain(expected);
   const probe = "(ls /private/var/log >/dev/null 2>&1) && echo READ-VAR-LOG || echo blocked-var-log";
   expect((await run(probe)).output).toContain("blocked-var-log");
-  expect((await run(probe, "allow")).output).toContain("READ-VAR-LOG"); // what the old profile let through
 });
 
 test("no mach broker that acts outside the sandbox: LaunchServices (open starts apps), SecurityServer (Keychain)", () => {

@@ -58,12 +58,13 @@ plain HTTP, and the error code when a listed host is unreachable), never a path,
 query or header. The default list holds the npm, PyPI, crates.io and Go module
 registries and GitHub's code hosts; set `local.network_allow` in
 `config.local.json` to replace it. `"direct"` keeps the open network of 0.10 and
-earlier for one release. With network on, commands may also read the public CA
+earlier until 0.13.0, which removes it; while it is set, `hub.log` and `ahub
+doctor` say so. With network on, commands may also read the public CA
 bundles and Python's `certifi/cacert.pem`, which the `*.pem` key deny would
 otherwise hide.
-`"local": { "sandbox": "allow-default" }` in `config.local.json` brings back the
-profile of 0.9 and earlier for one release, should a toolchain need a path the
-new one lacks; please report it. Newly closed outside home: `/Applications`
+The allow-default profile of 0.9 and earlier was removed in 0.12.0: a
+`local.sandbox` setting is ignored, with a note in `hub.log` and `ahub doctor`,
+and a toolchain the profile lacks goes in `local.read_allow`. Newly closed outside home: `/Applications`
 (an app's bundled CLI), `/nix`, `/Volumes` and `/Users/Shared`. A toolchain
 there, or elsewhere in your home (a CI tool cache, a version manager the profile
 does not list), needs its directory in `local.read_allow`, for example
@@ -519,7 +520,7 @@ to 0 to opt out.
 0.10.0 changes every project's local worker: its commands run under the
 deny-default sandbox described above, and a toolchain outside the listed
 directories needs `local.read_allow`; `"local": { "sandbox": "allow-default" }`
-in `config.local.json` restores the old profile for one release. Off unless set:
+in `config.local.json` restored the old profile until 0.12.0. Off unless set:
 `review.adaptive`, `recovery.auto_resume_after_crash` and `capabilities`. A hub
 before 0.10.0 keeps no session record, so a crash of one is not reported as such
 by the next start.
@@ -529,9 +530,14 @@ Pi's commands reach the network only through the hub's egress proxy, to the
 hosts in `local.network_allow` (package registries and GitHub's code hosts by
 default). `local.network_allow` is machine-local and replaces the default list:
 a project that needs another host sets it in `config.local.json` with the
-defaults it still needs. `"direct"` keeps the open network of 0.10.0 for one
-release. Each command gets a temp dir of its own, and under deny-default the
+defaults it still needs. `"direct"` keeps the open network of 0.10.0 until
+0.13.0. Each command gets a temp dir of its own, and under deny-default the
 shared temp dirs are closed.
+
+0.12.0 removes `local.sandbox: "allow-default"`: a project that still sets it
+runs under the deny-default sandbox, and `hub.log` and `ahub doctor` say so.
+`local.bash_network: "direct"` still works until 0.13.0, and both name it while
+it is set.
 
 The 0.7.0 transition stages the verified package and runs a retained
 coordinator from the source tree. It accepts a verified protocol-9 source and
