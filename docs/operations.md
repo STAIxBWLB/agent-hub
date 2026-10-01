@@ -37,7 +37,9 @@ The local worker's commands run under a sandbox that starts from deny default
 (0.8): they may run and read the system, toolchain and project directories,
 write the project and temp, and nothing else. `"local": { "sandbox":
 "allow-default" }` in `config.local.json` brings back the 0.7 profile for one
-release, should a toolchain need a path the new one lacks; please report it.
+release, should a toolchain need a path the new one lacks; please report it. A
+toolchain installed elsewhere in your home (a CI tool cache, a version manager
+the profile does not list) needs its directory in `local.read_allow`.
 
 `capabilities` in `.agenthub/config.json` narrows what a peer may do with the
 hub's tools: list a peer and it keeps only the capabilities named, from

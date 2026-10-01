@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { profile, sandboxAvailable, sandboxedExec } from "../src/local/sandbox.ts";
 import { guardPath, isDenied, runTool, type ToolContext } from "../src/local/tools.ts";
 
@@ -196,7 +196,11 @@ test.skipIf(!sandboxAvailable())("deny-default: bun, node and git work; outside 
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-denydefault-")));
   writeFileSync(join(cwd, "a.test.ts"), 'import { expect, test } from "bun:test";\ntest("t", () => expect(1).toBe(1));\n');
   Bun.spawnSync(["git", "init", "-q"], { cwd }); // outside: init writes .git/hooks, which the sandbox denies in both profiles
-  const run = (command: string, base: "deny" | "allow" = "deny") => sandboxedExec(["/bin/sh", "-c", command], { cwd, profile: profile(cwd, false, [], [], base) });
+  // A node installed elsewhere in home (the CI runner's tool cache) is outside the listed toolchain dirs: that is what
+  // local.read_allow is for. Its install prefix goes there, as a user would put it.
+  const node = realpathSync(Bun.which("node")!);
+  const readAllow = node.startsWith(`${homedir()}/`) ? [dirname(dirname(node))] : [];
+  const run = (command: string, base: "deny" | "allow" = "deny") => sandboxedExec(["/bin/sh", "-c", command], { cwd, profile: profile(cwd, false, readAllow, [], base) });
   const tools = await run([
     "node -e 'console.log(\"node-ok\")'",
     "bun -e 'console.log(\"bun-ok\")'",
