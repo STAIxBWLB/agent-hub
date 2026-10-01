@@ -1064,3 +1064,23 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
 - `recovery.auto_resume_after_crash` is off by default, also with a project
   config: an automatic start spends quota the user did not ask for.
 
+## Amendment: deny-default sandbox and capabilities (issue #39)
+
+- The deny-default profile allows exec and reads of the system directories
+  (`/usr`, `/bin`, `/sbin`, `/System`, `/Library`, `/opt`, `/private/etc`, the
+  dyld and timezone databases), the toolchain directories in home, `read_allow`,
+  the project, its external git dirs and temp; writes as before; a short list
+  of mach services (directory lookups, logging, notifications), plus name
+  resolution and TLS trust when network is on. The denies at the end (credential
+  stores, the denylist, `.agenthub`, git hooks and config) are shared by both
+  bases.
+- The issue's allowlist proxy for `local.bash_network` is not built here: with
+  the flag on, network is allowed as in 0.7. It moves to a follow-up issue.
+- `local.sandbox` ("deny-default" | "allow-default") is machine-local, since
+  "allow-default" widens the sandbox.
+- Capabilities: `propose`, `assign` (a proposal naming another peer as owner),
+  `remember`, `important`. A peer not listed in `capabilities` has all of them,
+  which keeps today's behaviour; the console user and the hub are never limited.
+  `important` is checked where messages are admitted, the others in the task
+  operations, so in-process tools (the local worker, Pi) are covered too.
+

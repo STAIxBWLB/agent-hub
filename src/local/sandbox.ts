@@ -28,22 +28,55 @@ function externalGitDirs(root: string): string[] {
   return [...new Set(dirs)].filter((d) => !d.startsWith(`${root}/`));
 }
 
-export function profile(cwd: string, network: boolean, readAllow: string[] = [], deny: string[] = []): string {
+/** The system directories a deny-default profile lets commands read and run from: dyld, frameworks, toolchains. */
+const SYSTEM_READABLE = ["/usr", "/bin", "/sbin", "/System", "/Library", "/opt", "/private/etc", "/private/var/db/timezone", "/private/var/db/dyld"];
+/** Directory lookups (users, groups), logging and notifications; plus name resolution and TLS trust when network is on. */
+const MACH_SERVICES = ["com.apple.system.opendirectoryd.libinfo", "com.apple.system.DirectoryService.libinfo_v1", "com.apple.system.logger", "com.apple.system.notification_center", "com.apple.CoreServices.coreservicesd", "com.apple.coreservices.launchservicesd"];
+const NETWORK_MACH_SERVICES = ["com.apple.dnssd.service", "com.apple.trustd", "com.apple.trustd.agent", "com.apple.SecurityServer", "com.apple.networkd"];
+
+/**
+ * `base` "deny" (issue #39) starts from `(deny default)` and allows only what commands need: running and reading the
+ * system, toolchain and project directories, writing the project and temp. "allow" is the profile of 0.7 and earlier,
+ * kept for one release behind `local.sandbox: "allow-default"`. The denies at the end apply to both.
+ */
+export function profile(cwd: string, network: boolean, readAllow: string[] = [], deny: string[] = [], base: "deny" | "allow" = "deny"): string {
   const home = homedir();
   const inHome = (p: string) => (p.startsWith("~/") ? join(home, p.slice(2)) : p);
   const root = realPath(cwd);
   const tmp = realPath(tmpdir());
   const gitDirs = externalGitDirs(root);
   const creds = [".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube", ".docker", ".netrc", ".npmrc", ".omniroute", ".claude", ".codex", ".kimi-code", "Library/Keychains"];
+  const readable = [root, ...HOME_READABLE.map((p) => join(home, p)), ...readAllow.map(inHome), ...gitDirs];
+  const subpaths = (paths: string[]) => paths.map((p) => `(subpath ${q(p)})`).join(" ");
+  const globals = (names: string[]) => names.map((n) => `(global-name ${q(n)})`).join(" ");
+  const start = base === "deny"
+    ? [
+        "(deny default)",
+        "(allow process-fork)",
+        // Runs from the system, toolchain and project directories only; a script runs through an allowed interpreter.
+        `(allow process-exec ${subpaths([...SYSTEM_READABLE, ...readable, tmp, "/private/tmp"])})`,
+        "(allow signal (target same-sandbox))",
+        "(allow process-info* (target same-sandbox))",
+        "(allow sysctl-read)",
+        `(allow mach-lookup ${globals([...MACH_SERVICES, ...(network ? NETWORK_MACH_SERVICES : [])])})`,
+        '(allow ipc-posix-shm-read-data ipc-posix-shm-read-metadata (ipc-posix-name "apple.shm.notification_center"))',
+        "(allow file-read-metadata)",
+        `(allow file-read* (literal "/") ${subpaths([...SYSTEM_READABLE, tmp, "/private/tmp", "/dev"])} ${subpaths(readable)})`,
+        '(allow file-ioctl (regex #"^/dev/"))',
+        ...(network ? ["(allow network*)"] : []),
+      ]
+    : [
+        "(allow default)",
+        ...(network ? [] : ["(deny network*)"]),
+        // Home is default-deny for reads: whatever a command reads can end up in the model's answer, and that answer
+        // is shared with agents that run on cloud subscriptions (~/.claude.json, app tokens, browser profiles ...).
+        `(deny file-read* (subpath ${q(home)}))`,
+        `(allow file-read-metadata (subpath ${q(home)}))`,
+        `(allow file-read* ${subpaths(readable)})`,
+      ];
   return [
     "(version 1)",
-    "(allow default)",
-    ...(network ? [] : ["(deny network*)"]),
-    // Home is default-deny for reads: whatever a command reads can end up in the model's answer, and that answer
-    // is shared with agents that run on cloud subscriptions (~/.claude.json, app tokens, browser profiles ...).
-    `(deny file-read* (subpath ${q(home)}))`,
-    `(allow file-read-metadata (subpath ${q(home)}))`,
-    `(allow file-read* (subpath ${q(root)}) ${[...HOME_READABLE.map((p) => join(home, p)), ...readAllow.map(inHome), ...gitDirs].map((p) => `(subpath ${q(p)})`).join(" ")})`,
+    ...start,
     "(deny file-write*)",
     `(allow file-write* (subpath ${q(root)}) (subpath ${q(tmp)}) (subpath "/private/tmp") (regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`,
     // Inside cwd: nothing that runs later outside the sandbox, nothing that reconfigures the hub.

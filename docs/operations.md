@@ -27,11 +27,26 @@ what the hub runs, which files it sends as credentials, where task text goes,
 or how far the local worker's sandbox reaches (`kimi_cmd`, `codex_bin`,
 `pi.cmd`, `checks`, `mlx.bin`, `mlx.runtimeDir`, `mlx.modelPath`, `omniroute.urls`,
 `omniroute.access_hosts`, the `omniroute` key files, `memory.worker_url`,
-`local.read_allow`, `local.bash_network`) are machine-local: they apply only
-from a file git confirms nobody committed. Put them in
+`local.read_allow`, `local.bash_network`, `local.sandbox`) are machine-local:
+they apply only from a file git confirms nobody committed. Put them in
 `.agenthub/config.local.json` (`ahub init` adds it to `.gitignore`), which is
 read after `config.json`; outside a git repository they keep their defaults, and
 an empty value always means the default.
+
+The local worker's commands run under a sandbox that starts from deny default
+(0.8): they may run and read the system, toolchain and project directories,
+write the project and temp, and nothing else. `"local": { "sandbox":
+"allow-default" }` in `config.local.json` brings back the 0.7 profile for one
+release, should a toolchain need a path the new one lacks; please report it.
+
+`capabilities` in `.agenthub/config.json` narrows what a peer may do with the
+hub's tools: list a peer and it keeps only the capabilities named, from
+`propose` (`hub_task_propose`), `assign` (proposing with another peer as owner),
+`remember` (`hub_remember`) and `important` (`[IMPORTANT]` messages). For
+example `"capabilities": { "local": ["propose", "remember"] }`. A peer that is
+not listed keeps all of them, and a refusal says which capability is missing.
+Approvals are never a capability: only the console (and the dashboard) answers a
+permission request.
 A committed value is ignored with a line in `hub.log`, a note from `ahub
 codex` and `ahub models`, and a row in `ahub doctor`.
 
