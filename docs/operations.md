@@ -37,7 +37,8 @@ The local worker's commands run under a sandbox that starts from deny default
 (0.10): they may run and read the system, toolchain and project directories and
 the selected Xcode or Command Line Tools dir (`xcode-select -p`), write the
 project and temp, and nothing else. With `local.bash_network` on they may also
-read the public CA bundles, which the `*.pem` key deny would otherwise hide.
+read the public CA bundles and Python's `certifi/cacert.pem`, which the `*.pem`
+key deny would otherwise hide.
 `"local": { "sandbox": "allow-default" }` in `config.local.json` brings back the
 profile of 0.9 and earlier for one release, should a toolchain need a path the
 new one lacks; please report it. Newly closed outside home: `/Applications`

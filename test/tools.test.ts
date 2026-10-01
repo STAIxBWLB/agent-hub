@@ -235,3 +235,16 @@ test.skipIf(!sandboxAvailable())("the selected developer dir is in the profile, 
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-devdir-")));
   if (dev) expect(profile(cwd, false)).toContain(dev);
 });
+
+// issue #64: Python's own CA bundle (certifi, also vendored by pip) is readable with network on, like the system's.
+test.skipIf(!sandboxAvailable())("network on: a certifi cacert.pem is readable, other .pem files are not", async () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-certifi-")));
+  const bundle = join(cwd, ".venv", "lib", "python3.12", "site-packages", "certifi");
+  mkdirSync(bundle, { recursive: true });
+  writeFileSync(join(bundle, "cacert.pem"), "-----BEGIN CERTIFICATE-----\n");
+  writeFileSync(join(bundle, "key.pem"), "-----BEGIN PRIVATE KEY-----\n");
+  const read = async (path: string, network: boolean) => (await sandboxedExec(["/bin/sh", "-c", `head -c 5 '${path}' >/dev/null 2>&1 && echo READ || echo blocked`], { cwd, profile: profile(cwd, network) })).output.trim();
+  expect(await read(join(bundle, "cacert.pem"), true)).toBe("READ");
+  expect(await read(join(bundle, "cacert.pem"), false)).toBe("blocked");
+  expect(await read(join(bundle, "key.pem"), true)).toBe("blocked");
+});

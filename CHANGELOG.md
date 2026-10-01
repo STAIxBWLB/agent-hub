@@ -9,6 +9,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - After a crash, `pi.auto_start` brings Pi back on its recorded headless session, with or without `recovery.auto_resume_after_crash`, and on a fresh session (on the recorded backend and model) if that resume fails; before, a fresh Pi started and the recorded session could not be resumed while it ran (#66).
 - Tests cover a refused `hub_send` from the local worker and from Pi, a Pi resumed after `kill -9` on the session file the dead run recorded, and the crash report for Codex and Claude (#68).
 - Model-written text on an ordinary task is screened before it leaves the hub: a done summary, a review note, an unmet item or a budget handoff that matches a PII pattern is not saved to claude-mem, and every peer (the local worker included) gets a stub naming `ahub task show <id>`; the board keeps the text, and `ahub ask` shows such a note only on campus (#69).
+- With `local.bash_network` on, the local worker's commands can read Python's own CA bundle (`certifi/cacert.pem`, also vendored by pip), so `pip install` and `requests` work over HTTPS; every other `.pem` stays denied (#64).
 
 ## 0.10.0
 
