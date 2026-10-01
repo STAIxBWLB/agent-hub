@@ -604,7 +604,7 @@ export async function startDaemon(opts: DaemonOptions) {
   /** A model-written peer argument: a peer id, or nothing for absent, null or "". Anything else is refused. */
   const peerArg = (v: unknown, name: string): PeerId | undefined => {
     if (v == null || v === "") return undefined;
-    const id = typeof v === "string" ? v.trim() : undefined;
+    const id = typeof v === "string" ? v.trim().toLowerCase() : undefined; // peer ids are lowercase; "Codex" means codex
     if (!id || !PEER_ID.test(id)) throw new Error(`${name} must be a peer id, not ${JSON.stringify(v).slice(0, 60)}`);
     return id;
   };

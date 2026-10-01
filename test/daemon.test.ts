@@ -1352,6 +1352,7 @@ test("hub_task_propose: an owner that is not a peer id is refused and creates no
   expect(await call("hub_task_propose", { title: "z", class: "implement", owner: null })).toMatch(/^task #1: proposed/);
   expect(await call("hub_task_propose", { title: "w", class: "implement", owner: "" })).toMatch(/^task #2: proposed/);
   expect(await call("hub_task_accept", { id: [1] })).toContain("id must be a task number, not [1]");
+  expect(await call("hub_task_propose", { title: "v", class: "implement", owner: "Claude" })).toMatch(/owner claude/); // peer ids are lowercase
 });
 
 test("a peer can never answer a permission request: not over the control link, not by message", async () => {
