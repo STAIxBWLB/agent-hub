@@ -1043,7 +1043,9 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
 - The continuous record is `sessions.json` (instance id, time, and each attached
   peer's `recoveryMetadata()`), rewritten when a peer's state changes and
   removed by a clean stop of the run that wrote it. Found at start, with no
-  controlled-restart state in play, it means the previous run crashed.
+  controlled-restart state in play, it means the previous run crashed; the new
+  run takes the record over at once, so its own clean stop removes it even when
+  no peer attaches.
 - Resume goes through the same start path as `ahub kimi` / `ahub pi` / `ahub
   local`: Kimi with `sessionId` (ACP `session/load`, refused when the agent does
   not offer `loadSession`), Pi with its session file, the local worker afresh.

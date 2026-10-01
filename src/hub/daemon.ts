@@ -1080,6 +1080,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const kimi = new AcpPeer("kimi", {
         cmd,
         ...(args.model ? { launchModel: args.model } : {}),
+        ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}),
         cwd: opts.cwd,
         watchdogMs: config.watchdog_ms,
         onPermission,
@@ -1732,7 +1733,11 @@ export async function startDaemon(opts: DaemonOptions) {
   writeStatus();
   log(`${RUN_START}${process.pid} control=127.0.0.1:${server.port} cwd=${opts.cwd}`);
   ready = true;
-  if (crashed) void recoverAfterCrash(crashed).catch((error) => log(`crash recovery failed: ${(error as Error).message}`));
+  if (crashed) {
+    // This run owns the record now, so its clean stop removes it even if no peer attaches to rewrite it.
+    try { if (readSessions(opts.stateDir)?.instanceId === crashed.instanceId) writeSessions(opts.stateDir, { ...crashed, instanceId, at: Date.now() }); } catch (error) { log(`session record not adopted: ${(error as Error).message}`); }
+    void recoverAfterCrash(crashed).catch((error) => log(`crash recovery failed: ${(error as Error).message}`));
+  }
   if (config.pi.enabled && config.pi.auto_start && !recoveryActive() && !crashed?.peers.some((p) => p.peer === "pi")) void startPeer("pi", {}).catch((error) => log(`Pi auto-start failed: ${error.message}`));
   return { bus, token, port: server.port as number, stop, stopped: new Promise<void>((r) => (onStop = r)) };
   } finally {

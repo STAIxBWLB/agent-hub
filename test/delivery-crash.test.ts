@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient, readControl } from "../src/hub/control-client.ts";
@@ -142,6 +142,7 @@ test("after a crash: sessions are resumed with the same identity, the report say
   const after = await consoleClient(second.stateDir);
   const log = () => readFileSync(join(second.stateDir, "hub.log"), "utf8");
   await until(() => log().includes("crash recovery: kimi resumed"), "kimi resumed");
+  expect(readFileSync(join(second.stateDir, "acp-load.txt"), "utf8")).toBe("s1"); // session/load, not a new session
   expect(log()).toContain("crash recovery: the previous hub run stopped without shutting down; 1 deliveries it had in flight are in needs_review (ahub queue list)");
   expect(log()).toContain("crash recovery: claude: the Claude Code plugin reconnects by itself while that session is still open");
   const status = await after.request({ t: "status" });
@@ -164,4 +165,16 @@ test("after a crash: sessions are resumed with the same identity, the report say
   expect(bodies).not.toContain("in flight when the hub dies"); // ids and senders, never the text
   peer.close();
   after.close();
+});
+
+test("a run that recovered from a crash removes the session record on a clean stop, so the next start is no crash", async () => {
+  const first = await startRuntime();
+  await crash(first);
+  rmSync(join(first.stateDir, "status.json"), { force: true });
+  rmSync(join(first.stateDir, "control-token"), { force: true });
+  const second = await startRuntime({ noPeer: true, stateDir: first.stateDir }); // nothing attaches to rewrite the record
+  await until(() => readFileSync(join(second.stateDir, "hub.log"), "utf8").includes("crash recovery: claude:"), "crash report");
+  second.process.kill("SIGTERM");
+  await second.process.exited;
+  expect(existsSync(join(second.stateDir, "sessions.json"))).toBe(false);
 });

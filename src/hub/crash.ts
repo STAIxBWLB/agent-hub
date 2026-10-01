@@ -70,8 +70,9 @@ export function crashPlan(records: SessionRecord[]): { peer: string; resume?: Re
         return { peer, resume: args, how: `pi: its session file can be resumed (${sessionFile})` };
       }
       case "local": {
-        const args: Record<string, string> = {};
-        for (const k of ["route", "model"] as const) if (str(launch[k])) args[k] = str(launch[k])!;
+        // `model` is also recorded as the route's fallback, and a model given at start pins it: pass one or the other.
+        const route = str(launch.route);
+        const args: Record<string, string> = route ? { route } : model ? { model } : {};
         return { peer, resume: args, how: "local: starts again without its history (the worker keeps none across a hub stop)" };
       }
       default:

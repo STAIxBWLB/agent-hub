@@ -32,7 +32,7 @@ const daemon = await startDaemon({
   controlPort: 0,
   codexAppPort: 0,
   codexProxyPort: 0,
-  config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, batch_ms: 15_000, kimi_cmd: ["bun", join(import.meta.dir, "acp-server.ts")], recovery: { auto_resume_after_crash: autoResume } },
+  config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, batch_ms: 15_000, kimi_cmd: ["bun", join(import.meta.dir, "acp-server.ts"), "--record-load", join(stateDir, "acp-load.txt")], recovery: { auto_resume_after_crash: autoResume } },
 });
 append({ type: "daemon-ready", pid: process.pid, port: daemon.port });
 if (withKimi) {

@@ -498,7 +498,8 @@ happened to each peer:
 - Kimi, Pi and the local worker run inside the hub, so they died with it. With
   `"recovery": { "auto_resume_after_crash": true }` in `.agenthub/config.json` the
   hub starts them again: Kimi loads its recorded session (ACP `session/load`), Pi
-  resumes its session file, and the local worker starts without its history. Off
+  resumes its session file, and the local worker starts without its history, on
+  its recorded route (or pinned model). Off
   by default: the report then says what to start.
 - Codex's app-server died with the hub; run `ahub codex` again. Claude Code's
   plugin reconnects by itself while that session is open.

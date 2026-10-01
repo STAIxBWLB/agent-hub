@@ -12,10 +12,11 @@ test("the plan resumes what the hub launches itself and says what the user reatt
     { peer: "codex", meta: { threadId: "th1" } },
     { peer: "kimi", meta: { launch: { kind: "acp", model: "k2" }, sessionId: "s1" } },
     { peer: "pi", meta: { launch: { kind: "pi", mode: "headless", backend: "dgx" }, sessionFile: "/x/s.jsonl" } },
-    { peer: "local", meta: { launch: { route: "sy/coding" } } },
+    { peer: "local", meta: { launch: { route: "sy/coding", model: "fallback" } } }, // the worker records both
     { peer: "kimi", meta: {} },
+    { peer: "local", meta: { launch: { model: "pinned" } } },
   ]);
-  expect(plan.map((p) => p.resume)).toEqual([undefined, undefined, { sessionId: "s1", model: "k2" }, { sessionFile: "/x/s.jsonl", mode: "headless", backend: "dgx" }, { route: "sy/coding" }, undefined]);
+  expect(plan.map((p) => p.resume)).toEqual([undefined, undefined, { sessionId: "s1", model: "k2" }, { sessionFile: "/x/s.jsonl", mode: "headless", backend: "dgx" }, { route: "sy/coding" }, undefined, { model: "pinned" }]);
   expect(plan[1]!.how).toBe("codex: its app-server died with the hub; run ahub codex again (its conversation was thread th1)");
   expect(plan[5]!.how).toBe("kimi: no session id was recorded; start it again with ahub kimi");
 });

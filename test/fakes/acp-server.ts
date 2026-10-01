@@ -89,6 +89,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   const msg = JSON.parse(line);
   if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
   else if (msg.method === "session/load") {
+    const record = process.argv.indexOf("--record-load");
+    if (record > 0) Bun.write(process.argv[record + 1]!, msg.params.sessionId); // argv, not env: the hub scrubs a child's environment
     // what a real agent does while it loads: replay the history, then answer
     send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: msg.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "replayed history" } } } });
     send({ jsonrpc: "2.0", id: msg.id, result: null });
