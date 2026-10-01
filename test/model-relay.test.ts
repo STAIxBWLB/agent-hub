@@ -104,7 +104,10 @@ test("relay enforces loopback, origin, body and backend-specific context limits"
 test("relay close aborts an active upstream request", async () => {
   let seen!: () => void;
   const requestSeen = new Promise<void>((resolve) => { seen = resolve; });
-  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async () => { seen(); await new Promise<void>(() => {}); return new Response("never"); } });
+  // The handler waits until the relay's request is aborted: one that never settles makes `stop(true)` poll for it
+  // (about 100 ms each time, past the 5 s test limit on a loaded macOS runner; issue #80). If the relay stopped aborting
+  // the upstream request, the handler and the client's request would hang and the test would still fail.
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async (req) => { seen(); await new Promise<void>((resolve) => req.signal.addEventListener("abort", () => resolve(), { once: true })); return new Response("never"); } });
   cleanup.push(() => upstream.stop(true));
   const relay = await startModelRelay({ omni: omni(`http://127.0.0.1:${upstream.port}/v1`), allowedDGXmodels: { "dgx/fast": "deepseek" }, token: "relay-token" });
   const pending = fetch(`${relay.url}/chat/completions`, { method: "POST", headers: { authorization: "Bearer relay-token", "content-type": "application/json" }, body: JSON.stringify({ model: "dgx/fast", messages: [{ role: "user", content: "wait" }] }) });
