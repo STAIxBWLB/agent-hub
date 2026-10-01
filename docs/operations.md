@@ -199,8 +199,8 @@ When another peer worked during the same turn, the messages say so: the change
 may be theirs. Edits by Claude or by you during a peer's turn count as that
 peer's, without that note: the hub sees no turn of yours. Nothing is blocked. A
 file only one agent touched, and anything to do with a PII task, warns nobody.
-A file whose name matches a PII pattern is left out of the messages, the
-console line and the event, as in overlap notices.
+A file whose name matches a PII pattern is not named, as in overlap notices: the
+messages and the console line only count such files, and the event leaves them out.
 
 Claude's edits do not pass through turn snapshots, so Claude can ask before each
 edit instead. `templates/claude-hooks.json` is a PreToolUse hook for Edit, Write,

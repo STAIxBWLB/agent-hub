@@ -1200,8 +1200,9 @@ test("conflicts: a turn changing another owner's file warns both, once; a file o
   await until(() => readEvents(file).some((e) => e.type === "conflict"), "the conflict");
   const conflict = readEvents(file).find((e) => e.type === "conflict");
   expect(conflict).toMatchObject({ peer: "codex", task: 2, other: 1, owner: "kimi", paths: ["shared.txt"], concurrent: false });
-  await until(() => codex.got.some((b) => b.includes("Your last turn (task #2) changed shared.txt")) && kimi.got.some((b) => b.includes("codex's last turn (task #2) changed shared.txt, which your open task #1 changed before it")), "both notices");
-  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("conflict: codex (task #2) changed shared.txt, which #1 (owner kimi) changed before");
+  await until(() => codex.got.some((b) => b.includes("Your last turn (task #2) changed shared.txt")) && kimi.got.some((b) => b.includes("codex's last turn (task #2) changed shared.txt, 1 file(s) whose names are withheld (they match a PII pattern), which your open task #1 changed before it")), "both notices");
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("conflict: codex (task #2) changed shared.txt, 1 file(s) whose names are withheld (they match a PII pattern), which #1 (owner kimi) changed before");
+  expect(codex.got.some((b) => b.includes("which kimi's open task (#1 refactor) changed before it"))).toBe(true);
   const said = [readFileSync(join(stateDir, "hub.log"), "utf8"), JSON.stringify(readEvents(file).filter((e) => e.type === "conflict")), ...kimi.got, ...codex.got].join("\n");
   expect(said).not.toContain("900101");
 

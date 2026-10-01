@@ -942,6 +942,7 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   peer changed (#33's `Turns.overlapping`), and none are recorded while such a
   turn's changes are unknown; detection runs after the `turn_end` event; the
   hook quotes task titles as JSON strings and says they are agents' text; a
-  file name that matches a PII pattern is left out of notices, the console line
-  and the event, through the same check as overlap mentions (#31).
+  file name that matches a PII pattern is never named, through the same check as
+  overlap mentions (#31): notices and the console line count such files, the
+  event leaves them out.
 
