@@ -16,6 +16,10 @@ const noPeer = process.argv.includes("--no-peer");
 // issue #37: a Kimi peer (the fake ACP agent) and crash recovery that resumes it
 const withKimi = process.argv.includes("--kimi");
 const autoResume = process.argv.includes("--auto-resume");
+// issue #68: a headless Pi (the fake RPC agent), so a crash leaves its session file in the record; `--pi-enabled`
+// only enables it, for the run after a crash, where recovery starts it
+const startPi = process.argv.includes("--pi");
+const withPi = startPi || process.argv.includes("--pi-enabled");
 if (!stateDir || !cwd || !projectId || !marker) throw new Error("delivery runtime needs --state-dir, --cwd, --project-id and --marker");
 
 mkdirSync(stateDir, { recursive: true });
@@ -32,9 +36,15 @@ const daemon = await startDaemon({
   controlPort: 0,
   codexAppPort: 0,
   codexProxyPort: 0,
-  config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, batch_ms: 15_000, kimi_cmd: ["bun", join(import.meta.dir, "acp-server.ts"), "--record-load", join(stateDir, "acp-load.txt")], recovery: { auto_resume_after_crash: autoResume } },
+  config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: withPi, auto_start: false, cmd: [process.execPath, join(import.meta.dir, "pi-rpc.ts")] }, batch_ms: 15_000, kimi_cmd: ["bun", join(import.meta.dir, "acp-server.ts"), "--record-load", join(stateDir, "acp-load.txt")], recovery: { auto_resume_after_crash: autoResume } },
 });
 append({ type: "daemon-ready", pid: process.pid, port: daemon.port });
+if (startPi) {
+  const console_ = await ControlClient.connect(stateDir, { role: "console", projectId, projectRoot: cwd });
+  const started = await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } });
+  console_.close();
+  append({ type: "pi-started", ok: started.ok, error: started.error });
+}
 if (withKimi) {
   const console_ = await ControlClient.connect(stateDir, { role: "console", projectId, projectRoot: cwd });
   const started = await console_.request({ t: "start", peer: "kimi" });

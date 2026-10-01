@@ -221,3 +221,19 @@ test("after a crash, malformed session records are skipped and pi.auto_start sti
   expect(daemon.bus.peers.get("pi")!.recoveryMetadata!().sessionId).toBe("recorded-1");
   expect((await crash()).some((l) => l.startsWith("pi resumed (pi.auto_start)"))).toBe(true);
 });
+
+// issue #68: Pi's hub_send hears a refusal too, instead of "sent".
+test("a Pi hub_send the limits refuse returns not sent with the reason", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-limits-"));
+  const config = { ...DEFAULT_CONFIG, limits: { ...DEFAULT_CONFIG.limits, repeat_window_s: 60 }, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { daemon, console_ } = await hub(config);
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  for (let i = 0; i < 100 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(10);
+  const launch = (daemon.bus.peers.get("pi") as any).tuiLaunch;
+  const call = async (name: string, args: unknown, toolCallId: string) => (await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, {
+    method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ name, args, toolCallId }),
+  })).json() as Promise<{ text: string }>;
+  expect((await call("hub_send", { text: "build is green" }, "send1")).text).toBe("sent");
+  expect((await call("hub_send", { text: "build is green" }, "send2")).text).toMatch(/^not sent: the same message went to everyone \d+ s ago$/);
+});
