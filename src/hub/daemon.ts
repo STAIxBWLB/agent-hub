@@ -486,7 +486,12 @@ export async function startDaemon(opts: DaemonOptions) {
     failing: () => bus.failingPeers(),
     held: () => Object.fromEntries(bus.knownPeers().flatMap((peer) => { const hold = queueHold(peer); return hold ? [[peer, hold]] : []; })),
   });
-  board.onChange = (t, h) => event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, pii: tasks.isPii(t) });
+  board.onChange = (t, h) => {
+    event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, pii: tasks.isPii(t) });
+    // Models can self-claim after their turn begins; preserve that ownership even if they finish before settlement.
+    const turn = t.owner ? turns.get(t.owner) : undefined;
+    if (turn) turnTasks.set(turn.id, [...new Set([...(turnTasks.get(turn.id) ?? []), t.id])]);
+  };
   // ---- budget relay -------------------------------------------------------------------------------------------
   const checkpointWaits = new Map<PeerId, (summary: string | undefined) => void>();
   const PLATFORM: Record<PeerId, string> = { claude: "claude", codex: "codex", kimi: "kimi" };

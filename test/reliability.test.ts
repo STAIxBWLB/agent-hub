@@ -206,3 +206,23 @@ test("#91 sequential overwrite of an in_review task is still a conflict", async 
   await until(() => readEvents(file).some((e) => e.type === "conflict"));
   expect(readEvents(file).find((e) => e.type === "conflict")).toMatchObject({ peer: "codex", other: 1, owner: "kimi", concurrent: false, paths: ["shared.txt"] });
 });
+
+
+test("#91 self-claims after both turns start still associate concurrent edits with their tasks", async () => {
+  const h = await hub(undefined, true); const k = await attach(h.daemon, "kimi"); const c = await attach(h.daemon, "codex");
+  k.held = true; c.held = true;
+  await h.console_.request({ t: "send", to: ["kimi"], body: "claim your own work" });
+  await h.console_.request({ t: "send", to: ["codex"], body: "claim your own work too" });
+  await until(() => k.state === "busy" && c.state === "busy");
+  for (const peer of ["kimi", "codex"]) {
+    const tools = await ControlClient.connect(h.stateDir, { role: "tools", peer });
+    const result = await tools.request({ t: "task", op: "hub_task_propose", args: { title: `${peer} self-claimed work`, class: "implement", owner: peer, refs: { paths: ["shared.txt"] } } });
+    expect(result.text).toContain("in_progress"); tools.close();
+  }
+  writeFileSync(join(h.cwd, "shared.txt"), "kimi then codex");
+  c.held = false; c.finish!(); k.held = false; k.finish!();
+  const file = join(h.stateDir, "events.jsonl");
+  await until(() => readEvents(file).some((e) => e.type === "conflict" && e.concurrent));
+  expect(readEvents(file).filter((e) => e.type === "conflict" && e.concurrent)).toHaveLength(1);
+  await until(() => k.got.flat().some((e) => e.body.includes("Concurrent edit:")) && c.got.flat().some((e) => e.body.includes("Concurrent edit:")));
+});
