@@ -284,11 +284,19 @@ export async function startDaemon(opts: DaemonOptions) {
   let inference: Inference | undefined;
   const journal = new DeliveryJournal({ file: join(opts.stateDir, "hub.db"), projectRoot: opts.cwd, projectId, instanceId, operationId: recoveryOperation });
   // Agents only: the console user and the hub itself are never limited (issue #38).
-  const limiter = new Limiter(config.limits);
-  const admit = (from: PeerId, to: PeerId[] | undefined, priority: Priority, body: string): string | undefined => {
-    if (from === USER || from === HUB || from === DIGEST) return undefined;
-    const refused = limiter.admit(from, to, priority, body);
-    if (refused) log(`limits: ${from}: ${refused}`);
+  // A typo such as "12/min" would read as 0, which turns a limit off without a word: the project default instead.
+  const limits = Object.fromEntries(Object.entries(config.limits).map(([k, v]) => {
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) return [k, v];
+    const fallback = PROJECT_LIMITS[k as keyof LimitsConfig];
+    log(`limits.${k}: ${JSON.stringify(v)} is not a number of 0 or more; using ${fallback}`);
+    return [k, fallback];
+  })) as unknown as LimitsConfig;
+  const limiter = new Limiter(limits);
+  const admit = (env: Envelope, parent?: string): string | undefined => {
+    // [FYI] is recorded and costs nobody a turn: nothing to limit.
+    if (env.from === USER || env.from === HUB || env.from === DIGEST || env.priority === "fyi") return undefined;
+    const refused = limiter.admit(env.from, env.to, env.priority, env.body, parent);
+    if (refused) log(`limits: ${env.from}: ${refused}`);
     return refused;
   };
   const bus = new Bus({ journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit });
@@ -1475,13 +1483,15 @@ export async function startDaemon(opts: DaemonOptions) {
         // A human at the console should not wait out the batch window; agents default to status.
         const { priority, body } = parseMarker(String(msg.body ?? ""), c.peer ? "status" : "important");
         if (!body) return void reply({ t: "sent", ok: false, error: "empty body" });
-        const to: PeerId[] | undefined = Array.isArray(msg.to) && msg.to.length ? msg.to.map(String) : undefined;
+        const to: PeerId[] | undefined = Array.isArray(msg.to) && msg.to.length ? [...new Set<string>(msg.to.map(String))] : undefined;
         const unknown = to?.filter((id) => !bus.knownPeers().includes(id)) ?? [];
         if (unknown.length) return void reply({ t: "sent", ok: false, error: `unknown peer: ${unknown.join(", ")}` });
         const inReplyTo = msg.reply_to ? bus.get(String(msg.reply_to)) : undefined;
-        const refused = c.peer ? admit(c.peer, to, priority, body) : undefined;
+        // Built first: limits count the audience it really has (a reply goes to the parent's sender).
+        const env = newEnvelope(c.peer ?? USER, body, { priority, ...(to ? { to } : {}), ...(inReplyTo ? { inReplyTo } : {}) });
+        const refused = c.peer ? admit(env, inReplyTo?.id) : undefined;
         if (refused) return void reply({ t: "sent", ok: false, error: refused });
-        const targets = bus.publish(newEnvelope(c.peer ?? USER, body, { priority, ...(to ? { to } : {}), ...(inReplyTo ? { inReplyTo } : {}) }));
+        const targets = bus.publish(env);
         if (c.peer && inReplyTo) bus.completeReply(c.peer, inReplyTo.id);
         return void reply({ t: "sent", ok: true, targets, recorded: priority === "fyi" });
       }

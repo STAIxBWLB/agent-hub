@@ -1002,8 +1002,14 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   shows, so the message shape is unchanged; the bus's `admit` option guards
   adapter messages (turn answers, the local worker's hub_send), drops a refused
   one and tells the sender in a ride-along line.
-- An `important` message over its budget is refused, not downgraded, and the
-  reason says to send it without `[IMPORTANT]`.
+- Both admit the envelope as it will be sent: a reply without `to` goes to its
+  parent's sender, `digest` is resolved to the senders it replaced, and the
+  priority is capped. The repeat key includes the id of what the message
+  answers. `fyi` is never limited: it reaches no peer.
+- An `important` hub_send over its budget is refused, not downgraded, and the
+  reason says to send it without `[IMPORTANT]`. A turn answer has no caller to
+  refuse: over its important budget it is lowered to status and delivered, and
+  the sender is told.
 - A refusal consumes no token and does not count as a send for repeat
   suppression. Limits are off in `DEFAULT_CONFIG` and on with any project config
   (12/min per sender, 6/min per recipient, 6 important an hour, 120 s repeats).

@@ -34,15 +34,18 @@ export class Limiter {
     private readonly now: () => number = Date.now,
   ) {}
 
-  /** undefined when the message may go; otherwise the reason, for the sender. */
-  admit(from: PeerId, to: PeerId[] | undefined, priority: Priority, body: string): string | undefined {
+  /**
+   * undefined when the message may go; otherwise the reason, for the sender. `parent` is the id of what the message
+   * answers: "Yes." to two different questions is two messages, not a repeat.
+   */
+  admit(from: PeerId, to: PeerId[] | undefined, priority: Priority, body: string, parent = ""): string | undefined {
     const now = this.now();
     const audience = to?.length ? [...new Set(to)].sort() : ["*"];
+    const key = `${from}\0${audience.join(",")}\0${parent}\0${body.trim().replace(/\s+/g, " ")}`;
     if (this.cfg.repeat_window_s > 0) {
-      const key = `${from}\0${audience.join(",")}\0${body.trim().replace(/\s+/g, " ")}`;
       const last = this.recent.get(key);
       if (last !== undefined && now - last < this.cfg.repeat_window_s * 1000) {
-        return `the same message went to ${audience.join(", ")} ${Math.round((now - last) / 1000)} s ago`;
+        return `the same message went to ${to?.length ? audience.join(", ") : "everyone"} ${Math.round((now - last) / 1000)} s ago`;
       }
       this.recent.set(key, now);
       if (this.recent.size > 1000) for (const [k, at] of this.recent) if (now - at >= this.cfg.repeat_window_s * 1000) this.recent.delete(k);
@@ -58,7 +61,7 @@ export class Limiter {
     const short = filled.filter((f) => f.b.tokens < 1);
     if (short.length) {
       const wait = Math.max(...short.map((f) => Math.ceil(Math.round((1 - f.b.tokens) / f.rate) / 1000))); // whole ms first: 1/(1/x) is not always x
-      if (this.cfg.repeat_window_s > 0) this.recent.delete(`${from}\0${audience.join(",")}\0${body.trim().replace(/\s+/g, " ")}`); // refused, so not sent
+      if (this.cfg.repeat_window_s > 0) this.recent.delete(key); // refused, so not sent
       const what = short.some((f) => f.key.startsWith("i\0")) ? "important messages" : "messages";
       return `rate limited: too many ${what} from ${from}; retry after ${wait} s${what === "important messages" ? ", or send it without [IMPORTANT]" : ""}`;
     }

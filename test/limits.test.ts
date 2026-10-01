@@ -58,6 +58,16 @@ test("duplicate recipients are the same recipients for repeat suppression", () =
   expect(l.admit("codex", ["claude", "claude"], "status", "done")).toMatch(/^the same message went to claude /);
 });
 
+test("what a message answers is part of the repeat key, and a broadcast repeat says everyone", () => {
+  const { now } = clock();
+  const l = new Limiter({ ...DEFAULT_LIMITS, repeat_window_s: 60 }, now);
+  expect(l.admit("codex", ["claude"], "status", "Yes.", "q1")).toBeUndefined();
+  expect(l.admit("codex", ["claude"], "status", "Yes.", "q2")).toBeUndefined();
+  expect(l.admit("codex", ["claude"], "status", "Yes.", "q1")).toMatch(/^the same message went to claude /);
+  expect(l.admit("codex", undefined, "status", "all done")).toBeUndefined();
+  expect(l.admit("codex", undefined, "status", "all done")).toMatch(/^the same message went to everyone /);
+});
+
 test("off by default", () => {
   const l = new Limiter(DEFAULT_LIMITS);
   for (let i = 0; i < 100; i++) expect(l.admit("codex", undefined, "important", "same")).toBeUndefined();
@@ -71,7 +81,7 @@ test("an adapter's refused message is not published, and the sender hears why on
     async stop() {}
   }
   const l = new Limiter({ ...DEFAULT_LIMITS, repeat_window_s: 60 });
-  const bus = new Bus({ batchMs: 0, admit: (from, to, p, body) => l.admit(from, to, p, body) });
+  const bus = new Bus({ batchMs: 0, admit: (e, parent) => l.admit(e.from, e.to, e.priority, e.body, parent) });
   const [a, b] = [new Peer("codex"), new Peer("claude")];
   for (const p of [a, b]) { bus.add(p); await p.start(); }
   expect(a.onMessage?.("done", { to: ["claude"] })).toBeUndefined();

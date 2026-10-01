@@ -24,8 +24,11 @@ export interface BusOptions {
   /** Optional: rewrite a delivery before it goes out (M6 digest condensation). Must return its input on any failure. */
   condense?: (envs: Envelope[]) => Promise<Envelope[]>;
   journal?: DeliveryJournal;
-  /** Optional: may an agent send this now (issue #38)? A reason refuses it, and the sender hears it on its next delivery. */
-  admit?: (from: PeerId, to: PeerId[] | undefined, priority: Priority, body: string) => string | undefined;
+  /**
+   * Optional: may an agent send this envelope now (issue #38)? `parent` is the id of what it answers. A reason refuses
+   * it, and the sender hears it on its next delivery.
+   */
+  admit?: (env: Envelope, parent?: string) => string | undefined;
 }
 
 /** Serializable delivery state used by the controlled restart coordinator. Bodies stay in the private daemon file. */
@@ -136,14 +139,22 @@ export class Bus {
       const condensed = !!last?.out.some((e) => e.from === DIGEST);
       const audienceOriginals = originals ?? (opts?.to?.includes(DIGEST) && condensed ? last?.originals : undefined);
       const to = opts?.to?.length ? resolveTo(opts.to, audienceOriginals) : undefined;
-      const effective = opts?.priority ?? capPriority(peer, priority, opts?.inReplyTo, originals);
-      // Limits count what is sent: the real recipients, not `digest`, and the priority after the cap.
-      const refused = this.opts.admit?.(peer.id, to, effective, body);
+      let env = newEnvelope(peer.id, body, { ...opts, ...(to ? { to } : {}), priority: opts?.priority ?? capPriority(peer, priority, opts?.inReplyTo, originals) });
+      // Limits count what is sent: the envelope as built (a reply goes to its parent's sender, `digest` is resolved,
+      // the priority is capped), never the raw `to`.
+      const parent = opts?.inReplyTo?.id;
+      let refused = this.opts.admit?.(env, parent);
+      // A turn answer has no caller to refuse: over its important budget it goes out as status, not at all.
+      if (refused && env.priority === "important" && !this.opts.admit?.({ ...env, priority: "status" }, parent)) {
+        this.note(peer.id, noteLine(HUB, "decision", `your [IMPORTANT] message went out as status: ${refused}`));
+        env = { ...env, priority: "status" };
+        refused = undefined;
+      }
       if (refused) {
         this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered: ${refused}`));
         return refused;
       }
-      this.publish(newEnvelope(peer.id, body, { ...opts, ...(to ? { to } : {}), priority: effective }));
+      this.publish(env);
     };
     peer.onFailed = (envs) => {
       // The adapter got the condensed list; what has to come back is what that list replaced.

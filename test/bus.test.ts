@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { Bus, type BusEvent, type BusOptions } from "../src/hub/bus.ts";
 import { DIGEST, frame, HUB, keepNotes, newEnvelope, noteLine, sanitize, parseMarker, renderDigest, replyAudience, replyParent, USER, type Envelope, type PeerState } from "../src/hub/envelope.ts";
+import { DEFAULT_LIMITS, Limiter, type LimitsConfig } from "../src/hub/limits.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 
 class FakePeer extends BasePeer {
@@ -530,7 +531,7 @@ test("a reply to a condensed delivery reaches the senders the condensation repla
 
 test("limits count what is sent: the senders behind a condensed delivery, and the priority after the cap (#38)", async () => {
   const admitted: string[] = [];
-  const admit = (from: string, to: string[] | undefined, p: string) => void admitted.push(`${from}>${to?.join(",") ?? "*"}:${p}`);
+  const admit = (e: Envelope) => void admitted.push(`${e.from}>${e.to?.join(",") ?? "*"}:${e.priority}`);
   const { bus, kimi } = await trio(undefined, {
     batchMax: 2,
     condense: async (envs) => (envs.length < 2 ? envs : [newEnvelope(DIGEST, `condensed ${envs.length}`, { kind: "status" })]),
@@ -609,4 +610,37 @@ test("fenceRecovery resolves once in-flight work settles", async () => {
   release();
   await pending; // the fence waited out the in-flight drain instead of timing out
   expect(bus.isRecoveryHeld).toBe(true);
+});
+
+// issue #38, review of #52: limits see the envelope as sent, and a turn answer is never refused for being important.
+const limited = (cfg: Partial<LimitsConfig>) => {
+  const l = new Limiter({ ...DEFAULT_LIMITS, ...cfg });
+  return (e: Envelope, parent?: string) => l.admit(e.from, e.to, e.priority, e.body, parent);
+};
+
+test("a reply without `to` counts against the sender it answers; the same short answer to two questions is two messages", async () => {
+  const { bus, claude, codex, kimi } = await trio(undefined, { admit: limited({ pair_per_min: 1, repeat_window_s: 60 }) });
+  const fromCodex = newEnvelope("codex", "is #12 merged?", { to: ["kimi"] });
+  const fromClaude = newEnvelope("claude", "do the tests pass?", { to: ["kimi"] });
+  bus.publish(fromCodex);
+  bus.publish(fromClaude);
+  await tick();
+  expect(kimi.onMessage!("Yes.", { inReplyTo: fromCodex })).toBeUndefined(); // to codex
+  expect(kimi.onMessage!("Yes.", { inReplyTo: fromClaude })).toBeUndefined(); // to claude: another pair, another question
+  await tick();
+  expect(codex.got.map((e) => e.body)).toEqual(["Yes."]);
+  expect(claude.got.map((e) => e.body)).toEqual(["Yes."]);
+  expect(kimi.onMessage!("Yes.", { inReplyTo: fromCodex })).toMatch(/^the same message went to codex/); // a real repeat
+  expect(kimi.onMessage!("Still yes.", { to: ["codex"] })).toMatch(/^rate limited/); // the codex pair is spent
+});
+
+test("a turn answer over its important budget goes out as status, and the sender is told", async () => {
+  const { bus, claude, codex } = await trio(undefined, { admit: limited({ important_per_hour: 1 }) });
+  codex.onMessage!("[IMPORTANT] main is red", { to: ["claude"] });
+  codex.onMessage!("[IMPORTANT] I reverted the bad commit; rebase now", { to: ["claude"] });
+  await tick();
+  expect(claude.got.map((e) => `${e.priority}:${e.body}`)).toEqual(["important:main is red", "status:I reverted the bad commit; rebase now"]);
+  bus.publish(newEnvelope("claude", "ok", { to: ["codex"] }));
+  await tick();
+  expect(codex.got[0]!.body).toContain("your [IMPORTANT] message went out as status: rate limited: too many important messages from codex");
 });

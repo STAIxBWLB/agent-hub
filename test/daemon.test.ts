@@ -1296,11 +1296,17 @@ test("limits: a hub_send burst is refused with the retry time, a repeat is dropp
   const { stateDir, daemon, console_ } = await hub({ limits: { sender_per_min: 2, pair_per_min: 0, important_per_hour: 0, repeat_window_s: 60 } });
   const { client } = await fakeClaude(stateDir);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
-  const send = async (text: string) => ((await client.callTool({ name: "hub_send", arguments: { text: `[FYI] ${text}` } })) as { content: { text: string }[] }).content[0]!.text;
-  expect(await send("one")).toContain("recorded only");
-  expect(await send("one")).toMatch(/^not sent: the same message went to \* \d+ s ago$/);
-  expect(await send("two")).toContain("recorded only");
+  const send = async (text: string) => ((await client.callTool({ name: "hub_send", arguments: { text } })) as { content: { text: string }[] }).content[0]!.text;
+  expect(await send("one")).not.toContain("not sent");
+  expect(await send("one")).toMatch(/^not sent: the same message went to everyone \d+ s ago$/);
+  expect(await send("two")).not.toContain("not sent");
   expect(await send("three")).toMatch(/^not sent: rate limited: too many messages from claude; retry after \d+ s$/);
+  expect(await send("[FYI] still recorded")).toContain("recorded only"); // costs nobody a turn: never limited
   for (let i = 0; i < 5; i++) expect((await console_.request({ t: "send", body: `[FYI] console ${i}` })).ok).toBe(true);
   expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("limits: claude: rate limited");
+});
+
+test("limits: a value that is not a number falls back to the project default, with a line in hub.log", async () => {
+  const { stateDir } = await hub({ limits: { ...DEFAULT_CONFIG.limits, sender_per_min: "12/min" as unknown as number } });
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain('limits.sender_per_min: "12/min" is not a number of 0 or more; using 12');
 });
