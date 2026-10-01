@@ -7,6 +7,9 @@ import { join } from "node:path";
 import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { HUB, newEnvelope } from "../src/hub/envelope.ts";
+import { readEvents } from "../src/hub/events.ts";
+import { summarize } from "../src/hub/report.ts";
+import { parse as parseOverlaps } from "../scripts/overlaps.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 import { startFakeModelServer, toolCall } from "./fakes/model-server.ts";
 
@@ -919,4 +922,31 @@ test("completion checks: run where git vouches for the config, refused where it 
   const pids = readFileSync(join(dir, "pids"), "utf8").trim().split("\n");
   expect(pids).toHaveLength(1);
   expect(() => process.kill(Number(pids[0]), 0)).toThrow();
+});
+
+// issue #40: events.jsonl from a scripted hub reproduces the known counts and never carries a body.
+test("telemetry: a scripted hub's events give the known counts, match the overlap counter, and hold no bodies", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  const { client } = await fakeClaude(stateDir);
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
+  expect((await console_.request({ t: "start", peer: "kimi" })).ok).toBe(true);
+  const op = async (o: string, args: unknown) => (await console_.request({ t: "task", op: o, args })).text as string;
+  await op("hub_task_propose", { title: "refactor the bus", class: "implement", owner: "kimi", refs: { paths: ["src/hub/bus.ts"] } });
+  await op("hub_task_propose", { title: "retry backoff", class: "implement", owner: "claude", refs: { paths: ["src/hub/bus.ts"] } });
+  await op("hub_task_propose", { title: "patient 900101-1234567 needs a follow-up", class: "implement" });
+  await client.callTool({ name: "hub_send", arguments: { text: "secret-body-text run the tests" } });
+  const file = join(stateDir, "events.jsonl");
+  await until(() => readEvents(file).some((e) => e.type === "turn_end" && e.peer === "kimi"), "a kimi turn");
+  const events = readEvents(file);
+  const r = summarize(events);
+  expect(r.overlaps).toEqual({ warnings: 1, pairs: 1 });
+  expect(r.tasks.proposed).toBe(3);
+  expect(r.peers.kimi!.turns).toBeGreaterThanOrEqual(1);
+  expect(r.messages.total).toBeGreaterThanOrEqual(1);
+  // The same notice the human sees, counted by scripts/overlaps.ts from hub.log.
+  expect(parseOverlaps(readFileSync(join(stateDir, "hub.log"), "utf8")).length).toBe(r.overlaps.warnings);
+  const raw = readFileSync(file, "utf8");
+  expect(raw).not.toContain("secret-body-text");
+  expect(raw).not.toContain("900101-1234567");
+  expect(events.every((e) => !("body" in e))).toBe(true);
 });

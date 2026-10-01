@@ -109,6 +109,21 @@ to attached peers. `[IMPORTANT]` can bypass batching where the peer supports
 it; `[STATUS]` may batch, and `[FYI]` is recorded without follow-on
 delivery. A delivery or answer is not a task completion receipt.
 
+## Telemetry: export and report
+
+The hub writes structured events to `.agenthub/state/events.jsonl` alongside
+`hub.log` (schema: `docs/events.md`). They carry ids, routing, sizes, states and
+token counts, never message bodies or task titles.
+
+```bash
+ahub report --since 7d          # turns, busy time and tokens per peer, messages, overlaps, task events
+ahub report --since 7d --json   # the same numbers as JSON
+ahub export --since 24h         # the raw events as JSON lines, for your own analysis
+```
+
+`ahub report` counts the same overlap warnings as `scripts/overlaps.ts`, from the
+structured events instead of log lines.
+
 ## Approvals and pauses
 
 Inspect permission requests in the terminal:

@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { stripUntrusted } from "./config-trust.ts";
+import { eventLog } from "./events.ts";
 import type { ServerWebSocket } from "bun";
 import { AcpPeer, type PermissionRequest } from "../adapters/acp.ts";
 import { CodexPeer } from "../adapters/codex-appserver.ts";
@@ -224,6 +225,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const logFile = join(opts.stateDir, "hub.log");
   // The state dir can vanish under a running hub (issue #56): a log line must never take a handler down with it.
   const log = (line: string) => { try { appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* the state dir is gone; the watchdog is stopping the hub */ } };
+  const event = eventLog(join(opts.stateDir, "events.jsonl"));
 
   // Any local web page can open a WebSocket to a loopback port, so the control link needs a secret.
   // The file is written only after the port is bound: a second daemon that loses the bind must not clobber it.
@@ -359,6 +361,7 @@ export async function startDaemon(opts: DaemonOptions) {
     project: chain.at(-1)!,
     ...(config.memory.enabled ? { memory, briefs: new Briefs(memory, chain.at(-1)!, config.memory.brief_items) } : {}),
     notify,
+    recordOverlap: (task, owner, others) => event({ type: "overlap", task, owner, others }),
     ...(checksAllowed ? { check: (cls: string) => checkCommands[cls], runCheck: async (command: string) => (checksClosed ? interrupted : runCheck(command, opts.cwd, checkTimeoutS * 1000, runningChecks)) } : {}),
     // What a peer learned reaches the peers working now, on their next delivery, instead of at their next session (#68).
     // Fail-open: the note is already saved, so a bus that cannot persist costs the sharing, not the tool call.
@@ -378,6 +381,7 @@ export async function startDaemon(opts: DaemonOptions) {
     },
     triage: { classify: (title, detail) => inference?.triage(title, detail) ?? Promise.resolve(undefined), onCampus: () => onCampus() },
   });
+  board.onChange = (t, h) => event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, pii: tasks.isPii(t) });
   // ---- budget relay -------------------------------------------------------------------------------------------
   const checkpointWaits = new Map<PeerId, (summary: string | undefined) => void>();
   const PLATFORM: Record<PeerId, string> = { claude: "claude", codex: "codex", kimi: "kimi" };
@@ -414,6 +418,7 @@ export async function startDaemon(opts: DaemonOptions) {
     // Somebody other than the paused peer has to be there, or the handoff would only leave its tasks without an owner.
     canHandOff: (peer) => [...bus.peers.keys()].some((id) => id !== peer && ["idle", "busy"].includes(bus.stateOf(id))),
     handoff: (peer, context) => tasks.reassignForPause(peer, context),
+    reading: (peer, windows, hard) => event({ type: "quota", peer, windows: windows.map((w) => ({ id: w.id, used: w.used, ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}) })), hard }),
     resumed: (record) => {
       if (record.peer === "kimi") kimiTokens.length = 0; // a new window: the old counts would pause it again at once
       const moved = record.moved.length ? `While you were paused these moved: ${record.moved.map((m) => `${m.title} (${m.role} -> ${m.to ?? "nobody"})`).join("; ")}. They stay where they are; ask the user if you should take one back.` : "Nothing was moved while you were paused.";
@@ -424,14 +429,27 @@ export async function startDaemon(opts: DaemonOptions) {
   budget.setRecoveryHold(recoveryActive());
   const kimiTokens: { at: number; n: number }[] = [];
   startupCleanup.push(() => budget.close());
-  let kimiSessionTotal = 0;
-  /** `total` is the session's running count: only what was added since the last update goes into the rolling window. */
+  // Turns and their tokens for telemetry (issue #40). Turn ids carry the hub run, so they stay unique across restarts.
+  const runId = Date.now().toString(36);
+  let turnSeq = 0;
+  const turns = new Map<PeerId, { id: string; start: number; tokens: number }>();
+  const tokenTotals = new Map<PeerId, number>();
+  /** `total` is a session's running count: only what was added since the last update counts (a smaller total means a new session). */
+  const addTokens = (peer: PeerId, total: number): number => {
+    const prev = tokenTotals.get(peer) ?? 0;
+    const n = total >= prev ? total - prev : total;
+    tokenTotals.set(peer, total);
+    if (n > 0) {
+      event({ type: "tokens", peer, n });
+      const turn = turns.get(peer);
+      if (turn) turn.tokens += n;
+    }
+    return n;
+  };
   const onKimiTokens = (total: number) => {
-    if (!config.budget.kimi_tokens_5h) return;
+    const n = addTokens("kimi", total);
+    if (!config.budget.kimi_tokens_5h || !n) return;
     const now = Date.now();
-    const n = total >= kimiSessionTotal ? total - kimiSessionTotal : total; // a smaller total means a new session
-    kimiSessionTotal = total;
-    if (!n) return;
     kimiTokens.push({ at: now, n });
     while (kimiTokens.length && now - kimiTokens[0]!.at > 5 * 3_600_000) kimiTokens.shift();
     const used = kimiTokens.reduce((s, t) => s + t.n, 0) / config.budget.kimi_tokens_5h;
@@ -672,12 +690,27 @@ export async function startDaemon(opts: DaemonOptions) {
     if (uiEvents.length > 200) uiEvents.shift();
     if (e.t === "state") {
       log(`state ${e.peer} -> ${e.state}`);
+      event({ type: "state", peer: e.peer, state: e.state });
+      const open = turns.get(e.peer);
+      if (e.state === "busy" && !open) {
+        const id = `${e.peer}#${runId}.${++turnSeq}`;
+        turns.set(e.peer, { id, start: Date.now(), tokens: 0 });
+        event({ type: "turn_start", peer: e.peer, turn: id });
+      } else if (e.state !== "busy" && open) {
+        turns.delete(e.peer);
+        event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...(open.tokens ? { tokens: open.tokens } : {}) });
+      }
       if (e.state === "offline") offlineSince.set(e.peer, offlineSince.get(e.peer) ?? Date.now());
       else offlineSince.delete(e.peer);
     }
-    else if (e.t === "undeliverable") log(`UNDELIVERABLE to ${e.peer} after retries: ${e.env.id} from ${e.env.from}`);
-    else if (e.t === "overflow") log(`OVERFLOW ${e.peer}: dropped ${e.env.id} from ${e.env.from}`);
-    else log(`msg ${e.env.from} -> ${e.env.to?.join(",") ?? "*"} ${e.env.priority} hop=${e.env.hop}${e.dropped ? ` NOT DELIVERED(${e.dropped})` : ""}: ${e.env.body.slice(0, 200)}`);
+    else if (e.t === "undeliverable" || e.t === "overflow") {
+      log(e.t === "undeliverable" ? `UNDELIVERABLE to ${e.peer} after retries: ${e.env.id} from ${e.env.from}` : `OVERFLOW ${e.peer}: dropped ${e.env.id} from ${e.env.from}`);
+      event({ type: e.t, id: e.env.id, from: e.env.from, peer: e.peer });
+    } else {
+      log(`msg ${e.env.from} -> ${e.env.to?.join(",") ?? "*"} ${e.env.priority} hop=${e.env.hop}${e.dropped ? ` NOT DELIVERED(${e.dropped})` : ""}: ${e.env.body.slice(0, 200)}`);
+      const env = e.env;
+      event({ type: "envelope", id: env.id, from: env.from, ...(env.to ? { to: env.to } : {}), priority: env.priority, hop: env.hop, ...(env.kind ? { kind: env.kind } : {}), ...(env.refs?.task ? { task: env.refs.task } : {}), bytes: env.body.length, ...(env.private ? { private: true } : {}), ...(e.dropped ? { dropped: e.dropped } : {}) });
+    }
     if (!stopping) writeStatus();
   });
 
@@ -839,6 +872,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (peer === "codex") {
       const codex = new CodexPeer("codex", {
+        onTokens: (total) => void addTokens("codex", total),
         appPort: opts.codexAppPort,
         proxyPort: opts.codexProxyPort,
         bin: config.codex_bin,

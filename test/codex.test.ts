@@ -13,12 +13,12 @@ const until = async (cond: () => boolean) => {
   expect(cond()).toBe(true);
 };
 
-async function setup(turnMs?: number, condense?: (envs: Envelope[]) => Promise<Envelope[]>) {
+async function setup(turnMs?: number, condense?: (envs: Envelope[]) => Promise<Envelope[]>, onTokens?: (total: number) => void) {
   const fake = startFakeAppServer(turnMs);
   const bus = new Bus({ batchMs: 0, ...(condense ? { condense } : {}) });
   const said: Envelope[] = [];
   bus.tap((e) => e.t === "envelope" && e.env.from === "codex" && said.push(e.env));
-  const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: fake.url, cwd: process.cwd() });
+  const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: fake.url, cwd: process.cwd(), ...(onTokens ? { onTokens } : {}) });
   bus.add(peer);
   await peer.start();
   cleanup.push(fake.stop, () => peer.stop());
@@ -270,4 +270,17 @@ test("a TUI that detaches mid-turn and comes back does not answer the old turn's
   const answer = said.find((e) => e.body === "echo: user typed this")!;
   expect(answer.to).toBeUndefined();
   expect(answer.hop).toBe(0);
+});
+
+// issue #40: Codex reports a running thread total per turn; the adapter passes it on for telemetry.
+test("thread token totals reach onTokens once per turn", async () => {
+  const totals: number[] = [];
+  const { bus, peer, tui } = await setup(undefined, undefined, (t) => totals.push(t));
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => peer.state === "idle");
+  bus.publish(newEnvelope("user", "one", { to: ["codex"] }));
+  await until(() => totals.length === 1 && peer.state === "idle");
+  bus.publish(newEnvelope("user", "two", { to: ["codex"] }));
+  await until(() => totals.length === 2);
+  expect(totals).toEqual([100, 200]);
 });

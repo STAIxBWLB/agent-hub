@@ -51,6 +51,9 @@ export function startFakeAppServer(delayMs = 30) {
           note("item/completed", { threadId, turnId: turn.id, completedAtMs: Date.now(), item: { type: "agentMessage", id, phase, text: t } });
         item("m1", "commentary", "thinking out loud");
         item("m2", "final_answer", `echo: ${text}${steered.map((s) => ` +steered: ${s}`).join("")}`);
+        // Running thread total, as Codex 0.156 reports it: 100 tokens per turn.
+        const usage = (n: number) => ({ totalTokens: n, inputTokens: n - 10, outputTokens: 10, cachedInputTokens: 0, reasoningOutputTokens: 0 });
+        note("thread/tokenUsage/updated", { threadId, turnId: turn.id, tokenUsage: { total: usage(100 * turnSeq), last: usage(100) } });
         active = false;
         note("turn/completed", { threadId, turn: { ...turn, status: "completed" } });
       },

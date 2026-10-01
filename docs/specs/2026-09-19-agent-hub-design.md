@@ -839,3 +839,15 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   start, `ahub codex` and `ahub models` print it, `ahub doctor` shows a row.
   `ahub init` adds `.agenthub/config.local.json` to `.gitignore`.
 - `routing.toml` and the shared fields still come from the checkout.
+
+## Amendment: telemetry export (issue #40)
+
+- The daemon appends structured events to `.agenthub/state/events.jsonl` (schema
+  version 1, `docs/events.md`): envelopes (no bodies), overflow and undeliverable,
+  peer states, turns with per-turn tokens where the adapter reports them (Kimi,
+  Codex), board changes (ids and states, no titles), overlap records and quota
+  readings. Writes never throw.
+- `ahub export [--since]` prints the events; `ahub report [--since] [--json]`
+  summarizes them. Both read the file directly, so the control protocol is
+  unchanged. Bodies are never exported (the issue's `--with-bodies` option was
+  dropped: the file never holds them).
