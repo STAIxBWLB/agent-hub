@@ -77,9 +77,13 @@ async function prompt(id: number, text: string) {
       params: { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: part } } },
     });
   }
+  // The session's running total, as Kimi reports it: 50 tokens per prompt.
+  usageTotal += 50;
+  send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", usage: { totalTokens: usageTotal } } } });
   busy = false;
   send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
 }
+let usageTotal = 0;
 
 createInterface({ input: process.stdin }).on("line", (line) => {
   const msg = JSON.parse(line);

@@ -23,6 +23,8 @@ export interface TasksDeps {
   share?: (by: PeerId, line: string) => void;
   /** Hands one peer a line that rides on its next delivery, without a turn of its own (issue #6). */
   tell?: (peer: PeerId, line: string) => void;
+  /** Structured overlap records for telemetry (issue #40); the notice line stays for the human. */
+  recordOverlap?: (task: number, owner: PeerId, others: { task: number; owner: PeerId; paths: string[] }[]) => void;
   /** Optional: name a class for a task proposed without one. `onCampus` says whether the model call stays on campus. */
   triage?: { classify: (title: string, detail: string) => Promise<TaskClass | undefined>; onCampus: () => Promise<boolean> };
 }
@@ -201,6 +203,7 @@ export class Tasks {
     const overlap = this.overlaps(next, false);
     if (overlap) {
       this.d.notify(`task ${this.publicTitle(next)} (${next.owner}): ${overlap}`);
+      this.d.recordOverlap?.(next.id, next.owner!, this.overlapHits(next).map((h) => ({ task: h.task.id, owner: h.task.owner!, paths: h.paths })));
       this.tellEarlierOwners(next);
     }
     if (opts.claim && a.owner === by) {

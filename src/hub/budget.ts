@@ -55,6 +55,8 @@ export interface BudgetHooks {
   /** Move the peer's open work. */
   handoff(peer: PeerId, context: string | undefined): Promise<Moved[]>;
   resumed(record: PauseRecord): void;
+  /** Every reading as it arrives, with the time it was measured (telemetry, issue #40). */
+  reading?(peer: PeerId, windows: UsageWindow[], hard: boolean, at: number): void;
   notify(line: string): void;
 }
 
@@ -144,6 +146,7 @@ export class Budget {
   /** `at`: when the numbers were measured, for sources that arrive through a file (a leftover file is not a fresh reading). */
   report(peer: PeerId, windows: UsageWindow[], hard = false, at = this.now()): void {
     if (EXEMPT.has(peer) || this.closed) return;
+    try { this.hooks.reading?.(peer, windows, hard, at); } catch { /* telemetry never costs a reading */ }
     const mine = this.readings.get(peer) ?? new Map<string, Reading>();
     this.readings.set(peer, mine);
     for (const w of windows) mine.set(w.id, { ...w, used: Math.max(0, Math.min(1, w.used)), at });

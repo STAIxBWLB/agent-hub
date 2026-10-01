@@ -18,6 +18,9 @@ export interface CodexOptions {
   preamble?: string;
   /** Raw `rateLimits` snapshots from app-server, and `hard = true` when a turn was refused for quota. */
   onUsage?: (rateLimits: unknown, hard: boolean) => void;
+  /** The thread's running token total from `thread/tokenUsage/updated` (cumulative, not a delta). */
+  /** Tokens the thread used since the previous update (see `tokenTotal` for how they are counted). */
+  onTokens?: (added: number) => void;
   /** How often to ask app-server for the rate limits while a TUI is attached. */
   usagePollMs?: number;
   cwd: string;
@@ -49,6 +52,14 @@ export class CodexPeer extends BasePeer {
   /** Claimed as soon as a TUI WebSocket opens, before it can start a thread. */
   private claimedTui: Link | undefined;
   private threadId = "";
+  /**
+   * The thread's running token total at the last update, and whether the thread started here. Codex 0.156.1 also
+   * sends `thread/tokenUsage/updated` for compaction (an estimate in `last`, `total` unchanged), a usage-limit refresh
+   * and a replay to a connection that attaches, so `last` is not always new usage; differences of `total` are. A
+   * resumed thread's first update only sets the baseline: its total holds the history from before (issue #40).
+   */
+  private tokenTotal: number | undefined;
+  private freshThread = false;
   private readonly activeTurns = new Set<string>();
   private nextId = -1;
   private readonly pending = new Map<number, { resolve: (result?: any) => void; reject: (e: Error) => void; deliveryId?: string; kind?: "deliver" | "steer" }>();
@@ -331,13 +342,16 @@ export class CodexPeer extends BasePeer {
       else p?.resolve(msg.result);
       return; // ours: the TUI never asked for it
     }
-    if (msg.id !== undefined && !msg.method && link.tracked.delete(msg.id)) this.adopt(link, msg.result?.thread?.id);
+    const tracked = msg.id !== undefined && !msg.method ? link.tracked.get(msg.id) : undefined;
+    if (tracked && link.tracked.delete(msg.id)) this.adopt(link, msg.result?.thread?.id, tracked === "thread/start");
     else if (msg.method) this.onNotification(link, msg.method, msg.params ?? {});
     link.tui.send(raw);
   }
 
-  private adopt(link: Link, threadId: unknown): void {
+  private adopt(link: Link, threadId: unknown, fresh = false): void {
     if (typeof threadId !== "string" || !threadId) return;
+    this.tokenTotal = undefined;
+    this.freshThread = fresh;
     this.link = link;
     this.threadId = threadId;
     this.activeTurns.clear();
@@ -367,6 +381,14 @@ export class CodexPeer extends BasePeer {
       this.opts.onUsage?.({ rateLimitReachedType: "usageLimitExceeded" }, true);
     }
     if (link !== this.link || params.threadId !== this.threadId) return;
+    if (method === "thread/tokenUsage/updated") {
+      const total = Number(params.tokenUsage?.total?.totalTokens);
+      if (!Number.isFinite(total)) return;
+      const added = this.tokenTotal === undefined ? (this.freshThread ? total : 0) : Math.max(0, total - this.tokenTotal);
+      this.tokenTotal = total;
+      if (added > 0) this.opts.onTokens?.(added);
+      return;
+    }
     if (method === "turn/started") {
       const nativeTurn = params.turn?.id ?? `unknown:${Date.now()}`;
       this.activeTurns.add(nativeTurn);

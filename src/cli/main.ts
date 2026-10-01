@@ -28,6 +28,17 @@ import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
 import { setupOllamaModel } from "./models-setup.ts";
 
 import { backendLine, peerLine, type BackendRow, type PeerRow } from "./status-lines.ts";
+import { parseSince, readEvents } from "../hub/events.ts";
+import { formatReport, summarize } from "../hub/report.ts";
+
+/** `--since 7d|24h|<iso>` for export and report; everything when absent. */
+const since = (): number => {
+  const at = args.indexOf("--since");
+  if (at < 0) return 0;
+  const t = parseSince(args[at + 1] ?? "");
+  if (t === undefined) fail("--since takes 7d, 24h, 90m or an ISO date");
+  return t;
+};
 
 const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one project directory
 
@@ -72,6 +83,8 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub queue show <delivery-id>               inspect one delivery and revision
   ahub queue resolve <delivery-id> --action completed|retry|discard --reason <text>
   ahub status | logs [-f] | doctor | kill
+  ahub export [--since 7d|<iso>]  structured events (events.jsonl) as JSON lines; never message bodies
+  ahub report [--since 7d|<iso>] [--json]  turns, tokens, messages, overlaps and task events per period
   ahub doctor --orphans [--kill]  list registrations whose project root is gone; --kill stops their
                                daemons (SIGTERM, then SIGKILL) only after the process identity checks out`;
 
@@ -716,6 +729,13 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   logs: () => exec("tail", [args.includes("-f") ? "-f" : "-n100", join(stateDir, "hub.log")]),
+  export: () => {
+    for (const e of readEvents(join(stateDir, "events.jsonl"), since())) console.log(JSON.stringify(e));
+  },
+  report: () => {
+    const r = summarize(readEvents(join(stateDir, "events.jsonl"), since()));
+    console.log(args.includes("--json") ? JSON.stringify(r, null, 2) : formatReport(r).join("\n"));
+  },
 
   kill: async () => {
     const registry = new Registry();

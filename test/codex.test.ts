@@ -13,12 +13,12 @@ const until = async (cond: () => boolean) => {
   expect(cond()).toBe(true);
 };
 
-async function setup(turnMs?: number, condense?: (envs: Envelope[]) => Promise<Envelope[]>) {
+async function setup(turnMs?: number, condense?: (envs: Envelope[]) => Promise<Envelope[]>, onTokens?: (total: number) => void) {
   const fake = startFakeAppServer(turnMs);
   const bus = new Bus({ batchMs: 0, ...(condense ? { condense } : {}) });
   const said: Envelope[] = [];
   bus.tap((e) => e.t === "envelope" && e.env.from === "codex" && said.push(e.env));
-  const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: fake.url, cwd: process.cwd() });
+  const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: fake.url, cwd: process.cwd(), ...(onTokens ? { onTokens } : {}) });
   bus.add(peer);
   await peer.start();
   cleanup.push(fake.stop, () => peer.stop());
@@ -270,4 +270,26 @@ test("a TUI that detaches mid-turn and comes back does not answer the old turn's
   const answer = said.find((e) => e.body === "echo: user typed this")!;
   expect(answer.to).toBeUndefined();
   expect(answer.hop).toBe(0);
+});
+
+// issue #40: Codex reports a running thread total per turn; the adapter passes it on for telemetry.
+test("tokens are the thread total's growth: a fresh thread counts from zero, a resumed one from its replayed total, compaction adds none", async () => {
+  const added: number[] = [];
+  const { bus, peer, tui } = await setup(undefined, undefined, (n) => added.push(n));
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => peer.state === "idle");
+  bus.publish(newEnvelope("user", "one", { to: ["codex"] }));
+  await until(() => added.length === 1 && peer.state === "idle");
+  bus.publish(newEnvelope("user", "two COMPACT", { to: ["codex"] }));
+  await until(() => added.length === 2 && peer.state === "idle");
+  await Bun.sleep(30); // the compaction update came after the turn's own
+  expect(added).toEqual([100, 100]);
+  // a thread resumed after a hub restart: the replayed total (5000) is its history, not new usage
+  tui.send(JSON.stringify({ id: 3, method: "thread/resume", params: { threadId: "th-old" } }));
+  await until(() => peer.state === "idle");
+  await Bun.sleep(30);
+  expect(added).toEqual([100, 100]);
+  bus.publish(newEnvelope("user", "three", { to: ["codex"] }));
+  await until(() => added.length === 3);
+  expect(added).toEqual([100, 100, 100]);
 });

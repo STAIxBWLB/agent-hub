@@ -7,6 +7,10 @@ import { join } from "node:path";
 import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { HUB, newEnvelope } from "../src/hub/envelope.ts";
+import { BasePeer } from "../src/hub/peers.ts";
+import { readEvents } from "../src/hub/events.ts";
+import { summarize } from "../src/hub/report.ts";
+import { parse as parseOverlaps } from "../scripts/overlaps.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 import { startFakeModelServer, toolCall } from "./fakes/model-server.ts";
 
@@ -919,4 +923,68 @@ test("completion checks: run where git vouches for the config, refused where it 
   const pids = readFileSync(join(dir, "pids"), "utf8").trim().split("\n");
   expect(pids).toHaveLength(1);
   expect(() => process.kill(Number(pids[0]), 0)).toThrow();
+});
+
+// issue #40: events.jsonl from a scripted hub reproduces the known counts and never carries a body.
+test("telemetry: a scripted hub's events give the known counts, match the overlap counter, and hold no bodies", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  const { client } = await fakeClaude(stateDir);
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
+  expect((await console_.request({ t: "start", peer: "kimi" })).ok).toBe(true);
+  const op = async (o: string, args: unknown) => (await console_.request({ t: "task", op: o, args })).text as string;
+  await op("hub_task_propose", { title: "refactor the bus", class: "implement", owner: "kimi", refs: { paths: ["src/hub/bus.ts"] } });
+  await op("hub_task_propose", { title: "retry backoff", class: "implement", owner: "claude", refs: { paths: ["src/hub/bus.ts"] } });
+  await op("hub_task_propose", { title: "patient 900101-1234567 needs a follow-up", class: "implement" });
+  await client.callTool({ name: "hub_send", arguments: { text: "secret-body-text run the tests" } });
+  const file = join(stateDir, "events.jsonl");
+  await until(() => readEvents(file).some((e) => e.type === "turn_end" && e.peer === "kimi"), "a kimi turn");
+  const events = readEvents(file);
+  const r = summarize(events);
+  expect(r.overlaps).toEqual({ warnings: 1, pairs: 1 });
+  expect(r.tasks.proposed).toBe(3);
+  expect(r.peers.kimi!.turns).toBeGreaterThanOrEqual(1);
+  expect(r.peers.kimi!.tokens).toBe(50 * r.peers.kimi!.turns); // the fake's usage_update: a session total, 50 per prompt
+  expect(r.messages.total).toBeGreaterThanOrEqual(1);
+  // The same notice the human sees, counted by scripts/overlaps.ts from hub.log.
+  expect(parseOverlaps(readFileSync(join(stateDir, "hub.log"), "utf8")).length).toBe(r.overlaps.warnings);
+  const raw = readFileSync(file, "utf8");
+  expect(raw).not.toContain("secret-body-text");
+  expect(raw).not.toContain("900101-1234567");
+  expect(events.every((e) => !("body" in e))).toBe(true);
+});
+
+// Review of #46: a pause shows a busy peer as paused, but the work goes on, so it is one turn.
+test("telemetry: pausing a busy peer does not split its turn, and sizes are UTF-8 bytes", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  let finish!: () => void;
+  class Slow extends BasePeer {
+    async start() { this.setState("idle"); }
+    async deliver() {
+      this.setState("busy");
+      finish = () => this.setState("idle");
+    }
+    async stop() { this.setState("offline"); }
+  }
+  const slow = new Slow("slow");
+  daemon.bus.add(slow);
+  await slow.start();
+  expect((await console_.request({ t: "send", body: "héllo 안녕", to: ["slow"] })).ok).toBe(true);
+  await until(() => slow.state === "busy", "the slow turn");
+  daemon.bus.pause("slow");
+  daemon.bus.resume("slow");
+  finish();
+  // and a turn that finishes while its peer is paused (what a budget pause does) ends then
+  const file0 = join(stateDir, "events.jsonl");
+  await until(() => readEvents(file0).some((e) => e.type === "turn_end" && e.peer === "slow"), "the first turn's end");
+  expect((await console_.request({ t: "send", body: "again", to: ["slow"] })).ok).toBe(true);
+  await until(() => slow.state === "busy", "the second turn");
+  daemon.bus.pause("slow");
+  finish();
+  await until(() => readEvents(file0).filter((e) => e.type === "turn_end" && e.peer === "slow").length === 2, "the paused turn's end");
+  daemon.bus.resume("slow");
+  const events = readEvents(file0);
+  expect(events.filter((e) => e.type === "turn_start" && e.peer === "slow")).toHaveLength(2);
+  expect(events.filter((e) => e.type === "state" && e.peer === "slow").map((e) => (e as { state: string }).state)).toContain("paused");
+  const sent = events.find((e) => e.type === "envelope" && e.from === "user" && e.to?.includes("slow")) as { bytes: number };
+  expect(sent.bytes).toBe(Buffer.byteLength("héllo 안녕"));
 });
