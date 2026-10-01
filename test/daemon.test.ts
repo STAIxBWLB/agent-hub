@@ -982,9 +982,7 @@ test("telemetry: pausing a busy peer does not split its turn, and sizes are UTF-
   finish();
   await until(() => readEvents(file0).filter((e) => e.type === "turn_end" && e.peer === "slow").length === 2, "the paused turn's end");
   daemon.bus.resume("slow");
-  const file = join(stateDir, "events.jsonl");
-  await until(() => readEvents(file).some((e) => e.type === "turn_end" && e.peer === "slow"), "the turn's end");
-  const events = readEvents(file);
+  const events = readEvents(file0);
   expect(events.filter((e) => e.type === "turn_start" && e.peer === "slow")).toHaveLength(2);
   expect(events.filter((e) => e.type === "state" && e.peer === "slow").map((e) => (e as { state: string }).state)).toContain("paused");
   const sent = events.find((e) => e.type === "envelope" && e.from === "user" && e.to?.includes("slow")) as { bytes: number };

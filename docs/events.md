@@ -25,7 +25,10 @@ marked `private: true`, and PII tasks `pii: true`.
 Token usage by adapter:
 
 - Kimi (ACP `usage_update`): recorded.
-- Codex (app-server `thread/tokenUsage/updated`, a running thread total): recorded.
+- Codex (app-server `thread/tokenUsage/updated`): recorded as the growth of the thread's running total, so
+  compaction estimates, usage-limit refreshes and the replay to a reattaching connection add nothing. A thread
+  started under the hub counts from zero; a resumed thread's first update is its history and only sets the
+  baseline. The model call of a compaction itself is real usage and counts.
 - Claude: not recorded. The status line tee carries quota percentages only; per-turn
   tokens would need transcript parsing.
 - Pi and the local worker: not recorded.

@@ -51,9 +51,9 @@ export function eventLog(file: string): (e: HubEvent) => void {
 }
 
 /**
- * Running totals to increments. A total is a session's running count, so only what was added since the last update
- * counts; a new session (thread) starts from zero whatever its first total, and a smaller total in the same session
- * means it was reset.
+ * Kimi's running session totals to increments: only what was added since the last update counts; a new session
+ * starts from zero whatever its first total, and a smaller total in the same session means it was reset. (Codex
+ * differences its thread totals in the adapter, which knows whether a thread was started or resumed.)
  */
 export function tokenDeltas(): (peer: string, total: number, session: string) => number {
   const last = new Map<string, { session: string; total: number }>();

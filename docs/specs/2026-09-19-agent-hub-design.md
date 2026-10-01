@@ -851,10 +851,12 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   summarizes them. Both read the file directly, so the control protocol is
   unchanged. Bodies are never exported (the issue's `--with-bodies` option was
   dropped: the file never holds them).
-- Codex tokens are summed from each update's `tokenUsage.last`, not differenced
-  from `total`: a thread resumed after a hub restart carries its whole history in
-  `total`. Kimi reports a session total, which is turned into increments per
-  session.
+- Codex tokens are the growth of each thread's `total`, with the baseline kept in
+  the adapter: Codex 0.156.1 also sends `thread/tokenUsage/updated` for
+  compaction, usage-limit refreshes and a replay to a reattaching connection,
+  where `last` is not new usage. A thread adopted from `thread/start` counts from
+  zero; one adopted from `thread/resume` takes its first total as the baseline.
+  Kimi reports a session total, which is turned into increments per session.
 - Not in schema 1: per-delivery events and delivery-journal transitions, which
   the issue's design listed. `ahub queue list` and hub.log keep them; a later
   schema version can add them without changing the meaning of a field.

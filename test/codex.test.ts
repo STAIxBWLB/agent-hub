@@ -273,14 +273,23 @@ test("a TUI that detaches mid-turn and comes back does not answer the old turn's
 });
 
 // issue #40: Codex reports a running thread total per turn; the adapter passes it on for telemetry.
-test("each update's added tokens reach onTokens once per turn; a resumed thread's history is not counted again", async () => {
-  const totals: number[] = [];
-  const { bus, peer, tui } = await setup(undefined, undefined, (t) => totals.push(t));
+test("tokens are the thread total's growth: a fresh thread counts from zero, a resumed one from its replayed total, compaction adds none", async () => {
+  const added: number[] = [];
+  const { bus, peer, tui } = await setup(undefined, undefined, (n) => added.push(n));
   tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
   await until(() => peer.state === "idle");
   bus.publish(newEnvelope("user", "one", { to: ["codex"] }));
-  await until(() => totals.length === 1 && peer.state === "idle");
-  bus.publish(newEnvelope("user", "two", { to: ["codex"] }));
-  await until(() => totals.length === 2);
-  expect(totals).toEqual([100, 100]); // the fake thread's total starts at 5100
+  await until(() => added.length === 1 && peer.state === "idle");
+  bus.publish(newEnvelope("user", "two COMPACT", { to: ["codex"] }));
+  await until(() => added.length === 2 && peer.state === "idle");
+  await Bun.sleep(30); // the compaction update came after the turn's own
+  expect(added).toEqual([100, 100]);
+  // a thread resumed after a hub restart: the replayed total (5000) is its history, not new usage
+  tui.send(JSON.stringify({ id: 3, method: "thread/resume", params: { threadId: "th-old" } }));
+  await until(() => peer.state === "idle");
+  await Bun.sleep(30);
+  expect(added).toEqual([100, 100]);
+  bus.publish(newEnvelope("user", "three", { to: ["codex"] }));
+  await until(() => added.length === 3);
+  expect(added).toEqual([100, 100, 100]);
 });

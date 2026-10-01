@@ -1,6 +1,8 @@
 // Fake `codex app-server` (v2 shapes from codex-cli 0.154.0 generate-json-schema). One thread, echo turns.
 export function startFakeAppServer(delayMs = 30) {
   let turnSeq = 0;
+  let threadTotal = 0; // the thread's running token total, as Codex keeps it
+  const usage = (n: number) => ({ totalTokens: n, inputTokens: n - 10, outputTokens: 10, cachedInputTokens: 0, reasoningOutputTokens: 0 });
   let active = false;
   let activeTurnId = "";
   let steered: string[] = [];
@@ -17,7 +19,13 @@ export function startFakeAppServer(delayMs = 30) {
         const reply = (result: unknown) => void ws.send(JSON.stringify({ id: msg.id, result }));
         const note = (method: string, params: unknown) => void ws.send(JSON.stringify({ method, params }));
         if (msg.method === "initialize") return reply({ userAgent: "fake-codex/0.154.0" });
-        if (msg.method === "thread/start") return reply({ thread: { id: "th1" }, model: "fake" });
+        if (msg.method === "thread/start") return (threadTotal = 0), reply({ thread: { id: "th1" }, model: "fake" });
+        if (msg.method === "thread/resume") {
+          // A thread with 5000 tokens of history; Codex 0.156 replays its saved usage to the connection that attaches.
+          threadTotal = 5000;
+          reply({ thread: { id: msg.params.threadId }, model: "fake" });
+          return note("thread/tokenUsage/updated", { threadId: msg.params.threadId, turnId: "old", tokenUsage: { total: usage(threadTotal), last: usage(800) } });
+        }
         if (msg.method === "account/rateLimits/read") return reply({ rateLimits: { primary: { usedPercent: 93, windowDurationMins: 300, resetsAt: 1_900_000_000 }, secondary: null } });
         if (msg.method === "turn/steer") {
           if (!active || msg.params.expectedTurnId !== activeTurnId) {
@@ -51,10 +59,11 @@ export function startFakeAppServer(delayMs = 30) {
           note("item/completed", { threadId, turnId: turn.id, completedAtMs: Date.now(), item: { type: "agentMessage", id, phase, text: t } });
         item("m1", "commentary", "thinking out loud");
         item("m2", "final_answer", `echo: ${text}${steered.map((s) => ` +steered: ${s}`).join("")}`);
-        // As Codex 0.156 reports it: the thread's running total and what this update added. The thread had 5000 tokens
-        // of history before (a resumed thread), which the hub must not count again.
-        const usage = (n: number) => ({ totalTokens: n, inputTokens: n - 10, outputTokens: 10, cachedInputTokens: 0, reasoningOutputTokens: 0 });
-        note("thread/tokenUsage/updated", { threadId, turnId: turn.id, tokenUsage: { total: usage(5000 + 100 * turnSeq), last: usage(100) } });
+        // As Codex 0.156 reports it: the thread's running total and what this update added, 100 tokens per turn.
+        threadTotal += 100;
+        note("thread/tokenUsage/updated", { threadId, turnId: turn.id, tokenUsage: { total: usage(threadTotal), last: usage(100) } });
+        // Compaction: an estimate of the retained history in `last`, the total unchanged.
+        if (text.includes("COMPACT")) note("thread/tokenUsage/updated", { threadId, turnId: turn.id, tokenUsage: { total: usage(threadTotal), last: usage(4000) } });
         active = false;
         note("turn/completed", { threadId, turn: { ...turn, status: "completed" } });
       },
