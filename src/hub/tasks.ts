@@ -35,7 +35,7 @@ const OPEN: Task["state"][] = ["proposed", "in_progress", "changes_requested"];
 const QUIET_EVENTS = new Set(["answer", "reviewer changed"]);
 
 /** Same path, or one is a directory of the other; the project root (`.`) holds everything. */
-const samePlace = (a: string, b: string) => {
+export const samePlace = (a: string, b: string) => {
   const norm = (p: string) => p.replace(/^\.\//, "").replace(/\/+$/, "") || ".";
   const [x, y] = [norm(a), norm(b)];
   return x === "." || y === "." || x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);

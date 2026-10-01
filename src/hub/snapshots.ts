@@ -4,6 +4,7 @@ import { copyFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { childEnv } from "./child-process.ts";
+import type { Touch } from "./conflicts.ts";
 
 /**
  * Per-turn workspace snapshots (issue #33): git tree objects written through a copy of the index, so the user's index
@@ -141,6 +142,8 @@ export class Turns {
     // Opened by a starting hub: a turn still open was cut short when the last run stopped. It has no end snapshot, and
     // it may have run until now, so its window ends now (other turns that overlapped it stay unknowable).
     this.db.query("UPDATE turns SET ended = ? WHERE ended IS NULL").run(Date.now());
+    // ponytail: rows of finished tasks stay (a few per file per task); prune by task state if hub.db ever grows.
+    this.db.run("CREATE TABLE IF NOT EXISTS touches (task INTEGER NOT NULL, peer TEXT NOT NULL, path TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (task, peer, path))");
   }
   begin(id: string, peer: string, startTree: string | undefined): void {
     this.db.query("INSERT OR REPLACE INTO turns (id, peer, started, start_tree) VALUES (?, ?, ?, ?)").run(id, peer, Date.now(), startTree ?? null);
@@ -179,6 +182,21 @@ export class Turns {
       .filter((p) => p.oldest > turn.started)
       .map((p) => `${p.peer} (its turns from then were pruned)`);
     return { paths: [...new Set(known.flatMap((r) => JSON.parse(r.changed) as string[]))], unknown: [...rows.filter((r) => !known.includes(r)).map((r) => r.id), ...pruned] };
+  }
+
+  /** Files a peer's turn changed while it owned `task` in progress (issue #32). */
+  touch(task: number, peer: string, paths: string[]): void {
+    const at = Date.now();
+    const q = this.db.query("INSERT OR REPLACE INTO touches (task, peer, path, at) VALUES (?, ?, ?, ?)");
+    this.db.transaction(() => { for (const p of paths) q.run(task, peer, p, at); })();
+  }
+  touchesFor(tasks: number[]): Touch[] {
+    if (!tasks.length) return [];
+    return this.db.query(`SELECT * FROM touches WHERE task IN (${tasks.map(() => "?").join(",")})`).all(...tasks) as Touch[];
+  }
+  /** Other peers with a turn that was open at some point since `since`: their changes may be in this turn's diff. */
+  busySince(peer: string, since: number): string[] {
+    return (this.db.query("SELECT DISTINCT peer FROM turns WHERE peer != ? AND (ended IS NULL OR ended >= ?) ORDER BY peer").all(peer, since) as { peer: string }[]).map((r) => r.peer);
   }
 
   /** The latest turn of a peer: a conversation can only be reverted from its latest turn. */

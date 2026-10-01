@@ -41,6 +41,7 @@ import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
 import { MemoryClient, workerUrl } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { projectChain, recallFor } from "../memory/recall.ts";
+import { conflictsOf } from "./conflicts.ts";
 import { changedPaths, repoOf, snapshot, Turns } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 
@@ -749,6 +750,33 @@ export async function startDaemon(opts: DaemonOptions) {
   releaseTimer.unref?.();
   intervals.push(releaseTimer);
 
+  // Early conflict detection (issue #32): the files a turn changed, against what other owners' open tasks changed
+  // before it. Warns both owners once per file and task; never blocks a write.
+  const conflictSeen = new Set<string>();
+  const detectConflicts = (peer: PeerId, since: number, changed: string[]) => {
+    const open = board.list().filter((t) => t.owner && ["proposed", "in_progress", "changes_requested"].includes(t.state));
+    const mine = open.filter((t) => t.owner === peer && t.state === "in_progress");
+    if (mine.some((t) => tasks.isPii(t))) return; // a PII turn's files are nobody else's business
+    const visible = open.filter((t) => !tasks.isPii(t));
+    const found = conflictsOf(peer, changed, turnLog!.touchesFor(visible.map((t) => t.id)), visible);
+    for (const t of mine) turnLog!.touch(t.id, peer, changed);
+    if (!found.length) return;
+    const others = turnLog!.busySince(peer, since);
+    const concurrent = others.length ? ` Concurrent: ${others.join(", ")} also worked during that turn, so some of these changes may be theirs.` : "";
+    const ours = mine.length ? ` (task ${mine.map((t) => `#${t.id}`).join(", ")})` : "";
+    for (const { task, paths: all } of found) {
+      const paths = all.filter((p) => !conflictSeen.has(`${peer}\0${task.id}\0${p}`));
+      if (!paths.length) continue;
+      for (const p of paths) conflictSeen.add(`${peer}\0${task.id}\0${p}`);
+      const owner = task.owner!;
+      const files = paths.join(", ");
+      notify(`conflict: ${peer}${ours} changed ${files}, which #${task.id} (owner ${owner}) changed before${others.length ? ` (concurrent: ${others.join(", ")})` : ""}`);
+      event({ type: "conflict", peer, ...(mine[0] ? { task: mine[0].id } : {}), other: task.id, owner, paths, concurrent: others.length > 0 });
+      bus.publish(newEnvelope(HUB, `Your last turn${ours} changed ${files}, which ${owner}'s open task #${task.id} (${task.title}) changed before it. Check that you did not overwrite that work, and settle it with ${owner} via hub_send.${concurrent}`, { to: [peer], kind: "task", ...(mine[0] ? { refs: { task: String(mine[0].id) } } : {}) }));
+      if (owner !== USER && owner !== HUB) bus.publish(newEnvelope(HUB, `${peer}'s last turn${ours} changed ${files}, which your open task #${task.id} changed before it. Check that your work there is intact.${concurrent}`, { to: [owner], kind: "task", refs: { task: String(task.id) } }));
+    }
+  };
+
   bus.tap((e) => {
     e = redact(e);
     uiEvents.push({ seq: ++uiSequence, event: e });
@@ -780,6 +808,9 @@ export async function startDaemon(opts: DaemonOptions) {
           if (open.tree && end.tree) files = changed.length; // unknown, not zero, when a snapshot failed
           snapshotMs = (snapshotMs ?? 0) + end.ms;
           try { turnLog.end(open.id, end.tree, changed, Math.max(1, Number(config.snapshots.keep) || 20)); } catch (error) { log(`turn record ${open.id}: ${(error as Error).message}`); }
+          if (changed.length) {
+            try { detectConflicts(e.peer, open.start, changed); } catch (error) { log(`conflict check after ${open.id}: ${(error as Error).message}`); }
+          }
         }
         event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}) });
       }

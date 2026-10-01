@@ -2,10 +2,10 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { ControlClient, readControl } from "../hub/control-client.ts";
 import { loadConfig } from "../hub/daemon.ts";
-import { projectContext } from "../hub/project.ts";
+import { projectContext, realPath } from "../hub/project.ts";
 import { Registry, type Project } from "../hub/registry.ts";
 import { inspectProject, startProject, stopProject, runProjectDaemon } from "../hub/lifecycle.ts";
 import { openManager, startManager, stopManager } from "../hub/manager.ts";
@@ -31,6 +31,7 @@ import { backendLine, peerLine, type BackendRow, type PeerRow } from "./status-l
 import { parseSince, readEvents } from "../hub/events.ts";
 import { formatReport, summarize } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
+import { pathWarnings } from "../hub/conflicts.ts";
 
 /** `--since 7d|24h|<iso>` for export and report; everything when absent. */
 const since = (): number => {
@@ -86,6 +87,8 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub status | logs [-f] | doctor | kill
   ahub export [--since 7d|<iso>]  structured events (events.jsonl) as JSON lines; never message bodies
   ahub report [--since 7d|<iso>] [--json]  turns, tokens, messages, overlaps and task events per period
+  ahub check-path <file> [--peer <id>]  other owners' open tasks that claim or changed a file
+  ahub check-path --hook        the same as a Claude Code PreToolUse hook (templates/claude-hooks.json); never blocks
   ahub turns [peer] [--limit N]  recent turns and the files each changed (a git work tree only)
   ahub undo <turn> [--yes] [--context]  put back the files a turn changed; refuses files changed since.
                                Without --yes it only lists them; --context also drops a Codex turn from its conversation
@@ -755,6 +758,32 @@ const commands: Record<string, () => Promise<void> | void> = {
   report: () => {
     const r = summarize(readEvents(join(stateDir, "events.jsonl"), since()));
     console.log(args.includes("--json") ? JSON.stringify(r, null, 2) : formatReport(r).join("\n"));
+  },
+  "check-path": async () => {
+    const hook = args.includes("--hook");
+    const { one, rest } = takeFlags(args.filter((a) => a !== "--hook"), ["--peer"], []);
+    const peer = one["--peer"] ?? "claude";
+    let target = rest[0];
+    try {
+      if (hook) {
+        const input = JSON.parse(await Bun.stdin.text()) as { tool_input?: { file_path?: string; notebook_path?: string } };
+        target = input.tool_input?.file_path ?? input.tool_input?.notebook_path;
+      }
+      if (!target) return hook ? undefined : fail("usage: ahub check-path <file> [--peer <id>]");
+      // Claude passes absolute paths; the board holds them relative to the project, snapshots relative to the top level.
+      const abs = resolve(cwd, target);
+      const real = existsSync(dirname(abs)) ? join(realPath(dirname(abs)), basename(abs)) : abs;
+      const top = repoOf(cwd)?.top;
+      const warnings = pathWarnings(join(stateDir, "hub.db"), peer, { project: relative(cwd, real), ...(top ? { repo: relative(top, real) } : {}) });
+      if (!warnings.length) return;
+      const text = `agent-hub: ${relative(cwd, real)} belongs to other open work:\n${warnings.map((w) => `- ${w}`).join("\n")}\nSettle it with that owner via hub_send before you change it further.`;
+      if (!hook) return console.log(text);
+      // Context for Claude, a line for the user; no permissionDecision, so the user's permission rules apply as they are.
+      console.log(JSON.stringify({ systemMessage: text.split("\n")[0], hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: text } }));
+    } catch (error) {
+      if (!hook) throw error;
+      // a hook that fails must not get in the way of the edit
+    }
   },
   turns: () => {
     const { one, rest } = takeFlags(args, ["--limit"], []);

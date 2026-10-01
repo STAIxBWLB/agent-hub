@@ -1150,3 +1150,63 @@ test("during a PII turn the local worker cannot accept with a plan, finish or re
   expect(shown.state).toBe("proposed");
   for (const name of ["hub_task_accept", "hub_task_done", "hub_review"]) expect(answer).toContain(`${name} on task #1 is not available while working on a PII task`);
 });
+
+// issue #32: in the shared tree, a turn that changes a file another owner's open task changed warns both owners.
+test("conflicts: a turn changing another owner's file warns both, once; a file one agent touched warns nobody", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-conflict-")));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...a: string[]) => Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@localhost", ...a]);
+  git("init", "-q");
+  writeFileSync(join(dir, "shared.txt"), "base\n");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const { stateDir, daemon, console_ } = await hub({ cwd: dir, snapshots: { enabled: true, keep: 20 } });
+  // A scripted agent: each delivery is a turn, and `work` (once) is what the turn does to the tree.
+  class Scripted extends BasePeer {
+    got: string[] = [];
+    work: (() => void) | undefined;
+    async start() { this.setState("idle"); }
+    async deliver(envs: { body: string }[]) {
+      this.setState("busy");
+      this.got.push(...envs.map((e) => e.body));
+      const w = this.work;
+      this.work = undefined;
+      w?.();
+      setTimeout(() => this.setState("idle"), 5);
+    }
+    async stop() { this.setState("offline"); }
+  }
+  const kimi = new Scripted("kimi");
+  const codex = new Scripted("codex");
+  for (const p of [kimi, codex]) {
+    daemon.bus.add(p);
+    await p.start();
+  }
+  const op = async (o: string, args: unknown) => console_.request({ t: "task", op: o, args });
+  await op("hub_task_propose", { title: "refactor", class: "implement", owner: "kimi" });
+  await op("hub_task_propose", { title: "retry", class: "implement", owner: "codex" });
+  await until(() => kimi.got.length === 1 && codex.got.length === 1 && kimi.state === "idle" && codex.state === "idle", "the offers");
+  await op("hub_task_accept", { id: 1 });
+  await op("hub_task_accept", { id: 2 });
+  const file = join(stateDir, "events.jsonl");
+  const turnsOf = (peer: string) => readEvents(file).filter((e) => e.type === "turn_end" && e.peer === peer).length;
+
+  kimi.work = () => writeFileSync(join(dir, "shared.txt"), "kimi\n");
+  await console_.request({ t: "send", body: "go", to: ["kimi"] });
+  await until(() => turnsOf("kimi") === 2 && kimi.state === "idle", "kimi's edit");
+  codex.work = () => (writeFileSync(join(dir, "shared.txt"), "codex\n"), writeFileSync(join(dir, "own.txt"), "codex only\n"));
+  await console_.request({ t: "send", body: "go", to: ["codex"] });
+  await until(() => readEvents(file).some((e) => e.type === "conflict"), "the conflict");
+  const conflict = readEvents(file).find((e) => e.type === "conflict");
+  expect(conflict).toMatchObject({ peer: "codex", task: 2, other: 1, owner: "kimi", paths: ["shared.txt"], concurrent: false });
+  await until(() => codex.got.some((b) => b.includes("Your last turn (task #2) changed shared.txt")) && kimi.got.some((b) => b.includes("codex's last turn (task #2) changed shared.txt, which your open task #1 changed before it")), "both notices");
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("conflict: codex (task #2) changed shared.txt, which #1 (owner kimi) changed before");
+
+  // The same file again: already told. A file only codex touched: nothing.
+  await until(() => kimi.state === "idle" && codex.state === "idle", "quiet peers");
+  codex.work = () => (writeFileSync(join(dir, "shared.txt"), "codex again\n"), writeFileSync(join(dir, "own.txt"), "still codex\n"));
+  const before = turnsOf("codex");
+  await console_.request({ t: "send", body: "again", to: ["codex"] });
+  await until(() => turnsOf("codex") === before + 1, "codex's second edit");
+  expect(readEvents(file).filter((e) => e.type === "conflict")).toHaveLength(1);
+});

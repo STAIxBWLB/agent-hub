@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- Early conflict detection: in a git work tree, a turn that changes a file another owner's open task changed earlier warns both owners (and the console, and `events.jsonl`), once per file and task, marked concurrent when another peer worked meanwhile. `ahub check-path` and the PreToolUse hook template `templates/claude-hooks.json` give Claude the same warning before an edit, without blocking it (#32).
+
 ## 0.8.1
 
 - Upgrading a running 0.7.x hub that has a task on its board no longer stops at verification ("queue, manual pause, task board or budget preservation was not verified"): the 0.8.0 target digested its tasks with the new `plan` field, which the 0.7.x source never had. The target now also accepts the digest in the source's shape while every plan is empty; any real change to the board still fails the check. Use the 0.8.1 coordinator, not 0.8.0's, for such an upgrade (#57).

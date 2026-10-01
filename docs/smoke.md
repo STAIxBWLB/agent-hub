@@ -883,3 +883,21 @@ peers attached.
 - The release gate for v0.8.0 (Actions run 36807880478) failed once on
   "removing a running project is refused"; the rerun passed and published. Cause: `ahub kill` returned before
   the hub released its registry claim. Fixed in 0.8.1 (#58).
+
+## Edit conflict detection (issue #32, 2026-10-01)
+
+- AC3, on a clone of this repository (156 tracked files) with 10 open tasks of
+  other owners holding 200 touches: the turn-end path (end snapshot, diff,
+  touch query, match) takes 57.6 ms median, 59.6 ms max; the detection part
+  alone (diff, query, match) 7.1 ms median. The machine was under load from
+  other work; the snapshot alone measured 17 ms median earlier the same day.
+- AC4, Claude Code 2.1.286 headless (`claude -p --settings <hook settings>
+  --permission-mode acceptEdits`, model Haiku 4.5) in a scratch repository whose
+  hub.db had kimi's open task claiming `notes.txt`, asked to edit `notes.txt` and
+  quote any agent-hub note:
+  - Runs 2 and 3: the hook fired (logged input and output in run 2), Claude
+    quoted the warning verbatim, and the edit went through under the session's
+    permission mode.
+  - Run 1, before the hook was logged: Claude answered NONE. Whether the hook
+    did not fire or the model left the reminder out was not determined; that run
+    also had no stdin redirect (`< /dev/null`), which runs 2 and 3 had.

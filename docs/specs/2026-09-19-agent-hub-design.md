@@ -921,3 +921,21 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   empty plan on accept keeps the plan there is. The completed-change notice
   leaves out any file, signature or summary line that matches a PII pattern.
 
+## Amendment: early conflict detection (issue #32)
+
+- Shared tree only. The issue's worktree mode (pairwise `git merge-tree` between
+  per-agent worktrees, AC2) moves to #41, which provides those worktrees.
+- Attribution reuses the #33 turn snapshots: the files a turn changed are
+  recorded as `touches` (task, peer, path) in hub.db for each task the peer has
+  in progress. A later turn by another peer that changes one of those files, while
+  the task is open, is a conflict. A file touched by one agent only is not, even
+  when its task changed hands. PII tasks are left out on both sides, and a turn of
+  a peer with a PII task in progress is not checked.
+- Notices are normal-priority `task` envelopes to both owners, once per (peer,
+  task, file) per hub run, plus a console line and a `conflict` event.
+  "Concurrent" means another peer had a turn open during this one.
+- The PreToolUse hook template runs `ahub check-path --hook`, which reads hub.db
+  read-only and answers with `hookSpecificOutput.additionalContext` and a
+  `systemMessage`, never a `permissionDecision`. Claude Code adds that context
+  with the tool result, so it warns after the edit is allowed, not before.
+
