@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { parseSince, type StampedEvent } from "../src/hub/events.ts";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { eventLog, parseSince, readEvents, tokenDeltas, type StampedEvent } from "../src/hub/events.ts";
 import { formatReport, summarize } from "../src/hub/report.ts";
 
 // issue #40: the report is computed from events.jsonl alone.
@@ -33,4 +36,23 @@ test("--since takes durations and ISO dates", () => {
   expect(parseSince("90m", now)).toBe(now - 90 * 60_000);
   expect(parseSince("2026-10-01T00:00:00Z", now)).toBe(Date.UTC(2026, 9, 1));
   expect(parseSince("soon", now)).toBeUndefined();
+});
+
+test("token totals become increments per session; a new thread counts from zero whatever its first total", () => {
+  const d = tokenDeltas();
+  expect([d("codex", 100, "th1"), d("codex", 250, "th1")]).toEqual([100, 150]);
+  expect(d("codex", 400, "th2")).toBe(400); // a new thread above the old total is not undercounted
+  expect(d("codex", 50, "th2")).toBe(50); // reset within a session
+  expect(d("kimi", 30, "s1")).toBe(30); // per peer
+});
+
+test("after a crash cut the last line short, the next event still lands on a line of its own", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-events-"));
+  const file = join(dir, "events.jsonl");
+  writeFileSync(file, `${JSON.stringify({ v: 1, at: "2026-10-01T00:00:00.000Z", type: "tokens", peer: "kimi", n: 1 })}\n{"v":1,"at":"2026-10-01T00:00:01`);
+  const log = eventLog(file);
+  log({ type: "tokens", peer: "codex", n: 5 });
+  log({ type: "tokens", peer: "codex", n: 6 });
+  expect(readEvents(file).map((e) => (e as { n: number }).n)).toEqual([1, 5, 6]);
+  rmSync(dir, { recursive: true, force: true });
 });

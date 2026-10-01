@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { stripUntrusted } from "./config-trust.ts";
-import { eventLog } from "./events.ts";
+import { eventLog, tokenDeltas } from "./events.ts";
 import type { ServerWebSocket } from "bun";
 import { AcpPeer, type PermissionRequest } from "../adapters/acp.ts";
 import { CodexPeer } from "../adapters/codex-appserver.ts";
@@ -433,12 +433,9 @@ export async function startDaemon(opts: DaemonOptions) {
   const runId = Date.now().toString(36);
   let turnSeq = 0;
   const turns = new Map<PeerId, { id: string; start: number; tokens: number }>();
-  const tokenTotals = new Map<PeerId, number>();
-  /** `total` is a session's running count: only what was added since the last update counts (a smaller total means a new session). */
-  const addTokens = (peer: PeerId, total: number): number => {
-    const prev = tokenTotals.get(peer) ?? 0;
-    const n = total >= prev ? total - prev : total;
-    tokenTotals.set(peer, total);
+  const delta = tokenDeltas();
+  const addTokens = (peer: PeerId, total: number, session: string): number => {
+    const n = delta(peer, total, session);
     if (n > 0) {
       event({ type: "tokens", peer, n });
       const turn = turns.get(peer);
@@ -446,8 +443,8 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     return n;
   };
-  const onKimiTokens = (total: number) => {
-    const n = addTokens("kimi", total);
+  const onKimiTokens = (total: number, session: string) => {
+    const n = addTokens("kimi", total, session);
     if (!config.budget.kimi_tokens_5h || !n) return;
     const now = Date.now();
     kimiTokens.push({ at: now, n });
@@ -692,11 +689,13 @@ export async function startDaemon(opts: DaemonOptions) {
       log(`state ${e.peer} -> ${e.state}`);
       event({ type: "state", peer: e.peer, state: e.state });
       const open = turns.get(e.peer);
-      if (e.state === "busy" && !open) {
+      // The adapter's own state: a pause shows a busy peer as paused, and its turn goes on all the same.
+      const busy = (bus.peers.get(e.peer)?.state ?? e.state) === "busy";
+      if (busy && !open) {
         const id = `${e.peer}#${runId}.${++turnSeq}`;
         turns.set(e.peer, { id, start: Date.now(), tokens: 0 });
         event({ type: "turn_start", peer: e.peer, turn: id });
-      } else if (e.state !== "busy" && open) {
+      } else if (!busy && open) {
         turns.delete(e.peer);
         event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...(open.tokens ? { tokens: open.tokens } : {}) });
       }
@@ -709,7 +708,7 @@ export async function startDaemon(opts: DaemonOptions) {
     } else {
       log(`msg ${e.env.from} -> ${e.env.to?.join(",") ?? "*"} ${e.env.priority} hop=${e.env.hop}${e.dropped ? ` NOT DELIVERED(${e.dropped})` : ""}: ${e.env.body.slice(0, 200)}`);
       const env = e.env;
-      event({ type: "envelope", id: env.id, from: env.from, ...(env.to ? { to: env.to } : {}), priority: env.priority, hop: env.hop, ...(env.kind ? { kind: env.kind } : {}), ...(env.refs?.task ? { task: env.refs.task } : {}), bytes: env.body.length, ...(env.private ? { private: true } : {}), ...(e.dropped ? { dropped: e.dropped } : {}) });
+      event({ type: "envelope", id: env.id, from: env.from, ...(env.to ? { to: env.to } : {}), priority: env.priority, hop: env.hop, ...(env.kind ? { kind: env.kind } : {}), ...(env.refs?.task ? { task: env.refs.task } : {}), bytes: Buffer.byteLength(env.body), ...(env.private ? { private: true } : {}), ...(e.dropped ? { dropped: e.dropped } : {}) });
     }
     if (!stopping) writeStatus();
   });
@@ -872,7 +871,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (peer === "codex") {
       const codex = new CodexPeer("codex", {
-        onTokens: (total) => void addTokens("codex", total),
+        onTokens: (total, thread) => void addTokens("codex", total, thread),
         appPort: opts.codexAppPort,
         proxyPort: opts.codexProxyPort,
         bin: config.codex_bin,

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { HUB, newEnvelope } from "../src/hub/envelope.ts";
+import { BasePeer } from "../src/hub/peers.ts";
 import { readEvents } from "../src/hub/events.ts";
 import { summarize } from "../src/hub/report.ts";
 import { parse as parseOverlaps } from "../scripts/overlaps.ts";
@@ -949,4 +950,33 @@ test("telemetry: a scripted hub's events give the known counts, match the overla
   expect(raw).not.toContain("secret-body-text");
   expect(raw).not.toContain("900101-1234567");
   expect(events.every((e) => !("body" in e))).toBe(true);
+});
+
+// Review of #46: a pause shows a busy peer as paused, but the work goes on, so it is one turn.
+test("telemetry: pausing a busy peer does not split its turn, and sizes are UTF-8 bytes", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  let finish!: () => void;
+  class Slow extends BasePeer {
+    async start() { this.setState("idle"); }
+    async deliver() {
+      this.setState("busy");
+      finish = () => this.setState("idle");
+    }
+    async stop() { this.setState("offline"); }
+  }
+  const slow = new Slow("slow");
+  daemon.bus.add(slow);
+  await slow.start();
+  expect((await console_.request({ t: "send", body: "héllo 안녕", to: ["slow"] })).ok).toBe(true);
+  await until(() => slow.state === "busy", "the slow turn");
+  daemon.bus.pause("slow");
+  daemon.bus.resume("slow");
+  finish();
+  const file = join(stateDir, "events.jsonl");
+  await until(() => readEvents(file).some((e) => e.type === "turn_end" && e.peer === "slow"), "the turn's end");
+  const events = readEvents(file);
+  expect(events.filter((e) => e.type === "turn_start" && e.peer === "slow")).toHaveLength(1);
+  expect(events.filter((e) => e.type === "state" && e.peer === "slow").map((e) => (e as { state: string }).state)).toContain("paused");
+  const sent = events.find((e) => e.type === "envelope" && e.from === "user" && e.to?.includes("slow")) as { bytes: number };
+  expect(sent.bytes).toBe(Buffer.byteLength("héllo 안녕"));
 });

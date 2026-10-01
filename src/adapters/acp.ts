@@ -31,7 +31,7 @@ export interface AcpOptions {
   /** Appended to the standing instruction of the first delivery (role contract). */
   preamble?: string;
   /** The session's running token total from `usage_update` (inferred shape: totalTokens, else input + output, else `used`). Cumulative, not a delta. */
-  onTokens?: (sessionTotal: number) => void;
+  onTokens?: (sessionTotal: number, sessionId: string) => void;
   /** Resolve with an optionId, or undefined to cancel. Absent = every request is cancelled.
    *  A request whose payload could not be resolved is titled as such and carries no session-wide allow option. */
   onPermission?: (req: PermissionRequest) => Promise<string | undefined>;
@@ -212,7 +212,7 @@ export class AcpPeer extends BasePeer {
         const f = { ...u, ...(typeof u.usage === "object" ? u.usage : {}) } as Record<string, unknown>;
         const num = (k: string) => (typeof f[k] === "number" ? (f[k] as number) : 0);
         const total = num("totalTokens") || num("total_tokens") || num("inputTokens") + num("outputTokens") || num("input_tokens") + num("output_tokens") || num("used");
-        if (total > 0) this.opts.onTokens(total);
+        if (total > 0) this.opts.onTokens(total, this.sessionId);
       }
     } else if (msg.method === "session/request_permission") {
       void this.answerPermission(msg);

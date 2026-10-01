@@ -19,7 +19,7 @@ export interface CodexOptions {
   /** Raw `rateLimits` snapshots from app-server, and `hard = true` when a turn was refused for quota. */
   onUsage?: (rateLimits: unknown, hard: boolean) => void;
   /** The thread's running token total from `thread/tokenUsage/updated` (cumulative, not a delta). */
-  onTokens?: (threadTotal: number) => void;
+  onTokens?: (threadTotal: number, threadId: string) => void;
   /** How often to ask app-server for the rate limits while a TUI is attached. */
   usagePollMs?: number;
   cwd: string;
@@ -371,7 +371,7 @@ export class CodexPeer extends BasePeer {
     if (link !== this.link || params.threadId !== this.threadId) return;
     if (method === "thread/tokenUsage/updated") {
       const total = Number(params.tokenUsage?.total?.totalTokens);
-      if (Number.isFinite(total) && total > 0) this.opts.onTokens?.(total);
+      if (Number.isFinite(total) && total > 0) this.opts.onTokens?.(total, this.threadId);
       return;
     }
     if (method === "turn/started") {

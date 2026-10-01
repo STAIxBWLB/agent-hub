@@ -12,10 +12,10 @@ marked `private: true`, and PII tasks `pii: true`.
 
 | type | fields |
 |---|---|
-| `envelope` | `id`, `from`, `to` (absent for broadcast), `priority`, `hop`, `kind`, `task` (task id from refs), `bytes`, `private`, `dropped` (`hop` or `fyi` when not delivered) |
+| `envelope` | `id`, `from`, `to` (absent for broadcast), `priority`, `hop`, `kind`, `task` (task id from refs), `bytes` (UTF-8 size of the body), `private`, `dropped` (`hop` or `fyi` when not delivered) |
 | `overflow`, `undeliverable` | `id`, `from`, `peer` |
 | `state` | `peer`, `state` |
-| `turn_start` | `peer`, `turn` (`<peer>#<hub run>.<n>`, unique across restarts) |
+| `turn_start` | `peer`, `turn` (`<peer>#<hub run>.<n>`, unique across restarts). A turn follows the adapter: pausing a busy peer does not end it |
 | `turn_end` | `peer`, `turn`, `ms`, `tokens` (when the adapter reported any during the turn) |
 | `tokens` | `peer`, `n` (tokens added since the previous report) |
 | `task` | `id`, `event` (the board history event, e.g. `proposed`, `assigned`, `done`, `check failed`), `by`, `state`, `owner`, `reviewer`, `class`, `pii` |
