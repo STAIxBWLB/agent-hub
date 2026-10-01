@@ -393,7 +393,9 @@ export class Tasks {
     if (!hits.length) return;
     const { paths } = this.places(task);
     const signatures = task.plan?.signatures ?? [];
-    const line = (summary ?? "").split("\n").find((l) => l.trim())?.trim().slice(0, 300);
+    const first = (summary ?? "").split("\n").find((l) => l.trim())?.trim().slice(0, 300);
+    // The summary is the owner's own words: one that matches a PII pattern is left out of what other owners get.
+    const line = first && !this.isPii({ signals: detectSignals({ title: "", detail: first, refs: {} }, this.d.routing(), this.d.cwd) }) ? first : undefined;
     for (const hit of hits) {
       const body = [
         `Task #${task.id} (owner ${task.owner}) is done and touches your open #${hit.task.id} on ${where(hit)}. Check your work against it before you go on.`,

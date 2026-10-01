@@ -750,3 +750,16 @@ test("a board from before plans gains the column with its tasks intact", () => {
   expect(board.get(1)).toMatchObject({ title: "kept", owner: "kimi", state: "in_progress", plan: {} });
   board.close();
 });
+
+// Review of #48 (Copilot): a summary that matches a PII pattern stays out of the completed-change notice.
+test("the completed-change notice leaves out a summary line that matches a PII pattern", async () => {
+  const { tasks, peers } = await setup();
+  await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/hub/bus.ts"] } });
+  const t = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/hub/bus.ts"] } });
+  await tasks.done("codex", t.id, `checked the record of ${PII}`);
+  await tick();
+  const notice = completedNotices(peers.kimi!)[0]!.body;
+  expect(notice).toContain("Changed files: src/hub/bus.ts");
+  expect(notice).not.toContain("900101");
+  expect(notice).not.toContain("Summary:");
+});
