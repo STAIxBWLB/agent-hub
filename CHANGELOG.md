@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- The egress proxy logs every refusal: an oversized request header and an unreachable listed host now leave a `network: refused` line too, the latter with its error code only; a failure after the tunnel opened closes the connection instead of writing an HTTP answer into it (#81).
+- The egress proxy logs every refusal: an oversized request header and an unreachable listed host now leave a `network: refused` line too, the latter with its error code, never the error text; a failure after the tunnel opened closes the connection instead of writing an HTTP answer into it (#81).
 
 ## 0.11.0
 
