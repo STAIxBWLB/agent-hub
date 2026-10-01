@@ -126,7 +126,9 @@ test("recovery RPC is console-only, fences sends, commits, restores and releases
 test("a recovery commit waits for a completion check, whose result would land after the commit's board digest", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-recovery-check-"));
   const gate = join(stateDir, "check-may-finish");
-  const config = { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, checks: { timeout_s: 60, review: `while [ ! -f '${gate}' ]; do sleep 0.05; done` } };
+  cleanup.push(() => writeFileSync(gate, "")); // a failing run must not leave the check looping
+  // Bounded too (30 s, under timeout_s), in case the runner itself dies before cleanup.
+  const config = { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, checks: { timeout_s: 60, review: `i=0; while [ ! -f '${gate}' ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); done` } };
   const hub = await startDaemon({ cwd: process.cwd(), projectId: "project-1", instanceId: "instance-1", stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
   const console_ = await ControlClient.connect(stateDir, { role: "console" });
   await console_.request({ t: "task", op: "hub_task_propose", args: { title: "x", class: "review" } });
