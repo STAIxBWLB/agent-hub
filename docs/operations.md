@@ -391,6 +391,11 @@ ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>
 ```
 
+The coordinator commits only once the source is quiet: no turn running, no
+approval pending, no completion check queued or running. It waits up to 10
+minutes and then aborts, leaving the source running; upgrade between long
+checks.
+
 The 0.7.0 transition stages the verified package and runs a retained
 coordinator from the source tree. It accepts a verified protocol-9 source and
 moves to a protocol-10 target. The source journal, queued envelopes, tasks,
