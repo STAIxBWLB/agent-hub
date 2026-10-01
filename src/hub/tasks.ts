@@ -431,8 +431,11 @@ export class Tasks {
   }
 
   private need(id: unknown, open = false): Task {
-    const task = this.d.board.get(Number(id));
-    if (!task) throw new Error(`no task #${id}`);
+    // Callers are models (#70): an id is a whole number or a digit string, never an array that Number() would accept.
+    const n = typeof id === "number" ? id : typeof id === "string" && /^\s*\d+\s*$/.test(id) ? Number(id) : NaN;
+    if (!Number.isInteger(n)) throw new Error(`id must be a task number, not ${(typeof id === "number" ? String(id) : JSON.stringify(id ?? null)).slice(0, 60)}`);
+    const task = this.d.board.get(n);
+    if (!task) throw new Error(`no task #${n}`);
     // Handing a task to someone else only makes sense while there is work left on it.
     if (open && !OPEN.includes(task.state)) throw new Error(`task #${task.id} is ${task.state}: it can no longer change hands`);
     return task;

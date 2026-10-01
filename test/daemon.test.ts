@@ -1340,6 +1340,21 @@ test("capabilities: a listed peer whose value is not a list gets none, and hub.l
   expect(log).toContain("capabilities: claude may not propose tasks (hub_task_propose)"); // the refusal itself is on record
 });
 
+// issue #70: model-written owners and ids are settled before anything reaches the board.
+test("hub_task_propose: an owner that is not a peer id is refused and creates no task; null and empty mean none", async () => {
+  const { stateDir, daemon } = await hub({ capabilities: { claude: ["propose"] } });
+  const { client } = await fakeClaude(stateDir);
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
+  const call = async (name: string, args: Record<string, unknown>) => ((await client.callTool({ name, arguments: args })) as { content: { text: string }[] }).content[0]!.text;
+  expect(await call("hub_task_propose", { title: "x", class: "implement", owner: ["codex"] })).toContain('owner must be a peer id, not ["codex"]');
+  expect(JSON.parse(await call("hub_task_list", {}))).toHaveLength(0); // nothing reached the board
+  expect(await call("hub_task_propose", { title: "y", class: "implement", owner: " kimi " })).toContain('claude may not hand tasks to other peers'); // checked on the trimmed owner
+  expect(await call("hub_task_propose", { title: "z", class: "implement", owner: null })).toMatch(/^task #1: proposed/);
+  expect(await call("hub_task_propose", { title: "w", class: "implement", owner: "" })).toMatch(/^task #2: proposed/);
+  expect(await call("hub_task_accept", { id: [1] })).toContain("id must be a task number, not [1]");
+  expect(await call("hub_task_propose", { title: "v", class: "implement", owner: "Claude" })).toMatch(/owner claude/); // peer ids are lowercase
+});
+
 test("a peer can never answer a permission request: not over the control link, not by message", async () => {
   const { stateDir, console_, pushes, events } = await hub();
   await console_.request({ t: "start", peer: "kimi" });
