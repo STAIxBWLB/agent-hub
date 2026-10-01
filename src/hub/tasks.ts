@@ -35,7 +35,7 @@ const OPEN: Task["state"][] = ["proposed", "in_progress", "changes_requested"];
 const QUIET_EVENTS = new Set(["answer", "reviewer changed"]);
 
 /** Same path, or one is a directory of the other; the project root (`.`) holds everything. */
-const samePlace = (a: string, b: string) => {
+export const samePlace = (a: string, b: string) => {
   const norm = (p: string) => p.replace(/^\.\//, "").replace(/\/+$/, "") || ".";
   const [x, y] = [norm(a), norm(b)];
   return x === "." || y === "." || x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
@@ -146,7 +146,7 @@ export class Tasks {
   private releasing: PeerId | undefined;
 
   /** Whether a model-written name may be shown to other peers and in the log: one matching a PII pattern may be PII. */
-  private nameable = (t: string): boolean => !this.isPii({ signals: detectSignals({ title: "", detail: t, refs: {} }, this.d.routing(), this.d.cwd) });
+  nameable = (t: string): boolean => !this.isPii({ signals: detectSignals({ title: "", detail: t, refs: {} }, this.d.routing(), this.d.cwd) });
 
   /** Where two tasks meet: shared paths, then shared symbols, leaving out any name that matches a PII pattern. */
   private where(hit: { paths: string[]; symbols: string[] }): string {

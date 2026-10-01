@@ -6,13 +6,15 @@ export interface Report {
   peers: Record<string, { turns: number; busyMinutes: number; tokens: number }>;
   messages: { total: number; dropped: Record<string, number>; overflow: number; undeliverable: number; perTask: number };
   overlaps: { warnings: number; pairs: number };
+  /** Files one agent changed after another owner's open task had changed them (issue #32). */
+  conflicts: number;
   tasks: Record<string, number>;
   quota: { readings: number; hard: number };
 }
 
 /** The numbers `ahub report` prints, from `events.jsonl` alone (issue #40). */
 export function summarize(events: StampedEvent[]): Report {
-  const r: Report = { peers: {}, messages: { total: 0, dropped: {}, overflow: 0, undeliverable: 0, perTask: 0 }, overlaps: { warnings: 0, pairs: 0 }, tasks: {}, quota: { readings: 0, hard: 0 } };
+  const r: Report = { peers: {}, messages: { total: 0, dropped: {}, overflow: 0, undeliverable: 0, perTask: 0 }, overlaps: { warnings: 0, pairs: 0 }, conflicts: 0, tasks: {}, quota: { readings: 0, hard: 0 } };
   const peer = (id: string) => (r.peers[id] ??= { turns: 0, busyMinutes: 0, tokens: 0 });
   const pairs = new Set<string>();
   const taskMessages = new Map<string, number>();
@@ -43,6 +45,9 @@ export function summarize(events: StampedEvent[]): Report {
         r.overlaps.warnings++;
         for (const o of e.others) pairs.add([e.task, o.task].sort((a, b) => a - b).join("-"));
         break;
+      case "conflict":
+        r.conflicts++;
+        break;
       case "quota":
         r.quota.readings++;
         if (e.hard) r.quota.hard++;
@@ -60,7 +65,7 @@ export function formatReport(r: Report): string[] {
   for (const [id, p] of Object.entries(r.peers).sort(([a], [b]) => a.localeCompare(b))) lines.push(`peer ${id}: ${p.turns} turn${p.turns === 1 ? "" : "s"}, ${p.busyMinutes} busy minutes, ${p.tokens || "-"} tokens`);
   const dropped = Object.entries(r.messages.dropped).map(([k, n]) => `${n} ${k}`).join(", ");
   lines.push(`messages: ${r.messages.total} (dropped: ${dropped || "none"}; overflow ${r.messages.overflow}; undeliverable ${r.messages.undeliverable}); ${r.messages.perTask} per task that had any`);
-  lines.push(`overlap warnings: ${r.overlaps.warnings}, task pairs: ${r.overlaps.pairs}`);
+  lines.push(`overlap warnings: ${r.overlaps.warnings}, task pairs: ${r.overlaps.pairs}; edit conflicts: ${r.conflicts}`);
   const tasks = Object.entries(r.tasks).sort().map(([k, n]) => `${k} ${n}`).join(", ");
   lines.push(`task events: ${tasks || "none"}`);
   lines.push(`quota readings: ${r.quota.readings} (${r.quota.hard} hard limits)`);

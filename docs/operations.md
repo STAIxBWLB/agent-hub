@@ -185,6 +185,34 @@ ahub undo <turn> --yes --context  # Codex's latest turn: also drop it from Codex
   older turn says so.
 - Each `turn_end` event carries `files` and `snapshotMs` (`ahub export`).
 
+## Edit conflicts
+
+With snapshots on, the hub also compares each turn's files with what other
+owners' open tasks changed before it. A turn's files count for every task its
+peer has in progress, except files that another peer's overlapping turn changed;
+while such a turn's changes are unknown (it still runs), the turn's files count
+for none. When a peer changes a file that another owner's open task changed
+earlier, both get a message naming the file and the other task, the console
+shows a `conflict:` line, and `events.jsonl` records a `conflict` event (`ahub
+report` counts them). Each peer, task and file is reported once per hub run.
+When another peer worked during the same turn, the messages say so: the change
+may be theirs. Edits by Claude or by you during a peer's turn count as that
+peer's, without that note: the hub sees no turn of yours. Nothing is blocked. A
+file only one agent touched, and anything to do with a PII task, warns nobody.
+A file whose name matches a PII pattern is not named, as in overlap notices: the
+messages and the console line only count such files, and the event leaves them out.
+
+Claude's edits do not pass through turn snapshots, so Claude can ask before each
+edit instead. `templates/claude-hooks.json` is a PreToolUse hook for Edit, Write,
+MultiEdit and NotebookEdit that runs `ahub check-path --hook`. Merge it into
+`.claude/settings.local.json` (or your user settings) yourself. When another
+owner's open task claims the file (refs or plan paths) or changed it, Claude gets
+the list with the tool result and you see one line. The hook never decides a
+permission, so your permission rules apply as before. Task titles in the list
+are quoted and marked as other agents' text. The hook runs `ahub`, so it has to
+be on the PATH Claude Code's hooks see; otherwise every edit shows a hook error
+(it never blocks). `ahub check-path <file>` prints the same list in a terminal.
+
 ## Approvals and pauses
 
 Inspect permission requests in the terminal:
