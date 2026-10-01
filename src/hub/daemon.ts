@@ -1077,7 +1077,8 @@ export async function startDaemon(opts: DaemonOptions) {
         permit: (title) => onPermission({ peer: "pi", title, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] }).then((picked) => picked === "allow" && pi.acceptingTools && bus.peers.get("pi") === pi),
         send: (text, to) => {
           if (to?.some((id) => !bus.peers.has(id) && id !== USER)) return "error: unknown peer";
-          pi.onMessage?.(text, { inReplyTo: piReply, ...(to?.length ? { to } : {}) }); return "sent";
+          const refused = pi.onMessage?.(text, { inReplyTo: piReply, ...(to?.length ? { to } : {}) });
+          return typeof refused === "string" ? `not sent: ${refused}` : "sent";
         },
       };
       const routing = currentRouting(opts.cwd, log);

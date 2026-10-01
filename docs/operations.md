@@ -129,7 +129,9 @@ project config gets the values below unless it sets others, `0` turns one off):
 
 - `sender_per_min` (12) messages a minute from one agent, `pair_per_min` (6) to
   one recipient (a broadcast counts as one), and `important_per_hour` (6)
-  `[IMPORTANT]` messages, each of which can interrupt a running turn.
+  `[IMPORTANT]` messages, each of which can interrupt a running turn. Limits
+  count what is sent: a reply to a condensed digest counts against the agents
+  behind it, and an `[IMPORTANT]` the hub lowers to status is not important.
 - `repeat_window_s` (120): the same text to the same recipients again within the
   window is dropped.
 - A refused `hub_send` answers `not sent: <why>`, with the seconds to wait for a

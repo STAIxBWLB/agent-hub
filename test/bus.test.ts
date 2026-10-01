@@ -528,6 +528,29 @@ test("a reply to a condensed delivery reaches the senders the condensation repla
   expect(codex.got.map((e) => e.body)).toEqual(["answering both"]);
 });
 
+test("limits count what is sent: the senders behind a condensed delivery, and the priority after the cap (#38)", async () => {
+  const admitted: string[] = [];
+  const admit = (from: string, to: string[] | undefined, p: string) => void admitted.push(`${from}>${to?.join(",") ?? "*"}:${p}`);
+  const { bus, kimi } = await trio(undefined, {
+    batchMax: 2,
+    condense: async (envs) => (envs.length < 2 ? envs : [newEnvelope(DIGEST, `condensed ${envs.length}`, { kind: "status" })]),
+    admit,
+  });
+  kimi.set("busy");
+  bus.publish(newEnvelope("claude", "one", { to: ["kimi"] }));
+  bus.publish(newEnvelope("codex", "two", { to: ["kimi"] }));
+  kimi.set("idle");
+  await tick();
+  kimi.onMessage!("answering both", { inReplyTo: replyParent(kimi.got), to: replyAudience(kimi.got) });
+  expect(admitted).toEqual(["kimi>claude,codex:status"]);
+  const native = new Bus({ batchMs: 0, admit });
+  const pi = new NativeFakePeer("pi");
+  native.add(pi);
+  await pi.start();
+  pi.onMessage!("[IMPORTANT] build finished"); // unsolicited: capped, so it does not spend the important budget
+  expect(admitted.at(-1)).toBe("pi>*:status");
+});
+
 test("a hub-native peer keeps important when the delivery held an important request for it, whatever replyParent picked", async () => {
   const bus = new Bus({ retryMs: 15, batchMs: 0, batchMax: 2 });
   const pi = new NativeFakePeer("pi");

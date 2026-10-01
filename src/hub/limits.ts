@@ -37,7 +37,7 @@ export class Limiter {
   /** undefined when the message may go; otherwise the reason, for the sender. */
   admit(from: PeerId, to: PeerId[] | undefined, priority: Priority, body: string): string | undefined {
     const now = this.now();
-    const audience = to?.length ? [...to].sort() : ["*"];
+    const audience = to?.length ? [...new Set(to)].sort() : ["*"];
     if (this.cfg.repeat_window_s > 0) {
       const key = `${from}\0${audience.join(",")}\0${body.trim().replace(/\s+/g, " ")}`;
       const last = this.recent.get(key);

@@ -51,6 +51,13 @@ test("the same message to the same recipients within the window is dropped and t
   expect(l.admit("codex", ["claude", "kimi"], "status", "tests pass")).toMatch(/^rate limited/); // window over: not a repeat
 });
 
+test("duplicate recipients are the same recipients for repeat suppression", () => {
+  const { now } = clock();
+  const l = new Limiter({ ...DEFAULT_LIMITS, repeat_window_s: 60 }, now);
+  expect(l.admit("codex", ["claude"], "status", "done")).toBeUndefined();
+  expect(l.admit("codex", ["claude", "claude"], "status", "done")).toMatch(/^the same message went to claude /);
+});
+
 test("off by default", () => {
   const l = new Limiter(DEFAULT_LIMITS);
   for (let i = 0; i < 100; i++) expect(l.admit("codex", undefined, "important", "same")).toBeUndefined();

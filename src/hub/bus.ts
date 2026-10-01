@@ -127,11 +127,6 @@ export class Bus {
     peer.onMessage = (text, opts) => {
       const { priority, body } = parseMarker(text);
       if (!body) return;
-      const refused = this.opts.admit?.(peer.id, opts?.to, opts?.priority ?? priority, body);
-      if (refused) {
-        this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered: ${refused}`));
-        return refused;
-      }
       // What the peer was handed differs from what it stands for once a delivery was condensed; both the audience
       // and the priority ceiling are about what it stands for.
       const last = this.lastDelivery.get(peer.id);
@@ -140,11 +135,15 @@ export class Bus {
       // `digest` in the audience stands for the condensed delivery even when a steer, not the digest, is the parent.
       const condensed = !!last?.out.some((e) => e.from === DIGEST);
       const audienceOriginals = originals ?? (opts?.to?.includes(DIGEST) && condensed ? last?.originals : undefined);
-      this.publish(newEnvelope(peer.id, body, {
-        ...opts,
-        ...(opts?.to?.length ? { to: resolveTo(opts.to, audienceOriginals) } : {}),
-        priority: opts?.priority ?? capPriority(peer, priority, opts?.inReplyTo, originals),
-      }));
+      const to = opts?.to?.length ? resolveTo(opts.to, audienceOriginals) : undefined;
+      const effective = opts?.priority ?? capPriority(peer, priority, opts?.inReplyTo, originals);
+      // Limits count what is sent: the real recipients, not `digest`, and the priority after the cap.
+      const refused = this.opts.admit?.(peer.id, to, effective, body);
+      if (refused) {
+        this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered: ${refused}`));
+        return refused;
+      }
+      this.publish(newEnvelope(peer.id, body, { ...opts, ...(to ? { to } : {}), priority: effective }));
     };
     peer.onFailed = (envs) => {
       // The adapter got the condensed list; what has to come back is what that list replaced.
