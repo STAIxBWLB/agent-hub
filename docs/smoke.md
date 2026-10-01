@@ -937,3 +937,29 @@ configured or running, and no peer was attached at the upgrade.
 - For about two minutes after the publish step logged `+ @staix/agent-hub@0.9.0`,
   `npm view` still showed `latest: 0.8.1`; the registry caught up without any
   action.
+
+## 0.9.0 to 0.10.0 attended upgrade (2026-10-01)
+
+A scratch project (a git work tree initialized by the 0.9.0 `ahub init`) ran a
+0.9.0 hub with tasks on its board and a completion check for the review class, set in
+`.agenthub/config.local.json` (`"review": "sleep 40"`, timeout 120 s). No peer
+was attached. Times are UTC.
+
+- At 05:54:46 the console marked task #1 done, which started its 40 s check.
+  `bunx --package @staix/agent-hub@0.10.0 ahub upgrade --to 0.10.0 --yes` right
+  after, about a minute after the publish, failed with "registry metadata
+  unavailable for @staix/agent-hub@0.10.0" and scheduled nothing; the 0.9.0 hub
+  kept running. This is the registry lag from the 0.9.0 entry, met here as an
+  error instead of a stale `npm view`; a `--dry-run` at that time printed no
+  plan either.
+- At 05:55:03 the console marked task #3 done, starting a second check, and
+  `--yes` was applied in the same second. Its plan listed one project, source
+  0.9.0, no blockers. The project stayed `pending` while both checks ran: #1's
+  passed at 05:55:26 and #3's at 05:56:07. The project moved on at 05:56:09
+  and was `verified` at 05:56:16.
+- After release the hub ran 0.10.0 under a new instance id. All three tasks
+  were on the board with their full history (#1 and #3 approved by their
+  checks, #2 still proposed), and no history entry recorded an interrupted
+  check.
+- The coordinator promoted the global CLI to 0.10.0, and `ahub setup --yes`
+  installed the 0.10.0 plugin.

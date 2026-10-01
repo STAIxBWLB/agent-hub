@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.10.0 and control protocol 10. Live verification
+This guide describes ahub 0.11.0 and control protocol 10. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Install and start
@@ -442,8 +442,8 @@ source and carries every recovery fix released up to it. Protocol 8 and older
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.10.0 ahub upgrade --to 0.10.0 --dry-run
-bunx --package @staix/agent-hub@0.10.0 ahub upgrade --to 0.10.0 --yes
+bunx --package @staix/agent-hub@0.11.0 ahub upgrade --to 0.11.0 --dry-run
+bunx --package @staix/agent-hub@0.11.0 ahub upgrade --to 0.11.0 --yes
 ```
 
 | Running now | Coordinator to use |
@@ -467,25 +467,26 @@ coordinator") with an operation left to clear by `ahub recovery abort <id>`. An
 older 0.7.x CLI may lack recovery fixes released after it. The
 [smoke ledger](smoke.md) records dry-runs from real 0.6.4 and 0.7.5 hubs (issue
 #75), an applied upgrade with the 0.7.0 coordinator, and one from a running
-0.8.1 hub with tasks and a budget pause with the 0.9.0 coordinator.
+0.8.1 hub with tasks and a budget pause with the 0.9.0 coordinator, and one
+with the 0.10.0 coordinator from a 0.9.0 hub with two completion checks running.
 
 The coordinator verifies and retains the exact target package, preserves its
 own source, and promotes the global CLI only after restored projects pass
 readback.
 
-Once the installed CLI is 0.10.0, review the current project or all registered
+Once the installed CLI is 0.11.0, review the current project or all registered
 projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.10.0 --dry-run
+ahub upgrade --to 0.11.0 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.10.0 --yes
+ahub upgrade --to 0.11.0 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>
@@ -515,6 +516,13 @@ in `config.local.json` restores the old profile for one release. Off unless set:
 `review.adaptive`, `recovery.auto_resume_after_crash` and `capabilities`. A hub
 before 0.10.0 keeps no session record, so a crash of one is not reported as such
 by the next start.
+
+0.11.0 changes what `local.bash_network: true` means: the local worker's and
+Pi's commands reach the network only through the hub's egress proxy, to the
+hosts in `local.network_allow` (package registries and GitHub's code hosts by
+default). A project that needs another host lists it there; `"direct"` keeps
+the open network of 0.10.0 for one release. Under deny-default each command
+gets a temp dir of its own, and the shared temp dirs are closed.
 
 The 0.7.0 transition stages the verified package and runs a retained
 coordinator from the source tree. It accepts a verified protocol-9 source and
