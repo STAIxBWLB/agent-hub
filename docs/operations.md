@@ -140,6 +140,9 @@ through a temporary index, so your index, HEAD and branches stay as they are. Th
 files a turn changed are the difference between its two snapshots, which counts
 changes made by shell commands as well as edits. The last 20 turns per peer are
 kept (`"snapshots": { "enabled": true, "keep": 20 }` in `.agenthub/config.json`).
+Snapshots are on in any project with a config file, including one written before
+0.8.0 without a `snapshots` block, and off without one; set `"enabled": false`
+to opt out.
 
 ```bash
 ahub turns                        # recent turns of every peer and the files each changed
