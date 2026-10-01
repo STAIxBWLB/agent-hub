@@ -64,8 +64,10 @@ export interface BudgetHooks {
 }
 
 const HYSTERESIS = 0.1;
-/** Marks a pause whose handoff was a wait, in its reason (issue #36). */
+/** Mark a pause whose handoff was a wait, and one whose wait was undone, in its reason (issue #36). */
 const WAIT_NOTE = "; keeps its work:";
+const WAITED_NOTE = "; waited, then the reset moved to";
+const waitedNote = (min: number, max: number) => `${WAITED_NOTE} ${min} min, beyond wait_max_min ${max}`;
 const FALLBACK_WINDOW_MINS = 300;
 /** Peers the coordinator never pauses: the local worker has no quota. */
 const EXEMPT = new Set<PeerId>(["local", "user", "hub"]);
@@ -188,7 +190,7 @@ export class Budget {
         const waited = open.handedOff && open.reason.includes(WAIT_NOTE);
         const waitMin = Math.ceil((known - this.now()) / 60_000);
         if (waited && waitMin > this.cfg.wait_max_min) {
-          const reason = `${open.reason.slice(0, open.reason.indexOf(WAIT_NOTE))}; waited, then the reset moved to ${waitMin} min, beyond wait_max_min ${this.cfg.wait_max_min}`;
+          const reason = `${open.reason.slice(0, open.reason.indexOf(WAIT_NOTE))}${waitedNote(waitMin, this.cfg.wait_max_min)}`;
           this.db.query("UPDATE budget_pauses SET resets_at = ?, handed_off = 0, reason = ? WHERE peer = ?").run(known, reason, peer);
           this.hooks.notify(`budget: ${peer}'s reset moved to ${waitMin} min, beyond wait_max_min ${this.cfg.wait_max_min}: its work is handed over`);
         } else this.db.query("UPDATE budget_pauses SET resets_at = ? WHERE peer = ?").run(known, peer);
@@ -242,11 +244,22 @@ export class Budget {
       return this.hooks.notify(`budget: handing over ${peer}'s work failed, will retry: ${(e as Error).message}`);
     }
     if (this.closed) return;
-    const why = wait ? `${WAIT_NOTE} resets in ${waitMin} min, within wait_max_min ${this.cfg.wait_max_min}` : this.cfg.wait_max_min > 0 && waitMin !== Infinity && !this.record(peer)?.reason.includes("; waited, then") ? `; handed over: resets in ${waitMin} min, beyond wait_max_min ${this.cfg.wait_max_min}` : "";
+    const record = this.record(peer);
     // A wait that was undone hands over a second time: keep what moved the first time (urgent work) on the record too.
-    const all = [...(this.record(peer)?.moved ?? []), ...moved];
-    this.db.query("UPDATE budget_pauses SET handed_off = 1, moved = ?, reason = reason || ? WHERE peer = ?").run(JSON.stringify(all), why, peer);
-    if (wait) this.hooks.notify(`budget: ${peer} keeps its work and waits ${waitMin} min for its reset (wait_max_min ${this.cfg.wait_max_min})${moved.length ? "; urgent work moves" : ""}`);
+    const all = JSON.stringify([...(record?.moved ?? []), ...moved]);
+    const nowMin = record ? Math.ceil((record.resetsAt - this.now()) / 60_000) : waitMin;
+    if (wait && nowMin > this.cfg.wait_max_min) {
+      // A reading moved the reset past the limit while the urgent work moved: no wait after all. Left unmarked, so the
+      // next tick hands over the rest.
+      this.db.query("UPDATE budget_pauses SET moved = ?, reason = reason || ? WHERE peer = ?").run(all, waitedNote(nowMin, this.cfg.wait_max_min), peer);
+      this.hooks.notify(`budget: ${peer}'s reset moved to ${nowMin} min, beyond wait_max_min ${this.cfg.wait_max_min}: its work is handed over`);
+    } else {
+      let why = "";
+      if (wait) why = `${WAIT_NOTE} resets in ${waitMin} min, within wait_max_min ${this.cfg.wait_max_min}`;
+      else if (this.cfg.wait_max_min > 0 && waitMin !== Infinity && !record?.reason.includes(WAITED_NOTE)) why = `; handed over: resets in ${waitMin} min, beyond wait_max_min ${this.cfg.wait_max_min}`;
+      this.db.query("UPDATE budget_pauses SET handed_off = 1, moved = ?, reason = reason || ? WHERE peer = ?").run(all, why, peer);
+      if (wait) this.hooks.notify(`budget: ${peer} keeps its work and waits ${waitMin} min for its reset (wait_max_min ${this.cfg.wait_max_min})${moved.length ? "; urgent work moves" : ""}`);
+    }
     if (moved.length) this.hooks.notify(`budget: moved from ${peer}: ${moved.map((m) => `#${m.id} ${m.role} -> ${m.to ?? "nobody"}`).join(", ")}`);
   }
 

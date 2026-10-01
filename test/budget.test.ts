@@ -281,11 +281,30 @@ test("a wait is undone when the reset moves past wait_max_min: the next tick han
   expect(s.budget.record("codex")!.moved.map((m) => m.id)).toEqual([1, 2]); // both handoffs are on the record
 });
 
+test("a reading that moves the reset out while the urgent work is moving undoes the wait as well", async () => {
+  const urgentOnly: boolean[] = [];
+  let release!: () => void;
+  const s = setup({ handoff: (_p, _ctx, only) => (urgentOnly.push(only), only ? new Promise((r) => (release = () => r([]))) : Promise.resolve([])) }, undefined, { ...DEFAULT_BUDGET, wait_max_min: 30 });
+  s.budget.report("codex", [{ id: "5h", used: 0.95, resetsAt: s.clock.now + 10 * MIN, source: "test" }, { id: "week", used: 0.5, resetsAt: s.clock.now + 4200 * MIN, source: "test" }]);
+  await s.settle();
+  s.budget.report("codex", [{ id: "week", used: 0.92, resetsAt: s.clock.now + 4200 * MIN, source: "test" }]); // during the urgent handoff
+  await s.settle();
+  release();
+  await s.settle();
+  expect(s.budget.record("codex")!.handedOff).toBe(false);
+  expect(s.budget.status().codex!.paused!.reason).toBe("5h window at 95% (test); waited, then the reset moved to 4200 min, beyond wait_max_min 30");
+  s.budget.tick();
+  await s.settle();
+  expect(urgentOnly).toEqual([true, false]);
+});
+
 test("headroom: the most used fresh window decides, with its own reset; stale readings say nothing", async () => {
   const { budget, clock } = setup();
   budget.report("codex", [{ id: "5h", used: 0.3, resetsAt: clock.now + 60 * MIN, source: "t" }, { id: "week", used: 0.6, resetsAt: clock.now + 3000 * MIN, source: "t" }]);
   // the week window bounds the headroom, and the 5 h reset gives none of it back
   expect(budget.headroom()).toEqual({ codex: { headroom: 0.4, resetsAt: clock.now + 3000 * MIN } });
+  budget.report("kimi", [{ id: "5h", used: 0.5, resetsAt: clock.now + 60 * MIN, source: "t" }, { id: "week", used: 0.5, source: "t" }]);
+  expect(budget.headroom().kimi).toEqual({ headroom: 0.5 }); // a binding window with no known reset: no drain rate
   clock.now += 31 * MIN; // past stale_min
   expect(budget.headroom()).toEqual({});
 });

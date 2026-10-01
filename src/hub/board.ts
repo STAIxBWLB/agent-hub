@@ -12,10 +12,10 @@ export interface TaskRefs {
   paths?: string[];
 }
 /** What an owner says it will change, before it starts (issue #31). Each list holds short free-text items. */
-/** Task outcomes older than this are pruned: demotion (issue #36) reads one week, seven half-lives. */
-export const OUTCOMES_KEPT_MS = 7 * 24 * 3_600_000;
 export const PLAN_KEYS = ["paths", "symbols", "signatures", "insertion_points"] as const;
 export type TaskPlan = Partial<Record<(typeof PLAN_KEYS)[number], string[]>>;
+/** Task outcomes older than this are pruned: demotion (issue #36) reads one week, seven half-lives. */
+export const OUTCOMES_KEPT_MS = 7 * 24 * 3_600_000;
 
 export interface HistoryEntry {
   at: number;
