@@ -407,7 +407,7 @@ export class Tasks {
       rejected.length ? `Earlier review notes:\n${rejected.join("\n")}` : "",
       brief ?? "",
       // What the previous owner left behind. Peer-written free text: never attached to a PII task.
-      context && !pii ? `Handoff from the previous owner:\n${this.screen(task, context.slice(0, 3000), "handoff", a.owner)}` : "",
+      context && !pii ? `Handoff from the previous owner:\n${this.screen(task, context, "handoff", a.owner).slice(0, 3000)}` : "",
       `Take it with hub_task_accept {id: ${task.id}, plan: {paths, symbols, signatures, insertion_points}} (what you will change, before you start${pii ? "" : "; owners of overlapping tasks see it"}) or pass with hub_task_decline. When finished: hub_task_done {id: ${task.id}, summary: what changed, why, and the check you ran with its result, refs}.`,
     ].filter(Boolean).join("\n\n");
     this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner!], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id) }, ...(pii ? { private: true } : {}) }));

@@ -1113,3 +1113,16 @@ test("review outcomes are credited to the work they judged: blame needs the same
   await tasks.escalate(HUB, c.id, "pi inference failed");
   expect(outcomes(c.id)).toEqual([]);
 });
+
+// issue #69: a budget handoff is model-written too.
+test("a handoff that matches a PII pattern reaches the next owner as a stub", async () => {
+  const { tasks, peers, bus } = await setup(["claude", "codex", "local"]);
+  const t = await tasks.propose("claude", { title: "implement parser", class: "implement", owner: "codex" });
+  tasks.accept("codex", t.id);
+  bus.pause("codex");
+  const [moved] = await tasks.reassignForPause("codex", `${"x".repeat(2990)} ${PII}`);
+  await tick();
+  const handed = peers[moved!.to!]!.got.find((e) => e.refs?.task === String(t.id))!.body;
+  expect(handed).toContain("[handoff withheld: it matches a PII pattern");
+  expect(handed).not.toContain("900101");
+});
