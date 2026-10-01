@@ -233,7 +233,9 @@ test.skipIf(!sandboxAvailable())("network on: the public CA bundle is readable d
 test.skipIf(!sandboxAvailable())("the selected developer dir is in the profile, so the /usr/bin shims can run what it holds", () => {
   const dev = Bun.spawnSync(["xcode-select", "-p"], { stdout: "pipe" }).stdout.toString().trim();
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-devdir-")));
-  if (dev) expect(profile(cwd, false)).toContain(dev);
+  // for an Xcode app, its whole Contents: the tools load SharedFrameworks next to Developer
+  const app = /^(.*\.app\/Contents)\/Developer\/?$/.exec(dev)?.[1];
+  if (dev) expect(profile(cwd, false)).toContain(`(subpath "${app ?? dev}")`);
 });
 
 // issue #64: Python's own CA bundle (certifi, also vendored by pip) is readable with network on, like the system's.
