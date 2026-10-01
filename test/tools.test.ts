@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { profile, sandboxAvailable, sandboxedExec } from "../src/local/sandbox.ts";
@@ -252,4 +252,28 @@ test.skipIf(!sandboxAvailable())("network on: a certifi cacert.pem is readable, 
   mkdirSync(state, { recursive: true });
   writeFileSync(join(state, "cacert.pem"), "secret\n");
   expect(await read(join(state, "cacert.pem"), true)).toBe("blocked");
+});
+
+// issue #63: each command gets a temp dir of its own; the shared ones are closed under deny-default.
+test.skipIf(!sandboxAvailable())("a command cannot read what other processes left in the shared temp dirs, and its own temp dir goes when it ends", async () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-owntmp-")));
+  const shared = join(tmpdir(), `agenthub-left-${process.pid}.txt`);
+  const tmp = `/private/tmp/agenthub-left-${process.pid}.txt`;
+  writeFileSync(shared, "LEFT_BY_ANOTHER_TOOL");
+  writeFileSync(tmp, "LEFT_IN_PRIVATE_TMP");
+  try {
+    const run = (command: string, timeoutMs?: number) => sandboxedExec(["/bin/sh", "-c", command], { cwd, profile: profile(cwd, false), ...(timeoutMs ? { timeoutMs } : {}) });
+    const out = (await run(`cat '${shared}' '${tmp}' 2>&1; echo "own=$TMPDIR"; echo hi > "$TMPDIR/x" && cat "$TMPDIR/x"`)).output;
+    expect(out).not.toContain("LEFT_BY_ANOTHER_TOOL");
+    expect(out).not.toContain("LEFT_IN_PRIVATE_TMP");
+    expect(out).toContain("hi"); // its own temp dir works
+    const own = out.match(/own=(\S+)/)![1]!;
+    expect(own).not.toBe(`${realpathSync(tmpdir())}/`);
+    expect(existsSync(own)).toBe(false); // removed when the command ended
+    const slow = (await run(`echo "own=$TMPDIR"; sleep 5`, 300)).output;
+    expect(existsSync(slow.match(/own=(\S+)/)![1]!)).toBe(false); // also after a timeout
+  } finally {
+    rmSync(shared, { force: true });
+    rmSync(tmp, { force: true });
+  }
 });

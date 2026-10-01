@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { realPath } from "../hub/project.ts";
@@ -71,14 +71,15 @@ export function profile(cwd: string, network: boolean, readAllow: string[] = [],
         "(deny default)",
         "(allow process-fork)",
         // Runs from the system, toolchain and project directories only; a script runs through an allowed interpreter.
-        `(allow process-exec ${subpaths([...SYSTEM_READABLE, ...readable, tmp, "/private/tmp"])})`,
+        // The user's temp dir and /private/tmp are shared with every other process: each command gets its own (#63).
+        `(allow process-exec ${subpaths([...SYSTEM_READABLE, ...readable])})`,
         "(allow signal (target same-sandbox))",
         "(allow process-info* (target same-sandbox))",
         "(allow sysctl-read)",
         `(allow mach-lookup ${globals([...MACH_SERVICES, ...(network ? NETWORK_MACH_SERVICES : [])])})`,
         '(allow ipc-posix-shm-read-data ipc-posix-shm-read-metadata (ipc-posix-name "apple.shm.notification_center"))',
         "(allow file-read-metadata)",
-        `(allow file-read* (literal "/") ${subpaths([...SYSTEM_READABLE, tmp, "/private/tmp", "/dev"])} ${subpaths(readable)})`,
+        `(allow file-read* (literal "/") ${subpaths([...SYSTEM_READABLE, "/dev"])} ${subpaths(readable)})`,
         '(allow file-ioctl (regex #"^/dev/"))',
         ...(network ? ["(allow network*)"] : []),
       ]
@@ -96,7 +97,7 @@ export function profile(cwd: string, network: boolean, readAllow: string[] = [],
     "(version 1)",
     ...start,
     "(deny file-write*)",
-    `(allow file-write* (subpath ${q(root)}) (subpath ${q(tmp)}) (subpath "/private/tmp") (regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`,
+    `(allow file-write* (subpath ${q(root)}) ${base === "deny" ? "" : `(subpath ${q(tmp)}) (subpath "/private/tmp") `}(regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`,
     // Inside cwd: nothing that runs later outside the sandbox, nothing that reconfigures the hub.
     `(deny file-write* (subpath ${q(join(root, ".agenthub"))}) ${[join(root, ".git"), ...gitDirs].map((d) => `(subpath ${q(join(d, "hooks"))}) (literal ${q(join(d, "config"))})`).join(" ")})`,
     `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join(home, c))})`).join(" ")})`,
@@ -116,9 +117,13 @@ export interface ExecResult {
 export function sandboxedExec(argv: string[], opts: { cwd: string; profile: string; timeoutMs?: number }): Promise<ExecResult> {
   if (!sandboxAvailable()) return Promise.resolve({ code: null, output: "error: command execution needs macOS sandbox-exec and is disabled on this host" });
   return new Promise((resolve) => {
-    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", TMPDIR: tmpdir() };
+    // A temp dir of its own (#63): the user's is shared with every other process, and what a command reads can reach
+    // an answer shown to cloud peers. Allowed after the profile's denies, and gone when the command ends.
+    const own = realPath(mkdtempSync(join(tmpdir(), "ahub-cmd-")));
+    const sandbox = `${opts.profile}\n(allow file-read* file-write* process-exec (subpath ${q(own)}))`;
+    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir(), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", TMPDIR: `${own}/` };
     // Own process group: a timeout has to take the grandchildren too, or they keep the pipes open and the project writable.
-    const child = spawn(SANDBOX_EXEC, ["-p", opts.profile, ...argv], { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const child = spawn(SANDBOX_EXEC, ["-p", sandbox, ...argv], { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let output = "";
     const take = (d: Buffer) => {
       if (output.length < OUTPUT_CAP) output += d.toString();
@@ -138,10 +143,11 @@ export function sandboxedExec(argv: string[], opts: { cwd: string; profile: stri
       if (done) return;
       done = true;
       clearTimeout(timer);
+      rmSync(own, { recursive: true, force: true });
       const clipped = output.length >= OUTPUT_CAP ? `${output.slice(0, OUTPUT_CAP)}\n(output truncated)` : output;
       resolve({ code, output: signal ? `${clipped}\n(killed: ${signal}, timeout?)` : clipped });
     };
-    child.on("error", (e) => (done || ((done = true), resolve({ code: null, output: `error: ${e.message}` }))));
+    child.on("error", (e) => (done || ((done = true), rmSync(own, { recursive: true, force: true }), resolve({ code: null, output: `error: ${e.message}` }))));
     child.on("close", finish);
     // `close` waits for every holder of the pipes; after `exit` give stragglers a moment, then stop waiting and reap them.
     child.on("exit", (code, signal) => setTimeout(() => (killGroup(), finish(code, signal)), 500).unref());
