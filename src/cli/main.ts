@@ -778,7 +778,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     const repo = repoOf(cwd) ?? fail(`${cwd} is not in a git work tree`);
     if (!hasTree(repo.top, startTree) || !hasTree(repo.top, endTree)) fail(`turn ${id}'s snapshots are gone from the git object store (git gc prunes them after two weeks)`);
     // Another peer's turn that overlapped this one in time has its changes in this turn's diff as well.
-    const overlapping = turnRecords((t) => t.overlapping(turn), { paths: [] as string[], unknown: [] as string[] });
+    const keep = Math.max(1, Number(projectConfig().snapshots.keep) || 20);
+    const overlapping = turnRecords((t) => t.overlapping(turn, keep), { paths: [] as string[], unknown: [] as string[] });
     if (overlapping.unknown.length) fail(`refusing to undo ${id}: these turns of other peers ran at the same time and their changes are not known (still running, cut short, or not snapshotted): ${overlapping.unknown.join(", ")}`);
     let reverted = false;
     const plan = () => {

@@ -445,12 +445,12 @@ export async function startDaemon(opts: DaemonOptions) {
   if (config.snapshots.enabled && !repo) log("snapshots: the project is not in a git work tree, so turns are not recorded");
   const turnLog = repo ? new Turns(join(opts.stateDir, "hub.db")) : undefined;
   if (turnLog) startupCleanup.push(() => turnLog.close());
+  /** Whether a peer has a PII task open in any state: assigned and not yet accepted counts. */
+  const holdsPii = (peer: PeerId) => board.list().some((t) => t.owner === peer && t.state !== "approved" && t.state !== "in_review" && tasks.isPii(t));
   /**
    * A snapshot that fails costs the undo record of that turn and nothing else. The peer's prompt waits for it (it
    * runs inside the state change): two or three git calls, each with the 10 s timeout in snapshots.ts.
    */
-  /** Whether a peer has a PII task open in any state: assigned and not yet accepted counts. */
-  const holdsPii = (peer: PeerId) => board.list().some((t) => t.owner === peer && t.state !== "approved" && t.state !== "in_review" && tasks.isPii(t));
   const snap = (what: string): { tree?: string; ms: number } => {
     const t0 = performance.now();
     let tree: string | undefined;

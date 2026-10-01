@@ -162,12 +162,16 @@ export class Turns {
   }
   /**
    * Other peers' turns that overlapped this one in time: their changes are in this turn's diff too. `unknown` lists
-   * those whose changes cannot be known (still running, cut short by a stop, a failed snapshot, a PII turn).
+   * those whose changes cannot be known (still running, cut short by a stop, a failed snapshot, a PII turn), and a
+   * peer whose `keep` records all start after this turn: its turns from then may have been pruned.
    */
-  overlapping(turn: TurnRecord): { paths: string[]; unknown: string[] } {
-    const rows = this.db.query("SELECT id, changed, ended, end_tree FROM turns WHERE id != ? AND peer != ? AND started < ? AND (ended IS NULL OR ended > ?)").all(turn.id, turn.peer, turn.ended ?? Date.now(), turn.started) as { id: string; changed: string; ended: number | null; end_tree: string | null }[];
-    const known = rows.filter((r) => r.ended !== null && r.end_tree !== null);
-    return { paths: [...new Set(known.flatMap((r) => JSON.parse(r.changed) as string[]))], unknown: rows.filter((r) => !known.includes(r)).map((r) => r.id) };
+  overlapping(turn: TurnRecord, keep: number): { paths: string[]; unknown: string[] } {
+    const rows = this.db.query("SELECT id, changed, ended, start_tree, end_tree FROM turns WHERE id != ? AND peer != ? AND started < ? AND (ended IS NULL OR ended > ?)").all(turn.id, turn.peer, turn.ended ?? Date.now(), turn.started) as { id: string; changed: string; ended: number | null; start_tree: string | null; end_tree: string | null }[];
+    const known = rows.filter((r) => r.ended !== null && r.start_tree !== null && r.end_tree !== null);
+    const pruned = (this.db.query("SELECT peer, MIN(started) AS oldest FROM turns WHERE peer != ? GROUP BY peer HAVING COUNT(*) >= ?").all(turn.peer, keep) as { peer: string; oldest: number }[])
+      .filter((p) => p.oldest > turn.started)
+      .map((p) => `${p.peer} (its turns from then were pruned)`);
+    return { paths: [...new Set(known.flatMap((r) => JSON.parse(r.changed) as string[]))], unknown: [...rows.filter((r) => !known.includes(r)).map((r) => r.id), ...pruned] };
   }
 
   /** The latest turn of a peer: a conversation can only be reverted from its latest turn. */

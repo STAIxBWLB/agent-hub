@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { changedPaths, planUndo, repoOf, restore, snapshot, Turns, type Repo } from "../src/hub/snapshots.ts";
@@ -157,16 +157,26 @@ test("an overlapping turn whose changes are not known yet is reported as unknown
   turns.begin("codex#r.1", "codex", "t0"); // starts while kimi works, still running when kimi ends
   await Bun.sleep(5);
   turns.end("kimi#r.1", "t1", ["a.txt", "b.txt"], 20);
-  expect(turns.overlapping(turns.get("kimi#r.1")!)).toEqual({ paths: [], unknown: ["codex#r.1"] });
+  expect(turns.overlapping(turns.get("kimi#r.1")!, 20)).toEqual({ paths: [], unknown: ["codex#r.1"] });
   turns.end("codex#r.1", "t2", ["b.txt"], 20);
-  expect(turns.overlapping(turns.get("kimi#r.1")!)).toEqual({ paths: ["b.txt"], unknown: [] });
+  expect(turns.overlapping(turns.get("kimi#r.1")!, 20)).toEqual({ paths: ["b.txt"], unknown: [] });
   turns.begin("pi#r.1", "pi", "t0");
   await Bun.sleep(5);
   turns.begin("local#r.1", "local", undefined); // a PII turn during pi's: recorded without trees
   turns.end("local#r.1", undefined, [], 20);
   await Bun.sleep(5);
   turns.end("pi#r.1", "t3", ["c.txt"], 20);
-  expect(turns.overlapping(turns.get("pi#r.1")!).unknown).toEqual(["local#r.1"]);
+  expect(turns.overlapping(turns.get("pi#r.1")!, 20).unknown).toEqual(["local#r.1"]);
+  // a turn whose start snapshot failed changed something unknown, whatever its end snapshot says (N1)
+  turns.begin("codex#r.2", "codex", undefined);
+  await Bun.sleep(5);
+  turns.begin("pi#r.2", "pi", "t0");
+  await Bun.sleep(5);
+  turns.end("codex#r.2", "t4", [], 20);
+  turns.end("pi#r.2", "t5", ["d.txt"], 20);
+  expect(turns.overlapping(turns.get("pi#r.2")!, 20).unknown).toEqual(["codex#r.2"]);
+  // a peer with `keep` records that all start after this turn may have had overlapping turns pruned (N3)
+  expect(turns.overlapping(turns.get("kimi#r.1")!, 1).unknown).toContain("pi (its turns from then were pruned)");
   turns.close();
 });
 
@@ -187,6 +197,7 @@ test.skipIf(!caseInsensitive)("undoing a case-only rename puts the old spelling 
   expect(t.changed).toEqual(["Foo.ts", "foo.ts"]);
   const plan = planUndo(r, t);
   restore(r, t.start_tree, plan.restore);
+  expect(readdirSync(top)).toContain("Foo.ts"); // the old spelling, not just a file the disk opens by that name
   expect(readFileSync(join(top, "Foo.ts"), "utf8")).toBe("export const x = 1;\n");
 });
 
