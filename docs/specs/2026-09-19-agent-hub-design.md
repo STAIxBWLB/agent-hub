@@ -1016,3 +1016,25 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   suppression. Limits are off in `DEFAULT_CONFIG` and on with any project config
   (12/min per sender, 6/min per recipient, 6 important an hour, 120 s repeats).
 
+## Amendment: review checklists and outcomes (issue #35)
+
+- A review request carries a checklist: map the changed signatures and call
+  sites to the task's plan, or without a plan to the task detail, which the
+  request then includes; the result of the class's check, or that none ran; and
+  `hub_review`'s `unmet`, one item each, which is appended to the verdict note.
+- Review outcomes live in a `reviews` table in hub.db: implementer, reviewer,
+  class, kind, task, time. Kinds: `approved`; `caught` (each reviewer who asked
+  for changes on the current owner's work, which was then approved);
+  `contradicted` (an approval, within seven days, of a task on the same file or
+  symbol as one whose check failed or whose review asked for changes, a
+  directory or `.` not counting; once per approval; console approvals and PII
+  tasks are not judged); `escalated` (the reviewer had asked for changes on the
+  work that was escalated, so not an escalation of unreviewed work).
+- A reviewer's record with an implementer in a class counts tasks: n = the tasks
+  it reviewed (approved, caught or escalated), held = (n - contradicted tasks) /
+  n. `assign()` takes the records as input and always shows them in its trace;
+  with `review.adaptive` it orders reviewer candidates that have at least
+  `min_reviews` by held, others keep their place, and the implementer is never
+  a candidate. The record is applied after quota, so the order is idle before
+  busy, then the record, then quota.
+

@@ -28,5 +28,6 @@
   "tasks": { "release_after_min": 30 },
   "checks": { "timeout_s": 600 },
   "snapshots": { "enabled": true, "keep": 20 },
+  "review": { "adaptive": false, "min_reviews": 5 },
   "limits": { "sender_per_min": 12, "pair_per_min": 6, "important_per_hour": 6, "repeat_window_s": 120 }
 }

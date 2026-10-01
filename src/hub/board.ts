@@ -74,6 +74,11 @@ export class Board {
     // Who did well or badly at which class, for demotion (issue #36). Only peers, classes and times: no task text.
     this.db.run("CREATE TABLE IF NOT EXISTS outcomes (peer TEXT NOT NULL, class TEXT NOT NULL, ok INTEGER NOT NULL, at INTEGER NOT NULL)");
     this.db.run("CREATE INDEX IF NOT EXISTS outcomes_class_at ON outcomes (class, at)");
+    // How reviews turned out, per (implementer, reviewer, class) (issue #35): approved, contradicted later, caught, escalated.
+    this.db.run("CREATE TABLE IF NOT EXISTS reviews (implementer TEXT NOT NULL, reviewer TEXT NOT NULL, class TEXT NOT NULL, kind TEXT NOT NULL, task INTEGER NOT NULL, at INTEGER NOT NULL)");
+    // ponytail: kept for good (a record is the whole history); prune by age if it ever grows large.
+    this.db.run("CREATE INDEX IF NOT EXISTS reviews_class ON reviews (class)");
+    this.db.run("CREATE INDEX IF NOT EXISTS reviews_task ON reviews (task)");
     // Boards from before issues #31 and #34 lack these columns; existing rows get the defaults.
     const have = new Set((this.db.query("PRAGMA table_info(tasks)").all() as { name: string }[]).map((c) => c.name));
     for (const [col, empty] of [["plan", "{}"], ["deps", "[]"]] as const) {
@@ -135,9 +140,30 @@ export class Board {
     return this.db.query("SELECT peer, ok, at FROM outcomes WHERE class = ? AND at >= ?").all(cls, since) as { peer: PeerId; ok: number; at: number }[];
   }
 
+  recordReview(r: Omit<ReviewOutcome, "at">, at = Date.now()): void {
+    this.db.query("INSERT INTO reviews (implementer, reviewer, class, kind, task, at) VALUES (?, ?, ?, ?, ?, ?)").run(r.implementer, r.reviewer, r.class, r.kind, r.task, at);
+  }
+
+  /** One task's review outcomes, or a class's (for reviewer choice). */
+  reviews(where: { task: number } | { class: TaskClass }): ReviewOutcome[] {
+    return ("task" in where
+      ? this.db.query("SELECT * FROM reviews WHERE task = ? ORDER BY at").all(where.task)
+      : this.db.query("SELECT * FROM reviews WHERE class = ? ORDER BY at").all(where.class)) as ReviewOutcome[];
+  }
+
   close(): void {
     this.db.close();
   }
+}
+
+export interface ReviewOutcome {
+  implementer: PeerId;
+  reviewer: PeerId;
+  class: TaskClass;
+  /** approved; contradicted (a later check failure or changes requested on the same places); caught (changes requested, then the redo passed); escalated */
+  kind: "approved" | "contradicted" | "caught" | "escalated";
+  task: number;
+  at: number;
 }
 
 function parse(row: Record<string, unknown>): Task {

@@ -87,6 +87,21 @@ external side effect happened unless the task's refs and a live readback show
 that effect. The hub can reassign after repeated review changes according to
 the routing configuration.
 
+A review request carries a checklist: map the changed signatures and call sites
+to the task's plan (without one, to its detail, which the request then
+includes), read the check result, and list what is
+unmet (`hub_review` takes `unmet`, `ahub review ... --unmet <item>`). The hub
+records how each review turned out, per implementer, reviewer and class:
+approved; caught (changes were requested and the owner's redo was approved);
+contradicted (within a week, work on the same file or symbol failed its check
+or review); escalated (after the reviewer asked for changes). A record counts
+tasks, not verdicts. `ahub task show <id>` lists a task's outcomes and `ahub
+route explain` shows each reviewer's record with the implementer. With
+`"review": { "adaptive": true }` in `.agenthub/config.json`, reviewers with at
+least `min_reviews` (5) reviews of that implementer in the class are ordered by
+how their reviews held up, ahead of quota but after idle before busy; off by
+default, which leaves assignment as it was.
+
 An agent can claim work nobody assigned it by proposing a task with itself as
 owner; without a class, and with no model to name one, the claim is filed as
 `implement`. A claim or an accept can carry a plan: the files, symbols and

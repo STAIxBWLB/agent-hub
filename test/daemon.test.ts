@@ -603,7 +603,9 @@ test("task tools from every surface: Claude plugin, a tools-role client acting f
 
   const verdict: any = await client.callTool({ name: "hub_review", arguments: { id: 1, verdict: "approved", note: "fine" } });
   expect(verdict.content[0].text).toContain("approved");
-  expect((await first.console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text).toContain('"event": "approved"');
+  const shown = JSON.parse((await first.console_.request({ t: "task", op: "task_show", args: { id: 1 } })).text);
+  expect(shown.history.map((h: { event: string }) => h.event)).toContain("approved");
+  expect(shown.reviews).toEqual([expect.objectContaining({ implementer: "kimi", reviewer: "claude", class: "test", kind: "approved", task: 1 })]); // #35
   expect((await first.console_.request({ t: "status" })).status.tasks).toEqual({ approved: 1 });
   const peerOnly: any = await client.callTool({ name: "hub_task_list", arguments: {} });
   expect(JSON.parse(peerOnly.content[0].text)).toHaveLength(1);
