@@ -449,7 +449,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const holdsPii = (peer: PeerId) => board.list().some((t) => t.owner === peer && t.state !== "approved" && t.state !== "in_review" && tasks.isPii(t));
   /**
    * A snapshot that fails costs the undo record of that turn and nothing else. The peer's prompt waits for it (it
-   * runs inside the state change): two or three git calls, each with the 10 s timeout in snapshots.ts.
+   * runs inside the state change): three git calls at a turn's start and four at its end, each with the 10 s timeout
+   * in snapshots.ts.
    */
   const snap = (what: string): { tree?: string; ms: number } => {
     const t0 = performance.now();

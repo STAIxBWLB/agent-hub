@@ -25,9 +25,10 @@ function repo(sub = "") {
 }
 /** A turn: snapshot, let `work` change the tree, snapshot again. */
 function turn(r: Repo, work: () => void) {
-  const start = snapshot(r)!;
+  const start = snapshot(r);
   work();
-  const end = snapshot(r)!;
+  const end = snapshot(r);
+  if (!start || !end) throw new Error("a snapshot failed"); // a failed snapshot must fail the test, not pass it vacuously
   return { start_tree: start, end_tree: end, changed: changedPaths(r, start, end) };
 }
 
@@ -53,9 +54,15 @@ test("hub state stays out of a snapshot even when the user's index tracks it", (
   mkdirSync(join(top, ".agenthub", "state"), { recursive: true });
   writeFileSync(join(top, ".agenthub", "state", "hub.db"), "v1");
   git("add", "-f", ".agenthub/state/hub.db"); // staged by mistake
-  const t = turn(r, () => writeFileSync(join(top, ".agenthub", "state", "hub.db"), "v2"));
-  expect(t.changed).toEqual([]);
-  expect(git("ls-tree", "-r", "--name-only", t.end_tree).stdout.toString()).not.toContain(".agenthub/state");
+  const t = turn(r, () => {
+    writeFileSync(join(top, ".agenthub", "state", "hub.db"), "v2"); // the hub rewrites its state all the time
+    writeFileSync(join(top, "a.txt"), "edited\n");
+  });
+  expect(t.end_tree).toBeDefined(); // the snapshot must still work
+  expect(t.changed).toEqual(["a.txt"]);
+  const tree = git("ls-tree", "-r", "--name-only", t.end_tree).stdout.toString();
+  expect(tree).toContain("a.txt");
+  expect(tree).not.toContain(".agenthub/state");
   expect(git("diff", "--cached", "--name-only").stdout.toString()).toContain(".agenthub/state/hub.db"); // the user's index keeps it
 });
 

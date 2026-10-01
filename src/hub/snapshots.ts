@@ -53,8 +53,9 @@ export function snapshot(repo: Repo): string | undefined {
     if (existsSync(join(repo.dir, "index"))) copyFileSync(join(repo.dir, "index"), env.GIT_INDEX_FILE);
     if (git(repo.top, ["add", "-A", "--", scope(repo), ":(exclude,glob)**/.agenthub/state/**"], env).status !== 0) return undefined;
     // The copy starts from the user's index: hub state somebody tracked or staged is still in it, and the exclude above
-    // only keeps `add` from touching it. Take it out explicitly.
-    if (git(repo.top, ["rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--", ":(glob)**/.agenthub/state/**"], env).status !== 0) return undefined;
+    // only keeps `add` from touching it. Take it out explicitly; -f because staged state the hub has rewritten since
+    // matches neither HEAD nor the file, which `rm --cached` otherwise refuses. Only the copy changes.
+    if (git(repo.top, ["rm", "-r", "-f", "--cached", "--quiet", "--ignore-unmatch", "--", ":(glob)**/.agenthub/state/**"], env).status !== 0) return undefined;
     const r = git(repo.top, ["write-tree"], env);
     return r.status === 0 ? r.stdout.trim() : undefined;
   } finally {
