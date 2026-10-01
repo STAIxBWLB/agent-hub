@@ -22,6 +22,8 @@ export interface HistoryEntry {
   by: PeerId;
   event: string; // proposed | assigned | accepted | declined | done | approved | changes_requested | escalated | reassigned
   note?: string;
+  /** The owner an event that set it left the task with (#67); absent in rows written before 0.11. */
+  owner?: PeerId | null;
 }
 export interface Task {
   id: number;
@@ -122,7 +124,7 @@ export class Board {
       throw new Error(`task #${id} is ${task.state}: cannot move to ${patch.state}`);
     }
     const next = { ...task, ...patch, refs: { ...task.refs, ...patch.refs } };
-    const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}) }];
+    const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}), ...("owner" in patch ? { owner: next.owner } : {}) }];
     this.db
       .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, refs = ?, plan = ?, rejections = ?, history = ?, updated = ? WHERE id = ?")
       .run(next.state, next.owner, next.reviewer, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(history), Date.now(), id);

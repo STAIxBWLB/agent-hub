@@ -45,12 +45,17 @@ const OPEN: Task["state"][] = ["proposed", "in_progress", "changes_requested"];
 /** Board events that leave a task where its completion check found it; any other event means it moved on meanwhile. */
 const QUIET_EVENTS = new Set(["answer", "reviewer changed"]);
 
+/** A project path as one spelling (#67): no leading `./`, no repeated or trailing `/`; the root is `.`. */
+export const normPath = (p: string) => p.replace(/^(\.\/)+/, "").replace(/\/{2,}/g, "/").replace(/\/+$/, "") || ".";
+
 /** Same path, or one is a directory of the other; the project root (`.`) holds everything. */
 export const samePlace = (a: string, b: string) => {
-  const norm = (p: string) => p.replace(/^\.\//, "").replace(/\/+$/, "") || ".";
-  const [x, y] = [norm(a), norm(b)];
+  const [x, y] = [normPath(a), normPath(b)];
   return x === "." || y === "." || x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
 };
+
+/** Events that hand a task to an owner (or take it away); newer history records that owner on them (#67). */
+const OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassigned"]);
 
 /** One line of model-written text: whitespace (newlines included) collapses, so it can never start a forged log line. */
 const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.replace(/\s+/g, " ").trim().slice(0, 300) : undefined);
@@ -61,7 +66,7 @@ const fields = (input: unknown) => (input && typeof input === "object" && !Array
 /** Tool callers are models: inputSchema is not enforced on the way in, so refs are normalized before they reach the board. */
 function cleanRefs(input: unknown): TaskRefs {
   const r = fields(input);
-  const paths = textList(r.paths);
+  const paths = [...new Set(textList(r.paths).map(normPath))];
   const out: TaskRefs = {};
   for (const k of ["repo", "branch", "commit"] as const) if (text(r[k])) out[k] = text(r[k])!;
   if (paths.length) out.paths = paths;
@@ -71,7 +76,7 @@ function cleanRefs(input: unknown): TaskRefs {
 /** The same for a plan (issue #31): only its four lists, each of short strings. */
 function cleanPlan(input: unknown): TaskPlan {
   const r = fields(input);
-  return Object.fromEntries(PLAN_KEYS.map((k) => [k, textList(r[k])] as const).filter(([, v]) => v.length));
+  return Object.fromEntries(PLAN_KEYS.map((k) => [k, k === "paths" ? [...new Set(textList(r[k]).map(normPath))] : textList(r[k])] as const).filter(([, v]) => v.length));
 }
 
 /** A plan as one line for other owners; the whole plan is on the board. */
@@ -147,7 +152,15 @@ export class Tasks {
 
   /** Who asked for changes on the current owner's work: requests made before the task changed hands were about someone else's. */
   private requestedChanges(task: Task): Set<PeerId> {
-    const since = task.history.findLastIndex((h) => ["assigned", "escalated", "reassigned", "unassigned"].includes(h.event));
+    // The window starts where the owner last changed. Newer entries carry the owner, so handing a task to the owner it
+    // already had (`ahub task assign <id> <owner>`) keeps the window; older ones do not, and any of them starts it.
+    let since = -1;
+    let owner: PeerId | null | undefined = null;
+    task.history.forEach((h, i) => {
+      if (!OWNERSHIP_EVENTS.has(h.event)) return;
+      if (h.owner === undefined || h.owner !== owner) since = i;
+      owner = h.owner;
+    });
     return new Set(task.history.slice(since + 1).filter((h) => h.event === "changes_requested").map((h) => h.by));
   }
 
@@ -171,8 +184,10 @@ export class Tasks {
       const approval = [...t.history].reverse().find((h) => h.event === "approved");
       if (!approval || now - approval.at > CONTRADICTION_WINDOW_MS || approval.by === USER) continue;
       const theirs = this.places(t);
-      // Blame needs the same file or symbol: a directory or `.` would contradict every approval under it.
-      const same = mine.paths.some((p) => theirs.paths.includes(p)) || mine.symbols.some((x) => theirs.symbols.includes(x));
+      // Blame needs the same file or symbol: a directory or `.` would contradict every approval under it. Older rows
+      // were stored as written, so both sides are compared in one spelling.
+      const file = (p: string) => normPath(p) !== "." && theirs.paths.some((q) => normPath(q) === normPath(p));
+      const same = mine.paths.some(file) || mine.symbols.some((x) => theirs.symbols.includes(x));
       if (!same || this.d.board.reviews({ task: t.id }).some((r) => r.kind === "contradicted")) continue;
       this.d.board.recordReview({ implementer: t.owner, reviewer: approval.by, class: t.class, kind: "contradicted", task: t.id });
     }

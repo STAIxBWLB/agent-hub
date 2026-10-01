@@ -414,9 +414,9 @@ test("overlaps: open tasks of other owners on the same paths or a directory of t
   const { tasks, peers, notices } = await setup();
   await tasks.propose("kimi", { title: "hub refactor", class: "implement", owner: "kimi", refs: { paths: ["src/hub/"] } });
   const codex = await tasks.propose("codex", { title: "retry backoff", class: "implement", owner: "codex", refs: { paths: ["./src/hub/bus.ts", "README.md"] } });
-  expect(tasks.overlaps(codex)).toBe("Overlaps #1 (owner kimi) on ./src/hub/bus.ts. Settle it with that owner via hub_send before editing those paths.");
-  expect(tasks.overlaps(codex, false)).toBe("Overlaps #1 (owner kimi) on ./src/hub/bus.ts. codex is told to settle it.");
-  expect(notices).toContain("task #2 retry backoff (codex): Overlaps #1 (owner kimi) on ./src/hub/bus.ts. codex is told to settle it.");
+  expect(tasks.overlaps(codex)).toBe("Overlaps #1 (owner kimi) on src/hub/bus.ts. Settle it with that owner via hub_send before editing those paths."); // stored in one spelling (#67)
+  expect(tasks.overlaps(codex, false)).toBe("Overlaps #1 (owner kimi) on src/hub/bus.ts. codex is told to settle it.");
+  expect(notices).toContain("task #2 retry backoff (codex): Overlaps #1 (owner kimi) on src/hub/bus.ts. codex is told to settle it.");
 
   const elsewhere = await tasks.propose("codex", { title: "x", class: "implement", owner: "codex", refs: { paths: ["src/hubx/a.ts"] } });
   const noPaths = await tasks.propose("codex", { title: "y", class: "implement", owner: "codex" });
@@ -437,7 +437,7 @@ test("overlaps: open tasks of other owners on the same paths or a directory of t
   expect(tasks.overlaps(unowned, false)).toBe("Overlaps #1 (owner kimi) on src/hub/a.ts. Whoever takes it is told to settle it.");
   // the project root holds everything
   const root = await tasks.propose("claude", { title: "format all", class: "implement", owner: "claude", refs: { paths: ["./"] } });
-  expect(tasks.overlaps(root)).toContain("#1 (owner kimi) on ./");
+  expect(tasks.overlaps(root)).toContain("#1 (owner kimi) on .;"); // `./` is stored as `.` (#67)
   const pii = await tasks.propose("claude", { title: PII, class: "implement", refs: { paths: ["src/hub/bus.ts"] } });
   expect(pii).toMatchObject({ id: 9, owner: "local" });
   expect(tasks.overlaps(codex)).not.toContain("#9");
@@ -863,6 +863,59 @@ test("an approval and the sweep releasing the same dependents at once offer each
     expect([events.filter((e) => e === "ready").length, events.filter((e) => e === "assigned").length]).toEqual([1, 1]);
     expect(Object.values(peers).flatMap((p) => p.got).filter((e) => e.kind === "task" && e.refs?.task === String(id))).toHaveLength(1);
   }
+});
+
+// issue #67: outcomes credited to the right work, whatever spelling the paths came in.
+test("a contradiction matches a file in any spelling, never `.`; a reassignment to the same owner keeps a catch", async () => {
+  const { tasks, board } = await setup(["claude", "codex", "kimi"]);
+  const outcomes = (id: number) => board.reviews({ task: id }).map((r) => `${r.implementer}/${r.reviewer}:${r.kind}`);
+  expect((await tasks.propose("claude", { title: "p", class: "implement", refs: { paths: ["./src//a.ts", "src/a.ts", "docs/"] } })).refs.paths).toEqual(["src/a.ts", "docs"]);
+  const a = await tasks.propose("codex", { title: "a", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
+  await tasks.done("codex", a.id, "done");
+  await tasks.review("claude", a.id, "approved");
+  const root = await tasks.propose("kimi", { title: "root", class: "implement", owner: "kimi", refs: { paths: ["."] } });
+  await tasks.done("kimi", root.id, "x");
+  await tasks.review(board.get(root.id)!.reviewer!, root.id, "changes_requested", "no");
+  expect(outcomes(a.id)).toEqual(["codex/claude:approved"]); // `.` blames nobody
+  const wide = await tasks.propose("codex", { title: "wide", class: "implement", owner: "codex", refs: { paths: ["."] } });
+  await tasks.done("codex", wide.id, "done");
+  await tasks.review("claude", wide.id, "approved");
+  const wider = await tasks.propose("kimi", { title: "wider", class: "implement", owner: "kimi", refs: { paths: ["./"] } });
+  await tasks.done("kimi", wider.id, "x");
+  await tasks.review(board.get(wider.id)!.reviewer!, wider.id, "changes_requested", "no");
+  expect(outcomes(wide.id)).toEqual(["codex/claude:approved"]); // not even an approval on `.` itself
+  board.update(a.id, HUB, "reopened", { refs: { paths: ["./src/a.ts"] } }); // a row stored as written, before #67
+  const same = await tasks.propose("kimi", { title: "same", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  await tasks.done("kimi", same.id, "x");
+  await tasks.review(board.get(same.id)!.reviewer!, same.id, "changes_requested", "no");
+  expect(outcomes(a.id)).toEqual(["codex/claude:approved", "codex/claude:contradicted"]);
+  // changes requested on codex's work, then the console hands it to codex again: the catch is still codex's
+  const b = await tasks.propose("claude", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/b.ts"] } });
+  const reviewer = board.get(b.id)!.reviewer!;
+  await tasks.done("codex", b.id, "try");
+  await tasks.review(reviewer, b.id, "changes_requested", "no");
+  await tasks.assignTo(b.id, "codex");
+  expect(board.get(b.id)!.history.at(-1)).toMatchObject({ event: "reassigned", owner: "codex" });
+  await tasks.done("codex", b.id, "again");
+  await tasks.review(reviewer, b.id, "approved");
+  expect(outcomes(b.id)).toEqual([`codex/${reviewer}:approved`, `codex/${reviewer}:caught`]);
+});
+
+test("a board written before #67 reads back unchanged: paths as written, history without owners (the recovery digest)", () => {
+  const file = join(mkdtempSync(join(tmpdir(), "agenthub-board-0100-")), "hub.db");
+  const db = new Database(file);
+  db.run("CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, detail TEXT, class TEXT NOT NULL, owner TEXT, reviewer TEXT, state TEXT NOT NULL, refs TEXT NOT NULL DEFAULT '{}', signals TEXT NOT NULL DEFAULT '[]', rejections INTEGER NOT NULL DEFAULT 0, history TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL, plan TEXT NOT NULL DEFAULT '{}', deps TEXT NOT NULL DEFAULT '[]')");
+  const history = [{ at: 1, by: "claude", event: "proposed" }, { at: 2, by: "hub", event: "assigned", note: "to codex" }, { at: 3, by: "user", event: "reassigned", note: "to codex" }];
+  db.query("INSERT INTO tasks (title, class, owner, state, refs, history, created, updated) VALUES ('old', 'implement', 'codex', 'proposed', ?, ?, 1, 3)").run(JSON.stringify({ paths: ["./src/a.ts"] }), JSON.stringify(history));
+  db.close();
+  const board = new Board(file);
+  const once = JSON.stringify(board.list());
+  board.close();
+  const again = new Board(file);
+  expect(JSON.stringify(again.list())).toBe(once);
+  expect(again.get(1)!.refs.paths).toEqual(["./src/a.ts"]);
+  expect(again.get(1)!.history).toEqual(history);
+  again.close();
 });
 
 test("a board from before plans and dependencies opens with its tasks intact", () => {
