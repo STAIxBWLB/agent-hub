@@ -47,11 +47,27 @@ export function allowed(list: string[], host: string, port: number): boolean {
 const INTERNAL = new BlockList();
 // IPv4 nets as leading octets: the package check refuses private address literals in published files.
 for (const [a, b, bits] of [[0, 0, 8], [10, 0, 8], [100, 64, 10], [127, 0, 8], [169, 254, 16], [172, 16, 12], [192, 168, 16], [198, 18, 15], [224, 0, 3]] as const) INTERNAL.addSubnet(`${a}.${b}.0.0`, bits, "ipv4");
-for (const [net, bits] of [["::", 96], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8]] as const) INTERNAL.addSubnet(net, bits, "ipv6");
+// RFC 8215's local-use NAT64 prefix puts the IPv4 address where the operator's prefix length says: refused outright.
+for (const [net, bits] of [["::", 96], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8], ["64:ff9b:1::", 48]] as const) INTERNAL.addSubnet(net, bits, "ipv6");
+// The well-known NAT64 prefix (issue #82): with DNS64, a name whose only record is an internal IPv4 address comes back
+// as 64:ff9b::<that address>, and the NAT64 gateway carries the connection there. Its IPv4 address is what counts.
+const NAT64 = new BlockList();
+NAT64.addSubnet("64:ff9b::", 96, "ipv6");
+
+/** The IPv4 address in the last 32 bits of an IPv6 address, whatever its spelling. */
+function lastIPv4(v6: string): string {
+  const [head = "", tail] = new URL(`http://[${v6}]`).hostname.slice(1, -1).split("::");
+  const h = head ? head.split(":") : [];
+  const t = tail ? tail.split(":") : [];
+  const all = tail === undefined ? h : [...h, ...Array<string>(8 - h.length - t.length).fill("0"), ...t];
+  const [a = 0, b = 0] = all.slice(6).map((g) => parseInt(g, 16));
+  return `${a >> 8}.${a & 255}.${b >> 8}.${b & 255}`;
+}
 
 /** Loopback, private, link-local, site-local, unspecified, carrier-grade NAT, benchmark, multicast or reserved. */
 export function isInternal(address: string): boolean {
   const family = isIP(address);
+  if (family === 6 && NAT64.check(address, "ipv6")) return isInternal(lastIPv4(address));
   return family !== 0 && INTERNAL.check(address, family === 6 ? "ipv6" : "ipv4");
 }
 

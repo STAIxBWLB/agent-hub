@@ -48,9 +48,14 @@ port 443 unless an entry names one) to the hosts in `local.network_allow`, and
 the profile denies every other connection, direct egress and other loopback
 ports (claude-mem's, the Codex app-server's) included. A listed name also
 covers its subdomains; a name that resolves to a loopback or private address is
-refused, and so is plain HTTP. Every refusal is a `network: refused` line in
-`hub.log`, by host where one is known (with the method for plain HTTP, and the
-error code when a listed host is unreachable), never a path, query or header. The default list holds the npm, PyPI, crates.io and Go module
+refused, and so is plain HTTP. Behind NAT64 with the well-known prefix
+`64:ff9b::/96`, the IPv4 address inside the answer is what counts; the local-use
+prefix `64:ff9b:1::/48` is refused outright, so on a network whose DNS64 uses it
+an IPv4-only host such as github.com is refused too (`"direct"` until 0.13.0). A
+network-specific NAT64 prefix is not recognised. Every refusal is a `network:
+refused` line in `hub.log`, by host where one is known (with the method for
+plain HTTP, and the error code when a listed host is unreachable), never a path,
+query or header. The default list holds the npm, PyPI, crates.io and Go module
 registries and GitHub's code hosts; set `local.network_allow` in
 `config.local.json` to replace it. `"direct"` keeps the open network of 0.10 and
 earlier for one release. With network on, commands may also read the public CA
