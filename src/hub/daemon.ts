@@ -292,6 +292,10 @@ export async function startDaemon(opts: DaemonOptions) {
 
   // A session record left by a run that never shut down means it crashed (issue #37). A controlled restart has its own.
   const crashed = !recoveryOperation && !restartFilePresent ? readSessions(opts.stateDir) : undefined;
+  // A controlled restart's source may have been cut short before it removed its record: this run is not a crash, and
+  // a record left now would make the next ordinary start look like one.
+  if (recoveryOperation || restartFilePresent) try { removeSessions(opts.stateDir); } catch { /* nothing to remove */ }
+  const autoResume = config.recovery.auto_resume_after_crash === true; // a string "false" is not a yes
   const startedAt = Date.now();
   /** What crash recovery did or asks the user to do, for `ahub status`. */
   const crashReport: string[] = [];
@@ -873,8 +877,9 @@ export async function startDaemon(opts: DaemonOptions) {
     const lostCount = [...lost.values()].reduce((n, l) => n + l.length, 0);
     report(`the previous hub run stopped without shutting down${lostCount ? `; ${lostCount} deliveries it had in flight are in needs_review (ahub queue list)` : ""}`);
     for (const step of crashPlan(prev.peers)) {
-      if (!step.resume || !config.recovery.auto_resume_after_crash) {
-        report(`${step.how}${step.resume ? " (recovery.auto_resume_after_crash is off)" : ""}`);
+      if (!step.resume || !autoResume) {
+        const fresh = step.peer === "pi" && config.pi.enabled && config.pi.auto_start ? "; pi.auto_start starts a fresh session" : "";
+        report(`${step.how}${step.resume ? " (recovery.auto_resume_after_crash is off)" : ""}${fresh}`);
         continue;
       }
       const r = await startPeer(step.peer, step.resume as Parameters<typeof startPeer>[1]).catch((e: Error) => ({ ok: false, error: e.message }));
@@ -1677,6 +1682,8 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function stopOnce(): Promise<void> {
     stopping = true;
+    // A stop someone asked for is not a crash, even if it then runs past the shutdown deadline: forget the sessions now.
+    try { removeSessions(opts.stateDir, instanceId); } catch { /* the state dir is gone */ }
     checksClosed = true;
     for (const kill of runningChecks) kill();
     log("hub stopping");
@@ -1707,7 +1714,6 @@ export async function startDaemon(opts: DaemonOptions) {
         const current = JSON.parse(readFileSync(join(opts.stateDir, "status.json"), "utf8"));
         if (current.instanceId === instanceId) for (const f of ["hub.pid", "status.json", "control-token"]) rmSync(join(opts.stateDir, f), { force: true });
       } catch { /* another owner or no published state: never remove it */ }
-      try { removeSessions(opts.stateDir, instanceId); } catch { /* the state dir is gone */ }
       onStop?.();
     }
   }
@@ -1738,7 +1744,9 @@ export async function startDaemon(opts: DaemonOptions) {
     try { if (readSessions(opts.stateDir)?.instanceId === crashed.instanceId) writeSessions(opts.stateDir, { ...crashed, instanceId, at: Date.now() }); } catch (error) { log(`session record not adopted: ${(error as Error).message}`); }
     void recoverAfterCrash(crashed).catch((error) => log(`crash recovery failed: ${(error as Error).message}`));
   }
-  if (config.pi.enabled && config.pi.auto_start && !recoveryActive() && !crashed?.peers.some((p) => p.peer === "pi")) void startPeer("pi", {}).catch((error) => log(`Pi auto-start failed: ${error.message}`));
+  // Skipped only when crash recovery itself starts Pi again on its recorded session.
+  const piResumes = !!crashed && autoResume && crashPlan(crashed.peers).some((s) => s.peer === "pi" && s.resume);
+  if (config.pi.enabled && config.pi.auto_start && !recoveryActive() && !piResumes) void startPeer("pi", {}).catch((error) => log(`Pi auto-start failed: ${error.message}`));
   return { bus, token, port: server.port as number, stop, stopped: new Promise<void>((r) => (onStop = r)) };
   } finally {
     if (!ready) for (const cleanup of startupCleanup.reverse()) { try { cleanup(); } catch { /* preserve startup error */ } }

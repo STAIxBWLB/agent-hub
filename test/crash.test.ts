@@ -15,8 +15,10 @@ test("the plan resumes what the hub launches itself and says what the user reatt
     { peer: "local", meta: { launch: { route: "sy/coding", model: "fallback" } } }, // the worker records both
     { peer: "kimi", meta: {} },
     { peer: "local", meta: { launch: { model: "pinned" } } },
+    { peer: "pi", meta: { launch: { kind: "pi", mode: "tui" }, sessionFile: "/x/t.jsonl" } }, // the CLI ran it in a terminal
   ]);
-  expect(plan.map((p) => p.resume)).toEqual([undefined, undefined, { sessionId: "s1", model: "k2" }, { sessionFile: "/x/s.jsonl", mode: "headless", backend: "dgx" }, { route: "sy/coding" }, undefined, { model: "pinned" }]);
+  expect(plan.map((p) => p.resume)).toEqual([undefined, undefined, { sessionId: "s1", model: "k2" }, { sessionFile: "/x/s.jsonl", mode: "headless", backend: "dgx" }, { route: "sy/coding" }, undefined, { model: "pinned" }, undefined]);
+  expect(plan[7]!.how).toBe("pi: it ran in a terminal; start it again with ahub pi --mode tui --session-file /x/t.jsonl");
   expect(plan[1]!.how).toBe("codex: its app-server died with the hub; run ahub codex again (its conversation was thread th1)");
   expect(plan[5]!.how).toBe("kimi: no session id was recorded; start it again with ahub kimi");
 });
@@ -41,5 +43,8 @@ test("the session record is removed only by the run that wrote it", () => {
   removeSessions(dir, "old");
   expect(readSessions(dir)?.peers[0]!.peer).toBe("kimi");
   removeSessions(dir, "new");
+  expect(existsSync(join(dir, "sessions.json"))).toBe(false);
+  writeSessions(dir, { instanceId: "source", at: 1, peers: [] });
+  removeSessions(dir); // a controlled restart's target clears whatever a cut-short source left
   expect(existsSync(join(dir, "sessions.json"))).toBe(false);
 });

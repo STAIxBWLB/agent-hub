@@ -487,10 +487,11 @@ plugin, daemon, or terminal mutation.
 ### After an unplanned stop
 
 While it runs, the hub keeps each attached peer's session identity in
-`.agenthub/state/sessions.json` (ids and launch options, no message text); a clean
-stop removes it. When a hub starts and finds the file, the previous run died
-(`kill -9`, a crash, a lost machine), and `ahub status` and the console say what
-happened to each peer:
+`.agenthub/state/sessions.json` (ids and launch options, no message text); a stop
+removes it as it begins. When a hub starts and finds the file, the previous run
+died (`kill -9`, a crash, a lost machine), and `ahub status` and the console say
+what happened to each peer. Hubs before this release kept no such record, so a
+crash of one is not reported this way.
 
 - Deliveries that were in flight are in `needs_review` (`ahub queue list`), as
   before. When a peer next attaches, its next delivery starts with a notice that
@@ -499,8 +500,10 @@ happened to each peer:
   `"recovery": { "auto_resume_after_crash": true }` in `.agenthub/config.json` the
   hub starts them again: Kimi loads its recorded session (ACP `session/load`), Pi
   resumes its session file, and the local worker starts without its history, on
-  its recorded route (or pinned model). Off
-  by default: the report then says what to start.
+  its recorded route (or pinned model). Off by default: the report then says
+  what to start. A Pi that ran in a terminal (`--mode tui`) is never started by
+  the hub; the report gives the command. With `pi.auto_start` and no resume,
+  Pi starts on a fresh session as usual.
 - Codex's app-server died with the hub; run `ahub codex` again. Claude Code's
   plugin reconnects by itself while that session is open.
 

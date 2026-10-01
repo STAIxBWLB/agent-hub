@@ -1042,10 +1042,15 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
 
 - The continuous record is `sessions.json` (instance id, time, and each attached
   peer's `recoveryMetadata()`), rewritten when a peer's state changes and
-  removed by a clean stop of the run that wrote it. Found at start, with no
+  removed when a stop of the run that wrote it begins (a stop that then runs past
+  the shutdown deadline is still not a crash). Found at start, with no
   controlled-restart state in play, it means the previous run crashed; the new
   run takes the record over at once, so its own clean stop removes it even when
-  no peer attaches.
+  no peer attaches. A controlled restart's target removes any record it finds.
+- Limits: a second crash before the peers attach loses their loss notices (the
+  journal rows stay in `needs_review`, shown by `ahub queue list`), and the first
+  attach rewrites the record with only the attached peers. A Pi in TUI mode is
+  reported with its command, not resumed: the CLI runs its terminal.
 - Resume goes through the same start path as `ahub kimi` / `ahub pi` / `ahub
   local`: Kimi with `sessionId` (ACP `session/load`, refused when the agent does
   not offer `loadSession`), Pi with its session file, the local worker afresh.

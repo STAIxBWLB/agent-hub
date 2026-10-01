@@ -37,9 +37,12 @@ export function readSessions(stateDir: string): SessionsFile | undefined {
   }
 }
 
-/** Only the run that wrote it removes it: a stop of an older instance must not erase a newer run's record. */
-export function removeSessions(stateDir: string, instanceId: string): void {
-  if (readSessions(stateDir)?.instanceId === instanceId) rmSync(fileOf(stateDir), { force: true });
+/**
+ * Only the run that wrote it removes it: a stop of an older instance must not erase a newer run's record. Without an
+ * instance id it goes whatever wrote it (a controlled restart, which has its own record of the peers).
+ */
+export function removeSessions(stateDir: string, instanceId?: string): void {
+  if (instanceId === undefined || readSessions(stateDir)?.instanceId === instanceId) rmSync(fileOf(stateDir), { force: true });
 }
 
 const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
@@ -65,6 +68,8 @@ export function crashPlan(records: SessionRecord[]): { peer: string; resume?: Re
       case "pi": {
         const sessionFile = str(meta.sessionFile) ?? str(launch.sessionFile);
         if (!sessionFile) return { peer, how: "pi: no session file was recorded; start it again with ahub pi" };
+        // A terminal Pi is run by the CLI that launched it, not by the hub: nothing here could start it again.
+        if (str(launch.mode) === "tui") return { peer, how: `pi: it ran in a terminal; start it again with ahub pi --mode tui --session-file ${sessionFile}` };
         const args: Record<string, string> = { sessionFile };
         for (const k of ["mode", "backend", "model"] as const) if (str(launch[k])) args[k] = str(launch[k])!;
         return { peer, resume: args, how: `pi: its session file can be resumed (${sessionFile})` };
@@ -92,7 +97,7 @@ export function lossNotice(lost: JournalDelivery[], taskTitle: (id: number) => s
     return `- delivery ${d.id} from ${from}${tasks.length ? `, about task ${tasks.join(", ")}` : ""}`;
   });
   return [
-    "The hub stopped unexpectedly and was started again. These deliveries to you were in flight, so whether you acted on them is not known; they are marked needs_review until the console marks each one completed, retried or discarded:",
+    "The hub stopped unexpectedly and was started again. These deliveries to you were in flight when it stopped, so whether you acted on them is not known; the console has since marked each one completed, retried or discarded:",
     ...lines,
     "Check your work against them before you go on.",
   ].join("\n");
