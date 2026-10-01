@@ -1060,6 +1060,12 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   journal rows stay in `needs_review`, shown by `ahub queue list`), and the first
   attach rewrites the record with only the attached peers. A Pi in TUI mode is
   reported with its command, not resumed: the CLI runs its terminal.
+- `pi.auto_start` (issue #66) counts as consent to start Pi after a crash too:
+  crash recovery, not the plain auto-start, starts it, on the recorded headless
+  session first and with a `fresh` start (one that does not inherit the failed
+  launch's pending session, keeps the recorded backend and model) if that fails
+  or nothing headless was recorded. If crash recovery itself fails, the plain
+  auto-start runs after all.
 - Resume goes through the same start path as `ahub kimi` / `ahub pi` / `ahub
   local`: Kimi with `sessionId` (ACP `session/load`, refused when the agent does
   not offer `loadSession`), Pi with its session file, the local worker afresh.

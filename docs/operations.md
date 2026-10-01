@@ -537,9 +537,13 @@ crash of one is not reported this way.
   hub starts them again: Kimi loads its recorded session (ACP `session/load`), Pi
   resumes its session file, and the local worker starts without its history, on
   its recorded route (or pinned model). Off by default: the report then says
-  what to start. A Pi that ran in a terminal (`--mode tui`) is never started by
-  the hub; the report gives the command. With `pi.auto_start` and no resume,
-  Pi starts on a fresh session as usual.
+  what to start. With `pi.auto_start` on, Pi comes back on its recorded
+  headless session whether or not auto-resume is on (it runs on-prem, so this
+  spends no cloud quota), and on a fresh session if that fails, keeping the
+  recorded backend and model; the report says which. Malformed records in
+  `sessions.json` are skipped. A Pi that ran in a terminal (`--mode tui`) is never started on its
+  recorded session by the hub; the report gives the command, and with
+  `pi.auto_start` a fresh headless Pi starts instead.
 - Codex's app-server died with the hub; run `ahub codex` again. Claude Code's
   plugin reconnects by itself while that session is open.
 

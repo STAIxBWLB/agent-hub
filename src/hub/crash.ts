@@ -31,7 +31,9 @@ export function readSessions(stateDir: string): SessionsFile | undefined {
   if (!existsSync(fileOf(stateDir))) return undefined;
   try {
     const s = JSON.parse(readFileSync(fileOf(stateDir), "utf8")) as SessionsFile;
-    return Array.isArray(s.peers) ? s : undefined;
+    if (!Array.isArray(s.peers)) return undefined;
+    // A record without a peer id or metadata says nothing to resume, and reading it would stop recovery for the rest.
+    return { ...s, peers: s.peers.filter((p) => !!p && typeof p.peer === "string" && !!p.meta && typeof p.meta === "object") };
   } catch {
     return undefined; // cut short by the crash: nothing to resume from
   }
@@ -51,7 +53,7 @@ const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
  * What can come back after a crash. `resume` holds the start arguments for peers the hub launches itself (Kimi through
  * ACP `session/load`, Pi through its session file, the local worker afresh); the others say what the user has to do.
  */
-export function crashPlan(records: SessionRecord[]): { peer: string; resume?: Record<string, string>; how: string }[] {
+export function crashPlan(records: SessionRecord[]): { peer: string; resume?: Record<string, string>; how: string; fresh?: Record<string, string>; tui?: true }[] {
   return records.map(({ peer, meta }) => {
     const launch = (meta.launch && typeof meta.launch === "object" ? meta.launch : {}) as Record<string, unknown>;
     const model = str(launch.model);
@@ -66,13 +68,16 @@ export function crashPlan(records: SessionRecord[]): { peer: string; resume?: Re
         return { peer, resume: { sessionId, ...(model ? { model } : {}) }, how: `kimi: session ${sessionId} can be loaded again (ACP session/load)` };
       }
       case "pi": {
+        // `fresh`: what a new headless session keeps of the recorded one (pi.auto_start's fallback, #66).
+        const fresh: Record<string, string> = {};
+        for (const k of ["backend", "model"] as const) if (str(launch[k])) fresh[k] = str(launch[k])!;
         const sessionFile = str(meta.sessionFile) ?? str(launch.sessionFile);
-        if (!sessionFile) return { peer, how: "pi: no session file was recorded; start it again with ahub pi" };
+        if (!sessionFile) return { peer, fresh, how: "pi: no session file was recorded; start it again with ahub pi" };
         // A terminal Pi is run by the CLI that launched it, not by the hub: nothing here could start it again.
-        if (str(launch.mode) === "tui") return { peer, how: `pi: it ran in a terminal; start it again with ahub pi --mode tui --session-file ${sessionFile}` };
+        if (str(launch.mode) === "tui") return { peer, fresh, tui: true, how: `pi: it ran in a terminal; start it again with ahub pi --mode tui --session-file ${sessionFile}` };
         const args: Record<string, string> = { sessionFile };
         for (const k of ["mode", "backend", "model"] as const) if (str(launch[k])) args[k] = str(launch[k])!;
-        return { peer, resume: args, how: `pi: its session file can be resumed (${sessionFile})` };
+        return { peer, fresh, resume: args, how: `pi: its session file can be resumed (${sessionFile})` };
       }
       case "local": {
         // `model` is also recorded as the route's fallback, and a model given at start pins it: pass one or the other.
