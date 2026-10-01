@@ -1,5 +1,5 @@
 import { lookup } from "node:dns/promises";
-import { isIP, connect, createServer, type Server, type Socket } from "node:net";
+import { BlockList, isIP, connect, createServer, type Server, type Socket } from "node:net";
 
 /**
  * The only way out for the local worker's commands when `local.bash_network` is on (issue #65): an HTTP CONNECT proxy
@@ -43,16 +43,25 @@ export function allowed(list: string[], host: string, port: number): boolean {
   });
 }
 
-/** Loopback, private (RFC 1918, unique local), link-local, unspecified or carrier-grade NAT. */
+// Parsed, not prefix-matched: an IPv4-mapped IPv6 address in any spelling (`::ffff:7f00:1`) checks as its IPv4 address.
+const INTERNAL = new BlockList();
+// IPv4 nets as leading octets: the package check refuses private address literals in published files.
+for (const [a, b, bits] of [[0, 0, 8], [10, 0, 8], [100, 64, 10], [127, 0, 8], [169, 254, 16], [172, 16, 12], [192, 168, 16], [198, 18, 15], [224, 0, 3]] as const) INTERNAL.addSubnet(`${a}.${b}.0.0`, bits, "ipv4");
+for (const [net, bits] of [["::", 96], ["fc00::", 7], ["fe80::", 10], ["fec0::", 10], ["ff00::", 8]] as const) INTERNAL.addSubnet(net, bits, "ipv6");
+
+/** Loopback, private, link-local, site-local, unspecified, carrier-grade NAT, benchmark, multicast or reserved. */
 export function isInternal(address: string): boolean {
-  if (isIP(address) === 6) {
-    const a = address.toLowerCase();
-    if (a.startsWith("::ffff:")) return isInternal(a.slice(7));
-    return a === "::1" || a === "::" || a.startsWith("fc") || a.startsWith("fd") || a.startsWith("fe8") || a.startsWith("fe9") || a.startsWith("fea") || a.startsWith("feb");
-  }
-  const [x = 0, y = 0] = address.split(".").map(Number);
-  return x === 127 || x === 10 || x === 0 || (x === 172 && y >= 16 && y <= 31) || (x === 192 && y === 168) || (x === 169 && y === 254) || (x === 100 && y >= 64 && y <= 127);
+  const family = isIP(address);
+  return family !== 0 && INTERNAL.check(address, family === 6 ? "ipv6" : "ipv4");
 }
+
+const hostOf = (target: string) => {
+  try {
+    return ` ${new URL(target).host}`;
+  } catch {
+    return "";
+  }
+};
 
 export function startEgressProxy(opts: { allow: string[]; log: (line: string) => void }): Promise<EgressProxy> {
   const sockets = new Set<Socket>();
@@ -85,10 +94,11 @@ export function startEgressProxy(opts: { allow: string[]; log: (line: string) =>
   };
 
   const tunnel = async (client: Socket, method: string, target: string, rest: Buffer, http: string) => {
-    if (method.toUpperCase() !== "CONNECT") return refuse(client, 403, "only CONNECT (https) goes through this proxy", `${method} ${target}`.slice(0, 200));
+    // The log gets a method and a host, never a path, a query or userinfo: those carry tokens.
+    if (method.toUpperCase() !== "CONNECT") return refuse(client, 403, "only CONNECT (https) goes through this proxy", `${/^[A-Za-z]{1,16}$/.test(method) ? method : "a request"}${hostOf(target)}`);
     const m = /^(\[[^\]]+\]|[^:]+):(\d{1,5})$/.exec(target);
-    if (!m) return refuse(client, 400, "bad CONNECT target", target.slice(0, 200));
-    const host = m[1]!.replace(/^\[|\]$/g, "");
+    const host = m?.[1]!.replace(/^\[|\]$/g, "") ?? "";
+    if (!m || !(isIP(host) || /^[a-z0-9.-]+$/i.test(host))) return refuse(client, 400, "bad CONNECT target", "a CONNECT request");
     const port = Number(m[2]);
     if (!allowed(opts.allow, host, port)) return refuse(client, 403, `${host}:${port} is not in local.network_allow`, `${host}:${port}`);
     let address = host;

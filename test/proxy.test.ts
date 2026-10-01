@@ -44,7 +44,7 @@ test("allowlist: a name also matches its subdomains, an address only itself, por
 });
 
 test("internal addresses: loopback, private, link-local, CGNAT and their IPv6 forms", () => {
-  for (const a of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.1.1", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:127.0.0.1"]) expect(isInternal(a)).toBe(true);
+  for (const a of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.1.1", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:127.0.0.1", "::ffff:7f00:1", "::127.0.0.1", "fec0::1", "224.0.0.1", "255.255.255.255", "198.18.0.1"]) expect(isInternal(a)).toBe(true);
   for (const a of ["140.82.112.3", "172.32.0.1", "100.128.0.1", "2606:4700::1111"]) expect(isInternal(a)).toBe(false);
 });
 
@@ -59,6 +59,12 @@ test("the proxy tunnels to an allowed target and refuses the rest, logging each 
   expect(await talk(proxy, "CONNECT example.invalid:443 HTTP/1.1\r\n\r\n")).toContain("403 Forbidden");
   expect(await talk(proxy, `CONNECT localhost:${target} HTTP/1.1\r\n\r\n`)).toContain("resolves to an internal address"); // a listed name, an internal address
   expect(await talk(proxy, "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n")).toContain("only CONNECT");
+  // no path, query or userinfo reaches the log: they carry tokens
+  expect(await talk(proxy, "GET http://user:pa55@example.com/up?token=SECRET-1 HTTP/1.1\r\n\r\n")).toContain("only CONNECT");
+  expect(await talk(proxy, "CONNECT https://user:pa55@evil.example/x?token=SECRET-2 HTTP/1.1\r\n\r\n")).toContain("bad CONNECT target");
+  expect(await talk(proxy, "CONNECT a/b?token=SECRET-3:443 HTTP/1.1\r\n\r\n")).toContain("bad CONNECT target");
+  expect(lines.join("\n")).not.toMatch(/SECRET|pa55|\/up/);
+  expect(lines).toContain("network: refused GET example.com (only CONNECT (https) goes through this proxy)");
   expect(lines).toContain("network: refused example.invalid:443 (example.invalid:443 is not in local.network_allow)");
   expect(lines.some((l) => l.includes(`localhost:${target}`) && l.includes("internal address"))).toBe(true);
 });
