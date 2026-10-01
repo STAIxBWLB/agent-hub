@@ -1,4 +1,4 @@
-import { appendNote, DIGEST, HUB, keepNotes, MAX_HOP, newEnvelope, parseMarker, quoteNotes, replyAudience, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
+import { appendNote, DIGEST, HUB, keepNotes, MAX_HOP, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
 import type { PeerAdapter } from "./peers.ts";
 import { DeliveryJournal, type JournalDelivery, type JournalDeliveryState } from "./delivery-journal.ts";
 
@@ -24,6 +24,8 @@ export interface BusOptions {
   /** Optional: rewrite a delivery before it goes out (M6 digest condensation). Must return its input on any failure. */
   condense?: (envs: Envelope[]) => Promise<Envelope[]>;
   journal?: DeliveryJournal;
+  /** Optional: may an agent send this now (issue #38)? A reason refuses it, and the sender hears it on its next delivery. */
+  admit?: (from: PeerId, to: PeerId[] | undefined, priority: Priority, body: string) => string | undefined;
 }
 
 /** Serializable delivery state used by the controlled restart coordinator. Bodies stay in the private daemon file. */
@@ -125,6 +127,11 @@ export class Bus {
     peer.onMessage = (text, opts) => {
       const { priority, body } = parseMarker(text);
       if (!body) return;
+      const refused = this.opts.admit?.(peer.id, opts?.to, opts?.priority ?? priority, body);
+      if (refused) {
+        this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered: ${refused}`));
+        return refused;
+      }
       // What the peer was handed differs from what it stands for once a delivery was condensed; both the audience
       // and the priority ceiling are about what it stands for.
       const last = this.lastDelivery.get(peer.id);

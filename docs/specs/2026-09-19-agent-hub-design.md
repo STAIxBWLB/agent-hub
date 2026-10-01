@@ -994,3 +994,17 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   one already was, and after a Pi inference failure the backend failed). Demotion: decayed failures reach 1.5 and outweigh decayed
   successes, half-life one day, fixed constants for now.
 
+## Amendment: per-sender limits (issue #38)
+
+- One `Limiter` (`src/hub/limits.ts`) serves both ways an agent sends: the
+  control WS `send` (hub_send from Claude, and from Codex and Kimi through the
+  tools server) refuses with the reason in `error`, which the channel already
+  shows, so the message shape is unchanged; the bus's `admit` option guards
+  adapter messages (turn answers, the local worker's hub_send), drops a refused
+  one and tells the sender in a ride-along line.
+- An `important` message over its budget is refused, not downgraded, and the
+  reason says to send it without `[IMPORTANT]`.
+- A refusal consumes no token and does not count as a send for repeat
+  suppression. Limits are off in `DEFAULT_CONFIG` and on with any project config
+  (12/min per sender, 6/min per recipient, 6 important an hour, 120 s repeats).
+

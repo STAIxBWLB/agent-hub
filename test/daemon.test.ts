@@ -25,8 +25,8 @@ const until = async (cond: () => boolean, what = "condition") => {
   if (!cond()) throw new Error(`timed out waiting for ${what}`);
 };
 
-async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number } = {}) {
-  const { memoryUrl, modelUrl, approvals, checks, ignored, snapshots, codex_bin, ...rest } = extra;
+async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits } = {}) {
+  const { memoryUrl, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
     cwd: ROOT,
@@ -45,6 +45,7 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?:
       ...(ignored ? { ignored } : {}),
       ...(snapshots ? { snapshots } : {}),
       ...(codex_bin ? { codex_bin } : {}),
+      ...(limits ? { limits } : {}),
     },
     permissionTimeoutMs: 200,
     ...rest,
@@ -1288,4 +1289,18 @@ test("hub_task_list ready: proposed tasks with nothing left to wait for", async 
   expect(ready.map((t) => t.id)).toEqual([1]);
   const all = JSON.parse((await op("hub_task_list", {})).text) as { id: number; deps: number[] }[];
   expect(all.find((t) => t.id === 2)!.deps).toEqual([1]);
+});
+
+// issue #38: an agent's hub_send is refused at once over the limit; the console user is never limited.
+test("limits: a hub_send burst is refused with the retry time, a repeat is dropped, the console is not limited", async () => {
+  const { stateDir, daemon, console_ } = await hub({ limits: { sender_per_min: 2, pair_per_min: 0, important_per_hour: 0, repeat_window_s: 60 } });
+  const { client } = await fakeClaude(stateDir);
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
+  const send = async (text: string) => ((await client.callTool({ name: "hub_send", arguments: { text: `[FYI] ${text}` } })) as { content: { text: string }[] }).content[0]!.text;
+  expect(await send("one")).toContain("recorded only");
+  expect(await send("one")).toMatch(/^not sent: the same message went to \* \d+ s ago$/);
+  expect(await send("two")).toContain("recorded only");
+  expect(await send("three")).toMatch(/^not sent: rate limited: too many messages from claude; retry after \d+ s$/);
+  for (let i = 0; i < 5; i++) expect((await console_.request({ t: "send", body: `[FYI] console ${i}` })).ok).toBe(true);
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("limits: claude: rate limited");
 });

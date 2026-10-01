@@ -166,7 +166,8 @@ export class LocalPeer extends BasePeer {
       permit: this.opts.tools.permit,
       sandboxProfile: this.sandboxProfile,
       send: (text, to) => {
-        this.onMessage?.(text, policy?.pii ? reply : { inReplyTo: replyParent(envs), to: to?.length ? to : replyAudience(envs) });
+        const refused = this.onMessage?.(text, policy?.pii ? reply : { inReplyTo: replyParent(envs), to: to?.length ? to : replyAudience(envs) });
+        if (typeof refused === "string") return `not sent: ${refused}`;
         return policy?.pii ? "sent to the console user only (PII task)" : "sent";
       },
     };
