@@ -107,6 +107,7 @@ test("watchdog aborts a silent model call; its late answer neither publishes nor
     },
     { watchdogMs: 80 },
   );
+  cleanup.push(() => release()); // runs before model.stop: a failure before the release below must not hang stop()
   bus.publish(newEnvelope("user", "SLOW", { priority: "important" }));
   bus.publish(newEnvelope("user", "after", { priority: "important" }));
   await until(() => said.length === 1, "turn after the abort");

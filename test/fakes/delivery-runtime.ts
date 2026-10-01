@@ -29,7 +29,10 @@ const append = (event: Record<string, unknown>) => {
   writeFileSync(marker, `${old}${line}`);
 };
 
-const daemon = await startDaemon({
+// The signal handlers come first: crash recovery reports from inside startDaemon, and a test that stops the hub on
+// that report must not find the default action (an exit that skips the clean stop) still in place (issue #80).
+let peer: ControlClient | undefined;
+const started = startDaemon({
   cwd,
   stateDir,
   projectId,
@@ -38,6 +41,13 @@ const daemon = await startDaemon({
   codexProxyPort: 0,
   config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: withPi, auto_start: false, cmd: [process.execPath, join(import.meta.dir, "pi-rpc.ts")] }, batch_ms: 15_000, kimi_cmd: ["bun", join(import.meta.dir, "acp-server.ts"), "--record-load", join(stateDir, "acp-load.txt")], recovery: { auto_resume_after_crash: autoResume } },
 });
+const stop = async () => {
+  peer?.close();
+  await (await started).stop();
+};
+process.once("SIGTERM", () => void stop().finally(() => process.exit(0)));
+process.once("SIGINT", () => void stop().finally(() => process.exit(0)));
+const daemon = await started;
 append({ type: "daemon-ready", pid: process.pid, port: daemon.port });
 if (startPi) {
   const console_ = await ControlClient.connect(stateDir, { role: "console", projectId, projectRoot: cwd });
@@ -52,7 +62,6 @@ if (withKimi) {
   append({ type: "kimi-started", ok: started.ok });
 }
 
-let peer: ControlClient | undefined;
 if (!noPeer) {
   peer = await ControlClient.connect(stateDir, { role: "peer", peer: "claude", projectId, projectRoot: cwd });
   peer.onPush = (msg) => {
@@ -65,10 +74,4 @@ if (!noPeer) {
   append({ type: "peer-ready", peer: "claude" });
 }
 
-const stop = async () => {
-  peer?.close();
-  await daemon.stop();
-};
-process.once("SIGTERM", () => void stop().finally(() => process.exit(0)));
-process.once("SIGINT", () => void stop().finally(() => process.exit(0)));
 await new Promise<void>(() => {});
