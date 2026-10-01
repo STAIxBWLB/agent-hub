@@ -350,7 +350,7 @@ export async function startDaemon(opts: DaemonOptions) {
   })) as unknown as LimitsConfig;
   const limiter = new Limiter(limits);
   // The local worker's and Pi's commands reach the network only through this proxy (issue #65); "direct" keeps the
-  // open network of 0.10 and earlier for one release, anything else means none.
+  // open network of 0.10 and earlier until 0.13.0 (issue #83), anything else means none.
   let egress: EgressProxy | undefined;
   if (config.local.bash_network === true) {
     const allow = Array.isArray(config.local.network_allow) ? config.local.network_allow.filter((h): h is string => typeof h === "string") : DEFAULT_NETWORK_ALLOW;

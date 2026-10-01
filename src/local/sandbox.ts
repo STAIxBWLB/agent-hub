@@ -59,7 +59,7 @@ const NETWORK_MACH_SERVICES = ["com.apple.dnssd.service", "com.apple.trustd", "c
 const PROXY_MACH_SERVICES = ["com.apple.trustd", "com.apple.trustd.agent"];
 
 /**
- * Network for the commands: none, direct (`local.bash_network: "direct"`, everything, kept for one release), or only
+ * Network for the commands: none, direct (`local.bash_network: "direct"`, everything, until 0.13.0), or only
  * the hub's egress proxy on a loopback port (#65), which opens allowlisted hosts.
  */
 export type SandboxNetwork = boolean | { proxyPort: number };
