@@ -91,6 +91,7 @@ export function profile(cwd: string, network: boolean, readAllow: string[] = [],
         `(allow file-read-metadata (subpath ${q(home)}))`,
         `(allow file-read* ${subpaths(readable)})`,
       ];
+  const places = `${creds.map((c) => `(subpath ${q(join(home, c))})`).join(" ")} ${denyRegexes(root, deny, false).join(" ")}`;
   return [
     "(version 1)",
     ...start,
@@ -100,7 +101,9 @@ export function profile(cwd: string, network: boolean, readAllow: string[] = [],
     `(deny file-write* (subpath ${q(join(root, ".agenthub"))}) ${[join(root, ".git"), ...gitDirs].map((d) => `(subpath ${q(join(d, "hooks"))}) (literal ${q(join(d, "config"))})`).join(" ")})`,
     `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join(home, c))})`).join(" ")})`,
     `(deny file-read* file-write* ${denyRegexes(root, deny).join(" ")})`,
-    ...(network ? [`(allow file-read* ${CA_BUNDLES.map((p) => `(literal ${q(p)})`).join(" ")})`] : []),
+    // Python's own CA bundle (certifi, which pip vendors too): pip, requests and httpx read it instead of the system's (#64).
+    // The last match wins: the denied places come again after it, so it overrides only the `.pem` name rule.
+    ...(network ? [`(allow file-read* ${CA_BUNDLES.map((p) => `(literal ${q(p)})`).join(" ")} (regex ${q("/certifi/cacert\\.pem$")}))`, `(deny file-read* file-write* ${places})`] : []),
   ].join("\n");
 }
 

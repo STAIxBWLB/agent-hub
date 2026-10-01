@@ -1088,7 +1088,8 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   -p`) and temp; writes as before; a short list of mach services (directory
   lookups, logging, notifications), plus name resolution and TLS trust when
   network is on, the trust being the public CA bundles allowed by exact path
-  after the denies (the `*.pem` key deny matches them); no brokers that act
+  after the denies (the `*.pem` key deny matches them), and any path ending in
+  `/certifi/cacert.pem` (Python's own bundle, issue #64); no brokers that act
   outside the sandbox (LaunchServices, SecurityServer). The denies at the end (credential
   stores, the denylist, `.agenthub`, git hooks and config) are shared by both
   bases.

@@ -30,14 +30,14 @@ export const sbplString = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"
  * Seatbelt regex filters equivalent to isDenied. Seatbelt sees absolute paths, so the `local.deny` substrings are
  * anchored under the project root: a bare "private/" would otherwise match /private/var/... and deny the whole temp tree.
  */
-export function denyRegexes(root: string, extra: string[] = []): string[] {
+export function denyRegexes(root: string, extra: string[] = [], withNames = true): string[] {
   const names = DENY_NAMES.map((re) => {
     const body = re.startsWith("^") ? re.slice(1) : `[^/]*${re}`;
     return `/${body}${body.endsWith("$") ? "" : "[^/]*$"}`;
   });
   return [
     ...DENY_SEGMENTS.map((s) => `/${sbplEscape(s)}(/|$)`),
-    ...names,
+    ...(withNames ? names : []),
     ...extra.filter(Boolean).map((e) => `^${sbplEscape(root)}/.*${sbplEscape(e)}`),
   ].map((re) => `(regex ${sbplString(re)})`);
 }
