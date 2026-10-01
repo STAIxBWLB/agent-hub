@@ -89,7 +89,7 @@ export function currentRouting(cwd: string, log: (line: string) => void = () => 
   }
 }
 
-export type Signal = "pii" | "long_context";
+export type Signal = "pii" | "long_context" | "urgent";
 
 /** What the policy can see in a task. Context length is estimated from the referenced files, 3 characters per token as elsewhere. */
 export function detectSignals(task: Pick<Task, "title" | "detail" | "refs">, routing: Routing, cwd: string): Signal[] {
@@ -125,7 +125,17 @@ export function assign(
   task: Pick<Task, "class" | "signals">,
   states: Record<PeerId, PeerState>,
   routing: Routing,
-  opts: { exclude?: PeerId[]; candidates?: PeerId[]; notReviewer?: PeerId; waitsFor?: number[] } = {},
+  opts: {
+    exclude?: PeerId[];
+    candidates?: PeerId[];
+    notReviewer?: PeerId;
+    waitsFor?: number[];
+    /** Quota per peer from its fresh readings, and the clock they are read against (issue #36). */
+    quota?: Record<PeerId, { headroom: number; resetsAt?: number }>;
+    now?: number;
+    /** Peers demoted for this task's class, with their recent failure weight (issue #36). */
+    demoted?: Record<PeerId, number>;
+  } = {},
 ): Assignment {
   const policy = routing.classes[task.class];
   const trace: string[] = [`class ${task.class}${policy ? "" : " (no [classes] entry: only an explicit owner can take it)"}`, `signals: ${task.signals.join(", ") || "none"}`];
@@ -150,6 +160,29 @@ export function assign(
     return undefined;
   };
 
+  /** Quota that resets soonest gets used first: headroom per hour left in the window, at least 15 min (a task assigned that close to a reset mostly runs after it). */
+  const drain = (p: PeerId): number | undefined => {
+    const q = opts.quota?.[p];
+    return q?.resetsAt === undefined ? undefined : q.headroom / Math.max((q.resetsAt - (opts.now ?? 0)) / 3_600_000, 0.25);
+  };
+  /** Peers with readings swap places among themselves by drain rate; peers without (local, pi) keep theirs. */
+  const byDrain = (list: PeerId[]): PeerId[] => {
+    const slots = list.flatMap((p, i) => (drain(p) === undefined ? [] : [i]));
+    if (slots.length < 2) return list;
+    const sorted = slots.map((i) => list[i]!).sort((a, b) => drain(b)! - drain(a)!);
+    const out = [...list];
+    slots.forEach((i, k) => (out[i] = sorted[k]!));
+    const left = (p: PeerId) => `${p} ${Math.round(opts.quota![p]!.headroom * 100)}% left, resets in ${Math.max(0, Math.round((opts.quota![p]!.resetsAt! - (opts.now ?? 0)) / 60_000))} min`;
+    if (sorted.join() !== slots.map((i) => list[i]).join()) trace.push(`  quota first: ${sorted.map(left).join("; ")}`);
+    return out;
+  };
+  /** Demoted peers go behind the rest for this class (owners only); each group is then ordered by quota. */
+  const rank = (ok: PeerId[], role: "owner" | "reviewer"): PeerId[] => {
+    const down = role === "owner" ? ok.filter((p) => opts.demoted?.[p]) : [];
+    if (down.length) trace.push(`  demoted for ${task.class}: ${down.map((p) => `${p} (${opts.demoted![p]!.toFixed(1)} recent failures)`).join(", ")}`);
+    return [...byDrain(ok.filter((p) => !down.includes(p))), ...byDrain(down)];
+  };
+
   const pick = (list: PeerId[], role: "owner" | "reviewer", not?: PeerId): PeerId | undefined => {
     const ok: PeerId[] = [];
     for (const peer of list) {
@@ -157,9 +190,11 @@ export function assign(
       trace.push(`  ${role} candidate ${peer}: ${why ? `skipped, ${why}` : states[peer]}`);
       if (!why) ok.push(peer);
     }
-    const localTier = ok.filter((p) => p === LOCAL || p === PI);
+    const ranked = rank(ok, role);
+    // Demotion applies to local and Pi too: a demoted one loses its place ahead of the cloud peers.
+    const localTier = ranked.filter((p) => (p === LOCAL || p === PI) && !(role === "owner" && opts.demoted?.[p]));
     if (localTier.length) return localTier.find((p) => states[p] === "idle") ?? localTier[0]; // local/Pi stays ahead of an idle cloud peer
-    return ok.find((p) => states[p] === "idle") ?? ok[0];
+    return ranked.find((p) => states[p] === "idle") ?? ranked[0];
   };
 
   // Never the task's current owner by default: a decline or an escalation has to reach the next peer in the list.

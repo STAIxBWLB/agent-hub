@@ -37,8 +37,11 @@ export interface BudgetConfig {
   poll_min: number;
   checkpoint_timeout_s: number;
   kimi_tokens_5h: number;
+  /** A paused peer whose window resets within this many minutes keeps its work, urgent tasks aside; 0 always hands over (issue #36). */
+  wait_max_min: number;
 }
-export const DEFAULT_BUDGET: BudgetConfig = { gate: 0.9, stale_min: 30, poll_min: 10, checkpoint_timeout_s: 90, kimi_tokens_5h: 0 };
+// wait_max_min is off here, as approvals.notify is: a project config turns it on (30 unless it says otherwise).
+export const DEFAULT_BUDGET: BudgetConfig = { gate: 0.9, stale_min: 30, poll_min: 10, checkpoint_timeout_s: 90, kimi_tokens_5h: 0, wait_max_min: 0 };
 
 export interface BudgetHooks {
   pause(peer: PeerId): void;
@@ -52,8 +55,8 @@ export interface BudgetHooks {
   attached(peer: PeerId): boolean;
   /** Is anybody attached who could take work over? Without one a handoff would only strip the tasks of their owner. */
   canHandOff(peer: PeerId): boolean;
-  /** Move the peer's open work. */
-  handoff(peer: PeerId, context: string | undefined): Promise<Moved[]>;
+  /** Move the peer's open work; with `urgentOnly`, only tasks marked urgent (the peer waits for its reset). */
+  handoff(peer: PeerId, context: string | undefined, urgentOnly: boolean): Promise<Moved[]>;
   resumed(record: PauseRecord): void;
   /** Every reading as it arrives, with the time it was measured (telemetry, issue #40). */
   reading?(peer: PeerId, windows: UsageWindow[], hard: boolean, at: number): void;
@@ -61,6 +64,10 @@ export interface BudgetHooks {
 }
 
 const HYSTERESIS = 0.1;
+/** Mark a pause whose handoff was a wait, and one whose wait was undone, in its reason (issue #36). */
+const WAIT_NOTE = "; keeps its work:";
+const WAITED_NOTE = "; waited, then the reset moved to";
+const waitedNote = (min: number, max: number) => `${WAITED_NOTE} ${min} min, beyond wait_max_min ${max}`;
 const FALLBACK_WINDOW_MINS = 300;
 /** Peers the coordinator never pauses: the local worker has no quota. */
 const EXEMPT = new Set<PeerId>(["local", "user", "hub"]);
@@ -177,7 +184,17 @@ export class Budget {
     if (open) {
       // A later reading may finally carry the reset time the first one lacked.
       const known = Math.max(0, ...over.map((r) => r.resetsAt ?? 0));
-      if (known && known !== open.resetsAt) this.db.query("UPDATE budget_pauses SET resets_at = ? WHERE peer = ?").run(known, peer);
+      if (known && known !== open.resetsAt) {
+        // A wait was decided against the old reset (#36). If the new one is past wait_max_min (a week window crossed
+        // the gate meanwhile), the work has to move after all: unmarked, the next tick hands it over in full.
+        const waited = open.handedOff && open.reason.includes(WAIT_NOTE);
+        const waitMin = Math.ceil((known - this.now()) / 60_000);
+        if (waited && waitMin > this.cfg.wait_max_min) {
+          const reason = `${open.reason.slice(0, open.reason.indexOf(WAIT_NOTE))}${waitedNote(waitMin, this.cfg.wait_max_min)}`;
+          this.db.query("UPDATE budget_pauses SET resets_at = ?, handed_off = 0, reason = ? WHERE peer = ?").run(known, reason, peer);
+          this.hooks.notify(`budget: ${peer}'s reset moved to ${waitMin} min, beyond wait_max_min ${this.cfg.wait_max_min}: its work is handed over`);
+        } else this.db.query("UPDATE budget_pauses SET resets_at = ? WHERE peer = ?").run(known, peer);
+      }
       const newer = fresh.filter((r) => r.at > open.since);
       if (newer.length && fresh.every((r) => r.used < this.cfg.gate - HYSTERESIS)) this.resume(peer, "usage is back under the gate");
       return;
@@ -215,15 +232,34 @@ export class Budget {
 
   private async handOff(peer: PeerId, summary: string | undefined): Promise<void> {
     const context = summary ?? (await this.hooks.platformContext(peer).catch(() => undefined));
+    // Wait or hand off (issue #36): a handoff costs the next peer the whole context, so a short wait can be cheaper.
+    const resetsAt = this.record(peer)?.resetsAt;
+    const waitMin = resetsAt === undefined ? Infinity : Math.max(0, Math.ceil((resetsAt - this.now()) / 60_000));
+    const wait = this.cfg.wait_max_min > 0 && waitMin <= this.cfg.wait_max_min;
     let moved: Moved[];
     try {
-      moved = await this.hooks.handoff(peer, context);
+      moved = await this.hooks.handoff(peer, context, wait);
     } catch (e) {
       // Left unmarked on purpose: the next tick, or the next hub run, tries again. The peer stays paused either way.
       return this.hooks.notify(`budget: handing over ${peer}'s work failed, will retry: ${(e as Error).message}`);
     }
     if (this.closed) return;
-    this.db.query("UPDATE budget_pauses SET handed_off = 1, moved = ? WHERE peer = ?").run(JSON.stringify(moved), peer);
+    const record = this.record(peer);
+    // A wait that was undone hands over a second time: keep what moved the first time (urgent work) on the record too.
+    const all = JSON.stringify([...(record?.moved ?? []), ...moved]);
+    const nowMin = record ? Math.ceil((record.resetsAt - this.now()) / 60_000) : waitMin;
+    if (wait && nowMin > this.cfg.wait_max_min) {
+      // A reading moved the reset past the limit while the urgent work moved: no wait after all. Left unmarked, so the
+      // next tick hands over the rest.
+      this.db.query("UPDATE budget_pauses SET moved = ?, reason = reason || ? WHERE peer = ?").run(all, waitedNote(nowMin, this.cfg.wait_max_min), peer);
+      this.hooks.notify(`budget: ${peer}'s reset moved to ${nowMin} min, beyond wait_max_min ${this.cfg.wait_max_min}: its work is handed over`);
+    } else {
+      let why = "";
+      if (wait) why = `${WAIT_NOTE} resets in ${waitMin} min, within wait_max_min ${this.cfg.wait_max_min}`;
+      else if (this.cfg.wait_max_min > 0 && waitMin !== Infinity && !record?.reason.includes(WAITED_NOTE)) why = `; handed over: resets in ${waitMin} min, beyond wait_max_min ${this.cfg.wait_max_min}`;
+      this.db.query("UPDATE budget_pauses SET handed_off = 1, moved = ?, reason = reason || ? WHERE peer = ?").run(all, why, peer);
+      if (wait) this.hooks.notify(`budget: ${peer} keeps its work and waits ${waitMin} min for its reset (wait_max_min ${this.cfg.wait_max_min})${moved.length ? "; urgent work moves" : ""}`);
+    }
     if (moved.length) this.hooks.notify(`budget: moved from ${peer}: ${moved.map((m) => `#${m.id} ${m.role} -> ${m.to ?? "nobody"}`).join(", ")}`);
   }
 
@@ -254,6 +290,21 @@ export class Budget {
     this.hooks.resumed(record);
     this.hooks.resume(peer);
     this.hooks.notify(`budget: ${peer} resumed (${why})`);
+  }
+
+  /**
+   * For routing (issue #36): per peer, the headroom of its most used fresh window and that window's reset. Headroom a
+   * week window bounds is not lost when the 5 h window resets, so the reset is the binding window's, the latest on a tie.
+   */
+  headroom(): Record<PeerId, { headroom: number; resetsAt?: number }> {
+    return Object.fromEntries([...this.readings.keys()].flatMap((peer) => {
+      const fresh = this.fresh(peer);
+      if (!fresh.length) return [];
+      const used = Math.max(...fresh.map((r) => r.used));
+      const binding = fresh.filter((r) => r.used === used);
+      const resetsAt = binding.some((r) => r.resetsAt === undefined) ? undefined : Math.max(...binding.map((r) => r.resetsAt!));
+      return [[peer, { headroom: 1 - used, ...(resetsAt !== undefined ? { resetsAt } : {}) }]];
+    }));
   }
 
   status(): Record<PeerId, { windows: (Reading & { stale: boolean })[]; paused?: { reason: string; resetsAt: number; since: number } }> {

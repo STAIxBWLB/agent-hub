@@ -14,6 +14,8 @@ export interface TaskRefs {
 /** What an owner says it will change, before it starts (issue #31). Each list holds short free-text items. */
 export const PLAN_KEYS = ["paths", "symbols", "signatures", "insertion_points"] as const;
 export type TaskPlan = Partial<Record<(typeof PLAN_KEYS)[number], string[]>>;
+/** Task outcomes older than this are pruned: demotion (issue #36) reads one week, seven half-lives. */
+export const OUTCOMES_KEPT_MS = 7 * 24 * 3_600_000;
 
 export interface HistoryEntry {
   at: number;
@@ -69,6 +71,9 @@ export class Board {
       id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', class TEXT NOT NULL,
       owner TEXT, reviewer TEXT, state TEXT NOT NULL, refs TEXT NOT NULL DEFAULT '{}', signals TEXT NOT NULL DEFAULT '[]',
       rejections INTEGER NOT NULL DEFAULT 0, history TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL)`);
+    // Who did well or badly at which class, for demotion (issue #36). Only peers, classes and times: no task text.
+    this.db.run("CREATE TABLE IF NOT EXISTS outcomes (peer TEXT NOT NULL, class TEXT NOT NULL, ok INTEGER NOT NULL, at INTEGER NOT NULL)");
+    this.db.run("CREATE INDEX IF NOT EXISTS outcomes_class_at ON outcomes (class, at)");
     // Boards from before issues #31 and #34 lack these columns; existing rows get the defaults.
     const have = new Set((this.db.query("PRAGMA table_info(tasks)").all() as { name: string }[]).map((c) => c.name));
     for (const [col, empty] of [["plan", "{}"], ["deps", "[]"]] as const) {
@@ -119,6 +124,15 @@ export class Board {
     const updated = this.get(id)!;
     this.changed(updated, history.at(-1)!);
     return updated;
+  }
+
+  recordOutcome(peer: PeerId, cls: TaskClass, ok: boolean, at = Date.now()): void {
+    this.db.query("INSERT INTO outcomes (peer, class, ok, at) VALUES (?, ?, ?, ?)").run(peer, cls, ok ? 1 : 0, at);
+    this.db.query("DELETE FROM outcomes WHERE at < ?").run(at - OUTCOMES_KEPT_MS); // nothing older is read
+  }
+
+  outcomes(cls: TaskClass, since: number): { peer: PeerId; ok: number; at: number }[] {
+    return this.db.query("SELECT peer, ok, at FROM outcomes WHERE class = ? AND at >= ?").all(cls, since) as { peer: PeerId; ok: number; at: number }[];
   }
 
   close(): void {
