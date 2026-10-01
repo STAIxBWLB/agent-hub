@@ -13,6 +13,9 @@ const cwd = value("--cwd");
 const projectId = value("--project-id");
 const marker = value("--marker");
 const noPeer = process.argv.includes("--no-peer");
+// issue #37: a Kimi peer (the fake ACP agent) and crash recovery that resumes it
+const withKimi = process.argv.includes("--kimi");
+const autoResume = process.argv.includes("--auto-resume");
 if (!stateDir || !cwd || !projectId || !marker) throw new Error("delivery runtime needs --state-dir, --cwd, --project-id and --marker");
 
 mkdirSync(stateDir, { recursive: true });
@@ -29,9 +32,15 @@ const daemon = await startDaemon({
   controlPort: 0,
   codexAppPort: 0,
   codexProxyPort: 0,
-  config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, batch_ms: 15_000 },
+  config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, batch_ms: 15_000, kimi_cmd: ["bun", join(import.meta.dir, "acp-server.ts")], recovery: { auto_resume_after_crash: autoResume } },
 });
 append({ type: "daemon-ready", pid: process.pid, port: daemon.port });
+if (withKimi) {
+  const console_ = await ControlClient.connect(stateDir, { role: "console", projectId, projectRoot: cwd });
+  const started = await console_.request({ t: "start", peer: "kimi" });
+  console_.close();
+  append({ type: "kimi-started", ok: started.ok });
+}
 
 let peer: ControlClient | undefined;
 if (!noPeer) {

@@ -22,6 +22,8 @@ export interface AcpOptions {
   cmd: string[];
   /** Coordinator-visible selected model only; contains no prompts or command arguments. */
   launchModel?: string;
+  /** Load this earlier session (ACP `session/load`) instead of starting a new one: crash recovery, issue #37. */
+  resumeSessionId?: string;
   cwd: string;
   /** Optional launch environment; recovery authority is always removed before spawn. */
   env?: NodeJS.ProcessEnv;
@@ -92,11 +94,17 @@ export class AcpPeer extends BasePeer {
     createInterface({ input: proc.stdout }).on("line", (line) => this.onLine(line));
 
     const handshake = async () => {
-      await this.request("initialize", {
+      const init = await this.request("initialize", {
         protocolVersion: 1,
         clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
       });
-      return this.request("session/new", { cwd: this.opts.cwd, mcpServers: this.opts.mcpServers ?? [] });
+      const resume = this.opts.resumeSessionId;
+      if (!resume) return this.request("session/new", { cwd: this.opts.cwd, mcpServers: this.opts.mcpServers ?? [] });
+      // The agent replays the session as updates while it loads; they arrive before the peer is idle, so none of
+      // them is taken for an answer.
+      if (!init?.agentCapabilities?.loadSession) throw new Error(`${this.id} cannot load an earlier session (the agent offers no loadSession)`);
+      await this.request("session/load", { sessionId: resume, cwd: this.opts.cwd, mcpServers: this.opts.mcpServers ?? [] });
+      return { sessionId: resume };
     };
     const timeout = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error(`${this.id} did not complete the ACP handshake within ${HANDSHAKE_MS / 1000} s`)), HANDSHAKE_MS).unref();

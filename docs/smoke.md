@@ -901,3 +901,18 @@ peers attached.
   - Run 1, before the hook was logged: Claude answered NONE. Whether the hook
     did not fire or the model left the reminder out was not determined; that run
     also had no stdin redirect (`< /dev/null`), which runs 2 and 3 had.
+
+## Recovery after an unplanned stop (issue #37, 2026-10-01)
+
+- AC1 baseline, released 0.7.11 in a scratch project, the fake ACP agent standing
+  in for the Kimi binary (`kimi_cmd`), `kill -9` of the daemon:
+  - the ACP child exited with the daemon;
+  - `ahub status` failed to reach the stale manifest's port;
+  - `ahub up` started a hub with no peers attached; nothing recorded Kimi's
+    session, so it could only start a new one.
+- The same run with this branch and `auto_resume_after_crash` on: `ahub up`
+  reported the crash and `kimi resumed: ... session s1 ... (ACP session/load)`,
+  and Kimi was idle on its recorded session id.
+- Pending, needs real accounts: Kimi 2.x (does it offer `loadSession`, and does
+  the resumed session keep its context), Pi with a real session file, and Codex
+  and Claude reattachment after `kill -9`.

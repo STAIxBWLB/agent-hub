@@ -87,7 +87,12 @@ let usageTotal = 0;
 
 createInterface({ input: process.stdin }).on("line", (line) => {
   const msg = JSON.parse(line);
-  if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1 } });
+  if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
+  else if (msg.method === "session/load") {
+    // what a real agent does while it loads: replay the history, then answer
+    send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: msg.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "replayed history" } } } });
+    send({ jsonrpc: "2.0", id: msg.id, result: null });
+  }
   else if (msg.method === "session/new") {
     if (process.env.FAKE_ACP_RECORD) Bun.write(process.env.FAKE_ACP_RECORD, JSON.stringify(msg.params));
     if (process.env.FAKE_ACP_ENV_RECORD) Bun.write(process.env.FAKE_ACP_ENV_RECORD, JSON.stringify({ recovery: process.env.AGENTHUB_RECOVERY_OPERATION, codex: process.env.CODEX_HOME, claude: process.env.CLAUDE_CONFIG_DIR, state: process.env.AGENTHUB_STATE_DIR }));

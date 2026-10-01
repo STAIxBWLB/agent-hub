@@ -14,12 +14,14 @@ const until = async (cond: () => boolean, what: string) => {
 };
 
 type Runtime = { stateDir: string; marker: string; process: Bun.Subprocess };
-async function startRuntime(options: { noPeer?: boolean; stateDir?: string } = {}): Promise<Runtime> {
+async function startRuntime(options: { noPeer?: boolean; stateDir?: string; kimi?: boolean; autoResume?: boolean } = {}): Promise<Runtime> {
   const stateDir = options.stateDir ?? mkdtempSync(join(tmpdir(), "agenthub-delivery-crash-"));
   const marker = join(stateDir, "runtime-events.jsonl");
   const projectId = "delivery-crash-project";
   const args = ["run", join(ROOT, "test/fakes/delivery-runtime.ts"), "--state-dir", stateDir, "--cwd", ROOT, "--project-id", projectId, "--marker", marker];
   if (options.noPeer) args.push("--no-peer");
+  if (options.kimi) args.push("--kimi");
+  if (options.autoResume) args.push("--auto-resume");
   const child = Bun.spawn(["bun", ...args], { cwd: ROOT, stdout: "ignore", stderr: "inherit" });
   const result = { stateDir, marker, process: child };
   cleanup.push(async () => {
@@ -29,6 +31,7 @@ async function startRuntime(options: { noPeer?: boolean; stateDir?: string } = {
   await until(() => !!readControl(stateDir), "daemon control manifest");
   // The runtime attaches its claude peer after the daemon is up; a console send before that finds no such peer.
   await until(() => events(result).some((e) => e.type === (options.noPeer ? "daemon-ready" : "peer-ready")), "runtime startup");
+  if (options.kimi) await until(() => events(result).some((e) => e.type === "kimi-started"), "kimi start");
   return result;
 }
 
@@ -119,4 +122,46 @@ test("a killed handoff becomes needs_review, blocks later work, and resolves ide
   peer.close();
   after.close();
   console_.close();
+});
+
+// issue #37: after kill -9 the hub says what died, resumes what it launched itself, and tells each peer what was lost.
+test("after a crash: sessions are resumed with the same identity, the report says what to reattach, and the loss notice matches the journal", async () => {
+  const first = await startRuntime({ kimi: true });
+  const console_ = await consoleClient(first.stateDir);
+  expect((await console_.request({ t: "send", to: ["claude"], body: "[IMPORTANT] in flight when the hub dies" })).ok).toBe(true);
+  await until(() => events(first).some((e) => e.type === "deliver"), "dispatch to claude");
+  const recorded = JSON.parse(readFileSync(join(first.stateDir, "sessions.json"), "utf8"));
+  expect(recorded.peers.map((p: any) => p.peer).sort()).toEqual(["claude", "kimi"]);
+  expect(recorded.peers.find((p: any) => p.peer === "kimi").meta.sessionId).toBe("s1");
+  console_.close();
+
+  await crash(first);
+  rmSync(join(first.stateDir, "status.json"), { force: true });
+  rmSync(join(first.stateDir, "control-token"), { force: true });
+  const second = await startRuntime({ noPeer: true, stateDir: first.stateDir, autoResume: true });
+  const after = await consoleClient(second.stateDir);
+  const log = () => readFileSync(join(second.stateDir, "hub.log"), "utf8");
+  await until(() => log().includes("crash recovery: kimi resumed"), "kimi resumed");
+  expect(log()).toContain("crash recovery: the previous hub run stopped without shutting down; 1 deliveries it had in flight are in needs_review (ahub queue list)");
+  expect(log()).toContain("crash recovery: claude: the Claude Code plugin reconnects by itself while that session is still open");
+  const status = await after.request({ t: "status" });
+  expect(status.status.peers.kimi.state).toBe("idle");
+  expect(status.status.crash).toContain("kimi resumed: kimi: session s1 can be loaded again (ACP session/load)");
+  expect(JSON.parse(readFileSync(join(second.stateDir, "sessions.json"), "utf8")).peers.find((p: any) => p.peer === "kimi").meta.sessionId).toBe("s1");
+
+  // claude comes back: the loss notice names the delivery the journal holds in needs_review
+  const review = (await after.request({ t: "queue", op: "list", peer: "claude" })).deliveries[0];
+  expect(review.state).toBe("needs_review");
+  const peer = await ControlClient.connect(second.stateDir, { role: "peer", peer: "claude", projectId: "delivery-crash-project", projectRoot: ROOT });
+  const delivered: any[] = [];
+  peer.onPush = (msg) => { if (msg.t === "deliver") delivered.push(msg); };
+  expect((await after.request({ t: "queue", op: "resolve", id: review.id, revision: review.revision, action: "completed", reason: "checked by hand" })).ok).toBe(true);
+  expect((await after.request({ t: "send", to: ["claude"], body: "[IMPORTANT] next" })).ok).toBe(true);
+  await until(() => delivered.length > 0, "next delivery");
+  const bodies = delivered[0].envs.map((e: any) => e.body).join("\n");
+  expect(bodies).toContain("The hub stopped unexpectedly");
+  expect(bodies).toContain(`- delivery ${review.id} from user`);
+  expect(bodies).not.toContain("in flight when the hub dies"); // ids and senders, never the text
+  peer.close();
+  after.close();
 });
