@@ -931,8 +931,8 @@ export async function startDaemon(opts: DaemonOptions) {
           if (r.ok) { report(`pi resumed (pi.auto_start): ${step.how}`); continue; }
           report(`pi not resumed (${String(r.error)}); ${step.how}`);
         } else report(step.how);
-        const fresh = await start("pi", { fresh: true });
-        const back = step.resume ? "" : `; to go back to the recorded session, run ahub kill, start the hub without pi.auto_start, then the command above`;
+        const fresh = await start("pi", { ...(step.fresh as Parameters<typeof startPeer>[1]), fresh: true });
+        const back = step.tui ? `; to go back to the recorded session, run ahub kill, start the hub without pi.auto_start, then the command above` : "";
         report(fresh.ok ? `pi.auto_start started a fresh session${back}` : `pi.auto_start could not start Pi either (${String(fresh.error)})`);
         continue;
       }
@@ -1801,7 +1801,11 @@ export async function startDaemon(opts: DaemonOptions) {
   if (crashed) {
     // This run owns the record now, so its clean stop removes it even if no peer attaches to rewrite it.
     try { if (readSessions(opts.stateDir)?.instanceId === crashed.instanceId) writeSessions(opts.stateDir, { ...crashed, instanceId, at: Date.now() }); } catch (error) { log(`session record not adopted: ${(error as Error).message}`); }
-    void recoverAfterCrash(crashed).catch((error) => log(`crash recovery failed: ${(error as Error).message}`));
+    void recoverAfterCrash(crashed).catch((error) => {
+      log(`crash recovery failed: ${(error as Error).message}`);
+      // pi.auto_start still holds: a running Pi answers `already`, a starting one refuses the second start.
+      if (piAutoStart) void startPeer("pi", {}).catch((e) => log(`Pi auto-start failed: ${e.message}`));
+    });
   }
   // After a crash that recorded Pi, crash recovery starts it (#66): its recorded session first, a fresh one if that fails.
   const piRecovered = !!crashed?.peers.some((p) => p.peer === "pi");

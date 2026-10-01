@@ -151,12 +151,12 @@ test("a stopped Pi owner can hand its persisted history to a different mode", as
 });
 
 // issue #66: after a crash, pi.auto_start brings Pi back on its recorded session, or on a fresh one.
-async function crashedHub(piConfig: Partial<typeof DEFAULT_CONFIG.pi>, session: (stateDir: string) => string | undefined, recovery = DEFAULT_CONFIG.recovery) {
+async function crashedHub(piConfig: Partial<typeof DEFAULT_CONFIG.pi>, session: (stateDir: string) => string | undefined, recovery = DEFAULT_CONFIG.recovery, launch: Record<string, unknown> = { mode: "headless", backend: "dgx" }, extra: unknown[] = []) {
   const stateDir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-pi-crash-")));
   mkdirSync(join(stateDir, "pi-sessions"), { recursive: true });
   const sessionFile = session(stateDir);
   // What a run that died left behind: a session record of another instance, with Pi on that session file.
-  writeFileSync(join(stateDir, "sessions.json"), JSON.stringify({ instanceId: "crashed", at: Date.now(), peers: [{ peer: "pi", meta: { launch: { kind: "pi", mode: "headless", backend: "dgx" }, ...(sessionFile ? { sessionFile } : {}) } }] }));
+  writeFileSync(join(stateDir, "sessions.json"), JSON.stringify({ instanceId: "crashed", at: Date.now(), peers: [...extra, { peer: "pi", meta: { launch: { kind: "pi", ...launch }, ...(sessionFile ? { sessionFile } : {}) } }] }));
   const config = { ...DEFAULT_CONFIG, recovery, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")], ...piConfig }, memory: { ...DEFAULT_CONFIG.memory, enabled: false } };
   const daemon = await startDaemon({ cwd: stateDir, permissionTimeoutMs: 20, projectId: "pi-project", instanceId: `pi-instance-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
   cleanup.push(() => daemon.stop());
@@ -194,4 +194,30 @@ test("after a crash, with pi.auto_start off, a recorded Pi is reported and not s
   await Bun.sleep(100);
   expect(daemon.bus.peers.has("pi")).toBe(false);
   expect((await crash()).some((l) => l.includes("(recovery.auto_resume_after_crash is off)"))).toBe(true);
+});
+
+test("after a crash, a terminal Pi is reported with its command, and pi.auto_start starts a fresh headless one on the recorded model", async () => {
+  const { daemon, crash } = await crashedHub({ auto_start: true }, recorded, DEFAULT_CONFIG.recovery, { mode: "tui", backend: "dgx", model: "dgx/fast" });
+  for (let i = 0; i < 200 && !(await crash()).some((l) => l.startsWith("pi.auto_start")); i++) await Bun.sleep(10);
+  const report = await crash();
+  expect(report.some((l) => l.startsWith("pi: it ran in a terminal; start it again with ahub pi --mode tui --session-file "))).toBe(true);
+  expect(report.some((l) => l.startsWith("pi.auto_start started a fresh session; to go back to the recorded session"))).toBe(true);
+  const launch = daemon.bus.peers.get("pi")!.recoveryMetadata!().launch as Record<string, unknown>;
+  expect(launch).toMatchObject({ mode: "headless", backend: "dgx", model: "dgx/fast" });
+});
+
+test("after a crash with no Pi session recorded there is no way back to offer; a fresh start that fails is reported", async () => {
+  const until = async (crash: () => Promise<string[]>) => { for (let i = 0; i < 300 && !(await crash()).some((l) => l.startsWith("pi.auto_start")); i++) await Bun.sleep(10); return crash(); };
+  const none = await until((await crashedHub({ auto_start: true }, () => undefined)).crash);
+  expect(none).toContain("pi: no session file was recorded; start it again with ahub pi");
+  expect(none).toContain("pi.auto_start started a fresh session");
+  const broken = await until((await crashedHub({ auto_start: true, cmd: [process.execPath, "-e", "process.exit(1)"] }, () => undefined)).crash);
+  expect(broken.some((l) => l.startsWith("pi.auto_start could not start Pi either ("))).toBe(true);
+});
+
+test("after a crash, malformed session records are skipped and pi.auto_start still brings Pi back", async () => {
+  const { daemon, crash } = await crashedHub({ auto_start: true }, recorded, DEFAULT_CONFIG.recovery, undefined, [null, { peer: "kimi", meta: null }]);
+  for (let i = 0; i < 200 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(10);
+  expect(daemon.bus.peers.get("pi")!.recoveryMetadata!().sessionId).toBe("recorded-1");
+  expect((await crash()).some((l) => l.startsWith("pi resumed (pi.auto_start)"))).toBe(true);
 });
