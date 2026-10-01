@@ -763,3 +763,17 @@ test("the completed-change notice leaves out a summary line and file names that 
   expect(notice).not.toContain("900101");
   expect(notice).not.toContain("Summary:");
 });
+
+// Review of #48 (v5): a PII-matching path is named nowhere, the overlap line and the ride-along included.
+test("an overlap on a path whose name matches a PII pattern does not name it", async () => {
+  const { tasks, peers, told, notices } = await setup();
+  await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["data/"] } });
+  const t = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["data/900101-1234567.json"] } });
+  await tasks.done("codex", t.id, "done", { paths: ["data/900101-1234567.json"] });
+  await tick();
+  const notice = completedNotices(peers.kimi!)[0]!.body;
+  expect(notice).toContain("on a path whose name is withheld");
+  expect(JSON.stringify([notice, told, notices])).not.toContain("900101");
+  const { parse } = await import("../scripts/overlaps.ts");
+  expect(parse(notices.map((l) => `2026-10-01T00:00:00.000Z ${l}`).join("\n"))).toHaveLength(1); // still counted
+});

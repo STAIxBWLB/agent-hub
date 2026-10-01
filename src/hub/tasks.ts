@@ -65,8 +65,6 @@ function cleanPlan(input: unknown): TaskPlan {
 
 /** A plan as one line for other owners; the whole plan is on the board. */
 const planText = (plan: TaskPlan = {}) => PLAN_KEYS.filter((k) => plan[k]?.length).map((k) => `${k.replace("_", " ")}: ${plan[k]!.join("; ")}`).join(" | ");
-/** Where two tasks meet: shared paths, then shared symbols. */
-const where = (hit: { paths: string[]; symbols: string[] }) => [...hit.paths, ...hit.symbols.map((s) => `symbol ${s}`)].join(", ");
 
 /**
  * The task flow. Adapters and tools never touch the board: every change comes through here, where assignment,
@@ -138,7 +136,7 @@ export class Tasks {
    * sides: their refs are hidden from cloud peers.
    */
   overlaps(task: Task, forOwner = true, found = this.overlapHits(task)): string {
-    const hits = found.map((h) => `#${h.task.id} (owner ${h.task.owner}) on ${where(h)}`);
+    const hits = found.map((h) => `#${h.task.id} (owner ${h.task.owner}) on ${this.where(h)}`);
     if (!hits.length) return "";
     const who = forOwner ? "Settle it with that owner via hub_send before editing those paths." : `${task.owner ?? "Whoever takes it"} is told to settle it.`;
     return `Overlaps ${hits.join("; ")}. ${who}`;
@@ -146,6 +144,15 @@ export class Tasks {
 
   /** While a gone owner's tasks move, its other tasks are about to move too: they are no one to settle with. */
   private releasing: PeerId | undefined;
+
+  /** Whether a model-written name may be shown to other peers and in the log: one matching a PII pattern may be PII. */
+  private nameable = (t: string): boolean => !this.isPii({ signals: detectSignals({ title: "", detail: t, refs: {} }, this.d.routing(), this.d.cwd) });
+
+  /** Where two tasks meet: shared paths, then shared symbols, leaving out any name that matches a PII pattern. */
+  private where(hit: { paths: string[]; symbols: string[] }): string {
+    const shown = [...hit.paths.filter(this.nameable), ...hit.symbols.filter(this.nameable).map((s) => `symbol ${s}`)];
+    return shown.length ? shown.join(", ") : "a path whose name is withheld (it matches a PII pattern)";
+  }
 
   /** Paths from refs and plan, symbols from the plan: the places a task says it touches (issue #31). */
   private places(task: Task): { paths: string[]; symbols: string[] } {
@@ -167,7 +174,7 @@ export class Tasks {
   /** The console notice and the telemetry record of an overlap; the two are counted against each other (issue #40). */
   private announceOverlap(task: Task, hits: ReturnType<Tasks["overlapHits"]>): void {
     this.d.notify(`task ${this.publicTitle(task)} (${task.owner}): ${this.overlaps(task, false, hits)}`);
-    this.d.recordOverlap?.(task.id, task.owner!, hits.map((h) => ({ task: h.task.id, owner: h.task.owner!, paths: h.paths, ...(h.symbols.length ? { symbols: h.symbols } : {}) })));
+    this.d.recordOverlap?.(task.id, task.owner!, hits.map((h) => ({ task: h.task.id, owner: h.task.owner!, paths: h.paths.filter(this.nameable), ...(h.symbols.length ? { symbols: h.symbols.filter(this.nameable) } : {}) })));
   }
 
   /**
@@ -179,7 +186,7 @@ export class Tasks {
     const plan = planText(task.plan);
     for (const hit of hits) {
       if (hit.task.owner === USER || hit.task.owner === HUB) continue;
-      this.d.tell(hit.task.owner!, noteLine(HUB, "finding", `task #${task.id} (owner ${task.owner}) now overlaps your #${hit.task.id} on ${where(hit)}; ${task.owner} is told to settle it${plan ? `. Its plan (full: hub_task_list): ${plan}` : ""}`));
+      this.d.tell(hit.task.owner!, noteLine(HUB, "finding", `task #${task.id} (owner ${task.owner}) now overlaps your #${hit.task.id} on ${this.where(hit)}; ${task.owner} is told to settle it${plan ? `. Its plan (full: hub_task_list): ${plan}` : ""}`));
     }
   }
 
@@ -393,14 +400,13 @@ export class Tasks {
     if (!hits.length) return;
     // Files, signatures and the summary are the owner's own words (paths given at done included): any item that
     // matches a PII pattern is left out of what other owners get.
-    const clean = (t: string) => !this.isPii({ signals: detectSignals({ title: "", detail: t, refs: {} }, this.d.routing(), this.d.cwd) });
-    const paths = this.places(task).paths.filter(clean);
-    const signatures = (task.plan?.signatures ?? []).filter(clean);
+    const paths = this.places(task).paths.filter(this.nameable);
+    const signatures = (task.plan?.signatures ?? []).filter(this.nameable);
     const first = (summary ?? "").split("\n").find((l) => l.trim())?.trim().slice(0, 300);
-    const line = first && clean(first) ? first : undefined;
+    const line = first && this.nameable(first) ? first : undefined;
     for (const hit of hits) {
       const body = [
-        `Task #${task.id} (owner ${task.owner}) is done and touches your open #${hit.task.id} on ${where(hit)}. Check your work against it before you go on.`,
+        `Task #${task.id} (owner ${task.owner}) is done and touches your open #${hit.task.id} on ${this.where(hit)}. Check your work against it before you go on.`,
         paths.length ? `Changed files: ${paths.join(", ")}` : "",
         signatures.length ? `New or changed signatures: ${signatures.join("; ")}` : "",
         line ? `Summary: ${line}` : "",
