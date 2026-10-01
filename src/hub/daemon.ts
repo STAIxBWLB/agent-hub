@@ -564,7 +564,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return "checkpoint received; you will be paused now and resumed when your window resets";
       }
       case "hub_task_list":
-        return JSON.stringify(board.list(a.state).map((t) => (onPrem ? t : tasks.publicView(t))).map(({ history: _h, ...t }) => t));
+        return JSON.stringify(board.list(a.ready === true ? "proposed" : a.state).filter((t) => a.ready !== true || !tasks.waitsFor(t).length).map((t) => (onPrem ? t : tasks.publicView(t))).map(({ history: _h, ...t }) => t));
     }
     if (by !== USER) throw new Error(`${op} is a console command`);
     switch (op) {

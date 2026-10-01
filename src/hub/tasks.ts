@@ -99,10 +99,20 @@ export class Tasks {
     return Object.fromEntries([...this.d.bus.peers.keys()].map((id) => [id, this.d.bus.stateOf(id)]));
   }
 
-  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId }): Promise<Task> {
+  /** Dependencies of a task that are not approved yet: while there are any, it is offered to nobody (issue #34). */
+  waitsFor = (task: Pick<Task, "deps">): number[] => (task.deps ?? []).filter((id) => this.d.board.get(id)?.state !== "approved");
+
+  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown }): Promise<Task> {
     // Callers are models: a title is one line (it is part of console and hub.log lines), not a document.
     const title = String(input.title ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
     if (!title) throw new Error("title is required");
+    // Dependencies can only name tasks that exist, so the new task closes no cycle: nothing can depend on it yet.
+    const deps = [...new Set((Array.isArray(input.after) ? input.after : input.after === undefined ? [] : [input.after]).map(Number))];
+    for (const id of deps) if (!Number.isInteger(id) || !this.d.board.get(id)) throw new Error(`after: no task #${id}`);
+    const waits = this.waitsFor({ deps });
+    if (waits.length && input.owner) {
+      throw new Error(`this task would wait for ${waits.map((id) => `#${id}`).join(", ")}, not approved yet: ${input.owner === by ? "claim it once they are" : "propose it without an owner; routing offers it when they are approved"}`);
+    }
     const given = input.class === undefined || input.class === "" ? undefined : input.class;
     if (given !== undefined && !CLASSES.includes(given as TaskClass)) throw new Error(`class must be one of ${CLASSES.join(", ")}`);
     const text = { title, detail: String(input.detail ?? "").slice(0, 8000), refs: cleanRefs(input.refs) };
@@ -122,10 +132,14 @@ export class Tasks {
     if (defaulted) cls = "implement";
     if (!cls) throw new Error(`class is required (one of ${CLASSES.join(", ")}); the hub could not name one for you`);
     const draft = { ...text, class: cls };
-    let task = this.d.board.propose(by, { ...draft, plan, signals });
+    let task = this.d.board.propose(by, { ...draft, plan, ...(deps.length ? { deps } : {}), signals });
     if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
     if (defaulted) task = this.d.board.update(task.id, "hub", "class defaulted", {}, "class implement for a claim without one");
     this.d.notify(`task ${this.publicTitle(task)} proposed by ${by} [${task.class}]${task.signals.length ? ` signals: ${task.signals.join(", ")}` : ""}`);
+    if (waits.length) {
+      this.d.notify(`task ${this.publicTitle(task)} waits for ${waits.map((id) => `#${id}`).join(", ")}; it is offered once they are approved`);
+      return this.d.board.update(task.id, HUB, "blocked", {}, `waits for ${waits.map((id) => `#${id}`).join(", ")}`);
+    }
     // Naming yourself is a claim: the work is already yours, so no offer comes back to you (paper: Agensh CLAIM, #68).
     return this.assignOwner(task, by, input.owner ? { candidates: [input.owner], claim: input.owner === by } : {});
   }
@@ -227,7 +241,7 @@ export class Tasks {
     if (typeof target === "number") {
       const task = this.d.board.get(target);
       if (!task) throw new Error(`no task #${target}`);
-      return [`task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"})`, "if it were assigned now:", ...assign(task, this.states(), routing, { exclude: this.declined(task) }).trace];
+      return [`task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"})`, "if it were assigned now:", ...assign(task, this.states(), routing, { exclude: this.declined(task), waitsFor: this.waitsFor(task) }).trace];
     }
     const draft = { title: target.title, detail: target.detail ?? "", refs: target.refs ?? {} };
     return assign({ class: target.class, signals: detectSignals(draft, routing, this.d.cwd) }, this.states(), routing).trace;
@@ -236,7 +250,12 @@ export class Tasks {
   private declined = (task: Task) => task.history.filter((h) => h.event === "declined").map((h) => h.by);
 
   private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; claim?: boolean } = {}): Promise<Task> {
-    const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}) });
+    const waits = this.waitsFor(task);
+    const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits });
+    if (waits.length) {
+      this.d.notify(`task ${this.publicTitle(task)} waits for ${waits.map((id) => `#${id}`).join(", ")}; it is offered once they are approved`);
+      return task;
+    }
     if (!a.owner) {
       this.d.notify(`task ${this.publicTitle(task)}: no peer can take it (${a.trace.filter((l) => l.includes("skipped")).length} skipped); assign with: ahub task assign ${task.id} <peer>`);
       // Only a decline takes the task away from its owner; a failed console assign or escalation leaves it where it was.
@@ -278,6 +297,22 @@ export class Tasks {
     this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner!], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id) }, ...(pii ? { private: true } : {}) }));
   }
 
+  /** Nobody, the console user included, works on a task before what it waits for is approved. */
+  private ready(task: Task): void {
+    const waits = this.waitsFor(task);
+    if (waits.length) throw new Error(`task #${task.id} waits for ${waits.map((id) => `#${id}`).join(", ")}, not approved yet`);
+  }
+
+  /** An approved task may be the last thing others waited for: those go through assignment now (issue #34). */
+  private async releaseDependents(approved: Task): Promise<void> {
+    for (const t of this.d.board.list("proposed")) {
+      if (!t.deps?.includes(approved.id) || t.owner || this.waitsFor(t).length) continue;
+      const ready = this.d.board.update(t.id, HUB, "ready", {}, `#${approved.id} approved`);
+      this.d.notify(`task ${this.publicTitle(ready)} is ready: what it waited for is approved`);
+      await this.assignOwner(ready, HUB).catch((e: Error) => this.d.notify(`task ${this.publicTitle(ready)}: could not be assigned: ${e.message}`));
+    }
+  }
+
   private mine(task: Task, by: PeerId, role: "owner" | "reviewer"): void {
     if (by !== USER && task[role] !== by) throw new Error(`task #${task.id}: only its ${role} (${task[role] ?? "none"}) or the console user can do that`);
   }
@@ -297,6 +332,7 @@ export class Tasks {
   accept(by: PeerId, id: unknown, plan?: unknown): Task {
     const task = this.need(id);
     this.mine(task, by, "owner");
+    this.ready(task);
     // Models send null or {} for an optional field they leave empty: neither replaces a plan.
     const given = plan == null ? undefined : cleanPlan(plan);
     const cleaned = given && Object.keys(given).length ? given : undefined;
@@ -335,6 +371,7 @@ export class Tasks {
     let task = this.need(id);
     this.mine(task, by, "owner");
     if (task.state === "in_review" || task.state === "approved") throw new Error(`task #${task.id} is already ${task.state}`);
+    this.ready(task);
     if (this.checking.has(task.id)) {
       // The result goes only to the owner the check was started for: anyone who took the task since hears nothing.
       throw new Error(this.checking.get(task.id) === task.owner ? `task #${task.id}: its check is still running; its result comes as a task message` : `task #${task.id}: a check from before it changed hands is still running; call hub_task_done again in a few minutes`);
@@ -384,7 +421,10 @@ export class Tasks {
     const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", refs: cleanRefs(refs) }, checkOutput ? `${summary ?? ""}\n${checkOutput}`.trim() : summary);
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`);
     this.tellCompleted(next, summary);
-    if (!reviewer) this.d.notify(`task ${this.publicTitle(next)} done by ${by}, no reviewer: approved`);
+    if (!reviewer) {
+      this.d.notify(`task ${this.publicTitle(next)} done by ${by}, no reviewer: approved`);
+      await this.releaseDependents(next);
+    }
     else if (reviewer === USER) this.d.notify(`task ${this.publicTitle(next)} done by ${by}: review it with ahub task show ${next.id}, then ahub review ${next.id} approved|changes_requested [note]`);
     else this.sendReview(next, reviewer);
     return next;
@@ -434,6 +474,7 @@ export class Tasks {
       const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0 }, note);
       this.note(next, by, "decision", `Task #${next.id} approved by ${by}: ${next.title}\n${note ?? ""}`);
       this.tell(next, `Task #${next.id} approved by ${by}.${note ? ` ${note}` : ""}`, pii);
+      await this.releaseDependents(next);
       return next;
     }
     const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: task.rejections + 1 }, note);

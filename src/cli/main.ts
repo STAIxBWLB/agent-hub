@@ -69,8 +69,8 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub budget                   quota windows per peer, and who is paused until when
   ahub budget set <peer> <0..1> [--resets-in 30m] [--window 5h|week]   feed a reading by hand (also: test the relay)
   ahub budget resume <peer>     override a budget pause; readings are ignored for that peer until the window resets
-  ahub board [state]            the task board
-  ahub task propose [--class <c> | <class>] <title...> [--owner <peer>] [--path <p>]... [--detail <text>]
+  ahub board [state | --ready]  the task board; --ready: proposed tasks with nothing left to wait for
+  ahub task propose [--class <c> | <class>] <title...> [--owner <peer>] [--path <p>]... [--after <id>]... [--detail <text>]
   ahub task show|escalate <id>  full task with history (PII text included) / hand it to the next peer in escalate_to
   ahub task assign <id> <peer>  give a task to a peer yourself
   ahub review <id> approved|changes_requested [note...]
@@ -668,9 +668,11 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   board: async () => {
-    const tasks = JSON.parse(await taskOp("hub_task_list", args[0] ? { state: args[0] } : {})) as any[];
+    const ready = args.includes("--ready");
+    const state = args.find((a) => !a.startsWith("--"));
+    const tasks = JSON.parse(await taskOp("hub_task_list", ready ? { ready: true } : state ? { state } : {})) as any[];
     if (!tasks.length) return console.log("no tasks");
-    for (const t of tasks) console.log(`#${String(t.id).padEnd(4)} ${t.state.padEnd(18)} ${t.class.padEnd(10)} ${(t.owner ?? "-").padEnd(8)} review:${(t.reviewer ?? "-").padEnd(8)} ${t.title}${t.signals.includes("pii") ? `  (ahub task show ${t.id})` : ""}`);
+    for (const t of tasks) console.log(`#${String(t.id).padEnd(4)} ${t.state.padEnd(18)} ${t.class.padEnd(10)} ${(t.owner ?? "-").padEnd(8)} review:${(t.reviewer ?? "-").padEnd(8)} ${t.title}${t.deps?.length ? `  (after ${t.deps.map((d: number) => `#${d}`).join(", ")})` : ""}${t.signals.includes("pii") ? `  (ahub task show ${t.id})` : ""}`);
   },
 
   task: async () => {
@@ -681,12 +683,12 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (sub !== "propose" || rest.length < 1) fail("usage: ahub task propose [<class>] <title...> | show <id> | assign <id> <peer> | escalate <id>");
     // `--class` is the explicit form. A first word that is a class name is still taken as the class (the documented
     // short form), but said out loud: "review the auth module" would otherwise be filed as class review, silently.
-    const flags = takeFlags(rest, ["--owner", "--detail", "--class"], ["--path"]);
+    const flags = takeFlags(rest, ["--owner", "--detail", "--class"], ["--path", "--after"]);
     const positional = !flags.one["--class"] && (CLASSES as readonly string[]).includes(flags.rest[0] ?? "") && flags.rest.length > 1;
     const cls = flags.one["--class"] ?? (positional ? flags.rest[0] : undefined);
     const title = (positional ? flags.rest.slice(1) : flags.rest).join(" ");
     if (positional) console.error(`note: "${cls}" was taken as the class and left out of the title; use --class <c> when the title itself starts with that word`);
-    console.log(await taskOp("hub_task_propose", { ...(cls ? { class: cls } : {}), title, owner: flags.one["--owner"], detail: flags.one["--detail"], ...(flags.many["--path"]?.length ? { refs: { paths: flags.many["--path"] } } : {}) }));
+    console.log(await taskOp("hub_task_propose", { ...(cls ? { class: cls } : {}), title, owner: flags.one["--owner"], detail: flags.one["--detail"], ...(flags.many["--path"]?.length ? { refs: { paths: flags.many["--path"] } } : {}), ...(flags.many["--after"]?.length ? { after: flags.many["--after"].map(Number) } : {}) }));
   },
 
   review: async () => {

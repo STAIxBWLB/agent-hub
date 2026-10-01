@@ -748,6 +748,64 @@ test("a board from before plans gains the column with its tasks intact", () => {
   old.close();
   const board = new Board(file);
   expect(board.get(1)).toMatchObject({ title: "kept", owner: "kimi", state: "in_progress", plan: {} });
+});
+
+// issue #34: dependencies and the ready queue.
+test("a task that waits is offered to nobody and cannot be claimed or worked; approving the last dependency assigns it", async () => {
+  const { tasks, board, peers, notices } = await setup();
+  const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+  const b = await tasks.propose("claude", { title: "api", class: "implement" });
+  const c = await tasks.propose("claude", { title: "client", class: "implement", after: [a.id, b.id] });
+  await tick();
+  expect(board.get(c.id)).toMatchObject({ owner: null, state: "proposed", deps: [a.id, b.id] });
+  expect(Object.values(peers).flatMap((p) => p.got).some((e) => e.refs?.task === String(c.id))).toBe(false);
+  expect(notices).toContain(`task #${c.id} client waits for #${a.id}, #${b.id}; it is offered once they are approved`);
+  // a claim of waiting work is refused with what blocks it, and creates nothing
+  await expect(tasks.propose("kimi", { title: "client too", owner: "kimi", after: [a.id] })).rejects.toThrow(`would wait for #${a.id}, not approved yet: claim it once they are`);
+  expect(board.list()).toHaveLength(3);
+  // nobody works on it early, the console user included
+  await expect(tasks.done(USER, c.id, "early")).rejects.toThrow(`waits for #${a.id}, #${b.id}`);
+  await expect(tasks.assignTo(c.id, "kimi")).resolves.toMatchObject({ owner: null });
+  expect(tasks.explain(c.id).at(-1)).toBe(`blocked: waits for #${a.id}, #${b.id} (not approved)`);
+
+  // approve a: c still waits for b
+  for (const t of [a]) {
+    await tasks.done(board.get(t.id)!.owner!, t.id, "done");
+    await tasks.review(board.get(t.id)!.reviewer!, t.id, "approved");
+  }
+  expect(board.get(c.id)!.owner).toBeNull();
+  // approve b: c is ready and goes through assignment
+  await tasks.done(board.get(b.id)!.owner!, b.id, "done");
+  await tasks.review(board.get(b.id)!.reviewer!, b.id, "approved");
+  await tick();
+  const ready = board.get(c.id)!;
+  expect(ready.owner).not.toBeNull();
+  expect(ready.history.map((h) => h.event)).toEqual(expect.arrayContaining(["blocked", "ready", "assigned"]));
+  expect(peers[ready.owner!]!.got.some((e) => e.kind === "task" && e.refs?.task === String(c.id))).toBe(true);
+});
+
+test("after names existing tasks only, so no cycle can form; ready lists proposed tasks with nothing left to wait for", async () => {
+  const { tasks, board } = await setup();
+  await expect(tasks.propose("claude", { title: "x", class: "implement", after: [99] })).rejects.toThrow("after: no task #99");
+  await expect(tasks.propose("claude", { title: "x", class: "implement", after: ["two"] })).rejects.toThrow("after: no task #NaN");
+  const a = await tasks.propose("claude", { title: "a", class: "implement" });
+  const b = await tasks.propose("claude", { title: "b", class: "implement", after: [a.id, a.id] });
+  expect(board.get(b.id)!.deps).toEqual([a.id]);
+  const ready = board.list("proposed").filter((t) => !tasks.waitsFor(t).length).map((t) => t.id);
+  expect(ready).toEqual([a.id]);
+});
+
+test("a board from before plans and dependencies opens with its tasks intact", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-migrate-"));
+  const file = join(dir, "hub.db");
+  const old = new Database(file, { create: true });
+  old.run(`CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', class TEXT NOT NULL,
+    owner TEXT, reviewer TEXT, state TEXT NOT NULL, refs TEXT NOT NULL DEFAULT '{}', signals TEXT NOT NULL DEFAULT '[]',
+    rejections INTEGER NOT NULL DEFAULT 0, history TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL)`);
+  old.run(`INSERT INTO tasks (title, class, owner, state, refs, history, created, updated) VALUES ('kept', 'implement', 'kimi', 'in_progress', '{"paths":["a.ts"]}', '[]', 1, 1)`);
+  old.close();
+  const board = new Board(file);
+  expect(board.get(1)).toMatchObject({ title: "kept", owner: "kimi", state: "in_progress", refs: { paths: ["a.ts"] }, plan: {}, deps: [] });
   board.close();
 });
 

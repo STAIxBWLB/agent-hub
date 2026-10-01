@@ -125,10 +125,12 @@ export function assign(
   task: Pick<Task, "class" | "signals">,
   states: Record<PeerId, PeerState>,
   routing: Routing,
-  opts: { exclude?: PeerId[]; candidates?: PeerId[]; notReviewer?: PeerId } = {},
+  opts: { exclude?: PeerId[]; candidates?: PeerId[]; notReviewer?: PeerId; waitsFor?: number[] } = {},
 ): Assignment {
   const policy = routing.classes[task.class];
   const trace: string[] = [`class ${task.class}${policy ? "" : " (no [classes] entry: only an explicit owner can take it)"}`, `signals: ${task.signals.join(", ") || "none"}`];
+  // Readiness is an input like peer states (issue #34): a task that waits for others goes to nobody yet.
+  if (opts.waitsFor?.length) return { trace: [...trace, `blocked: waits for ${opts.waitsFor.map((id) => `#${id}`).join(", ")} (not approved)`] };
   const pii = task.signals.includes("pii") && routing.constraints.pii === "local_only";
 
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {

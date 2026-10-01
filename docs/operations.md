@@ -98,7 +98,17 @@ task is done (after its check passes, when one is configured), the owners of
 open tasks on the same paths or symbols get a message with the changed files,
 the plan's signatures and the first line of the summary, each left out when it
 matches a PII pattern; nobody else does. PII
-tasks are left out on both sides. An owner offline longer than `tasks.release_after_min`
+tasks are left out on both sides.
+
+A task can wait for others: `hub_task_propose` takes `after: [ids]` (`ahub task
+propose ... --after <id>`). Until every one of them is approved, the task is
+offered to nobody, cannot be claimed, accepted or marked done, and `ahub route
+explain <id>` says what it waits for. When the last one is approved, the task
+goes through assignment like a new one. `ahub board --ready` and
+`hub_task_list {ready: true}` list the proposed tasks with nothing left to wait
+for. Dependencies are fixed when a task is proposed and can only name tasks that
+already exist, so they cannot form a cycle. A waiting task cannot name an owner;
+use `ahub task assign` once it is ready. An owner offline longer than `tasks.release_after_min`
 (default 30, `0` turns it off) in `.agenthub/config.json` loses its open tasks
 to a peer routing can give them to; with nobody to take them they stay, and a
 paused peer or a hub in a recovery operation is left alone.
