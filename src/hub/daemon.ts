@@ -301,6 +301,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // a record left now would make the next ordinary start look like one.
   if (recoveryOperation || restartFilePresent) try { removeSessions(opts.stateDir); } catch { /* nothing to remove */ }
   const autoResume = config.recovery.auto_resume_after_crash === true; // a string "false" is not a yes
+  const piAutoStart = config.pi.enabled && config.pi.auto_start;
   const startedAt = Date.now();
   /** What crash recovery did or asks the user to do, for `ahub status`. */
   const crashReport: string[] = [];
@@ -920,13 +921,26 @@ export async function startDaemon(opts: DaemonOptions) {
     const report = (line: string) => (crashReport.push(line), notify(`crash recovery: ${line}`));
     const lostCount = [...lost.values()].reduce((n, l) => n + l.length, 0);
     report(`the previous hub run stopped without shutting down${lostCount ? `; ${lostCount} deliveries it had in flight are in needs_review (ahub queue list)` : ""}`);
+    const start = (peer: string, args: Parameters<typeof startPeer>[1]) => startPeer(peer, args).catch((e: Error) => ({ ok: false, error: e.message }));
     for (const step of crashPlan(prev.peers)) {
-      if (!step.resume || !autoResume) {
-        const fresh = step.peer === "pi" && config.pi.enabled && config.pi.auto_start ? "; pi.auto_start starts a fresh session" : "";
-        report(`${step.how}${step.resume ? " (recovery.auto_resume_after_crash is off)" : ""}${fresh}`);
+      // `pi.auto_start` already asks for Pi (#66): its recorded headless session comes back, auto-resume or not, and a
+      // fresh one starts when that fails or there is nothing headless to resume. Pi runs on-prem: no cloud quota.
+      if (step.peer === "pi" && piAutoStart) {
+        if (step.resume) {
+          const r = await start("pi", step.resume as Parameters<typeof startPeer>[1]);
+          if (r.ok) { report(`pi resumed (pi.auto_start): ${step.how}`); continue; }
+          report(`pi not resumed (${String(r.error)}); ${step.how}`);
+        } else report(step.how);
+        const fresh = await start("pi", { fresh: true });
+        const back = step.resume ? "" : `; to go back to the recorded session, run ahub kill, start the hub without pi.auto_start, then the command above`;
+        report(fresh.ok ? `pi.auto_start started a fresh session${back}` : `pi.auto_start could not start Pi either (${String(fresh.error)})`);
         continue;
       }
-      const r = await startPeer(step.peer, step.resume as Parameters<typeof startPeer>[1]).catch((e: Error) => ({ ok: false, error: e.message }));
+      if (!step.resume || !autoResume) {
+        report(`${step.how}${step.resume ? " (recovery.auto_resume_after_crash is off)" : ""}`);
+        continue;
+      }
+      const r = await start(step.peer, step.resume as Parameters<typeof startPeer>[1]);
       report(r.ok ? `${step.peer} resumed: ${step.how}` : `${step.peer} not resumed (${String(r.error)}); ${step.how}`);
     }
     writeStatus();
@@ -1050,7 +1064,7 @@ export async function startDaemon(opts: DaemonOptions) {
 
   // One start per peer at a time: a second `ahub codex` must not tear down an adapter that is still coming up.
   const starting = new Map<string, Promise<Record<string, unknown>>>();
-  function startPeer(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string }): Promise<Record<string, unknown>> {
+  function startPeer(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean }): Promise<Record<string, unknown>> {
     if (stopping) return Promise.resolve({ ok: false, error: "hub is stopping" });
     if (peer === "pi" && starting.has(peer)) return Promise.resolve({ ok: false, error: "Pi start is in progress; inspect status before retrying" });
     const running = starting.get(peer) ?? startPeerOnce(peer, args).finally(() => starting.delete(peer));
@@ -1074,7 +1088,7 @@ export async function startDaemon(opts: DaemonOptions) {
     };
   }
 
-  async function startPeerOnce(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string }): Promise<Record<string, unknown>> {
+  async function startPeerOnce(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean }): Promise<Record<string, unknown>> {
     let unmute: (() => void) | undefined;
     try {
       return await startPeerBody(peer, args, (p) => { unmute = muteState(p); });
@@ -1083,7 +1097,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
   }
 
-  async function startPeerBody(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string }, mute: (p: PeerAdapter) => void): Promise<Record<string, unknown>> {
+  async function startPeerBody(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean }, mute: (p: PeerAdapter) => void): Promise<Record<string, unknown>> {
     if (peer === "pi") {
       if (args.mode !== undefined && !["headless", "tui"].includes(args.mode)) return { ok: false, error: "invalid Pi mode" };
       if (args.backend !== undefined && !["auto", "dgx", "mlx"].includes(args.backend)) return { ok: false, error: "invalid Pi backend" };
@@ -1099,7 +1113,8 @@ export async function startDaemon(opts: DaemonOptions) {
       const unclaimed = existing.state === "offline" && !saved.sessionId && !saved.sessionFile;
       if (changesOwner && (existing.state === "busy" || (existing.state !== "offline" && !existing.recoveryReady))) return { ok: false, error: "Pi is busy; wait for agent_settled before changing mode/backend" };
       if (unclaimed) {
-        if (!args.sessionId && !args.sessionFile) args = { ...args, ...existing.pendingResume };
+        // `fresh` (crash recovery's fallback, #66): the pending session is the one that just failed to load.
+        if (!args.sessionId && !args.sessionFile && !args.fresh) args = { ...args, ...existing.pendingResume };
         // Revoke the previous launch bridge before issuing another launch. A late
         // process from the abandoned CLI cannot claim the replacement owner.
         // The replacement's start event is the only state change the console should see (issue #42).
@@ -1788,9 +1803,9 @@ export async function startDaemon(opts: DaemonOptions) {
     try { if (readSessions(opts.stateDir)?.instanceId === crashed.instanceId) writeSessions(opts.stateDir, { ...crashed, instanceId, at: Date.now() }); } catch (error) { log(`session record not adopted: ${(error as Error).message}`); }
     void recoverAfterCrash(crashed).catch((error) => log(`crash recovery failed: ${(error as Error).message}`));
   }
-  // Skipped only when crash recovery itself starts Pi again on its recorded session.
-  const piResumes = !!crashed && autoResume && crashPlan(crashed.peers).some((s) => s.peer === "pi" && s.resume);
-  if (config.pi.enabled && config.pi.auto_start && !recoveryActive() && !piResumes) void startPeer("pi", {}).catch((error) => log(`Pi auto-start failed: ${error.message}`));
+  // After a crash that recorded Pi, crash recovery starts it (#66): its recorded session first, a fresh one if that fails.
+  const piRecovered = !!crashed?.peers.some((p) => p.peer === "pi");
+  if (piAutoStart && !recoveryActive() && !piRecovered) void startPeer("pi", {}).catch((error) => log(`Pi auto-start failed: ${error.message}`));
   return { bus, token, port: server.port as number, stop, stopped: new Promise<void>((r) => (onStop = r)) };
   } finally {
     if (!ready) for (const cleanup of startupCleanup.reverse()) { try { cleanup(); } catch { /* preserve startup error */ } }

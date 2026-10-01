@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
@@ -148,4 +148,50 @@ test("a stopped Pi owner can hand its persisted history to a different mode", as
   expect(resumed.ok).toBe(true);
   expect(resumed.launch.args).toContain("--session");
   expect(resumed.launch.args).toContain(saved.sessionFile);
+});
+
+// issue #66: after a crash, pi.auto_start brings Pi back on its recorded session, or on a fresh one.
+async function crashedHub(piConfig: Partial<typeof DEFAULT_CONFIG.pi>, session: (stateDir: string) => string | undefined, recovery = DEFAULT_CONFIG.recovery) {
+  const stateDir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-pi-crash-")));
+  mkdirSync(join(stateDir, "pi-sessions"), { recursive: true });
+  const sessionFile = session(stateDir);
+  // What a run that died left behind: a session record of another instance, with Pi on that session file.
+  writeFileSync(join(stateDir, "sessions.json"), JSON.stringify({ instanceId: "crashed", at: Date.now(), peers: [{ peer: "pi", meta: { launch: { kind: "pi", mode: "headless", backend: "dgx" }, ...(sessionFile ? { sessionFile } : {}) } }] }));
+  const config = { ...DEFAULT_CONFIG, recovery, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")], ...piConfig }, memory: { ...DEFAULT_CONFIG.memory, enabled: false } };
+  const daemon = await startDaemon({ cwd: stateDir, permissionTimeoutMs: 20, projectId: "pi-project", instanceId: `pi-instance-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
+  cleanup.push(() => daemon.stop());
+  const console_ = await ControlClient.connect(stateDir, { role: "console" });
+  cleanup.push(() => console_.close());
+  const crash = async () => ((await console_.request({ t: "status" })).status.crash ?? []) as string[];
+  return { daemon, crash };
+}
+const recorded = (stateDir: string) => {
+  const file = join(stateDir, "pi-sessions", "recorded.jsonl");
+  writeFileSync(file, JSON.stringify({ type: "session", id: "recorded-1", cwd: stateDir }) + "\n");
+  return file;
+};
+
+test("after a crash, pi.auto_start resumes Pi on its recorded session, also with auto-resume off", async () => {
+  const { daemon, crash } = await crashedHub({ auto_start: true }, recorded);
+  for (let i = 0; i < 200 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(10);
+  expect(daemon.bus.peers.get("pi")!.recoveryMetadata!().sessionId).toBe("recorded-1");
+  expect((await crash()).some((l) => l.startsWith("pi resumed (pi.auto_start): pi: its session file can be resumed"))).toBe(true);
+});
+
+test("after a crash, a Pi resume that fails falls back to a fresh session under pi.auto_start, and the report says so", async () => {
+  const { daemon, crash } = await crashedHub({ auto_start: true }, (dir) => join(dir, "pi-sessions", "gone.jsonl"), { auto_resume_after_crash: true });
+  for (let i = 0; i < 200 && !(await crash()).some((l) => l.startsWith("pi.auto_start")); i++) await Bun.sleep(10);
+  expect(daemon.bus.stateOf("pi")).toBe("idle");
+  expect(daemon.bus.peers.get("pi")!.recoveryMetadata!().sessionId).toBe("fake-session");
+  const report = await crash();
+  expect(report.some((l) => l.startsWith("pi not resumed ("))).toBe(true);
+  expect(report).toContain("pi.auto_start started a fresh session");
+});
+
+test("after a crash, with pi.auto_start off, a recorded Pi is reported and not started (auto-resume off)", async () => {
+  const { daemon, crash } = await crashedHub({ auto_start: false }, recorded);
+  for (let i = 0; i < 100 && !(await crash()).length; i++) await Bun.sleep(10);
+  await Bun.sleep(100);
+  expect(daemon.bus.peers.has("pi")).toBe(false);
+  expect((await crash()).some((l) => l.includes("(recovery.auto_resume_after_crash is off)"))).toBe(true);
 });
