@@ -170,3 +170,18 @@ test("found by a second reviewer (Kimi, through the hub): run marker, PII in log
   const mixed = setup(() => ({ content: "Nothing found in the hub log about a deploy, but the sidecar work is open [task #1]." }));
   expect(await ask("deploy?", mixed.deps)).toMatchObject({ found: true });
 });
+
+// issue #69: an ordinary task's last note that matches a PII pattern counts like a PII task for an off-campus model.
+test("a PII-matching note on an ordinary task is evidence only on campus", async () => {
+  const isPiiText = (s: string) => /\d{6}-\d{7}/.test(s);
+  const off = setup(() => ({ content: "Codex has it [task #1]." }), { onCampus: false });
+  off.deps.board.update(1, "codex", "done", { state: "in_review" }, "called 900101-1234567 back");
+  const away = await ask("sidecar status?", { ...off.deps, isPiiText });
+  expect(away.evidence.find((e) => e.id === "task #1")!.text).toContain("its note is shown only when the model is reached on campus");
+  expect(JSON.stringify(off.model!.requests)).not.toContain("900101");
+  const on = setup(() => ({ content: "Codex has it [task #1]." }), { onCampus: true });
+  on.deps.board.update(1, "codex", "done", { state: "in_review" }, "called 900101-1234567 back");
+  const here = await ask("sidecar status?", { ...on.deps, isPiiText });
+  expect(here.pii).toBe(true);
+  expect(here.evidence.find((e) => e.id === "task #1")!.text).toContain("900101");
+});
