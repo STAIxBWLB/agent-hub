@@ -1,13 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { HUB, newEnvelope } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
+import { Turns } from "../src/hub/snapshots.ts";
 import { readEvents } from "../src/hub/events.ts";
 import { summarize } from "../src/hub/report.ts";
 import { parse as parseOverlaps } from "../scripts/overlaps.ts";
@@ -24,8 +25,8 @@ const until = async (cond: () => boolean, what = "condition") => {
   if (!cond()) throw new Error(`timed out waiting for ${what}`);
 };
 
-async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[] } = {}) {
-  const { memoryUrl, modelUrl, approvals, checks, ignored, ...rest } = extra;
+async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number } = {}) {
+  const { memoryUrl, modelUrl, approvals, checks, ignored, snapshots, codex_bin, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
     cwd: ROOT,
@@ -42,6 +43,8 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?:
       ...(approvals ? { approvals } : {}),
       ...(checks ? { checks } : {}),
       ...(ignored ? { ignored } : {}),
+      ...(snapshots ? { snapshots } : {}),
+      ...(codex_bin ? { codex_bin } : {}),
     },
     permissionTimeoutMs: 200,
     ...rest,
@@ -987,4 +990,129 @@ test("telemetry: pausing a busy peer does not split its turn, and sizes are UTF-
   expect(events.filter((e) => e.type === "state" && e.peer === "slow").map((e) => (e as { state: string }).state)).toContain("paused");
   const sent = events.find((e) => e.type === "envelope" && e.from === "user" && e.to?.includes("slow")) as { bytes: number };
   expect(sent.bytes).toBe(Buffer.byteLength("héllo 안녕"));
+});
+
+// issue #33: a turn's files are known from snapshots, not from tool events, so a shell-made change counts too.
+test("snapshots: a turn records what it changed, and ahub undo restores it unless the file changed since", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-snaprepo-")));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...a: string[]) => Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@localhost", ...a]);
+  git("init", "-q");
+  writeFileSync(join(dir, "a.txt"), "one\n");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const { stateDir, daemon, console_ } = await hub({ cwd: dir, snapshots: { enabled: true, keep: 20 } });
+  class Editor extends BasePeer {
+    async start() { this.setState("idle"); }
+    async deliver() {
+      this.setState("busy");
+      writeFileSync(join(dir, "a.txt"), "edited\n"); // what a shell command does: no tool event says so
+      writeFileSync(join(dir, "made.txt"), "new\n");
+      setTimeout(() => this.setState("idle"), 5);
+    }
+    async stop() { this.setState("offline"); }
+  }
+  const editor = new Editor("editor");
+  daemon.bus.add(editor);
+  await editor.start();
+  expect((await console_.request({ t: "send", body: "edit please", to: ["editor"] })).ok).toBe(true);
+  const file = join(stateDir, "events.jsonl");
+  await until(() => readEvents(file).some((e) => e.type === "turn_end" && e.peer === "editor"), "the editor's turn");
+  const ended = readEvents(file).find((e) => e.type === "turn_end" && e.peer === "editor") as { files?: number; snapshotMs?: number };
+  expect(ended.files).toBe(2);
+  expect(ended.snapshotMs).toBeGreaterThanOrEqual(0);
+
+  // Async: the hub runs in this process, and a blocking spawn would keep it from answering the CLI.
+  const cli = async (...a: string[]) => {
+    const p = Bun.spawn([process.execPath, join(ROOT, "src/cli/main.js"), ...a], { cwd: dir, env: { ...process.env, AGENTHUB_STATE_DIR: stateDir }, stdout: "pipe", stderr: "pipe" });
+    const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    return { code, out, err };
+  };
+  const listed = await cli("turns", "editor");
+  expect(listed.out).toContain("2 files: a.txt, made.txt");
+  const turn = listed.out.split(/\s/)[0]!;
+  expect((await cli("undo", turn)).out).toContain("add --yes"); // a dry run by default
+  expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("edited\n");
+  writeFileSync(join(dir, "a.txt"), "somebody else's work\n");
+  const refused = await cli("undo", turn, "--yes");
+  expect(refused.code).toBe(1);
+  expect(refused.err).toContain("a.txt");
+  expect(existsSync(join(dir, "made.txt"))).toBe(true); // nothing was touched
+  writeFileSync(join(dir, "a.txt"), "edited\n");
+  const noContext = await cli("undo", turn, "--yes", "--context"); // the conversation half goes first, so a refusal leaves the files
+  expect(noContext.code).toBe(1);
+  expect(noContext.err).toContain("no Codex conversation turn");
+  expect(existsSync(join(dir, "made.txt"))).toBe(true);
+  const undone = await cli("undo", turn, "--yes");
+  expect(undone.code).toBe(0);
+  expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("one\n");
+  expect(existsSync(join(dir, "made.txt"))).toBe(false);
+  expect(git("status", "--porcelain").stdout.toString()).toBe(""); // back to the committed state, index untouched
+});
+
+// Review of #47 (F9): the daemon side of `ahub undo --context`, with Codex on the fake app-server.
+test("snapshots: a Codex turn records its native id, and turn_revert reverts the thread while holding Codex's deliveries", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-revert-")));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+  const record = join(dir, "..", `${dir.split("/").at(-1)}-reverts.jsonl`);
+  cleanup.push(() => rmSync(record, { force: true }));
+  const bin = join(dir, "..", `${dir.split("/").at(-1)}-codex.sh`);
+  writeFileSync(bin, `#!/bin/sh\nexec bun ${join(ROOT, "test/fakes/codex-bin.ts")} --record ${record} "$@"\n`, { mode: 0o755 });
+  cleanup.push(() => rmSync(bin, { force: true }));
+  const freePort = () => { const s = Bun.serve({ port: 0, fetch: () => new Response() }); const p = s.port as number; s.stop(true); return p; };
+  const [appPort, proxyPort] = [freePort(), freePort()];
+  const { stateDir, daemon, console_ } = await hub({ cwd: dir, snapshots: { enabled: true, keep: 20 }, codex_bin: bin, codexAppPort: appPort, codexProxyPort: proxyPort });
+  expect((await console_.request({ t: "start", peer: "codex" })).ok).toBe(true);
+  const tui = new WebSocket(`ws://127.0.0.1:${proxyPort}`);
+  cleanup.push(() => tui.close());
+  await new Promise((r) => (tui.onopen = r));
+  tui.send(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "fake-tui" } } }));
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => daemon.bus.stateOf("codex") === "idle", "codex thread");
+  expect((await console_.request({ t: "send", body: "do it", to: ["codex"] })).ok).toBe(true);
+  const file = join(stateDir, "events.jsonl");
+  await until(() => readEvents(file).some((e) => e.type === "turn_end" && e.peer === "codex"), "the codex turn");
+  await until(() => daemon.bus.stateOf("codex") === "idle" && daemon.bus.queued("codex") === 0, "a quiet codex");
+  const records = new Turns(join(stateDir, "hub.db"), true);
+  const latest = records.latest("codex")!;
+  records.close();
+  expect(latest.native).toMatch(/^turn\d+$/);
+  const turn = latest.id;
+  const states: string[] = [];
+  const off = daemon.bus.tap((e) => void (e.t === "state" && e.peer === "codex" && states.push(e.state)));
+  const reverted = await console_.request({ t: "task", op: "turn_revert", args: { turn } });
+  off();
+  expect(reverted).toMatchObject({ ok: true, text: `Codex's conversation no longer holds turn ${turn}` });
+  expect(readFileSync(record, "utf8").trim().split("\n").map((l) => JSON.parse(l))).toEqual([{ threadId: "th1", beforeTurnId: latest.native }]);
+  expect(states).toEqual(["paused", "idle"]); // held during the revert, released after
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain(`turn_revert ${turn}: Codex conversation reverted to before ${latest.native}`);
+});
+
+// Review of #47 (R3): a peer with a PII task open, accepted or not, is not snapshotted; its turn is recorded without trees.
+test("snapshots: a turn of a peer holding an unaccepted PII task is recorded without snapshots", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-piisnap-")));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+  const { stateDir, daemon, console_ } = await hub({ cwd: dir, snapshots: { enabled: true, keep: 20 } });
+  class Worker extends BasePeer {
+    async start() { this.setState("idle"); }
+    async deliver() {
+      this.setState("busy");
+      writeFileSync(join(dir, "record.txt"), "900101-1234567\n");
+      setTimeout(() => this.setState("idle"), 5);
+    }
+    async stop() { this.setState("offline"); }
+  }
+  const local = new Worker("local");
+  daemon.bus.add(local);
+  await local.start();
+  expect((await console_.request({ t: "task", op: "hub_task_propose", args: { title: "fix the entry for 900101-1234567", class: "implement" } })).text).toContain("owner local");
+  const file = join(stateDir, "events.jsonl");
+  await until(() => readEvents(file).some((e) => e.type === "turn_end" && e.peer === "local"), "the PII offer's turn");
+  const ended = readEvents(file).find((e) => e.type === "turn_end" && e.peer === "local") as { files?: number };
+  expect(ended.files).toBeUndefined();
+  const records = new Turns(join(stateDir, "hub.db"), true);
+  expect(records.latest("local")).toMatchObject({ start_tree: null, end_tree: null, changed: [] });
+  records.close();
 });

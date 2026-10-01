@@ -30,6 +30,7 @@ import { setupOllamaModel } from "./models-setup.ts";
 import { backendLine, peerLine, type BackendRow, type PeerRow } from "./status-lines.ts";
 import { parseSince, readEvents } from "../hub/events.ts";
 import { formatReport, summarize } from "../hub/report.ts";
+import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 
 /** `--since 7d|24h|<iso>` for export and report; everything when absent. */
 const since = (): number => {
@@ -85,6 +86,9 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub status | logs [-f] | doctor | kill
   ahub export [--since 7d|<iso>]  structured events (events.jsonl) as JSON lines; never message bodies
   ahub report [--since 7d|<iso>] [--json]  turns, tokens, messages, overlaps and task events per period
+  ahub turns [peer] [--limit N]  recent turns and the files each changed (a git work tree only)
+  ahub undo <turn> [--yes] [--context]  put back the files a turn changed; refuses files changed since.
+                               Without --yes it only lists them; --context also drops a Codex turn from its conversation
   ahub doctor --orphans [--kill]  list registrations whose project root is gone; --kill stops their
                                daemons (SIGTERM, then SIGKILL) only after the process identity checks out`;
 
@@ -290,6 +294,22 @@ async function taskOp(op: string, a: Record<string, unknown>): Promise<string> {
   hub.close();
   if (!res.ok) fail(res.error);
   return res.text;
+}
+
+/** Reads hub.db's turn records; `none` when the hub never kept one (snapshots off, no git work tree, an older hub). */
+function turnRecords<T>(read: (turns: Turns) => T, none: T): T {
+  const db = join(stateDir, "hub.db");
+  if (!existsSync(db)) return none;
+  let turns: Turns | undefined;
+  try {
+    turns = new Turns(db, true);
+    return read(turns);
+  } catch (error) {
+    if (/no such table/.test((error as Error).message)) return none;
+    throw error;
+  } finally {
+    turns?.close();
+  }
 }
 
 /** `--flag value` pairs pulled out of an argument list; the rest keeps its order. */
@@ -735,6 +755,57 @@ const commands: Record<string, () => Promise<void> | void> = {
   report: () => {
     const r = summarize(readEvents(join(stateDir, "events.jsonl"), since()));
     console.log(args.includes("--json") ? JSON.stringify(r, null, 2) : formatReport(r).join("\n"));
+  },
+  turns: () => {
+    const { one, rest } = takeFlags(args, ["--limit"], []);
+    const rows = turnRecords((t) => t.list(rest[0], Number(one["--limit"]) || 20), []);
+    if (!rows.length) return console.log("no turns recorded (they need a git work tree and snapshots.enabled)");
+    for (const r of rows) {
+      const shown = r.changed.slice(0, 5).join(", ") + (r.changed.length > 5 ? ", ..." : "");
+      const files = r.changed.length ? `: ${shown}` : "";
+      let status = "";
+      if (!r.ended) status = " (running)";
+      else if (!r.end_tree) status = " (no end snapshot)";
+      console.log(`${r.id}  ${new Date(r.started).toLocaleString()}${status}  ${r.changed.length} files${files}`);
+    }
+  },
+  undo: async () => {
+    const id = args.find((a) => !a.startsWith("--")) ?? fail("usage: ahub undo <turn> [--yes] [--context]");
+    const turn = turnRecords((t) => t.get(id), undefined) ?? fail(`no turn ${id} recorded (ahub turns lists them)`);
+    if (!turn.ended) fail(`turn ${id} is still running`);
+    const { start_tree: startTree, end_tree: endTree } = turn;
+    if (!startTree || !endTree) fail(`turn ${id} has no ${startTree ? "end" : "start"} snapshot: the hub stopped during it, or a snapshot failed (see hub.log)`);
+    const repo = repoOf(cwd) ?? fail(`${cwd} is not in a git work tree`);
+    if (!hasTree(repo.top, startTree) || !hasTree(repo.top, endTree)) fail(`turn ${id}'s snapshots are gone from the git object store (git gc prunes them after two weeks)`);
+    // Another peer's turn that overlapped this one in time has its changes in this turn's diff as well.
+    const keep = Math.max(1, Number(projectConfig().snapshots.keep) || 20);
+    const overlapping = turnRecords((t) => t.overlapping(turn, keep), { paths: [] as string[], unknown: [] as string[] });
+    if (overlapping.unknown.length) fail(`refusing to undo ${id}: these turns of other peers ran at the same time and their changes are not known (still running, cut short, or not snapshotted): ${overlapping.unknown.join(", ")}`);
+    let reverted = false;
+    const plan = () => {
+      const p = planUndo(repo, { start_tree: startTree, end_tree: endTree, changed: turn.changed }, overlapping.paths);
+      if (p.undone) return p;
+      const why = [
+        p.changedSince.length ? `these files changed again after it ended, and restoring them would lose that work:\n  ${p.changedSince.join("\n  ")}` : "",
+        p.concurrent.length ? `these files were also changed by another peer's turn running at the same time, so the change may be theirs:\n  ${p.concurrent.join("\n  ")}` : "",
+      ].filter(Boolean);
+      if (why.length) fail(`refusing to undo ${id}: ${why.join("\n")}${reverted ? "\nCodex's conversation was already reverted; restore the files later with ahub undo without --context" : ""}`);
+      return p;
+    };
+    const first = plan();
+    if (first.undone) return console.log(`turn ${id} is already undone: its files are as they were before it started`);
+    console.log(first.restore.length ? `turn ${id} changed:\n  ${first.restore.join("\n  ")}` : `turn ${id} changed no files`);
+    console.log("(every change made in the project during the turn counts as its own, including any by Claude or by you)");
+    if (!args.includes("--yes")) return console.log("nothing was changed; add --yes to restore these files");
+    if (args.includes("--context")) {
+      console.log(await taskOp("turn_revert", { turn: id }));
+      reverted = true;
+    }
+    // A peer may have written meanwhile (the revert alone can take seconds): plan again right before restoring.
+    const second = plan();
+    if (second.restore.join("\0") !== first.restore.join("\0")) fail(`the project changed while undoing; nothing was restored, run ahub undo again${reverted ? " without --context (Codex's conversation was already reverted)" : ""}`);
+    restore(repo, startTree, second.restore);
+    if (second.restore.length) console.log(`restored to their state before ${id}`);
   },
 
   kill: async () => {

@@ -124,6 +124,57 @@ ahub export --since 24h         # the raw events as JSON lines, for your own ana
 `ahub report` counts the same overlap warnings as `scripts/overlaps.ts`, from the
 structured events instead of log lines.
 
+## Turns and undo
+
+In a git work tree the hub snapshots the project's tracked and unignored files (the
+project directory only, when it is part of a larger repository) when a peer
+turns busy and again when it stops. The snapshots are git tree objects written
+through a temporary index, so your index, HEAD and branches stay as they are. The
+files a turn changed are the difference between its two snapshots, which counts
+changes made by shell commands as well as edits. The last 20 turns per peer are
+kept (`"snapshots": { "enabled": true, "keep": 20 }` in `.agenthub/config.json`).
+
+```bash
+ahub turns                        # recent turns of every peer and the files each changed
+ahub turns codex --limit 5
+ahub undo <turn>                  # lists what it would restore; changes nothing
+ahub undo <turn> --yes            # puts those files back as they were when the turn started
+ahub undo <turn> --yes --context  # Codex's latest turn: also drop it from Codex's conversation
+```
+
+- A turn's files are everything that changed in the project while it ran,
+  whoever changed them: the hub cannot tell Claude's or your edits made during
+  the turn from the peer's own.
+- `ahub undo` refuses the whole turn, naming the files, when a file it changed
+  has changed again since the turn ended (by anyone; modes, symlinks and a
+  directory in a deleted file's place count), or when another peer's turn that
+  ran at the same time changed it too, so the change may be theirs. It also
+  refuses while such an overlapping turn's changes are unknown (still running,
+  cut short by a stop, a failed snapshot, a PII turn, or pruned records).
+  Nothing is restored then. It plans again right before restoring and stops if
+  anything moved meanwhile. A turn that is already undone says so.
+- A file the turn created is deleted; a file it deleted comes back.
+- `--context` asks Codex (`thread/revert`) to drop the turn, and every later one,
+  from its thread's saved history before the files are restored; Codex receives
+  nothing while that runs. It changes no file itself, works only on Codex's
+  latest recorded turn while Codex is idle, and is logged in hub.log. Whether
+  Codex's running session also forgets the turn, or only its saved history, is
+  still to be checked against a live Codex (docs/smoke.md).
+- A turn of a peer that holds an open PII task (assigned, accepted or sent
+  back) is not snapshotted, so it cannot be undone. Another peer's turn that
+  starts or ends meanwhile snapshots the whole project, a PII file the worker
+  has not removed yet included, and a PII file left in the project is
+  snapshotted by later turns like any other file. Keep PII files in an ignored
+  directory.
+- A turn the hub stopped in the middle of shows as `(no end snapshot)` and
+  cannot be undone.
+- Claude's turns are not recorded: its channel shows the hub no turn boundary.
+  Claude Code's own checkpoints cover its edits, though not its shell commands.
+- The snapshots are unreferenced objects in the repository's own object store, so
+  `git gc` prunes them after `gc.pruneExpire` (two weeks by default); undoing an
+  older turn says so.
+- Each `turn_end` event carries `files` and `snapshotMs` (`ahub export`).
+
 ## Approvals and pauses
 
 Inspect permission requests in the terminal:

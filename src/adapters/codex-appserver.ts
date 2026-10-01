@@ -18,9 +18,10 @@ export interface CodexOptions {
   preamble?: string;
   /** Raw `rateLimits` snapshots from app-server, and `hard = true` when a turn was refused for quota. */
   onUsage?: (rateLimits: unknown, hard: boolean) => void;
-  /** The thread's running token total from `thread/tokenUsage/updated` (cumulative, not a delta). */
   /** Tokens the thread used since the previous update (see `tokenTotal` for how they are counted). */
   onTokens?: (added: number) => void;
+  /** The native id of each turn as it starts, after the peer turned busy (issue #33: `ahub undo --context`). */
+  onTurn?: (turnId: string) => void;
   /** How often to ask app-server for the rate limits while a TUI is attached. */
   usagePollMs?: number;
   cwd: string;
@@ -338,7 +339,7 @@ export class CodexPeer extends BasePeer {
     if (typeof msg.id === "number" && msg.id < 0 && !msg.method) {
       const p = this.pending.get(msg.id);
       this.pending.delete(msg.id);
-      if (msg.error) p?.reject(new Error(msg.error.message ?? "turn/start rejected"));
+      if (msg.error) p?.reject(new Error(msg.error.message ?? "app-server rejected the request"));
       else p?.resolve(msg.result);
       return; // ours: the TUI never asked for it
     }
@@ -362,6 +363,22 @@ export class CodexPeer extends BasePeer {
     clearInterval(this.usageTimer);
     this.usageTimer = setInterval(() => this.readUsage(), this.opts.usagePollMs ?? 600_000);
     this.usageTimer.unref?.();
+  }
+
+  /**
+   * thread/revert through the TUI's connection (issue #33): drops `turnId` and every later turn from the conversation
+   * history. It touches no file; `ahub undo` restores those. The TUI sees the `thread/reverted` notification.
+   */
+  revert(turnId: string): Promise<void> {
+    const link = this.link;
+    if (this.state !== "idle" || !link || link.up.readyState !== WebSocket.OPEN) return Promise.reject(new Error(`${this.id} is not idle`));
+    const id = this.nextId--;
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => this.pending.delete(id) && reject(new Error("thread/revert got no answer")), 30_000);
+      timer.unref?.();
+      this.pending.set(id, { resolve: () => (clearTimeout(timer), resolve()), reject: (e) => (clearTimeout(timer), reject(e)) });
+      link.up.send(JSON.stringify({ method: "thread/revert", id, params: { threadId: this.threadId, beforeTurnId: turnId } }));
+    });
   }
 
   /** account/rateLimits/read through the TUI's connection, with a hub id so the answer never reaches the TUI. */
@@ -395,6 +412,7 @@ export class CodexPeer extends BasePeer {
       for (const id of [...this.unboundDeliveries]) this.addTurnDelivery(nativeTurn, id);
       this.lastAnswer = "";
       this.setState("busy");
+      if (params.turn?.id) this.opts.onTurn?.(params.turn.id);
     } else if (method === "item/agentMessage/delta") {
       const buf = this.deltas.get(params.itemId) ?? [];
       buf.push(params.delta);

@@ -26,5 +26,6 @@
   "local": { "deny": [], "bash_network": false, "max_steps": 30, "read_allow": [] },
   "approvals": { "timeout_s": 120 },
   "tasks": { "release_after_min": 30 },
-  "checks": { "timeout_s": 600 }
+  "checks": { "timeout_s": 600 },
+  "snapshots": { "enabled": true, "keep": 20 }
 }
