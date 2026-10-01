@@ -674,21 +674,30 @@ export async function startDaemon(opts: DaemonOptions) {
     return [id, row];
   }));
   const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-  // `prePlan`: the board as a hub from before the plan column (#31, 0.8.0) digested it. An empty plan is left out, so an
-  // upgrade from such a hub still verifies the board it was handed; a real plan never matches that shape.
-  const integrity = (prePlan = false) => {
+  // Task columns added since a source may have recorded its digest, newest first, with their empty values. A hub from
+  // before them digested its rows without them (0.8.x: no deps, #34; 0.7.x: no plan either, #31). `older` leaves out
+  // the newest `older` of them while they are empty, so an upgrade from such a hub verifies the board it was handed; a
+  // filled one stays in the row and never matches.
+  const ADDED_COLUMNS = [["deps", "[]"], ["plan", "{}"]] as const;
+  const integrity = (older = 0) => {
     const queues = Object.fromEntries(Object.keys(bus.snapshot().queues).sort().map((id) => [id, bus.queueIds(id)]));
-    const tasks = board.list().sort((a, b) => a.id - b.id);
-    const boardState = prePlan ? tasks.map(({ plan, ...t }) => (plan && Object.keys(plan).length ? { ...t, plan } : t)) : tasks;
+    const boardState = board.list().sort((a, b) => a.id - b.id).map((t) => {
+      const row: Record<string, unknown> = { ...t };
+      for (const [col, empty] of ADDED_COLUMNS.slice(0, older)) if (JSON.stringify(row[col]) === empty) delete row[col];
+      return row;
+    });
     const budgetState = budget.persistedPauseDigestRows().sort((a, b) => a.peer.localeCompare(b.peer));
     return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState) };
   };
-  /** The integrity in the shape `expected` was recorded in: the current one unless only the pre-plan shape matches. */
+  /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
     const now = integrity();
     if (!expected || JSON.stringify(expected) === JSON.stringify(now)) return now;
-    const old = integrity(true);
-    return JSON.stringify(expected) === JSON.stringify(old) ? old : now;
+    for (let older = 1; older <= ADDED_COLUMNS.length; older++) {
+      const then = integrity(older);
+      if (JSON.stringify(expected) === JSON.stringify(then)) return then;
+    }
+    return now;
   };
   const status = () => ({
     projectId,
