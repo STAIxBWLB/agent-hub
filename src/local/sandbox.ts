@@ -26,10 +26,14 @@ const HOME_READABLE = [".bun", ".cargo", ".rustup", ".local", ".npm", ".cache", 
  */
 const CA_BUNDLES = ["/private/etc/ssl/cert.pem", "/opt/homebrew/etc/ca-certificates/cert.pem", "/opt/homebrew/etc/openssl@3/cert.pem", "/usr/local/etc/ca-certificates/cert.pem", "/usr/local/etc/openssl@3/cert.pem"];
 
-/** The selected Xcode or Command Line Tools dir: the `/usr/bin` shims (git, clang, make, python3) run what is in it. */
+/**
+ * The selected Xcode or Command Line Tools dir: the `/usr/bin` shims (git, clang, make, python3) run what is in it.
+ * Inside an app bundle that is the whole `Contents`: its tools load frameworks from `SharedFrameworks` next to it.
+ */
 function developerDir(): string | undefined {
   const out = spawnSync("xcode-select", ["-p"], { encoding: "utf8" });
-  return out.status === 0 && out.stdout.trim() ? out.stdout.trim() : undefined;
+  const dir = out.status === 0 ? out.stdout.trim() : "";
+  return dir ? dir.replace(/(\.app\/Contents)\/Developer\/?$/, "$1") : undefined;
 }
 
 /** A submodule or worktree keeps its git dir outside the project; git needs it, minus the parts that execute or reconfigure. */
