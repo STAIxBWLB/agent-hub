@@ -312,10 +312,13 @@ export async function startDaemon(opts: DaemonOptions) {
   const lost = new Map<PeerId, JournalDelivery[]>();
   if (crashed) for (const d of journal.list()) if (d.state === "needs_review" && d.reason === "daemon stopped during delivery" && d.updatedAt >= startedAt) lost.set(d.peer, [...(lost.get(d.peer) ?? []), d]);
   // Capabilities (issue #39): enforced here and in taskOp, never by role text alone. Unlisted peers keep everything.
+  // A listed peer whose value is not a list gets nothing: whoever listed it meant to narrow it.
   const may = (peer: PeerId, cap: "propose" | "assign" | "remember" | "important"): boolean => {
+    if (peer === USER || peer === HUB || !Object.hasOwn(config.capabilities, peer)) return true;
     const list = config.capabilities[peer];
-    return peer === USER || peer === HUB || !Array.isArray(list) || list.includes(cap);
+    return Array.isArray(list) && list.includes(cap);
   };
+  for (const [peer, list] of Object.entries(config.capabilities)) if (!Array.isArray(list)) log(`capabilities.${peer} is not a list: ${peer} gets no capabilities`);
   // Agents only: the console user and the hub itself are never limited (issue #38).
   // A typo such as "12/min" would read as 0, which turns a limit off without a word: the project default instead.
   for (const k of Object.keys(config.limits)) if (!(k in PROJECT_LIMITS)) log(`limits.${k} is not a known limit; ignored`);

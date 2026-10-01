@@ -30,9 +30,13 @@ function externalGitDirs(root: string): string[] {
 
 /** The system directories a deny-default profile lets commands read and run from: dyld, frameworks, toolchains. */
 const SYSTEM_READABLE = ["/usr", "/bin", "/sbin", "/System", "/Library", "/opt", "/private/etc", "/private/var/db/timezone", "/private/var/db/dyld"];
-/** Directory lookups (users, groups), logging and notifications; plus name resolution and TLS trust when network is on. */
-const MACH_SERVICES = ["com.apple.system.opendirectoryd.libinfo", "com.apple.system.DirectoryService.libinfo_v1", "com.apple.system.logger", "com.apple.system.notification_center", "com.apple.CoreServices.coreservicesd", "com.apple.coreservices.launchservicesd"];
-const NETWORK_MACH_SERVICES = ["com.apple.dnssd.service", "com.apple.trustd", "com.apple.trustd.agent", "com.apple.SecurityServer", "com.apple.networkd"];
+/**
+ * Directory lookups (users, groups), logging and notifications; plus name resolution and TLS trust when network is on.
+ * No brokers that act outside the sandbox: LaunchServices would let `open` start a browser with network, and
+ * SecurityServer would answer Keychain queries the credential-path denies are there to stop.
+ */
+const MACH_SERVICES = ["com.apple.system.opendirectoryd.libinfo", "com.apple.system.DirectoryService.libinfo_v1", "com.apple.system.logger", "com.apple.system.notification_center"];
+const NETWORK_MACH_SERVICES = ["com.apple.dnssd.service", "com.apple.trustd", "com.apple.trustd.agent", "com.apple.networkd"];
 
 /**
  * `base` "deny" (issue #39) starts from `(deny default)` and allows only what commands need: running and reading the

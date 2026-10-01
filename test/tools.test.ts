@@ -208,3 +208,11 @@ test.skipIf(!sandboxAvailable())("deny-default: bun, node and git work; outside 
   expect((await run(probe)).output).toContain("blocked-var-log");
   expect((await run(probe, "allow")).output).toContain("READ-VAR-LOG"); // what the old profile let through
 });
+
+test("no mach broker that acts outside the sandbox: LaunchServices (open starts apps), SecurityServer (Keychain)", () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-brokers-")));
+  for (const network of [false, true]) {
+    const p = profile(cwd, network);
+    for (const broker of ["coreservicesd", "launchservicesd", "SecurityServer"]) expect(p).not.toContain(broker);
+  }
+});

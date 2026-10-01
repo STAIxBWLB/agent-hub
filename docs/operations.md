@@ -44,7 +44,8 @@ hub's tools: list a peer and it keeps only the capabilities named, from
 `propose` (`hub_task_propose`), `assign` (proposing with another peer as owner),
 `remember` (`hub_remember`) and `important` (`[IMPORTANT]` messages). For
 example `"capabilities": { "local": ["propose", "remember"] }`. A peer that is
-not listed keeps all of them, and a refusal says which capability is missing.
+not listed keeps all of them, a listed peer whose value is not a list gets none
+(`hub.log` says so), and a refusal says which capability is missing.
 Approvals are never a capability: only the console (and the dashboard) answers a
 permission request.
 A committed value is ignored with a line in `hub.log`, a note from `ahub

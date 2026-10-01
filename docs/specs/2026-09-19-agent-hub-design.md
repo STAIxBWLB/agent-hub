@@ -1071,7 +1071,8 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   dyld and timezone databases), the toolchain directories in home, `read_allow`,
   the project, its external git dirs and temp; writes as before; a short list
   of mach services (directory lookups, logging, notifications), plus name
-  resolution and TLS trust when network is on. The denies at the end (credential
+  resolution and TLS trust when network is on; no brokers that act outside the
+  sandbox (LaunchServices, SecurityServer). The denies at the end (credential
   stores, the denylist, `.agenthub`, git hooks and config) are shared by both
   bases.
 - The issue's allowlist proxy for `local.bash_network` is not built here: with
@@ -1080,7 +1081,8 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   "allow-default" widens the sandbox.
 - Capabilities: `propose`, `assign` (a proposal naming another peer as owner),
   `remember`, `important`. A peer not listed in `capabilities` has all of them,
-  which keeps today's behaviour; the console user and the hub are never limited.
+  which keeps today's behaviour, and a listed peer whose value is not a list has
+  none; the console user and the hub are never limited.
   `important` is checked where messages are admitted, the others in the task
   operations, so in-process tools (the local worker, Pi) are covered too.
 
