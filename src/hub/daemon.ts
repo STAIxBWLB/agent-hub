@@ -62,7 +62,7 @@ export interface HubConfig {
   omniroute: OmniRouteConfig;
   pi: { enabled: boolean; auto_start: boolean; cmd: string[]; backend: "auto" | "dgx" | "mlx"; dgx_coding: string; dgx_fast: string; max_steps: number };
   mlx: Pick<MlxOptions, "provider" | "host" | "runtimeDir" | "modelPath" | "port" | "model" | "sourceModel" | "contextWindow" | "maxInputTokens" | "maxTokens" | "maxConcurrency">;
-  /** `sandbox`: "deny-default" (issue #39), or "allow-default", the 0.7 profile, kept for one release. */
+  /** `sandbox`: "deny-default" (issue #39), or "allow-default", the profile of 0.9 and earlier, kept for one release. */
   local: { deny: string[]; bash_network: boolean; max_steps: number; read_allow: string[]; sandbox: "deny-default" | "allow-default" };
   /** Pending permission requests: how long they wait, and whether the desktop is told (issue #5). */
   approvals: { timeout_s: number; notify: boolean };

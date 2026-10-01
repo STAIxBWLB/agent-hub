@@ -916,3 +916,24 @@ peers attached.
 - Pending, needs real accounts: Kimi 2.x (does it offer `loadSession`, and does
   the resumed session keep its context), Pi with a real session file, and Codex
   and Claude reattachment after `kill -9`.
+
+## 0.8.1 to 0.9.0 attended upgrade (2026-10-01)
+
+A scratch project (a git work tree whose `.agenthub/config.json` was written by
+the 0.8.1 `ahub init`) ran a 0.8.1 hub with two proposed tasks, one with a path
+and a detail, and an open budget pause: a peer had attached once and gone
+offline, and `ahub budget set` fed it a 95% reading. No completion check was
+configured or running, and no peer was attached at the upgrade.
+
+- `bunx --package @staix/agent-hub@0.9.0 ahub upgrade --to 0.9.0 --dry-run`
+  exited 0: one project, source 0.8.1, protocol 10, no blockers.
+- `--yes` scheduled the operation, which completed in about 10 s with the
+  project `verified`.
+- After release the hub ran 0.9.0 under a new instance id. Both tasks were on
+  the board unchanged, now with `deps: []` (the column the target adds on open),
+  the budget pause kept its reset time, and the `outcomes` table was created.
+- The coordinator promoted the global CLI to 0.9.0, and `ahub setup --yes`
+  installed the 0.9.0 plugin.
+- For about two minutes after the publish step logged `+ @staix/agent-hub@0.9.0`,
+  `npm view` still showed `latest: 0.8.1`; the registry caught up without any
+  action.
