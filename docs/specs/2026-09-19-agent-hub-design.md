@@ -1127,5 +1127,5 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
 - Decisions recorded in the issue: the default list holds the npm, Yarn, PyPI,
   crates.io and Go module registries and GitHub's code hosts, so a project that
   already had network on keeps installing packages; `"direct"` keeps the open
-  network of 0.10 and earlier for one release.
+  network of 0.10 and earlier until 0.13.0 (issue #83).
 

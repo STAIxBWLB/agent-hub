@@ -211,6 +211,7 @@ test.skipIf(!sandboxAvailable())("deny-default: bun, node and git work; outside 
   ].join("; "));
   for (const expected of ["node-ok", "bun-ok", "bun-test-ok", "git-ok"]) expect(tools.output).toContain(expected);
   const probe = "(ls /private/var/log >/dev/null 2>&1) && echo READ-VAR-LOG || echo blocked-var-log";
+  expect(Bun.spawnSync(["/bin/sh", "-c", probe]).stdout.toString()).toContain("READ-VAR-LOG"); // readable outside, so the block is the profile's
   expect((await run(probe)).output).toContain("blocked-var-log");
 });
 
