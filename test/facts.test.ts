@@ -393,3 +393,43 @@ test("the integration target counts the files the members touched, a symbol-only
   write("other.txt", "z\n");
   expect(facts.tree([], ["claude"])).not.toBe(before);
 });
+
+test("reading a file never moves an integration target; a cut is said once; a nested .git is never read; a staged move shows both names", async () => {
+  const { root, facts, write } = rig();
+  const read = (id: string, file: string) => {
+    facts.preTool("claude", id, "Read", { file_path: join(root, file) });
+    facts.postTool("claude", id, "Read", { file_path: join(root, file) });
+  };
+  const before = facts.tree(["a.txt"], ["claude"]);
+  read("r1", "other.txt");
+  facts.codexItem("codex", { type: "commandExecution", status: "completed", commandActions: [{ type: "read", path: join(root, "other.txt") }] });
+  expect(facts.tree(["a.txt"], ["claude", "codex"])).toBe(before); // what they only looked at is not their work
+  mkdirSync(join(root, "vendor", "lib", ".git"), { recursive: true });
+  writeFileSync(join(root, "vendor", "lib", ".git", "config"), "[remote]\n");
+  expect(facts.rel("vendor/lib/.git/config")).toBeUndefined();
+  write("other.txt", "x\n");
+  expect(facts.pending("claude")).toEqual([]);
+  const integration = facts.due("claude", undefined, true);
+  expect(integration ? facts.pending("claude").at(-1) : { done: true }).toMatchObject({ done: true }); // waits for the next done, not a readback
+});
+
+test("a directory cut at the cap is said once per peer, and a staged move lists the old name as well as the new", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-facts-")));
+  dirs.push(root);
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src", "old.ts"), "o\n");
+  const git = (...a: string[]) => spawnSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...a]);
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: ["src"], plans: [] }), peers: () => ["claude"], nameable: () => true });
+  git("mv", "src/old.ts", "src/new.ts");
+  const moved = facts.tree(["src"]);
+  writeFileSync(join(root, "src", "old.ts"), "again\n"); // the old name exists again: only a hash that covers it changes
+  expect(facts.tree(["src"])).not.toBe(moved);
+  for (let i = 0; i < 205; i++) writeFileSync(join(root, "src", `n${i}.ts`), "n\n");
+  const first = facts.due("claude");
+  if (first) facts.ack("claude", first.id);
+  expect(first?.text ?? "").toContain("more than 200 files changed under src");
+  expect(facts.due("claude")?.text ?? "").not.toContain("more than 200 files changed"); // said once
+});

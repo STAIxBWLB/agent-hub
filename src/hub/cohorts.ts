@@ -47,11 +47,13 @@ export interface Integration {
   /** The fact offer that went out with the last request: the next done acknowledges it. */
   offer?: string;
   confirmed?: boolean;
+  /** The outcome was recorded as unresolved: this revision asks nothing more, and the member's check counts as usual. */
+  closed?: boolean;
 }
 
 export interface Cohort {
   id: number;
-  /** Bumps on every change of membership or owner, and when an intent is withdrawn. */
+  /** Bumps on every change of membership or owner, when an intent is withdrawn, and when the cohort is lifted. */
   revision: number;
   members: Map<number, Member>;
   silent: boolean;
@@ -245,6 +247,7 @@ export class Cohorts {
       c.integration = { task: task.id, owner: task.owner!, gen: now.gen, revision: c.revision, tree: now.tree, requests: 1, at: Date.now() };
       return { action: "request", why: "", requests: 1, cohort: c };
     }
+    if (ig.closed) return { action: "proceed" }; // recorded as unresolved: nothing more is asked of this revision
     // Its next done: accepted only for the same target, once every other member has settled. A later turn of a settled
     // member that touches these files moves the target, which the file hash catches.
     // Other owners only: the integrating owner's own other tasks in the cohort stop with this very turn.
@@ -257,7 +260,10 @@ export class Cohorts {
       ig.confirmed = true;
       return { action: "proceed", integrated: true };
     }
-    if (ig.requests >= MAX_REQUESTS) return { action: "unresolved", why, cohort: c };
+    if (ig.requests >= MAX_REQUESTS) {
+      ig.closed = true;
+      return { action: "unresolved", why, cohort: c };
+    }
     ig.requests++;
     ig.tree = now.tree;
     ig.at = Date.now();
@@ -274,7 +280,7 @@ export class Cohorts {
   holds(task: number, gen: number, tree: string): boolean {
     const c = this.of(task);
     const ig = c?.integration;
-    if (!c || !c.silent || !ig || ig.task !== task || ig.revision !== c.revision) return true;
+    if (!c || !c.silent || !ig || ig.task !== task || ig.revision !== c.revision || ig.closed) return true;
     return !!ig.confirmed && ig.gen === gen && ig.tree === tree;
   }
 

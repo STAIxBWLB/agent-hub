@@ -36,7 +36,8 @@ UNITS = {
     "settlement": "per agent, seconds to the end of its last native turn after the last done (turns that late "
                   "messages started included), read from its own record (Codex turn/completed, Claude's end_turn "
                   "responses); the last done itself when it did not work after it; null when it was still in a turn "
-                  "when its record ended. settlement_s is the later of the two",
+                  "when its record ended (a synthetic error response ends a turn). settlement_s is the later of the two, "
+                  "null when either is unknown",
     "codex": "Codex on its own thread (a sub-agent's left out) from task assignment to its last done on the board (in "
              "task): turns (turn/started), "
              "assistant_messages (agentMessage items), usage_growth (token-usage updates whose running total grew past "
@@ -95,8 +96,9 @@ UNITS = {
                "(excluded), and planned attempts that wrote no record (missing: from each directory's cohort.json, or "
                "with --plan from the manifest's plan, whole repeats included); medians over valid completed attempts, "
                "over the (case, repeat) pairs every arm completed validly (common) and, for turn-free, over treated "
-               "attempts; totals over all attempts, each with the number of attempts where it was unknown "
-               "(<name>_unknown) and the coverage notes of the contribution heuristic",
+               "attempts; totals over the attempts whose tasks were handed out and to which the measure applies, each "
+               "with the number of those attempts where it was unknown (<name>_unknown; lost contributions are unknown "
+               "when an agent's writes could not be counted), and the coverage notes of the contribution heuristic",
 }
 IDENT = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{3,}\b")
 SHELL_READS = ("read", "listFiles", "search")
@@ -288,7 +290,8 @@ def settlement(run, rows, t0, last_done):
         still = turns and turns[-1][1] is None  # its record ended inside a turn
         out["codex"] = None if still else secs(t0, max([last_done] + [e for _, e in turns if e is not None and e >= last_done]))
     if rows is not None:
-        replies = sorted((row_ms(r), (r.get("message") or {}).get("stop_reason")) for r in rows if r.get("type") == "assistant" and row_ms(r) is not None)
+        # A synthetic response (an API error Claude Code reports) ends its turn too.
+        replies = sorted((row_ms(r), "end_turn" if (r.get("message") or {}).get("model") == "<synthetic>" else (r.get("message") or {}).get("stop_reason")) for r in rows if r.get("type") == "assistant" and row_ms(r) is not None)
         after = [(ms, stop) for ms, stop in replies if ms >= last_done]
         before = [stop for ms, stop in replies if ms < last_done]
         still = (after and after[-1][1] != "end_turn") or (not after and before and before[-1] != "end_turn")
@@ -333,11 +336,15 @@ def treatment_of(run, window):
     return {"silent_cohort": any(e.get("type") == "cohort" and e.get("silent") and ids <= set(e.get("tasks") or []) for e in window)}
 
 
+QUOTES = "'\""
+
+
 def hook_label(command):
     """A hook command as a label: never its paths or arguments (they can carry a home path or a token)."""
     if not command: return "(command not recorded)"
     if "facts-hook.ts" in command: return "agent-hub facts hook"
-    program = command.strip().split()[0].strip("'\"") if command.strip() else ""
+    words = [w for w in command.split() if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)]  # environment assignments carry values
+    program = words[0].strip(QUOTES) if words else ""
     return f"other: {Path(program).name or '?'}"
 
 
@@ -505,7 +512,7 @@ def ledger_of(run):
         "integrated_s": secs(t0, max((t["integrated"] for t in tasks if t["integrated"]), default=None)),
         "check_s": secs(t0, max((t["check"] for t in tasks if t["check"]), default=None)),
         "settlement": settle,
-        "settlement_s": max((v for v in settle.values() if v is not None), default=None),
+        "settlement_s": None if None in settle.values() else max(settle.values(), default=None),  # unknown if either is
         "codex": codex_usage(run, codex_done, "to its last done" if codex_done is not None else "to the end: no done"),
         "codex_attempt": codex_usage(run, None, "to the end of the record"),
         "claude": claude_usage(rows, run.get("startedAt"), claude_done),
@@ -537,11 +544,18 @@ def summarize(rows, missing=()):
     common = {p for p in pairs if all(any(r["case"] == p[0] and r.get("repeat") == p[1] and ok(r) for r in by[a]) for a in arms)}
     med = lambda rs, part, key: median([r[part][key] for r in rs if r.get(part) and r[part].get(key) is not None])
     worked = lambda rs: [r for r in rs if r.get("done_s") is not None]  # attempts whose tasks were handed out
+    codex_arm = lambda r: "codex" in str(r.get("arm"))
+    joint = lambda r: str(r.get("arm")).startswith("hub-")
 
-    def total(rs, name, get):
-        """A total over the attempts that know it, and how many did not: an unknown is never a zero."""
-        values = [get(r) for r in worked(rs)]
+    def total(rs, name, get, applies=lambda r: True):
+        """A total over the attempts it applies to that know it, and how many did not: an unknown is never a zero."""
+        values = [get(r) for r in worked(rs) if applies(r)]
         return {f"{name}_total": sum(v for v in values if v is not None), f"{name}_unknown": sum(1 for v in values if v is None)}
+
+    def lost(r, key):
+        """Lost contributions, unknown when an agent's writes could not be counted at all."""
+        c = r.get("contributions") or {}
+        return None if any("are not counted" in n for n in c.get("coverage") or []) else size(c.get(key))
 
     def size(v):
         return None if v is None else len(v)
@@ -571,9 +585,9 @@ def summarize(rows, missing=()):
             "claude_attempt_tokens_median": med(done, "claude_attempt", "tokens"),
             "claude_attempt_tokens_median_common": med(shared, "claude_attempt", "tokens"),
             **({"treatment_received": len(treated), "both_done_s_median_treated": median([r["both_done_s"] for r in treated])} if arm == TURN_FREE else {}),
-            **total(rs, "hub_send", lambda r: (r.get("codex") or {}).get("hub_send")),
-            **total(rs, "post_done_turns", lambda r: size(r.get("post_done_turns"))),
-            **total(rs, "late_replies", lambda r: size(r.get("late_replies"))),
+            **total(rs, "hub_send", lambda r: (r.get("codex") or {}).get("hub_send"), codex_arm),
+            **total(rs, "post_done_turns", lambda r: size(r.get("post_done_turns")), codex_arm),
+            **total(rs, "late_replies", lambda r: size(r.get("late_replies")), joint),
             **total(rs, "quiet", lambda r: r.get("quiet")),
             **total(rs, "stale", lambda r: r.get("stale")),
             **total(rs, "fact_offers", lambda r: sum(r["facts"][v]["offers"] for v in ("hook", "steer", "done")) if r.get("facts") else None),
@@ -581,8 +595,8 @@ def summarize(rows, missing=()):
             **total(rs, "fact_bytes_acknowledged", lambda r: sum(r["facts"][v]["bytes_acknowledged"] for v in ("hook", "steer", "done")) if r.get("facts") else None),
             **total(rs, "integration_requests", lambda r: (r.get("integration") or {}).get("requests")),
             **total(rs, "integration_unresolved", lambda r: size((r.get("integration") or {}).get("unresolved"))),
-            **total(rs, "lost_identifiers", lambda r: size((r.get("contributions") or {}).get("identifiers"))),
-            **total(rs, "lost_fragments", lambda r: size((r.get("contributions") or {}).get("fragments"))),
+            **total(rs, "lost_identifiers", lambda r: lost(r, "identifiers")),
+            **total(rs, "lost_fragments", lambda r: lost(r, "fragments")),
             "contribution_coverage_notes": sum(len((r.get("contributions") or {}).get("coverage") or []) for r in worked(rs)),
         }
     return out

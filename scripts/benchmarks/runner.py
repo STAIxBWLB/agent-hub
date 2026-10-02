@@ -73,8 +73,9 @@ def treatment_failure(arm, run):
     t0,end=active_window(run)
     if t0 is None: return None
     events=[e for e in run.get("events") or [] if e.get("at") is not None]
-    verified={e.get("peer") for e in events if e.get("type")=="capability" and e.get("state")=="verified" and at_ms(e["at"])<=t0}
-    missing=sorted({"claude","codex"}-verified)
+    state={}  # each peer's capability as of the first task: its latest event by then
+    for e in sorted((e for e in events if e.get("type")=="capability" and at_ms(e["at"])<=t0),key=lambda e: at_ms(e["at"])): state[e.get("peer")]=e.get("state")
+    missing=sorted(p for p in ("claude","codex") if state.get(p)!="verified")
     if missing: return f"turn-free context path not verified before the tasks: {', '.join(missing)}"
     work=[e for e in events if at_ms(e["at"])>t0 and (end is None or at_ms(e["at"])<=end)]
     lost=sorted({str(e.get("peer")) for e in work if e.get("type")=="capability" and e.get("state")=="lost"})
@@ -96,10 +97,13 @@ def hook_rows(rows):
 
 def transcript(run):
     """The rows of the attempt's Claude transcript, or (None, why)."""
-    path=((run.get("readiness") or {}).get("claude") or {}).get("transcriptPath")
+    claude=(run.get("readiness") or {}).get("claude") or {}
+    path=claude.get("transcriptPath")
     if not path: return None,"no transcript path"
-    try: lines=Path(path).read_text(encoding="utf-8",errors="replace").splitlines()
+    try: data=Path(path).read_bytes()
     except OSError as e: return None,f"transcript unreadable ({e.__class__.__name__})"
+    if claude.get("transcriptSha256") and sha(data)!=claude["transcriptSha256"]: return None,"transcript changed since the attempt"
+    lines=data.decode("utf-8",errors="replace").splitlines()
     rows=[]
     for line in lines:
         try: rows.append(json.loads(line))

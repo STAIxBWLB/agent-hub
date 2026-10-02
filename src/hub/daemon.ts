@@ -538,7 +538,7 @@ export async function startDaemon(opts: DaemonOptions) {
     integrationFacts: (peer) => {
       if (!factsOn()) return undefined;
       let offered: ReturnType<Facts["due"]>;
-      try { offered = facts.due(peer); } catch (error) { log(`integration facts for ${peer}: ${(error as Error).message}`); return undefined; }
+      try { offered = facts.due(peer, undefined, true); } catch (error) { log(`integration facts for ${peer}: ${(error as Error).message}`); return undefined; }
       if (offered) event({ type: "fact", peer, id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "done" });
       return offered ? { id: offered.id, text: offered.text } : undefined;
     },
@@ -599,9 +599,12 @@ export async function startDaemon(opts: DaemonOptions) {
     log(`turn-free: ${peer}'s context path is no longer verified (${why})`);
     for (const cohort of tasks.cohorts.lift(peer)) tasks.announceLift(cohort, `${peer}'s context path is no longer verified (${why})`);
   };
-  /** A verified peer with three offers past a minute and no readback has lost its context path. */
+  /**
+   * A verified peer with three offers past a minute and no readback has lost its context path. Facts sent with an
+   * integration request wait for the next done, not a readback, so they never count.
+   */
   const checkCapability = (peer: PeerId) => {
-    if (capable.has(peer) && facts.pending(peer).filter((o) => Date.now() - o.at > 60_000).length >= 3) {
+    if (capable.has(peer) && facts.pending(peer).filter((o) => !o.done && Date.now() - o.at > 60_000).length >= 3) {
       capable.delete(peer);
       loseCapability(peer, "three facts found no readback");
     }
@@ -612,7 +615,7 @@ export async function startDaemon(opts: DaemonOptions) {
    * not injected at every tool call.
    */
   const offerFor = (peer: PeerId, toolUseId?: string) => {
-    if (!capable.has(peer) && facts.pending(peer).length >= 3) return undefined;
+    if (!capable.has(peer) && facts.pending(peer).filter((o) => !o.done).length >= 3) return undefined;
     const due = facts.due(peer, toolUseId);
     if (due || capable.has(peer) || facts.pending(peer).some((o) => o.probe) || (probes.get(peer) ?? 0) >= 3) return due;
     probes.set(peer, (probes.get(peer) ?? 0) + 1);
@@ -1546,6 +1549,7 @@ export async function startDaemon(opts: DaemonOptions) {
           const sent = performance.now();
           void codex.steerText(offered.text).then((accepted) => {
             codexSteering = false;
+            if (!accepted) facts.drop("codex", offered.id); // it never went in: not an unread offer, and the next boundary offers it again
             event({ type: "fact", peer: "codex", id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "steer", ms, rttMs: Math.round(performance.now() - sent), accepted, ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
           });
         },

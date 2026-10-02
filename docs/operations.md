@@ -378,9 +378,11 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   context, matched by tool use id and the offer's id; for Codex the steered
   input coming back as a user message item of the turn. A new native session,
   the peer going offline, or three offers past a minute without a readback
-  (checked at its boundaries and every 30 seconds), makes it unverified again,
-  and a Claude session whose transcript the hub cannot find gets no facts at
-  all. A session whose hooks stop altogether leaves no offer unread, so it
+  (checked at its boundaries and every 30 seconds; facts sent with an
+  integration request wait for the next done and do not count, and a refused
+  steer is no offer), makes it unverified again, and a Claude session whose
+  transcript the hub cannot find gets no facts at all and loses a verified
+  path. A session whose hooks stop altogether leaves no offer unread, so it
   stays verified; a peer without a verified path that left three
   offers unread gets none until a readback arrives. Kimi, Pi and the local
   worker have no path yet, so a cohort with one of them is never silent.
@@ -405,9 +407,9 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   touched, with the other members' new plans; the last member still at work
   keeps the others' files after they finish. A directory a task names stands for
   git's changed (staged or not) files against HEAD, new and deleted files under
-  it (200 at most; the fact says when more were cut). `.git` and what the
-  denylist keeps from every agent (`src/local/deny.ts` and `local.deny`) are
-  never read or shown. A file a peer touched before it had a view of it (a
+  it (200 at most; the fact says once when more were cut). `.git` directories
+  at any depth and what the denylist keeps from every agent
+  (`src/local/deny.ts` and `local.deny`) are never read or shown. A file a peer touched before it had a view of it (a
   partial read, say) is compared with what it was then, so a change landing in
   between is shown. A change is credited to an agent
   only with effect evidence: a Claude Edit, MultiEdit or Write whose result is
@@ -436,14 +438,16 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   against the others' (their files, signatures and summaries, plus its own facts)
   and to call `hub_task_done` again; nothing is recorded as done yet. The next
   call counts only for the same target: the same owner, cohort revision and
-  files (the named ones and those its members touched, so a symbol-only overlap
-  and edits outside the named paths count), with every other owner's native turn
+  files (the named ones, and those the members still at work wrote with a tool
+  the hub saw, so a symbol-only overlap counts; reading a file never moves it,
+  and a shell command's writes outside the named paths are not seen), with every other owner's native turn
   ended after its done (or that owner idle when it finished); the integrating
   owner's own other tasks in the cohort never count as still running. A done of a member by the console counts as its
   intent too. Edits in between, a new member, an owner change, a failed check or
   a reopened review ask again; a done within two seconds of a request is taken as a retry and gets the
   same request again; after three requests the done is recorded with
-  `integration unresolved`, never as integrated. A configured check of the integrating member
+  `integration unresolved`, never as integrated, and that revision asks nothing
+  more (a configured check then counts as usual). A configured check of the integrating member
   counts only for the target it confirmed; when another member reopens its task,
   that member integrates instead and the earlier one's check counts as usual.
   Inside a silent cohort a member's completed-change notice is held, not sent;

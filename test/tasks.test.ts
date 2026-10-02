@@ -1481,18 +1481,57 @@ test("the integrating owner's own other task in the cohort never counts as a mem
   expect((await tasks.done("kimi", c.id, "c, checked")).history.slice(-2).map((h) => h.event)).toEqual(["integrated", "done"]);
 });
 
-test("a done right after a repeated request is a retry too; only a later one confirms", async () => {
-  const { tasks, state, stop, later } = await turnFreeRig();
+test("a done right after a request repeated after a confirmation is a retry; only a later one confirms", async () => {
+  const results: Promise<number>[] = [];
+  let release!: (code: number) => void;
+  const { tasks, board, state, stop, later } = await turnFreeRig({
+    check: (cls) => (cls === "implement" ? "make test" : undefined),
+    runCheck: async () => ({ code: await (results.shift() ?? Promise.resolve(0)), timedOut: false, interrupted: false, tail: "" }),
+  });
   const { first, second } = await pair(tasks);
   await tasks.done("kimi", first.id, "a");
+  await until(() => board.get(first.id)!.state === "in_review");
   stop("kimi");
   await tasks.done("codex", second.id, "b"); // request 1
   later();
-  state.tree = "t2"; // its own edits since: asked again
-  expect((await tasks.done("codex", second.id, "b")).history.at(-1)!.note).toContain("integration request 2 of 3");
-  expect((await tasks.done("codex", second.id, "b")).history.filter((h) => h.event === "integration requested")).toHaveLength(2); // a retry
+  results.push(new Promise<number>((r) => (release = r)));
+  await tasks.done("codex", second.id, "b"); // confirmed; its check runs
+  state.tree = "t2"; // the files change while it runs
+  release(0);
+  await until(() => board.get(second.id)!.history.some((h) => h.event === "check finished late"));
   later();
-  expect((await tasks.done("codex", second.id, "b")).history.slice(-2).map((h) => h.event)).toEqual(["integrated", "done"]);
+  expect((await tasks.done("codex", second.id, "b")).history.at(-1)!.note).toContain("integration request 2 of 3"); // asked again
+  const retry = await tasks.done("codex", second.id, "b"); // right away: a retry, never a confirmation
+  expect(retry.history.filter((h) => h.event === "integrated")).toHaveLength(1);
+  expect(retry.history.at(-1)!.event).toBe("integration requested");
+});
+
+test("an unresolved outcome is final for its revision: the member's check counts, and nothing is asked again", async () => {
+  const { tasks, board, later } = await turnFreeRig({
+    check: (cls) => (cls === "implement" ? "true" : undefined),
+    runCheck: async () => ({ code: 0, timedOut: false, interrupted: false, tail: "" }),
+  });
+  const { first, second } = await pair(tasks);
+  await tasks.done("kimi", first.id, "a");
+  await until(() => board.get(first.id)!.state === "in_review");
+  for (let i = 0; i < 3; i++) {
+    await tasks.done("codex", second.id, "b"); // kimi never stops
+    later();
+  }
+  await tasks.done("codex", second.id, "b"); // unresolved, then its check
+  await until(() => board.get(second.id)!.state === "in_review");
+  expect(board.get(second.id)!.history.filter((h) => h.event === "integration unresolved")).toHaveLength(1);
+  expect(board.get(second.id)!.history.some((h) => h.event === "check finished late")).toBe(false);
+});
+
+test("the integration target covers what the members still at work write, not a settled member's next work", async () => {
+  const seen: string[][] = [];
+  const { tasks, stop } = await turnFreeRig({ treeHash: (_paths, owners) => (seen.push([...owners].sort()), "t1") });
+  const { first, second } = await pair(tasks);
+  await tasks.done("kimi", first.id, "a");
+  stop("kimi");
+  await tasks.done("codex", second.id, "b");
+  expect(seen.at(-1)).toEqual(["codex"]);
 });
 
 test("a cohort whose members have all settled is over: a peer leaving afterwards lifts nothing, and a reopen stays outside it", async () => {
@@ -1504,13 +1543,14 @@ test("a cohort whose members have all settled is over: a peer leaving afterwards
   later();
   await tasks.done("codex", second.id, "b");
   stop("codex");
+  // A reopen after the cohort was over stays outside it (withdraw collects it first, nothing else ran gc in between).
+  await tasks.review("claude", first.id, "changes_requested", "fix it");
+  expect(tasks.silenced("kimi", "codex")).toBeUndefined();
+  expect(tasks.cohorts.of(first.id)).toBeUndefined();
   // A benchmark's teardown: a member's path is lost once the work is over. Nothing is lifted, nothing announced.
-  expect(tasks.cohorts.lift("claude")).toEqual([]);
+  expect(tasks.cohorts.lift("codex")).toEqual([]);
   expect(tasks.cohorts.lift("kimi")).toEqual([]);
   expect(notices.some((n) => n.includes("no longer silent"))).toBe(false);
-  expect(tasks.cohorts.of(first.id)).toBeUndefined();
-  await tasks.review("claude", first.id, "changes_requested", "fix it"); // reopened after the cohort was over
-  expect(tasks.silenced("kimi", "codex")).toBeUndefined();
 });
 
 test("an absolute path inside the project and its relative spelling are one place", async () => {

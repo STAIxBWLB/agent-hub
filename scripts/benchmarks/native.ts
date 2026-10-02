@@ -362,7 +362,10 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     mkdirSync(join(dir, '.agenthub'), { recursive: true, mode: 0o700 });
     mkdirSync(join(dir, '.claude'), { mode: 0o700 });
     const denied = [...protectedRoots, ...[join(runs, 'runs'), join(runs, 'patches'), join(runs, 'private'), ...(await (async () => { const fs = await import('node:fs/promises'); return (await fs.readdir(join(runs, 'fixtures'))).map(x => join(runs, 'fixtures', x)).filter(x => resolve(x) !== resolve(dir)); })())]];
-    writeFileSync(join(dir, '.agenthub/config.json'), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, snapshots: { enabled: true, keep: 50 }, watchdog_ms: 360000, batch_ms: 0, batch_max: 1, tasks: { release_after_min: 0 }, roles: { codex: ['implementer'], claude: ['implementer'] }, budget: { poll_min: 1 }, approvals: { notify: false }, codex_bin: codexIsolated, ...(turnFree ? { coordination: 'turn-free' } : {}), ...(staleOff ? { experiments: { stale_notices: 'deliver' } } : {}) }));
+    writeFileSync(join(dir, '.agenthub/config.json'), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, snapshots: { enabled: true, keep: 50 }, watchdog_ms: 360000, batch_ms: 0, batch_max: 1, tasks: { release_after_min: 0 }, roles: { codex: ['implementer'], claude: ['implementer'] }, budget: { poll_min: 1 }, approvals: { notify: false }, codex_bin: join(dir, '.agenthub', 'codex-isolated.sh'), ...(turnFree ? { coordination: 'turn-free' } : {}), ...(staleOff ? { experiments: { stale_notices: 'deliver' } } : {}) }));
+    // The Codex the hub runs, isolated (issue #110). Here, in the arm's own fixture, because every other run artifact is
+    // locked while an arm runs; ignored by git, and started once, before Codex can touch anything.
+    writeFileSync(join(dir, '.agenthub', 'codex-isolated.sh'), `#!/bin/sh\nexec ${shellQuote(codexBin)} "$@" ${codexIsolation.map(shellQuote).join(' ')}\n`, { mode: 0o700 });
     writeFileSync(join(dir, '.agenthub/routing.toml'), '[local]\nfixed_model="coding"\n[classes.implement]\npeers=["codex","claude"]\nescalate_to=[]\n[classes.review]\npeers=[]\nlocal_allowed=false\n');
     const permissions = { defaultMode: 'acceptEdits', allow: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', ...hubNames.map(n => 'mcp__agent-hub__' + n)], deny: ['WebFetch', 'WebSearch', 'Agent', 'Skill', 'Read(./.agenthub/**)', 'Read(./.claude/**)', 'Edit(./.agenthub/**)', 'Edit(./.claude/**)', 'Edit(./AGENTS.md)', 'Edit(./.gitignore)', 'Edit(./tests/**)'] };
     // Hooks are equal across arms (issue #110): none of the user's or a plugin's; the turn-free arm runs the hub's own
@@ -636,6 +639,8 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
                 log('cleanup-error', { index, kind, error: 'Claude trust restore failed' });
             }
         }
+        // The transcript as the attempt left it (issue #110): validity is read from it later, and a changed one is unknown.
+        if (readiness.claude?.transcriptPath && existsSync(readiness.claude.transcriptPath)) readiness.claude.transcriptSha256 = sourceHash(readiness.claude.transcriptPath);
         const metadataClean = fixtureMetadataHash(dir) === metadataBaseline;
         if (!metadataClean)
             endReason = 'metadata-modified';
@@ -672,8 +677,6 @@ const codexUserServers = (JSON.parse(await cmd([codexBin, '--disable', 'plugins'
 if (codexUserServers.some(n => !/^[A-Za-z0-9_-]+$/.test(n)))
     throw new Error('a Codex MCP server name cannot be disabled by a -c override; isolate it by hand before a run');
 const codexIsolation = ['--disable', 'plugins', '--disable', 'apps', '--disable', 'multi_agent', '-c', 'notify=[]', ...codexUserServers.flatMap(n => ['-c', `mcp_servers.${n}.enabled=false`])];
-const codexIsolated = join(runs, 'private', 'codex-isolated.sh');
-writeFileSync(codexIsolated, `#!/bin/sh\nexec ${shellQuote(codexBin)} "$@" ${codexIsolation.map(shellQuote).join(' ')}\n`, { mode: 0o700 });
 mkdirSync(join(runs, 'runs'), { recursive: true, mode: 0o700 });
 mkdirSync(join(runs, 'patches'), { recursive: true, mode: 0o700 });
 writeFileSync(join(runs, 'cohort.json'), JSON.stringify({ schema: m.schema, manifest_sha256: sourceHash(join(runs, 'manifest.json')), cases: selected, calibration: setupOnly, repeat, private_case_sha256: Object.fromEntries(selected.map(i => [i, privateCaseHashes[i]])), arms: m.arms, runner_sha256: prepared.runner_sha256, native_runner_sha256: prepared.native_runner_sha256 }), { mode: 0o600 });
@@ -685,7 +688,8 @@ try {
         // A Williams design (issue #110): row (case + repeat) of n arms is 0, 1, n-1, 2, n-2, ... shifted by the row, so
         // over n consecutive rows every arm runs right before every other one once (for an even n).
         const n = m.arms.length, row = (i + repeat) % n;
-        const order = Array.from({ length: n }, (_, j) => m.arms[((j === 0 ? 0 : j % 2 ? (j + 1) / 2 : n - j / 2) + row) % n]);
+        const step = (j: number) => { if (j === 0) return 0; return j % 2 ? (j + 1) / 2 : n - j / 2; };
+        const order = Array.from({ length: n }, (_, j) => m.arms[(step(j) + row) % n]);
         for (const kind of order) {
             if (stopRequested)
                 break;

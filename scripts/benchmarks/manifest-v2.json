@@ -200,7 +200,7 @@
   ],
   "sampling": "All official flash pairs from three selected task images, fixed before inference as a local-resource convenience sample; not representative of the full suite.",
   "actor_assignment": "In both joint arms, Codex receives the first feature at even case indices and Claude at odd indices; the other actor receives the second feature.",
-  "order_rule": "Rotate arm order by (case index + repeat) modulo the number of arms, so repeats of one case change which arm runs last.",
+  "order_rule": "Row (case index + repeat) modulo n of a Williams design over the n arms (0, 1, n-1, 2, n-2, ... shifted by the row): over n consecutive rows every arm runs right before every other arm once, and repeats of one case change which arm runs last.",
   "stop_conditions": [
     "all assigned tasks approved and deliveries settled",
     "300 second active-work limit",

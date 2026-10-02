@@ -83,6 +83,8 @@ interface Offer {
   /** Claude's tool call the offer went out with: its transcript row is the readback. */
   toolUseId?: string;
   probe?: boolean;
+  /** Sent with an integration request: the next done acknowledges it, so it is not an unread readback. */
+  done?: boolean;
 }
 
 /** What `due` hands the adapter. `unknown`: files whose change is shown with its attribution unknown. */
@@ -112,6 +114,13 @@ export class Facts {
   private expanded = new Map<string, string[]>();
   /** Directories of the current boundary whose changed files were more than the cap. */
   private expandedCut = new Set<string>();
+  /** Directories each peer was told were cut: once, not at every boundary. */
+  private readonly cutTold = new Map<PeerId, Set<string>>();
+  /**
+   * The files each peer wrote with a tool the hub saw (Claude's Edit, MultiEdit and Write; Codex's patches): with the
+   * named paths, what an integration target covers. Reads are not writes: looking at a file never moves a target.
+   */
+  private readonly written = new Map<PeerId, Set<string>>();
   /**
    * What a peer saw of a file it touched before it had a view of it (a partial read, its own write): the baseline of
    * that file's first fact, so a change landing between the touch and the next boundary is shown, not absorbed.
@@ -158,7 +167,7 @@ export class Facts {
     const r = relative(this.root, real);
     if (!r || r.startsWith("..") || isAbsolute(r)) return undefined;
     // Never git's own files, and never what the denylist keeps from every agent.
-    return /^\.git(\/|$)/i.test(r) || isDenied(r, this.o.deny ?? []) ? undefined : r;
+    return /(^|\/)\.git(\/|$)/i.test(r) || isDenied(r, this.o.deny ?? []) ? undefined : r;
   }
 
   /**
@@ -205,6 +214,8 @@ export class Facts {
     this.before.clear();
     this.covered.clear();
     this.firstSeen.clear();
+    this.cutTold.clear();
+    this.written.clear();
     this.epoch = Date.now();
   }
 
@@ -219,6 +230,10 @@ export class Facts {
     this.offers.delete(peer);
     this.covered.delete(peer);
     this.firstSeen.delete(peer);
+  }
+
+  private wrote(peer: PeerId, file: string): void {
+    this.written.set(peer, (this.written.get(peer) ?? new Set()).add(file));
   }
 
   /** A new boundary: directories are expanded afresh. */
@@ -270,12 +285,14 @@ export class Facts {
       if (!dir) return [p];
       let files = this.expanded.get(p);
       if (!files) {
+        // Plumbing only, with optional locks off: an agent's own git commands must never meet a lock the hub holds.
         const git = (...args: string[]) => {
-          const r = Bun.spawnSync(["git", ...args, "--", p], { cwd: this.root, stdout: "pipe", stderr: "pipe" });
+          const r = Bun.spawnSync(["git", ...args, "--", p], { cwd: this.root, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
           return r.exitCode === 0 ? r.stdout.toString().split("\0").filter(Boolean) : undefined;
         };
-        // Against HEAD, so a staged change counts; a repository without a commit yet has only the index to go by.
-        const changed = git("diff", "--name-only", "--relative", "-z", "HEAD") ?? git("ls-files", "-z", "-m", "-d") ?? [];
+        // Against HEAD, so a staged change counts (a staged move by both names); a repository without a commit yet has
+        // only the index to go by.
+        const changed = git("diff-index", "--name-only", "--relative", "-z", "HEAD") ?? git("ls-files", "-z", "-m", "-d") ?? [];
         const all = [...new Set([...changed, ...(git("ls-files", "-z", "-o", "--exclude-standard") ?? [])].flatMap((f) => { const x = this.rel(f); return x ? [x] : []; }))];
         if (all.length > EXPANDED_KEPT) this.expandedCut.add(p);
         files = all.slice(0, EXPANDED_KEPT);
@@ -342,6 +359,7 @@ export class Facts {
     if (file && pre?.version) {
       this.touch(peer, file, pre.version);
       if (["Edit", "MultiEdit", "Write"].includes(tool)) {
+        this.wrote(peer, file);
         const expected = this.latest.get(file)?.hash === pre.version.hash ? applyEdit(pre.version.text, tool, input) : undefined;
         const version = this.observe(file, expected === undefined ? undefined : { peer, expected: sha1(expected) });
         const last = this.transitions.get(file)?.at(-1);
@@ -369,11 +387,15 @@ export class Facts {
     if (item?.type === "fileChange" && item.status !== "failed" && item.status !== "declined") {
       for (const change of Array.isArray(item.changes) ? item.changes : []) {
         const moved = typeof change?.kind?.move_path === "string" ? this.rel(change.kind.move_path) : undefined;
-        if (moved) this.touch(peer, moved);
+        if (moved) {
+          this.touch(peer, moved);
+          this.wrote(peer, moved);
+        }
         const file = typeof change?.path === "string" ? this.rel(change.path) : undefined;
         if (!file) continue;
         const was = this.latest.get(file);
         this.touch(peer, file, was);
+        this.wrote(peer, file);
         const now = this.load(file);
         const matches = was ? codexEffect(was.text, now, change, (a, b) => this.diff(a, b)) : false;
         const version = this.observe(file, matches ? { peer, expected: now.hash } : undefined);
@@ -395,7 +417,7 @@ export class Facts {
    * The fact due for `peer` at a boundary, recorded as an offer, or undefined. Nothing moves until it is acknowledged:
    * a later boundary offers everything since the peer's last acknowledged view again.
    */
-  due(peer: PeerId, toolUseId?: string): Offered | undefined {
+  due(peer: PeerId, toolUseId?: string, withDone = false): Offered | undefined {
     this.boundary();
     const scope = this.o.scope(peer);
     if (!scope) return undefined;
@@ -471,7 +493,10 @@ export class Facts {
     }
     if (cut) parts.push(`(${cut} more changed line(s) not shown; read ${cutFiles.join(", ")})`);
     if (unnamed) parts.push(`${unnamed} more changed file(s) in your scope, not named here: their names match a private-data pattern`);
-    const cutDirs = [...this.expandedCut].filter(this.o.nameable);
+    const told = this.cutTold.get(peer) ?? new Set<string>();
+    const cutDirs = [...this.expandedCut].filter((d) => this.o.nameable(d) && !told.has(d));
+    for (const d of cutDirs) told.add(d);
+    this.cutTold.set(peer, told);
     if (cutDirs.length) parts.push(`more than ${EXPANDED_KEPT} files changed under ${cutDirs.join(", ")}: the rest are not shown; check them yourself`);
     const plans = new Map<number, string>();
     const seen = this.plansAccepted.get(peer) ?? new Map<number, string>();
@@ -501,7 +526,7 @@ export class Facts {
       for (const [file, v] of offered) if (!view.has(file)) view.set(file, v);
       return undefined;
     }
-    return this.offer(peer, parts, offered, plans, toolUseId, { files, plans: plans.size, unknown, coverage });
+    return this.offer(peer, parts, offered, plans, toolUseId, { files, plans: plans.size, unknown, coverage, done: withDone });
   }
 
   /** The plans of these tasks were shown in a tool result (an accept's answer): they need no fact later. */
@@ -512,7 +537,7 @@ export class Facts {
   }
 
   /**
-   * One hash over these project paths and the files these peers touched, as they are now: an integration target (issue
+   * One hash over these project paths and the files these peers wrote, as they are now: an integration target (issue
    * #107). A directory counts by git's changed, new and deleted files under it, with the commit they are relative to.
    */
   tree(paths: string[], peers: PeerId[] = []): string {
@@ -520,10 +545,10 @@ export class Facts {
     const h = createHash("sha1");
     const head = Bun.spawnSync(["git", "rev-parse", "-q", "--verify", "HEAD"], { cwd: this.root, stdout: "pipe", stderr: "pipe" });
     h.update(head.exitCode === 0 ? head.stdout.toString().trim() : "no-head").update("\0");
-    // The files the members touched count too: a symbol-only overlap names no path, and an edit outside the named
-    // paths still moves the work the integration checked.
-    const touched = peers.flatMap((p) => this.touched.get(p) ?? []);
-    const files = [...new Set([...this.expand(paths.flatMap((p) => { const r = this.rel(p); return r ? [r] : []; })), ...touched])].sort();
+    // The files these peers wrote count too: a symbol-only overlap names no path, and a tool's write outside the named
+    // paths still moves the work the integration checked. What they only read never does.
+    const written = peers.flatMap((p) => [...(this.written.get(p) ?? [])]);
+    const files = [...new Set([...this.expand(paths.flatMap((p) => { const r = this.rel(p); return r ? [r] : []; })), ...written])].sort();
     for (const file of files) h.update(file).update("\0").update(this.load(file).hash).update("\0");
     return h.digest("hex");
   }
@@ -543,19 +568,26 @@ export class Facts {
     return this.offer(peer, ["context check: nothing to act on"], new Map(), new Map(), toolUseId, { files: 0, plans: 0, unknown: 0, coverage: false, probe: true });
   }
 
-  private offer(peer: PeerId, parts: string[], files: Map<string, Version>, plans: Map<number, string>, toolUseId: string | undefined, counts: { files: number; plans: number; unknown: number; coverage: boolean; probe?: boolean }): Offered {
+  private offer(peer: PeerId, parts: string[], files: Map<string, Version>, plans: Map<number, string>, toolUseId: string | undefined, counts: { files: number; plans: number; unknown: number; coverage: boolean; probe?: boolean; done?: boolean }): Offered {
     const id = `${this.o.instance}-${++this.n}`;
     const text = sanitize([factsHeader(id), ...parts].join("\n"));
     const list = this.offers.get(peer) ?? [];
-    list.push({ id, seq: this.seq, at: Date.now(), files, plans, ...(toolUseId ? { toolUseId } : {}), ...(counts.probe ? { probe: true } : {}) });
+    list.push({ id, seq: this.seq, at: Date.now(), files, plans, ...(toolUseId ? { toolUseId } : {}), ...(counts.probe ? { probe: true } : {}), ...(counts.done ? { done: true } : {}) });
     if (list.length > OFFERS_KEPT) list.shift();
     this.offers.set(peer, list);
     return { id, text, files: counts.files, plans: counts.plans, unknown: counts.unknown, bytes: Buffer.byteLength(text), ...(counts.probe ? { probe: true } : {}), ...(counts.coverage ? { coverage: true } : {}) };
   }
 
   /** Offers not acknowledged yet, oldest first: their readback is still to be found. */
-  pending(peer: PeerId): { id: string; at: number; toolUseId?: string; probe?: boolean }[] {
-    return (this.offers.get(peer) ?? []).map((o) => ({ id: o.id, at: o.at, ...(o.toolUseId ? { toolUseId: o.toolUseId } : {}), ...(o.probe ? { probe: true } : {}) }));
+  pending(peer: PeerId): { id: string; at: number; toolUseId?: string; probe?: boolean; done?: boolean }[] {
+    return (this.offers.get(peer) ?? []).map((o) => ({ id: o.id, at: o.at, ...(o.toolUseId ? { toolUseId: o.toolUseId } : {}), ...(o.probe ? { probe: true } : {}), ...(o.done ? { done: true } : {}) }));
+  }
+
+  /** An offer that never went in (app-server refused the steer): nothing is pending for it, and nothing moved. */
+  drop(peer: PeerId, id: string): void {
+    const list = this.offers.get(peer);
+    const i = list?.findIndex((o) => o.id === id) ?? -1;
+    if (i >= 0) list!.splice(i, 1);
   }
 
   /**

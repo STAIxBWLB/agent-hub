@@ -178,6 +178,12 @@ t=tempfile.NamedTemporaryFile('w',suffix='.jsonl',delete=False)
 t.write(json.dumps({'type':'attachment','attachment':{'type':'hook_success','command':"bun '/x/src/cli/facts-hook.ts'"}})+'\\n'); t.close()
 run['readiness']={'claude':{'transcriptPath':t.name}}
 assert m.unavailable_reason(tf,run) is None  # valid with no cohort at all: the plans' overlap is the agents' doing
+run['events'].append({'type':'capability','peer':'codex','state':'lost','at':iso(-1)})
+assert m.unavailable_reason(tf,run)=='turn-free context path not verified before the tasks: codex'  # lost again before the tasks
+run['events'].pop()
+import hashlib
+run['readiness']['claude']['transcriptSha256']=hashlib.sha256(open(t.name,'rb').read()).hexdigest()
+assert m.unavailable_reason(tf,run) is None
 run['events'].append({'type':'cohort','id':1,'event':'lifted','silent':False,'tasks':[1,2],'at':iso(70)})
 run['events'].append({'type':'capability','peer':'claude','state':'lost','at':iso(70)})
 assert m.unavailable_reason(tf,run) is None  # teardown, after the 60 s of work
@@ -198,6 +204,8 @@ run['codexMessages']=[{'method':'mcpServer/startupStatus/updated','params':{'nam
 assert m.unavailable_reason(tf,run)=='MCP isolation failed: Codex started obsidian'
 run['codexMessages']=[]
 with open(t.name,'a') as f: f.write(json.dumps({'type':'system','subtype':'stop_hook_summary','hookInfos':[{'command':'~/.claude/hooks/notify.sh'}]})+'\\n')
+assert m.unavailable_reason(tf,run)=='hook isolation unknown: transcript changed since the attempt'  # appended after its hash was taken
+del run['readiness']['claude']['transcriptSha256']
 assert m.unavailable_reason(tf,run)=="hook isolation failed: Claude ran a hook that is not the hub's"
 os.unlink(t.name)
 assert m.unavailable_reason(tf,run).startswith('hook isolation unknown: transcript unreadable')

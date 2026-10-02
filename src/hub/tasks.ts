@@ -893,10 +893,12 @@ export class Tasks {
     }
   }
 
-  /** One hash over the files a cohort's tasks name and its owners touched, as they are now: the integration target (issue #107). */
+  /** One hash over the files a cohort's tasks name and its working owners wrote, as they are now: the integration target (issue #107). */
   private tree(cohort: Cohort): string {
     const paths = [...new Set([...cohort.members.keys()].flatMap((id) => { const t = this.d.board.get(id); return t ? this.places(t).paths : []; }))];
-    return this.d.treeHash?.(paths, [...new Set([...cohort.members.values()].map((m) => m.owner))]) ?? "";
+    // Writes count from members still at work in the cohort: a settled member's later writes are its next task's.
+    const working = [...new Set([...cohort.members.values()].filter((m) => m.settledAt === undefined).map((m) => m.owner))];
+    return this.d.treeHash?.(paths, working) ?? "";
   }
 
   /**
