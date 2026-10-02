@@ -18,6 +18,7 @@ marked `private: true`, and PII tasks `pii: true`.
 | `turn_start` | `peer`, `turn` (`<peer>#<hub run>.<n>`, unique across restarts). A turn follows the adapter: pausing a busy peer does not end it |
 | `turn_end` | `peer`, `turn`, `ms`, `tokens` (when the adapter reported any during the turn), `files` and `snapshotMs` (when snapshots are on: how many files the turn changed, and the time both snapshots took) |
 | `tokens` | `peer`, `n` (tokens added since the previous report) |
+| `usage` | `peer`, `source`, opaque `id`, optional `measuredAt` (provider/source time), requested/served model and provider labels, and any provider-reported input/output/cache/total counters. Missing counters stay unknown. |
 | `task` | `id`, `event` (the board history event, e.g. `proposed`, `assigned`, `done`, `check failed`, `blocked`, `ready`), `by`, `state`, `owner`, `reviewer`, `class`, `pii` |
 | `overlap` | `task`, `owner`, `others` (`task`, `owner`, `paths`, and `symbols` when plans name the same symbol; a name that matches a PII pattern is left out, so either list can be empty), the structured twin of the console notice |
 | `quota` | `peer`, `windows` (`id`, `used`, `resetsAt`), `hard`, `measuredAt` (when the reading was taken, if not when it arrived: Claude's numbers come through a file) |
@@ -30,9 +31,10 @@ Token usage by adapter:
   compaction estimates, usage-limit refreshes and the replay to a reattaching connection add nothing. A thread
   started under the hub counts from zero; a resumed thread's first update is its history and only sets the
   baseline. The model call of a compaction itself is real usage and counts.
-- Claude: not recorded. The status line tee carries quota percentages only; per-turn
-  tokens would need transcript parsing.
-- Pi and the local worker: not recorded.
+- Claude native transcript usage is optional and keyed by an opaque hash of session and message identity; streamed records with the same message id count once. The status line tee still carries quota percentages only.
+- The local worker records optional counters returned by OmniRoute. Requested route/model and gateway-reported served model/provider are separate fields; an alias is never treated as a served model.
+- `ahub report` deduplicates usage records by peer, source and id. Coverage counts distinguish calls with provider usage from calls where usage was absent. Token counters are provider-reported values; the report never derives a price or treats missing spend as zero. Estimated price and measured provider spend remain unknown unless a future source reports them.
+- Usage telemetry has no prompt, completion, task text, credential, Access header, session id or transcript path.
 
 The file is local and never uploaded. It grows without rotation; delete it to start
 over (the hub recreates it).

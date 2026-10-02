@@ -34,17 +34,24 @@ test("#94 the Pi bridge records usage once per message before releasing the turn
 
 test("#94 the actual extension forwards assistant message usage and does not recount it at agent_end", async () => {
   const posts: any[] = [];
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) { posts.push(await req.json()); return Response.json({ ok: true }); } });
+  let budgetOffline = false;
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) { const body = await req.json() as any; posts.push(body); if (new URL(req.url).pathname === "/budget" && budgetOffline) return Response.json({ error: "stale Pi budget request" }, { status: 409 }); return Response.json({ ok: true }); } });
   const previousUrl = process.env.AGENTHUB_PI_BRIDGE_URL; const previousToken = process.env.AGENTHUB_PI_BRIDGE_TOKEN;
   process.env.AGENTHUB_PI_BRIDGE_URL = `http://127.0.0.1:${server.port}`; process.env.AGENTHUB_PI_BRIDGE_TOKEN = "test-token";
   try {
     const { default: extension } = await import("../src/pi/extension.ts");
-    const handlers = new Map<string, (event: any) => Promise<unknown>>();
-    extension({ on: (name: string, handler: (event: any) => Promise<unknown>) => handlers.set(name, handler), registerProvider: () => {}, registerTool: () => {} });
+    const handlers = new Map<string, (event: any, ctx?: any) => Promise<unknown>>();
+    extension({ on: (name: string, handler: (event: any, ctx?: any) => Promise<unknown>) => handlers.set(name, handler), registerProvider: () => {}, registerTool: () => {} });
     const message = { role: "assistant", content: [{ type: "text", text: "done" }], usage: { totalTokens: 57 } };
     await handlers.get("message_end")!({ message }); await handlers.get("agent_end")!({ messages: [message] });
     expect(posts.filter((p) => p.type === "tokens")).toMatchObject([{ id: "usage-1", tokens: 57 }]);
     expect(posts.find((p) => p.type === "agent_end")).not.toHaveProperty("tokens");
+    budgetOffline = true;
+    await handlers.get("agent_start")!({});
+    let aborted = false;
+    await handlers.get("before_provider_request")!({}, { model: { provider: "agent-hub-local" }, abort: () => { aborted = true; } });
+    expect(aborted).toBe(true);
+    expect(posts.some((p) => p.type === "agent_end" && String(p.error).includes("admission unavailable"))).toBe(true);
   } finally {
     server.stop(true);
     if (previousUrl === undefined) delete process.env.AGENTHUB_PI_BRIDGE_URL; else process.env.AGENTHUB_PI_BRIDGE_URL = previousUrl;

@@ -9,16 +9,45 @@ bun scripts/build.mjs --check
 node scripts/check-package.mjs
 
 tests=0
-bun test || tests=$?
-# issue #56: a daemon leaked by the suite spins a core for days. Test projects live in
-# mkdtemp dirs named ahub-* (realpath /private$TMPDIR on macOS, /tmp on Linux), and the
-# daemon argv carries --project <temp-root>, so that tmp path signature finds any of them
-# without matching a real hub whose project dir happens to start with ahub-. The guard
-# runs whether or not the tests passed; a leak fails the gate either way.
-if pgrep -f "(T|tmp)/ahub-" >/dev/null 2>&1; then
-  echo "check: leaked agent-hub process(es) survived the test suite:" >&2
-  pgrep -fl "(T|tmp)/ahub-" >&2 || true
-  exit 1
+check_tmp=$(mktemp -d "${TMPDIR:-/tmp}/ahub-check.XXXXXX")
+check_tmp=$(cd "$check_tmp" && pwd -P)
+export TMPDIR="$check_tmp"
+ledger="$check_tmp/owned-processes.jsonl"
+: > "$ledger"
+export AHUB_CHECK_RUN_ROOT="$check_tmp"
+export AHUB_CHECK_PROCESS_LEDGER="$ledger"
+export BUN_OPTIONS="${BUN_OPTIONS:+$BUN_OPTIONS }--preload=$PWD/scripts/record-test-process.mjs"
+
+preserve_tmp=1
+test_pid=""
+cleanup_check() {
+  status=$?
+  trap - EXIT INT TERM
+  if [ -n "$test_pid" ]; then
+    kill -TERM "$test_pid" 2>/dev/null || true
+    wait "$test_pid" 2>/dev/null || true
+  fi
+  if [ "$preserve_tmp" -eq 0 ]; then rm -rf "$check_tmp"; fi
+  exit "$status"
+}
+trap cleanup_check EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+bun test &
+test_pid=$!
+wait "$test_pid" || tests=$?
+test_pid=""
+
+# The Bun preload records each current-run Bun process's PID, start time, and process
+# group at startup. The final scan uses those identities to include children that outlive
+# the daemon. Run this after test failures as well.
+leaks=0
+node scripts/check-owned-processes.mjs "$check_tmp" "$ledger" || leaks=$?
+if [ "$tests" -ne 0 ] || [ "$leaks" -ne 0 ]; then
+  echo "check: preserved test fixtures at $check_tmp" >&2
+  if [ "$leaks" -ne 0 ]; then exit 1; fi
+  exit "$tests"
 fi
-if [ "$tests" -ne 0 ]; then exit "$tests"; fi
+preserve_tmp=0
 echo "check: OK"

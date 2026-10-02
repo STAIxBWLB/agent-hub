@@ -1114,3 +1114,19 @@ work. Times are `hub.log` UTC. Issues #89-#95 come from this run.
   Retried from the console, the question reached Kimi led by the loss notice ("The hub stopped unexpectedly ...",
   with the delivery id), and Kimi answered at 13:19:26.6.
 - **Pi's tokens were missing from the report** (#94).
+
+### Channel settlement and usage (0.12.3, protocol 12)
+
+With real Codex and Claude sessions in a disposable project, deliver a workflow
+assignment to Claude, then a directed Codex question. Reply to the question and
+approve the workflow task. Confirm `ahub status` still lists the workflow delivery
+as awaiting settlement, without a queue hold, and a later important message arrives.
+Call `hub_delivery_done` with the workflow channel's delivery ID and generation.
+Confirm only that row becomes completed. Wrong peer, stale generation and unrelated
+IDs must be refused. Disconnect during another accepted delivery; confirm
+`needs_review` survives reconnect and requires explicit inspected queue resolution.
+
+Compare Claude usage events against its explicit native session transcript, deduped
+by assistant message ID. Compare local usage events with actual successful provider
+response counters; absent counters remain unknown and model aliases remain separate
+from reported served-model provenance. Do not infer dollar spend from token counts.

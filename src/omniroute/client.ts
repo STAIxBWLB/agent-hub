@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { normalizeUsage, safeModelLabel, type NormalizedUsage } from "./usage.ts";
 
 export interface OmniRouteConfig {
   /** Candidate base URLs ending in /v1, in order of preference. `AGENTHUB_OMNIROUTE_URL` replaces the list. */
@@ -26,6 +27,10 @@ export interface ChatMessage {
 }
 export interface ChatResult {
   message: ChatMessage;
+  /** Usage counters returned by the provider, when valid. No missing counter is inferred as zero. */
+  usage?: NormalizedUsage;
+  /** Model named by the completed response, when the gateway reports it. */
+  servedModel?: string;
   /** `x-omniroute-provider` (direct path) */
   provider?: string;
   /** `x-model-router-selected-model` (through Switchyard) */
@@ -171,16 +176,22 @@ export class OmniRoute {
       throw e;
     }
     if (!res.ok) throw new Error(`model call failed: HTTP ${res.status} ${(await res.text()).slice(0, 300)}`);
-    const json = (await res.json()) as { choices?: { message?: ChatMessage }[] };
+    const json = (await res.json()) as { choices?: { message?: ChatMessage }[]; usage?: unknown; model?: unknown };
     const message = json.choices?.[0]?.message;
     if (!message) throw new Error("model call returned no message");
     const provider = res.headers.get("x-omniroute-provider") ?? undefined;
     const selectedModel = res.headers.get("x-model-router-selected-model") ?? undefined;
+    const servedModel = safeModelLabel(json.model) ?? safeModelLabel(selectedModel);
+    const safeProvider = safeModelLabel(provider);
+    const safeSelectedModel = safeModelLabel(selectedModel);
+    const usage = normalizeUsage(json.usage);
     // reasoning_content and other extras are dropped here: only role, content and tool_calls travel on.
     return {
       message: { role: "assistant", content: message.content ?? null, ...(message.tool_calls?.length ? { tool_calls: message.tool_calls } : {}) },
-      ...(provider ? { provider } : {}),
-      ...(selectedModel ? { selectedModel } : {}),
+      ...(usage ? { usage } : {}),
+      ...(safeProvider ? { provider: safeProvider } : {}),
+      ...(safeSelectedModel ? { selectedModel: safeSelectedModel } : {}),
+      ...(servedModel ? { servedModel } : {}),
     };
   }
 }

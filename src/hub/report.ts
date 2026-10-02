@@ -4,6 +4,7 @@ export interface Report {
   from?: string;
   to?: string;
   peers: Record<string, { turns: number; busyMinutes: number; tokens: number }>;
+  usage: { peers: Record<string, UsageCoverage>; totals: UsageTotals; unknownPeers: string[]; completeCoverage: boolean; estimatedUsd?: number; measuredSpendUsd?: number };
   messages: { total: number; dropped: Record<string, number>; overflow: number; undeliverable: number; perTask: number };
   overlaps: { warnings: number; pairs: number };
   /** Files one agent changed after another owner's open task had changed them (issue #32). */
@@ -12,12 +13,82 @@ export interface Report {
   quota: { readings: number; hard: number };
 }
 
+export interface UsageCoverage {
+  records: number;
+  withUsage: number;
+  withoutUsage: number;
+  inputTokens: number;
+  inputRecords: number;
+  outputTokens: number;
+  outputRecords: number;
+  cacheReadTokens: number;
+  cacheReadRecords: number;
+  cacheWriteTokens: number;
+  cacheWriteRecords: number;
+  totalTokens: number;
+  totalRecords: number;
+}
+
+export type UsageTotals = Omit<UsageCoverage, "records" | "withUsage" | "withoutUsage">;
+
+const emptyUsage = (): UsageCoverage => ({ records: 0, withUsage: 0, withoutUsage: 0, inputTokens: 0, inputRecords: 0, outputTokens: 0, outputRecords: 0, cacheReadTokens: 0, cacheReadRecords: 0, cacheWriteTokens: 0, cacheWriteRecords: 0, totalTokens: 0, totalRecords: 0 });
+
+function recordUsage(coverage: UsageCoverage, e: Extract<StampedEvent, { type: "usage" }>): void {
+  coverage.records++;
+  const fields = [e.inputTokens, e.outputTokens, e.cacheReadTokens, e.cacheWriteTokens, e.totalTokens];
+  if (fields.some((n) => typeof n === "number" && Number.isSafeInteger(n) && n >= 0)) coverage.withUsage++;
+  else coverage.withoutUsage++;
+  const add = (field: keyof UsageTotals, n: number | undefined, countField: keyof UsageTotals) => {
+    if (typeof n === "number" && Number.isSafeInteger(n) && n >= 0) {
+      coverage[field] += n;
+      coverage[countField]++;
+    }
+  };
+  add("inputTokens", e.inputTokens, "inputRecords");
+  add("outputTokens", e.outputTokens, "outputRecords");
+  add("cacheReadTokens", e.cacheReadTokens, "cacheReadRecords");
+  add("cacheWriteTokens", e.cacheWriteTokens, "cacheWriteRecords");
+  add("totalTokens", e.totalTokens, "totalRecords");
+}
+
+function finalizeUsage(report: Report): void {
+  for (const id of Object.keys(report.peers)) {
+    if (!report.usage.peers[id]) {
+      report.usage.peers[id] = emptyUsage();
+      report.usage.unknownPeers.push(id);
+    }
+  }
+  for (const p of Object.values(report.usage.peers)) {
+    const out = report.usage.totals;
+    for (const field of ["inputTokens", "inputRecords", "outputTokens", "outputRecords", "cacheReadTokens", "cacheReadRecords", "cacheWriteTokens", "cacheWriteRecords", "totalTokens", "totalRecords"] as const) out[field] += p[field];
+    if (p.withoutUsage || p.inputRecords < p.withUsage || p.outputRecords < p.withUsage || p.cacheReadRecords < p.withUsage || p.cacheWriteRecords < p.withUsage || p.totalRecords < p.withUsage) report.usage.completeCoverage = false;
+  }
+  if (report.usage.unknownPeers.length) report.usage.completeCoverage = false;
+}
+
+function formatUsage(usage: Report["usage"]): string[] {
+  const lines: string[] = [];
+  for (const [id, u] of Object.entries(usage.peers).sort(([a], [b]) => a.localeCompare(b))) {
+    const coverage = `${u.withUsage}/${u.records} records with usage`;
+    const value = (name: string, count: number, records: number) => records ? `${name} ${count} (${records} known)` : `${name} unknown (0 known)`;
+    const known = [value("input", u.inputTokens, u.inputRecords), value("output", u.outputTokens, u.outputRecords), value("cache read", u.cacheReadTokens, u.cacheReadRecords), value("cache write", u.cacheWriteTokens, u.cacheWriteRecords), value("reported total", u.totalTokens, u.totalRecords)].join(", ");
+    const incomplete = u.withoutUsage || u.inputRecords < u.withUsage || u.outputRecords < u.withUsage || u.cacheReadRecords < u.withUsage || u.cacheWriteRecords < u.withUsage || u.totalRecords < u.withUsage;
+    lines.push(`usage ${id}: ${u.records ? coverage : "no usage records"}; ${known}; coverage ${incomplete ? "incomplete" : u.records ? "complete for recorded calls" : "unknown"}`);
+  }
+  const total = usage.totals.totalRecords ? `${usage.totals.totalTokens} reported tokens (${usage.totals.totalRecords} known records)` : "reported token total unknown (0 known records)";
+  const coverage = usage.completeCoverage ? "recorded-call coverage complete" : `incomplete or unknown peer coverage${usage.unknownPeers.length ? ` (${usage.unknownPeers.join(", ")})` : ""}`;
+  lines.push(`usage team totals: ${total}; ${coverage}; estimated price unknown; measured spend unknown`);
+  return lines;
+}
+
 /** The numbers `ahub report` prints, from `events.jsonl` alone (issue #40). */
 export function summarize(events: StampedEvent[]): Report {
-  const r: Report = { peers: {}, messages: { total: 0, dropped: {}, overflow: 0, undeliverable: 0, perTask: 0 }, overlaps: { warnings: 0, pairs: 0 }, conflicts: 0, tasks: {}, quota: { readings: 0, hard: 0 } };
+  const r: Report = { peers: {}, usage: { peers: {}, totals: { inputTokens: 0, inputRecords: 0, outputTokens: 0, outputRecords: 0, cacheReadTokens: 0, cacheReadRecords: 0, cacheWriteTokens: 0, cacheWriteRecords: 0, totalTokens: 0, totalRecords: 0 }, unknownPeers: [], completeCoverage: true }, messages: { total: 0, dropped: {}, overflow: 0, undeliverable: 0, perTask: 0 }, overlaps: { warnings: 0, pairs: 0 }, conflicts: 0, tasks: {}, quota: { readings: 0, hard: 0 } };
   const peer = (id: string) => (r.peers[id] ??= { turns: 0, busyMinutes: 0, tokens: 0 });
+  const usagePeer = (id: string) => (r.usage.peers[id] ??= emptyUsage());
   const pairs = new Set<string>();
   const taskMessages = new Map<string, number>();
+  const seenUsage = new Set<string>();
   for (const e of events) {
     r.from ??= e.at;
     r.to = e.at;
@@ -35,9 +106,19 @@ export function summarize(events: StampedEvent[]): Report {
         peer(e.peer).turns++;
         peer(e.peer).busyMinutes += e.ms / 60_000;
         break;
+      case "state":
+        peer(e.peer);
+        break;
       case "tokens":
         peer(e.peer).tokens += e.n;
         break;
+      case "usage": {
+        const key = `${e.peer}\0${e.source}\0${e.id}`;
+        if (seenUsage.has(key)) break;
+        seenUsage.add(key);
+        recordUsage(usagePeer(e.peer), e);
+        break;
+      }
       case "task":
         r.tasks[e.event] = (r.tasks[e.event] ?? 0) + 1;
         break;
@@ -55,6 +136,8 @@ export function summarize(events: StampedEvent[]): Report {
     }
   }
   r.overlaps.pairs = pairs.size;
+  finalizeUsage(r);
+  // Pricing is intentionally absent: a token count is neither an estimated price nor provider-reported spend.
   r.messages.perTask = taskMessages.size ? Number(([...taskMessages.values()].reduce((a, b) => a + b, 0) / taskMessages.size).toFixed(1)) : 0;
   for (const p of Object.values(r.peers)) p.busyMinutes = Number(p.busyMinutes.toFixed(1));
   return r;
@@ -63,6 +146,7 @@ export function summarize(events: StampedEvent[]): Report {
 export function formatReport(r: Report): string[] {
   const lines = [`period: ${r.from ?? "-"} .. ${r.to ?? "-"}`];
   for (const [id, p] of Object.entries(r.peers).sort(([a], [b]) => a.localeCompare(b))) lines.push(`peer ${id}: ${p.turns} turn${p.turns === 1 ? "" : "s"}, ${p.busyMinutes} busy minutes, ${p.tokens ? `${p.tokens} tokens` : id === "pi" ? "tokens not reported" : "- tokens"}`);
+  if (Object.keys(r.usage.peers).length) lines.push(...formatUsage(r.usage));
   const dropped = Object.entries(r.messages.dropped).map(([k, n]) => `${n} ${k}`).join(", ");
   lines.push(`messages: ${r.messages.total} (dropped: ${dropped || "none"}; overflow ${r.messages.overflow}; undeliverable ${r.messages.undeliverable}); ${r.messages.perTask} per task that had any`);
   lines.push(`overlap warnings: ${r.overlaps.warnings}, task pairs: ${r.overlaps.pairs}; edit conflicts: ${r.conflicts}`);

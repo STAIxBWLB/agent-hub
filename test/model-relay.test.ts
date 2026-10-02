@@ -214,3 +214,26 @@ test("relay uses explicit Ollama MLX mode, clamps default output, and enforces t
   });
   expect(tooMuch.status).toBe(400);
 });
+
+test("#102 relay refuses exhausted admission before any upstream dispatch", async () => {
+  let requests = 0;
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => { requests++; return new Response("should never arrive"); } });
+  cleanup.push(() => upstream.stop(true));
+  const relay = await startModelRelay({ omni: omni(`http://127.0.0.1:${upstream.port}/v1`), allowedDGXmodels: { "dgx/coding": "glm-5" }, token: "relay-token", admitRequest: async () => ({ allowed: false, reason: "execution budget exhausted" }) });
+  cleanup.push(relay.close);
+  const response = await fetch(`${relay.url}/chat/completions`, { method: "POST", headers: { authorization: "Bearer relay-token", "content-type": "application/json" }, body: JSON.stringify({ model: "dgx/coding", messages: [{ role: "user", content: "do not dispatch" }] }) });
+  expect(response.status).toBe(502);
+  expect(await response.text()).toContain("execution budget exhausted");
+  expect(requests).toBe(0);
+  expect(relay.status().backends[0]?.active).toBe(0);
+});
+
+test("#101 relay model provenance ignores gateway heartbeat model labels", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response('data: {"model":"keepalive","choices":[]}\n\ndata: {"model":"physical/model","choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } }) });
+  cleanup.push(() => upstream.stop(true));
+  const relay = await startModelRelay({ omni: omni(`http://127.0.0.1:${upstream.port}/v1`), allowedDGXmodels: { "dgx/coding": "coding" }, token: "relay-token" });
+  cleanup.push(relay.close);
+  const response = await fetch(`${relay.url}/chat/completions`, { method: "POST", headers: { authorization: "Bearer relay-token", "content-type": "application/json" }, body: JSON.stringify({ model: "dgx/coding", messages: [{ role: "user", content: "provenance" }] }) });
+  await response.text();
+  expect(relay.status().backends[0]?.actualModel).toBe("physical/model");
+});

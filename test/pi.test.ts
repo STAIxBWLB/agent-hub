@@ -244,6 +244,51 @@ test("Pi addresses its answer to the senders of the delivery it answers", async 
   }
 });
 
+test("idle Pi user bash aborts at its elapsed deadline without reusing that signal on the next command", async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-idle-budget-deadline-"));
+  let admissionCount = 0, firstSignalAborted = false, executionCount = 0;
+  const peer = new PiPeer("pi", {
+    cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx", cmd: ["bun", join(import.meta.dir, "fakes/pi-rpc.ts")],
+    relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [{ id: "dgx/coding" }] }, tools: [],
+    admitBudget: async (_envs, unit) => {
+      admissionCount++;
+      return admissionCount === 1
+        ? [{ allowed: true, scope: "run:idle", unit, used: 1, limit: 5, remaining: 4 }, { allowed: true, scope: "run:idle", unit: "elapsed_ms", used: 0, limit: 80, remaining: 80 }]
+        : [{ allowed: true, scope: "run:idle", unit, used: 2, limit: 5, remaining: 3 }];
+    },
+    executeTool: async (_name, _args, _callId, _sessionId, signal) => {
+      executionCount++;
+      if (executionCount > 1) return signal?.aborted ? "stale abort signal" : "fresh command";
+      await new Promise<void>((resolve) => signal?.addEventListener("abort", () => { firstSignalAborted = true; resolve(); }, { once: true }));
+      return "elapsed deadline reached";
+    },
+  });
+  try {
+    await peer.start();
+    const launch = peer.tuiLaunch!;
+    const base = launch.env.AGENTHUB_PI_BRIDGE_URL!;
+    const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
+    const post = (path: string, body: unknown) => fetch(`${base}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
+    const metadata = peer.recoveryMetadata();
+    expect((await post("/event", { type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: process.pid, signature: currentSignature(), sessionId: metadata.sessionId, sessionFile: metadata.sessionFile })).status).toBe(200);
+    const admissionResponse = await post("/budget", { unit: "tool_calls", idleUserBash: true, generation: 0 });
+    expect(admissionResponse.status).toBe(200);
+    const admission = await admissionResponse.json() as { reservation: string };
+    const first = post("/tool", { name: "bash", purpose: "idle_user_bash", generation: 0, reservation: admission.reservation, toolCallId: "idle-long", args: { command: "sleep", cwd: process.cwd() } });
+    const firstResponse = await first;
+    expect(firstResponse.status).toBe(200);
+    expect((await firstResponse.json() as { text: string }).text).toBe("elapsed deadline reached");
+    expect(firstSignalAborted).toBe(true);
+    expect(peer.state).toBe("idle");
+    const nextAdmissionResponse = await post("/budget", { unit: "tool_calls", idleUserBash: true, generation: 0 });
+    expect(nextAdmissionResponse.status).toBe(200);
+    const nextAdmission = await nextAdmissionResponse.json() as { reservation: string };
+    const nextResponse = await post("/tool", { name: "bash", purpose: "idle_user_bash", generation: 0, reservation: nextAdmission.reservation, toolCallId: "idle-next", args: { command: "true", cwd: process.cwd() } });
+    expect(nextResponse.status).toBe(200);
+    expect((await nextResponse.json() as { text: string }).text).toBe("fresh command");
+  } finally { await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+});
+
 // #56 review: a native owner that ignores the graceful shutdown must not survive next to a replacement hub.
 test("Pi stop tears down a TUI owner whose shutdown acknowledgement was lost, by verified identity", async () => {
   const stateDir = mkdtempSync(join(process.cwd(), ".pi-survivor-test-"));

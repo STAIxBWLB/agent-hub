@@ -193,6 +193,17 @@ test.skipIf(!sandboxAvailable())("git: read-only subcommands run without asking,
   expect(Date.now() - t0).toBeLessThan(5000);
 });
 
+test.skipIf(!sandboxAvailable())("elapsed cancellation kills an active sandboxed command", async () => {
+  const { cwd, ctx } = project();
+  const controller = new AbortController();
+  const started = Date.now();
+  const running = sandboxedExec(["/bin/sleep", "30"], { cwd, profile: ctx.sandboxProfile, signal: controller.signal });
+  setTimeout(() => controller.abort(), 50);
+  const result = await running;
+  expect(result.output).toContain("killed");
+  expect(Date.now() - started).toBeLessThan(5000);
+});
+
 // issue #39: the deny-default profile still runs the toolchains; outside the listed dirs nothing is readable.
 test.skipIf(!sandboxAvailable())("deny-default: bun, node and git work; outside the system, toolchain and project dirs nothing is readable", async () => {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-denydefault-")));

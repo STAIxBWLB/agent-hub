@@ -340,12 +340,14 @@ export class Bus {
     void this.drain(record.peer);
   }
 
-  queueSummary(peer: string): { needsReview: number; heldBy?: string; oldestQueuedAt?: number } {
+  queueSummary(peer: string): { needsReview: number; heldBy?: string; liveAccepted?: string[]; oldestQueuedAt?: number } {
     const rows = this.storageError ? [] : this.queueList(peer);
     const queued = this.queues.get(peer) ?? [];
     const review = rows.filter((r) => r.state === "needs_review");
     const needsReview = review.length;
-    const hold = review[0] ? { heldBy: review[0].id } : {};
+    const blocked = rows.find((r) => r.state === "needs_review" || (["dispatching", "accepted"].includes(r.state) && !this.activeDeliveries.has(r.id)));
+    const liveAccepted = rows.filter((r) => r.state === "accepted" && this.activeDeliveries.get(r.id) === peer).map((r) => r.id);
+    const hold = { ...(blocked ? { heldBy: blocked.id } : {}), ...(liveAccepted.length ? { liveAccepted } : {}) };
     const oldest = queued.reduce<number | undefined>((a, r) => a === undefined ? r.ts : Math.min(a, r.ts), undefined);
     return oldest === undefined ? { needsReview, ...hold } : { needsReview, ...hold, oldestQueuedAt: oldest };
   }
@@ -379,7 +381,8 @@ export class Bus {
 
   private refreshRecoveryHold(peer: PeerId): void {
     if (!this.journal) return;
-    const blocked = this.journal.list(peer).some((r) => r.state === "needs_review" || r.state === "dispatching" || r.state === "accepted");
+    // Live accepted notifications are awaiting explicit correlation, not crash recovery.
+    const blocked = this.journal.list(peer).some((r) => r.state === "needs_review" || (["dispatching", "accepted"].includes(r.state) && this.activeDeliveries.get(r.id) !== peer));
     if (blocked) this.recoveryHeldPeers.add(peer); else this.recoveryHeldPeers.delete(peer);
   }
 
@@ -397,6 +400,17 @@ export class Bus {
         break;
       }
     }
+  }
+
+  /** Explicit completion never resolves recovered, unrelated or already uncertain work. */
+  completeDelivery(peer: PeerId, deliveryId: string): boolean {
+    const row = this.journal?.get(deliveryId);
+    // The bridge separately fences socket/generation/handed IDs. Retrying a completed
+    // acknowledgement (or acknowledging after a correlated reply) changes nothing.
+    if (row?.peer === peer && row.state === "completed") return true;
+    if (this.activeDeliveries.get(deliveryId) !== peer || row?.state !== "accepted") return false;
+    this.deliveryReceipt(peer, { id: deliveryId, state: "completed", reason: "explicit correlated completion" });
+    return true;
   }
 
   queueIds(id: PeerId): string[] {

@@ -6,7 +6,9 @@ import { spawn } from "node:child_process";
 import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { stripUntrusted } from "./config-trust.ts";
-import { eventLog, tokenDeltas } from "./events.ts";
+import { eventLog, readEvents, tokenDeltas } from "./events.ts";
+import { ExecutionBudget } from "./execution-budget.ts";
+import { readClaudeTranscriptUsage } from "./usage.ts";
 import type { ServerWebSocket } from "bun";
 import { AcpPeer, type PermissionRequest } from "../adapters/acp.ts";
 import { CodexPeer } from "../adapters/codex-appserver.ts";
@@ -218,6 +220,8 @@ type Sock = ServerWebSocket<Client>;
 
 /** A peer that lives in another process and attaches over the control WS (the Claude channel plugin). */
 class WsPeer extends BasePeer {
+  private generation = crypto.randomUUID();
+  private delivered = new Set<string>();
   private sock: Sock | undefined;
   private claimed: Sock | undefined;
   /** Called at hello, before the async preface: the newest hello wins even if an older one's recall finishes last. */
@@ -231,8 +235,11 @@ class WsPeer extends BasePeer {
   }
   attach(sock: Sock): void {
     if (sock !== this.claimed) return void sock.close(4000, "replaced"); // a newer session said hello meanwhile
+    if (this.sock) this.setState("offline"); // unresolved work belongs to the previous connection
     this.sock?.close(4000, "replaced");
     this.sock = sock;
+    this.generation = crypto.randomUUID();
+    this.delivered.clear();
     this.setState("idle");
   }
   detach(sock: Sock): void {
@@ -242,9 +249,11 @@ class WsPeer extends BasePeer {
   }
   async deliver(envs: Envelope[], deliveryId?: string): Promise<void> {
     if (!this.sock) throw new Error(`${this.id} is offline`);
-    this.sock.send(JSON.stringify({ t: "deliver", envs, ...(deliveryId ? { deliveryId } : {}) }));
+    if (deliveryId) this.delivered.add(deliveryId);
+    this.sock.send(JSON.stringify({ t: "deliver", envs, generation: this.generation, ...(deliveryId ? { deliveryId } : {}) }));
   }
   owns(sock: Sock): boolean { return this.sock === sock; }
+  ownsDelivery(sock: Sock, generation: unknown, id: string): boolean { return this.owns(sock) && generation === this.generation && this.delivered.has(id); }
   async start(): Promise<void> {}
   async stop(): Promise<void> {
     this.sock?.close();
@@ -441,6 +450,8 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const board = new Board(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => board.close());
+  const executionBudget = new ExecutionBudget(join(opts.stateDir, "hub.db"));
+  startupCleanup.push(() => executionBudget.close());
   // Completion checks (issue #7): only from a config file git does not track, one at a time, killed on stop.
   const checkCommands = Object.fromEntries(Object.entries(config.checks).filter(([k, v]) => (CLASSES as readonly string[]).includes(k) && typeof v === "string" && v.trim())) as Record<string, string>;
   const strayChecks = Object.keys(config.checks).filter((k) => k !== "timeout_s" && !(k in checkCommands));
@@ -456,6 +467,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const tasks = new Tasks({
     board,
     bus,
+    executionBudget,
     routing: () => currentRouting(opts.cwd, log), // routing.toml is edited while the hub runs: re-read on change, last good parse kept
     cwd: opts.cwd,
     project: chain.at(-1)!,
@@ -807,6 +819,20 @@ export async function startDaemon(opts: DaemonOptions) {
     const config = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
     return existsSync(join(config, "projects", opts.cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`));
   };
+  // Optional native usage: only the instance-fenced explicit Claude session is read.
+  // IDs persist in telemetry, so a restart/resume never counts the same native message twice.
+  const claudeNativeUsageSeen = new Set(readEvents(join(opts.stateDir, "events.jsonl")).filter(e => e.type === "usage" && e.source === "claude_transcript").map(e => (e as { id: string }).id));
+  const collectClaudeUsage = () => {
+    const session = claudeSession();
+    if (!session.sessionId || !session.transcriptPath) return;
+    for (const record of readClaudeTranscriptUsage(session.sessionId, session.transcriptPath)) {
+      if (claudeNativeUsageSeen.has(record.id)) continue;
+      claudeNativeUsageSeen.add(record.id);
+      event({ type: "usage", peer: "claude", source: "claude_transcript", id: record.id, ...record.usage, ...(record.servedModel ? { servedModel: record.servedModel } : {}), ...(record.at ? { measuredAt: record.at } : {}) });
+    }
+  };
+  const claudeUsageTimer = setInterval(collectClaudeUsage, 2000);
+  claudeUsageTimer.unref(); intervals.push(claudeUsageTimer);
   const recoveryPeers = (): Record<string, RestartPeerSnapshot> => Object.fromEntries([...bus.peers].map(([id, peer]) => {
     const metadata = peer.recoveryMetadata?.() ?? {};
     const row: RestartPeerSnapshot = { id, state: peer.state, queueIds: bus.queueIds(id), ...(metadata.launch ? { launch: metadata.launch as Record<string, unknown> } : {}) };
@@ -855,7 +881,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      bus.knownPeers().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); return [id, { state: bus.stateOf(id), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
+      bus.knownPeers().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); return [id, { state: bus.stateOf(id), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
     ),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
     ...(modelRelay ? { models: modelRelay.status() } : {}),
@@ -1297,7 +1323,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const mode = args.mode ?? "headless";
       const backend = args.backend ?? config.pi.backend;
       if (!["headless", "tui"].includes(mode) || !["auto", "dgx", "mlx"].includes(backend)) return { ok: false, error: "invalid Pi mode/backend" };
-      modelRelay ??= await startModelRelay({ omni, dgxMaxInputTokens: currentRouting(opts.cwd, log).pi.dgx_max_context_tokens, allowedDGXmodels: { "dgx/coding": config.pi.dgx_coding, "dgx/fast": config.pi.dgx_fast }, mlx: config.mlx, mlxAlias: "mlx/fast", fallbackDGXAlias: "dgx/fast" });
+      modelRelay ??= await startModelRelay({ omni, admitRequest: admitPiRequest, dgxMaxInputTokens: currentRouting(opts.cwd, log).pi.dgx_max_context_tokens, allowedDGXmodels: { "dgx/coding": config.pi.dgx_coding, "dgx/fast": config.pi.dgx_fast }, mlx: config.mlx, mlxAlias: "mlx/fast", fallbackDGXAlias: "dgx/fast" });
       piReceipts ??= new PiToolReceipts(join(opts.stateDir, "hub.db"));
       let piReply: Envelope | undefined;
       const ctx: ToolContext = {
@@ -1316,14 +1342,24 @@ export async function startDaemon(opts: DaemonOptions) {
         cwd: opts.cwd, stateDir: opts.stateDir, cmd: config.pi.cmd, mode, backend,
         model: args.model,
         sessionId: args.sessionId, sessionFile: args.sessionFile,
+        admitBudget: async (envs, unit) => unit === "model_calls" ? [] : tasks.admitExecutionEnvelopes(envs, "pi", unit),
         relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? Math.min(routing.pi.mlx_max_context_tokens, config.mlx.provider === "ollama" ? (config.mlx.contextWindow ?? 8192) : routing.pi.mlx_max_context_tokens) : routing.pi.dgx_max_context_tokens, maxTokens: id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
         tools: [...TOOL_SCHEMAS.map((t) => t.function), ...TASK_TOOLS.map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
-        executeTool: async (name, raw, callId, sessionId) => {
+        executeTool: async (name, raw, callId, sessionId, signal) => {
+          if (signal?.aborted) return "error: turn cancelled before tool effects";
           if (stopping || (recoveryActive() && recoveryPhase !== "preparing")) return "error: recovery is holding tool effects";
           return piReceipts!.execute(sessionId ?? "", callId, name, raw, async () => {
             if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "error: invalid tool arguments";
             if (TASK_TOOLS.some((t) => t.name === name)) return taskOp("pi", name, raw as Record<string, unknown>, true);
-            return runTool(name, JSON.stringify(raw), ctx);
+            return runTool(name, JSON.stringify(raw), { ...ctx, signal, permit: async title => {
+              if (!signal) return ctx.permit(title);
+              if (signal.aborted) return false;
+              return new Promise<boolean>((resolve, reject) => {
+                const finish = (allowed: boolean) => { signal.removeEventListener("abort", aborted); resolve(allowed && !signal.aborted); };
+                const aborted = () => finish(false); signal.addEventListener("abort", aborted, { once: true });
+                Promise.resolve(ctx.permit(title)).then(finish, error => { signal.removeEventListener("abort", aborted); reject(error); });
+              });
+            } });
           });
         },
         selectModel: async (envs) => {
@@ -1401,6 +1437,8 @@ export async function startDaemon(opts: DaemonOptions) {
       const local = new LocalPeer("local", {
         cwd: opts.cwd,
         omni,
+        onUsage: record => event({ type: "usage", peer: "local", source: "omniroute", id: record.id, ...record.usage, requestedModel: record.requestedModel, ...(record.servedModel ? { servedModel: record.servedModel } : {}), ...(record.provider ? { provider: record.provider } : {}), measuredAt: record.at }),
+        admitBudget: async (envs, unit) => tasks.admitExecutionEnvelopes(envs, "local", unit),
         ...(sidecar && route ? { sidecar, route } : {}),
         fixedModel: args.model ?? routing.local.fixed_model,
         tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, permit },
@@ -1423,6 +1461,15 @@ export async function startDaemon(opts: DaemonOptions) {
       return { ok: true, model: route ? `${route} (fallback ${routing.local.fixed_model})` : (args.model ?? routing.local.fixed_model) };
     }
     return { ok: false, error: `unknown peer "${peer}"` };
+  }
+
+  async function admitPiRequest(): Promise<{ allowed: boolean; reason?: string; remainingMs?: number }> {
+    const current = bus.peers.get("pi");
+    if (!(current instanceof PiPeer)) return { allowed: false, reason: "Pi owner is not active" };
+    const decisions = tasks.admitExecutionEnvelopes(current.budgetEnvelopes, "pi", "model_calls");
+    const denied = decisions.find(d => !d.allowed);
+    const deadline = decisions.filter(d => d.unit === "elapsed_ms" && d.remaining !== null).map(d => d.remaining!);
+    return { allowed: !denied, ...(denied ? { reason: `execution budget ${denied.reason}: ${denied.scope}` } : {}), ...(deadline.length ? { remainingMs: Math.min(...deadline) } : {}) };
   }
 
   async function validateLocalChoice(route: string | undefined, fixedModel: string): Promise<void> {
@@ -1729,9 +1776,29 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "delivery_receipt": {
         const peer = c.peer ? bus.peers.get(c.peer) : undefined;
-        if (c.role !== "peer" || !(peer instanceof WsPeer) || !peer.owns(sock) || typeof msg.deliveryId !== "string" || !["accepted", "needs_review"].includes(msg.state)) return void reply({ ok: false, error: "invalid delivery receipt" });
+        if (c.role !== "peer" || !(peer instanceof WsPeer) || typeof msg.deliveryId !== "string" || !peer.ownsDelivery(sock, msg.generation, msg.deliveryId) || !["accepted", "needs_review"].includes(msg.state)) return void reply({ ok: false, error: "invalid delivery receipt" });
         bus.deliveryReceipt(peer.id, { id: msg.deliveryId, state: msg.state, ...(msg.state === "needs_review" ? { reason: "Claude bridge could not confirm notification delivery" } : {}) });
         return void reply({ ok: true });
+      }
+      case "delivery_complete": {
+        const peer = c.peer ? bus.peers.get(c.peer) : undefined;
+        if (c.role !== "peer" || !(peer instanceof WsPeer) || typeof msg.deliveryId !== "string" || !peer.ownsDelivery(sock, msg.generation, msg.deliveryId)) return void reply({ ok: false, error: "delivery does not belong to this connection generation" });
+        return void reply(bus.completeDelivery(peer.id, msg.deliveryId) ? { ok: true } : { ok: false, error: "delivery is not live and accepted; inspect ahub queue show before resolving" });
+      }
+      case "execution_budget": {
+        if (c.role !== "console") return void reply({ ok: false, error: "execution budgets are console-only" });
+        if (msg.op === "status") return void reply({ ok: true, budgets: tasks.executionBudgetStatus(msg.id) });
+        if (recoveryActive() || stopping) return void reply({ ok: false, error: "recovery or shutdown is holding budget mutations" });
+        try {
+          if (msg.op === "configure") {
+            const cfg = msg.config;
+            if (!cfg || !Array.isArray(cfg.peers) || cfg.peers.some((p: unknown) => p !== "local" && p !== "pi")) throw new Error("strict execution budgets support local and Pi only; native Codex/Claude calls are not instrumented");
+            if (cfg.kind === "task" && !board.get(cfg.taskId)) throw new Error("task not found");
+            return void reply({ ok: true, budget: tasks.configureExecutionBudget(cfg) });
+          }
+          if (msg.op === "disable" && typeof msg.id === "string") return void reply({ ok: true, disabled: tasks.disableExecutionBudget(msg.id) });
+          return void reply({ ok: false, error: "unknown execution budget operation" });
+        } catch (error) { return void reply({ ok: false, error: (error as Error).message }); }
       }
       case "recovery":
         if (c.role !== "console") return void reply(recoveryError("recovery is a console command"));
@@ -1899,7 +1966,9 @@ export async function startDaemon(opts: DaemonOptions) {
       await modelRelay?.close();
       await egress?.close();
       await piReceipts?.close();
+      collectClaudeUsage();
       budget.close();
+      executionBudget.close();
       board.close();
       turnLog?.close();
       server.stop(true);

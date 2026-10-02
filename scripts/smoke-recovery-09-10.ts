@@ -16,8 +16,9 @@ import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { packageDigest, stageRelease } from "../src/cli/recovery-package.ts";
 import { PACKAGE_ROOT } from "../src/cli/upgrade-runtime.ts";
 
-const OLD_VERSION = "0.6.4";
-const OLD_INTEGRITY = "sha512-IRSWqC9rRGwsoJtJuXzQLUbdRfad24NTTN0AxuyAp5KrV1v/7O+ETUEmNBvO4wKVIMbISqW93C3Z546pxDgTWQ==";
+const OLD_VERSION = process.env.AGENTHUB_SMOKE_SOURCE_VERSION ?? "0.6.4";
+const SOURCE_PROTOCOL = Number(process.env.AGENTHUB_SMOKE_SOURCE_PROTOCOL ?? 9);
+const OLD_INTEGRITY = process.env.AGENTHUB_SMOKE_SOURCE_INTEGRITY ?? "sha512-IRSWqC9rRGwsoJtJuXzQLUbdRfad24NTTN0AxuyAp5KrV1v/7O+ETUEmNBvO4wKVIMbISqW93C3Z546pxDgTWQ==";
 const timeoutMs = 45_000;
 
 type Result = { code: number; stdout: string; stderr: string };
@@ -44,7 +45,7 @@ async function waitForControl(stateDir: string, projectRoot: string, protocol: n
 }
 
 async function stopOwnedDaemon(): Promise<void> {
-  for (const protocol of [PROTOCOL, 10, 9]) {
+  for (const protocol of [PROTOCOL, SOURCE_PROTOCOL]) {
     try {
       const client = await ControlClient.connect(stateDir, { role: "console", projectRoot: project }, 1_000, protocol);
       const status = await client.request({ t: "status" }, 2_000);
@@ -107,7 +108,7 @@ async function main(): Promise<void> {
 
   const started = await run([join(oldRoot, "src/cli/main.js"), "--project", project, "up"], baseEnv, project);
   assert(started.code === 0, `source failed to start: ${started.stderr}`);
-  const source = await waitForControl(stateDir, project, 9, baseEnv);
+  const source = await waitForControl(stateDir, project, SOURCE_PROTOCOL, baseEnv);
   sourceClient = source;
   let sourceState: any;
   let sourceTasksDigest = "";
@@ -116,16 +117,16 @@ async function main(): Promise<void> {
   try {
     // Register an explicitly offline peer so its queue and manual pause are
     // exercised without starting a real native account or model process.
-    const claude = await ControlClient.connect(stateDir, { role: "peer", peer: "claude", projectRoot: project }, 5_000, 9);
+    const claude = await ControlClient.connect(stateDir, { role: "peer", peer: "claude", projectRoot: project }, 5_000, SOURCE_PROTOCOL);
     claude.close();
     const status = await source.request({ t: "status" });
     sourceState = status.status;
-    assert(sourceState?.protocol === 9, `source did not report protocol 9: ${JSON.stringify(sourceState)}`);
+    assert(sourceState?.protocol === SOURCE_PROTOCOL, `source did not report protocol 9: ${JSON.stringify(sourceState)}`);
     const paused = await source.request({ t: "pause", peer: "claude" });
     assert(paused.ok === true, `could not establish manual pause: ${JSON.stringify(paused)}`);
     const sent = await source.request({ t: "send", body: "[STATUS] disposable recovery queue marker", to: ["claude"] });
     assert(sent.ok === true, `could not queue marker: ${JSON.stringify(sent)}`);
-    const task = await run([join(oldRoot, "src/cli/main.js"), "--project", project, "task", "propose", "test", "protocol 9 recovery task", "--detail", "disposable"], baseEnv, project);
+    const task = await run([join(oldRoot, "src/cli/main.js"), "--project", project, "task", "propose", "test", `protocol ${SOURCE_PROTOCOL} recovery task`, "--detail", "disposable"], baseEnv, project);
     assert(task.code === 0, `could not create source task: ${task.stderr}`);
     const sourceSnapshot = await source.request({ t: "ui_snapshot", after: 0 });
     assert(sourceSnapshot.ok === true, `source snapshot readback failed: ${JSON.stringify(sourceSnapshot)}`);
@@ -169,7 +170,7 @@ async function main(): Promise<void> {
     assert(targetTasksDigest === sourceTasksDigest, `task identity/state digest changed across recovery: ${sourceTasksDigest} -> ${targetTasksDigest}`);
     const inspected = await target.request({ t: "recovery", op: "inspect", expectedInstanceId: targetStatus.status.instanceId });
     assert(inspected.ok === true && inspected.recovery?.phase === "released", `target recovery was not released: ${JSON.stringify(inspected)}`);
-    console.log(JSON.stringify({ sourceProtocol: 9, targetProtocol: PROTOCOL, sourceInstanceId: sourceState.instanceId, targetInstanceId: targetStatus.status.instanceId, operationId, queuePreserved: true, taskDigest: targetTasksDigest, targetDigest: packageDigest(PACKAGE_ROOT) }, null, 2));
+    console.log(JSON.stringify({ sourceProtocol: SOURCE_PROTOCOL, targetProtocol: PROTOCOL, sourceInstanceId: sourceState.instanceId, targetInstanceId: targetStatus.status.instanceId, operationId, queuePreserved: true, taskDigest: targetTasksDigest, targetDigest: packageDigest(PACKAGE_ROOT) }, null, 2));
   } finally { target.close(); }
 }
 

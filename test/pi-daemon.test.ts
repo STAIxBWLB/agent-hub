@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 
@@ -24,13 +25,19 @@ createInterface({ input: process.stdin }).on("line", (line) => { const m = JSON.
   return file;
 }
 
-async function hub(config = DEFAULT_CONFIG) {
+async function hub(config = DEFAULT_CONFIG, unattended = false) {
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-pi-daemon-"));
-  const daemon = await startDaemon({ cwd: stateDir, permissionTimeoutMs: 20, projectId: "pi-project", instanceId: `pi-instance-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...config, memory: { ...config.memory, enabled: false } } });
+  const daemon = await startDaemon({ cwd: stateDir, permissionTimeoutMs: 20, unattended, projectId: "pi-project", instanceId: `pi-instance-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...config, memory: { ...config.memory, enabled: false } } });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console" });
   cleanup.push(() => console_.close());
   return { stateDir, daemon, console_ };
+}
+
+function processSignature(pid: number): string {
+  const result = Bun.spawnSync(["ps", "-p", String(pid), "-o", "lstart=,comm="]);
+  if (result.exitCode !== 0) throw new Error("test owner process is not visible");
+  return createHash("sha256").update(result.stdout.toString().trim()).digest("hex");
 }
 
 test("Pi is disabled by default and its peer identity remains reserved", async () => {
@@ -102,6 +109,42 @@ test("Pi tools use hub path guards and approval denial, with persisted call rece
   expect((await call("write", { path: "output.txt", content: "denied" }, "write1")).text).toContain("did not approve");
   expect(existsSync(join(stateDir, "output.txt"))).toBe(false);
   expect((await call("write", { path: "different.txt", content: "denied" }, "write1")).text).toContain("different arguments");
+});
+
+test("idle Pi user_bash keeps the managed route without opt-in budgets and charges only run scope when enabled", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-user-bash-"));
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { stateDir, daemon, console_ } = await hub(config, true);
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  for (let i = 0; i < 100 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(10);
+  const peer = daemon.bus.peers.get("pi") as any;
+  const launch = peer.tuiLaunch;
+  const metadata = peer.recoveryMetadata();
+  const base = launch.env.AGENTHUB_PI_BRIDGE_URL;
+  const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
+  const generation = 0;
+  const session = await fetch(`${base}/event`, { method: "POST", headers, body: JSON.stringify({ type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: process.pid, signature: processSignature(process.pid), sessionId: metadata.sessionId, sessionFile: metadata.sessionFile }) });
+  expect(session.status).toBe(200);
+  const budget = async () => fetch(`${base}/budget`, { method: "POST", headers, body: JSON.stringify({ unit: "tool_calls", idleUserBash: true, generation }) });
+  const tool = async (name: string, reservation: string) => fetch(`${base}/tool`, { method: "POST", headers, body: JSON.stringify({ name: "bash", purpose: "idle_user_bash", generation, reservation, toolCallId: `user-bash-${name}`, args: { command: `printf managed > ${name}`, cwd: stateDir } }) });
+
+  const unconfigured = await budget();
+  expect(unconfigured.status).toBe(200);
+  const unconfiguredResult = await unconfigured.json() as any;
+  expect(unconfiguredResult).toMatchObject({ decisions: [] });
+  expect(await (await tool("legacy.txt", unconfiguredResult.reservation)).json()).toMatchObject({ text: expect.stringContaining("(exit 0)") });
+  expect(readFileSync(join(stateDir, "legacy.txt"), "utf8")).toBe("managed");
+
+  expect((await console_.request({ t: "execution_budget", op: "configure", config: { id: "run:pi-shell", kind: "run", peers: ["pi"], limits: { tool_calls: 1 } } })).ok).toBe(true);
+  const budgeted = await (await budget()).json() as any;
+  expect(budgeted.decisions).toMatchObject([{ allowed: true, unit: "tool_calls", used: 1, remaining: 0 }]);
+  expect(await (await tool("budgeted.txt", budgeted.reservation)).json()).toMatchObject({ text: expect.stringContaining("(exit 0)") });
+  const exhausted = await budget();
+  expect(exhausted.status).toBe(200);
+  expect(((await exhausted.json()) as any).decisions).toMatchObject([{ allowed: false, reason: "exhausted", used: 1, remaining: 0 }]);
+  const staleTool = await tool("must-not-exist.txt", "missing-reservation");
+  expect(staleTool.status).toBe(409);
+  expect(existsSync(join(stateDir, "must-not-exist.txt"))).toBe(false);
 });
 
 test("an unattached Pi TUI launch can be replaced without restarting the hub", async () => {

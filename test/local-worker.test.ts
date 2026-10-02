@@ -140,6 +140,66 @@ test("a model failure after tools with side effects is reported, not redelivered
   expect(said[1]!.body).toBe("roles=system,user,assistant,tool,assistant,user");
 });
 
+test("budget exhaustion midway through a tool batch is terminal and leaves valid history", async () => {
+  let calls = 0, toolCalls = 0;
+  const { bus, peer, said, model } = await setup((body) => {
+    calls++;
+    if (calls === 1) return { tool_calls: [toolCall("read", { path: "a.txt" }), toolCall("read", { path: "a.txt" })] };
+    return { content: `roles=${body.messages.map((m) => m.role).join(",")}` };
+  }, {
+    admitBudget: async (_envs, unit) => {
+      if (unit === "model_calls") return [{ allowed: true, scope: "run:test", unit, used: 1, limit: 3, remaining: 2 }];
+      toolCalls++;
+      return [{ allowed: toolCalls < 2, scope: "run:test", unit, used: 1, limit: 1, remaining: 0, ...(toolCalls >= 2 ? { reason: "exhausted" as const } : {}) }];
+    },
+  });
+  bus.publish(newEnvelope("user", "read twice", { priority: "important" }));
+  await until(() => said.length === 1, "budget stop report");
+  expect(said[0]!.body).toContain("execution budget stopped before any tool side effects");
+  expect(model.requests).toHaveLength(1); // a budget stop cannot be auto-replayed
+  bus.publish(newEnvelope("user", "continue", { priority: "important" }));
+  await until(() => said.length === 2, "next delivery");
+  expect(said[1]!.body).toBe("roles=system,user,assistant,tool,tool,assistant,user");
+});
+
+test("elapsed budget aborts an active model request and does not replay it", async () => {
+  const { bus, peer, said, model } = await setup(async () => {
+    await Bun.sleep(300);
+    return { content: "late response" };
+  }, {
+    admitBudget: async (_envs, unit) => [
+      { allowed: true, scope: "run:deadline", unit, used: 1, limit: 10, remaining: 9 },
+      { allowed: true, scope: "run:deadline", unit: "elapsed_ms", used: 20, limit: 80, remaining: 25 },
+    ],
+  });
+  bus.publish(newEnvelope("user", "finish before deadline", { priority: "important" }));
+  await until(() => said.length === 1, "elapsed budget report");
+  expect(said[0]!.body).toContain("execution budget stopped before any tool side effects");
+  expect(model.requests).toHaveLength(1);
+  expect(peer.state).toBe("idle");
+});
+
+test("elapsed budget cancels a pending approval before a write can start", async () => {
+  let releaseApproval = () => {};
+  const deadline = Date.now() + 150;
+  const { bus, peer, said, cwd, model } = await setup(() => ({ tool_calls: [toolCall("edit", { path: "a.txt", old: "two", new: "2" })] }), {
+    tools: { deny: [], permit: async () => new Promise<boolean>((resolve) => { releaseApproval = () => resolve(true); }) },
+    admitBudget: async (_envs, unit) => Date.now() >= deadline
+      ? [{ allowed: false, scope: "run:approval", unit: "elapsed_ms", used: 150, limit: 150, remaining: 0, reason: "exhausted" }]
+      : [
+          { allowed: true, scope: "run:approval", unit, used: 1, limit: 10, remaining: 9 },
+          { allowed: true, scope: "run:approval", unit: "elapsed_ms", used: Date.now() - (deadline - 150), limit: 150, remaining: deadline - Date.now() },
+        ],
+  });
+  bus.publish(newEnvelope("user", "edit after approval", { priority: "important" }));
+  await until(() => said.length === 1, "approval budget stop");
+  expect(said[0]!.body).toContain("execution budget stopped before any tool side effects");
+  expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("one\ntwo\n");
+  expect(model.requests).toHaveLength(1);
+  releaseApproval();
+  await peer.stop();
+});
+
 test("correlated local delivery after a side effect requires review", async () => {
   let calls = 0;
   const { peer, said, model, cwd } = await setup((body) => {
@@ -333,6 +393,32 @@ for (const [mode, why] of [["missing-binary", "not runnable"], ["reject-config",
     expect(sidecar.status).toStartWith("off (");
   });
 }
+
+test("model-call budget admits a sidecar attempt and gates its fixed-model fallback separately", async () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-local-budget-fallback-")));
+  const model = startFakeModelServer({ key: "sk-fake-secret", script: (body) => ({ content: `model=${body.model}` }) });
+  process.env.OMNIROUTE_API_KEY = "sk-fake-secret";
+  const lines: string[] = [], omni = new OmniRoute({ urls: [model.url], access_hosts: [] }, (line) => lines.push(line));
+  const wrapper = join(mkdtempSync(join(tmpdir(), "agenthub-bin-")), "switchyard-server");
+  writeFileSync(wrapper, `#!/bin/sh\nFAKE_SWITCHYARD=fail-calls exec bun ${FAKE_SWITCHYARD} "$@"\n`, { mode: 0o755 });
+  const sidecar = new Sidecar({ routing: loadRouting(mkdtempSync(join(tmpdir(), "agenthub-routing-"))), omni, stateDir: mkdtempSync(join(tmpdir(), "agenthub-state-")), port: 48000 + (process.pid % 900), bin: wrapper, log: (line) => lines.push(line) });
+  const admissions: string[] = [], bus = new Bus({ batchMs: 0 });
+  const said: Envelope[] = [];
+  bus.tap((e) => e.t === "envelope" && e.env.from === "local" && said.push(e.env));
+  const peer = new LocalPeer("local", { cwd, omni, sidecar, route: "sy/coding", fixedModel: "vllm/fixed", tools: { deny: [], permit: async () => true }, admitBudget: async (_envs, unit) => {
+    admissions.push(unit);
+    return admissions.filter((entry) => entry === "model_calls").length === 1
+      ? [{ allowed: true, scope: "run:fallback", unit, used: 1, limit: 1, remaining: 0 }]
+      : [{ allowed: false, scope: "run:fallback", unit, used: 1, limit: 1, remaining: 0, reason: "exhausted" }];
+  } });
+  bus.add(peer); await peer.start();
+  cleanup.push(model.stop, () => sidecar.stop(), () => peer.stop());
+  bus.publish(newEnvelope("user", "use routed model", { priority: "important" }));
+  await until(() => said.length === 1, "fallback budget report");
+  expect(admissions).toEqual(["model_calls", "model_calls"]);
+  expect(said[0]!.body).toContain("execution budget stopped before any tool side effects");
+  expect(model.requests).toHaveLength(0); // fallback is stopped before reaching the fixed-model endpoint
+});
 
 test("a gateway that is down when the sidecar would start does not turn L2 off: the next call starts it", async () => {
   const ctx = await setup((b) => ({ content: `model=${b.model}` }));

@@ -67,6 +67,7 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub say [@peer ...] <text>   send as the console user (no @peer = broadcast); delivered at once,
                                start the text with [STATUS] to let it batch or [FYI] for the record only
   ahub pause|resume <peer>      hold a peer's deliveries in its queue / release them
+  ahub budget execution configure <config.json> | status [id] | disable <id>
   ahub budget                   quota windows per peer, and who is paused until when
   ahub budget set <peer> <0..1> [--resets-in 30m] [--window 5h|week]   feed a reading by hand (also: test the relay)
   ahub budget resume <peer>     override a budget pause; readings are ignored for that peer until the window resets
@@ -643,6 +644,18 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   budget: async () => {
     const hub = await connect();
+    if (args[0] === "execution") {
+      const op = args[1] ?? "status";
+      let request: Record<string, unknown> = { t: "execution_budget", op, ...(args[2] ? { id: args[2] } : {}) };
+      if (op === "configure") {
+        if (!args[2]) { hub.close(); fail("usage: ahub budget execution configure <config.json>"); }
+        try { request = { t: "execution_budget", op, config: JSON.parse(readFileSync(args[2]!, "utf8")) }; }
+        catch { hub.close(); fail("cannot read execution budget JSON configuration"); }
+      }
+      const result = await hub.request(request); hub.close();
+      if (!result.ok) fail(result.error);
+      return console.log(JSON.stringify(result.budgets ?? result.budget ?? { disabled: result.disabled }, null, 2));
+    }
     let set: Record<string, unknown> | undefined;
     if (args[0] === "resume") {
       if (!args[1]) fail("usage: ahub budget resume <peer>");

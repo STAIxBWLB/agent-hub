@@ -118,8 +118,9 @@ export interface ExecResult {
 }
 
 /** Run argv under seatbelt with a scrubbed environment. Never runs unsandboxed: no sandbox, no exec. */
-export function sandboxedExec(argv: string[], opts: { cwd: string; profile: string; timeoutMs?: number; env?: Record<string, string> }): Promise<ExecResult> {
+export function sandboxedExec(argv: string[], opts: { cwd: string; profile: string; timeoutMs?: number; env?: Record<string, string>; signal?: AbortSignal }): Promise<ExecResult> {
   if (!sandboxAvailable()) return Promise.resolve({ code: null, output: "error: command execution needs macOS sandbox-exec and is disabled on this host" });
+  if (opts.signal?.aborted) return Promise.resolve({ code: null, output: "error: command cancelled before execution" });
   return new Promise((resolve) => {
     // A temp dir of its own (#63): the user's is shared with every other process, and what a command reads can reach
     // an answer shown to cloud peers. Allowed after the profile's denies, and gone when the command ends.
@@ -141,6 +142,8 @@ export function sandboxedExec(argv: string[], opts: { cwd: string; profile: stri
         child.kill("SIGKILL");
       }
     };
+    const abort = () => killGroup();
+    opts.signal?.addEventListener("abort", abort, { once: true });
     // Best effort, never in the way of the result: a command can mark its files immutable (`chflags uchg`), and then
     // the plain remove throws. What still fails is left to the OS temp cleanup.
     const dropOwn = () => {
@@ -154,11 +157,12 @@ export function sandboxedExec(argv: string[], opts: { cwd: string; profile: stri
       if (done) return;
       done = true;
       clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", abort);
       dropOwn();
       const clipped = output.length >= OUTPUT_CAP ? `${output.slice(0, OUTPUT_CAP)}\n(output truncated)` : output;
       resolve({ code, output: signal ? `${clipped}\n(killed: ${signal}, timeout?)` : clipped });
     };
-    child.on("error", (e) => (done || ((done = true), dropOwn(), resolve({ code: null, output: `error: ${e.message}` }))));
+    child.on("error", (e) => (done || ((done = true), clearTimeout(timer), opts.signal?.removeEventListener("abort", abort), dropOwn(), resolve({ code: null, output: `error: ${e.message}` }))));
     child.on("close", finish);
     // `close` waits for every holder of the pipes; after `exit` give stragglers a moment, then stop waiting and reap them.
     child.on("exit", (code, signal) => setTimeout(() => (killGroup(), finish(code, signal)), 500).unref());

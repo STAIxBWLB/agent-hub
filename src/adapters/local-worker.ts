@@ -6,7 +6,9 @@ import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { runTool, TOOL_SCHEMAS, touchedPaths, type ToolContext } from "../local/tools.ts";
 import type { Capture } from "../memory/capture.ts";
 import type { ChatMessage, ChatResult, OmniRoute } from "../omniroute/client.ts";
+import { safeModelLabel } from "../omniroute/usage.ts";
 import type { Sidecar } from "../switchyard/sidecar.ts";
+import type { ExecutionBudgetDecision } from "../hub/execution-budget.ts";
 
 export interface LocalOptions {
   cwd: string;
@@ -21,6 +23,10 @@ export interface LocalOptions {
   capture?: Capture;
   /** Runs a hub task tool (hub_task_*, hub_review, hub_remember) as this peer. Absent = the tools are not offered. */
   taskTool?: (name: string, args: Record<string, unknown>, turn: { pii: boolean }) => Promise<string>;
+  /** Successful provider responses only; usage may be absent when the gateway omits it. Never includes prompt data. */
+  onUsage?: (record: { id: string; at: string; usage?: ChatResult["usage"]; requestedModel: string; servedModel?: string; provider?: string }) => void;
+  /** Atomic task/run admission immediately before every model request or tool execution. */
+  admitBudget?: (envs: Envelope[], unit: "model_calls" | "tool_calls") => Promise<ExecutionBudgetDecision[]>;
   /** Per-turn policy from the task the delivery carries: the class's route, and whether it is a PII task. */
   turnPolicy?: (envs: Envelope[]) => { route?: string; fixedModel?: string; pii: boolean; task?: string } | undefined;
   /** Role contract, appended to the system prompt. */
@@ -35,6 +41,7 @@ const HISTORY_CHARS = 100_000;
 const TURN_CHARS = 120_000;
 /** Tools whose effects outlive a failed turn: once one ran, the turn is never redelivered. */
 const SIDE_EFFECTS = new Set(["write", "edit", "bash", "git", "hub_send"]);
+class ExecutionBudgetStop extends Error { readonly budgetStop = true; }
 const chars = (msgs: ChatMessage[]) => msgs.reduce((n, m) => n + (m.content?.length ?? 0) + JSON.stringify(m.tool_calls ?? "").length, 0);
 
 const asFunction = (t: { name: string; description: string; inputSchema: unknown }) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.inputSchema } });
@@ -57,6 +64,8 @@ export class LocalPeer extends BasePeer {
   private readonly sessionId = `agent-hub-local-${randomUUID()}`;
   private turn = 0; // generation guard, as in acp.ts: a turn aborted by the watchdog must not touch the next one
   private abort: AbortController | undefined;
+  private budgetTimer?: ReturnType<typeof setTimeout>;
+  private budgetStopReason = "";
   private activeDeliveryId: string | undefined;
   private readonly sandboxProfile: string; // built once: profile() spawns git and must stay off the per-call path
   /** What served the last call, for `ahub status`. */
@@ -83,6 +92,7 @@ export class LocalPeer extends BasePeer {
     if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "turn stopped before settlement" });
     this.activeDeliveryId = undefined;
     this.turn++;
+    clearTimeout(this.budgetTimer); this.budgetTimer = undefined;
     this.abort?.abort();
     await this.opts.capture?.end();
     this.setState("offline");
@@ -95,7 +105,10 @@ export class LocalPeer extends BasePeer {
       throw new Error(`${this.id} is ${this.state}`);
     }
     const turn = ++this.turn;
+    this.budgetStopReason = "";
+    clearTimeout(this.budgetTimer); this.budgetTimer = undefined;
     this.activeDeliveryId = deliveryId;
+    this.abort = new AbortController();
     this.setState("busy");
     if (deliveryId) this.delivery({ id: deliveryId, state: "accepted" });
     // The turn works on its own message list and joins the history only as a whole, so a failed or aborted turn can
@@ -115,7 +128,12 @@ export class LocalPeer extends BasePeer {
       })
       .catch((e: Error) => {
         if (turn !== this.turn) return; // aborted by the watchdog or stop(): nothing to report, nothing was committed
+        if (this.budgetStopReason && !(e instanceof ExecutionBudgetStop)) e = new ExecutionBudgetStop(this.budgetStopReason);
         this.opts.log?.(`[${this.id}] turn failed: ${e.message}`);
+        if (e instanceof ExecutionBudgetStop) {
+          this.reportBudgetStop(e, msgs, progress, reply, !!policy?.pii, deliveryId);
+          return;
+        }
         if (!progress.sideEffects) {
           if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: e.message });
           else this.onFailed?.(envs); // legacy delivery: safe to redeliver
@@ -130,6 +148,7 @@ export class LocalPeer extends BasePeer {
         if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: e.message });
       })
       .finally(() => {
+        if (turn === this.turn) { clearTimeout(this.budgetTimer); this.budgetTimer = undefined; }
         if (turn === this.turn && this.state === "busy") this.setState("idle");
         if (turn === this.turn && this.activeDeliveryId === deliveryId) this.activeDeliveryId = undefined;
       });
@@ -139,6 +158,7 @@ export class LocalPeer extends BasePeer {
     if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "turn watchdog timeout" });
     this.activeDeliveryId = undefined;
     this.turn++;
+    clearTimeout(this.budgetTimer); this.budgetTimer = undefined;
     this.abort?.abort();
     super.onWatchdog();
   }
@@ -152,6 +172,7 @@ export class LocalPeer extends BasePeer {
     reply: EnvelopeOpts,
   ): Promise<string> {
     const { maxSteps = 30 } = this.opts;
+    const turnSignal = this.abort!.signal;
     // claude-mem's observer is a cloud model: nothing of a PII turn is captured.
     const capture = policy?.pii ? undefined : this.opts.capture;
     // Positive confirmation, and for the path this turn will really take: a sidecar generated against the off-campus URL
@@ -160,22 +181,11 @@ export class LocalPeer extends BasePeer {
     if (policy?.pii && (viaOffCampus || !(await this.opts.omni.onCampus()))) {
       return "Refused: this is a PII task and the only reachable gateway is off campus (Cloudflare Access). Connect the VPN and assign it again.";
     }
-    const ctx: ToolContext = {
-      cwd: this.opts.cwd,
-      deny: this.opts.tools.deny,
-      permit: this.opts.tools.permit,
-      sandboxProfile: this.sandboxProfile,
-      sandboxEnv: proxyEnv(this.opts.tools.bashNetwork ?? false),
-      send: (text, to) => {
-        const refused = this.onMessage?.(text, policy?.pii ? reply : { inReplyTo: replyParent(envs), to: to?.length ? to : replyAudience(envs) });
-        if (typeof refused === "string") return `not sent: ${refused}`;
-        return policy?.pii ? "sent to the console user only (PII task)" : "sent";
-      },
-    };
+    const ctx = this.toolContext(envs, turnSignal, !!policy?.pii, reply);
     let usedTools = false;
     for (let step = 0; step < maxSteps; step++) {
       this.elide(msgs);
-      const res = await this.call(msgs, policy);
+      const res = await this.call(msgs, policy, envs);
       if (turn !== this.turn) return "";
       this.touch();
       msgs.push(res.message);
@@ -188,6 +198,10 @@ export class LocalPeer extends BasePeer {
         // A tool has its own timeout (bash up to 600 s) and an approval can take 120 s: neither is the model going silent.
         const alive = setInterval(() => this.state === "busy" && turn === this.turn && this.touch(), 30_000);
         const name = call.function.name;
+        try {
+          await this.requireBudget(envs, "tool_calls");
+          if (turnSignal.aborted) throw new ExecutionBudgetStop(this.budgetStopReason || "turn cancelled before tool execution");
+        } catch (error) { clearInterval(alive); throw error; }
         const running = TASK_TOOL_NAMES.has(name) && this.opts.taskTool ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii }).catch((e: Error) => `error: ${e.message}`) : runTool(name, call.function.arguments, ctx);
         const output = await running.finally(() => clearInterval(alive));
         if (turn !== this.turn) return "";
@@ -202,30 +216,109 @@ export class LocalPeer extends BasePeer {
     return `(stopped after ${maxSteps} steps) ${progress.last}`.trim();
   }
 
+  private toolContext(envs: Envelope[], turnSignal: AbortSignal, pii: boolean, reply: EnvelopeOpts): ToolContext {
+    return {
+      cwd: this.opts.cwd,
+      deny: this.opts.tools.deny,
+      permit: async (title) => {
+        if (turnSignal.aborted) return false;
+        return new Promise<boolean>((resolve, reject) => {
+          const finish = (allowed: boolean) => { turnSignal.removeEventListener("abort", onAbort); resolve(allowed); };
+          const onAbort = () => finish(false);
+          turnSignal.addEventListener("abort", onAbort, { once: true });
+          this.opts.tools.permit(title).then(finish, (error) => { turnSignal.removeEventListener("abort", onAbort); reject(error); });
+        });
+      },
+      sandboxProfile: this.sandboxProfile,
+      sandboxEnv: proxyEnv(this.opts.tools.bashNetwork ?? false),
+      signal: turnSignal,
+      send: (text, to) => {
+        const refused = this.onMessage?.(text, pii ? reply : { inReplyTo: replyParent(envs), to: to?.length ? to : replyAudience(envs) });
+        if (typeof refused === "string") return `not sent: ${refused}`;
+        return pii ? "sent to the console user only (PII task)" : "sent";
+      },
+    };
+  }
+
+  private reportBudgetStop(e: Error, msgs: ChatMessage[], progress: { sideEffects: number; last: string }, reply: EnvelopeOpts, pii: boolean, deliveryId?: string): void {
+    this.completeMissingToolResults(msgs, `not run: ${e.message}`);
+    const detail = progress.sideEffects
+      ? `(execution budget stopped after ${progress.sideEffects} tool call(s) with side effects; partial work may exist and needs review) ${progress.last}`.trim()
+      : `(execution budget stopped before any tool side effects; no work was repeated) ${progress.last}`.trim();
+    msgs.push({ role: "assistant", content: detail });
+    if (!pii) this.commit(msgs);
+    this.onMessage?.(detail, reply);
+    if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: e.message });
+  }
+
+  private async requireBudget(envs: Envelope[], unit: "model_calls" | "tool_calls"): Promise<void> {
+    if (!this.opts.admitBudget) return;
+    const decisions = await this.opts.admitBudget(envs, unit);
+    const denied = decisions.find((decision) => !decision.allowed);
+    if (denied) throw new ExecutionBudgetStop(`execution budget ${denied.reason ?? "exhausted"}: ${denied.scope} ${denied.unit} used ${denied.used}${denied.limit === null ? "" : ` of ${denied.limit}`}`);
+    const remaining = decisions.filter((decision) => decision.unit === "elapsed_ms" && decision.remaining !== null).reduce<number | undefined>((min, decision) => min === undefined ? decision.remaining! : Math.min(min, decision.remaining!), undefined);
+    if (remaining !== undefined) {
+      clearTimeout(this.budgetTimer);
+      this.budgetTimer = setTimeout(() => {
+        this.budgetStopReason = "execution budget exhausted: elapsed_ms wall cap reached";
+        this.abort?.abort();
+      }, Math.max(0, remaining));
+    }
+  }
+
+  /** Preserve valid model history when admission stops in the middle of a parallel tool-call batch. */
+  private completeMissingToolResults(msgs: ChatMessage[], result: string): void {
+    const called = new Set<string>();
+    for (const msg of msgs) if (msg.role === "tool" && msg.tool_call_id) called.add(msg.tool_call_id);
+    const missing: string[] = [];
+    for (const msg of msgs) if (msg.role === "assistant") for (const call of msg.tool_calls ?? []) if (call.id && !called.has(call.id)) {
+      called.add(call.id); missing.push(call.id);
+    }
+    for (const tool_call_id of missing) msgs.push({ role: "tool", tool_call_id, content: result });
+  }
+
   /** L2 when the sidecar is up, otherwise (or when a call through it fails) the fixed model on L3. */
-  private async call(turnMsgs: ChatMessage[], policy?: { route?: string; fixedModel?: string }): Promise<ChatResult> {
+  private async call(turnMsgs: ChatMessage[], policy: { route?: string; fixedModel?: string } | undefined, envs: Envelope[]): Promise<ChatResult> {
     const { omni, sidecar } = this.opts;
     // A task turn asks for its class's route; a route needs the sidecar, which exists only when the worker was started with one.
     const route = sidecar ? (policy?.route ?? this.opts.route) : undefined;
     const fixedModel = policy?.fixedModel ?? this.opts.fixedModel;
     const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? TASK_TOOLS.map(asFunction) : [])];
-    this.abort = new AbortController();
-    const signal = this.abort.signal;
+    const signal = this.abort!.signal;
     const messages: ChatMessage[] = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
     const via = route ? await sidecar?.endpoint() : undefined;
     if (via) {
+      await this.requireBudget(envs, "model_calls");
       try {
         const res = await omni.chat({ model: route!, messages, tools }, { via, sessionId: this.sessionId, signal });
         this.lastServedBy = `switchyard ${route} -> ${res.selectedModel ?? "?"}`;
+        this.recordUsage(res, route!);
         return res;
       } catch (e) {
         if (signal.aborted) throw e;
         sidecar!.disable((e as Error).message);
       }
     }
+    await this.requireBudget(envs, "model_calls");
     const res = await omni.chat({ model: fixedModel, messages, tools }, { signal });
     this.lastServedBy = `omniroute ${fixedModel} (provider ${res.provider ?? "?"})`;
+    this.recordUsage(res, fixedModel);
     return res;
+  }
+
+  private recordUsage(res: ChatResult, requestedModel: string): void {
+    try {
+      this.opts.onUsage?.({
+        id: randomUUID(),
+        at: new Date().toISOString(),
+        ...(res.usage ? { usage: res.usage } : {}),
+        requestedModel: safeModelLabel(requestedModel) ?? "unknown",
+        ...(safeModelLabel(res.servedModel ?? res.selectedModel) ? { servedModel: safeModelLabel(res.servedModel ?? res.selectedModel)! } : {}),
+        ...(safeModelLabel(res.provider) ? { provider: safeModelLabel(res.provider)! } : {}),
+      });
+    } catch {
+      // Usage persistence is optional and must never affect a provider call or turn.
+    }
   }
 
   /** A finished turn joins the history; whole old turns (user message up to the next one) fall off the front, so tool calls keep their results. */
