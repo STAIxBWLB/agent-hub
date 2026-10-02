@@ -1697,3 +1697,20 @@ test("turn-free offers no facts or probes while a PII task is open, an advisory 
   const typo = await hub({ coordination: "turn_free" });
   await until(() => readFileSync(join(typo.stateDir, "hub.log"), "utf8").includes('coordination: "turn_free" is not "advisory" or "turn-free"; advisory applies'), "the log line");
 });
+
+// issue #109: every hand-over is tagged with the new owner's split profile; Claude Code's version comes from its transcript.
+test("a hand-over to Claude is tagged with the hub's version, Claude Code's from its transcript, and the coordination", async () => {
+  const { stateDir, daemon, console_ } = await hub({ coordination: "turn-free" });
+  const { instanceId } = (await console_.request({ t: "status" })).status;
+  const transcript = join(stateDir, "s1.jsonl");
+  writeFileSync(transcript, [JSON.stringify({ type: "user", version: "2.1.286" }), JSON.stringify({ type: "assistant", version: "2.1.287" }), '{"type":"attach'].join("\n"));
+  writeFileSync(join(stateDir, "claude-session.json"), JSON.stringify({ instanceId, sessionId: "s1", transcriptPath: transcript }));
+  await fakeClaude(stateDir);
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
+  expect((await console_.request({ t: "task", op: "hub_task_propose", args: { title: "review the parser", class: "review", owner: "claude" } })).text).toContain("owner claude");
+  const { Database } = await import("bun:sqlite");
+  const db = new Database(join(stateDir, "hub.db"), { readonly: true });
+  const history = JSON.parse((db.query("SELECT history FROM tasks WHERE id = 1").get() as { history: string }).history);
+  db.close();
+  expect(history.find((h: any) => h.event === "assigned")?.profile).toBe(`hub ${JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version}; claude 2.1.287; turn-free`);
+});

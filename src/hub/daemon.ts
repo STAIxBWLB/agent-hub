@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, fstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
@@ -544,10 +544,10 @@ export async function startDaemon(opts: DaemonOptions) {
     },
     ackFacts: (peer, id) => acked(peer, id, "done"),
     factsCurrent: (peer) => !factsOn() || facts.current(peer),
-    since: hubStartedAt,
+    splitProfile: (peer) => splitProfile(peer),
     recordCohort: (c) => event({ type: "cohort", ...c }),
     // The trace holds peer names and numbers only (never task text): it is the inputs a later check of the prediction needs.
-    recordSplit: (task, p) => event({ type: "split", task, verdict: p.verdict, ...(p.single ? { single: p.single, splitS: p.splitS, singleS: p.singleS } : {}), ...(p.verdict === "unknown" ? { reason: p.trace.at(-1)!.replace(/^ {2}unknown: /, "").slice(0, 200) } : {}), trace: p.trace.slice(1).map((l) => l.trim()).slice(0, 10) }),
+    recordSplit: (task, p, where) => event({ type: "split", task, where, verdict: p.verdict, ...(p.single ? { single: p.single, splitS: p.splitS, singleS: p.singleS } : {}), ...(p.verdict === "unknown" ? { reason: p.trace.at(-1)!.replace(/^ {2}unknown: /, "").slice(0, 200) } : {}), trace: p.trace.slice(1).map((l) => l.trim()).slice(0, 10) }),
     failing: () => bus.failingPeers(),
     held: () => Object.fromEntries(bus.knownPeers().flatMap((peer) => { const hold = queueHold(peer); return hold ? [[peer, hold]] : []; })),
   });
@@ -1018,6 +1018,37 @@ export async function startDaemon(opts: DaemonOptions) {
       };
     } catch { return {}; }
   };
+  /** Claude Code's version, from the last row of its transcript that names one (its rows carry it). */
+  const claudeVersion = (): string | undefined => {
+    const path = claudeSession().transcriptPath;
+    if (!path) return undefined;
+    let fd: number | undefined;
+    try {
+      fd = openSync(path, "r");
+      const size = fstatSync(fd).size;
+      const buf = Buffer.alloc(Math.min(size, 64 * 1024));
+      readSync(fd, buf, 0, buf.length, size - buf.length);
+      for (const line of buf.toString("utf8").split("\n").reverse()) {
+        try {
+          const version = JSON.parse(line)?.version;
+          if (typeof version === "string" && /^\d+\.\d+\.\d+/.test(version)) return version;
+        } catch { /* the cut first line, or not JSON */ }
+      }
+    } catch { /* no transcript yet */ } finally { if (fd !== undefined) closeSync(fd); }
+    return undefined;
+  };
+  /**
+   * A peer's split profile (issue #109): the hub's version, its agent's, and the hook profile, which is the hub's own (a
+   * turn-free project runs the facts hooks in Claude and steers facts into Codex). Undefined while a version is unknown.
+   * ponytail: the user's and plugins' hooks are not seen here, and only Claude and Codex report a version; read hooks
+   * from the native records, as the benchmark ledger does, and add other agents' versions when a pair needs them.
+   */
+  function splitProfile(peer: PeerId): string | undefined {
+    try {
+      const version = peer === "codex" ? (bus.peers.get("codex") as { version?: string } | undefined)?.version : peer === "claude" ? claudeVersion() : undefined;
+      return version ? `hub ${VERSION}; ${peer} ${version}; ${coordination}` : undefined;
+    } catch { return undefined; } // asked before the daemon finished starting
+  }
   /** Claude persists projects/<slug>/<sessionId>.jsonl only with the first turn. Prefer the
    * path Claude itself reported through the status line; fall back to the slug computation. */
   const claudeTranscriptPersisted = (sessionId: string): boolean => {

@@ -531,7 +531,7 @@ def ledger_of(run):
         "quiet": sum(1 for e in window if e.get("type") == "quiet"),
         "fyi": sum(1 for e in window if e.get("type") == "envelope" and e.get("from") in ("claude", "codex") and e.get("dropped") == "fyi"),
         "stale": sum(1 for e in window if e.get("type") == "stale"),
-        "split_predictions": [{k: e.get(k) for k in ("task", "verdict", "single", "splitS", "singleS", "reason", "trace") if e.get(k) is not None} for e in events if e.get("type") == "split"],
+        "split_predictions": [{k: e.get(k) for k in ("task", "where", "verdict", "single", "splitS", "singleS", "reason", "trace") if e.get(k) is not None} for e in events if e.get("type") == "split"],
         "hooks": hooks_seen(run, rows, rows_why, events),
         "contributions": contributions(run, rows, rows_why),
     })

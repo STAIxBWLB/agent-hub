@@ -486,12 +486,19 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   silent cohort with the caller, and only then leaves out the request to settle
   by message. `templates/claude-hooks.json` holds only the check-path hook; the
   facts hooks need a hub-launched session.
-- Routing does not change. When a task's overlap with another owner's open task
-  forms or changes a cohort, routed or named, the hub records a shadow split
-  prediction (`split` event; `ahub route explain <id>` shows its trace as it would
-  be now): whether splitting two equal units between the two peers
-  (`o_s + u_s < o_f + 2u_f`) would finish sooner than the faster one alone, from
-  this hub run's recorded task stages. It is unknown unless the units are equal
+- Routing does not change. When routing chooses the owner of a task that
+  overlaps another owner's task not started yet (`where: "routing"`, the record
+  calibration reads), and when an overlap forms or changes a cohort, routed or
+  named (`where: "cohort"`), the hub records a shadow split prediction (`split`
+  event; `ahub route explain <id>` shows its trace as it would be now): whether
+  splitting two equal units between the two peers (`o_s + u_s < o_f + 2u_f`)
+  would finish sooner than the faster one alone, from the recorded task stages of
+  each peer under the profile it has now. Every hand-over is tagged with the new
+  owner's profile: the hub's version, the agent's (Codex's from app-server,
+  Claude Code's from its transcript; other agents report none yet) and the
+  coordination mode, which decides the hub's own hooks; records accumulate across
+  hub runs, and a peer whose version is unknown has no profile. The user's and
+  plugins' hooks are not part of it. It is unknown unless the units are equal
   and known, both peers are available (the other owner idle; the task's own peer
   idle or busy taking it) with no other open work (an overlapping task its owner
   has started counts), and each has five measured tasks with no more than 30%

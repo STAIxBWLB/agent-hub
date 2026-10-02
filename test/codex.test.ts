@@ -37,6 +37,7 @@ test("offline until the TUI starts a thread, then idle", async () => {
   const { peer, tui, seen } = await setup();
   await until(() => seen.some((m) => m.id === 1));
   expect(peer.state).toBe("offline");
+  expect(peer.version).toBe("0.154.0"); // from app-server's userAgent: what split records are tagged with (#109)
   tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
   await until(() => peer.state === "idle");
   expect(seen.find((m) => m.id === 2).result.thread.id).toBe("th1"); // proxy is transparent

@@ -79,6 +79,8 @@ export class CodexPeer extends BasePeer {
   private lastAnswer = "";
   private readonly deltas = new Map<string, string[]>();
   private primed = false;
+  /** The Codex version app-server reported in its `initialize` answer (`<client>/<version> (...)`), once seen. */
+  version: string | undefined;
   private readonly steers = new Set<number>(); // request ids of turn/steer calls app-server has not answered yet
   private readonly turnDeliveries = new Map<string, Set<string>>();
   private readonly unboundDeliveries = new Set<string>();
@@ -376,6 +378,7 @@ export class CodexPeer extends BasePeer {
       else p?.resolve(msg.result);
       return; // ours: the TUI never asked for it
     }
+    if (typeof msg.result?.userAgent === "string") this.version = /^[^/\s]+\/(\d+\.\d+\.\d+)/.exec(msg.result.userAgent)?.[1] ?? this.version;
     const tracked = msg.id !== undefined && !msg.method ? link.tracked.get(msg.id) : undefined;
     if (tracked && link.tracked.delete(msg.id)) this.adopt(link, msg.result?.thread?.id, tracked === "thread/start");
     else if (msg.method) this.onNotification(link, msg.method, msg.params ?? {});
