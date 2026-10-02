@@ -138,7 +138,7 @@ export class CodexPeer extends BasePeer {
     } catch (error) {
       const proc = this.proc;
       if (proc) {
-        await stopOwnedProcess(proc);
+        await stopOwnedProcess(proc, { group: true });
         if (this.proc === proc) this.proc = undefined;
       }
       throw error;
@@ -151,7 +151,7 @@ export class CodexPeer extends BasePeer {
     const proc = this.proc;
     if (proc && proc.exitCode === null) {
       // Wait for the port to be released: `ahub codex` may restart the adapter right away.
-      await stopOwnedProcess(proc);
+      await stopOwnedProcess(proc, { group: true });
       if (this.proc === proc) this.proc = undefined;
     }
     this.setState("offline");
@@ -298,6 +298,7 @@ export class CodexPeer extends BasePeer {
       cwd: this.opts.cwd,
       env: childEnv({ ...process.env, ...(this.opts.env ?? {}) }),
       stdio: ["ignore", "ignore", "pipe"],
+      detached: true, // its own process group, stopped as a whole (#113): `codex` is a launcher with a native child
     });
     this.proc.stderr?.on("data", (d) => this.opts.log?.(`[${this.id}] ${String(d).trimEnd()}`));
     this.proc.on("error", (e) => (gone = `cannot run ${this.opts.bin ?? "codex"}: ${e.message}`));
@@ -312,7 +313,7 @@ export class CodexPeer extends BasePeer {
     }
     if (gone) throw new Error(gone);
     const proc = this.proc;
-    await stopOwnedProcess(proc);
+    await stopOwnedProcess(proc, { group: true });
     if (this.proc === proc) this.proc = undefined;
     throw new Error("codex app-server did not become healthy within 10 s");
   }

@@ -6,6 +6,7 @@ import { ControlClient } from '../../src/hub/control-client.ts';
 import { realPath } from '../../src/hub/project.ts';
 import { sessionSettings, statusLineSettings } from '../../src/cli/launch.ts';
 import { readEvents } from '../../src/hub/events.ts';
+import { daemonProjectRoot, parseProcessSnapshot } from '../process-ownership.mjs';
 process.umask(0o077);
 const argv = process.argv.slice(2), runArg = argv[argv.indexOf('--run') + 1], inputArg = argv[argv.indexOf('--private-inputs') + 1], upstreamArg = argv[argv.indexOf('--upstream-root') + 1], probeArg = argv[argv.indexOf('--probe-target') + 1];
 if (!runArg || !inputArg || !upstreamArg || !probeArg)
@@ -319,6 +320,22 @@ function codexProbe(messages: any[], start: number, command: string) { let invok
 } for (const child of Object.values(v))
     visit(child); }; for (const msg of messages.slice(start))
     visit(msg); return invoked && denied && !readable; }
+// The arm's hub daemon and the Codex app-server it runs (issue #113), each by a command line naming the fixture, so a
+// reused PID never counts.
+async function armProcesses(dir: string) {
+    const codex = `AGENTHUB_PROJECT_DIR=${JSON.stringify(dir)}`;
+    return parseProcessSnapshot(await cmd(['ps', '-axww', '-o', 'pid=,ppid=,pgid=,lstart=,command='])).flatMap((row: any) => daemonProjectRoot(row.command) === dir ? [{ pid: Number(row.pid), role: 'daemon' }]
+        : row.command.includes(' app-server ') && row.command.includes(codex) ? [{ pid: Number(row.pid), role: 'codex-app-server' }] : []);
+}
+// Claude's turn has ended when the last assistant row of its transcript does not stop for a tool (issue #113): its
+// final answer is written, and a later prompt would come as a user row.
+function claudeTurnEnded(transcriptPath: string) {
+    let last: any;
+    for (const line of readFileSync(transcriptPath, 'utf8').split('\n')) {
+        try { const row = JSON.parse(line); if (row?.type === 'assistant' || row?.type === 'user') last = row; } catch { }
+    }
+    return last?.type === 'assistant' && typeof last.message?.stop_reason === 'string' && last.message.stop_reason !== 'tool_use';
+}
 async function sendTerminalText(handle: string, text: string) { const receipt = await orca(['terminal', 'send', '--terminal', handle, '--text', text, '--enter', '--wait-submit', '2']); if (receipt.ok !== true)
     throw new Error('Orca rejected native sandbox probe input'); }
 async function arm(cas: any, index: number, kind: string, manifest: any) {
@@ -377,7 +394,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const settings = { permissions, ...(turnFree ? { disableAllHooks: false, hooks: session.hooks } : { disableAllHooks: true }), sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: denied } } };
     writeFileSync(join(dir, '.claude/settings.json'), JSON.stringify(settings));
     // The conditions each attempt ran with (issue #110): bound to its record, next to the capability readbacks in its events.
-    const conditions = { claude: { settingSources: 'project', strictMcpConfig: true, disableAllHooks: !turnFree, statusLine: false, hookEvents: turnFree ? Object.keys(session.hooks ?? {}).sort() : [], settingsSha256: hash(JSON.stringify(settings)), instructions: 'fixture AGENTS.md via --append-system-prompt-file' }, codex: { hooksFeature: false, memories: false, externalAgentMemoryImport: false, plugins: false, apps: false, multiAgent: false, notify: false, disabledMcpServers: codexUserServers, instructions: 'fixture AGENTS.md as project doc; the user\'s global AGENTS.md too' }, coordination: turnFree ? 'turn-free' : kind.startsWith('hub-') ? 'advisory' : 'solo', ...(staleOff ? { experiments: { stale_notices: 'deliver' } } : {}) };
+    const conditions = { claude: { settingSources: 'project', strictMcpConfig: true, disableAllHooks: !turnFree, statusLine: false, hookEvents: turnFree ? Object.keys(session.hooks ?? {}).sort() : [], settingsSha256: hash(JSON.stringify(settings)), instructions: 'fixture AGENTS.md via --append-system-prompt-file' }, codex: { hooksFeature: false, memories: false, externalAgentMemoryImport: false, plugins: false, apps: false, multiAgent: false, notify: false, disabledMcpServers: codexUserServers, skills: 'the user\'s Codex skills stay available', instructions: 'fixture AGENTS.md as project doc; the user\'s global AGENTS.md too' }, coordination: turnFree ? 'turn-free' : kind.startsWith('hub-') ? 'advisory' : 'solo', ...(staleOff ? { experiments: { stale_notices: 'deliver' } } : {}) };
     const candidateMcp = join(dir, '.claude/candidate-mcp.json');
     writeFileSync(candidateMcp, JSON.stringify({ mcpServers: { 'agent-hub': { command: 'bun', args: [join(repo, 'plugins/agent-hub/server.js')], env: { AGENTHUB_STATE_DIR: state, AGENTHUB_PROJECT_DIR: dir, AGENTHUB_PEER_ID: 'claude' } } } }), { mode: 0o600 });
     await cmd(['git', 'add', '-A'], dir);
@@ -481,6 +498,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
                 throw new Error('Codex native sandbox probe did not prove read denial');
             readiness.codex.sandboxProbe = { checked: true, result: 'denied', target_sha256: probeTargetSha, command_sha256: hash(probeCommand) };
         }
+        readiness.processes = await armProcesses(dir); // what teardown must leave stopped (issue #113)
         if (setupOnly) { endReason = 'setup-calibration'; return; }
         const op = async (op: string, args: any) => { const r = await c.request({ t: 'task', op, args }); if (!r.ok)
             throw new Error(r.error); return r.text; };
@@ -549,19 +567,28 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         const activeEnd = Date.now();
         const elapsedMs = started ? activeEnd - started : 0;
         let stoppedAt = 0; // when every actor this attempt started was stopped: writes can land until then
+        const cleanupErrors: string[] = [];
+        const cleanupError = (error: string) => { cleanupErrors.push(error); log('cleanup-error', { index, kind, error }); };
+        // A completed arm lets Claude finish the turn it is in (issue #113): a final answer still being written would be
+        // left out of the transcript prefix taken below, and Claude's settlement with it. Bounded; a stop ends it.
+        let claudeTurnWait: { ms: number, ended: boolean } | undefined;
+        if (endReason === 'completed' && readiness.claude?.transcriptPath && existsSync(readiness.claude.transcriptPath)) {
+            let ended = false;
+            while (!(ended = claudeTurnEnded(readiness.claude.transcriptPath)) && Date.now() - activeEnd < 30000 && !stopRequested)
+                await Bun.sleep(250);
+            claudeTurnWait = { ms: Date.now() - activeEnd, ended };
+        }
         if (client) {
             for (const actor of actors)
                 await client.request({ t: 'pause', peer: actor }).catch(() => { });
         }
         const finalStatus = client ? ((await client.request({ t: 'status' }).catch(() => ({ status: undefined }))).status) : undefined;
-        let cleanupFailed = false;
         if (claudeTerminal) {
             try {
                 await orcaClose(claudeTerminal);
             }
             catch {
-                cleanupFailed = true;
-                log('cleanup-error', { index, kind, error: 'Claude Orca terminal close failed' });
+                cleanupError('Claude Orca terminal close failed');
             }
         }
         const unsettled = actors.some(a => (finalStatus?.peers?.[a]?.liveAccepted?.length ?? 0) > 0 || finalStatus?.peers?.[a]?.needsReview || finalStatus?.peers?.[a]?.queued); 
@@ -584,17 +611,33 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
                 if (projectId) await cmd(['bun', cliPath, 'projects', 'remove', String(projectId)], dir);
             }
             catch {
-                cleanupFailed = true;
-                log('cleanup-error', { index, kind, error: 'owned hub shutdown or registration cleanup failed' });
+                cleanupError('owned hub shutdown or registration cleanup failed');
             }
+        }
+        // Whatever of the arm `ahub kill` left running is stopped here, by PID, and recorded (issue #113).
+        let leftovers: { pid: number, role: string }[] = [];
+        try {
+            leftovers = await armProcesses(dir);
+            if (leftovers.length) {
+                cleanupError(`left running after ahub kill: ${leftovers.map(p => `${p.role} ${p.pid}`).join(', ')}`);
+                for (const signal of ['SIGTERM', 'SIGKILL'] as const) {
+                    for (const p of await armProcesses(dir)) try { process.kill(p.pid, signal); } catch { }
+                    for (let i = 0; i < 8 && (await armProcesses(dir)).length; i++) await Bun.sleep(250);
+                }
+                const still = await armProcesses(dir);
+                if (still.length) cleanupError(`still running after SIGKILL: ${still.map(p => `${p.role} ${p.pid}`).join(', ')}`);
+                stoppedAt = Date.now();
+            }
+        }
+        catch {
+            cleanupError('arm processes could not be checked');
         }
         if (managerTerminal) {
             try {
                 await orcaClose(managerTerminal);
             }
             catch {
-                cleanupFailed = true;
-                log('cleanup-error', { index, kind, error: 'owned hub terminal close failed' });
+                cleanupError('owned hub terminal close failed');
             }
         }
         try {
@@ -605,8 +648,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             persistLedger();
         }
         catch {
-            cleanupFailed = true;
-            log('cleanup-error', { index, kind, error: 'sibling artifact read locks could not be restored' });
+            cleanupError('sibling artifact read locks could not be restored');
         }
         let trustRestored = true;
         if (trustLease) {
@@ -629,14 +671,12 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
                 }
                 else {
                     trustRestored = false;
-                    cleanupFailed = true;
-                    log('cleanup-error', { index, kind, error: 'Claude trust entry changed concurrently; preserved current state' });
+                    cleanupError('Claude trust entry changed concurrently; preserved current state');
                 }
             }
             catch {
                 trustRestored = false;
-                cleanupFailed = true;
-                log('cleanup-error', { index, kind, error: 'Claude trust restore failed' });
+                cleanupError('Claude trust restore failed');
             }
         }
         // The transcript as the attempt left it (issue #110): validity is read from these bytes later. Claude Code may still
@@ -654,10 +694,10 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         const patchFile = join(runs, 'patches', name + '.patch');
         writeFileSync(patchFile, patch, { mode: 0o600 });
         const events = readEvents(join(state, 'events.jsonl'));
-        const result = { protocol: 'native-cc-v1', index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: sealedBase.trim(), models: manifest.models, requestedModels: actors.reduce((o: any, a: string) => (o[a] = manifest.models[a], o), {}), readiness, patchFile, model: actors.length === 1 ? manifest.models[actors[0]!] : undefined, setupMs: started ? started - setup : Date.now() - setup, elapsedMs, stoppedMs: stoppedAt ? stoppedAt - activeEnd : undefined, teardownMs: Date.now() - activeEnd, end_reason: cleanupFailed ? 'infrastructure-error' : endReason === 'infrastructure-error' ? 'infrastructure-error' : endReason === 'provider-quota' ? 'provider-quota' : endReason === 'budget-paused' ? 'budget-paused' : endReason === 'model-unverified' || endReason === 'metadata-modified' ? 'infrastructure-error' : endReason === 'completed' ? 'completed' : endReason === 'delivery-unsettled' ? 'delivery-unsettled' : endReason === 'wall-timeout' ? 'timeout' : 'interrupted', end_reason_detail: endReason, error: error ? String(error).replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 300) : undefined, taskStates, effort: manifest.effort, events, codexMessages, codexTaskStart, startedAt: started || undefined, repeat, conditions, codexUsage: codexUsage(codexMessages, thread?.thread?.id), nativeVersions: { codex: codexVersion, claude: claudeVersion }, codexBinarySha256: sourceHash(codexBin), claudeSessionId: actors.includes('claude') ? claudeId : undefined, codexThreadId: thread?.thread?.id, trust_restored: trustRestored, cleanup_complete: !cleanupFailed, metadata_clean: metadataClean, metadata_sha256: metadataBaseline, delivery_status: finalStatus?.peers };
+        const result = { protocol: 'native-cc-v1', index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: sealedBase.trim(), models: manifest.models, requestedModels: actors.reduce((o: any, a: string) => (o[a] = manifest.models[a], o), {}), readiness, patchFile, model: actors.length === 1 ? manifest.models[actors[0]!] : undefined, setupMs: started ? started - setup : Date.now() - setup, elapsedMs, stoppedMs: stoppedAt ? stoppedAt - activeEnd : undefined, teardownMs: Date.now() - activeEnd, end_reason: cleanupErrors.length ? 'infrastructure-error' : endReason === 'infrastructure-error' ? 'infrastructure-error' : endReason === 'provider-quota' ? 'provider-quota' : endReason === 'budget-paused' ? 'budget-paused' : endReason === 'model-unverified' || endReason === 'metadata-modified' ? 'infrastructure-error' : endReason === 'completed' ? 'completed' : endReason === 'delivery-unsettled' ? 'delivery-unsettled' : endReason === 'wall-timeout' ? 'timeout' : 'interrupted', end_reason_detail: endReason, error: error ? String(error).replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 300) : undefined, taskStates, effort: manifest.effort, events, codexMessages, codexTaskStart, startedAt: started || undefined, repeat, conditions, codexUsage: codexUsage(codexMessages, thread?.thread?.id), nativeVersions: { codex: codexVersion, claude: claudeVersion }, codexBinarySha256: sourceHash(codexBin), claudeSessionId: actors.includes('claude') ? claudeId : undefined, codexThreadId: thread?.thread?.id, trust_restored: trustRestored, cleanup_complete: !cleanupErrors.length, cleanup_errors: cleanupErrors.length ? cleanupErrors : undefined, leftover_processes: leftovers.length ? leftovers : undefined, claude_turn_wait: claudeTurnWait, metadata_clean: metadataClean, metadata_sha256: metadataBaseline, delivery_status: finalStatus?.peers };
         writeFileSync(join(runs, 'runs', name + '.json'), JSON.stringify(result, null, 2), { mode: 0o600 });
         log('arm-end', { index, kind, elapsedMs, endReason, patchLines: patch.split('\n').length });
-        if (cleanupFailed)
+        if (cleanupErrors.length)
             throw new Error('cleanup incomplete; stopping cohort to avoid unmanaged actors');
     }
 }

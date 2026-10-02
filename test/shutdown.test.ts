@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { stopOwnedProcess } from "../src/hub/child-process.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
@@ -73,4 +75,27 @@ test("the watchdog stops a daemon whose project root vanished", async () => {
   rmSync(root, { recursive: true, force: true });
   await Promise.race([hub.stopped, bounded("losing its project root")]);
   rmSync(stateDir, { recursive: true, force: true });
+});
+
+// issue #113: Codex's `codex.js` forwards SIGTERM to its native app-server and waits; mid-turn the app-server does not
+// exit, the launcher alone is SIGKILLed, and the app-server is re-parented to init, still running.
+test("stopping a process group also stops the child its launcher waits for", async () => {
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const launch = async (detached: boolean) => {
+    // Both ignore SIGTERM: the launcher waits for its child, the child is busy.
+    const proc = spawn("sh", ["-c", 'trap "" TERM; (exec sleep 30) & echo $!; wait'], { stdio: ["ignore", "pipe", "ignore"], detached });
+    const child = Number(await new Promise<string>((resolve) => proc.stdout!.once("data", (d) => resolve(String(d)))));
+    return { proc, child };
+  };
+  const loose = await launch(false);
+  try {
+    await stopOwnedProcess(loose.proc, { termMs: 200 });
+    expect(alive(loose.child)).toBe(true); // what the hub did before
+  } finally { try { process.kill(loose.child, "SIGKILL"); } catch { /* gone */ } }
+  const grouped = await launch(true);
+  try {
+    await stopOwnedProcess(grouped.proc, { termMs: 200, group: true });
+    await Bun.sleep(100);
+    expect(alive(grouped.child)).toBe(false);
+  } finally { try { process.kill(grouped.child, "SIGKILL"); } catch { /* gone */ } }
 });
