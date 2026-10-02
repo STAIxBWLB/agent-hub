@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.2 and control protocol 11. Live verification
+This guide describes ahub 0.12.4 and control protocol 13. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Install and start
@@ -344,6 +344,159 @@ are quoted and marked as other agents' text. The hook runs `ahub`, so it has to
 be on the PATH Claude Code's hooks see; otherwise every edit shows a hook error
 (it never blocks). `ahub check-path <file>` prints the same list in a terminal.
 
+## Turn-free coordination
+
+A notice about an open task of its recipient (the completed-change notice and the
+edit-conflict messages above) is checked again for each recipient right before it
+is handed over, after any digest condensation: if that recipient's task has
+closed, changed owner or is gone, its copy is dropped instead of starting a turn,
+the journal records it as `discarded`, `hub.log` has a `STALE` line and
+`events.jsonl` a `stale` event. Other recipients keep their copies. Approvals,
+check results, review requests, assignments and budget, permission and recovery
+messages are never dropped this way, and a dropped notice never resolves another
+delivery. The condition lives in memory: after a restart, or for the oldest of
+more than 1024 notices, the notice is delivered as before.
+
+Set `"coordination": "turn-free"` in `.agenthub/config.json` to let owners of
+overlapping open tasks (the overlap rules above) work without messaging each
+other. The default, `"advisory"`, keeps the behaviour described so far, and it
+stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
+
+- Cohorts. Owners of overlapping tasks form a cohort when the overlap is found.
+  It is silent only if, at that moment, turn-free is on, no PII task is open and
+  every owner's context path is verified (below). It never turns silent later;
+  it stops being silent, for good, when an owner without a verified path joins,
+  a path is lost or a PII task opens, and every member still at work is told at
+  once that it may message again, with the completed-change notices the silence
+  held.
+- Verified context path. A hub-launched Claude session (`ahub claude`) gets the
+  hub's hook before and after every tool call and at the end of each turn, in
+  its `--settings` next to the status line tee (a `--settings` of your own turns
+  them off). Codex gets context by steer into its running turn. Until a fact or a
+  one-line probe has been read back, the peer counts as unverified: for Claude
+  the row Claude Code writes in its transcript for the hook's additional
+  context, matched by tool use id and the offer's id; for Codex the steered
+  input coming back as a user message item of the turn. A new native session,
+  the peer going offline, or three offers past a minute without a readback
+  (checked at its boundaries and every 30 seconds; facts sent with an
+  integration request wait for the next done and do not count, a refused steer
+  is no offer, and an unanswered one may still be read back), makes it
+  unverified again, and a Claude session whose
+  transcript the hub cannot find gets no facts at all and loses a verified
+  path. A session whose hooks stop altogether leaves no offer unread, so it
+  stays verified; a peer without a verified path that left three
+  offers unread gets none until a readback arrives. Kimi, Pi and the local
+  worker have no path yet, so a cohort with one of them is never silent.
+- Silence. While a cohort is silent, an agent message from a member to another
+  member is held back for that recipient only: other recipients and the console
+  get it unchanged, and `events.jsonl` records a `quiet` event. `hub_send`
+  answers `not delivered to <peer>: ...` (or `sent to: ...; not delivered to
+  ...` when some recipients got it); a native turn answer's sender hears it on
+  its next delivery. Workflow messages from the hub are never held back. A
+  member's messages stay held until its native turn has ended after its task
+  closed (Codex's turn completes, or Claude's Stop hook runs; a member already
+  between turns when its task closes has stopped; a paused peer may still be in
+  its turn, and Claude's channel going offline says nothing about its session),
+  so a late answer is still the cohort's. That settlement is recorded when it happens and
+  never undone: the member's next turn is new work, and once every member has
+  settled the cohort is over (a task reopened after that is outside it). Only a tool call starting counts as activity after
+  a turn end. A message held back from all its recipients does not count
+  against the sender's limits.
+- Facts. At each tool call (Claude) or completed tool item (Codex) of a cohort
+  member with an open task, the hub offers what changed since it last
+  acknowledged them in the files every member's task names and in the files it
+  touched, with the other members' new plans; the last member still at work
+  keeps the others' files after they finish. A directory a task names stands for
+  git's changed (staged or not) files against HEAD, new and deleted files under
+  it (200 at most; the fact says when more were cut, until it is read back and
+  again in a new session). A file the peer has seen there stays covered after git
+  stops listing it (put back to HEAD's bytes, or the directory moved away), so
+  the way back is shown (200 at most, the newest versions first; the rest are
+  named once as no longer tracked). A file there that the peer has neither seen
+  nor touched appears once someone changed or created it: it is named without a
+  diff (what happened before is never shown) until the peer reads the fact back,
+  and until then it counts as a change the peer has not been shown. `.git` directories
+  at any depth and what the denylist keeps from every agent
+  (`src/local/deny.ts` and `local.deny`) are never read or shown. A file a peer touched before it had a view of it (a
+  partial read, say) is compared with what it was then, so a change landing in
+  between is shown. A change is credited to an agent
+  only with effect evidence: a Claude Edit, MultiEdit or Write whose result is
+  exactly its input applied to the file as observed before it, or a Codex patch
+  whose diff is exactly what changed. Shell commands, concurrent writers and
+  unreported changes are shown with their attribution unknown, never credited by
+  elimination; an agent's own verified writes are not shown back to it. A Codex
+  read action never counts as having seen a file (it may be partial); a Claude
+  Read does when it returns the whole file: no offset or limit, at most 2000
+  lines and no line over 2000 characters. A diff that matches a PII pattern is
+  not shown (the file is named, to be read), and a changed file whose name
+  matches one is counted, not named. Only an acknowledgement (a readback, or the next
+  `hub_task_done` for facts sent with an integration request) moves the peer's
+  view, so a fact that does not arrive is
+  offered again at a later boundary; no turn is ever started for one. An
+  acknowledgement says the context reached the native session, not that the
+  model read it. 60 changed lines are shown at most, the cut files named; a
+  history longer than the hub keeps is shown with its attribution unknown, and a
+  file that falls out of the 64 a peer touched is named once. Only regular files
+  of 256 KB or less inside the project are read, re-resolved at every read and
+  opened without following links; larger ones are named without a diff. Facts never go through the bus or the delivery journal;
+  `events.jsonl` records `fact`, `fact_ack` and `capability` events with bytes
+  and latencies.
+- Integration. A member's `hub_task_done` is a completion intent. The member
+  whose intent completes the set is asked, as its done result, to check its work
+  against the others' (their files, signatures and summaries, plus its own facts)
+  and to call `hub_task_done` again; nothing is recorded as done yet. The next
+  call counts only for the same target: the same owner, cohort revision and
+  files (the named ones, and those each member wrote with an edit tool the hub
+  saw, Claude's Edit, MultiEdit and Write or a Codex patch, between being handed
+  its task and settling, so a symbol-only overlap counts and
+  a member settling keeps its files in; reading a file never moves it, a settled
+  member's later work does not count, a shell command's writes outside the named
+  paths are not seen, and a file the hub reads whole whose bytes equal HEAD's
+  is no change, whatever git's stat data says), with every other owner's native turn
+  ended after its done (or that owner idle when it finished); the integrating
+  owner's own other tasks in the cohort never count as still running. A done of a member by the console counts as its
+  intent too. Edits in between, a new member, an owner change, a failed check or
+  a reopened review ask again; a done within two seconds of a request is taken as a retry and gets the
+  same request again; after three requests the done is recorded with
+  `integration unresolved`, never as integrated, and that revision asks nothing
+  more (a configured check then counts as usual). A configured check of the integrating member
+  counts only for the target it confirmed; when another member reopens its task,
+  that member integrates instead and the earlier one's check counts as usual.
+  Inside a silent cohort a member's completed-change notice is held, not sent;
+  where no integration step runs for the others (the silence was lifted, a PII
+  task opened), the held notices go with the lift notice or the done result, and
+  for a task the console finishes, to the console. Open tasks outside the cohort
+  get their notices as usual. Facts sent with an integration request are
+  offered again at the next boundary until the next done acknowledges them.
+  Cohorts live in memory: after a hub restart an open
+  request is recorded as unresolved, and when a peer first attaches, each of its
+  open tasks that overlaps other work hears that overlaps are settled by message
+  again, with the completed-change notices of overlapping tasks finished since
+  it was handed the task (a notice may come twice; none is lost).
+- While any PII task is open the project behaves as advisory: no facts, no
+  silence and no integration step, and the cohorts that were silent stay lifted.
+  When it closes, the hub forgets what it had observed, so nothing changed
+  meanwhile is shown as a diff; each member is told which of its files to read
+  again.
+- `ahub check-path` asks the hub whether the owner of the claimed path shares a
+  silent cohort with the caller, and only then leaves out the request to settle
+  by message. `templates/claude-hooks.json` holds only the check-path hook; the
+  facts hooks need a hub-launched session.
+- Routing does not change. When a task's overlap with another owner's open task
+  forms or changes a cohort, routed or named, the hub records a shadow split
+  prediction (`split` event; `ahub route explain <id>` shows its trace as it would
+  be now): whether splitting two equal units between the two peers
+  (`o_s + u_s < o_f + 2u_f`) would finish sooner than the faster one alone, from
+  this hub run's recorded task stages. It is unknown unless the units are equal
+  and known, both peers are available (the other owner idle; the task's own peer
+  idle or busy taking it) with no other open work (an overlapping task its owner
+  has started counts), and each has five measured tasks with no more than 30%
+  failures and comparable work times. The work stage of a task ends at its first
+  `hub_task_done`, and the task itself is never one of its own observations.
+- `"experiments": {"stale_notices": "deliver"}` in `.agenthub/config.json`
+  turns the stale-notice drop off, for a controlled comparison only (the #106
+  ablation in `docs/cooperbench.md`); the hub logs it at start.
+
 ## Approvals and pauses
 
 Inspect permission requests in the terminal:
@@ -474,21 +627,21 @@ Rows without a live process are stale registrations; forget them with
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-or 11 (0.12.1) and only
+11 (0.12.1 and 0.12.2) or 12 (0.12.3) and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.2 ahub upgrade --to 0.12.2 --dry-run
-bunx --package @staix/agent-hub@0.12.2 ahub upgrade --to 0.12.2 --yes
+bunx --package @staix/agent-hub@0.12.4 ahub upgrade --to 0.12.4 --dry-run
+bunx --package @staix/agent-hub@0.12.4 ahub upgrade --to 0.12.4 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 

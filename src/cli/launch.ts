@@ -51,10 +51,30 @@ export function statusLineSettings(tee: StatusLineTee): string {
   return JSON.stringify({ statusLine: { type: "command", command, refreshInterval: tee.original?.refreshInterval ?? 10, ...(tee.original?.padding !== undefined ? { padding: tee.original.padding } : {}) } });
 }
 
+/** The turn-free facts hook (issue #108): absolute path of src/cli/facts-hook.ts and the hub's state dir. */
+export interface FactsHook {
+  script: string;
+  stateDir: string;
+}
+
+/**
+ * The one `--settings` value of a hub-launched Claude session: the status line tee, and in a turn-free project the
+ * facts hook before and after every tool call and at the end of each turn (issue #108; the turn end is the quiescence
+ * evidence of issue #107).
+ */
+export function sessionSettings(tee: StatusLineTee, facts?: FactsHook): string {
+  const settings = JSON.parse(statusLineSettings(tee)) as Record<string, unknown>;
+  if (facts) {
+    const hooks = [{ type: "command", command: `AGENTHUB_STATE_DIR=${sh(facts.stateDir)} bun ${sh(facts.script)}`, timeout: 5 }];
+    settings.hooks = { PreToolUse: [{ matcher: "*", hooks }], PostToolUse: [{ matcher: "*", hooks }], Stop: [{ hooks }] };
+  }
+  return JSON.stringify(settings);
+}
+
 export function buildLaunch(
   tool: "claude" | "codex",
   userArgs: string[],
-  ctx: { unattended: boolean; proxyUrl?: string; codexBin?: string; statusLine?: StatusLineTee },
+  ctx: { unattended: boolean; proxyUrl?: string; codexBin?: string; statusLine?: StatusLineTee; facts?: FactsHook },
 ): Launch {
   // Hub-level switches are consumed here; everything else passes through to the tool.
   const passthrough = userArgs.filter((a) => !["--unattended", "--safe", "--new"].includes(a));
@@ -66,8 +86,12 @@ export function buildLaunch(
   if (tool === "claude") {
     // `--settings` takes one value, so a user-supplied one wins and Claude has no quota source for that session.
     const own = passthrough.some((a) => a === "--settings" || a.startsWith("--settings="));
-    const tee = ctx.statusLine && !own ? ["--settings", statusLineSettings(ctx.statusLine)] : [];
-    const notes = [unattended ? UNATTENDED_WARNING : "", ctx.statusLine && own ? "note: you passed --settings, so the hub's status line tee is off and the budget coordinator cannot see Claude's quota (ahub budget set claude <0..1> still works)." : ""].filter(Boolean);
+    const tee = ctx.statusLine && !own ? ["--settings", sessionSettings(ctx.statusLine, ctx.facts)] : [];
+    const notes = [
+      unattended ? UNATTENDED_WARNING : "",
+      ctx.statusLine && own ? "note: you passed --settings, so the hub's status line tee is off and the budget coordinator cannot see Claude's quota (ahub budget set claude <0..1> still works)." : "",
+      ctx.facts && own ? "note: you passed --settings, so the hub's turn-free facts hooks are off for this session: Claude will not see the other agents' changes at its tool calls." : "",
+    ].filter(Boolean);
     return {
       cmd: "claude",
       args: ["--dangerously-load-development-channels", claudeChannel(passthrough), ...(unattended ? ["--dangerously-skip-permissions"] : []), ...tee, ...passthrough],

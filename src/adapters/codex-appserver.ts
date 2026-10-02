@@ -22,8 +22,17 @@ export interface CodexOptions {
   onTokens?: (added: number) => void;
   /** The native id of each turn as it starts, after the peer turned busy (issue #33: `ahub undo --context`). */
   onTurn?: (turnId: string) => void;
+  /**
+   * Each completed `fileChange`, `commandExecution`, `mcpToolCall` and `userMessage` item, for turn-free facts (issue
+   * #108): the first three are boundaries, a `userMessage` is the readback of a steered fact. Codex emits
+   * `item/started` about when a command has finished, so only completions are reported. Untyped JSON (hence `any`):
+   * the receiver checks every field it reads.
+   */
+  onItem?: (item: any) => void;
   /** How often to ask app-server for the rate limits while a TUI is attached. */
   usagePollMs?: number;
+  /** How long a fact's steer waits for app-server's answer (tests shorten it). */
+  steerTimeoutMs?: number;
   cwd: string;
   /** Optional launch environment; recovery authority is always removed before spawn. */
   env?: NodeJS.ProcessEnv;
@@ -86,6 +95,11 @@ export class CodexPeer extends BasePeer {
       launch: { kind: "codex", bin: this.opts.bin ?? "codex", cwd: this.opts.cwd, appPort: this.opts.appPort, proxyPort: this.opts.proxyPort },
       ...(this.threadId ? { threadId: this.threadId } : {}),
     };
+  }
+
+  /** The app-server thread the hub drives; a new one is a new native session. */
+  get thread(): string {
+    return this.threadId;
   }
 
   get proxyUrl(): string {
@@ -217,6 +231,24 @@ export class CodexPeer extends BasePeer {
       });
       const input = [{ type: "text", text: this.render(envs) }];
       link.up.send(JSON.stringify({ method: "turn/steer", id, params: { threadId: this.threadId, expectedTurnId, input } }));
+    });
+  }
+
+  /**
+   * A turn-free fact for the running turn (issue #108). Not a message: no envelope, no delivery record, nothing the
+   * turn's answer is addressed to. `refused` when there is no running turn or app-server says no: it never went in.
+   * `unanswered` when app-server did not answer in time: it may have gone in, and its readback can still come.
+   */
+  steerText(text: string): Promise<"accepted" | "refused" | "unanswered"> {
+    const link = this.link;
+    const expectedTurnId = [...this.activeTurns].reverse().find((t) => !t.startsWith("unknown:"));
+    if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId) return Promise.resolve("refused");
+    const id = this.nextId--;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => this.pending.delete(id) && resolve("unanswered"), this.opts.steerTimeoutMs ?? 10_000);
+      timer.unref?.();
+      this.pending.set(id, { resolve: () => (clearTimeout(timer), resolve("accepted")), reject: () => (clearTimeout(timer), resolve("refused")) });
+      link.up.send(JSON.stringify({ method: "turn/steer", id, params: { threadId: this.threadId, expectedTurnId, input: [{ type: "text", text }] } }));
     });
   }
 
@@ -417,6 +449,12 @@ export class CodexPeer extends BasePeer {
       const buf = this.deltas.get(params.itemId) ?? [];
       buf.push(params.delta);
       this.deltas.set(params.itemId, buf);
+    } else if (method === "item/completed" && ["fileChange", "commandExecution", "mcpToolCall", "userMessage"].includes(params.item?.type)) {
+      try {
+        this.opts.onItem?.(params.item);
+      } catch (error) {
+        this.opts.log?.(`[${this.id}] item handler failed: ${(error as Error).message}`); // the proxy keeps going
+      }
     } else if (method === "item/completed" && params.item?.type === "agentMessage") {
       const item = params.item;
       const text: string =

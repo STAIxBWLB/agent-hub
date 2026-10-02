@@ -5,7 +5,10 @@ import argparse, hashlib, json, os, re, shutil, subprocess, sys, tarfile
 from pathlib import Path, PurePosixPath
 
 SCHEMA = "agent-hub.cooperbench-run/v1"
-ARMS = ("solo-codex", "solo-claude", "hub-codex-claude")
+ARMS_V1 = ("solo-codex", "solo-claude", "hub-codex-claude")
+# Issue #110: manifest v2 adds the turn-free collaboration arm; a v1 manifest keeps its three arms for earlier cohorts;
+# the #106 ablation compares the advisory arm with the same arm with stale-notice dropping off.
+PROTOCOL_ARMS = (ARMS_V1, ARMS_V1 + ("hub-turnfree-codex-claude",), ("hub-codex-claude", "hub-staleoff-codex-claude"))
 
 class BenchError(RuntimeError): pass
 
@@ -21,10 +24,121 @@ def git(cwd: Path, *args: str):
     p = subprocess.run(["git", *args], cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if p.returncode: raise BenchError(p.stderr.strip() or "git operation failed")
     return p.stdout.strip()
+def arms_of(m):
+    arms=tuple(m.get("arms") or ())
+    if arms not in PROTOCOL_ARMS: raise BenchError("arms must match a versioned protocol")
+    return arms
+
+def required_actors(arm):
+    """The native actors an arm's run record must show: both for a joint arm, one for a solo arm."""
+    return ["codex","claude"] if arm.startswith("hub-") else [arm.removeprefix("solo-")]
+
+def check_plan(m):
+    """Issue #110: a manifest's planned attempts and active-time ceilings are what its arms, cases and repeats make."""
+    for name,plan in (m.get("plan") or {}).items():
+        if not isinstance(plan,dict): continue
+        if "attempts" not in plan: raise BenchError(f"plan {name}: no attempts")
+        cases,repeats=plan.get("cases"),plan.get("repeats")
+        if not isinstance(cases,list) or not cases or any(not isinstance(c,int) or isinstance(c,bool) or not 0<=c<len(m.get("cases",[])) for c in cases) or len(set(cases))!=len(cases):
+            raise BenchError(f"plan {name}: cases must be distinct indices of the manifest's cases")
+        if not isinstance(repeats,int) or isinstance(repeats,bool) or repeats<1: raise BenchError(f"plan {name}: repeats must be a whole number of at least 1")
+        attempts=len(m["arms"])*len(cases)*repeats
+        if plan["attempts"]!=attempts or plan.get("active_ceiling_s")!=attempts*m.get("wall_limit_s",0):
+            raise BenchError(f"plan {name}: {plan['attempts']} attempts / {plan.get('active_ceiling_s')} s do not match {attempts} attempts of {m.get('wall_limit_s')} s")
+
+TURN_FREE="hub-turnfree-codex-claude"
+
+def at_ms(value):
+    """Milliseconds since the epoch of a record's time: a number already, or an ISO string."""
+    if isinstance(value,(int,float)) and not isinstance(value,bool): return float(value)
+    from datetime import datetime
+    return datetime.fromisoformat(str(value).replace("Z","+00:00")).timestamp()*1000
+
+def active_window(run):
+    """(start, end) of an attempt's work in ms: from its first task proposal to the end of its active time, before
+    teardown. Either is None when the record cannot say."""
+    proposals=[h.get("at") for t in run.get("taskStates") or [] for h in t.get("history",[]) if h.get("event")=="proposed" and h.get("at") is not None]
+    start=min(map(at_ms,proposals)) if proposals else None
+    began,elapsed=run.get("startedAt"),run.get("elapsedMs")
+    end=at_ms(began)+elapsed if isinstance(began,(int,float)) and isinstance(elapsed,(int,float)) else None
+    return start,end
+
+def treatment_failure(arm, run):
+    """Issue #110: a turn-free attempt is valid only with its context paths working, which is decided before the
+    agents start and must hold while they work: both paths verified before the first task, none lost and no cohort lifted
+    or formed not silent until the work ended. Teardown comes after and does not count. Whether the agents' plans
+    overlapped, so that a cohort formed at all, is their doing after assignment and never makes an attempt invalid: the
+    ledger reports it as the treatment received."""
+    if arm!=TURN_FREE: return None
+    t0,end=active_window(run)
+    if t0 is None: return None
+    events=[e for e in run.get("events") or [] if e.get("at") is not None]
+    state={}  # each peer's capability as of the first task: its latest event by then
+    for e in sorted((e for e in events if e.get("type")=="capability" and at_ms(e["at"])<=t0),key=lambda e: at_ms(e["at"])): state[e.get("peer")]=e.get("state")
+    missing=sorted(p for p in ("claude","codex") if state.get(p)!="verified")
+    if missing: return f"turn-free context path not verified before the tasks: {', '.join(missing)}"
+    work=[e for e in events if at_ms(e["at"])>t0 and (end is None or at_ms(e["at"])<=end)]
+    lost=sorted({str(e.get("peer")) for e in work if e.get("type")=="capability" and e.get("state")=="lost"})
+    if lost: return f"turn-free context path lost while the agents worked: {', '.join(lost)}"
+    if any(e.get("type")=="cohort" and (e.get("event")=="lifted" or not e.get("silent")) for e in work): return "turn-free cohort not silent while the agents worked"
+    return None
+
+def hook_rows(rows):
+    """(hook, command, durationMs) of every hook row in a Claude transcript: hook attachments (Claude Code writes them for
+    hooks that printed something) and Stop hook summaries. A hook that printed nothing leaves no row."""
+    out=[]
+    for row in rows:
+        a=row.get("attachment") or {}
+        kind=str(a.get("type",""))
+        if kind.startswith("hook") and kind!="hook_additional_context": out.append((a.get("hookName") or a.get("hookEvent"),a.get("command"),a.get("durationMs")))
+        if row.get("type")=="system" and row.get("subtype")=="stop_hook_summary":
+            out+=[("Stop",h.get("command"),h.get("durationMs")) for h in row.get("hookInfos") or [] if isinstance(h,dict)]
+    return out
+
+def transcript(run):
+    """The rows of the attempt's Claude transcript, or (None, why)."""
+    claude=(run.get("readiness") or {}).get("claude") or {}
+    path=claude.get("transcriptPath")
+    if not path: return None,"no transcript path"
+    try: data=Path(path).read_bytes()
+    except OSError as e: return None,f"transcript unreadable ({e.__class__.__name__})"
+    if claude.get("transcriptSha256"):
+        # Claude Code may append rows after it exits: the attempt is the prefix recorded when it ended, and only that.
+        size=claude.get("transcriptBytes")
+        if isinstance(size,int) and not isinstance(size,bool): data=data[:size] if len(data)>=size else b""
+        if sha(data)!=claude["transcriptSha256"]: return None,"transcript changed since the attempt"
+    lines=data.decode("utf-8",errors="replace").splitlines()
+    rows=[]
+    for line in lines:
+        try: rows.append(json.loads(line))
+        except ValueError: continue
+    return rows,None
+
+def isolation_failure(run):
+    """Issue #110: no arm may run a foreign hook or MCP server. Codex runs no hooks and starts no MCP server but the hub's;
+    Claude's transcript may show only the hub's facts hook. Without the transcript isolation cannot be shown."""
+    msgs=run.get("codexMessages") or []
+    if any(m.get("method")=="hook/started" for m in msgs): return "hook isolation failed: Codex ran hooks"
+    started=sorted({str((m.get("params") or {}).get("name")) for m in msgs if m.get("method")=="mcpServer/startupStatus/updated" and (m.get("params") or {}).get("name")!="agent-hub" and (m.get("params") or {}).get("status")!="disabled"})
+    if started: return f"MCP isolation failed: Codex started {', '.join(started)}"
+    if "claude" not in str(run.get("kind") or ""): return None
+    rows,why=transcript(run)
+    if rows is None: return f"hook isolation unknown: {why}"
+    if any(c and "facts-hook.ts" not in c for _,c,_ in hook_rows(rows)): return "hook isolation failed: Claude ran a hook that is not the hub's"
+    return None
+
+GRADED_ENDS=("completed","timeout")
+
+def unavailable_reason(arm, run):
+    """Why an attempt with a run record is not graded, or None. Completed and timed-out attempts are graded."""
+    if run.get("end_reason") not in GRADED_ENDS: return run.get("end_reason_detail") or run.get("end_reason") or "no end reason"
+    return treatment_failure(arm,run) or isolation_failure(run)
+
 def validate_manifest(m):
     if m.get("schema") != SCHEMA or m.get("upstream", {}).get("commit") != "63b9d44d9f39a02fccf5bf0052db48a917a011fd":
         raise BenchError("unsupported schema or upstream commit")
-    if m.get("arms") != list(ARMS): raise BenchError("arms must match the versioned protocol")
+    arms_of(m)
+    check_plan(m)
     cases=m.get("cases")
     if not isinstance(cases,list) or not cases: raise BenchError("manifest has no cases")
     seen=set()
@@ -97,7 +211,7 @@ def prepare(args):
     for i,c in enumerate(m["cases"]):
         archive=Path(c["archive"]).resolve()
         if file_sha(archive)!=c["archive_sha256"]: raise BenchError(f"archive hash mismatch for case {i}")
-        for arm in ARMS:
+        for arm in arms_of(m):
             dest=root/"fixtures"/f"{i:02d}-{arm}"
             if dest.exists(): raise BenchError("fixture already exists")
             dest.mkdir(parents=True,mode=0o700)
@@ -137,9 +251,10 @@ def grade(args):
     if prep.get("runner_sha256")!=file_sha(Path(__file__)) or prep.get("native_runner_sha256")!=file_sha(Path(__file__).with_name("native.ts")) or prep.get("evaluator_sha256")!=file_sha(args.evaluator): raise BenchError("benchmark runner/evaluator changed after fixture preparation")
     if cohort.get("runner_sha256")!=prep.get("runner_sha256") or cohort.get("native_runner_sha256")!=prep.get("native_runner_sha256"): raise BenchError("run source pins differ from prepared fixture")
     if cohort.get("calibration"): raise BenchError("setup calibration is never graded")
-    if cohort.get("arms")!=list(ARMS): raise BenchError("run cohort does not contain every predeclared arm")
+    arms=arms_of(m)
+    if cohort.get("arms")!=list(arms): raise BenchError("run cohort does not contain every predeclared arm")
     prepared_keys=[(int(x["case"]),x["arm"]) for x in prep.get("fixtures",[])]
-    if len(prepared_keys)!=len(m["cases"])*len(ARMS) or len(set(prepared_keys))!=len(prepared_keys) or set(prepared_keys)!={(i,arm) for i in range(len(m["cases"])) for arm in ARMS}: raise BenchError("prepared fixture matrix is incomplete or duplicated")
+    if len(prepared_keys)!=len(m["cases"])*len(arms) or len(set(prepared_keys))!=len(prepared_keys) or set(prepared_keys)!={(i,arm) for i in range(len(m["cases"])) for arm in arms}: raise BenchError("prepared fixture matrix is incomplete or duplicated")
     try: restored=load(root/"restoration.json")
     except Exception as e: raise BenchError("protected inputs were not restored") from e
     if restored.get("restored") is not True: raise BenchError("protected inputs were not restored")
@@ -178,21 +293,22 @@ def grade(args):
 
     fixture_map={(int(x["case"]),x["arm"]):x for x in prep["fixtures"]}
     for case in selected:
-      for arm in ARMS:
+      for arm in arms:
         fixture=fixture_map[(case,arm)]
         cwd=Path(fixture["cwd"])
         if not cwd.is_dir() or cwd.resolve().parent!=(root/"fixtures").resolve(): raise BenchError("fixture cwd identity mismatch")
         run_path=root/"runs"/f"{case:02d}-{arm}.json"
         if not run_path.is_file(): rows.append({"case":case,"arm":arm,"status":"missing","pass":None}); continue
-        run=load(run_path); required_actors={"solo-codex":["codex"],"solo-claude":["claude"],"hub-codex-claude":["codex","claude"]}[arm]
+        run=load(run_path); actors=required_actors(arm)
         ready=run.get("readiness") if isinstance(run.get("readiness"),dict) else {}
-        identities=all(isinstance(ready.get(actor),dict) and ready[actor].get("cwd")==str(cwd) and ready[actor].get("requestedModel",ready[actor].get("model"))==m.get("models",{}).get(actor) and (ready[actor].get("sessionId") if actor=="claude" else ready[actor].get("threadId")) and isinstance(ready[actor].get("sandboxProbe"),dict) and ready[actor]["sandboxProbe"].get("checked") is True and ready[actor]["sandboxProbe"].get("result")=="denied" for actor in required_actors)
-        claude_ready=ready.get("claude",{}) if "claude" in required_actors else {}
+        identities=all(isinstance(ready.get(actor),dict) and ready[actor].get("cwd")==str(cwd) and ready[actor].get("requestedModel",ready[actor].get("model"))==m.get("models",{}).get(actor) and (ready[actor].get("sessionId") if actor=="claude" else ready[actor].get("threadId")) and isinstance(ready[actor].get("sandboxProbe"),dict) and ready[actor]["sandboxProbe"].get("checked") is True and ready[actor]["sandboxProbe"].get("result")=="denied" for actor in actors)
+        claude_ready=ready.get("claude",{}) if "claude" in actors else {}
         if claude_ready and claude_ready.get("modelVerified") is not True: identities=False
-        if run.get("cwd")!=str(cwd) or not identities or run.get("cleanup_complete") is not True or run.get("metadata_clean") is not True or run.get("metadata_sha256")!=fixture_metadata_sha256(cwd) or ("claude" in required_actors and run.get("trust_restored") is not True):
+        if run.get("cwd")!=str(cwd) or not identities or run.get("cleanup_complete") is not True or run.get("metadata_clean") is not True or run.get("metadata_sha256")!=fixture_metadata_sha256(cwd) or ("claude" in actors and run.get("trust_restored") is not True):
             rows.append({"case":case,"arm":arm,"status":"unavailable","reason":"native identity/model/readiness/cleanup gate failed","pass":None}); continue
-        if run.get("end_reason") in ("setup-error","provider-quota","budget-paused","delivery-unsettled","interrupted","infrastructure-error"):
-            rows.append({"case":case,"arm":arm,"status":"unavailable","reason":run["end_reason"],"pass":None}); continue
+        failure=unavailable_reason(arm,run)
+        if failure:
+            rows.append({"case":case,"arm":arm,"status":"unavailable","reason":failure,"pass":None}); continue
         sealed=run.get("sealedCommit")
         if not isinstance(sealed,str):
             rows.append({"case":case,"arm":arm,"status":"unavailable","reason":"sealed baseline identity mismatch","pass":None}); continue
@@ -210,7 +326,7 @@ def grade(args):
         result=ev.get("both_passed")
         claude_usage=run.get("readiness",{}).get("claude",{}).get("nativeUsage")
         rows.append({"case":case,"arm":arm,"status":"scored" if isinstance(result,bool) else "unavailable","pass":result if isinstance(result,bool) else None,"input_sha256":input_hash,"patch_path":str(patch_path),"evaluation_path":str(output),"evaluation_sha256":file_sha(output),"evaluator_sha256":eval_hash,"native_usage":{"codex":run.get("codexUsage"),"claude":claude_usage}})
-    expected_rows=[(case,arm) for case in selected for arm in ARMS]
+    expected_rows=[(case,arm) for case in selected for arm in arms]
     actual_rows=[(row["case"],row["arm"]) for row in rows]
     if actual_rows!=expected_rows or len(set(actual_rows))!=len(actual_rows): raise BenchError("grade rows do not exactly cover the fixed cohort")
     dump(root/"grade.json",{"schema":SCHEMA,"manifest_sha256":prep["manifest_sha256"],"runner_sha256":prep["runner_sha256"],"native_runner_sha256":prep["native_runner_sha256"],"evaluator_sha256":eval_hash,"cohort":selected,"controls":controls,"rows":rows})
@@ -220,7 +336,8 @@ def report(args):
     root=args.run.resolve(); m=load(root/"manifest.json"); grade=load(root/"grade.json");cohort=load(root/"cohort.json")
     if grade.get("manifest_sha256")!=file_sha(root/"manifest.json") or cohort.get("manifest_sha256")!=grade.get("manifest_sha256"): raise BenchError("stale grade: manifest hash differs")
     if grade.get("runner_sha256")!=cohort.get("runner_sha256") or grade.get("native_runner_sha256")!=cohort.get("native_runner_sha256"): raise BenchError("stale grade: runner source hashes differ")
-    expected_rows=[(case,arm) for case in cohort["cases"] for arm in ARMS]
+    arms=arms_of(m)
+    expected_rows=[(case,arm) for case in cohort["cases"] for arm in arms]
     actual_rows=[(row.get("case"),row.get("arm")) for row in grade.get("rows",[])]
     if grade.get("cohort")!=cohort["cases"] or actual_rows!=expected_rows or len(set(actual_rows))!=len(actual_rows): raise BenchError("stale grade: row coverage differs from the fixed cohort")
     for row in grade.get("rows",[]):
@@ -234,7 +351,7 @@ def report(args):
             if not evaluation.is_file() or file_sha(evaluation)!=item.get("evaluation_sha256") or load(evaluation).get("input_sha256")!=item.get("input_sha256"):
                 raise BenchError("stale evaluation control: input or output hash differs")
     by_arm={}
-    for arm in ARMS:
+    for arm in arms:
         rows=[x for x in grade["rows"] if x["arm"]==arm]; scored=[x for x in rows if x["status"]=="scored"]
         codex_known=[r["native_usage"]["codex"].get("total_tokens") for r in scored if isinstance(r.get("native_usage",{}).get("codex"),dict) and r["native_usage"]["codex"].get("total_tokens") is not None]
         claude_known=[r["native_usage"]["claude"].get("output_tokens") for r in scored if isinstance(r.get("native_usage",{}).get("claude"),dict) and r["native_usage"]["claude"].get("output_tokens") is not None]

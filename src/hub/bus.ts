@@ -12,6 +12,8 @@ export type BusEvent =
   | { t: "envelope"; env: Envelope; dropped?: "hop" | "fyi" }
   | { t: "overflow"; env: Envelope; peer: PeerId }
   | { t: "undeliverable"; env: Envelope; peer: PeerId; reason?: string }
+  | { t: "stale"; env: Envelope; peer: PeerId; reason: string }
+  | { t: "quiet"; env: Envelope; peers: PeerId[]; reason: string }
   | { t: "state"; peer: PeerId; state: PeerState };
 
 export interface BusOptions {
@@ -29,6 +31,18 @@ export interface BusOptions {
    * it, and the sender hears it on its next delivery.
    */
   admit?: (env: Envelope, parent?: string) => string | undefined;
+  /**
+   * Optional: does a queued envelope still matter to this recipient (issue #106)? Asked per recipient when a delivery is
+   * built and again right before it is handed over, after condensation. False drops it unsent: the journal records it
+   * as discarded and taps see a `stale` event.
+   */
+  relevant?: (peer: PeerId, env: Envelope) => boolean;
+  /**
+   * Optional: why this recipient does not get this envelope (issue #107, a turn-free cohort). Asked per recipient once
+   * the audience is final (implicit replies and `digest` resolved), so the other recipients still get it, unchanged;
+   * the console and the log see it as published.
+   */
+  silence?: (env: Envelope, peer: PeerId) => string | undefined;
 }
 
 /** Serializable delivery state used by the controlled restart coordinator. Bodies stay in the private daemon file. */
@@ -145,7 +159,10 @@ export class Bus {
       // Limits count what is sent: the envelope as built (a reply goes to its parent's sender, `digest` is resolved,
       // the priority is capped), never the raw `to`.
       const parent = opts?.inReplyTo?.id;
-      let refused = this.opts.admit?.(env, parent);
+      // Held back from every recipient (issue #107): nothing goes out, so nothing counts against the sender's limits.
+      const hushed = this.hushed(env);
+      const heldBack = hushed.length > 0 && hushed.length === this.audience(env).length;
+      let refused = heldBack ? undefined : this.opts.admit?.(env, parent);
       // A turn answer has no caller to refuse: over its important budget it goes out as status, not at all.
       if (refused && env.priority === "important" && !this.opts.admit?.({ ...env, priority: "status" }, parent)) {
         // It went out, so the advice on how to send it does not apply.
@@ -158,6 +175,10 @@ export class Bus {
         return refused;
       }
       this.publish(env);
+      // The sender's result (issue #107): a turn answer has no caller, so it hears it on its next delivery. It counts as
+      // not sent only when nobody got it.
+      if (hushed.length) this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}`));
+      return heldBack ? hushed[0]!.reason : undefined;
     };
     peer.onFailed = (envs) => {
       // The adapter got the condensed list; what has to come back is what that list replaced.
@@ -490,8 +511,9 @@ export class Bus {
     this.emit({ t: "envelope", env, ...(dropped ? { dropped } : {}) });
     if (dropped) { this.persist(); return []; }
 
-    const known = new Set([...this.peers.keys(), ...this.queues.keys(), ...(this.journal?.list().map((d) => d.peer) ?? [])]);
-    const targets = (env.to ?? [...this.peers.keys()]).filter((id) => id !== env.from && known.has(id));
+    const hushed = this.hushed(env);
+    if (hushed.length) this.emit({ t: "quiet", env, peers: hushed.map((h) => h.peer), reason: hushed[0]!.reason });
+    const targets = this.audience(env).filter((id) => !hushed.some((h) => h.peer === id));
     this.suppressDrain = !!this.journal;
     try { for (const id of targets) {
       const peer = this.peers.get(id);
@@ -520,6 +542,21 @@ export class Bus {
       }
     }
     return targets;
+  }
+
+  /** Who an envelope is queued for: its `to`, or every peer but its sender. */
+  audience(env: Envelope): PeerId[] {
+    const known = new Set([...this.peers.keys(), ...this.queues.keys(), ...(this.journal?.list().map((d) => d.peer) ?? [])]);
+    return (env.to ?? [...this.peers.keys()]).filter((id) => id !== env.from && known.has(id));
+  }
+
+  /** The recipients of `env` that the silence policy holds it back from, each with why (issue #107). */
+  hushed(env: Envelope): { peer: PeerId; reason: string }[] {
+    if (!this.opts.silence || env.hop > MAX_HOP || env.priority === "fyi") return [];
+    return this.audience(env).flatMap((peer) => {
+      const reason = this.opts.silence!(env, peer);
+      return reason ? [{ peer, reason }] : [];
+    });
   }
 
   /** A recently published envelope, for resolving `reply_to`. */
@@ -611,6 +648,7 @@ export class Bus {
       const peer = this.peers.get(id)!;
       const queue = this.queues.get(id)!;
       while (!this.storageError && !this.recoveryHeld && !this.recoveryHeldPeers.has(id) && queue.length && this.stateOf(id) === "idle") {
+        if (this.dropIrrelevant(id, queue) && !queue.length) break;
         const delay = this.wait(queue);
         if (delay > 0) { this.arm(id, delay); break; }
         const preface = this.prefaces.get(id);
@@ -626,6 +664,12 @@ export class Bus {
         if (this.recoveryHeld || this.recoveryHeldPeers.has(id) || this.stateOf(id) !== "idle") {
           if (!this.journal) { if (preface) this.restorePreface(id, preface); queue.unshift(...batch.filter((e) => !this.withdrawn.has(e.id))); }
           break;
+        }
+        // The final recheck (issue #106): a task can close while the delivery was condensed or prepared.
+        if (batch.some((e) => !this.isRelevant(id, e))) {
+          if (!this.journal) { if (preface) this.restorePreface(id, preface); queue.unshift(...batch.filter((e) => !this.withdrawn.has(e.id))); }
+          this.dropIrrelevant(id, queue);
+          continue;
         }
         if (this.journal) {
           if (this.prefaces.get(id) !== preface || batch.some((e) => !queue.some((item) => item.id === e.id))) continue;
@@ -648,6 +692,34 @@ export class Bus {
       }
     } catch { this.storageError = "delivery journal unavailable"; }
     finally { this.draining.delete(id); this.onQueues?.(); }
+  }
+
+  private isRelevant(id: PeerId, env: Envelope): boolean {
+    return this.opts.relevant?.(id, env) ?? true;
+  }
+
+  /**
+   * A notice about the recipient's open task can wait out a whole Codex turn; once the task is closed it would only
+   * start a turn of its own (issue #106). Checked when the delivery is built, not when the notice was published. Only
+   * this recipient's copy goes: the other queues keep theirs, and no other delivery record changes.
+   */
+  private dropIrrelevant(id: PeerId, queue: Envelope[]): boolean {
+    if (!this.opts.relevant) return false;
+    let dropped = false;
+    for (let i = queue.length - 1; i >= 0; i--) {
+      const env = queue[i]!;
+      if (this.isRelevant(id, env)) continue;
+      const reason = `stale: task #${env.refs?.task ?? "?"} is no longer open for ${id}`;
+      queue.splice(i, 1);
+      dropped = true;
+      if (this.journal) this.pendingOutcomes.push({ id: crypto.randomUUID(), peer: id, state: "discarded", createdAt: Date.now(), originals: [env], out: [], reason });
+      this.emit({ t: "stale", env, peer: id, reason });
+    }
+    if (dropped) {
+      this.persist();
+      this.onQueues?.();
+    }
+    return dropped;
   }
 
   /**

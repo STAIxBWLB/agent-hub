@@ -102,6 +102,9 @@ export function summarize(events: StampedEvent[]): Report {
       case "undeliverable":
         r.messages[e.type]++;
         break;
+      case "stale": // published, then dropped before delivery (issue #106)
+        r.messages.dropped.stale = (r.messages.dropped.stale ?? 0) + 1;
+        break;
       case "turn_end":
         peer(e.peer).turns++;
         peer(e.peer).busyMinutes += e.ms / 60_000;

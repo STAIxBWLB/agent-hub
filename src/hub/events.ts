@@ -10,9 +10,18 @@ export const EVENTS_SCHEMA = 1;
 export type HubEvent =
   | { type: "envelope"; id: string; from: string; to?: string[]; priority: string; hop: number; kind?: string; task?: string; bytes?: number; private?: boolean; dropped?: string }
   | { type: "overflow" | "undeliverable"; id: string; from: string; peer: string }
+  | { type: "stale"; id: string; from: string; peer: string; task?: string }
+  | { type: "quiet"; id: string; from: string; peers: string[] }
+  | { type: "fact"; peer: string; id: string; files: number; plans: number; unknown: number; bytes: number; via: "hook" | "steer" | "done"; ms?: number; hookMs?: number; rttMs?: number; accepted?: boolean; unanswered?: boolean; probe?: boolean; coverage?: boolean }
+  | { type: "fact_ack"; peer: string; id: string; via: string; ms: number }
+  | { type: "capability"; peer: string; state: "verified" | "lost"; via?: string }
+  | { type: "split"; task: number; verdict: "split" | "single" | "unknown"; single?: string; splitS?: number; singleS?: number; reason?: string; trace?: string[] }
   | { type: "state"; peer: string; state: string }
   | { type: "turn_start"; peer: string; turn: string }
   | { type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number }
+  | { type: "native_turn_end"; peer: string }
+  | { type: "hook_stats"; peer: string; n: number; startupMs: number; hubMs: number; maxStartupMs: number }
+  | { type: "cohort"; id: number; event: "formed" | "joined" | "lifted"; silent: boolean; tasks: number[]; owners: string[] }
   | { type: "tokens"; peer: string; n: number }
   | { type: "usage"; peer: string; source: "omniroute" | "claude_transcript"; id: string; measuredAt?: string; requestedModel?: string; servedModel?: string; provider?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; totalTokens?: number }
   | { type: "task"; id: number; event: string; by: string; state: string; owner: string | null; reviewer: string | null; class: string; pii: boolean }

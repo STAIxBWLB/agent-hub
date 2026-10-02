@@ -1,0 +1,246 @@
+{
+  "schema": "agent-hub.cooperbench-run/v1",
+  "upstream": {
+    "repository": "https://github.com/CooperBench/CooperBench",
+    "commit": "63b9d44d9f39a02fccf5bf0052db48a917a011fd"
+  },
+  "hub_version": "0.12.4",
+  "versions": {
+    "hub": "0.12.4",
+    "codex": "0.159.3",
+    "claude": "2.1.287"
+  },
+  "models": {
+    "codex": "gpt-6.1-sol",
+    "claude": "claude-opus-5-5"
+  },
+  "effort": {
+    "codex": "medium",
+    "claude": "medium"
+  },
+  "arms": [
+    "solo-codex",
+    "solo-claude",
+    "hub-codex-claude",
+    "hub-turnfree-codex-claude"
+  ],
+  "wall_limit_s": 300,
+  "memory": false,
+  "inference": false,
+  "topology": "Solo native Codex; solo native Claude; Codex plus Claude on one shared fixture checkout with advisory coordination (0.12.4 drops stale notices; the #106 ablation, with and without that, is manifest-v2-ablation-106.json); and the same pair with turn-free coordination: a silent cohort once both context paths are verified by readback, facts at tool boundaries (Claude hooks, Codex steers), and an integration request (at most three) for the member that finishes last. Task allocation is fixed by case index in both joint arms; the split rule is recorded as a shadow prediction only. Every final artifact is graded by official tests.",
+  "cases": [
+    {
+      "repo": "pallets_click_task",
+      "task": 2068,
+      "features": [
+        1,
+        6
+      ],
+      "image_digest": "akhatua/cooperbench-pallets-click@sha256:2116cc975812211cdae8b97f63069c666b7fffc490ce0d329f8853e241342386",
+      "base_commit": "d791537317947448a3960662d00acf160eff2602",
+      "archive_sha256": "4296f993ec9f220476637f45b813dbb62bf0a40b10339089918fbc03b29f3b47",
+      "prompt_sha256": [
+        "6fc1156c2df73cb467c5742b2d0f19cc14760e1c686cd616b0ef1653df4ef606",
+        "634e4a083e1f088283f0d91dbf06d4f114228656b30493b87c706dd84cf76372"
+      ],
+      "image": "akhatua/cooperbench-pallets-click:task2068"
+    },
+    {
+      "repo": "pallets_click_task",
+      "task": 2068,
+      "features": [
+        2,
+        10
+      ],
+      "image_digest": "akhatua/cooperbench-pallets-click@sha256:2116cc975812211cdae8b97f63069c666b7fffc490ce0d329f8853e241342386",
+      "base_commit": "d791537317947448a3960662d00acf160eff2602",
+      "archive_sha256": "4296f993ec9f220476637f45b813dbb62bf0a40b10339089918fbc03b29f3b47",
+      "prompt_sha256": [
+        "90bd71e1d55949828571723fbd91b4ad4f5439663a1444e3fefebc849f0f4764",
+        "dbc931039f8a439a3a14aa1f505909020c907c35e26d39e833a8d025dc1455b9"
+      ],
+      "image": "akhatua/cooperbench-pallets-click:task2068"
+    },
+    {
+      "repo": "pallets_click_task",
+      "task": 2068,
+      "features": [
+        5,
+        7
+      ],
+      "image_digest": "akhatua/cooperbench-pallets-click@sha256:2116cc975812211cdae8b97f63069c666b7fffc490ce0d329f8853e241342386",
+      "base_commit": "d791537317947448a3960662d00acf160eff2602",
+      "archive_sha256": "4296f993ec9f220476637f45b813dbb62bf0a40b10339089918fbc03b29f3b47",
+      "prompt_sha256": [
+        "85164f29f9885891d2468870a5070b1960f47ac789872e5563de20d479dfb96f",
+        "1b916bfeb8bc3c0b5f4b8db7e3b1149954cc228d5a4c9e6a049fba61a7c9e109"
+      ],
+      "image": "akhatua/cooperbench-pallets-click:task2068"
+    },
+    {
+      "repo": "pallets_click_task",
+      "task": 2068,
+      "features": [
+        5,
+        11
+      ],
+      "image_digest": "akhatua/cooperbench-pallets-click@sha256:2116cc975812211cdae8b97f63069c666b7fffc490ce0d329f8853e241342386",
+      "base_commit": "d791537317947448a3960662d00acf160eff2602",
+      "archive_sha256": "4296f993ec9f220476637f45b813dbb62bf0a40b10339089918fbc03b29f3b47",
+      "prompt_sha256": [
+        "85164f29f9885891d2468870a5070b1960f47ac789872e5563de20d479dfb96f",
+        "0e46eef13fc12ac0ea871b094f1cc9baa1c9c75c614325306559160d4991d5e0"
+      ],
+      "image": "akhatua/cooperbench-pallets-click:task2068"
+    },
+    {
+      "repo": "pallets_click_task",
+      "task": 2068,
+      "features": [
+        6,
+        7
+      ],
+      "image_digest": "akhatua/cooperbench-pallets-click@sha256:2116cc975812211cdae8b97f63069c666b7fffc490ce0d329f8853e241342386",
+      "base_commit": "d791537317947448a3960662d00acf160eff2602",
+      "archive_sha256": "4296f993ec9f220476637f45b813dbb62bf0a40b10339089918fbc03b29f3b47",
+      "prompt_sha256": [
+        "634e4a083e1f088283f0d91dbf06d4f114228656b30493b87c706dd84cf76372",
+        "1b916bfeb8bc3c0b5f4b8db7e3b1149954cc228d5a4c9e6a049fba61a7c9e109"
+      ],
+      "image": "akhatua/cooperbench-pallets-click:task2068"
+    },
+    {
+      "repo": "pallets_click_task",
+      "task": 2068,
+      "features": [
+        7,
+        10
+      ],
+      "image_digest": "akhatua/cooperbench-pallets-click@sha256:2116cc975812211cdae8b97f63069c666b7fffc490ce0d329f8853e241342386",
+      "base_commit": "d791537317947448a3960662d00acf160eff2602",
+      "archive_sha256": "4296f993ec9f220476637f45b813dbb62bf0a40b10339089918fbc03b29f3b47",
+      "prompt_sha256": [
+        "1b916bfeb8bc3c0b5f4b8db7e3b1149954cc228d5a4c9e6a049fba61a7c9e109",
+        "dbc931039f8a439a3a14aa1f505909020c907c35e26d39e833a8d025dc1455b9"
+      ],
+      "image": "akhatua/cooperbench-pallets-click:task2068"
+    },
+    {
+      "repo": "pallets_jinja_task",
+      "task": 1465,
+      "features": [
+        2,
+        3
+      ],
+      "image_digest": "akhatua/cooperbench-pallets-jinja@sha256:c8c7802ed974eb11dff1692f2de9e58b75f01c7128a54bd258a157beb4714f7b",
+      "base_commit": "20eb7f5e33120f1717b78bdf85540ab75631187a",
+      "archive_sha256": "4954001d59d8e891939f7219d21c18001f61564691fdbfa893a87cfb7a6eb2c1",
+      "prompt_sha256": [
+        "04b563486caae8c7d485dce459df098073c86ab64835628e68ae3ed0f6b31ff1",
+        "a824981ca0072bf3629b7fd69e99c909e3747973dd62426af1a460e2f1d9ae39"
+      ],
+      "image": "akhatua/cooperbench-pallets-jinja:task1465"
+    },
+    {
+      "repo": "pallets_jinja_task",
+      "task": 1465,
+      "features": [
+        2,
+        6
+      ],
+      "image_digest": "akhatua/cooperbench-pallets-jinja@sha256:c8c7802ed974eb11dff1692f2de9e58b75f01c7128a54bd258a157beb4714f7b",
+      "base_commit": "20eb7f5e33120f1717b78bdf85540ab75631187a",
+      "archive_sha256": "4954001d59d8e891939f7219d21c18001f61564691fdbfa893a87cfb7a6eb2c1",
+      "prompt_sha256": [
+        "04b563486caae8c7d485dce459df098073c86ab64835628e68ae3ed0f6b31ff1",
+        "d569c1b220395dc69e06e6444e2f82a8e5dcdd913b5222fba6654ead5f339f7e"
+      ],
+      "image": "akhatua/cooperbench-pallets-jinja:task1465"
+    },
+    {
+      "repo": "samuelcolvin_dirty_equals_task",
+      "task": 43,
+      "features": [
+        2,
+        3
+      ],
+      "image_digest": "akhatua/cooperbench-samuelcolvin-dirty-equals@sha256:c0d0ab8de32ec280797c0043d29c2904389b786cb8ad9f44fbf7b79032d68926",
+      "base_commit": "593bcccf738ab8b724d7cb860881d74344171f5f",
+      "archive_sha256": "169001ec5cb6f6917b25db77a5f9c754ed698593c67c64c01ae4a168129b7703",
+      "prompt_sha256": [
+        "aa7bfdbf0590c17798461e5d4f87745e00648eba92b9c7dfba2342c87b5a66d4",
+        "75e3ca2ec8bd9d5b63d4a200c69cd49380b57c2c503f10e629ba8207832d4ae6"
+      ],
+      "image": "akhatua/cooperbench-samuelcolvin-dirty-equals:task43"
+    },
+    {
+      "repo": "samuelcolvin_dirty_equals_task",
+      "task": 43,
+      "features": [
+        3,
+        7
+      ],
+      "image_digest": "akhatua/cooperbench-samuelcolvin-dirty-equals@sha256:c0d0ab8de32ec280797c0043d29c2904389b786cb8ad9f44fbf7b79032d68926",
+      "base_commit": "593bcccf738ab8b724d7cb860881d74344171f5f",
+      "archive_sha256": "169001ec5cb6f6917b25db77a5f9c754ed698593c67c64c01ae4a168129b7703",
+      "prompt_sha256": [
+        "75e3ca2ec8bd9d5b63d4a200c69cd49380b57c2c503f10e629ba8207832d4ae6",
+        "616af688a762e61edd65b82d5a0baea0b4773e8da54177658e6acb8f14d4e8a1"
+      ],
+      "image": "akhatua/cooperbench-samuelcolvin-dirty-equals:task43"
+    }
+  ],
+  "limitations": [
+    "Mixed native models/harnesses by request; no fixed-model causal coordination claim",
+    "300s wall budget per condition, not a token or dollar matched budget",
+    "Shared checkout differs from isolated CooperBench coop",
+    "Changed native tools/budget relative to prior Pi pilot, so do not attribute differences solely to model",
+    "No user or plugin hooks for either agent in any arm; the turn-free arm runs the hub's own Claude facts hook, whose time counts as part of the treatment",
+    "The release pilot repeats one pair; it shows feasibility, not a performance difference"
+  ],
+  "sampling": "All official flash pairs from three selected task images, fixed before inference as a local-resource convenience sample; not representative of the full suite.",
+  "actor_assignment": "In both joint arms, Codex receives the first feature at even case indices and Claude at odd indices; the other actor receives the second feature.",
+  "order_rule": "Row (case index + repeat) modulo n of a Williams design over the n arms (0, 1, n-1, 2, n-2, ... shifted by the row): over n consecutive rows every arm runs right before every other arm once, and repeats of one case change which arm runs last.",
+  "stop_conditions": [
+    "all assigned tasks approved and deliveries settled",
+    "300 second active-work limit",
+    "structured provider quota error",
+    "hub budget pause",
+    "native infrastructure failure"
+  ],
+  "plan": {
+    "pilot": {
+      "purpose": "release feasibility only (no adoption claim)",
+      "cases": [
+        0
+      ],
+      "repeats": 3,
+      "attempts": 12,
+      "active_ceiling_s": 3600
+    },
+    "study": {
+      "purpose": "after release, on the owner's go-ahead",
+      "cases": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "repeats": 2,
+      "attempts": 80,
+      "active_ceiling_s": 24000
+    },
+    "ablation_order": [
+      "#106 stale notices: manifest-v2-ablation-106.json, the advisory arm with and without stale-notice dropping on the same release",
+      "#107/#108 cohort silence with acknowledged facts and revision-fenced integration (turn-free arm)",
+      "#109 split rule: shadow predictions only, allocation fixed"
+    ],
+    "adoption_gate": "advisory stays the default; a change needs prespecified paired quality and resource criteria and held-out repository/task instances (docs/cooperbench.md, Preregistration)"
+  }
+}

@@ -1,10 +1,13 @@
+import { isAbsolute, relative } from "node:path";
 import type { Briefs } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
 import { CLASSES, OUTCOMES_KEPT_MS, PLAN_KEYS, type Board, type Task, type TaskClass, type TaskPlan, type TaskRefs } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
-import { assign, detectSignals, LOCAL, PI, type Assignment, type Routing } from "./routing.ts";
+import { assign, detectSignals, LOCAL, PI, predictSplit, type Assignment, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
+import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
+import { realPath } from "./project.ts";
 
 export interface TasksDeps {
   board: Board;
@@ -40,6 +43,25 @@ export interface TasksDeps {
   roles?: Record<string, string[]>;
   /** Optional: name a class for a task proposed without one. `onCampus` says whether the model call stays on campus. */
   triage?: { classify: (title: string, detail: string) => Promise<TaskClass | undefined>; onCampus: () => Promise<boolean> };
+  /** Turn-free coordination (issue #107): configured and no PII task open. Asked at each use. */
+  turnFree?: () => boolean;
+  /** Whether a peer's context path for facts is verified in its current session (issue #108). */
+  capable?: (peer: PeerId) => boolean;
+  /** Whether `peer` is between native turns now (issue #107): Codex not busy, Claude stopped since its last tool call. */
+  idle?: (peer: PeerId) => boolean;
+  /** One hash over these project files as they are now: an integration target (issue #107). */
+  treeHash?: (paths: string[], windows: { peer: PeerId; since: number; until?: number }[]) => string;
+  /** The facts due for a peer, offered with an integration request; acknowledged by its next done. */
+  integrationFacts?: (peer: PeerId) => { id: string; text: string } | undefined;
+  ackFacts?: (peer: PeerId, id: string) => void;
+  /** Whether a peer has been shown every change to its files. */
+  factsCurrent?: (peer: PeerId) => boolean;
+  /** When this hub run started: split observations come from it only, one version and one hook profile (issue #109). */
+  since?: number;
+  /** A shadow split prediction made at an assignment, for the record (issue #109). */
+  recordSplit?: (task: number, prediction: SplitPrediction) => void;
+  /** A cohort formed, changed or was lifted (issue #107), for the record: the benchmark's treatment check reads it. */
+  recordCohort?: (cohort: { id: number; event: "formed" | "joined" | "lifted"; silent: boolean; tasks: number[]; owners: PeerId[] }) => void;
 }
 
 const ESCALATE_AFTER = 2;
@@ -65,6 +87,12 @@ export const samePlace = (a: string, b: string) => {
 
 /** Events that hand a task to an owner (or take it away); newer history records that owner on them (#67). */
 const OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassigned"]);
+/** The note on an accept recorded by the done call itself: its stages are unknown to the split prediction (issue #109). */
+const WITH_DONE = "with its done";
+/** How many times a task changed hands: a cohort member's generation (issue #107). */
+const ownerGen = (t: Task) => t.history.filter((h) => OWNERSHIP_EVENTS.has(h.event)).length;
+/** When the task was handed to its current owner (its creation, if it never changed hands). */
+const handedAt = (t: Task) => [...t.history].reverse().find((h) => OWNERSHIP_EVENTS.has(h.event) && h.event !== "unassigned")?.at ?? t.history[0]?.at ?? Date.now();
 
 /** One line of model-written text: whitespace (newlines included) collapses, so it can never start a forged log line. */
 const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.replace(/\s+/g, " ").trim().slice(0, 300) : undefined);
@@ -96,7 +124,14 @@ const planText = (plan: TaskPlan = {}) => PLAN_KEYS.filter((k) => plan[k]?.lengt
  * PII handling, envelopes, briefs and memory notes are decided in one place.
  */
 export class Tasks {
+  /** Turn-free cohorts (issue #107): who works without messages, and who integrates. */
+  readonly cohorts: Cohorts;
+
   constructor(private readonly d: TasksDeps) {
+    this.cohorts = new Cohorts({
+      silence: (owners) => this.turnFree() && owners.every((p) => p !== USER && p !== HUB && (this.d.capable?.(p) ?? false)),
+      idle: (peer) => this.d.idle?.(peer) ?? false,
+    });
     // What the on-prem worker says about a PII task is private on the bus (console tail and log show a stub), so the
     // board keeps the text: `ahub task show <id>` is where the console user reads it, a refusal included.
     d.bus.tap((e) => {
@@ -218,6 +253,53 @@ export class Tasks {
   }
 
   /**
+   * A peer's tasks of a class in this hub run, as split observations (issue #109): handed to it by someone else (claims
+   * left out), typed by outcome. Stages are the board's own proxies and stay unknown when the accept came with the done.
+   */
+  splitObservations(cls: TaskClass, peer: PeerId, exclude?: number): SplitObservation[] {
+    const since = this.d.since ?? 0;
+    return this.d.board.list().flatMap((t): SplitObservation[] => {
+      if (t.class !== cls || t.owner !== peer || t.id === exclude) return [];
+      const given = [...t.history].reverse().find((h) => OWNERSHIP_EVENTS.has(h.event) && h.event !== "unassigned" && (h.owner === undefined || h.owner === peer));
+      if (!given || given.at < since || given.by === peer) return [];
+      const after = t.history.filter((h) => h.at >= given.at);
+      if (after.some((h) => ["check failed", "changes_requested", "escalated", "released", "declined", "integration unresolved"].includes(h.event))) return [{ outcome: "failed" }];
+      if (t.state !== "approved") return [];
+      const accepted = after.find((h) => h.event === "accepted" && h.by === peer);
+      // The work stage ends at its first done call: checks and an integration step are not the work itself.
+      const intent = accepted && after.find((h) => h.at >= accepted.at && ["done", "done (checking)", "integration requested"].includes(h.event));
+      if (!accepted || !intent || accepted.note === WITH_DONE) return [{ outcome: "approved" }];
+      return [{ outcome: "approved", orient: accepted.at - given.at, work: intent.at - accepted.at }];
+    });
+  }
+
+  /**
+   * The shadow split prediction for routing `task` to `candidate` (issue #109): the pair it would form with the owner of
+   * an open task it overlaps. Assignment never reads it; `route explain` shows it and assignment records it.
+   */
+  splitShadow(task: Task, candidate: PeerId | undefined): SplitPrediction | undefined {
+    if (!candidate) return undefined;
+    const other = this.overlapHits({ ...task, owner: null }).map((h) => h.task).find((t) => t.owner && t.owner !== candidate && t.owner !== USER && t.owner !== HUB);
+    if (!other) return undefined;
+    const peers: [PeerId, PeerId] = [candidate, other.owner!];
+    const states = this.states();
+    const failing = this.d.failing?.() ?? {};
+    // Other open work, and the overlapping task itself once its owner has started it: either way that owner would not
+    // start from orientation plus two whole units.
+    const open = this.d.board.list().filter((t) => OPEN.includes(t.state) && t.id !== task.id && (t.id !== other.id || t.state !== "proposed"));
+    // One task of a class is one unit: the only normalization the board supports, so another class is unknown.
+    const unit = task.class === other.class ? 1 : undefined;
+    return predictSplit({
+      peers,
+      observations: Object.fromEntries(peers.map((p) => [p, this.splitObservations(task.class, p, task.id)])),
+      units: [unit, unit],
+      backlog: Object.fromEntries(peers.map((p) => [p, open.filter((t) => t.owner === p).length])),
+      // The routed peer may be busy taking this very task; the other owner, busy, is at work on something already.
+      available: Object.fromEntries(peers.map((p) => [p, !failing[p] && (states[p] === "idle" || (states[p] === "busy" && p === candidate))])),
+    });
+  }
+
+  /**
    * Work on these places failed (a check failure, or changes requested): approvals of other tasks on the same places
    * within the window were contradicted. Each approval counts once.
    */
@@ -302,12 +384,83 @@ export class Tasks {
   overlaps(task: Task, forOwner = true, found = this.overlapHits(task)): string {
     const hits = found.map((h) => `#${h.task.id} (owner ${h.task.owner}) on ${this.where(h)}`);
     if (!hits.length) return "";
+    if (this.silentFor(task.id)) {
+      // A silent cohort (issue #107): the plans are what the owner works from, and nobody negotiates by message.
+      const plans = found.map((h) => (planText(h.task.plan) ? `#${h.task.id}'s plan: ${planText(h.task.plan)}` : "")).filter(Boolean);
+      const who = forOwner
+        ? `Do not message ${found.length > 1 ? "those owners" : "that owner"}: you are in one turn-free cohort, the hub shows you their changes as you work and asks the last of you to finish to check the work against the others.${plans.length ? ` ${plans.join(" | ")}` : ""}`
+        : `${task.owner ?? "Whoever takes it"} works alongside without messages (turn-free).`;
+      return `Overlaps ${hits.join("; ")}. ${who}`;
+    }
     const who = forOwner ? "Settle it with that owner via hub_send before editing those paths." : `${task.owner ?? "Whoever takes it"} is told to settle it.`;
     return `Overlaps ${hits.join("; ")}. ${who}`;
   }
 
+  turnFree = (): boolean => this.d.turnFree?.() ?? false;
+
+  /** Whether `task` is in a silent cohort: its owner works without messages to the other members (issue #107). */
+  silentFor = (task: number): boolean => this.turnFree() && !!this.cohorts.of(task)?.silent;
+
+  /** The live silent cohort that makes a message from `from` to `to` cohort coordination (issue #107). */
+  silenced = (from: PeerId, to: PeerId) => (this.turnFree() ? this.cohorts.silenced(from, to) : undefined);
+
+  /**
+   * What `peer`'s turn-free facts cover (issue #108): for each live cohort in which it still has an open task, the paths
+   * every member's task names, the other members' plans, and the task its own writes are reported under. Membership,
+   * not open overlap, so the last member to finish still sees the others' final edits. Undefined without such a task.
+   */
+  factScope = (peer: PeerId): { paths: string[]; plans: { task: number; owner: PeerId; text: string }[]; task?: { id: number; title: string }; since?: number } | undefined => {
+    const open = (task: number) => OPEN.includes(this.d.board.get(task)?.state ?? "approved");
+    const members = this.cohorts.list().filter((c) => [...c.members.values()].some((m) => m.owner === peer && open(m.task))).flatMap((c) => [...c.members.values()]);
+    const tasks = members.flatMap((m) => {
+      const t = this.d.board.get(m.task);
+      return t && t.owner === m.owner && !this.isPii(t) ? [t] : [];
+    });
+    const mine = tasks.filter((t) => t.owner === peer && OPEN.includes(t.state));
+    if (!mine.length) return undefined;
+    const paths = [...new Set(tasks.flatMap((t) => this.places(t).paths))].filter((p) => p !== "." && this.nameable(p));
+    const plans = tasks.filter((t) => t.owner !== peer).map((t) => ({ task: t.id, owner: t.owner!, text: planText(t.plan) })).filter((p) => p.text);
+    // When the earliest of its tasks was handed over: work from before facts were tracked is not covered.
+    const since = Math.min(...mine.map(handedAt));
+    return { paths, plans, task: { id: mine[0]!.id, title: mine[0]!.title }, since };
+  };
+
+  /** The tasks an overlap text for `task` names: their plans are in it (issue #108). */
+  overlapTasks = (task: Task): number[] => this.overlapHits(task).map((h) => h.task.id);
+
   /** While a gone owner's tasks move, its other tasks are about to move too: they are no one to settle with. */
   private releasing: PeerId | undefined;
+
+  /**
+   * Notices that only matter while their recipient's task is open (issue #106): envelope id -> recipient and task, the
+   * newest 1024. An envelope without a record (another kind, a restart, an evicted record) is delivered as before: its
+   * purpose is never guessed from its kind.
+   * ponytail: kept in memory, so after a restart such a notice is delivered whatever its task's state; persist the
+   * condition if stale notices after restarts show up.
+   */
+  private readonly conditional = new Map<string, { peer: PeerId; task: number; states: Task["state"][] }>();
+
+  /**
+   * Publish a notice about `task`, which only matters to `to` while that task is in one of `states` for it (issue
+   * #106): open work by default; the conflict notices of #91 count a task in review too.
+   */
+  whileOpen(to: PeerId, task: number, body: string, states: Task["state"][] = OPEN): void {
+    const env = newEnvelope(HUB, body, { to: [to], kind: "task", refs: { task: String(task) } });
+    this.conditional.set(env.id, { peer: to, task, states });
+    if (this.conditional.size > 1024) this.conditional.delete(this.conditional.keys().next().value as string);
+    this.d.bus.publish(env);
+  }
+
+  /**
+   * Whether a queued envelope still matters to `peer`; the bus asks per recipient at delivery (issue #106). False only
+   * for a recorded notice to this peer whose task is gone, has another owner, or left the states it was about.
+   */
+  relevant = (peer: PeerId, env: Envelope): boolean => {
+    const c = this.conditional.get(env.id);
+    if (!c || c.peer !== peer) return true;
+    const t = this.d.board.get(c.task);
+    return !!t && t.owner === peer && c.states.includes(t.state);
+  };
 
   /** Whether a model-written name may be shown to other peers and in the log: one matching a PII pattern may be PII. */
   nameable = (t: string): boolean => !this.isPii({ signals: detectSignals({ title: "", detail: t, refs: {} }, this.d.routing(), this.d.cwd) });
@@ -330,9 +483,28 @@ export class Tasks {
     return shown.length ? shown.join(", ") : "a path whose name is withheld (it matches a PII pattern)";
   }
 
-  /** Paths from refs and plan, symbols from the plan: the places a task says it touches (issue #31). */
+  /**
+   * Paths from refs and plan, symbols from the plan: the places a task says it touches (issue #31). Models write paths
+   * absolute or relative: one inside the project is compared in its project-relative spelling.
+   */
   private places(task: Task): { paths: string[]; symbols: string[] } {
-    return { paths: [...new Set([...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])])], symbols: task.plan?.symbols ?? [] };
+    const paths = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])].map((p) => this.projectPath(p));
+    return { paths: [...new Set(paths)], symbols: task.plan?.symbols ?? [] };
+  }
+
+  private roots?: string[];
+  private projectPath(p: string): string {
+    if (!isAbsolute(p)) return normPath(p);
+    if (!this.roots) {
+      let real = this.d.cwd;
+      try { real = realPath(this.d.cwd); } catch { /* compared as given */ }
+      this.roots = [...new Set([this.d.cwd, real])];
+    }
+    for (const root of this.roots) {
+      const r = relative(root, p);
+      if (!r.startsWith("..") && !isAbsolute(r)) return normPath(r || ".");
+    }
+    return p;
   }
 
   private overlapHits(task: Task): { task: Task; paths: string[]; symbols: string[] }[] {
@@ -362,7 +534,8 @@ export class Tasks {
     const plan = planText(task.plan);
     for (const hit of hits) {
       if (hit.task.owner === USER || hit.task.owner === HUB) continue;
-      this.d.tell(hit.task.owner!, noteLine(HUB, "finding", `task #${task.id} (owner ${task.owner}) now overlaps your #${hit.task.id} on ${this.where(hit)}; ${task.owner} is told to settle it${plan ? `. Its plan (full: hub_task_list): ${plan}` : ""}`));
+      const how = this.silentFor(task.id) ? `do not message ${task.owner}: you are in one turn-free cohort and the hub shows you its changes as you work` : `${task.owner} is told to settle it`;
+      this.d.tell(hit.task.owner!, noteLine(HUB, "finding", `task #${task.id} (owner ${task.owner}) now overlaps your #${hit.task.id} on ${this.where(hit)}; ${how}${plan ? `. Its plan (full: hub_task_list): ${plan}` : ""}`));
     }
   }
 
@@ -403,7 +576,9 @@ export class Tasks {
     if (typeof target === "number") {
       const task = this.d.board.get(target);
       if (!task) throw new Error(`no task #${target}`);
-      return [`task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"})`, "if it were assigned now:", ...assign(task, this.states(), routing, { exclude: this.declined(task), waitsFor: this.waitsFor(task), ...this.weights(task.class) }).trace];
+      const a = assign(task, this.states(), routing, { exclude: this.declined(task), waitsFor: this.waitsFor(task), ...this.weights(task.class) });
+      // The split trace is for the pair the record is about: the task's owner when it has one (issue #109).
+      return [`task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"})`, "if it were assigned now:", ...a.trace, ...(this.splitShadow(task, task.owner ?? a.owner)?.trace ?? [])];
     }
     const draft = { title: target.title, detail: target.detail ?? "", refs: target.refs ?? {} };
     return assign({ class: target.class, signals: detectSignals(draft, routing, this.d.cwd) }, this.states(), routing, this.weights(target.class)).trace;
@@ -429,6 +604,7 @@ export class Tasks {
   private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; claim?: boolean } = {}): Promise<Task> {
     const waits = this.waitsFor(task);
     const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class) });
+
     if (waits.length) {
       this.d.notify(`task ${this.publicTitle(task)} waits for ${waits.map((id) => `#${id}`).join(", ")}; it is offered once they are approved`);
       return task;
@@ -436,10 +612,15 @@ export class Tasks {
     if (!a.owner) {
       this.d.notify(`task ${this.publicTitle(task)}: no peer can take it (${a.trace.filter((l) => l.includes("skipped")).length} skipped); assign with: ahub task assign ${task.id} <peer>`);
       // Only a decline takes the task away from its owner; a failed console assign or escalation leaves it where it was.
-      return opts.clearOnFail && task.owner ? this.d.board.update(task.id, by, "unassigned", { owner: null }) : task;
+      if (opts.clearOnFail && task.owner) {
+        this.cohorts.leave(task.id);
+        return this.d.board.update(task.id, by, "unassigned", { owner: null });
+      }
+      return task;
     }
     const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}) }, opts.note ?? `to ${a.owner}`);
     const hits = this.overlapHits(next);
+    this.formCohort(next, hits);
     if (hits.length) {
       this.announceOverlap(next, hits);
       this.tellEarlierOwners(next, hits);
@@ -550,12 +731,56 @@ export class Tasks {
     this.d.notify(`task ${this.publicTitle(next)} accepted by ${by}`);
     if (cleaned) {
       const hits = this.overlapHits(next);
+      this.formCohort(next, hits);
       const fresh = hits.filter((h) => !before.has(h.task.id));
       if (fresh.length) this.announceOverlap(next, fresh);
       this.tellEarlierOwners(next, hits);
     }
     return next;
   }
+
+  /**
+   * Put `task` and the open tasks it overlaps into one cohort (issue #107). A silent cohort that an owner without a
+   * verified context path joins speaks again, and its members hear so.
+   */
+  private formCohort(task: Task, hits: ReturnType<Tasks["overlapHits"]>): void {
+    if (!task.owner || this.isPii(task)) return;
+    const before = this.cohorts.of(task.id)?.revision;
+    const joined = this.cohorts.join(task, hits.map((h) => h.task), ownerGen, handedAt);
+    if (!joined) return;
+    const c = joined.cohort;
+    if (joined.formed || c.revision !== before) {
+      this.d.recordCohort?.({ id: c.id, event: joined.formed ? "formed" : "joined", silent: c.silent, tasks: [...c.members.keys()].sort((a, b) => a - b), owners: [...new Set([...c.members.values()].map((m) => m.owner))].sort() });
+      // A shadow split prediction for the pair that just overlapped, named owner or not (issue #109): for the record only.
+      const shadow = this.splitShadow(task, task.owner);
+      if (shadow) this.d.recordSplit?.(task.id, shadow);
+    }
+    if (joined.lifted) this.announceLift(c, `${task.owner} cannot be shown the others' changes`);
+  }
+
+  /** Members of a cohort that is no longer silent may message each other again. */
+  announceLift(cohort: Cohort, why: string): void {
+    const owners = [...new Set([...cohort.members.values()].map((m) => m.owner))];
+    this.d.notify(`turn-free cohort #${cohort.id} (${owners.join(", ")}) is no longer silent: ${why}`);
+    this.d.recordCohort?.({ id: cohort.id, event: "lifted", silent: false, tasks: [...cohort.members.keys()].sort((a, b) => a - b), owners: [...owners].sort() });
+    // Members still at work hear it, with the completed-change notices the silence held (they replace the integration
+    // step that will not run); a member whose task closed is not started on a turn for it (#106).
+    for (const m of cohort.members.values()) {
+      const t = this.d.board.get(m.task);
+      if (m.owner === USER || m.owner === HUB || !t || !OPEN.includes(t.state)) continue;
+      const evidence = this.heldEvidence(cohort, t);
+      this.whileOpen(m.owner, m.task, [`Task #${m.task}: turn-free silence is lifted for the overlapping work of ${owners.filter((o) => o !== m.owner).join(", ")} (${why}). Settle overlaps with them via hub_send, as usual.`, evidence ?? ""].filter(Boolean).join("\n"));
+    }
+    cohort.held.clear();
+  }
+
+  /** Text a done result carries besides the board line (issue #107): held notices when no integration ran. */
+  private readonly doneNotes = new Map<number, string>();
+  takeDoneNote = (id: number): string | undefined => {
+    const note = this.doneNotes.get(id);
+    this.doneNotes.delete(id);
+    return note;
+  };
 
   async decline(by: PeerId, id: unknown, reason?: string): Promise<Task> {
     const task = this.need(id, true);
@@ -584,7 +809,35 @@ export class Tasks {
       // The result goes only to the owner the check was started for: anyone who took the task since hears nothing.
       throw new Error(this.checking.get(task.id) === task.owner ? `task #${task.id}: its check is still running; its result comes as a task message` : `task #${task.id}: a check from before it changed hands is still running; call hub_task_done again in a few minutes`);
     }
-    if (task.state === "proposed" || task.state === "changes_requested") task = this.d.board.update(task.id, by, "accepted", { state: "in_progress" }); // done without a separate accept
+    // A member of a silent cohort (issue #107): its done is an intent, and the last of them integrates first.
+    const cohort = this.cohorts.of(task.id);
+    const silentMember = !!cohort?.silent && this.turnFree() && !!task.owner && !this.isPii(task);
+    if (silentMember && by === USER) {
+      // The console finishing a member: its done still counts as an intent, so the last member integrates; what the
+      // silence held goes to the console.
+      this.cohorts.intent(cohort!, task, ownerGen(task));
+      const evidence = this.heldEvidence(cohort!, task);
+      if (evidence) this.d.notify(`task ${this.publicTitle(task)} done by the console; overlapping work finished meanwhile:\n${evidence}`);
+    } else if (silentMember) {
+      const gen = ownerGen(task);
+      // A retry right after the request: the same request again, nothing acknowledged or counted.
+      if (this.cohorts.isRetry(cohort!, task, gen)) return this.d.board.get(task.id)!;
+      const ig = cohort!.integration;
+      if (ig?.task === task.id && ig.offer) this.d.ackFacts?.(task.owner!, ig.offer); // this call is the proof the request arrived
+      const r = this.cohorts.completion(cohort!, task, { gen, tree: this.tree(cohort!), factsCurrent: this.d.factsCurrent?.(task.owner!) ?? true, handed: handedAt(task) });
+      if (r.action === "request") return this.d.board.update(task.id, HUB, "integration requested", {}, this.integrationRequest(task, r));
+      if (r.action === "unresolved") {
+        this.d.notify(`task ${this.publicTitle(task)}: turn-free integration unresolved after ${MAX_REQUESTS} requests (${r.why}); its done is recorded, check the overlapping work by hand`);
+        task = this.d.board.update(task.id, HUB, "integration unresolved", {}, r.why);
+      } else if (r.integrated) task = this.d.board.update(task.id, HUB, "integrated", {}, `cohort #${cohort!.id}, revision ${cohort!.revision}`);
+    } else if (cohort?.held.size && !this.isPii(task)) {
+      // No integration step for this member (silence lifted, a PII task open): the notices the silence held stand in
+      // for it (issue #107, AC4).
+      const evidence = this.heldEvidence(cohort, task);
+      if (evidence && by === USER) this.d.notify(`task ${this.publicTitle(task)} done by the console; overlapping work finished meanwhile:\n${evidence}`);
+      else if (evidence) this.doneNotes.set(task.id, `Overlapping work finished while you worked (no turn-free integration step ran):\n${evidence}`);
+    }
+    if (task.state === "proposed" || task.state === "changes_requested") task = this.d.board.update(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE); // done without a separate accept
     const command = this.d.runCheck ? this.d.check?.(task.class) : undefined;
     if (!command) return this.complete(task, by, summary, refs);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
@@ -598,6 +851,81 @@ export class Tasks {
       .catch((e: Error) => this.d.notify(`task #${pending.id}: its check result could not be recorded: ${e.message}`))
       .finally(() => this.pendingChecks--);
     return pending;
+  }
+
+  /**
+   * After a restart (issue #107) the cohorts, intents and turn ends are gone, so an integration that was asked for and
+   * not confirmed can never be: it is recorded as unresolved, and the owner's next done is recorded as usual.
+   */
+  recoverIntegrations(): void {
+    const marks = new Set(["integration requested", "integrated", "integration unresolved", "done", "done (checking)", "reopened", "accepted", "assigned", "reassigned", "escalated"]);
+    for (const t of this.d.board.list()) {
+      if (!OPEN.includes(t.state) || [...t.history].reverse().find((h) => marks.has(h.event))?.event !== "integration requested") continue;
+      this.d.board.update(t.id, HUB, "integration unresolved", {}, "the hub restarted before the integration was confirmed");
+      this.d.notify(`task ${this.publicTitle(t)}: turn-free integration unresolved (the hub restarted); check the overlapping work by hand`);
+    }
+  }
+
+  /**
+   * After a restart in a turn-free project (issue #107) the cohorts are gone, and with them what their silence held. When
+   * `peer` first attaches, each of its open tasks that overlaps another owner's work hears that overlaps are settled by
+   * message again, with the completed-change notices of the overlapping tasks finished since it was handed over. A
+   * duplicate notice is the price of never losing one.
+   */
+  replayHeld(peer: PeerId): void {
+    const finished = this.d.board.list().filter((u) => (u.state === "approved" || u.state === "in_review") && u.owner && !this.isPii(u));
+    for (const t of this.d.board.list()) {
+      if (!OPEN.includes(t.state) || t.owner !== peer || this.isPii(t)) continue;
+      const open = this.overlapHits(t).filter((h) => h.task.owner !== USER && h.task.owner !== HUB);
+      const mine = this.places(t);
+      const done = finished.flatMap((u) => {
+        const at = [...u.history].reverse().find((h) => h.event === "done");
+        if (u.owner === t.owner || !at || at.at < handedAt(t)) return [];
+        const theirs = this.places(u);
+        const paths = mine.paths.filter((p) => theirs.paths.some((q) => samePlace(p, q)));
+        const symbols = mine.symbols.filter((x) => theirs.symbols.includes(x));
+        return paths.length || symbols.length ? [this.completedNotice(u, { task: t, paths, symbols }, at.note)] : [];
+      });
+      if (!open.length && !done.length) continue;
+      const owners = [...new Set(open.map((h) => h.task.owner!))];
+      const head = owners.length ? `Task #${t.id}: the hub restarted, so overlaps with ${owners.join(", ")} are settled via hub_send again (any turn-free silence is lifted).` : `Task #${t.id}: the hub restarted; overlapping work finished meanwhile.`;
+      this.whileOpen(peer, t.id, [head, ...done].join("\n"));
+    }
+  }
+
+  /** One hash over the files a cohort's tasks name and its members wrote while at work, as they are now: the integration target (issue #107). */
+  private tree(cohort: Cohort): string {
+    const paths = [...new Set([...cohort.members.keys()].flatMap((id) => { const t = this.d.board.get(id); return t ? this.places(t).paths : []; }))];
+    // Each member's writes count from when its owner was handed the task until it settled: settling keeps its files in
+    // the target, and its later writes are its next task's.
+    const windows = [...cohort.members.values()].map((m) => ({ peer: m.owner, since: m.since, ...(m.settledAt !== undefined ? { until: m.settledAt } : {}) }));
+    return this.d.treeHash?.(paths, windows) ?? "";
+  }
+
+  /**
+   * What the integrating member reads as its done result (issue #107): what the others finished, the facts it has not
+   * been shown, and what makes the next done count. Its facts offer is acknowledged by that next done.
+   */
+  private integrationRequest(task: Task, r: Extract<Completion, { action: "request" }>): string {
+    const others = [...r.cohort.members.values()].filter((m) => m.task !== task.id).flatMap((m) => { const t = this.d.board.get(m.task); return t ? [t] : []; });
+    const doneAt = (t: Task) => [...t.history].reverse().find((h) => h.event === "done" || h.event === "done (checking)");
+    const lines = others.map((t) => {
+      const files = this.places(t).paths.filter(this.nameable);
+      const signatures = (t.plan?.signatures ?? []).filter(this.nameable);
+      const first = (doneAt(t)?.note ?? "").split("\n").find((l) => l.trim())?.trim().slice(0, 300);
+      return [
+        `- ${this.publicTitle(t)} (owner ${t.owner}, ${t.state})`,
+        files.length ? `  changed files: ${files.join(", ")}` : "",
+        signatures.length ? `  signatures: ${signatures.join("; ")}` : "",
+        first && this.nameable(first) ? `  summary: ${first}` : "",
+      ].filter(Boolean).join("\n");
+    });
+    const facts = task.owner ? this.d.integrationFacts?.(task.owner) : undefined;
+    if (facts && r.cohort.integration) r.cohort.integration.offer = facts.id;
+    const head = r.requests === 1
+      ? `Before task #${task.id} is recorded as done: you are the last of turn-free cohort #${r.cohort.id} to finish. Check your work against the others' below, fix what conflicts, then call hub_task_done again.`
+      : `Task #${task.id} is not recorded as done yet (integration request ${r.requests} of ${MAX_REQUESTS}): ${r.why}. Check again, then call hub_task_done again.`;
+    return [head, "The done counts once the files did not change between two calls and the others have stopped.", ...lines, facts?.text ?? ""].filter(Boolean).join("\n");
   }
 
   private async finishChecked(id: number, by: PeerId, summary: string | undefined, command: string, seen: { events: number; owner: PeerId | null }): Promise<void> {
@@ -616,12 +944,20 @@ export class Tasks {
       return;
     }
     if (result.code === 0 && !result.timedOut) {
+      // An integrating member's check counts only for the target it confirmed (issue #107).
+      const cohort = this.cohorts.of(id);
+      if (cohort?.silent && !this.cohorts.holds(id, ownerGen(task), this.tree(cohort))) {
+        this.d.board.update(id, HUB, "check finished late", {}, `${outcome}; the integration target changed while it ran`);
+        this.tell(task, `Task #${id}: its check passed, but the overlapping work or the files changed while it ran (turn-free integration). Call hub_task_done again.`, pii);
+        return;
+      }
       this.d.board.update(id, HUB, "check passed", {}, `${outcome}\n${result.tail}`.trim());
       // The output goes to the reviewer with the done note, not into shared memory: nobody screened it.
       await this.complete(this.d.board.get(id)!, by, `${summary ?? ""}\nCheck: ${outcome}`.trim(), undefined, result.tail);
       return;
     }
     this.d.board.update(id, HUB, "check failed", {}, `${outcome}\n${result.tail}`.trim());
+    this.cohorts.withdraw(id); // open again: its done intent no longer counts (issue #107)
     if (task.owner) this.d.board.recordOutcome(task.owner, task.class, false);
     this.contradict(task);
     this.d.notify(`task ${this.publicTitle(task)}: its check failed (${outcome}); it stays with ${task.owner ?? by}`);
@@ -631,6 +967,7 @@ export class Tasks {
   private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = ""): Promise<Task> {
     const reviewer = task.reviewer;
     const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", refs: cleanRefs(refs) }, checkOutput ? `${summary ?? ""}\n${checkOutput}`.trim() : summary);
+    this.cohorts.closed(next.id); // its owner's next native turn end settles it in its cohort (issue #107)
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`);
     this.tellCompleted(next, summary);
     if (!reviewer) {
@@ -650,22 +987,45 @@ export class Tasks {
    */
   private tellCompleted(task: Task, summary?: string): void {
     const hits = this.overlapHits(task).filter((h) => h.task.owner !== USER && h.task.owner !== HUB);
-    if (!hits.length) return;
-    // Files, signatures and the summary are the owner's own words (paths given at done included): any item that
-    // matches a PII pattern is left out of what other owners get.
+    const cohort = this.cohorts.of(task.id);
+    const silent = this.silentFor(task.id);
+    for (const hit of hits) {
+      // A member of the same silent cohort (issue #107): the member that finishes last integrates instead
+      // (Cohorts.completion). The notice is held, so something replaces it if no integration runs. Others hear it.
+      if (silent && cohort?.members.has(hit.task.id)) {
+        cohort.held.add(task.id);
+        continue;
+      }
+      this.whileOpen(hit.task.owner!, hit.task.id, this.completedNotice(task, hit, summary));
+    }
+  }
+
+  /**
+   * The completed-change notice: files, signatures and the summary are the owner's own words (paths given at done
+   * included), and any item that matches a PII pattern is left out of what other owners get.
+   */
+  private completedNotice(task: Task, hit: { task: Task; paths: string[]; symbols: string[] }, summary?: string): string {
     const paths = this.places(task).paths.filter(this.nameable);
     const signatures = (task.plan?.signatures ?? []).filter(this.nameable);
     const first = (summary ?? "").split("\n").find((l) => l.trim())?.trim().slice(0, 300);
     const line = first && this.nameable(first) ? first : undefined;
-    for (const hit of hits) {
-      const body = [
-        `Task #${task.id} (owner ${task.owner}) is done and touches your open #${hit.task.id} on ${this.where(hit)}. Check your work against it before you go on.`,
-        paths.length ? `Changed files: ${paths.join(", ")}` : "",
-        signatures.length ? `New or changed signatures: ${signatures.join("; ")}` : "",
-        line ? `Summary: ${line}` : "",
-      ].filter(Boolean).join("\n");
-      this.d.bus.publish(newEnvelope(HUB, body, { to: [hit.task.owner!], kind: "task", refs: { task: String(hit.task.id) } }));
-    }
+    return [
+      `Task #${task.id} (owner ${task.owner}) is done and touches your open #${hit.task.id} on ${this.where(hit)}. Check your work against it before you go on.`,
+      paths.length ? `Changed files: ${paths.join(", ")}` : "",
+      signatures.length ? `New or changed signatures: ${signatures.join("; ")}` : "",
+      line ? `Summary: ${line}` : "",
+    ].filter(Boolean).join("\n");
+  }
+
+  /** The held notices of a cohort, as one list for a member that gets no integration step (issue #107). */
+  private heldEvidence(cohort: Cohort, task: Task): string | undefined {
+    const lines = [...cohort.held].filter((id) => id !== task.id).flatMap((id) => {
+      const t = this.d.board.get(id);
+      if (!t || this.isPii(t)) return [];
+      const done = [...t.history].reverse().find((h) => h.event === "done");
+      return [this.completedNotice(t, { task, paths: this.places(task).paths.filter((p) => this.places(t).paths.some((q) => samePlace(p, q))), symbols: [] }, done?.note)];
+    });
+    return lines.length ? lines.join("\n") : undefined;
   }
 
   /** The one place a review request is written: the first reviewer and a replacement get the same text, refs and privacy. */
@@ -711,6 +1071,7 @@ export class Tasks {
       return next;
     }
     const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: task.rejections + 1 }, note);
+    this.cohorts.withdraw(rejected.id); // open again: its done intent no longer counts (issue #107)
     if (rejected.owner) this.d.board.recordOutcome(rejected.owner, rejected.class, false);
     this.contradict(rejected);
     this.note(rejected, by, "decision", `Task #${rejected.id} changes requested by ${by}: ${rejected.title}\n${note ?? ""}`);

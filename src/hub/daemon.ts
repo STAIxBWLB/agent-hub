@@ -28,7 +28,9 @@ import { Board, CLASSES, type Task, type TaskClass } from "./board.ts";
 import { Budget, claudeWindows, codexWindows, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
 import { HUB } from "./envelope.ts";
 import { trimToTokens } from "../memory/recall.ts";
-import { statSync } from "node:fs";
+import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { basename, isAbsolute } from "node:path";
+import { realPath } from "./project.ts";
 import type { BusEvent } from "./bus.ts";
 import { DEFAULT_ROLES, roleContract, TASK_TOOLS } from "./hub-tools.ts";
 import { Tasks } from "./tasks.ts";
@@ -45,6 +47,7 @@ import { MemoryClient, workerUrl } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { projectChain, recallFor } from "../memory/recall.ts";
 import { conflictsOf } from "./conflicts.ts";
+import { Facts, FACTS_PREFIX, type FactScope } from "./facts.ts";
 import { crashPlan, lossNotice, readSessions, removeSessions, writeSessions, type SessionsFile } from "./crash.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
@@ -83,6 +86,13 @@ export interface HubConfig {
   recovery: { auto_resume_after_crash: boolean };
   /** Per peer, the hub-tool capabilities it has (issue #39); a peer not listed has all of them. */
   capabilities: Record<string, string[]>;
+  /**
+   * How owners of overlapping tasks coordinate (issue #107): "advisory" lets them message each other; "turn-free" has
+   * them work without messages while the hub derives what they need to know. Anything else is advisory.
+   */
+  coordination: "advisory" | "turn-free";
+  /** Switches for controlled ablations only (issue #110): `stale_notices: "deliver"` turns #106's dropping off. */
+  experiments?: { stale_notices?: "drop" | "deliver" };
   /** Machine-local fields a config file set but git could not vouch for, and why (issue #17). */
   ignored?: string[];
   /** Settings that were removed or are about to be (issue #83): what each does now, for `hub.log` and `ahub doctor`. */
@@ -113,6 +123,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   review: { adaptive: false, min_reviews: 5 },
   recovery: { auto_resume_after_crash: false },
   capabilities: {},
+  coordination: "advisory",
 };
 
 export { stateDirFor };
@@ -350,6 +361,25 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   // Agents only: the console user and the hub itself are never limited (issue #38).
   // A typo such as "12/min" would read as 0, which turns a limit off without a word: the project default instead.
+  // Turn-free coordination (issue #107): owners of overlapping tasks work without messages.
+  const coordination = config.coordination === "turn-free" ? "turn-free" : "advisory";
+  if (config.coordination !== coordination) log(`coordination: ${JSON.stringify(config.coordination)} is not "advisory" or "turn-free"; advisory applies`);
+  // While any PII task is open the regime is advisory (issue #108): facts would carry file contents to cloud peers, and
+  // silence without facts would leave overlapping owners blind. Facts and silence ask the same question, so both switch
+  // together. Cached until the board changes: it is asked per recipient of every message.
+  let turnFreeNow: boolean | undefined;
+  const turnFree = (): boolean => (turnFreeNow ??= coordination === "turn-free" && !board.list().some((t) => t.state !== "approved" && tasks.isPii(t)));
+  /**
+   * Why `to` does not get an agent's message (issue #107): sender and recipient are in one silent cohort, and the sender
+   * has not stopped since its cohort task closed. Workflow events and anything to the console are never held back.
+   */
+  const silence = (env: Envelope, to: PeerId): string | undefined => {
+    if (!turnFree() || env.from === USER || env.from === HUB || env.from === DIGEST || env.priority === "fyi" || env.kind !== "chat" || to === USER) return undefined;
+    const cohort = tasks.silenced(env.from, to);
+    if (!cohort) return undefined;
+    const ids = [...cohort.members.keys()].sort((a, b) => a - b).map((id) => `#${id}`).join(", ");
+    return `you and ${to} are in turn-free cohort #${cohort.id} (tasks ${ids}): owners in a cohort do not message each other; the hub shows each of you the other's changes and asks the last to finish to check the work against the others. The console user reads it in the log.`;
+  };
   for (const k of Object.keys(config.limits)) if (!(k in PROJECT_LIMITS)) log(`limits.${k} is not a known limit; ignored`);
   const limits = Object.fromEntries(Object.entries(PROJECT_LIMITS).map(([k, fallback]) => {
     const v = config.limits[k as keyof LimitsConfig];
@@ -379,7 +409,13 @@ export async function startDaemon(opts: DaemonOptions) {
     if (refused) log(`limits: ${env.from}: ${refused}`);
     return refused;
   };
-  const bus = new Bus({ journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit });
+  /** This hub run's start: offline owners count from it (issue #6), split predictions read tasks since (issue #109). */
+  const hubStartedAt = Date.now();
+  // The bus exists before `Tasks`, which knows whether a queued notice still matters (issue #106).
+  let relevantNotice: (peer: PeerId, env: Envelope) => boolean = () => true;
+  const staleOff = config.experiments?.stale_notices === "deliver";
+  if (staleOff) log("experiment: stale notices are delivered as before 0.12.4 (the issue #106 ablation)");
+  const bus = new Bus({ journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => staleOff || relevantNotice(peer, env), silence });
   startupCleanup.push(() => bus.closeJournal());
   const manualPaused = new Set<PeerId>(bus.manualPausedPeers()); // recovery never lifts an operator's pause
   let recoveryOperationId: string | undefined;
@@ -464,7 +500,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const runningChecks = new Set<() => void>();
   let checksClosed = false; // set on stop: a check still queued then must not start and outlive the hub
   const interrupted = { code: null, timedOut: false, interrupted: true, tail: "" };
-  const tasks = new Tasks({
+  const tasks: Tasks = new Tasks({
     board,
     bus,
     executionBudget,
@@ -495,10 +531,170 @@ export async function startDaemon(opts: DaemonOptions) {
     quota: (): ReturnType<Budget["headroom"]> => budget.headroom(), // budget is built below; this runs at assignment time
     review: config.review,
     roles: config.roles,
+    turnFree,
+    capable: (peer) => capable.has(peer),
+    idle: (peer) => idle(peer),
+    treeHash: (paths, windows) => facts.tree(paths, windows),
+    integrationFacts: (peer) => {
+      if (!factsOn()) return undefined;
+      let offered: ReturnType<Facts["due"]>;
+      try { offered = facts.due(peer, undefined, true); } catch (error) { log(`integration facts for ${peer}: ${(error as Error).message}`); return undefined; }
+      if (offered) event({ type: "fact", peer, id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "done" });
+      return offered ? { id: offered.id, text: offered.text } : undefined;
+    },
+    ackFacts: (peer, id) => acked(peer, id, "done"),
+    factsCurrent: (peer) => !factsOn() || facts.current(peer),
+    since: hubStartedAt,
+    recordCohort: (c) => event({ type: "cohort", ...c }),
+    // The trace holds peer names and numbers only (never task text): it is the inputs a later check of the prediction needs.
+    recordSplit: (task, p) => event({ type: "split", task, verdict: p.verdict, ...(p.single ? { single: p.single, splitS: p.splitS, singleS: p.singleS } : {}), ...(p.verdict === "unknown" ? { reason: p.trace.at(-1)!.replace(/^ {2}unknown: /, "").slice(0, 200) } : {}), trace: p.trace.slice(1).map((l) => l.trim()).slice(0, 10) }),
     failing: () => bus.failingPeers(),
     held: () => Object.fromEntries(bus.knownPeers().flatMap((peer) => { const hold = queueHold(peer); return hold ? [[peer, hold]] : []; })),
   });
+  relevantNotice = tasks.relevant;
+  tasks.recoverIntegrations();
+  /** Peers told, at their first attach, what the cohorts lost in the restart held for them (issue #107). */
+  const replayed = new Set<PeerId>();
+  // Turn-free facts (issue #108): what the others changed in an owner's files, at its tool calls. Scopes are read from
+  // the board once per change of it: every boundary asks for them.
+  let scopes = new Map<PeerId, FactScope | undefined>();
+  const facts: Facts = new Facts({ root: opts.cwd, tmp: join(opts.stateDir, "facts"), instance: instanceId.slice(0, 8), scope: (peer) => (scopes.has(peer) ? scopes.get(peer) : scopes.set(peer, tasks.factScope(peer)).get(peer)), peers: () => [...bus.peers.keys()], nameable: tasks.nameable, deny: config.local.deny });
+  /** Whether facts are tracked now. When tracking resumes (a PII task closed), everything observed before is dropped. */
+  let factsWereOn = false;
+  const factsOn = (): boolean => {
+    const on = turnFree();
+    if (on && !factsWereOn) facts.reset();
+    // A PII task opened: every silent cohort speaks again, for good, and its members hear so at once (issue #108).
+    if (!on && factsWereOn) for (const cohort of tasks.cohorts.liftAll()) tasks.announceLift(cohort, "a private task opened, and facts are off while it is open");
+    factsWereOn = on;
+    return on;
+  };
+  /** Peers whose context path is verified in their current native session: a readback found an offered fact there. */
+  const capable = new Set<PeerId>();
+  const probes = new Map<PeerId, number>();
+  const factSessions = new Map<PeerId, string>();
+  /** A new native session or thread: its context path is unverified until a readback says otherwise. */
+  const factSession = (peer: PeerId, id: string | undefined) => {
+    if (!id || factSessions.get(peer) === id) return;
+    if (factSessions.has(peer)) {
+      if (capable.delete(peer)) loseCapability(peer, "a new native session started");
+      probes.delete(peer);
+    }
+    factSessions.set(peer, id);
+    facts.session(peer, id);
+  };
+  const acked = (peer: PeerId, id: string, via: string) => {
+    const got = facts.ack(peer, id);
+    if (!got) return;
+    event({ type: "fact_ack", peer, id, via, ms: Date.now() - got.at });
+    if (via !== "done" && !capable.has(peer)) {
+      capable.add(peer);
+      event({ type: "capability", peer, state: "verified", via });
+      log(`turn-free: ${peer}'s context path is verified (${via} readback of ${id})`);
+    }
+  };
+  /** Silent cohorts with this peer speak again; their members hear so. */
+  const loseCapability = (peer: PeerId, why: string) => {
+    event({ type: "capability", peer, state: "lost" });
+    log(`turn-free: ${peer}'s context path is no longer verified (${why})`);
+    for (const cohort of tasks.cohorts.lift(peer)) tasks.announceLift(cohort, `${peer}'s context path is no longer verified (${why})`);
+  };
+  /**
+   * A verified peer with three offers past a minute and no readback has lost its context path. Facts sent with an
+   * integration request wait for the next done, not a readback, so they never count.
+   */
+  const checkCapability = (peer: PeerId) => {
+    if (capable.has(peer) && facts.pending(peer).filter((o) => !o.done && Date.now() - o.at > 60_000).length >= 3) {
+      capable.delete(peer);
+      loseCapability(peer, "three facts found no readback");
+    }
+  };
+  /**
+   * An offer for this boundary: the facts due, or, until the context path is verified, a probe (three per session).
+   * A peer without a verified path that left three offers unread gets none until a readback arrives: the same diff is
+   * not injected at every tool call.
+   */
+  const offerFor = (peer: PeerId, toolUseId?: string) => {
+    if (!capable.has(peer) && facts.pending(peer).filter((o) => !o.done).length >= 3) return undefined;
+    const due = facts.due(peer, toolUseId);
+    if (due || capable.has(peer) || facts.pending(peer).some((o) => o.probe) || (probes.get(peer) ?? 0) >= 3) return due;
+    probes.set(peer, (probes.get(peer) ?? 0) + 1);
+    return facts.probe(peer, toolUseId);
+  };
+  // Claude's readback: the transcript row Claude Code writes for a hook's additional context, by tool use id.
+  const injected = new Map<string, string>();
+  let transcriptRead = { path: "", offset: 0 };
+  const readTranscript = (path: string) => {
+    try {
+      if (transcriptRead.path !== path) transcriptRead = { path, offset: 0 };
+      const st = statSync(path);
+      if (st.size < transcriptRead.offset) transcriptRead.offset = 0;
+      if (st.size === transcriptRead.offset) return;
+      const fd = openSync(path, "r");
+      try {
+        const start = Math.max(transcriptRead.offset, st.size - 4 * 1024 * 1024);
+        const buf = Buffer.alloc(st.size - start);
+        readSync(fd, buf, 0, buf.length, start);
+        // Lines end at a newline byte: decoding first would misplace the offset after a split multi-byte character.
+        const end = buf.lastIndexOf(10);
+        if (end === -1) return;
+        const lines = buf.subarray(0, end).toString("utf8").split("\n");
+        if (start > transcriptRead.offset) lines.shift(); // the window began inside a line
+        transcriptRead.offset = start + end + 1;
+        for (const line of lines) {
+          if (!line.includes("hook_additional_context")) continue;
+          try {
+            const a = JSON.parse(line)?.attachment;
+            if (a?.type !== "hook_additional_context" || typeof a.toolUseID !== "string") continue;
+            injected.set(a.toolUseID, Array.isArray(a.content) ? a.content.join("\n") : String(a.content ?? ""));
+            if (injected.size > 512) injected.delete(injected.keys().next().value as string);
+          } catch { /* a partial or foreign line */ }
+        }
+      } finally { closeSync(fd); }
+    } catch { /* no transcript yet: no readback */ }
+  };
+  /** Claude's transcript for this session: the one the status line reported, or the hook's own, inside Claude's projects. */
+  const claudeTranscript = (sessionId: string | undefined, fromHook: unknown): string | undefined => {
+    const reported = claudeSession();
+    if (reported.transcriptPath && (!sessionId || reported.sessionId === sessionId)) return reported.transcriptPath;
+    if (!sessionId || typeof fromHook !== "string" || !isAbsolute(fromHook) || basename(fromHook) !== `${sessionId}.jsonl`) return undefined;
+    try {
+      const projects = realPath(join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects"));
+      const real = realPath(fromHook);
+      return real.startsWith(`${projects}/`) && statSync(real).isFile() ? real : undefined;
+    } catch { return undefined; }
+  };
+  const readbacks = (peer: PeerId, transcript: string | undefined) => {
+    const pending = facts.pending(peer).filter((o) => o.toolUseId);
+    if (!pending.length || !transcript) return;
+    readTranscript(transcript);
+    for (const o of pending) if (injected.get(o.toolUseId!)?.includes(`[${o.id}]`)) acked(peer, o.id, "hook");
+  };
+  // Native turn ends (issue #107): Codex's is its adapter going idle, Claude's is its Stop hook. Never a task approval,
+  // never a delivery acknowledgement. Cohorts record them as they happen (`Cohorts.turnEnded`), so a later turn of the
+  // same peer cannot undo a settlement.
+  const turnEnded = new Map<PeerId, number>();
+  const activeAt = new Map<PeerId, number>();
+  /** Every Claude hook call's own start-up and the hub's time for it, summed per turn (issue #108): reported at Stop. */
+  const hookStats = new Map<PeerId, { n: number; startupMs: number; hubMs: number; maxStartupMs: number }>();
+  /**
+   * Between native turns now: Claude stopped after its last tool call began (its channel going offline says nothing
+   * about its session, whose hooks may still run); any other peer's adapter is not in a turn. The adapter's own state,
+   * never `stateOf`: a paused peer may still be in its turn.
+   */
+  const idle = (peer: PeerId): boolean => {
+    if (peer === "claude") return (turnEnded.get(peer) ?? -1) >= (activeAt.get(peer) ?? 0);
+    return (bus.peers.get(peer)?.state ?? "offline") !== "busy";
+  };
+  /** What quiescence was judged on, for the log when an integration waits on it. */
+  const stopEvidence = (peer: PeerId) => `${peer}: turn end ${turnEnded.has(peer) ? new Date(turnEnded.get(peer)!).toISOString() : "none"}, last tool call ${activeAt.has(peer) ? new Date(activeAt.get(peer)!).toISOString() : "none"}, ${bus.peers.get(peer)?.state ?? "offline"}`;
   board.onChange = (t, h) => {
+    turnFreeNow = undefined;
+    scopes = new Map();
+    factsOn(); // a PII task opening or closing switches tracking at once, not at the next boundary (issue #108)
+    if ((h.event === "integration requested" || h.event === "integration unresolved") && /has not stopped/.test(h.note ?? "")) {
+      for (const m of tasks.cohorts.of(t.id)?.members.values() ?? []) if (m.task !== t.id) log(`turn-free: task #${t.id} waits on ${stopEvidence(m.owner)}`);
+    }
     event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, pii: tasks.isPii(t) });
     // Models can self-claim after their turn begins; preserve that ownership even if they finish before settlement.
     const turn = t.owner ? turns.get(t.owner) : undefined;
@@ -607,6 +803,8 @@ export async function startDaemon(opts: DaemonOptions) {
   let claudeUsageSeen = 0;
   const intervals = [
     setInterval(() => budget.tick(), 30_000),
+    // A verified context path whose hooks stopped altogether has no boundary left to notice it at (issue #108).
+    setInterval(() => { for (const peer of [...capable]) checkCapability(peer); }, 30_000),
     setInterval(() => {
       try {
         const file = join(opts.stateDir, "claude-usage.json");
@@ -690,18 +888,27 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_task_propose": {
         const t = await tasks.propose(by, a);
         const overlap = tasks.overlaps(t, t.owner === by);
+        if (t.owner === by && tasks.silentFor(t.id) && factsOn()) facts.sawPlans(by, tasks.overlapTasks(t)); // as for an accept
         return overlap ? `${line(t)}\n${overlap}` : line(t);
       }
       case "hub_task_accept": {
         const t = tasks.accept(by, a.id, a.plan);
-        const overlap = a.plan == null ? "" : tasks.overlaps(t);
+        // A silent cohort (issue #107): the owners' plans come with every accept, as what the newcomer works from.
+        const silent = tasks.silentFor(t.id);
+        const overlap = a.plan == null && !silent ? "" : tasks.overlaps(t);
+        if (silent && factsOn()) facts.sawPlans(by, tasks.overlapTasks(t)); // the plans in this answer need no fact later
         return overlap ? `${line(t)}\n${overlap}` : line(t);
       }
       case "hub_task_decline":
         return line(await tasks.decline(by, a.id, a.reason));
       case "hub_task_done": {
         const t = await tasks.done(by, a.id, a.summary, a.refs);
-        return tasks.isChecking(t.id) ? `${line(t)}; its check is queued or running, and the result comes as a task message` : line(t);
+        // A silent cohort (issue #107): the member that integrates is asked to check its work first; no done yet.
+        const last = t.history.at(-1);
+        if (last?.event === "integration requested" && last.by === HUB) return last.note ?? "";
+        const extra = tasks.takeDoneNote(t.id); // the notices a silence held, when no integration step ran
+        const result = tasks.isChecking(t.id) ? `${line(t)}; its check is queued or running, and the result comes as a task message` : line(t);
+        return extra ? `${result}\n${extra}` : result;
       }
       case "hub_review":
         return line(await tasks.review(by, a.id, a.verdict, a.note, a.unmet));
@@ -927,7 +1134,6 @@ export async function startDaemon(opts: DaemonOptions) {
 
   // When each peer went offline; a peer never seen attached counts from hub start (issue #6).
   const offlineSince = new Map<PeerId, number>();
-  const hubStartedAt = Date.now();
   const releaseGoneOwners = async () => {
     const limit = config.tasks.release_after_min;
     if (releasing || stopping || recoveryActive()) return;
@@ -958,6 +1164,8 @@ export async function startDaemon(opts: DaemonOptions) {
   // before it. Warns both owners once per file and task; never blocks a write.
   const conflictSeen = new Set<string>();
   const turnTasks = new Map<string, number[]>();
+  /** Work a conflict notice is about: open tasks and tasks in review (#91); a notice for anything else is dropped (#106). */
+  const CONFLICT_STATES: Task["state"][] = ["proposed", "in_progress", "changes_requested", "in_review"];
   const detectConcurrentConflicts = (record: TurnRecord, mine: Task[]) => {
     for (const otherTurn of turnLog!.concurrentWith(record)) {
       const otherTasks = (turnTasks.get(otherTurn.id) ?? []).flatMap((id) => { const task = board.get(id); return task ? [task] : []; });
@@ -972,15 +1180,17 @@ export async function startDaemon(opts: DaemonOptions) {
         for (const path of paths) conflictSeen.add(`concurrent:${pair}:${path}`);
         const named = paths.filter(tasks.nameable);
         const files = [...named, ...(paths.length > named.length ? [`${paths.length - named.length} file(s) whose names are withheld (they match a PII pattern)`] : [])].join(", ");
-        const text = `Concurrent edit: ${record.id} (task #${ours.id}) and ${otherTurn.id} (task #${theirs.id}) both include changes to ${files}. These snapshots do not attribute the changes to either peer. Check the working tree together before continuing.`;
+        const together = tasks.silentFor(ours.id) && tasks.silentFor(theirs.id) ? "Check the working tree before continuing; do not message the other owner (you are in one turn-free cohort: the hub shows you its changes)." : "Check the working tree together before continuing.";
+        const text = `Concurrent edit: ${record.id} (task #${ours.id}) and ${otherTurn.id} (task #${theirs.id}) both include changes to ${files}. These snapshots do not attribute the changes to either peer. ${together}`;
         notify(`conflict: ${text}`);
         event({ type: "conflict", peer: record.peer, task: ours.id, other: theirs.id, owner: otherTurn.peer, paths: named, concurrent: true, turns: [record.id, otherTurn.id] });
-        [record.peer, otherTurn.peer].filter((owner) => owner !== USER && owner !== HUB).forEach((owner) => bus.publish(newEnvelope(HUB, text, { to: [owner], kind: "task" })));
+        // Each owner hears it while its own task is open; once that task is closed the notice is dropped (issue #106).
+        for (const [owner, task] of [[record.peer, ours.id], [otherTurn.peer, theirs.id]] as const) if (owner !== USER && owner !== HUB) tasks.whileOpen(owner, task, text, CONFLICT_STATES);
       }
     }
   };
   const detectConflicts = (peer: PeerId, turnId: string, since: number, changed: string[]) => {
-    const open = board.list().filter((t) => t.owner && ["proposed", "in_progress", "changes_requested", "in_review"].includes(t.state));
+    const open = board.list().filter((t) => t.owner && CONFLICT_STATES.includes(t.state));
     const mine = (turnTasks.get(turnId) ?? []).flatMap((id) => { const task = board.get(id); return task ? [task] : []; });
     if (mine.some((t) => tasks.isPii(t))) return; // a PII turn's files are nobody else's business
     const visible = open.filter((t) => !tasks.isPii(t));
@@ -1010,8 +1220,12 @@ export async function startDaemon(opts: DaemonOptions) {
       const files = [...named, ...(hidden ? [`${hidden} file(s) whose names are withheld (they match a PII pattern)`] : [])].join(", ");
       notify(`conflict: ${peer}${ours} changed ${files}, which #${task.id} (owner ${owner}) changed before${others.length ? ` (concurrent: ${others.join(", ")})` : ""}`);
       event({ type: "conflict", peer, ...(mine[0] ? { task: mine[0].id } : {}), other: task.id, owner, paths: named, concurrent: others.length > 0 });
-      bus.publish(newEnvelope(HUB, `Your last turn${ours} changed ${files}, which ${owner}'s open task (${tasks.publicTitle(task)}) changed before it. Check that you did not overwrite that work, and settle it with ${owner} via hub_send.${concurrent}`, { to: [peer], kind: "task", ...(mine[0] ? { refs: { task: String(mine[0].id) } } : {}) }));
-      if (owner !== USER && owner !== HUB) bus.publish(newEnvelope(HUB, `${peer}'s last turn${ours} changed ${files}, which your open task #${task.id} changed before it. Check that your work there is intact.${concurrent}`, { to: [owner], kind: "task", refs: { task: String(task.id) } }));
+      // Both notices are about an open task of their recipient: dropped at delivery once it is closed (issue #106).
+      const settle = mine[0] && tasks.silentFor(mine[0].id) && tasks.silentFor(task.id) ? `; do not message ${owner} (you are in one turn-free cohort): the hub shows you its changes` : `, and settle it with ${owner} via hub_send`;
+      const toPeer = `Your last turn${ours} changed ${files}, which ${owner}'s open task (${tasks.publicTitle(task)}) changed before it. Check that you did not overwrite that work${settle}.${concurrent}`;
+      if (mine[0]) tasks.whileOpen(peer, mine[0].id, toPeer, CONFLICT_STATES);
+      else bus.publish(newEnvelope(HUB, toPeer, { to: [peer], kind: "task" }));
+      if (owner !== USER && owner !== HUB) tasks.whileOpen(owner, task.id, `${peer}'s last turn${ours} changed ${files}, which your open task #${task.id} changed before it. Check that your work there is intact.${concurrent}`, CONFLICT_STATES);
     }
   };
 
@@ -1096,10 +1310,20 @@ export async function startDaemon(opts: DaemonOptions) {
           if (changed.length) afterTurn = () => detectConflicts(e.peer, open.id, open.start, changed);
         }
         event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}) });
+        if (e.peer !== "claude") { // Claude's native turn end is its Stop hook
+          turnEnded.set(e.peer, Date.now());
+          tasks.cohorts.turnEnded(e.peer);
+        }
         try { afterTurn?.(); } catch (error) { log(`conflict check after ${open.id}: ${(error as Error).message}`); }
       }
       if (e.state === "offline") offlineSince.set(e.peer, offlineSince.get(e.peer) ?? Date.now());
       else offlineSince.delete(e.peer);
+      // A session that ended may come back without hooks: its context path is verified again or not at all (issue #108).
+      if (e.state === "offline" && capable.delete(e.peer)) loseCapability(e.peer, "it went offline");
+      if (e.state !== "offline" && coordination === "turn-free" && !replayed.has(e.peer)) {
+        replayed.add(e.peer);
+        tasks.replayHeld(e.peer);
+      }
       // After a crash, a peer's first attach brings the loss notice: it leads its next delivery (issue #37).
       if (e.state !== "offline" && lost.has(e.peer)) {
         const still = lost.get(e.peer)!.filter((d) => { try { return journal.get(d.id)?.state === "needs_review"; } catch { return false; } });
@@ -1107,6 +1331,14 @@ export async function startDaemon(opts: DaemonOptions) {
         if (still.length) bus.preface(e.peer, lossNotice(still, (id) => { const t = board.get(id); return t ? tasks.publicTitle(t) : undefined; }));
       }
       recordSessions();
+    }
+    else if (e.t === "stale") {
+      log(`STALE ${e.peer}: dropped ${e.env.id} from ${e.env.from}: ${e.reason}`);
+      event({ type: "stale", id: e.env.id, from: e.env.from, peer: e.peer, ...(e.env.refs?.task ? { task: e.env.refs.task } : {}) });
+    }
+    else if (e.t === "quiet") {
+      log(`QUIET ${e.env.id} from ${e.env.from}: not delivered to ${e.peers.join(", ")} (turn-free cohort)`);
+      event({ type: "quiet", id: e.env.id, from: e.env.from, peers: e.peers });
     }
     else if (e.t === "undeliverable" || e.t === "overflow") {
       log(e.t === "undeliverable" ? `UNDELIVERABLE to ${e.peer} after retries: ${e.env.id} from ${e.env.from}` : `OVERFLOW ${e.peer}: dropped ${e.env.id} from ${e.env.from}`);
@@ -1288,11 +1520,40 @@ export async function startDaemon(opts: DaemonOptions) {
       return { ok: true };
     }
     if (peer === "codex") {
+      let codexSteering = false;
       const codex = new CodexPeer("codex", {
         onTokens: (added) => void addTokens("codex", added),
         onTurn: (native) => {
           const open = turns.get("codex");
           if (open) turnLog?.native(open.id, native);
+          if (factsOn()) factSession("codex", codex.thread); // a new thread is unverified before its first item
+        },
+        // Turn-free facts (issue #108): its items are the boundaries; a fact goes into the running turn by steer, and
+        // the steered input coming back as a user message item is its readback.
+        onItem: (item) => {
+          if (!factsOn()) return;
+          factSession("codex", codex.thread);
+          if (item.type === "userMessage") {
+            const text = JSON.stringify(item.content ?? "");
+            if (text.includes(FACTS_PREFIX)) for (const o of facts.pending("codex")) if (text.includes(`[${o.id}]`)) acked("codex", o.id, "steer");
+            return;
+          }
+          facts.codexItem("codex", item);
+          checkCapability("codex");
+          if (codexSteering) return; // one at a time: the next boundary offers what this one could not
+          const started = performance.now();
+          const offered = offerFor("codex");
+          if (!offered) return;
+          const ms = Math.round(performance.now() - started);
+          codexSteering = true;
+          const sent = performance.now();
+          void codex.steerText(offered.text).then((outcome) => {
+            codexSteering = false;
+            // Refused, it never went in: not an unread offer, and the next boundary offers it again. Unanswered, it may
+            // have: its readback can still come.
+            if (outcome === "refused") facts.drop("codex", offered.id);
+            event({ type: "fact", peer: "codex", id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "steer", ms, ...(outcome === "accepted" ? { rttMs: Math.round(performance.now() - sent) } : {}), accepted: outcome === "accepted", ...(outcome === "unanswered" ? { unanswered: true } : {}), ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
+          });
         },
         appPort: opts.codexAppPort,
         proxyPort: opts.codexProxyPort,
@@ -1816,11 +2077,84 @@ export async function startDaemon(opts: DaemonOptions) {
         const inReplyTo = msg.reply_to ? bus.get(String(msg.reply_to)) : undefined;
         // Built first: limits count the audience it really has (a reply goes to the parent's sender).
         const env = newEnvelope(c.peer ?? USER, body, { priority, ...(to ? { to } : {}), ...(inReplyTo ? { inReplyTo } : {}) });
-        const refused = c.peer ? admit(env, inReplyTo?.id) : undefined;
+        // A silent cohort (issue #107): the members it is held back from are left out, the rest get it; the sender is
+        // told. Held back from everyone, it costs the sender nothing against its limits.
+        const hushed = bus.hushed(env);
+        const heldBack = hushed.length > 0 && hushed.length === bus.audience(env).length;
+        const refused = c.peer && !heldBack ? admit(env, inReplyTo?.id) : undefined;
         if (refused) return void reply({ t: "sent", ok: false, error: refused });
         const targets = bus.publish(env);
-        if (c.peer && inReplyTo) bus.completeReply(c.peer, inReplyTo.id);
-        return void reply({ t: "sent", ok: true, targets, recorded: priority === "fyi" });
+        if (c.peer && inReplyTo) bus.completeReply(c.peer, inReplyTo.id); // the delivery it answers was handled all the same
+        if (hushed.length && !targets.length) return void reply({ t: "sent", ok: false, error: `not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}` });
+        return void reply({ t: "sent", ok: true, targets, recorded: priority === "fyi", ...(hushed.length ? { hushed: hushed.map((h) => h.peer), notice: `not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}` } : {}) });
+      }
+      case "facts": {
+        // Turn-free facts (issue #108) for Claude's hooks: `pre` before a tool runs (the fact rides back as additional
+        // context), `post` after it (its effect, and the readback of what went in before), `stop` when its turn ends.
+        // The hook never shows an error: on any failure the answer is just empty.
+        if (!c.peer || c.role === "console") return void reply({ t: "facts", ok: false, error: "facts are for a peer" });
+        const phase: "pre" | "post" | "stop" = msg.phase === "post" || msg.phase === "stop" ? msg.phase : "pre";
+        const tool = typeof msg.tool === "string" ? msg.tool.slice(0, 64) : "";
+        const input = msg.input && typeof msg.input === "object" && !Array.isArray(msg.input) ? msg.input : {};
+        const toolUseId = typeof msg.toolUseId === "string" && msg.toolUseId ? msg.toolUseId.slice(0, 128) : undefined;
+        const sessionId = typeof msg.sessionId === "string" && msg.sessionId ? msg.sessionId.slice(0, 128) : undefined;
+        const callStarted = performance.now();
+        const tally = (peer: PeerId) => {
+          const st = hookStats.get(peer) ?? { n: 0, startupMs: 0, hubMs: 0, maxStartupMs: 0 };
+          const startup = typeof msg.startedMs === "number" && Number.isFinite(msg.startedMs) ? Math.max(0, msg.startedMs) : 0;
+          hookStats.set(peer, { n: st.n + 1, startupMs: st.startupMs + startup, hubMs: st.hubMs + (performance.now() - callStarted), maxStartupMs: Math.max(st.maxStartupMs, startup) });
+        };
+        try {
+          const peer = c.peer;
+          // Quiescence evidence is kept in every regime: a PII window must not make an active peer look stopped. Only
+          // a tool call starting is new activity: a PostToolUse of an earlier call can arrive after the Stop.
+          if (phase === "stop") {
+            turnEnded.set(peer, Date.now());
+            tasks.cohorts.turnEnded(peer);
+            event({ type: "native_turn_end", peer });
+            tally(peer);
+            const st = hookStats.get(peer)!;
+            event({ type: "hook_stats", peer, n: st.n, startupMs: Math.round(st.startupMs), hubMs: Math.round(st.hubMs), maxStartupMs: Math.round(st.maxStartupMs) });
+            hookStats.delete(peer);
+          } else {
+            if (phase === "pre") activeAt.set(peer, Date.now());
+            queueMicrotask(() => tally(peer)); // after this call's own work below
+          }
+          if (!factsOn()) return void reply({ t: "facts", ok: true });
+          factSession(peer, sessionId);
+          const transcript = claudeTranscript(sessionId, msg.transcriptPath);
+          if (phase === "stop") {
+            readbacks(peer, transcript);
+            return void reply({ t: "facts", ok: true });
+          }
+          if (phase === "post") {
+            facts.postTool(peer, toolUseId, tool, input);
+            readbacks(peer, transcript);
+            return void reply({ t: "facts", ok: true });
+          }
+          readbacks(peer, transcript);
+          checkCapability(peer);
+          const started = performance.now();
+          facts.preTool(peer, toolUseId, tool, input);
+          // Without a transcript nothing offered could ever be read back: a verified path is lost, and nothing is offered
+          // (the same diff would otherwise go in at every tool call).
+          if (!transcript) {
+            if (capable.delete(peer)) loseCapability(peer, "its transcript cannot be found");
+            return void reply({ t: "facts", ok: true });
+          }
+          const offered = offerFor(peer, toolUseId);
+          if (offered) event({ type: "fact", peer, id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "hook", ms: Math.round(performance.now() - started), ...(typeof msg.startedMs === "number" && Number.isFinite(msg.startedMs) ? { hookMs: Math.round(msg.startedMs) } : {}), ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
+          return void reply({ t: "facts", ok: true, ...(offered ? { text: offered.text, id: offered.id } : {}) });
+        } catch (error) {
+          log(`facts for ${c.peer}: ${(error as Error).message}`);
+          return void reply({ t: "facts", ok: true });
+        }
+      }
+      case "silenced": {
+        // `ahub check-path` (issue #107): which of these owners the asking peer shares a silent cohort with.
+        if (!c.peer) return void reply({ t: "silenced", ok: false, error: "silenced is for a peer" });
+        const owners = Array.isArray(msg.owners) ? msg.owners.filter((o: unknown): o is string => typeof o === "string").slice(0, 20) : [];
+        return void reply({ t: "silenced", ok: true, owners: owners.filter((o: string) => !!tasks.silenced(c.peer!, o)) });
       }
       case "tail":
         if (c.role !== "console" || c.tail) return;

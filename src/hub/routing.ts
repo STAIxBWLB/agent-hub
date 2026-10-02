@@ -248,3 +248,88 @@ export function assign(
   if (owner === PI) trace.push(`pi decision: backend ${piBackend ?? "dgx"}${task.signals.includes("long_context") ? `, context limit ${piBackend === "mlx" ? routing.pi.mlx_max_context_tokens : routing.pi.dgx_max_context_tokens}` : ""}`);
   return { ...(owner ? { owner } : {}), ...(pii ? { reviewer: "user" } : reviewer ? { reviewer } : {}), ...(route ? { route } : {}), fixedModel, ...(piBackend ? { piBackend } : {}), trace };
 }
+
+/**
+ * One recorded task of a peer in a class, as stage proxies (issue #109): `orient` from being handed the task to its
+ * accept (queueing included), `work` from the accept to its done. Unknown stages stay undefined, never zero.
+ */
+export interface SplitObservation {
+  outcome: "approved" | "failed";
+  orient?: number;
+  work?: number;
+}
+
+/** Everything the shadow split prediction reads; `Tasks` builds it once and `route explain` shows the same. */
+export interface SplitInput {
+  /** The pair: the peer routing would pick for the task, and the owner of the open task it overlaps. */
+  peers: [PeerId, PeerId];
+  /** Each peer's observations in this class, from this hub run only: one version, one hook profile. */
+  observations: Record<PeerId, SplitObservation[]>;
+  /** Work units of the routed task and of the one it overlaps; undefined is unknown. */
+  units: [number | undefined, number | undefined];
+  /** Other open work each peer has: a busy owner does not start from orientation plus two whole units. */
+  backlog: Record<PeerId, number>;
+  available: Record<PeerId, boolean>;
+}
+
+export interface SplitPrediction {
+  verdict: "split" | "single" | "unknown";
+  trace: string[];
+  /** The peer that would finish both units soonest on its own. */
+  single?: PeerId;
+  /** Predicted seconds: both peers one unit each, in parallel (the later of the two), and the best peer alone. */
+  splitS?: number;
+  singleS?: number;
+}
+
+/** Observations a peer needs, and the share of failures a history may hold, before a prediction is made. */
+export const SPLIT_MIN = 5;
+const SPLIT_FAILURE_SHARE = 0.3;
+
+/**
+ * Shadow split prediction (issue #109): never changes assignment. For two similar units of overlapping work, a split
+ * (each peer one unit, in parallel) finishes when the later of `o + u` does; the best single peer takes `o + 2u`. With
+ * a faster and a slower peer that is `o_s + u_s < o_f + 2u_f`. It is a model assumption (equal units, measured
+ * orientation, free coordination), not a bound, so anything that breaks it makes the prediction unknown: unequal or
+ * unknown units, a busy or unavailable peer, too few or failure-heavy records, or work times too spread out to call
+ * comparable. A difference under a tenth of the single time is inconclusive.
+ */
+export function predictSplit(input: SplitInput): SplitPrediction {
+  const trace: string[] = ["shadow split prediction (it never changes assignment):"];
+  const unknown = (why: string): SplitPrediction => ({ verdict: "unknown", trace: [...trace, `  unknown: ${why}`] });
+  const [a, b] = input.peers;
+  if (a === b) return unknown("the routed task and the one it overlaps have the same owner");
+  const [ua, ub] = input.units;
+  if (ua === undefined || ub === undefined || ua !== ub) return unknown(`work units ${ua ?? "?"} and ${ub ?? "?"}: the rule needs two equal, known units`);
+  for (const p of [a, b]) {
+    if (!input.available[p]) return unknown(`${p} is not available`);
+    if ((input.backlog[p] ?? 0) > 0) return unknown(`${p} has ${input.backlog[p]} other open task(s): it would not start from orientation plus two units`);
+  }
+  const median = (xs: number[]) => {
+    const v = [...xs].sort((x, y) => x - y);
+    return v.length % 2 ? v[(v.length - 1) / 2]! : (v[v.length / 2 - 1]! + v[v.length / 2]!) / 2;
+  };
+  const stats: Record<PeerId, { o: number; u: number }> = {};
+  for (const p of [a, b]) {
+    const all = input.observations[p] ?? [];
+    const failed = all.filter((o) => o.outcome !== "approved").length;
+    const ok = all.filter((o): o is Required<SplitObservation> => o.outcome === "approved" && o.orient !== undefined && o.work !== undefined);
+    if (ok.length < SPLIT_MIN) return unknown(`${p} has ${ok.length} measured task(s) in this hub run; ${SPLIT_MIN} are needed`);
+    if (failed / all.length > SPLIT_FAILURE_SHARE) return unknown(`${failed} of ${all.length} of ${p}'s recorded tasks failed: its successes alone would understate its time`);
+    const works = ok.map((o) => o.work).sort((x, y) => x - y);
+    const u = median(works);
+    const iqr = works[Math.floor((works.length * 3) / 4)]! - works[Math.floor(works.length / 4)]!;
+    if (u <= 0 || iqr / u > 1) return unknown(`${p}'s work times spread too widely (IQR ${Math.round(iqr / 1000)} s against a median of ${Math.round(u / 1000)} s) to call its tasks comparable units`);
+    stats[p] = { o: median(ok.map((o) => o.orient)), u };
+    trace.push(`  ${p}: orientation ${Math.round(stats[p]!.o / 1000)} s, one unit ${Math.round(u / 1000)} s (median of ${ok.length})`);
+  }
+  const single = stats[a]!.o + 2 * stats[a]!.u <= stats[b]!.o + 2 * stats[b]!.u ? a : b;
+  const s = (ms: number) => Math.round(ms / 1000);
+  const splitS = s(Math.max(stats[a]!.o + stats[a]!.u, stats[b]!.o + stats[b]!.u));
+  const singleS = s(stats[single]!.o + 2 * stats[single]!.u);
+  trace.push(`  split: ${splitS} s (${a} ${s(stats[a]!.o + stats[a]!.u)} s, ${b} ${s(stats[b]!.o + stats[b]!.u)} s for one unit each); ${single} alone: ${singleS} s for two`);
+  if (Math.abs(splitS - singleS) < singleS / 10) return { ...unknown("the difference is under a tenth of the single time: inconclusive"), single, splitS, singleS };
+  const verdict = splitS < singleS ? "split" : "single";
+  trace.push(verdict === "split" ? "  a split would finish sooner" : `  ${single} alone would finish sooner`);
+  return { verdict, trace, single, splitS, singleS };
+}

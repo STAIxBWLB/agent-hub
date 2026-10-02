@@ -126,3 +126,98 @@ test("crash trust restoration preserves native updates to unrelated project fiel
     const value=JSON.parse(readFileSync(trust,"utf8"));expect(value.projects[project]).toEqual({hasTrustDialogAccepted:false,lastCost:2});expect(value.projects.other).toEqual({untouched:true});
   } finally {rmSync(root,{recursive:true,force:true});}
 });
+
+test("a v2 manifest prepares the turn-free arm too, and an arm list that matches no protocol is refused", () => {
+  const root=fixture();
+  try {
+    const archive=join(root,"sample_repo-7.tar");
+    const pack=spawnSync("python3",["-c",`import tarfile,io; t=tarfile.open(${JSON.stringify(archive)},'w'); i=tarfile.TarInfo('tracked.py'); i.size=1; t.addfile(i,io.BytesIO(b'a')); t.close()`]);
+    expect(pack.status).toBe(0);
+    const archiveHash=createHash("sha256").update(readFileSync(archive)).digest("hex");
+    const manifest=(arms:string[])=>({schema:"agent-hub.cooperbench-run/v1",upstream:{commit:"63b9d44d9f39a02fccf5bf0052db48a917a011fd"},arms,cases:[{repo:"sample_repo",task:7,features:[1,2],image_digest:"sample@sha256:"+"d".repeat(64),base_commit:"e".repeat(40),archive_sha256:archiveHash,prompt_sha256:["a".repeat(64),"b".repeat(64)]}]});
+    const prepare=(arms:string[],out:string)=>{const path=join(root,`${out}.json`);writeFileSync(path,JSON.stringify(manifest(arms)));return spawnSync("python3",[script,"prepare","--manifest",path,"--archives",root,"--output",join(root,out)],{encoding:"utf8"});};
+    const v2=prepare(["solo-codex","solo-claude","hub-codex-claude","hub-turnfree-codex-claude"],"v2");
+    if(v2.status!==0) throw new Error(v2.stderr);
+    expect(JSON.parse(readFileSync(join(root,"v2","prepared.json"),"utf8")).fixtures.map((f:any)=>f.arm)).toEqual(["solo-codex","solo-claude","hub-codex-claude","hub-turnfree-codex-claude"]);
+    const odd=prepare(["solo-codex","hub-turnfree-codex-claude"],"odd");
+    expect(odd.status).not.toBe(0);
+    expect(odd.stderr).toContain("versioned protocol");
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+// issue #110: grading binds the actors of every v2 arm, applies one validity gate to every run record, and a manifest's
+// planned attempts match its arms, cases and repeats.
+test("grading names the actors of every arm; its validity gate (graded ends, context paths while the agents worked, hook and MCP isolation) decides what is graded; a plan that does not add up is refused", () => {
+  const code = `import importlib.util,json,os,tempfile
+s=importlib.util.spec_from_file_location('r',${JSON.stringify(script)});m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+assert [m.required_actors(a) for a in ['solo-codex','solo-claude','hub-codex-claude','hub-turnfree-codex-claude']]==[['codex'],['claude'],['codex','claude'],['codex','claude']]
+v2=json.load(open(${JSON.stringify(join(import.meta.dir, "../../scripts/benchmarks/manifest-v2.json"))}))
+m.validate_manifest(v2)
+assert v2['plan']['pilot']['attempts']==12 and v2['plan']['study']['attempts']==80 and v2['plan']['study']['active_ceiling_s']==24000
+v2['plan']['study']['attempts']=60
+try: m.validate_manifest(v2); raise AssertionError('a wrong plan was accepted')
+except m.BenchError as e: assert 'do not match 80 attempts' in str(e)
+v2['plan']['study']['attempts']=80
+for bad,why in (({'cases':[0,99],'repeats':1,'attempts':8,'active_ceiling_s':2400},'distinct indices'),({'cases':[0],'repeats':1.5,'attempts':4,'active_ceiling_s':1200},'whole number'),({'cases':[0],'repeats':1,'attempt':4},'no attempts')):
+    v2['plan']['bad']=bad
+    try: m.validate_manifest(v2); raise AssertionError('a malformed plan was accepted')
+    except m.BenchError as e: assert why in str(e), str(e)
+del v2['plan']['bad']
+ab=json.load(open(${JSON.stringify(join(import.meta.dir, "../../scripts/benchmarks/manifest-v2-ablation-106.json"))}))
+m.validate_manifest(ab)
+assert ab['arms']==['hub-codex-claude','hub-staleoff-codex-claude'] and m.required_actors('hub-staleoff-codex-claude')==['codex','claude']
+# The gate grade() applies to every run record that passed the identity checks.
+tf='hub-turnfree-codex-claude'
+T0=1_800_000_000_000
+iso=lambda s: __import__('datetime').datetime.fromtimestamp((T0+s*1000)/1000,__import__('datetime').timezone.utc).isoformat()
+run={'kind':tf,'end_reason':'completed','startedAt':T0,'elapsedMs':60_000,'taskStates':[{'id':1,'history':[{'event':'proposed','at':T0}]},{'id':2,'history':[{'event':'proposed','at':T0}]}],'events':[],'codexMessages':[]}
+assert m.unavailable_reason(tf,run)=='turn-free context path not verified before the tasks: claude, codex'
+assert m.unavailable_reason('hub-codex-claude',{**run,'kind':'hub-codex-claude','readiness':{}})=='hook isolation unknown: no transcript path'
+run['events']=[{'type':'capability','peer':p,'state':'verified','at':iso(-5)} for p in ('claude','codex')]
+t=tempfile.NamedTemporaryFile('w',suffix='.jsonl',delete=False)
+t.write(json.dumps({'type':'attachment','attachment':{'type':'hook_success','command':"bun '/x/src/cli/facts-hook.ts'"}})+'\\n'); t.close()
+run['readiness']={'claude':{'transcriptPath':t.name}}
+assert m.unavailable_reason(tf,run) is None  # valid with no cohort at all: the plans' overlap is the agents' doing
+run['events'].append({'type':'capability','peer':'codex','state':'lost','at':iso(-1)})
+assert m.unavailable_reason(tf,run)=='turn-free context path not verified before the tasks: codex'  # lost again before the tasks
+run['events'].pop()
+import hashlib
+recorded=open(t.name,'rb').read()
+run['readiness']['claude']['transcriptSha256']=hashlib.sha256(recorded).hexdigest()
+run['readiness']['claude']['transcriptBytes']=len(recorded)
+assert m.unavailable_reason(tf,run) is None
+with open(t.name,'a') as f: f.write(json.dumps({'type':'ai-title','title':'written after Claude Code exited'})+'\\n')
+assert m.unavailable_reason(tf,run) is None  # appended after the attempt: the recorded prefix still matches
+with open(t.name,'w') as f: f.write(recorded.decode()+json.dumps({'type':'system','subtype':'stop_hook_summary','hookInfos':[{'command':'~/.claude/hooks/notify.sh'}]})+'\\n')
+assert m.unavailable_reason(tf,run) is None  # a foreign hook after the attempt is not the attempt's
+with open(t.name,'w') as f: f.write(json.dumps({'type':'x'})+'\\n'+recorded.decode())
+assert m.unavailable_reason(tf,run)=='hook isolation unknown: transcript changed since the attempt'  # the attempt's own bytes changed
+with open(t.name,'w') as f: f.write(recorded.decode())
+run['events'].append({'type':'cohort','id':1,'event':'lifted','silent':False,'tasks':[1,2],'at':iso(70)})
+run['events'].append({'type':'capability','peer':'claude','state':'lost','at':iso(70)})
+assert m.unavailable_reason(tf,run) is None  # teardown, after the 60 s of work
+run['events'].append({'type':'capability','peer':'codex','state':'lost','at':iso(30)})
+assert m.unavailable_reason(tf,run)=='turn-free context path lost while the agents worked: codex'
+run['events'].pop()
+run['events'].append({'type':'cohort','id':2,'event':'formed','silent':False,'tasks':[1,2],'at':iso(10)})
+assert m.unavailable_reason(tf,run)=='turn-free cohort not silent while the agents worked'
+run['events'].pop()
+run['end_reason']='timeout'; run['end_reason_detail']='wall-timeout'
+assert m.unavailable_reason(tf,run) is None  # a timed-out attempt's final artifact is graded
+run['end_reason']='interrupted'; run['end_reason_detail']='needs-review'
+assert m.unavailable_reason(tf,run)=='needs-review'
+run['end_reason']='completed'
+run['codexMessages']=[{'method':'hook/started'}]
+assert m.unavailable_reason('solo-codex',{**run,'kind':'solo-codex'})=='hook isolation failed: Codex ran hooks'
+run['codexMessages']=[{'method':'mcpServer/startupStatus/updated','params':{'name':'agent-hub','status':'ready'}},{'method':'mcpServer/startupStatus/updated','params':{'name':'obsidian','status':'starting'}}]
+assert m.unavailable_reason(tf,run)=='MCP isolation failed: Codex started obsidian'
+run['codexMessages']=[]
+with open(t.name,'a') as f: f.write(json.dumps({'type':'system','subtype':'stop_hook_summary','hookInfos':[{'command':'~/.claude/hooks/notify.sh'}]})+'\\n')
+del run['readiness']['claude']['transcriptSha256']; del run['readiness']['claude']['transcriptBytes']
+assert m.unavailable_reason(tf,run)=="hook isolation failed: Claude ran a hook that is not the hub's"
+os.unlink(t.name)
+assert m.unavailable_reason(tf,run).startswith('hook isolation unknown: transcript unreadable')
+`;
+  const r = spawnSync("python3", ["-B", "-c", code], { encoding: "utf8" });
+  if (r.status !== 0) throw new Error(r.stderr);
+});

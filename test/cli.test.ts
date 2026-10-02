@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { existsSync, linkSync, lstatSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { init, removeBlock, upsertBlock } from "../src/cli/init.ts";
-import { buildLaunch, CLAUDE_CHANNEL, statusLineSettings, UNATTENDED_WARNING } from "../src/cli/launch.ts";
+import { buildLaunch, CLAUDE_CHANNEL, sessionSettings, statusLineSettings, UNATTENDED_WARNING } from "../src/cli/launch.ts";
 import { allocatePorts } from "../src/hub/ports.ts";
 import { nextStep, parseList, pluginState } from "../src/cli/setup.ts";
 import { VERSION } from "../src/version.ts";
@@ -151,6 +151,33 @@ test("ahub claude injects the tee through --settings, wraps the user's command, 
   const own = buildLaunch("claude", ["--settings", "{}"], { unattended: false, statusLine: tee });
   expect(own.args.filter((a) => a === "--settings")).toHaveLength(1);
   expect(own.warning).toContain("status line tee is off");
+});
+
+// issue #108: a turn-free project's Claude session gets the facts hook before and after every tool call, and at the end
+// of each turn (the quiescence evidence of issue #107).
+test("ahub claude adds the facts hooks next to the tee in a turn-free project, and says so when a user --settings turns them off", () => {
+  const tee = { script: "/repo/src/cli/statusline-tee.ts", stateDir: "/p/.agenthub/state" };
+  const facts = { script: "/repo/src/cli/facts-hook.ts", stateDir: "/p/.agenthub/state" };
+  const settings = JSON.parse(sessionSettings(tee, facts));
+  expect(settings.statusLine.type).toBe("command");
+  const hooks = [{ type: "command", command: "AGENTHUB_STATE_DIR='/p/.agenthub/state' bun '/repo/src/cli/facts-hook.ts'", timeout: 5 }];
+  for (const event of ["PreToolUse", "PostToolUse"]) expect(settings.hooks[event]).toEqual([{ matcher: "*", hooks }]);
+  expect(settings.hooks.Stop).toEqual([{ hooks }]);
+  expect(Object.keys(settings.hooks).sort()).toEqual(["PostToolUse", "PreToolUse", "Stop"]); // the hub's own and nothing else
+  expect(sessionSettings(tee)).toBe(statusLineSettings(tee)); // an advisory project: the tee alone, as before
+  expect(buildLaunch("claude", [], { unattended: false, statusLine: tee, facts }).args.slice(2, 4)).toEqual(["--settings", sessionSettings(tee, facts)]);
+  const own = buildLaunch("claude", ["--settings", "{}"], { unattended: false, statusLine: tee, facts });
+  expect(own.warning).toContain("turn-free facts hooks are off");
+});
+
+test("the facts hook prints nothing and exits 0 without a hub, without a state dir, or on bad input", () => {
+  const empty = mkdtempSync(join(tmpdir(), "agenthub-factshook-"));
+  const run = (env: Record<string, string>, stdin: string) => Bun.spawnSync(["bun", "src/cli/facts-hook.ts"], { stdin: Buffer.from(stdin), env: { ...process.env, AGENTHUB_STATE_DIR: "", ...env } });
+  for (const r of [run({ AGENTHUB_STATE_DIR: empty }, JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Read", tool_input: {} })), run({}, "{}"), run({ AGENTHUB_STATE_DIR: empty }, "not json")]) {
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.toString()).toBe("");
+  }
+  rmSync(empty, { recursive: true, force: true });
 });
 
 test("one version: package.json, the plugin manifest, the CLI and the MCP server agree", async () => {
