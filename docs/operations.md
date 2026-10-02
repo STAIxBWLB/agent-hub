@@ -446,8 +446,9 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   against the others' (their files, signatures and summaries, plus its own facts)
   and to call `hub_task_done` again; nothing is recorded as done yet. The next
   call counts only for the same target: the same owner, cohort revision and
-  files (the named ones, and those each member wrote with a tool the hub saw
-  between being handed its task and settling, so a symbol-only overlap counts and
+  files (the named ones, and those each member wrote with an edit tool the hub
+  saw, Claude's Edit, MultiEdit and Write or a Codex patch, between being handed
+  its task and settling, so a symbol-only overlap counts and
   a member settling keeps its files in; reading a file never moves it, a settled
   member's later work does not count, a shell command's writes outside the named
   paths are not seen, and a file the hub reads whole whose bytes equal HEAD's
