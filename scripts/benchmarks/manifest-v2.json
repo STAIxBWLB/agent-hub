@@ -4,11 +4,11 @@
     "repository": "https://github.com/CooperBench/CooperBench",
     "commit": "63b9d44d9f39a02fccf5bf0052db48a917a011fd"
   },
-  "hub_version": "0.12.4",
+  "hub_version": "0.12.5",
   "versions": {
-    "hub": "0.12.4",
+    "hub": "0.12.5",
     "codex": "0.159.3",
-    "claude": "2.1.287"
+    "claude": "2.1.288"
   },
   "models": {
     "codex": "gpt-6.1-sol",

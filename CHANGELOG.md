@@ -2,6 +2,13 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## 0.12.5
+
+- The Codex app-server runs in its own process group and is stopped as one. `codex` is a node launcher, and mid-turn the native app-server does not exit on SIGTERM: the SIGKILL that followed reached the launcher alone, leaving the app-server at work under init and the hub process alive after `ahub kill` reported it stopped. The CooperBench runner now checks after `ahub kill` that no daemon or Codex app-server of the arm is left (by a command line naming the fixture), stops and records any leftover, waits up to 30 s for Claude's turn to end before tearing down a completed arm, and records that the user's Codex skills stay available (#113).
+- Turn-free facts: files seen under a named directory beyond the 200 followed have a notice of their own; it and the touched-limit notice are spent only when an offer carrying them is read back, and a new session hears them afresh. A directory file rewritten with HEAD's bytes, which git lists until it refreshes its index, is neither named nor counted against `current()`. The `fact` event carries `named` (directory files named without a diff), and the ledger counts them (#112).
+- Split predictions (shadow only, routing unchanged): every hand-over records the new owner's profile (hub version, agent version from app-server or Claude Code's transcript, coordination mode); observations accumulate across hub runs and count only with the peer's current profile. A prediction is recorded when routing chooses the owner of a task overlapping another owner's task not started yet (`where: "routing"`, the calibration record); cohort-time records carry `where: "cohort"` (#109).
+- CooperBench manifest v2 and the #106 ablation pin hub 0.12.5 and Claude Code 2.1.288.
+
 ## 0.12.4
 
 - A completed-change or edit-conflict notice is checked again for each recipient right before it is handed over, after condensation: a copy whose task has closed, changed owner or is gone is dropped instead of starting a turn, recorded as discarded and as a `stale` event. Other recipients and unrecorded envelopes are delivered as before (#106).
