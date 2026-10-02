@@ -26,6 +26,8 @@ export interface Member {
   owner: PeerId;
   /** Changes whenever the task changes hands. */
   gen: number;
+  /** When it became a member: its writes count for the integration target from here until it settles. */
+  since: number;
   /** When the task left the open states for its owner. */
   closedAt?: number;
   /** When its owner's native turn first ended after that (or the task closed while the owner was idle). */
@@ -125,7 +127,7 @@ export class Cohorts {
       const m = cohort.members.get(t.id);
       const g = gen(t);
       if (m && m.owner === t.owner && m.gen === g) continue;
-      cohort.members.set(t.id, { task: t.id, owner: t.owner!, gen: g });
+      cohort.members.set(t.id, { task: t.id, owner: t.owner!, gen: g, since: Date.now() });
       cohort.intents.delete(t.id);
       changed = true;
     }
@@ -235,7 +237,7 @@ export class Cohorts {
   completion(c: Cohort, task: Task, now: { gen: number; tree: string; factsCurrent: boolean }): Completion {
     const m = c.members.get(task.id);
     if (!m || m.owner !== task.owner || m.gen !== now.gen) {
-      c.members.set(task.id, { task: task.id, owner: task.owner!, gen: now.gen });
+      c.members.set(task.id, { task: task.id, owner: task.owner!, gen: now.gen, since: Date.now() });
       c.revision++;
     }
     this.intent(c, task, now.gen);

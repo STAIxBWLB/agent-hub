@@ -65,6 +65,8 @@ export interface FactsOptions {
 interface Version {
   hash: string;
   text?: string;
+  /** Git's blob id of the same bytes: a file equal to HEAD's is no change, whatever its stat data says. */
+  blob?: string;
   seq: number;
 }
 /** One observed change of a file. `by` is set only with effect evidence; undefined means attribution unknown. */
@@ -85,6 +87,8 @@ interface Offer {
   probe?: boolean;
   /** Sent with an integration request: the next done acknowledges it, so it is not an unread readback. */
   done?: boolean;
+  /** Cut directories it named: told once it is acknowledged. */
+  cuts?: string[];
 }
 
 /** What `due` hands the adapter. `unknown`: files whose change is shown with its attribution unknown. */
@@ -114,13 +118,14 @@ export class Facts {
   private expanded = new Map<string, string[]>();
   /** Directories of the current boundary whose changed files were more than the cap. */
   private expandedCut = new Set<string>();
-  /** Directories each peer was told were cut: once, not at every boundary. */
+  /** Directories each peer acknowledged being told were cut: once per session, not at every boundary. */
   private readonly cutTold = new Map<PeerId, Set<string>>();
   /**
-   * The files each peer wrote with a tool the hub saw (Claude's Edit, MultiEdit and Write; Codex's patches): with the
-   * named paths, what an integration target covers. Reads are not writes: looking at a file never moves a target.
+   * When each peer wrote each file with a tool the hub saw (Claude's Edit, MultiEdit and Write; Codex's patches), the
+   * newest 16 per file: with the named paths, what an integration target covers for the time a member was at work.
+   * Reads are not writes: looking at a file never moves a target.
    */
-  private readonly written = new Map<PeerId, Set<string>>();
+  private readonly writes = new Map<PeerId, Map<string, number[]>>();
   /**
    * What a peer saw of a file it touched before it had a view of it (a partial read, its own write): the baseline of
    * that file's first fact, so a change landing between the touch and the next boundary is shown, not absorbed.
@@ -193,7 +198,8 @@ export class Facts {
         got += n;
       }
       const data = buf.subarray(0, got);
-      return { hash: createHash("sha1").update(data).digest("hex"), text: data.toString("utf8") };
+      const blob = createHash("sha1").update(`blob ${data.length}\0`).update(data).digest("hex");
+      return { hash: createHash("sha1").update(data).digest("hex"), text: data.toString("utf8"), blob };
     } catch {
       return { hash: "missing" };
     } finally {
@@ -215,7 +221,7 @@ export class Facts {
     this.covered.clear();
     this.firstSeen.clear();
     this.cutTold.clear();
-    this.written.clear();
+    this.writes.clear();
     this.epoch = Date.now();
   }
 
@@ -230,10 +236,26 @@ export class Facts {
     this.offers.delete(peer);
     this.covered.delete(peer);
     this.firstSeen.delete(peer);
+    this.cutTold.delete(peer);
   }
 
   private wrote(peer: PeerId, file: string): void {
-    this.written.set(peer, (this.written.get(peer) ?? new Set()).add(file));
+    const files = this.writes.get(peer) ?? new Map<string, number[]>();
+    files.set(file, [...(files.get(file) ?? []), Date.now()].slice(-16));
+    this.writes.set(peer, files);
+  }
+
+  /** HEAD's blob id of each of these project paths that HEAD has, in one read-only git call. */
+  private headBlobs(files: string[]): Map<string, string> {
+    const out = new Map<string, string>();
+    if (!files.length) return out;
+    const r = Bun.spawnSync(["git", "cat-file", "--batch-check=%(objectname) %(objecttype)"], { cwd: this.root, stdin: new TextEncoder().encode(files.map((f) => `HEAD:./${f}`).join("\n") + "\n"), stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+    if (r.exitCode !== 0) return out;
+    r.stdout.toString().split("\n").forEach((line, i) => {
+      const [oid, type] = line.split(" ");
+      if (type === "blob" && oid && files[i]) out.set(files[i]!, oid);
+    });
+    return out;
   }
 
   /** A new boundary: directories are expanded afresh. */
@@ -293,7 +315,11 @@ export class Facts {
         // Against HEAD, so a staged change counts (a staged move by both names); a repository without a commit yet has
         // only the index to go by.
         const changed = git("diff-index", "--name-only", "--relative", "-z", "HEAD") ?? git("ls-files", "-z", "-m", "-d") ?? [];
-        const all = [...new Set([...changed, ...(git("ls-files", "-z", "-o", "--exclude-standard") ?? [])].flatMap((f) => { const x = this.rel(f); return x ? [x] : []; }))];
+        const listed = [...new Set([...changed, ...(git("ls-files", "-z", "-o", "--exclude-standard") ?? [])].flatMap((f) => { const x = this.rel(f); return x ? [x] : []; }))];
+        // Stat data can list a file whose bytes equal HEAD's (edited and put back) until some git command refreshes
+        // the index: such a file is no change, so a refresh never moves what a directory stands for.
+        const head = this.headBlobs(listed);
+        const all = listed.filter((f) => !head.has(f) || this.load(f).blob !== head.get(f));
         if (all.length > EXPANDED_KEPT) this.expandedCut.add(p);
         files = all.slice(0, EXPANDED_KEPT);
         this.expanded.set(p, files);
@@ -493,10 +519,8 @@ export class Facts {
     }
     if (cut) parts.push(`(${cut} more changed line(s) not shown; read ${cutFiles.join(", ")})`);
     if (unnamed) parts.push(`${unnamed} more changed file(s) in your scope, not named here: their names match a private-data pattern`);
-    const told = this.cutTold.get(peer) ?? new Set<string>();
-    const cutDirs = [...this.expandedCut].filter((d) => this.o.nameable(d) && !told.has(d));
-    for (const d of cutDirs) told.add(d);
-    this.cutTold.set(peer, told);
+    const told = this.cutTold.get(peer);
+    const cutDirs = [...this.expandedCut].filter((d) => this.o.nameable(d) && !told?.has(d));
     if (cutDirs.length) parts.push(`more than ${EXPANDED_KEPT} files changed under ${cutDirs.join(", ")}: the rest are not shown; check them yourself`);
     const plans = new Map<number, string>();
     const seen = this.plansAccepted.get(peer) ?? new Map<number, string>();
@@ -526,7 +550,7 @@ export class Facts {
       for (const [file, v] of offered) if (!view.has(file)) view.set(file, v);
       return undefined;
     }
-    return this.offer(peer, parts, offered, plans, toolUseId, { files, plans: plans.size, unknown, coverage, done: withDone });
+    return this.offer(peer, parts, offered, plans, toolUseId, { files, plans: plans.size, unknown, coverage, done: withDone, cuts: cutDirs });
   }
 
   /** The plans of these tasks were shown in a tool result (an accept's answer): they need no fact later. */
@@ -537,17 +561,18 @@ export class Facts {
   }
 
   /**
-   * One hash over these project paths and the files these peers wrote, as they are now: an integration target (issue
-   * #107). A directory counts by git's changed, new and deleted files under it, with the commit they are relative to.
+   * One hash over these project paths and the files each peer wrote within its window, as they are now: an integration
+   * target (issue #107). A directory counts by git's changed, new and deleted files under it, with the commit they are relative to.
    */
-  tree(paths: string[], peers: PeerId[] = []): string {
+  tree(paths: string[], windows: { peer: PeerId; since: number; until?: number }[] = []): string {
     this.boundary();
     const h = createHash("sha1");
     const head = Bun.spawnSync(["git", "rev-parse", "-q", "--verify", "HEAD"], { cwd: this.root, stdout: "pipe", stderr: "pipe" });
     h.update(head.exitCode === 0 ? head.stdout.toString().trim() : "no-head").update("\0");
-    // The files these peers wrote count too: a symbol-only overlap names no path, and a tool's write outside the named
-    // paths still moves the work the integration checked. What they only read never does.
-    const written = peers.flatMap((p) => [...(this.written.get(p) ?? [])]);
+    // The files the members wrote while at work in the cohort count too: a symbol-only overlap names no path, and a
+    // tool's write outside the named paths still moves the work the integration checked. What they only read never
+    // does, nor what they wrote before or after (a member settling keeps its files in the set).
+    const written = windows.flatMap((w) => [...(this.writes.get(w.peer) ?? [])].filter(([, times]) => times.some((t) => t >= w.since && (w.until === undefined || t <= w.until))).map(([file]) => file));
     const files = [...new Set([...this.expand(paths.flatMap((p) => { const r = this.rel(p); return r ? [r] : []; })), ...written])].sort();
     for (const file of files) h.update(file).update("\0").update(this.load(file).hash).update("\0");
     return h.digest("hex");
@@ -568,11 +593,11 @@ export class Facts {
     return this.offer(peer, ["context check: nothing to act on"], new Map(), new Map(), toolUseId, { files: 0, plans: 0, unknown: 0, coverage: false, probe: true });
   }
 
-  private offer(peer: PeerId, parts: string[], files: Map<string, Version>, plans: Map<number, string>, toolUseId: string | undefined, counts: { files: number; plans: number; unknown: number; coverage: boolean; probe?: boolean; done?: boolean }): Offered {
+  private offer(peer: PeerId, parts: string[], files: Map<string, Version>, plans: Map<number, string>, toolUseId: string | undefined, counts: { files: number; plans: number; unknown: number; coverage: boolean; probe?: boolean; done?: boolean; cuts?: string[] }): Offered {
     const id = `${this.o.instance}-${++this.n}`;
     const text = sanitize([factsHeader(id), ...parts].join("\n"));
     const list = this.offers.get(peer) ?? [];
-    list.push({ id, seq: this.seq, at: Date.now(), files, plans, ...(toolUseId ? { toolUseId } : {}), ...(counts.probe ? { probe: true } : {}), ...(counts.done ? { done: true } : {}) });
+    list.push({ id, seq: this.seq, at: Date.now(), files, plans, ...(toolUseId ? { toolUseId } : {}), ...(counts.probe ? { probe: true } : {}), ...(counts.done ? { done: true } : {}), ...(counts.cuts?.length ? { cuts: counts.cuts } : {}) });
     if (list.length > OFFERS_KEPT) list.shift();
     this.offers.set(peer, list);
     return { id, text, files: counts.files, plans: counts.plans, unknown: counts.unknown, bytes: Buffer.byteLength(text), ...(counts.probe ? { probe: true } : {}), ...(counts.coverage ? { coverage: true } : {}) };
@@ -607,6 +632,7 @@ export class Facts {
     const seen = this.plansAccepted.get(peer) ?? new Map<number, string>();
     for (const [task, text] of offer.plans) seen.set(task, text);
     this.plansAccepted.set(peer, seen);
+    if (offer.cuts) this.cutTold.set(peer, new Set([...(this.cutTold.get(peer) ?? []), ...offer.cuts]));
     if (offer.files.size || !offer.probe) this.covered.add(peer);
     list.splice(0, i + 1);
     return { at: offer.at, ...(offer.probe ? { probe: true } : {}) };

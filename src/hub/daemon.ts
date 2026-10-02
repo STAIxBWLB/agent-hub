@@ -534,7 +534,7 @@ export async function startDaemon(opts: DaemonOptions) {
     turnFree,
     capable: (peer) => capable.has(peer),
     idle: (peer) => idle(peer),
-    treeHash: (paths, owners) => facts.tree(paths, owners),
+    treeHash: (paths, windows) => facts.tree(paths, windows),
     integrationFacts: (peer) => {
       if (!factsOn()) return undefined;
       let offered: ReturnType<Facts["due"]>;
@@ -1547,10 +1547,12 @@ export async function startDaemon(opts: DaemonOptions) {
           const ms = Math.round(performance.now() - started);
           codexSteering = true;
           const sent = performance.now();
-          void codex.steerText(offered.text).then((accepted) => {
+          void codex.steerText(offered.text).then((outcome) => {
             codexSteering = false;
-            if (!accepted) facts.drop("codex", offered.id); // it never went in: not an unread offer, and the next boundary offers it again
-            event({ type: "fact", peer: "codex", id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "steer", ms, rttMs: Math.round(performance.now() - sent), accepted, ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
+            // Refused, it never went in: not an unread offer, and the next boundary offers it again. Unanswered, it may
+            // have: its readback can still come.
+            if (outcome === "refused") facts.drop("codex", offered.id);
+            event({ type: "fact", peer: "codex", id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "steer", ms, rttMs: Math.round(performance.now() - sent), accepted: outcome === "accepted", ...(outcome === "unanswered" ? { unanswered: true } : {}), ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
           });
         },
         appPort: opts.codexAppPort,

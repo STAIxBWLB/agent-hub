@@ -268,7 +268,7 @@ test("a measure that does not apply is not unknown, an unknown settlement or a p
     const transcript = join(root, "claude.jsonl");
     writeFileSync(transcript, [
       JSON.stringify({ type: "assistant", timestamp: iso(9), message: { id: "m1", content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] } }),
-      JSON.stringify({ type: "attachment", attachment: { type: "hook_success", hookName: "PreToolUse:Bash", command: "SLACK_TOKEN=xoxb-123 /usr/local/bin/notify --channel x" } }),
+      JSON.stringify({ type: "attachment", attachment: { type: "hook_success", hookName: "PreToolUse:Bash", command: 'SLACK_TOKEN=xoxb-123 MSG="hello secretword" /usr/local/bin/notify --channel x' } }),
       JSON.stringify({ type: "assistant", timestamp: iso(11), message: { id: "m2", model: "<synthetic>", stop_reason: "stop_sequence", content: [{ type: "text", text: "API Error" }] } }),
     ].join("\n"));
     const task = (owner: string, done: number) => ({ id: 1, owner, state: "approved", history: [{ event: "proposed", at: t0 }, { event: "done", at: t0 + done * 1000 }] });
@@ -281,11 +281,11 @@ test("a measure that does not apply is not unknown, an unknown settlement or a p
     const solo = out.rows.find((r: { arm: string }) => r.arm === "solo-claude");
     expect(solo.settlement).toEqual({ claude: 11 }); // the synthetic error response ended its turn
     expect(solo.hooks).toMatchObject({ claude_transcript_rows: { "PreToolUse:Bash other: notify": 1 }, foreign: ["other: notify"] });
-    expect(JSON.stringify(out)).not.toContain("xoxb");
+    expect(JSON.stringify(out)).not.toMatch(/xoxb|secretword/);
     expect(solo.validity).toEqual({ valid: false, why: "hook isolation failed: Claude ran a hook that is not the hub's" });
     expect(out.summary["solo-claude"]).toMatchObject({ hub_send_unknown: 0, post_done_turns_unknown: 0, late_replies_unknown: 0 });
     const joint = out.rows.find((r: { arm: string }) => r.arm === "hub-codex-claude");
-    expect(joint.settlement).toEqual({ codex: null });
+    expect(joint.settlement).toEqual({ codex: null, claude: null }); // a missing record is unknown, never left out
     expect(joint.settlement_s).toBeNull();
     expect(out.summary["hub-codex-claude"]).toMatchObject({ lost_identifiers_unknown: 1, lost_fragments_unknown: 1 }); // Claude's writes were not counted
   } finally {

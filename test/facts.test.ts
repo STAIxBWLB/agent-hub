@@ -388,10 +388,14 @@ test("the integration target counts the files the members touched, a symbol-only
   facts.preTool("claude", "e1", "Edit", input);
   write("other.txt", "y\n");
   facts.postTool("claude", "e1", "Edit", input);
-  const before = facts.tree([], ["claude"]);
-  expect(facts.tree([], [])).not.toBe(before); // other.txt is in it only through what claude touched
+  const window = [{ peer: "claude", since: 0 }];
+  const before = facts.tree([], window);
+  expect(facts.tree([], [])).not.toBe(before); // other.txt is in it only through what claude wrote
   write("other.txt", "z\n");
-  expect(facts.tree([], ["claude"])).not.toBe(before);
+  expect(facts.tree([], window)).not.toBe(before);
+  // Writes outside a member's window (before it joined, after it settled) are not the cohort's.
+  expect(facts.tree([], [{ peer: "claude", since: Date.now() + 1000 }])).toBe(facts.tree([], []));
+  expect(facts.tree([], [{ peer: "claude", since: 0, until: 1 }])).toBe(facts.tree([], []));
 });
 
 test("reading a file never moves an integration target; a cut is said once; a nested .git is never read; a staged move shows both names", async () => {
@@ -400,17 +404,20 @@ test("reading a file never moves an integration target; a cut is said once; a ne
     facts.preTool("claude", id, "Read", { file_path: join(root, file) });
     facts.postTool("claude", id, "Read", { file_path: join(root, file) });
   };
-  const before = facts.tree(["a.txt"], ["claude"]);
+  const before = facts.tree(["a.txt"], [{ peer: "claude", since: 0 }]);
   read("r1", "other.txt");
   facts.codexItem("codex", { type: "commandExecution", status: "completed", commandActions: [{ type: "read", path: join(root, "other.txt") }] });
-  expect(facts.tree(["a.txt"], ["claude", "codex"])).toBe(before); // what they only looked at is not their work
+  expect(facts.tree(["a.txt"], [{ peer: "claude", since: 0 }, { peer: "codex", since: 0 }])).toBe(before); // what they only looked at is not their work
   mkdirSync(join(root, "vendor", "lib", ".git"), { recursive: true });
   writeFileSync(join(root, "vendor", "lib", ".git", "config"), "[remote]\n");
   expect(facts.rel("vendor/lib/.git/config")).toBeUndefined();
   write("other.txt", "x\n");
   expect(facts.pending("claude")).toEqual([]);
   const integration = facts.due("claude", undefined, true);
-  expect(integration ? facts.pending("claude").at(-1) : { done: true }).toMatchObject({ done: true }); // waits for the next done, not a readback
+  expect(integration).toBeDefined();
+  expect(facts.pending("claude").at(-1)).toMatchObject({ id: integration!.id, done: true }); // waits for the next done, not a readback
+  facts.drop("claude", integration!.id);
+  expect(facts.pending("claude")).toEqual([]);
 });
 
 test("a directory cut at the cap is said once per peer, and a staged move lists the old name as well as the new", async () => {
@@ -428,8 +435,32 @@ test("a directory cut at the cap is said once per peer, and a staged move lists 
   writeFileSync(join(root, "src", "old.ts"), "again\n"); // the old name exists again: only a hash that covers it changes
   expect(facts.tree(["src"])).not.toBe(moved);
   for (let i = 0; i < 205; i++) writeFileSync(join(root, "src", `n${i}.ts`), "n\n");
-  const first = facts.due("claude");
-  if (first) facts.ack("claude", first.id);
-  expect(first?.text ?? "").toContain("more than 200 files changed under src");
-  expect(facts.due("claude")?.text ?? "").not.toContain("more than 200 files changed"); // said once
+  const first = facts.due("claude")!;
+  expect(first.text).toContain("more than 200 files changed under src");
+  facts.drop("claude", first.id); // a refused steer: it never went in, so it is said again
+  const again = facts.due("claude")!;
+  expect(again.text).toContain("more than 200 files changed under src");
+  facts.ack("claude", again.id);
+  expect(facts.due("claude")?.text ?? "").not.toContain("more than 200 files changed"); // said once it was read back
+  facts.session("claude", "s1");
+  facts.session("claude", "s2"); // a new session never heard it
+  expect(facts.due("claude")?.text ?? "").toContain("more than 200 files changed under src");
+});
+
+test("a tracked file edited and put back is no change, whatever git's stat data says", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-facts-")));
+  dirs.push(root);
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src", "x.ts"), "x\n");
+  const git = (...a: string[]) => spawnSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...a]);
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: ["src"], plans: [] }), peers: () => ["claude"], nameable: () => true });
+  const clean = facts.tree(["src"]);
+  writeFileSync(join(root, "src", "x.ts"), "edited\n");
+  writeFileSync(join(root, "src", "x.ts"), "x\n"); // put back: same bytes, new stat data, index not refreshed
+  expect(facts.tree(["src"])).toBe(clean);
+  git("status", "--short"); // an agent's own git command refreshes the index
+  expect(facts.tree(["src"])).toBe(clean);
 });

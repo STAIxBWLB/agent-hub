@@ -50,7 +50,7 @@ export interface TasksDeps {
   /** Whether `peer` is between native turns now (issue #107): Codex not busy, Claude stopped since its last tool call. */
   idle?: (peer: PeerId) => boolean;
   /** One hash over these project files as they are now: an integration target (issue #107). */
-  treeHash?: (paths: string[], owners: PeerId[]) => string;
+  treeHash?: (paths: string[], windows: { peer: PeerId; since: number; until?: number }[]) => string;
   /** The facts due for a peer, offered with an integration request; acknowledged by its next done. */
   integrationFacts?: (peer: PeerId) => { id: string; text: string } | undefined;
   ackFacts?: (peer: PeerId, id: string) => void;
@@ -893,12 +893,13 @@ export class Tasks {
     }
   }
 
-  /** One hash over the files a cohort's tasks name and its working owners wrote, as they are now: the integration target (issue #107). */
+  /** One hash over the files a cohort's tasks name and its members wrote while at work, as they are now: the integration target (issue #107). */
   private tree(cohort: Cohort): string {
     const paths = [...new Set([...cohort.members.keys()].flatMap((id) => { const t = this.d.board.get(id); return t ? this.places(t).paths : []; }))];
-    // Writes count from members still at work in the cohort: a settled member's later writes are its next task's.
-    const working = [...new Set([...cohort.members.values()].filter((m) => m.settledAt === undefined).map((m) => m.owner))];
-    return this.d.treeHash?.(paths, working) ?? "";
+    // Each member's writes count from when it joined until it settled: settling keeps its files in the target, and its
+    // later writes are its next task's.
+    const windows = [...cohort.members.values()].map((m) => ({ peer: m.owner, since: m.since, ...(m.settledAt !== undefined ? { until: m.settledAt } : {}) }));
+    return this.d.treeHash?.(paths, windows) ?? "";
   }
 
   /**

@@ -12,7 +12,7 @@ Correctness is the official grader's: nothing here certifies a correct or loss-f
 can only expose possible loss.
 """
 from __future__ import annotations
-import argparse, json, keyword, re, statistics, subprocess, sys
+import argparse, json, keyword, re, shlex, statistics, subprocess, sys
 from datetime import datetime
 from pathlib import Path
 
@@ -63,7 +63,7 @@ UNITS = {
              "path (hook, steer, done): offers, acknowledged, probes, coverage notices, files shown with attribution "
              "unknown, bytes offered (a re-offer and a refused steer count again) and bytes acknowledged (offers a "
              "readback or done confirmed), build time, the hook process's start-up time, steer round trip, refused "
-             "steers; ack_ms_median is offer-to-acknowledgement",
+             "and unanswered steers; ack_ms_median is offer-to-acknowledgement",
     "capability": "per peer, the hub's capability events (verified or lost) with their time, setup included",
     "validity": "whether the attempt is a valid run of its arm, by the grader's own gates: a turn-free attempt needs both "
                 "context paths verified before its tasks and none lost, no cohort lifted and none formed open while the "
@@ -72,8 +72,9 @@ UNITS = {
                 "transcript cannot be read. Invalid and unknown attempts are left out of the summary's medians",
     "treatment": "turn-free only: whether the treatment was received, a silent cohort holding every task of the attempt "
                  "while the agents worked. Not a validity condition: whether the plans overlapped is the agents' doing "
-                 "after assignment, so every valid attempt counts for the arm (intention to treat); the summary also "
-                 "gives the median over treated attempts",
+                 "after assignment, so every attempt without a capability failure counts for the arm (a capability "
+                 "failure is the one exclusion after assignment, which #110 AC3 requires); the summary also gives the "
+                 "median over treated attempts",
     "quiet": "agent messages a silent cohort held back from a member (the hub's quiet events), in the task window",
     "fyi": "agent messages sent as [FYI] in the task window (recorded, nobody's turn), the final [FYI] the instructions "
            "ask for included",
@@ -284,7 +285,10 @@ def claude_usage(rows, start_ms, end_ms):
 
 def settlement(run, rows, t0, last_done):
     if last_done is None: return {}
+    arm = str(run.get("kind") or "")
     out = {}
+    if "codex" in arm: out["codex"] = None  # unknown unless its record says
+    if "claude" in arm: out["claude"] = None
     if run.get("codexMessages"):
         turns = codex_turns(run)
         still = turns and turns[-1][1] is None  # its record ended inside a turn
@@ -311,7 +315,8 @@ def facts_of(events):
                     "coverage_notices": sum(1 for e in mine if e.get("coverage")), "unknown_attribution_files": sum(e.get("unknown", 0) for e in mine),
                     "bytes_offered": sum(e.get("bytes", 0) for e in mine), "bytes_acknowledged": sum(e.get("bytes", 0) for e in mine if e.get("id") in acked),
                     "build_ms_median": median(num(mine, "ms")), "hook_startup_ms_median": median(num(mine, "hookMs")),
-                    "steer_rtt_ms_median": median(num(mine, "rttMs")), "steers_refused": sum(1 for e in mine if e.get("accepted") is False)}
+                    "steers_unanswered": sum(1 for e in mine if e.get("unanswered")),
+                    "steer_rtt_ms_median": median(num(mine, "rttMs")), "steers_refused": sum(1 for e in mine if e.get("accepted") is False and not e.get("unanswered"))}
     out["ack_ms_median"] = median(num(acks, "ms"))
     return out
 
@@ -336,16 +341,14 @@ def treatment_of(run, window):
     return {"silent_cohort": any(e.get("type") == "cohort" and e.get("silent") and ids <= set(e.get("tasks") or []) for e in window)}
 
 
-QUOTES = "'\""
-
-
 def hook_label(command):
     """A hook command as a label: never its paths or arguments (they can carry a home path or a token)."""
     if not command: return "(command not recorded)"
     if "facts-hook.ts" in command: return "agent-hub facts hook"
-    words = [w for w in command.split() if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)]  # environment assignments carry values
-    program = words[0].strip(QUOTES) if words else ""
-    return f"other: {Path(program).name or '?'}"
+    try: words = shlex.split(command)
+    except ValueError: return "other: ?"  # unbalanced quotes: nothing of it is safe to show
+    words = [w for w in words if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)]  # environment assignments carry values
+    return f"other: {Path(words[0]).name if words else '?'}"
 
 
 def hooks_seen(run, rows, rows_why, events):
@@ -555,7 +558,7 @@ def summarize(rows, missing=()):
     def lost(r, key):
         """Lost contributions, unknown when an agent's writes could not be counted at all."""
         c = r.get("contributions") or {}
-        return None if any("are not counted" in n for n in c.get("coverage") or []) else size(c.get(key))
+        return None if any("are not counted" in n or "could not be read" in n for n in c.get("coverage") or []) else size(c.get(key))
 
     def size(v):
         return None if v is None else len(v)

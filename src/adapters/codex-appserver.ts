@@ -31,6 +31,8 @@ export interface CodexOptions {
   onItem?: (item: any) => void;
   /** How often to ask app-server for the rate limits while a TUI is attached. */
   usagePollMs?: number;
+  /** How long a fact's steer waits for app-server's answer (tests shorten it). */
+  steerTimeoutMs?: number;
   cwd: string;
   /** Optional launch environment; recovery authority is always removed before spawn. */
   env?: NodeJS.ProcessEnv;
@@ -234,17 +236,18 @@ export class CodexPeer extends BasePeer {
 
   /**
    * A turn-free fact for the running turn (issue #108). Not a message: no envelope, no delivery record, nothing the
-   * turn's answer is addressed to. Resolves false when there is no running turn or app-server refuses; the fact is dropped.
+   * turn's answer is addressed to. `refused` when there is no running turn or app-server says no: it never went in.
+   * `unanswered` when app-server did not answer in time: it may have gone in, and its readback can still come.
    */
-  steerText(text: string): Promise<boolean> {
+  steerText(text: string): Promise<"accepted" | "refused" | "unanswered"> {
     const link = this.link;
     const expectedTurnId = [...this.activeTurns].reverse().find((t) => !t.startsWith("unknown:"));
-    if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId) return Promise.resolve(false);
+    if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId) return Promise.resolve("refused");
     const id = this.nextId--;
-    return new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => this.pending.delete(id) && resolve(false), 10_000);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => this.pending.delete(id) && resolve("unanswered"), this.opts.steerTimeoutMs ?? 10_000);
       timer.unref?.();
-      this.pending.set(id, { resolve: () => (clearTimeout(timer), resolve(true)), reject: () => (clearTimeout(timer), resolve(false)) });
+      this.pending.set(id, { resolve: () => (clearTimeout(timer), resolve("accepted")), reject: () => (clearTimeout(timer), resolve("refused")) });
       link.up.send(JSON.stringify({ method: "turn/steer", id, params: { threadId: this.threadId, expectedTurnId, input: [{ type: "text", text }] } }));
     });
   }

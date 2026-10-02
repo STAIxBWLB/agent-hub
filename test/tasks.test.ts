@@ -1504,6 +1504,9 @@ test("a done right after a request repeated after a confirmation is a retry; onl
   const retry = await tasks.done("codex", second.id, "b"); // right away: a retry, never a confirmation
   expect(retry.history.filter((h) => h.event === "integrated")).toHaveLength(1);
   expect(retry.history.at(-1)!.event).toBe("integration requested");
+  later();
+  const confirmed = await tasks.done("codex", second.id, "b, checked again"); // a later one, the files unchanged
+  expect(confirmed.history.filter((h) => h.event === "integrated")).toHaveLength(2);
 });
 
 test("an unresolved outcome is final for its revision: the member's check counts, and nothing is asked again", async () => {
@@ -1524,14 +1527,20 @@ test("an unresolved outcome is final for its revision: the member's check counts
   expect(board.get(second.id)!.history.some((h) => h.event === "check finished late")).toBe(false);
 });
 
-test("the integration target covers what the members still at work write, not a settled member's next work", async () => {
-  const seen: string[][] = [];
-  const { tasks, stop } = await turnFreeRig({ treeHash: (_paths, owners) => (seen.push([...owners].sort()), "t1") });
+test("a member settling between the integrating member's calls keeps its writes in the target: nothing changed, nothing asked again", async () => {
+  // What Facts.tree does with the windows: the files written by a member between joining and settling.
+  const writes: { peer: string; file: string; at: number }[] = [];
+  const treeHash = (_paths: string[], windows: { peer: string; since: number; until?: number }[]) =>
+    [...new Set(writes.filter((w) => windows.some((x) => x.peer === w.peer && w.at >= x.since && (x.until === undefined || w.at <= x.until))).map((w) => w.file))].sort().join(",");
+  const { tasks, stop, later } = await turnFreeRig({ treeHash });
   const { first, second } = await pair(tasks);
+  writes.push({ peer: "kimi", file: "src/click/helper.py", at: Date.now() }); // outside the plan's paths
   await tasks.done("kimi", first.id, "a");
-  stop("kimi");
-  await tasks.done("codex", second.id, "b");
-  expect(seen.at(-1)).toEqual(["codex"]);
+  await tasks.done("codex", second.id, "b"); // request 1, while kimi's turn still runs
+  stop("kimi"); // kimi settles: its window closes, its file stays
+  later();
+  writes.push({ peer: "kimi", file: "src/other/next_task.py", at: Date.now() }); // its next work, after it settled
+  expect((await tasks.done("codex", second.id, "b")).history.slice(-2).map((h) => h.event)).toEqual(["integrated", "done"]);
 });
 
 test("a cohort whose members have all settled is over: a peer leaving afterwards lifts nothing, and a reopen stays outside it", async () => {
