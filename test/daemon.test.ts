@@ -1219,6 +1219,67 @@ test("conflicts: a turn changing another owner's file warns both, once; a file o
   expect(readEvents(file).filter((e) => e.type === "conflict")).toHaveLength(1);
 });
 
+// issue #106: a conflict notice for a task closed before it reaches its owner is dropped, never delivered as a turn.
+test("conflicts: the notice for an owner whose task closed before delivery is dropped and recorded as stale", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-staleconflict-")));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...a: string[]) => Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...a]);
+  git("init", "-q");
+  writeFileSync(join(dir, "shared.txt"), "base\n");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const { stateDir, daemon, console_ } = await hub({ cwd: dir, snapshots: { enabled: true, keep: 20 } });
+  class Scripted extends BasePeer {
+    got: string[] = [];
+    work: (() => void) | undefined;
+    hold = false;
+    async start() { this.setState("idle"); }
+    async deliver(envs: { body: string }[]) {
+      this.setState("busy");
+      this.got.push(...envs.map((e) => e.body));
+      const w = this.work;
+      this.work = undefined;
+      w?.();
+      setTimeout(() => { if (!this.hold) this.setState("idle"); }, 5);
+    }
+    release() { this.hold = false; this.setState("idle"); }
+    async stop() { this.setState("offline"); }
+  }
+  const kimi = new Scripted("kimi");
+  const codex = new Scripted("codex");
+  for (const p of [kimi, codex]) {
+    daemon.bus.add(p);
+    await p.start();
+  }
+  const op = async (o: string, args: unknown) => console_.request({ t: "task", op: o, args });
+  await op("hub_task_propose", { title: "refactor", class: "implement", owner: "kimi" });
+  await op("hub_task_propose", { title: "retry", class: "implement", owner: "codex" });
+  await until(() => kimi.got.length === 1 && codex.got.length === 1 && kimi.state === "idle" && codex.state === "idle", "the offers");
+  await op("hub_task_accept", { id: 1 });
+  await op("hub_task_accept", { id: 2 });
+  const file = join(stateDir, "events.jsonl");
+  const turnsOf = (peer: string) => readEvents(file).filter((e) => e.type === "turn_end" && e.peer === peer).length;
+  kimi.work = () => writeFileSync(join(dir, "shared.txt"), "kimi\n");
+  await console_.request({ t: "send", body: "go", to: ["kimi"] });
+  await until(() => turnsOf("kimi") === 2 && kimi.state === "idle", "kimi's edit");
+  // kimi's next turn stays open, so the notice that codex's edit causes waits in kimi's queue.
+  kimi.hold = true;
+  await console_.request({ t: "send", body: "keep working", to: ["kimi"] });
+  await until(() => kimi.state === "busy" && kimi.got.length === 3, "kimi's open turn");
+  codex.work = () => writeFileSync(join(dir, "shared.txt"), "codex\n");
+  await console_.request({ t: "send", body: "go", to: ["codex"] });
+  await until(() => readEvents(file).some((e) => e.type === "conflict") && daemon.bus.queued("kimi") > 0, "the conflict and kimi's queued notice");
+  await op("hub_task_done", { id: 1 }); // kimi's task closes before kimi hears about the conflict
+  kimi.release();
+  await until(() => readEvents(file).some((e) => e.type === "stale"), "the dropped notice");
+  // The turn-end notice, and the concurrent-edit one when the two turns overlapped: each was only about kimi's #1.
+  const stale = readEvents(file).filter((e) => e.type === "stale");
+  expect(stale.length).toBeGreaterThan(0);
+  for (const e of stale) expect(e).toMatchObject({ peer: "kimi", task: "1", from: "hub" });
+  expect(kimi.got.some((b) => b.includes("codex's last turn") || b.includes("Concurrent edit"))).toBe(false);
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("stale: task #1 is no longer open for kimi");
+});
+
 // Review of #49 (F1): another peer's edit made during a long turn is not stored as this peer's touch.
 test("conflicts: a long turn spanning another peer's edit does not make that peer's later edit a conflict", async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-overlapturn-")));

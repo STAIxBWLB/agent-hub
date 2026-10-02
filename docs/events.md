@@ -14,6 +14,7 @@ marked `private: true`, and PII tasks `pii: true`.
 |---|---|
 | `envelope` | `id`, `from`, `to` (absent for broadcast), `priority`, `hop`, `kind`, `task` (task id from refs), `bytes` (UTF-8 size of the body; absent on a private envelope, whose size would say something about the PII text), `private`, `dropped` (`hop` or `fyi` when not delivered) |
 | `overflow`, `undeliverable` | `id`, `from`, `peer` |
+| `stale` | `id`, `from`, `peer`, `task`: a notice about the recipient's open task, dropped unsent because that task was closed by the time it would have been delivered (issue #106) |
 | `state` | `peer`, `state` |
 | `turn_start` | `peer`, `turn` (`<peer>#<hub run>.<n>`, unique across restarts). A turn follows the adapter: pausing a busy peer does not end it |
 | `turn_end` | `peer`, `turn`, `ms`, `tokens` (when the adapter reported any during the turn), `files` and `snapshotMs` (when snapshots are on: how many files the turn changed, and the time both snapshots took) |

@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## 0.12.4
+
+- A completed-change or edit-conflict notice about its recipient's open task is dropped when it would be delivered after that task closed, instead of starting a turn; the journal records it as discarded and `events.jsonl` as `stale` (#106).
+
 ## 0.12.3
 
 - Fix live Claude delivery settlement holds, add generation-bound explicit completion and pending-settlement status (#100).

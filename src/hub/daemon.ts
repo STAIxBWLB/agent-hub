@@ -379,7 +379,9 @@ export async function startDaemon(opts: DaemonOptions) {
     if (refused) log(`limits: ${env.from}: ${refused}`);
     return refused;
   };
-  const bus = new Bus({ journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit });
+  // The bus exists before `Tasks`, which knows whether a queued notice still matters (issue #106).
+  let staleNotice: (peer: PeerId, env: Envelope) => string | undefined = () => undefined;
+  const bus = new Bus({ journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, stale: (peer, env) => staleNotice(peer, env) });
   startupCleanup.push(() => bus.closeJournal());
   const manualPaused = new Set<PeerId>(bus.manualPausedPeers()); // recovery never lifts an operator's pause
   let recoveryOperationId: string | undefined;
@@ -498,6 +500,7 @@ export async function startDaemon(opts: DaemonOptions) {
     failing: () => bus.failingPeers(),
     held: () => Object.fromEntries(bus.knownPeers().flatMap((peer) => { const hold = queueHold(peer); return hold ? [[peer, hold]] : []; })),
   });
+  staleNotice = tasks.stale;
   board.onChange = (t, h) => {
     event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, pii: tasks.isPii(t) });
     // Models can self-claim after their turn begins; preserve that ownership even if they finish before settlement.
@@ -975,7 +978,8 @@ export async function startDaemon(opts: DaemonOptions) {
         const text = `Concurrent edit: ${record.id} (task #${ours.id}) and ${otherTurn.id} (task #${theirs.id}) both include changes to ${files}. These snapshots do not attribute the changes to either peer. Check the working tree together before continuing.`;
         notify(`conflict: ${text}`);
         event({ type: "conflict", peer: record.peer, task: ours.id, other: theirs.id, owner: otherTurn.peer, paths: named, concurrent: true, turns: [record.id, otherTurn.id] });
-        [record.peer, otherTurn.peer].filter((owner) => owner !== USER && owner !== HUB).forEach((owner) => bus.publish(newEnvelope(HUB, text, { to: [owner], kind: "task" })));
+        // Each owner hears it while its own task is open; once that task is closed the notice is dropped (issue #106).
+        for (const [owner, task] of [[record.peer, ours.id], [otherTurn.peer, theirs.id]] as const) if (owner !== USER && owner !== HUB) tasks.whileOpen(owner, task, text);
       }
     }
   };
@@ -1010,8 +1014,11 @@ export async function startDaemon(opts: DaemonOptions) {
       const files = [...named, ...(hidden ? [`${hidden} file(s) whose names are withheld (they match a PII pattern)`] : [])].join(", ");
       notify(`conflict: ${peer}${ours} changed ${files}, which #${task.id} (owner ${owner}) changed before${others.length ? ` (concurrent: ${others.join(", ")})` : ""}`);
       event({ type: "conflict", peer, ...(mine[0] ? { task: mine[0].id } : {}), other: task.id, owner, paths: named, concurrent: others.length > 0 });
-      bus.publish(newEnvelope(HUB, `Your last turn${ours} changed ${files}, which ${owner}'s open task (${tasks.publicTitle(task)}) changed before it. Check that you did not overwrite that work, and settle it with ${owner} via hub_send.${concurrent}`, { to: [peer], kind: "task", ...(mine[0] ? { refs: { task: String(mine[0].id) } } : {}) }));
-      if (owner !== USER && owner !== HUB) bus.publish(newEnvelope(HUB, `${peer}'s last turn${ours} changed ${files}, which your open task #${task.id} changed before it. Check that your work there is intact.${concurrent}`, { to: [owner], kind: "task", refs: { task: String(task.id) } }));
+      // Both notices are about an open task of their recipient: dropped at delivery once it is closed (issue #106).
+      const toPeer = `Your last turn${ours} changed ${files}, which ${owner}'s open task (${tasks.publicTitle(task)}) changed before it. Check that you did not overwrite that work, and settle it with ${owner} via hub_send.${concurrent}`;
+      if (mine[0]) tasks.whileOpen(peer, mine[0].id, toPeer);
+      else bus.publish(newEnvelope(HUB, toPeer, { to: [peer], kind: "task" }));
+      if (owner !== USER && owner !== HUB) tasks.whileOpen(owner, task.id, `${peer}'s last turn${ours} changed ${files}, which your open task #${task.id} changed before it. Check that your work there is intact.${concurrent}`);
     }
   };
 
@@ -1107,6 +1114,10 @@ export async function startDaemon(opts: DaemonOptions) {
         if (still.length) bus.preface(e.peer, lossNotice(still, (id) => { const t = board.get(id); return t ? tasks.publicTitle(t) : undefined; }));
       }
       recordSessions();
+    }
+    else if (e.t === "stale") {
+      log(`STALE ${e.peer}: dropped ${e.env.id} from ${e.env.from}: ${e.reason}`);
+      event({ type: "stale", id: e.env.id, from: e.env.from, peer: e.peer, ...(e.env.refs?.task ? { task: e.env.refs.task } : {}) });
     }
     else if (e.t === "undeliverable" || e.t === "overflow") {
       log(e.t === "undeliverable" ? `UNDELIVERABLE to ${e.peer} after retries: ${e.env.id} from ${e.env.from}` : `OVERFLOW ${e.peer}: dropped ${e.env.id} from ${e.env.from}`);

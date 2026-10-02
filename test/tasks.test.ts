@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
-import { Bus } from "../src/hub/bus.ts";
+import { Bus, type BusEvent } from "../src/hub/bus.ts";
 import { HUB, USER, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { assign, currentRouting, detectSignals, loadRouting } from "../src/hub/routing.ts";
@@ -1167,4 +1167,56 @@ test("failing peers are skipped by assignment, and a held owner queue is named i
   const explained = tasks.explain(t.id).join("\n");
   expect(explained).toContain("owner candidate local: skipped, failing: 3 undeliverable deliveries");
   expect(explained).toContain("hold: codex's queue is held: needs_review delivery d7");
+});
+
+// issue #106: the completed-change notice is about the recipient's open task; it is dropped at delivery once that is closed.
+async function staleRig() {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-tasks-"));
+  let stale: (peer: string, env: Envelope) => string | undefined = () => undefined;
+  const events: BusEvent[] = [];
+  const bus = new Bus({ batchMs: 0, stale: (peer, env) => stale(peer, env) }); // the daemon binds it the same way
+  bus.tap((e) => events.push(e));
+  const peers = Object.fromEntries(["claude", "codex", "kimi"].map((id) => [id, new FakePeer(id)]));
+  for (const p of Object.values(peers)) {
+    bus.add(p);
+    await p.start();
+  }
+  const board = new Board(join(dir, "hub.db"));
+  const tasks = new Tasks({ board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: () => {} });
+  stale = tasks.stale;
+  return { bus, peers, board, tasks, events };
+}
+
+test("a completed-change notice queued for a busy owner is dropped once that owner's task is done", async () => {
+  const { peers, tasks, events } = await staleRig();
+  const kimis = await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  const codexs = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
+  peers.kimi!.set("busy");
+  await tasks.done("codex", codexs.id, "changed a"); // the notice waits in kimi's queue
+  await tasks.done("kimi", kimis.id, "kimi's part"); // kimi finishes before it goes idle
+  peers.kimi!.set("idle");
+  await tick();
+  expect(completedNotices(peers.kimi!)).toEqual([]);
+  expect(events.filter((e) => e.t === "stale").map((e) => (e as { reason: string }).reason)).toEqual([`stale: task #${kimis.id} is no longer open for kimi`]);
+});
+
+test("the same notice is delivered while the owner's task is still open, and other task messages are never dropped", async () => {
+  const { peers, tasks, board, events } = await staleRig();
+  const kimis = await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  const codexs = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
+  peers.kimi!.set("busy");
+  await tasks.done("codex", codexs.id, "changed a");
+  peers.kimi!.set("idle");
+  await tick();
+  expect(completedNotices(peers.kimi!)).toHaveLength(1);
+  // A message about a closed task that is not conditional (an approval) still reaches its owner after the task closed.
+  peers.kimi!.set("busy");
+  expect(board.get(kimis.id)!.reviewer).toBe("claude"); // the default routing in this rig
+  await tasks.done("kimi", kimis.id, "done");
+  await tasks.review("claude", kimis.id, "approved", "fine");
+  expect(board.get(kimis.id)!.state).toBe("approved");
+  peers.kimi!.set("idle");
+  await tick();
+  expect(peers.kimi!.got.some((e) => e.body.startsWith(`Task #${kimis.id} approved by claude`))).toBe(true);
+  expect(events.some((e) => e.t === "stale")).toBe(false);
 });

@@ -1188,3 +1188,10 @@ and interrupted daemon instances retain `needs_review`, with no automatic replay
 A person inspects and resolves uncertain work through the existing revision-fenced
 `ahub queue` commands. Older source protocols 9, 10 and 11 remain authenticated
 upgrade sources; ordinary clients must use protocol 12.
+
+## Amendment: stale overlap notices (issue #106)
+
+- The completed-change notice (#31) and the edit-conflict notices (#32) are about an open task of their recipient. `Tasks.whileOpen` publishes them and remembers that condition; the bus asks `Tasks.stale` when it builds a delivery and drops a notice whose task is no longer `proposed`, `in_progress` or `changes_requested` for that recipient. The journal records it as `discarded` with the reason, `hub.log` has a `STALE` line and `events.jsonl` a `stale` event; `ahub report` counts it under dropped.
+- Why at delivery: a status envelope to a busy Codex waits for its turn to end. On the 2026-10-02 native CooperBench run (0.12.2) the notice started or helped start 8 of 9 post-done Codex turns, 8 of which changed no file.
+- Approvals, check results, review requests and assignments are never conditional: they matter after a task closes.
+- The conditions live in memory, so after a restart such a notice is delivered whatever its task's state.

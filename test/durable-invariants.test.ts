@@ -173,3 +173,22 @@ test("a note that arrives while a delivery with the preface is in flight survive
   expect(peer.deliveries[3]!.envs.map((e) => e.body)).toEqual(["note from kimi [finding]: second\n\nnote from kimi [fail]: after the failure", "m2"]);
   durable.close();
 });
+
+// issue #106: the journal keeps what was dropped, so an operator can see why a notice never arrived.
+test("a stale notice is recorded as discarded with its reason and never handed to the peer", async () => {
+  let closed = false;
+  const { bus, durable } = setupBus({ stale: (peer, env) => (closed && env.body === "notice" ? `stale: task #1 is no longer open for ${peer}` : undefined) });
+  const peer = new FakePeer("claude"); bus.add(peer);
+  peer.setState("busy");
+  const notice = newEnvelope("hub", "notice", { to: ["claude"], kind: "task", refs: { task: "1" } });
+  bus.publish(notice);
+  closed = true;
+  peer.setState("idle");
+  await waitFor(() => durable.list("claude").some((r) => r.state === "discarded"), "the discarded row");
+  const row = durable.list("claude").find((r) => r.state === "discarded")!;
+  expect(row.reason).toBe("stale: task #1 is no longer open for claude");
+  expect(row.originals.map((e) => e.id)).toEqual([notice.id]);
+  expect(peer.deliveries).toEqual([]);
+  expect(bus.queued("claude")).toBe(0);
+  durable.close();
+});

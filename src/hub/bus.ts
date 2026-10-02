@@ -12,6 +12,7 @@ export type BusEvent =
   | { t: "envelope"; env: Envelope; dropped?: "hop" | "fyi" }
   | { t: "overflow"; env: Envelope; peer: PeerId }
   | { t: "undeliverable"; env: Envelope; peer: PeerId; reason?: string }
+  | { t: "stale"; env: Envelope; peer: PeerId; reason: string }
   | { t: "state"; peer: PeerId; state: PeerState };
 
 export interface BusOptions {
@@ -29,6 +30,11 @@ export interface BusOptions {
    * it, and the sender hears it on its next delivery.
    */
   admit?: (env: Envelope, parent?: string) => string | undefined;
+  /**
+   * Optional: why a queued envelope no longer matters to its recipient (issue #106), asked when a delivery is built. A
+   * reason drops it unsent: the journal records it as discarded and taps see a `stale` event.
+   */
+  stale?: (peer: PeerId, env: Envelope) => string | undefined;
 }
 
 /** Serializable delivery state used by the controlled restart coordinator. Bodies stay in the private daemon file. */
@@ -611,6 +617,7 @@ export class Bus {
       const peer = this.peers.get(id)!;
       const queue = this.queues.get(id)!;
       while (!this.storageError && !this.recoveryHeld && !this.recoveryHeldPeers.has(id) && queue.length && this.stateOf(id) === "idle") {
+        if (this.dropStale(id, queue) && !queue.length) break;
         const delay = this.wait(queue);
         if (delay > 0) { this.arm(id, delay); break; }
         const preface = this.prefaces.get(id);
@@ -648,6 +655,29 @@ export class Bus {
       }
     } catch { this.storageError = "delivery journal unavailable"; }
     finally { this.draining.delete(id); this.onQueues?.(); }
+  }
+
+  /**
+   * A notice about the recipient's open task can wait out a whole Codex turn; once the task is closed it would only
+   * start a turn of its own (issue #106). Checked when the delivery is built, not when the notice was published.
+   */
+  private dropStale(id: PeerId, queue: Envelope[]): boolean {
+    if (!this.opts.stale) return false;
+    let dropped = false;
+    for (let i = queue.length - 1; i >= 0; i--) {
+      const env = queue[i]!;
+      const reason = this.opts.stale(id, env);
+      if (!reason) continue;
+      queue.splice(i, 1);
+      dropped = true;
+      if (this.journal) this.pendingOutcomes.push({ id: crypto.randomUUID(), peer: id, state: "discarded", createdAt: Date.now(), originals: [env], out: [], reason });
+      this.emit({ t: "stale", env, peer: id, reason });
+    }
+    if (dropped) {
+      this.persist();
+      this.onQueues?.();
+    }
+    return dropped;
   }
 
   /**

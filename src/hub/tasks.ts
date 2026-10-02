@@ -309,6 +309,31 @@ export class Tasks {
   /** While a gone owner's tasks move, its other tasks are about to move too: they are no one to settle with. */
   private releasing: PeerId | undefined;
 
+  /**
+   * Notices that only matter while their recipient's task is open (issue #106): envelope id -> recipient and task.
+   * ponytail: kept in memory, so after a restart such a notice is delivered whatever its task's state; persist the
+   * condition if stale notices after restarts show up.
+   */
+  private readonly conditional = new Map<string, { peer: PeerId; task: number }>();
+
+  /** Publish a notice about `task`, which only matters to `to` while that task is open for it (issue #106). */
+  whileOpen(to: PeerId, task: number, body: string): void {
+    const env = newEnvelope(HUB, body, { to: [to], kind: "task", refs: { task: String(task) } });
+    this.conditional.set(env.id, { peer: to, task });
+    if (this.conditional.size > 1024) this.conditional.delete(this.conditional.keys().next().value as string);
+    this.d.bus.publish(env);
+  }
+
+  /** Why a queued notice no longer matters to `peer`, or undefined while it does; the bus asks at delivery (issue #106). */
+  stale = (peer: PeerId, env: Envelope): string | undefined => {
+    const c = this.conditional.get(env.id);
+    if (!c || c.peer !== peer) return undefined;
+    const t = this.d.board.get(c.task);
+    if (t && t.owner === peer && OPEN.includes(t.state)) return undefined;
+    this.conditional.delete(env.id);
+    return `stale: task #${c.task} is no longer open for ${peer}`;
+  };
+
   /** Whether a model-written name may be shown to other peers and in the log: one matching a PII pattern may be PII. */
   nameable = (t: string): boolean => !this.isPii({ signals: detectSignals({ title: "", detail: t, refs: {} }, this.d.routing(), this.d.cwd) });
 
@@ -664,7 +689,7 @@ export class Tasks {
         signatures.length ? `New or changed signatures: ${signatures.join("; ")}` : "",
         line ? `Summary: ${line}` : "",
       ].filter(Boolean).join("\n");
-      this.d.bus.publish(newEnvelope(HUB, body, { to: [hit.task.owner!], kind: "task", refs: { task: String(hit.task.id) } }));
+      this.whileOpen(hit.task.owner!, hit.task.id, body);
     }
   }
 

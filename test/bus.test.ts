@@ -644,3 +644,32 @@ test("a turn answer over its important budget goes out as status, and the sender
   await tick();
   expect(codex.got[0]!.body).toMatch(/your \[IMPORTANT\] message went out as status: rate limited: too many important messages from codex$/m); // no advice on how to send it
 });
+
+// issue #106: a notice the recipient no longer needs is dropped when its delivery is built, not when it was published.
+test("a queued envelope that turned stale is dropped unsent and reported; the rest of the queue still goes out", async () => {
+  let closed = false;
+  const events: BusEvent[] = [];
+  const { bus, codex } = await trio(undefined, { stale: (peer, env) => (closed && env.body === "notice" ? `stale: task #1 is no longer open for ${peer}` : undefined) });
+  bus.tap((e) => events.push(e));
+  codex.set("busy");
+  bus.publish(newEnvelope(HUB, "notice", { to: ["codex"], kind: "task", refs: { task: "1" } }));
+  bus.publish(newEnvelope("claude", "keep", { to: ["codex"] }));
+  closed = true;
+  codex.set("idle");
+  await tick();
+  expect(codex.got.map((e) => e.body)).toEqual(["keep"]);
+  expect(events.filter((e) => e.t === "stale")).toMatchObject([{ t: "stale", peer: "codex", reason: "stale: task #1 is no longer open for codex", env: { body: "notice" } }]);
+  expect(bus.queued("codex")).toBe(0);
+});
+
+test("an envelope still relevant when its delivery is built goes out as before", async () => {
+  const events: BusEvent[] = [];
+  const { bus, codex } = await trio(undefined, { stale: () => undefined });
+  bus.tap((e) => events.push(e));
+  codex.set("busy");
+  bus.publish(newEnvelope(HUB, "notice", { to: ["codex"], kind: "task", refs: { task: "1" } }));
+  codex.set("idle");
+  await tick();
+  expect(codex.got.map((e) => e.body)).toEqual(["notice"]);
+  expect(events.some((e) => e.t === "stale")).toBe(false);
+});
