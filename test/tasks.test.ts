@@ -1527,6 +1527,18 @@ test("an unresolved outcome is final for its revision: the member's check counts
   expect(board.get(second.id)!.history.some((h) => h.event === "check finished late")).toBe(false);
 });
 
+test("a member's writes count from when it was handed its task, before the overlap was found too", async () => {
+  const windows: { peer: string; since: number; until?: number }[][] = [];
+  const { tasks, stop } = await turnFreeRig({ treeHash: (_paths, w) => (windows.push(w), "t1") });
+  const first = await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/x.ts"] } });
+  const handed = first.history.at(-1)!.at;
+  const second = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/x.ts"] } }); // the cohort forms now
+  await tasks.done("kimi", first.id, "a");
+  stop("kimi");
+  await tasks.done("codex", second.id, "b");
+  expect(windows.at(-1)!.find((w) => w.peer === "kimi")!.since).toBeLessThanOrEqual(handed);
+});
+
 test("a member settling between the integrating member's calls keeps its writes in the target: nothing changed, nothing asked again", async () => {
   // What Facts.tree does with the windows: the files written by a member between joining and settling.
   const writes: { peer: string; file: string; at: number }[] = [];

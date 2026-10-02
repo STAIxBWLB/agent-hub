@@ -102,7 +102,11 @@ def transcript(run):
     if not path: return None,"no transcript path"
     try: data=Path(path).read_bytes()
     except OSError as e: return None,f"transcript unreadable ({e.__class__.__name__})"
-    if claude.get("transcriptSha256") and sha(data)!=claude["transcriptSha256"]: return None,"transcript changed since the attempt"
+    if claude.get("transcriptSha256"):
+        # Claude Code may append rows after it exits: the attempt is the prefix recorded when it ended, and only that.
+        size=claude.get("transcriptBytes")
+        if isinstance(size,int) and not isinstance(size,bool): data=data[:size] if len(data)>=size else b""
+        if sha(data)!=claude["transcriptSha256"]: return None,"transcript changed since the attempt"
     lines=data.decode("utf-8",errors="replace").splitlines()
     rows=[]
     for line in lines:

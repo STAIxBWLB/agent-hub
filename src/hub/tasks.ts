@@ -91,6 +91,8 @@ const OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassi
 const WITH_DONE = "with its done";
 /** How many times a task changed hands: a cohort member's generation (issue #107). */
 const ownerGen = (t: Task) => t.history.filter((h) => OWNERSHIP_EVENTS.has(h.event)).length;
+/** When the task was handed to its current owner (its creation, if it never changed hands). */
+const handedAt = (t: Task) => [...t.history].reverse().find((h) => OWNERSHIP_EVENTS.has(h.event) && h.event !== "unassigned")?.at ?? t.history[0]?.at ?? Date.now();
 
 /** One line of model-written text: whitespace (newlines included) collapses, so it can never start a forged log line. */
 const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.replace(/\s+/g, " ").trim().slice(0, 300) : undefined);
@@ -745,7 +747,7 @@ export class Tasks {
   private formCohort(task: Task, hits: ReturnType<Tasks["overlapHits"]>): void {
     if (!task.owner || this.isPii(task)) return;
     const before = this.cohorts.of(task.id)?.revision;
-    const joined = this.cohorts.join(task, hits.map((h) => h.task), ownerGen);
+    const joined = this.cohorts.join(task, hits.map((h) => h.task), ownerGen, handedAt);
     if (!joined) return;
     const c = joined.cohort;
     if (joined.formed || c.revision !== before) {
@@ -823,7 +825,7 @@ export class Tasks {
       if (this.cohorts.isRetry(cohort!, task, gen)) return this.d.board.get(task.id)!;
       const ig = cohort!.integration;
       if (ig?.task === task.id && ig.offer) this.d.ackFacts?.(task.owner!, ig.offer); // this call is the proof the request arrived
-      const r = this.cohorts.completion(cohort!, task, { gen, tree: this.tree(cohort!), factsCurrent: this.d.factsCurrent?.(task.owner!) ?? true });
+      const r = this.cohorts.completion(cohort!, task, { gen, tree: this.tree(cohort!), factsCurrent: this.d.factsCurrent?.(task.owner!) ?? true, handed: handedAt(task) });
       if (r.action === "request") return this.d.board.update(task.id, HUB, "integration requested", {}, this.integrationRequest(task, r));
       if (r.action === "unresolved") {
         this.d.notify(`task ${this.publicTitle(task)}: turn-free integration unresolved after ${MAX_REQUESTS} requests (${r.why}); its done is recorded, check the overlapping work by hand`);

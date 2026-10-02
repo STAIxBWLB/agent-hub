@@ -182,8 +182,17 @@ run['events'].append({'type':'capability','peer':'codex','state':'lost','at':iso
 assert m.unavailable_reason(tf,run)=='turn-free context path not verified before the tasks: codex'  # lost again before the tasks
 run['events'].pop()
 import hashlib
-run['readiness']['claude']['transcriptSha256']=hashlib.sha256(open(t.name,'rb').read()).hexdigest()
+recorded=open(t.name,'rb').read()
+run['readiness']['claude']['transcriptSha256']=hashlib.sha256(recorded).hexdigest()
+run['readiness']['claude']['transcriptBytes']=len(recorded)
 assert m.unavailable_reason(tf,run) is None
+with open(t.name,'a') as f: f.write(json.dumps({'type':'ai-title','title':'written after Claude Code exited'})+'\\n')
+assert m.unavailable_reason(tf,run) is None  # appended after the attempt: the recorded prefix still matches
+with open(t.name,'w') as f: f.write(recorded.decode()+json.dumps({'type':'system','subtype':'stop_hook_summary','hookInfos':[{'command':'~/.claude/hooks/notify.sh'}]})+'\\n')
+assert m.unavailable_reason(tf,run) is None  # a foreign hook after the attempt is not the attempt's
+with open(t.name,'w') as f: f.write(json.dumps({'type':'x'})+'\\n'+recorded.decode())
+assert m.unavailable_reason(tf,run)=='hook isolation unknown: transcript changed since the attempt'  # the attempt's own bytes changed
+with open(t.name,'w') as f: f.write(recorded.decode())
 run['events'].append({'type':'cohort','id':1,'event':'lifted','silent':False,'tasks':[1,2],'at':iso(70)})
 run['events'].append({'type':'capability','peer':'claude','state':'lost','at':iso(70)})
 assert m.unavailable_reason(tf,run) is None  # teardown, after the 60 s of work
@@ -204,8 +213,7 @@ run['codexMessages']=[{'method':'mcpServer/startupStatus/updated','params':{'nam
 assert m.unavailable_reason(tf,run)=='MCP isolation failed: Codex started obsidian'
 run['codexMessages']=[]
 with open(t.name,'a') as f: f.write(json.dumps({'type':'system','subtype':'stop_hook_summary','hookInfos':[{'command':'~/.claude/hooks/notify.sh'}]})+'\\n')
-assert m.unavailable_reason(tf,run)=='hook isolation unknown: transcript changed since the attempt'  # appended after its hash was taken
-del run['readiness']['claude']['transcriptSha256']
+del run['readiness']['claude']['transcriptSha256']; del run['readiness']['claude']['transcriptBytes']
 assert m.unavailable_reason(tf,run)=="hook isolation failed: Claude ran a hook that is not the hub's"
 os.unlink(t.name)
 assert m.unavailable_reason(tf,run).startswith('hook isolation unknown: transcript unreadable')

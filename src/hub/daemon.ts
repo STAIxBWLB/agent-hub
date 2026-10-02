@@ -1552,7 +1552,7 @@ export async function startDaemon(opts: DaemonOptions) {
             // Refused, it never went in: not an unread offer, and the next boundary offers it again. Unanswered, it may
             // have: its readback can still come.
             if (outcome === "refused") facts.drop("codex", offered.id);
-            event({ type: "fact", peer: "codex", id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "steer", ms, rttMs: Math.round(performance.now() - sent), accepted: outcome === "accepted", ...(outcome === "unanswered" ? { unanswered: true } : {}), ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
+            event({ type: "fact", peer: "codex", id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "steer", ms, ...(outcome === "accepted" ? { rttMs: Math.round(performance.now() - sent) } : {}), accepted: outcome === "accepted", ...(outcome === "unanswered" ? { unanswered: true } : {}), ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
           });
         },
         appPort: opts.codexAppPort,

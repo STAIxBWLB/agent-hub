@@ -278,10 +278,22 @@ test("a directory a task names stands for git's changed and new files under it, 
   writeFileSync(join(root, "src", "x.ts"), "x changed\n");
   expect(facts.tree(["src"])).not.toBe(before);
   writeFileSync(join(root, "src", "new.ts"), "n\n");
-  const o = facts.due("claude"); // first looks at both files under src
-  expect(o).toBeUndefined();
+  // Files that stand in for the directory are compared with HEAD on their first look: another agent's first change
+  // there is shown, not absorbed.
+  const o = facts.due("claude")!;
+  expect(o.text).toContain("src/x.ts, changed, attribution unknown");
+  expect(o.text).toContain("+x changed");
+  expect(o.text).toContain("src/new.ts (created)");
+  facts.ack("claude", o.id);
   writeFileSync(join(root, "src", "new.ts"), "n2\n");
-  expect(facts.due("claude")!.text).toContain("src/new.ts, changed, attribution unknown");
+  const next = facts.due("claude")!;
+  expect(next.text).toContain("src/new.ts, changed, attribution unknown");
+  expect(next.text).not.toContain("src/x.ts");
+  // Put back to HEAD's bytes: git may stop listing it, but whoever saw the change is shown the way back.
+  facts.ack("claude", next.id);
+  writeFileSync(join(root, "src", "x.ts"), "x\n");
+  git("status", "--short");
+  expect(facts.due("claude")!.text).toContain("-x changed");
 });
 
 test("history beyond the cap is attribution unknown, and a file that falls out of the touched list is named once", async () => {

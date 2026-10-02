@@ -639,8 +639,13 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
                 log('cleanup-error', { index, kind, error: 'Claude trust restore failed' });
             }
         }
-        // The transcript as the attempt left it (issue #110): validity is read from it later, and a changed one is unknown.
-        if (readiness.claude?.transcriptPath && existsSync(readiness.claude.transcriptPath)) readiness.claude.transcriptSha256 = sourceHash(readiness.claude.transcriptPath);
+        // The transcript as the attempt left it (issue #110): validity is read from these bytes later. Claude Code may still
+        // append rows after it exits, so its length is recorded too; a later read checks and keeps only this prefix.
+        if (readiness.claude?.transcriptPath && existsSync(readiness.claude.transcriptPath)) {
+            const bytes = readFileSync(readiness.claude.transcriptPath);
+            readiness.claude.transcriptBytes = bytes.length;
+            readiness.claude.transcriptSha256 = createHash('sha256').update(bytes).digest('hex');
+        }
         const metadataClean = fixtureMetadataHash(dir) === metadataBaseline;
         if (!metadataClean)
             endReason = 'metadata-modified';

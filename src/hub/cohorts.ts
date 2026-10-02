@@ -26,7 +26,7 @@ export interface Member {
   owner: PeerId;
   /** Changes whenever the task changes hands. */
   gen: number;
-  /** When it became a member: its writes count for the integration target from here until it settles. */
+  /** When its owner was handed the task: its writes count for the integration target from here until it settles. */
   since: number;
   /** When the task left the open states for its owner. */
   closedAt?: number;
@@ -102,7 +102,7 @@ export class Cohorts {
    * in, records owner changes (each bumps the revision and voids that member's intent), and lifts a silent cohort that
    * an owner without verified facts joins. Returns what happened, for the notices.
    */
-  join(task: Task, others: Task[], gen: (t: Task) => number): { cohort: Cohort; formed: boolean; lifted: boolean } | undefined {
+  join(task: Task, others: Task[], gen: (t: Task) => number, handed: (t: Task) => number = () => Date.now()): { cohort: Cohort; formed: boolean; lifted: boolean } | undefined {
     this.gc();
     const all = [task, ...others].filter((t) => t.owner);
     const found = [...new Set(all.map((t) => this.of(t.id)).filter((c): c is Cohort => !!c))];
@@ -127,7 +127,7 @@ export class Cohorts {
       const m = cohort.members.get(t.id);
       const g = gen(t);
       if (m && m.owner === t.owner && m.gen === g) continue;
-      cohort.members.set(t.id, { task: t.id, owner: t.owner!, gen: g, since: Date.now() });
+      cohort.members.set(t.id, { task: t.id, owner: t.owner!, gen: g, since: handed(t) });
       cohort.intents.delete(t.id);
       changed = true;
     }
@@ -234,10 +234,10 @@ export class Cohorts {
    * work, another member integrates this revision, or its integration is confirmed), or it is asked to integrate (first
    * request, or the target moved), or, past MAX_REQUESTS, the outcome is unresolved.
    */
-  completion(c: Cohort, task: Task, now: { gen: number; tree: string; factsCurrent: boolean }): Completion {
+  completion(c: Cohort, task: Task, now: { gen: number; tree: string; factsCurrent: boolean; handed?: number }): Completion {
     const m = c.members.get(task.id);
     if (!m || m.owner !== task.owner || m.gen !== now.gen) {
-      c.members.set(task.id, { task: task.id, owner: task.owner!, gen: now.gen, since: Date.now() });
+      c.members.set(task.id, { task: task.id, owner: task.owner!, gen: now.gen, since: now.handed ?? Date.now() });
       c.revision++;
     }
     this.intent(c, task, now.gen);

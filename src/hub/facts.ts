@@ -258,6 +258,29 @@ export class Facts {
     return out;
   }
 
+  /** HEAD's version of each of these project paths, in one read-only git call; a path HEAD lacks is `missing`. */
+  private headVersions(files: string[]): Map<string, Version> {
+    const out = new Map<string, Version>();
+    if (!files.length) return out;
+    const r = Bun.spawnSync(["git", "cat-file", "--batch"], { cwd: this.root, stdin: new TextEncoder().encode(files.map((f) => `HEAD:./${f}`).join("\n") + "\n"), stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+    if (r.exitCode !== 0) return out;
+    const buf = Buffer.from(r.stdout);
+    let at = 0;
+    for (const file of files) {
+      const eol = buf.indexOf(10, at);
+      if (eol === -1) break;
+      const [oid, type, size] = buf.subarray(at, eol).toString().split(" ");
+      at = eol + 1;
+      if (type === undefined || size === undefined) { out.set(file, { hash: "missing", seq: 0 }); continue; } // "<name> missing"
+      const n = Number(size);
+      const data = buf.subarray(at, at + n);
+      at += n + 1; // the content, then a newline
+      if (type !== "blob") continue;
+      out.set(file, n > MAX_BYTES ? { hash: `head-large:${oid}`, seq: 0 } : { hash: createHash("sha1").update(data).digest("hex"), text: data.toString("utf8"), blob: oid, seq: 0 });
+    }
+    return out;
+  }
+
   /** A new boundary: directories are expanded afresh. */
   private boundary(): void {
     this.expanded = new Map();
@@ -285,27 +308,50 @@ export class Facts {
    * reports changed or new under it (at most 200), and the files it touched.
    */
   private files(peer: PeerId, scope = this.o.scope(peer)): string[] {
-    const named = this.expand((scope?.paths ?? []).flatMap((p) => {
+    const paths = this.scopePaths(scope);
+    // A file the peer has seen under a named directory stays covered after git stops listing it (put back to HEAD's
+    // bytes, say): the way back is a change too.
+    const dirs = paths.filter((p) => this.isDir(p));
+    const seen = [...(this.accepted.get(peer)?.keys() ?? [])].filter((f) => dirs.some((d) => d === "." || f.startsWith(`${d}/`)));
+    return [...new Set([...this.expand(paths), ...(this.touched.get(peer) ?? []), ...seen])];
+  }
+
+  private scopePaths(scope: FactScope | undefined): string[] {
+    return (scope?.paths ?? []).flatMap((p) => {
       const r = this.rel(p);
       return r ? [r] : [];
-    }));
-    return [...new Set([...named, ...(this.touched.get(peer) ?? [])])];
+    });
+  }
+
+  private isDir(p: string): boolean {
+    try {
+      return statSync(join(this.root, p)).isDirectory();
+    } catch {
+      return false; // gone or unreadable: compared as a file
+    }
+  }
+
+  /**
+   * A file that stands in for a named directory and that the peer has neither seen nor touched: its first look is
+   * HEAD's version, so another agent's first change to it is shown, not absorbed. Undefined for any other file.
+   */
+  private dirBaselines(peer: PeerId, scope: FactScope | undefined, files: string[]): Map<string, Version> {
+    const direct = new Set(this.scopePaths(scope));
+    const touched = new Set(this.touched.get(peer) ?? []);
+    const view = this.accepted.get(peer);
+    const first = this.firstSeen.get(peer);
+    return this.headVersions(files.filter((f) => !direct.has(f) && !touched.has(f) && !view?.has(f) && !first?.has(f)));
   }
 
   /**
    * Files stay; a directory becomes git's changed (staged or not), new and deleted files under it against HEAD, once
    * per boundary. More than the cap are cut, and the boundary's fact says so.
    */
-  private expand(paths: string[]): string[] {
+  private expand(paths: string[], againstHead = false): string[] {
     return paths.flatMap((p) => {
-      let dir = false;
-      try {
-        dir = statSync(join(this.root, p)).isDirectory();
-      } catch {
-        // gone or unreadable: compared as a file
-      }
-      if (!dir) return [p];
-      let files = this.expanded.get(p);
+      if (!this.isDir(p)) return [p];
+      const key = `${againstHead ? "head" : "stat"}:${p}`;
+      let files = this.expanded.get(key);
       if (!files) {
         // Plumbing only, with optional locks off: an agent's own git commands must never meet a lock the hub holds.
         const git = (...args: string[]) => {
@@ -315,14 +361,19 @@ export class Facts {
         // Against HEAD, so a staged change counts (a staged move by both names); a repository without a commit yet has
         // only the index to go by.
         const changed = git("diff-index", "--name-only", "--relative", "-z", "HEAD") ?? git("ls-files", "-z", "-m", "-d") ?? [];
-        const listed = [...new Set([...changed, ...(git("ls-files", "-z", "-o", "--exclude-standard") ?? [])].flatMap((f) => { const x = this.rel(f); return x ? [x] : []; }))];
-        // Stat data can list a file whose bytes equal HEAD's (edited and put back) until some git command refreshes
-        // the index: such a file is no change, so a refresh never moves what a directory stands for.
-        const head = this.headBlobs(listed);
-        const all = listed.filter((f) => !head.has(f) || this.load(f).blob !== head.get(f));
+        const contained = (list: string[]) => list.flatMap((f) => { const x = this.rel(f); return x ? [x] : []; });
+        let tracked = contained(changed);
+        // For an integration target: stat data can list a tracked file whose bytes equal HEAD's (edited and put back)
+        // until some git command refreshes the index; such a file is no change there, so a refresh never moves the
+        // target. Facts keep it: the way back is a change to whoever saw the file before.
+        if (againstHead) {
+          const head = this.headBlobs(tracked);
+          tracked = tracked.filter((f) => !head.has(f) || this.load(f).blob !== head.get(f));
+        }
+        const all = [...new Set([...tracked, ...contained(git("ls-files", "-z", "-o", "--exclude-standard") ?? [])])];
         if (all.length > EXPANDED_KEPT) this.expandedCut.add(p);
         files = all.slice(0, EXPANDED_KEPT);
-        this.expanded.set(p, files);
+        this.expanded.set(key, files);
       }
       return files;
     });
@@ -457,9 +508,11 @@ export class Facts {
     let unnamed = 0;
     const cutFiles: string[] = [];
     const firstLooks: string[] = [];
-    for (const file of this.files(peer, scope)) {
+    const covered = this.files(peer, scope);
+    const heads = this.dirBaselines(peer, scope, covered);
+    for (const file of covered) {
       const now = this.observe(file);
-      const was = view.get(file) ?? this.firstSeen.get(peer)?.get(file);
+      const was = view.get(file) ?? this.firstSeen.get(peer)?.get(file) ?? heads.get(file);
       if (!was) {
         firstLooks.push(file);
         offered.set(file, now); // what the peer sees from here on; nothing to compare with
@@ -573,7 +626,7 @@ export class Facts {
     // tool's write outside the named paths still moves the work the integration checked. What they only read never
     // does, nor what they wrote before or after (a member settling keeps its files in the set).
     const written = windows.flatMap((w) => [...(this.writes.get(w.peer) ?? [])].filter(([, times]) => times.some((t) => t >= w.since && (w.until === undefined || t <= w.until))).map(([file]) => file));
-    const files = [...new Set([...this.expand(paths.flatMap((p) => { const r = this.rel(p); return r ? [r] : []; })), ...written])].sort();
+    const files = [...new Set([...this.expand(paths.flatMap((p) => { const r = this.rel(p); return r ? [r] : []; }), true), ...written])].sort();
     for (const file of files) h.update(file).update("\0").update(this.load(file).hash).update("\0");
     return h.digest("hex");
   }
@@ -582,8 +635,11 @@ export class Facts {
   current(peer: PeerId): boolean {
     this.boundary();
     const view = this.accepted.get(peer);
-    return this.files(peer).every((f) => {
-      const v = view?.get(f);
+    const scope = this.o.scope(peer);
+    const covered = this.files(peer, scope);
+    const heads = this.dirBaselines(peer, scope, covered);
+    return covered.every((f) => {
+      const v = view?.get(f) ?? this.firstSeen.get(peer)?.get(f) ?? heads.get(f);
       return !v || v.hash === this.observe(f).hash;
     });
   }
