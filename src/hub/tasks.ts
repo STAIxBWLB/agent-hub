@@ -421,8 +421,7 @@ export class Tasks {
     const paths = [...new Set(tasks.flatMap((t) => this.places(t).paths))].filter((p) => p !== "." && this.nameable(p));
     const plans = tasks.filter((t) => t.owner !== peer).map((t) => ({ task: t.id, owner: t.owner!, text: planText(t.plan) })).filter((p) => p.text);
     // When the earliest of its tasks was handed over: work from before facts were tracked is not covered.
-    const handed = (t: Task) => [...t.history].reverse().find((h) => OWNERSHIP_EVENTS.has(h.event) && h.event !== "unassigned")?.at ?? t.history[0]?.at;
-    const since = Math.min(...mine.map((t) => handed(t) ?? Date.now()));
+    const since = Math.min(...mine.map(handedAt));
     return { paths, plans, task: { id: mine[0]!.id, title: mine[0]!.title }, since };
   };
 
@@ -874,7 +873,6 @@ export class Tasks {
    * duplicate notice is the price of never losing one.
    */
   replayHeld(peer: PeerId): void {
-    const handed = (t: Task) => [...t.history].reverse().find((h) => OWNERSHIP_EVENTS.has(h.event) && h.event !== "unassigned")?.at ?? t.history[0]?.at ?? 0;
     const finished = this.d.board.list().filter((u) => (u.state === "approved" || u.state === "in_review") && u.owner && !this.isPii(u));
     for (const t of this.d.board.list()) {
       if (!OPEN.includes(t.state) || t.owner !== peer || this.isPii(t)) continue;
@@ -882,7 +880,7 @@ export class Tasks {
       const mine = this.places(t);
       const done = finished.flatMap((u) => {
         const at = [...u.history].reverse().find((h) => h.event === "done");
-        if (u.owner === t.owner || !at || at.at < handed(t)) return [];
+        if (u.owner === t.owner || !at || at.at < handedAt(t)) return [];
         const theirs = this.places(u);
         const paths = mine.paths.filter((p) => theirs.paths.some((q) => samePlace(p, q)));
         const symbols = mine.symbols.filter((x) => theirs.symbols.includes(x));
@@ -898,8 +896,8 @@ export class Tasks {
   /** One hash over the files a cohort's tasks name and its members wrote while at work, as they are now: the integration target (issue #107). */
   private tree(cohort: Cohort): string {
     const paths = [...new Set([...cohort.members.keys()].flatMap((id) => { const t = this.d.board.get(id); return t ? this.places(t).paths : []; }))];
-    // Each member's writes count from when it joined until it settled: settling keeps its files in the target, and its
-    // later writes are its next task's.
+    // Each member's writes count from when its owner was handed the task until it settled: settling keeps its files in
+    // the target, and its later writes are its next task's.
     const windows = [...cohort.members.values()].map((m) => ({ peer: m.owner, since: m.since, ...(m.settledAt !== undefined ? { until: m.settledAt } : {}) }));
     return this.d.treeHash?.(paths, windows) ?? "";
   }

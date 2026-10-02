@@ -78,7 +78,8 @@ test("every measure of a turn-free attempt, with its unit, from the records nati
         { type: "envelope", id: "e3", from: "codex", priority: "fyi", kind: "chat", dropped: "fyi", at: iso(61) },
         { type: "fact", peer: "claude", id: "f1", via: "hook", files: 1, plans: 0, unknown: 0, bytes: 300, ms: 4, hookMs: 120, at: iso(31) },
         { type: "fact_ack", peer: "claude", id: "f1", via: "hook", ms: 900, at: iso(32) },
-        { type: "fact", peer: "codex", id: "f2", via: "steer", files: 1, plans: 0, unknown: 1, bytes: 500, ms: 6, rttMs: 40, accepted: false, at: iso(40) },
+        { type: "fact", peer: "codex", id: "f2", via: "steer", files: 1, plans: 0, unknown: 1, bytes: 500, ms: 6, accepted: false, at: iso(40) }, // refused: no round trip
+        { type: "fact", peer: "codex", id: "f4", via: "steer", files: 1, plans: 0, unknown: 0, bytes: 100, ms: 5, rttMs: 40, accepted: true, at: iso(45) },
         { type: "fact", peer: "claude", id: "f3", via: "done", files: 0, plans: 0, unknown: 0, bytes: 80, at: iso(75) },
         { type: "stale", id: "n1", peer: "codex", at: iso(72) },
         { type: "split", task: 2, verdict: "unknown", reason: "codex has 0 measured task(s)", trace: ["unknown: codex has 0 measured task(s)"], at: iso(1) },
@@ -133,7 +134,7 @@ test("every measure of a turn-free attempt, with its unit, from the records nati
     expect(row.treatment).toEqual({ silent_cohort: true });
     expect(row).toMatchObject({ quiet: 1, fyi: 1, stale: 1 }); // the setup probe's [FYI] is not in the task window
     expect(row.facts.hook).toMatchObject({ offers: 1, acknowledged: 1, bytes_offered: 300, bytes_acknowledged: 300, build_ms_median: 4, hook_startup_ms_median: 120 });
-    expect(row.facts.steer).toMatchObject({ offers: 1, acknowledged: 0, bytes_offered: 500, bytes_acknowledged: 0, unknown_attribution_files: 1, steers_refused: 1, steer_rtt_ms_median: 40 });
+    expect(row.facts.steer).toMatchObject({ offers: 2, acknowledged: 0, bytes_offered: 600, bytes_acknowledged: 0, unknown_attribution_files: 1, steers_refused: 1, steers_unanswered: 0, steer_rtt_ms_median: 40 });
     expect(row.facts.done).toMatchObject({ offers: 1, bytes_offered: 80, bytes_acknowledged: 0 });
     expect([row.facts.hook.probes, row.facts.hook.coverage_notices, row.facts.steer.probes]).toEqual([0, 0, 0]);
     expect(row.facts.ack_ms_median).toBe(900);
@@ -155,7 +156,7 @@ test("every measure of a turn-free attempt, with its unit, from the records nati
     expect(row.contributions.coverage).toEqual(["codex ran 1 shell command(s) during the task; what they wrote is not attributed"]); // the setup Bash is before the task
     expect(out.summary["hub-turnfree-codex-claude"]).toMatchObject({
       attempts: 1, completed: 1, valid_completed: 1, excluded: [], missing: [], both_done_s_median: 80, both_done_s_median_common: 80, settlement_s_median: 100, quiet_total: 1, quiet_unknown: 0,
-      fact_offers_total: 3, fact_bytes_offered_total: 880, fact_bytes_acknowledged_total: 300, integration_requests_total: 1, lost_identifiers_total: 3, lost_identifiers_unknown: 0,
+      fact_offers_total: 4, fact_bytes_offered_total: 980, fact_bytes_acknowledged_total: 300, integration_requests_total: 1, lost_identifiers_total: 3, lost_identifiers_unknown: 0,
       codex_attempt_tokens_median: 4000, claude_attempt_tokens_median: 115, treatment_received: 1, both_done_s_median_treated: 80,
     });
   } finally {

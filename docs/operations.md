@@ -409,10 +409,12 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   keeps the others' files after they finish. A directory a task names stands for
   git's changed (staged or not) files against HEAD, new and deleted files under
   it (200 at most; the fact says when more were cut, until it is read back and
-  again in a new session). Such a file that the peer has neither seen nor
-  touched is compared with HEAD's version, so another agent's first change there
-  is shown, and one it has seen stays covered after git stops listing it (put
-  back to HEAD's bytes, say). `.git` directories
+  again in a new session). A file the peer has seen there stays covered after git
+  stops listing it (put back to HEAD's bytes, or the directory moved away), so
+  the way back is shown; the most recently seen 200 at most. A file there that
+  the peer has neither seen nor touched is a first look when it first appears:
+  another agent's first change to it is not shown as a diff, and the peer reads
+  the file when it needs it. `.git` directories
   at any depth and what the denylist keeps from every agent
   (`src/local/deny.ts` and `local.deny`) are never read or shown. A file a peer touched before it had a view of it (a
   partial read, say) is compared with what it was then, so a change landing in

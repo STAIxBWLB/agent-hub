@@ -278,13 +278,8 @@ test("a directory a task names stands for git's changed and new files under it, 
   writeFileSync(join(root, "src", "x.ts"), "x changed\n");
   expect(facts.tree(["src"])).not.toBe(before);
   writeFileSync(join(root, "src", "new.ts"), "n\n");
-  // Files that stand in for the directory are compared with HEAD on their first look: another agent's first change
-  // there is shown, not absorbed.
-  const o = facts.due("claude")!;
-  expect(o.text).toContain("src/x.ts, changed, attribution unknown");
-  expect(o.text).toContain("+x changed");
-  expect(o.text).toContain("src/new.ts (created)");
-  facts.ack("claude", o.id);
+  const o = facts.due("claude"); // first looks at both files under src: nothing to compare with
+  expect(o).toBeUndefined();
   writeFileSync(join(root, "src", "new.ts"), "n2\n");
   const next = facts.due("claude")!;
   expect(next.text).toContain("src/new.ts, changed, attribution unknown");
@@ -294,6 +289,11 @@ test("a directory a task names stands for git's changed and new files under it, 
   writeFileSync(join(root, "src", "x.ts"), "x\n");
   git("status", "--short");
   expect(facts.due("claude")!.text).toContain("-x changed");
+  // The named directory moved away: what the peer saw there is still covered, its removal shown.
+  const back = facts.due("claude");
+  if (back) facts.ack("claude", back.id);
+  spawnSync("mv", [join(root, "src"), join(root, "moved")]);
+  expect(facts.due("claude")!.text).toContain("src/new.ts (deleted)");
 });
 
 test("history beyond the cap is attribution unknown, and a file that falls out of the touched list is named once", async () => {
@@ -392,7 +392,7 @@ test("a directory's staged changes count, more than the cap are said to be cut, 
   expect(o.text).not.toContain(".env");
   for (let i = 0; i < 205; i++) writeFileSync(join(root, "src", `n${i}.ts`), "n\n");
   expect(facts.due("claude")!.text).toContain("more than 200 files changed under src: the rest are not shown");
-});
+}, 20_000); // hundreds of files: slow on a CI disk
 
 test("the integration target counts the files the members touched, a symbol-only overlap too", async () => {
   const { root, facts, write } = rig();
@@ -457,7 +457,7 @@ test("a directory cut at the cap is said once per peer, and a staged move lists 
   facts.session("claude", "s1");
   facts.session("claude", "s2"); // a new session never heard it
   expect(facts.due("claude")?.text ?? "").toContain("more than 200 files changed under src");
-});
+}, 20_000); // hundreds of files: slow on a CI disk
 
 test("a tracked file edited and put back is no change, whatever git's stat data says", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-facts-")));

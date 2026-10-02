@@ -258,29 +258,6 @@ export class Facts {
     return out;
   }
 
-  /** HEAD's version of each of these project paths, in one read-only git call; a path HEAD lacks is `missing`. */
-  private headVersions(files: string[]): Map<string, Version> {
-    const out = new Map<string, Version>();
-    if (!files.length) return out;
-    const r = Bun.spawnSync(["git", "cat-file", "--batch"], { cwd: this.root, stdin: new TextEncoder().encode(files.map((f) => `HEAD:./${f}`).join("\n") + "\n"), stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
-    if (r.exitCode !== 0) return out;
-    const buf = Buffer.from(r.stdout);
-    let at = 0;
-    for (const file of files) {
-      const eol = buf.indexOf(10, at);
-      if (eol === -1) break;
-      const [oid, type, size] = buf.subarray(at, eol).toString().split(" ");
-      at = eol + 1;
-      if (type === undefined || size === undefined) { out.set(file, { hash: "missing", seq: 0 }); continue; } // "<name> missing"
-      const n = Number(size);
-      const data = buf.subarray(at, at + n);
-      at += n + 1; // the content, then a newline
-      if (type !== "blob") continue;
-      out.set(file, n > MAX_BYTES ? { hash: `head-large:${oid}`, seq: 0 } : { hash: createHash("sha1").update(data).digest("hex"), text: data.toString("utf8"), blob: oid, seq: 0 });
-    }
-    return out;
-  }
-
   /** A new boundary: directories are expanded afresh. */
   private boundary(): void {
     this.expanded = new Map();
@@ -310,9 +287,12 @@ export class Facts {
   private files(peer: PeerId, scope = this.o.scope(peer)): string[] {
     const paths = this.scopePaths(scope);
     // A file the peer has seen under a named directory stays covered after git stops listing it (put back to HEAD's
-    // bytes, say): the way back is a change too.
-    const dirs = paths.filter((p) => this.isDir(p));
-    const seen = [...(this.accepted.get(peer)?.keys() ?? [])].filter((f) => dirs.some((d) => d === "." || f.startsWith(`${d}/`)));
+    // bytes, or the directory moved away): the way back is a change too. The most recently seen 200 at most.
+    const seen = [...(this.accepted.get(peer)?.entries() ?? [])]
+      .filter(([f]) => paths.some((p) => f.startsWith(`${p}/`)))
+      .sort((a, b) => b[1].seq - a[1].seq)
+      .slice(0, EXPANDED_KEPT)
+      .map(([f]) => f);
     return [...new Set([...this.expand(paths), ...(this.touched.get(peer) ?? []), ...seen])];
   }
 
@@ -329,18 +309,6 @@ export class Facts {
     } catch {
       return false; // gone or unreadable: compared as a file
     }
-  }
-
-  /**
-   * A file that stands in for a named directory and that the peer has neither seen nor touched: its first look is
-   * HEAD's version, so another agent's first change to it is shown, not absorbed. Undefined for any other file.
-   */
-  private dirBaselines(peer: PeerId, scope: FactScope | undefined, files: string[]): Map<string, Version> {
-    const direct = new Set(this.scopePaths(scope));
-    const touched = new Set(this.touched.get(peer) ?? []);
-    const view = this.accepted.get(peer);
-    const first = this.firstSeen.get(peer);
-    return this.headVersions(files.filter((f) => !direct.has(f) && !touched.has(f) && !view?.has(f) && !first?.has(f)));
   }
 
   /**
@@ -508,11 +476,9 @@ export class Facts {
     let unnamed = 0;
     const cutFiles: string[] = [];
     const firstLooks: string[] = [];
-    const covered = this.files(peer, scope);
-    const heads = this.dirBaselines(peer, scope, covered);
-    for (const file of covered) {
+    for (const file of this.files(peer, scope)) {
       const now = this.observe(file);
-      const was = view.get(file) ?? this.firstSeen.get(peer)?.get(file) ?? heads.get(file);
+      const was = view.get(file) ?? this.firstSeen.get(peer)?.get(file);
       if (!was) {
         firstLooks.push(file);
         offered.set(file, now); // what the peer sees from here on; nothing to compare with
@@ -635,11 +601,8 @@ export class Facts {
   current(peer: PeerId): boolean {
     this.boundary();
     const view = this.accepted.get(peer);
-    const scope = this.o.scope(peer);
-    const covered = this.files(peer, scope);
-    const heads = this.dirBaselines(peer, scope, covered);
-    return covered.every((f) => {
-      const v = view?.get(f) ?? this.firstSeen.get(peer)?.get(f) ?? heads.get(f);
+    return this.files(peer).every((f) => {
+      const v = view?.get(f) ?? this.firstSeen.get(peer)?.get(f);
       return !v || v.hash === this.observe(f).hash;
     });
   }

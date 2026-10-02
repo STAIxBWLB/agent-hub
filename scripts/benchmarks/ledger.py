@@ -316,7 +316,7 @@ def facts_of(events):
                     "bytes_offered": sum(e.get("bytes", 0) for e in mine), "bytes_acknowledged": sum(e.get("bytes", 0) for e in mine if e.get("id") in acked),
                     "build_ms_median": median(num(mine, "ms")), "hook_startup_ms_median": median(num(mine, "hookMs")),
                     "steers_unanswered": sum(1 for e in mine if e.get("unanswered")),
-                    "steer_rtt_ms_median": median(num(mine, "rttMs")), "steers_refused": sum(1 for e in mine if e.get("accepted") is False and not e.get("unanswered"))}
+                    "steer_rtt_ms_median": median(num([e for e in mine if e.get("accepted")], "rttMs")), "steers_refused": sum(1 for e in mine if e.get("accepted") is False and not e.get("unanswered"))}
     out["ack_ms_median"] = median(num(acks, "ms"))
     return out
 

@@ -644,7 +644,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         if (readiness.claude?.transcriptPath && existsSync(readiness.claude.transcriptPath)) {
             const bytes = readFileSync(readiness.claude.transcriptPath);
             readiness.claude.transcriptBytes = bytes.length;
-            readiness.claude.transcriptSha256 = createHash('sha256').update(bytes).digest('hex');
+            readiness.claude.transcriptSha256 = hash(bytes);
         }
         const metadataClean = fixtureMetadataHash(dir) === metadataBaseline;
         if (!metadataClean)

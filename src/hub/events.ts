@@ -12,7 +12,7 @@ export type HubEvent =
   | { type: "overflow" | "undeliverable"; id: string; from: string; peer: string }
   | { type: "stale"; id: string; from: string; peer: string; task?: string }
   | { type: "quiet"; id: string; from: string; peers: string[] }
-  | { type: "fact"; peer: string; id: string; files: number; plans: number; unknown: number; bytes: number; via: "hook" | "steer" | "done"; ms?: number; hookMs?: number; rttMs?: number; accepted?: boolean; probe?: boolean; coverage?: boolean }
+  | { type: "fact"; peer: string; id: string; files: number; plans: number; unknown: number; bytes: number; via: "hook" | "steer" | "done"; ms?: number; hookMs?: number; rttMs?: number; accepted?: boolean; unanswered?: boolean; probe?: boolean; coverage?: boolean }
   | { type: "fact_ack"; peer: string; id: string; via: string; ms: number }
   | { type: "capability"; peer: string; state: "verified" | "lost"; via?: string }
   | { type: "split"; task: number; verdict: "split" | "single" | "unknown"; single?: string; splitS?: number; singleS?: number; reason?: string; trace?: string[] }
