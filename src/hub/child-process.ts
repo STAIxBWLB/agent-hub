@@ -33,17 +33,21 @@ export function parseProcessTable(text: string): ProcRow[] {
 
 /**
  * The process table, or undefined when it cannot be read or does not show this process: a parse that found nothing
- * (a localized `lstart`, a changed `ps`) is not an empty table. Read with LC_ALL=C for that reason.
+ * (a localized `lstart`, a changed `ps`) is not an empty table. Read with LC_ALL=C for that reason, by a `ps` in a
+ * process group of its own (a Ctrl-C to the caller's group would kill it), and tried twice.
  */
 export function processTable(): ProcRow[] | undefined {
-  try {
-    const r = Bun.spawnSync(["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart=,command="], { stdout: "pipe", stderr: "pipe", env: { ...process.env, LC_ALL: "C" } });
-    if (r.exitCode !== 0) return undefined;
-    const rows = parseProcessTable(r.stdout.toString());
-    return rows.some((row) => row.pid === process.pid) ? rows : undefined;
-  } catch {
-    return undefined;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = Bun.spawnSync(["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart=,command="], { stdout: "pipe", stderr: "pipe", env: { ...process.env, LC_ALL: "C" }, detached: true });
+      if (r.exitCode !== 0) continue;
+      const rows = parseProcessTable(r.stdout.toString());
+      if (rows.some((row) => row.pid === process.pid)) return rows;
+    } catch {
+      // tried again below
+    }
   }
+  return undefined;
 }
 
 /** Every descendant of `pid` in `rows`, by parent links. */
@@ -75,20 +79,27 @@ export function descendantsOf(rows: ProcRow[], pid: number): ProcRow[] {
  * tool commands so): those are found by parent links before anything is signalled and stopped by identity after the
  * group. Done means the group and every one of them is gone.
  */
+// ponytail: a leader that exited before the stop (its launcher killed from outside) returns at once and its group is
+// not swept: its pid may be reused once the group empties. Record the leader's start time at spawn to sweep it safely.
 export async function stopOwnedProcess(proc: ChildProcess, { termMs = 1_000, killMs = 2_000, group = false } = {}): Promise<void> {
   if (proc.exitCode !== null || proc.signalCode !== null || proc.pid === undefined) return;
   const pid = proc.pid;
   const below = group ? descendantsOf(processTable() ?? [], pid) : [];
-  // ESRCH from a group means every member is gone; the leader's exit event may still be on its way.
+  // ESRCH from a group means every member is gone; the leader's exit event may still be on its way. macOS answers
+  // EPERM for a group whose members are all zombies (exited, not yet reaped): the table read back decides either way.
   const signal = (sig: NodeJS.Signals) => {
     if (!group) return void proc.kill(sig);
-    try { process.kill(-pid, sig); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+    try { process.kill(-pid, sig); } catch (error) { if (!["ESRCH", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error; }
   };
-  /** What is left of the group and of the processes found below it, the same processes (pid and start time). */
+  /**
+   * What is left of the group and of the processes found below it, the same processes (pid and start time). Without a
+   * table, and with nothing found below, the group's own answer is the proof: ESRCH (or EPERM, all zombies) is gone.
+   */
   const left = (): ProcRow[] | undefined => {
     const table = processTable();
-    if (!table) return undefined;
-    return table.filter((row) => row.pgid === pid || below.some((b) => b.pid === row.pid && b.started === row.started));
+    if (table) return table.filter((row) => row.pgid === pid || below.some((b) => b.pid === row.pid && b.started === row.started));
+    if (below.length) return undefined;
+    try { process.kill(-pid, 0); return undefined; } catch (error) { return ["ESRCH", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "") ? [] : undefined; }
   };
   // The leader is gone: whatever is left goes too, a group leader with its group, and the readback must show nothing.
   const sweep = async (): Promise<void> => {
@@ -101,7 +112,8 @@ export async function stopOwnedProcess(proc: ChildProcess, { termMs = 1_000, kil
       for (const row of rest ?? []) {
         try { process.kill(row.pgid === row.pid ? -row.pid : row.pid, "SIGKILL"); } catch { /* gone meanwhile */ }
       }
-      signal("SIGKILL");
+      // The group itself only while it still has members: an emptied group's id is free for reuse.
+      if (!rest || rest.some((row) => row.pgid === pid)) signal("SIGKILL");
       await Bun.sleep(50);
     }
     // Nothing of it can write any more: drop the pipes, so a holder that escaped the table cannot keep the hub alive.

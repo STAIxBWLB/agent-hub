@@ -1,29 +1,42 @@
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { descendantsOf, processTable, type ProcRow } from '../../src/hub/child-process.ts';
-import { namingFixture, restoreModes, same } from './teardown.ts';
+import { namingFixture, processCwds, restoreModes, same } from './teardown.ts';
 
 /**
- * Recovery after an arm whose cleanup was incomplete or unknown (issue #113): the runner left the protected inputs and
- * the sibling artifacts unreadable. Once nothing that arm started is running, and nothing names its fixture, this puts
- * their read modes back from the run's ledger. Usage: bun scripts/benchmarks/restore.ts --run RUN_DIR
+ * Recovery after a run that left inputs unreadable (issue #113): an arm's cleanup was incomplete or unknown, or the
+ * runner itself did not finish. Nothing is restored while the runner runs, while any process an arm was recorded to
+ * have started runs, or while anything has a fixture in its argv or as its working directory. Then the read modes come
+ * back from the run's ledger, and the records kept in `recovery/` move to `runs/`, where grading and the ledger read
+ * them. Usage: bun scripts/benchmarks/restore.ts --run RUN_DIR
  */
-export function recover(run: string, table: ProcRow[] | undefined, self = process.pid): { restored: boolean; blockers: string[]; failed: string[] } {
+export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<number, string> | undefined, self = process.pid): { restored: boolean; blockers: string[]; failed: string[] } {
+    const status = existsSync(join(run, 'restoration.json')) ? JSON.parse(readFileSync(join(run, 'restoration.json'), 'utf8')) : undefined;
+    if (status?.restored === true) return { restored: true, blockers: [], failed: [] };
     if (!table) return { restored: false, blockers: ['the process table cannot be read'], failed: [] };
-    const mine = new Set([self, ...descendantsOf(table, self).map((r) => r.pid)]);
-    const blockers: string[] = [];
-    let records: string[] = [];
-    try { records = readdirSync(join(run, 'recovery', 'runs')).filter((f) => f.endsWith('.json')); } catch { }
-    for (const file of records) {
-        const record = JSON.parse(readFileSync(join(run, 'recovery', 'runs', file), 'utf8'));
-        for (const p of [...(record.cleanup?.owned ?? []), ...(record.cleanup?.unresolved ?? [])])
-            if (same(table, p)) blockers.push(`${file}: ${p.role ?? 'unresolved'} ${p.pid} is still running`);
-        if (typeof record.cwd === 'string')
-            for (const r of namingFixture(table, record.cwd)) if (!mine.has(r.pid)) blockers.push(`${file}: ${r.pid} names the fixture`);
-    }
-    if (blockers.length) return { restored: false, blockers: [...new Set(blockers)], failed: [] };
+    if (!cwds) return { restored: false, blockers: ['working directories cannot be read'], failed: [] };
     const ledgerFile = join(run, 'restoration-ledger.json');
     const ledger = JSON.parse(readFileSync(ledgerFile, 'utf8'));
+    const blockers: string[] = [];
+    if (!ledger.runner) blockers.push('the ledger does not name the runner: it may still be running');
+    else if (same(table, ledger.runner)) blockers.push(`the runner ${ledger.runner.pid} is still running`);
+    const mine = new Set([self, ...descendantsOf(table, self).map((r) => r.pid)]);
+    const records = existsSync(join(run, 'recovery', 'runs')) ? readdirSync(join(run, 'recovery', 'runs')).filter((f) => f.endsWith('.json')) : [];
+    const recorded = records.map((f) => ({ file: f, record: JSON.parse(readFileSync(join(run, 'recovery', 'runs', f), 'utf8')) }));
+    const actors: { pid: number; started: string; role?: string; where: string }[] = [
+        ...Object.entries<any[]>(ledger.actors ?? {}).flatMap(([dir, list]) => list.map((a) => ({ ...a, where: dir }))),
+        ...recorded.flatMap(({ file, record }) => [...(record.cleanup?.owned ?? []), ...(record.cleanup?.unresolved ?? [])].map((a: any) => ({ ...a, where: file }))),
+    ];
+    for (const a of actors) if (same(table, a)) blockers.push(`${a.where}: ${a.role ?? 'unresolved'} ${a.pid} is still running`);
+    const fixtures = new Set<string>([...Object.keys(ledger.actors ?? {}), ...Object.keys(ledger.siblings ?? {}), ...recorded.map(({ record }) => record.cwd).filter((d): d is string => typeof d === 'string')]);
+    for (const dir of fixtures) {
+        for (const r of namingFixture(table, dir)) if (!mine.has(r.pid)) blockers.push(`${r.pid} names ${dir}`);
+        for (const r of table) {
+            const cwd = cwds.get(r.pid);
+            if (!mine.has(r.pid) && cwd !== undefined && (cwd === dir || cwd.startsWith(`${dir}/`))) blockers.push(`${r.pid} works in ${dir}`);
+        }
+    }
+    if (blockers.length) return { restored: false, blockers: [...new Set(blockers)], failed: [] };
     const failed: string[] = [];
     for (const sibling of Object.values<any>(ledger.siblings ?? {})) {
         if (sibling.restored) continue;
@@ -37,14 +50,24 @@ export function recover(run: string, table: ProcRow[] | undefined, self = proces
         failed.push(...lost);
     }
     writeFileSync(ledgerFile, JSON.stringify(ledger, null, 2), { mode: 0o600 });
-    if (!failed.length) writeFileSync(join(run, 'restoration.json'), JSON.stringify({ restored: true, recovered: true, at: new Date().toISOString() }), { mode: 0o600 });
-    return { restored: !failed.length, blockers: [], failed };
+    if (failed.length) return { restored: false, blockers: [], failed };
+    // The kept records join the run's own, so grading and the ledger see these attempts (as unavailable).
+    mkdirSync(join(run, 'runs'), { recursive: true, mode: 0o700 });
+    mkdirSync(join(run, 'patches'), { recursive: true, mode: 0o700 });
+    for (const { file, record } of recorded) {
+        const patch = join(run, 'patches', file.replace(/\.json$/, '.patch'));
+        if (typeof record.patchFile === 'string' && existsSync(record.patchFile)) renameSync(record.patchFile, patch);
+        writeFileSync(join(run, 'runs', file), JSON.stringify({ ...record, patchFile: patch, recovered: true }, null, 2), { mode: 0o600 });
+        rmSync(join(run, 'recovery', 'runs', file));
+    }
+    writeFileSync(join(run, 'restoration.json'), JSON.stringify({ restored: true, recovered: true, at: new Date().toISOString() }), { mode: 0o600 });
+    return { restored: true, blockers: [], failed: [] };
 }
 
 if (import.meta.main) {
-    const argv = process.argv.slice(2), run = argv[argv.indexOf('--run') + 1];
-    if (!run || argv.indexOf('--run') < 0) throw new Error('usage: bun scripts/benchmarks/restore.ts --run RUN_DIR');
-    const result = recover(run, processTable());
+    const argv = process.argv.slice(2), at = argv.indexOf('--run'), run = at >= 0 ? argv[at + 1] : undefined;
+    if (!run) throw new Error('usage: bun scripts/benchmarks/restore.ts --run RUN_DIR');
+    const result = recover(run, processTable(), processCwds());
     console.log(JSON.stringify(result, null, 2));
     if (!result.restored) process.exit(1);
 }

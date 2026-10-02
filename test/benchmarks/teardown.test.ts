@@ -29,10 +29,11 @@ const runner = row(50, 49, 50, "bun scripts/benchmarks/native.ts");
 const actors = (rows: ProcRow[]): Actor[] => [actorOf(rows, 100, "daemon", "hub.pid")!, actorOf(rows, 105, "codex-app-server", "child of the daemon")!, actorOf(rows, 120, "claude", "launch record")!];
 
 /** A process table in memory: signals remove what they reach unless `stubborn`; the clock moves with sleep. */
-function world(start: ProcRow[], opts: { stubborn?: number[]; shutdown?: (w: { rows: ProcRow[] }) => string[]; unreadable?: () => boolean } = {}) {
+function world(start: ProcRow[], opts: { stubborn?: number[]; shutdown?: (w: { rows: ProcRow[] }) => string[]; unreadable?: () => boolean; cwds?: Map<number, string> | null } = {}) {
   const w = { rows: [...start], signals: [] as [number, string][], clock: 0 };
   const deps: Deps = {
     table: () => (opts.unreadable?.() ? undefined : [...w.rows]),
+    cwds: () => (opts.cwds === null ? undefined : opts.cwds ?? new Map()),
     signal: (pid, sig) => {
       w.signals.push([pid, sig]);
       w.rows = w.rows.filter((r) => opts.stubborn?.includes(r.pid) || !(pid < 0 ? r.pgid === -pid : r.pid === pid));
@@ -93,7 +94,7 @@ test("a reused pid, a replacement hub on the same fixture and a foreign process 
   const c = await teardown(recorded, DIR, shutdown, deps);
   expect(w.signals).toEqual([]);
   expect(w.rows.map((r) => r.pid)).toEqual([50, 51, 100, 200, 300]);
-  expect(c.owned.map((a) => a.pid)).toEqual([105, 106]); // the daemon and Claude were gone before teardown
+  expect(c.remaining).toEqual([]); // the recorded daemon and Claude were gone before teardown: pid 100 is someone else now
   expect(c.unresolved.map((u) => u.pid)).toEqual([200, 300]);
   expect(c.outcome).toBe("incomplete_or_unknown");
   expect(daemonRoot(replacement.command)).toBe(DIR);
@@ -169,29 +170,76 @@ test("restoration: modes come back parents first and failures are named; a trust
   expect(restoreTrust({ file: join(dir, "missing.json"), previous: undefined, hadProjects: false, mode: 0o600 }, fixture)).toBe("failed");
 });
 
-test("recovery puts the withheld read modes back only when nothing the arm left is running", async () => {
+test("recovery puts the withheld read modes back only when the runner, every recorded process and anything in the fixture are gone", async () => {
   const { recover } = await import("../../scripts/benchmarks/restore.ts");
   const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
   dirs.push(run);
+  const fixture = join(run, "fixtures", "00-x");
+  mkdirSync(fixture, { recursive: true });
   const input = join(run, "gold.patch"), sibling = join(run, "sibling.json");
   writeFileSync(input, "x");
   writeFileSync(sibling, "{}");
   chmodSync(input, 0);
   chmodSync(sibling, 0);
-  writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ protected: { paths: { [input]: 0o600 }, restored: false }, siblings: { [join(run, "fixtures/00-x")]: { modes: { [sibling]: 0o600 }, restored: false } } }));
-  mkdirSync(join(run, "recovery", "runs"), { recursive: true });
-  const record = (owned: object[]) => writeFileSync(join(run, "recovery", "runs", "00-x.json"), JSON.stringify({ cwd: join(run, "fixtures/00-x"), cleanup: { owned, unresolved: [] } }));
   const table = processTable()!;
   const me = table.find((r) => r.pid === process.pid)!;
-  // A recorded process still runs (here: this test's own): nothing is restored.
-  record([{ role: "below", pid: me.pid, started: me.started }]);
-  const blocked = recover(run, table, -1);
-  expect(blocked.restored).toBe(false);
-  expect(blocked.blockers).toEqual([`00-x.json: below ${me.pid} is still running`]);
+  const gone = { pid: me.pid, started: "Thu Jan  1 00:00:00 1970" }; // the same pid, started another time: not this process
+  const ledger = (runner: object, actors: object[]) => writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner, protected: { paths: { [input]: 0o600 }, restored: false }, siblings: { [fixture]: { modes: { [sibling]: 0o600 }, restored: false } }, actors: { [fixture]: actors } }));
+  mkdirSync(join(run, "recovery", "runs"), { recursive: true });
+  mkdirSync(join(run, "recovery", "patches"), { recursive: true });
+  writeFileSync(join(run, "recovery", "patches", "00-x.patch"), "diff");
+  writeFileSync(join(run, "recovery", "runs", "00-x.json"), JSON.stringify({ cwd: fixture, patchFile: join(run, "recovery", "patches", "00-x.patch"), cleanup: { owned: [], unresolved: [] } }));
+  // The runner still runs (here: this test process stands for it), then a recorded actor, then a shell in the fixture.
+  ledger({ pid: me.pid, started: me.started }, []);
+  expect(recover(run, table, new Map(), -1).blockers).toEqual([`the runner ${me.pid} is still running`]);
+  ledger(gone, [{ role: "codex-app-server", pid: me.pid, started: me.started }]);
+  expect(recover(run, table, new Map(), -1).blockers).toEqual([`${fixture}: codex-app-server ${me.pid} is still running`]);
+  ledger(gone, [{ role: "codex-app-server", ...gone }]);
+  expect(recover(run, table, new Map([[me.pid, join(fixture, "src")]]), -1).blockers).toEqual([`${me.pid} works in ${fixture}`]);
+  expect(recover(run, table, undefined, -1).blockers).toEqual(["working directories cannot be read"]);
   expect(statSync(input).mode & 0o777).toBe(0);
-  // Gone (the same pid would have to have started at another time): the modes come back and the run says so.
-  record([{ role: "below", pid: me.pid, started: "Thu Jan  1 00:00:00 1970" }]);
-  expect(recover(run, table, -1)).toEqual({ restored: true, blockers: [], failed: [] });
+  // Nothing of it runs: the modes come back, the kept record joins the run's own, and the run says so.
+  expect(recover(run, table, new Map(), -1)).toEqual({ restored: true, blockers: [], failed: [] });
   expect([statSync(input).mode & 0o777, statSync(sibling).mode & 0o777]).toEqual([0o600, 0o600]);
+  expect(JSON.parse(readFileSync(join(run, "runs", "00-x.json"), "utf8"))).toMatchObject({ recovered: true, patchFile: join(run, "patches", "00-x.patch") });
+  expect(readFileSync(join(run, "patches", "00-x.patch"), "utf8")).toBe("diff");
   expect(JSON.parse(readFileSync(join(run, "restoration.json"), "utf8"))).toMatchObject({ restored: true, recovered: true });
+  expect(recover(run, undefined, undefined, -1).restored).toBe(true); // done once: nothing left to do
+});
+
+test("a first read that fails keeps every recorded actor: the fallback still acts on them, and the cleanup is unknown", async () => {
+  // A Ctrl-C can kill the first `ps`: what ran below the actors then is unknown, the actors themselves are not.
+  let reads = 0;
+  const { w, deps, shutdown } = world(everything, { unreadable: () => ++reads === 1, shutdown: () => ["ahub kill: hub did not acknowledge shutdown"] });
+  const c = await teardown(actors(everything), DIR, shutdown, deps);
+  expect(c.owned.slice(0, 3).map((a) => a.pid)).toEqual([100, 105, 120]);
+  expect(c.fallback.length).toBeGreaterThan(0);
+  expect(w.rows).toEqual([runner]);
+  expect(c.outcome).toBe("incomplete_or_unknown");
+  expect(c.reasons).toEqual(["the process table could not be read before the shutdown: what ran below the recorded actors is unknown"]);
+});
+
+test("a background job in a recorded group is the arm's while that group is known; one that left it, or a visitor in the fixture, is left alone and keeps the cleanup open", async () => {
+  // The tool shell 107 was recorded and has exited; its `sh -c serve` 109 was recorded too and still runs, so group 107
+  // is still that group and its unrecorded job 108 is the arm's. 110 left for a session of its own: no proof, only its
+  // working directory in the fixture. 400 is someone's shell sitting in the fixture.
+  const keeper = row(109, 1, 107, "sh -c serve");
+  const job = row(108, 1, 107, "python server.py");
+  const escaped = row(110, 1, 110, "python worker.py");
+  const visitor = row(400, 1, 400, "-zsh");
+  const below = (r: ProcRow) => ({ role: "below" as const, pid: r.pid, started: r.started, pgid: r.pgid, via: "below codex-app-server 105" });
+  const recorded = [...actors(everything), below(row(107, 106, 107, "sh -c tool")), below(keeper)];
+  const { w, deps, shutdown } = world([runner, daemon, launcher, native, claude, keeper, job, escaped, visitor], { cwds: new Map([[108, DIR], [110, DIR], [400, `${DIR}/src`]]), shutdown: (x) => { x.rows = x.rows.filter((r) => ![100, 105, 106, 120].includes(r.pid)); return []; } });
+  const c = await teardown(recorded, DIR, shutdown, deps);
+  expect(c.owned.find((a) => a.pid === 108)?.via).toBe("group of below 107");
+  expect(w.signals).toEqual([[109, "SIGTERM"], [108, "SIGTERM"]]); // by pid: their leader is gone
+  expect(c.unresolved).toEqual([{ pid: 110, started: T, command: "python worker.py", cwd: DIR }, { pid: 400, started: T, command: "-zsh", cwd: `${DIR}/src` }]);
+  expect(w.rows.map((r) => r.pid)).toEqual([50, 110, 400]);
+  expect(c.outcome).toBe("incomplete_or_unknown");
+});
+
+test("working directories that cannot be read leave the cleanup unknown", async () => {
+  const { deps, shutdown } = world(everything, { cwds: null, shutdown: (x) => { x.rows = [runner]; return []; } });
+  const c = await teardown(actors(everything), DIR, shutdown, deps);
+  expect(c.reasons).toEqual(["working directories could not be read: whether anything else runs in the fixture is unknown"]);
 });

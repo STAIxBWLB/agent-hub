@@ -272,7 +272,8 @@ export class Tasks {
       if (t.class !== cls || t.owner !== peer || t.id === exclude) return [];
       const given = [...t.history].reverse().find((h) => OWNERSHIP_EVENTS.has(h.event) && h.event !== "unassigned" && (h.owner === undefined || h.owner === peer));
       if (!given || given.profile !== profile || given.by === peer) return [];
-      const after = t.history.filter((h) => h.at >= given.at);
+      // What happened after the hand-over, in board order: the escalation or decline that caused it was the last owner's.
+      const after = t.history.slice(t.history.indexOf(given) + 1);
       if (after.some((h) => ["check failed", "changes_requested", "escalated", "released", "declined", "integration unresolved"].includes(h.event))) return [{ outcome: "failed" }];
       if (t.state !== "approved") return [];
       const accepted = after.find((h) => h.event === "accepted" && h.by === peer);

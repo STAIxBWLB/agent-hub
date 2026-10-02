@@ -84,7 +84,7 @@ Run this before reporting any task complete, and paste the output. A failing tes
 - Auto-approval covers the hub's own tools by exact `mcp__agent-hub__<name>` title and only ever picks `allow_once`. Never widen it to a prefix, and never set Kimi's session mode to `auto` or `yolo` instead: those approve everything.
 - Secrets stay inside `OmniRoute`: never put the key or Access values in a log line, an error message, a return value or the generated Switchyard file (the key goes by env var name).
 - Switchyard's docs drift from the released binary. Any change to `switchyardToml` is checked with the real `switchyard-server --dry-run`, not only the stand-in in `test/fakes/`.
-- The Codex app-server is spawned in its own process group and stopped as one (`stopOwnedProcess(proc, { group: true })`): `codex` is a node launcher, and mid-turn its native app-server ignores SIGTERM, so a SIGKILL to the launcher alone left the app-server running under init and holding the daemon alive (#113).
+- The Codex app-server is spawned in its own process group and stopped as one (`stopOwnedProcess(proc, { group: true })`): `codex` is a node launcher, and mid-turn its native app-server does not exit on SIGTERM within the grace period, so a SIGKILL to the launcher alone left the app-server running under init and holding the daemon alive (#113).
 - A child process gets a scrubbed environment, so test knobs for fakes travel in a wrapper script, not in `process.env`.
 - Work that must survive `ahub kill` (claude-mem `session-end`) is awaited in `stop()`; fire-and-forget dies with the process.
 - A peer must set `busy` synchronously inside `deliver()`, otherwise the bus drains the next envelope into a running turn (Kimi answers `turn.agent_busy`).

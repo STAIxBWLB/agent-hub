@@ -1,4 +1,4 @@
-import { chmodSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, readdirSync, readFileSync, readlinkSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { descendantsOf, processTable, type ProcRow } from '../../src/hub/child-process.ts';
 
 /**
@@ -21,21 +21,66 @@ export interface Cleanup {
     owned: Actor[];
     fallback: { pid: number; role: Role; signal: 'SIGTERM' | 'SIGKILL'; group: boolean; result: 'sent' | 'failed' }[];
     remaining: Actor[];
-    /** Running and naming the fixture, not proved to be the arm's: left alone, and the cleanup is not complete. */
-    unresolved: { pid: number; started: string; command: string }[];
+    /** Running with the fixture in its argv or as its working directory, not proved to be the arm's: left alone, and the cleanup is not complete. */
+    unresolved: { pid: number; started: string; command: string; cwd?: string }[];
     ms: { settle: number; fallback: number; total: number };
 }
 export interface Deps {
     table: () => ProcRow[] | undefined;
+    /** Each process's working directory, or undefined when they cannot be read. */
+    cwds: () => Map<number, string> | undefined;
     signal: (pid: number, signal: 'SIGTERM' | 'SIGKILL') => void;
     sleep: (ms: number) => Promise<void>;
     now: () => number;
     /** The runner itself: it and its children (a `bun ... kill` naming the fixture) are not the arm's. */
     self: number;
 }
-export const realDeps: Deps = { table: processTable, signal: (pid, signal) => process.kill(pid, signal), sleep: (ms) => Bun.sleep(ms), now: () => Date.now(), self: process.pid };
+export const realDeps: Deps = { table: processTable, cwds: processCwds, signal: (pid, signal) => process.kill(pid, signal), sleep: (ms) => Bun.sleep(ms), now: () => Date.now(), self: process.pid };
 
 export const same = (rows: ProcRow[], a: { pid: number; started: string }) => rows.find((r) => r.pid === a.pid && r.started === a.started);
+
+/** Every process's working directory: `lsof` on macOS, `/proc` elsewhere; undefined when it cannot be read. */
+export function processCwds(): Map<number, string> | undefined {
+    const out = new Map<number, string>();
+    if (process.platform === 'linux') {
+        try {
+            for (const entry of readdirSync('/proc')) {
+                if (!/^\d+$/.test(entry)) continue;
+                try { out.set(Number(entry), readlinkSync(`/proc/${entry}/cwd`)); } catch { /* another user's, or gone */ }
+            }
+            return out;
+        } catch { return undefined; }
+    }
+    try {
+        const r = Bun.spawnSync(['lsof', '-a', '-d', 'cwd', '-F', 'pn'], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, LC_ALL: 'C' }, detached: true });
+        let pid = 0;
+        for (const line of r.stdout.toString().split('\n')) {
+            if (line.startsWith('p')) pid = Number(line.slice(1));
+            else if (line.startsWith('n') && pid) out.set(pid, line.slice(1));
+        }
+        return out.size ? out : undefined;
+    } catch { return undefined; }
+}
+
+/** Whether `path` is `dir` or inside it. */
+const inside = (path: string | undefined, dir: string) => path !== undefined && (path === dir || path.startsWith(`${dir}/`));
+
+export const key = (a: { pid: number; started: string }) => `${a.pid}@${a.started}`;
+
+/**
+ * Adds to `owned` what the table shows below an owned process, and what is in the group an owned process leads while
+ * that group is known to be the same one: its leader alive, or an owned member still in it (a group id is not reused
+ * while any member lives). A group that may have emptied is not followed: its id can belong to someone else now.
+ */
+export function extend(owned: Map<string, Actor>, rows: ProcRow[]): void {
+    for (const a of [...owned.values()]) {
+        const alive = !!same(rows, a);
+        if (alive) for (const r of descendantsOf(rows, a.pid)) if (!owned.has(key(r))) owned.set(key(r), { role: 'below', pid: r.pid, started: r.started, pgid: r.pgid, via: `below ${a.role} ${a.pid}` });
+        if (a.pgid !== a.pid) continue;
+        const known = alive || rows.some((r) => r.pgid === a.pid && r.pid !== a.pid && owned.has(key(r)));
+        if (known) for (const r of rows) if (r.pgid === a.pid && !owned.has(key(r))) owned.set(key(r), { role: 'below', pid: r.pid, started: r.started, pgid: r.pgid, via: `group of ${a.role} ${a.pid}` });
+    }
+}
 
 /** The live process `pid` as an actor of `role`, with how it was found. */
 export function actorOf(rows: ProcRow[], pid: number, role: Role, via: string): Actor | undefined {
@@ -57,23 +102,13 @@ export function namingFixture(rows: ProcRow[], dir: string): ProcRow[] {
 export async function teardown(actors: Actor[], dir: string, shutdown: () => Promise<string[]>, deps: Deps = realDeps, bounds = { settleMs: 10_000, fallbackMs: 4_000 }): Promise<Cleanup> {
     const t0 = deps.now();
     const reasons: string[] = [];
-    const key = (a: { pid: number; started: string }) => `${a.pid}@${a.started}`;
-    const owned = new Map<string, Actor>();
-    // What runs below an owned process, and in the group of an owned leader still alive, is the arm's too.
-    const grow = (rows: ProcRow[]) => {
-        for (const a of [...owned.values()]) {
-            if (!same(rows, a)) continue;
-            for (const r of descendantsOf(rows, a.pid)) if (!owned.has(key(r))) owned.set(key(r), { role: 'below', pid: r.pid, started: r.started, pgid: r.pgid, via: `below ${a.role} ${a.pid}` });
-            if (a.pgid !== a.pid) continue;
-            for (const r of rows) if (r.pgid === a.pid && !owned.has(key(r))) owned.set(key(r), { role: 'below', pid: r.pid, started: r.started, pgid: r.pgid, via: `group of ${a.role} ${a.pid}` });
-        }
-    };
+    // Every recorded actor counts, whatever the first read says; what is found below them is added as reads come.
+    const owned = new Map<string, Actor>(actors.map((a) => [key(a), a]));
+    const grow = (rows: ProcRow[]) => extend(owned, rows);
     const alive = (rows: ProcRow[]) => [...owned.values()].filter((a) => same(rows, a));
     const first = deps.table();
-    if (first) {
-        for (const a of actors) if (same(first, a)) owned.set(key(a), a);
-        grow(first);
-    } else reasons.push('the process table could not be read before the shutdown: what the arm left is unknown');
+    if (first) grow(first);
+    else reasons.push('the process table could not be read before the shutdown: what ran below the recorded actors is unknown');
 
     const n0 = deps.now();
     let errors: string[];
@@ -83,11 +118,11 @@ export async function teardown(actors: Actor[], dir: string, shutdown: () => Pro
     // Exiting takes a moment after `ahub kill` returns: wait for it before calling anything a leftover.
     const s0 = deps.now();
     let rows = deps.table();
-    while (rows) {
-        grow(rows);
-        if (!alive(rows).length || deps.now() - s0 >= bounds.settleMs) break;
+    for (;;) {
+        if (rows) grow(rows);
+        if ((rows && !alive(rows).length) || deps.now() - s0 >= bounds.settleMs) break;
         await deps.sleep(250);
-        rows = deps.table();
+        rows = deps.table() ?? rows; // an unreadable read is tried again; a fallback never acts on it
     }
     const settle = deps.now() - s0;
     const fallback: Cleanup['fallback'] = [];
@@ -115,8 +150,14 @@ export async function teardown(actors: Actor[], dir: string, shutdown: () => Pro
     const remaining = last ? alive(last) : [...owned.values()];
     if (last && remaining.length) reasons.push(`still running: ${remaining.map((a) => `${a.role} ${a.pid}`).join(', ')}`);
     const mine = new Set(last ? [deps.self, ...descendantsOf(last, deps.self).map((r) => r.pid)] : []);
-    const unresolved = last ? namingFixture(last, dir).filter((r) => !owned.has(key(r)) && !mine.has(r.pid)).map((r) => ({ pid: r.pid, started: r.started, command: r.command.slice(0, 200) })) : [];
-    if (unresolved.length) reasons.push(`running and naming the fixture, but not proved to be this arm's (left alone): ${unresolved.map((u) => u.pid).join(', ')}`);
+    // A process with the fixture in its argv or as its working directory that is not proved the arm's: a job an agent
+    // left in the background, or someone else's. Never signalled; the cleanup is not complete while it runs.
+    const cwds = last ? deps.cwds() : undefined;
+    if (last && !cwds) reasons.push('working directories could not be read: whether anything else runs in the fixture is unknown');
+    const named = new Set(last ? namingFixture(last, dir).map((r) => r.pid) : []);
+    const unresolved = (last ?? []).filter((r) => (named.has(r.pid) || inside(cwds?.get(r.pid), dir)) && !owned.has(key(r)) && !mine.has(r.pid))
+        .map((r) => ({ pid: r.pid, started: r.started, command: r.command.slice(0, 200), ...(inside(cwds?.get(r.pid), dir) ? { cwd: cwds!.get(r.pid)! } : {}) }));
+    if (unresolved.length) reasons.push(`running with the fixture in its argv or as its working directory, not proved to be this arm's (left alone): ${unresolved.map((u) => u.pid).join(', ')}`);
     return {
         outcome: reasons.length ? 'incomplete_or_unknown' : fallback.length ? 'clean_with_fallback' : 'clean',
         reasons, normal, owned: [...owned.values()], fallback, remaining, unresolved,

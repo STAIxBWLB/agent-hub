@@ -249,7 +249,7 @@ def grade(args):
     root=args.run.resolve(); prep=load(root/"prepared.json"); m=load(root/"manifest.json"); cohort=load(root/"cohort.json")
     if prep["manifest_sha256"]!=file_sha(root/"manifest.json") or cohort.get("manifest_sha256")!=prep["manifest_sha256"]: raise BenchError("prepared manifest changed")
     if prep.get("runner_sha256")!=file_sha(Path(__file__)) or prep.get("native_runner_sha256")!=file_sha(Path(__file__).with_name("native.ts")) or prep.get("teardown_sha256")!=file_sha(Path(__file__).with_name("teardown.ts")) or prep.get("evaluator_sha256")!=file_sha(args.evaluator): raise BenchError("benchmark runner/evaluator changed after fixture preparation")
-    if cohort.get("runner_sha256")!=prep.get("runner_sha256") or cohort.get("native_runner_sha256")!=prep.get("native_runner_sha256"): raise BenchError("run source pins differ from prepared fixture")
+    if cohort.get("runner_sha256")!=prep.get("runner_sha256") or cohort.get("native_runner_sha256")!=prep.get("native_runner_sha256") or cohort.get("teardown_sha256")!=prep.get("teardown_sha256"): raise BenchError("run source pins differ from prepared fixture")
     if cohort.get("calibration"): raise BenchError("setup calibration is never graded")
     arms=arms_of(m)
     if cohort.get("arms")!=list(arms): raise BenchError("run cohort does not contain every predeclared arm")
@@ -300,6 +300,8 @@ def grade(args):
         run_path=root/"runs"/f"{case:02d}-{arm}.json"
         if not run_path.is_file(): rows.append({"case":case,"arm":arm,"status":"missing","pass":None}); continue
         run=load(run_path); actors=required_actors(arm)
+        if run.get("teardown_errors"):  # #113: a patch or transcript prefix that could not be taken is no evidence
+            rows.append({"case":case,"arm":arm,"status":"unavailable","reason":("teardown evidence incomplete: "+"; ".join(map(str,run["teardown_errors"])))[:300],"pass":None}); continue
         ready=run.get("readiness") if isinstance(run.get("readiness"),dict) else {}
         identities=all(isinstance(ready.get(actor),dict) and ready[actor].get("cwd")==str(cwd) and ready[actor].get("requestedModel",ready[actor].get("model"))==m.get("models",{}).get(actor) and (ready[actor].get("sessionId") if actor=="claude" else ready[actor].get("threadId")) and isinstance(ready[actor].get("sandboxProbe"),dict) and ready[actor]["sandboxProbe"].get("checked") is True and ready[actor]["sandboxProbe"].get("result")=="denied" for actor in actors)
         claude_ready=ready.get("claude",{}) if "claude" in actors else {}

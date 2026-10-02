@@ -1036,9 +1036,10 @@ export async function startDaemon(opts: DaemonOptions) {
       for (const line of buf.toString("utf8").split("\n").reverse()) {
         try {
           const version = JSON.parse(line)?.version;
-          if (typeof version === "string" && /^\d+\.\d+\.\d+/.test(version)) {
-            claudeVersions.set(path, version);
-            return version;
+          const found = typeof version === "string" ? /^\d+\.\d+\.\d+(?:-[\w.]+)?/.exec(version)?.[0] : undefined;
+          if (found) {
+            claudeVersions.set(path, found);
+            return found;
           }
         } catch { /* the cut first line, or not JSON */ }
       }

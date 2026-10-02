@@ -7,7 +7,7 @@ import { realPath } from '../../src/hub/project.ts';
 import { sessionSettings, statusLineSettings } from '../../src/cli/launch.ts';
 import { readEvents } from '../../src/hub/events.ts';
 import { descendantsOf, processTable } from '../../src/hub/child-process.ts';
-import { actorOf, awaitTurnEnd, daemonRoot, restoreModes, restoreTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
+import { actorOf, awaitTurnEnd, daemonRoot, extend, restoreModes, restoreTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
 process.umask(0o077);
 const argv = process.argv.slice(2), runArg = argv[argv.indexOf('--run') + 1], inputArg = argv[argv.indexOf('--private-inputs') + 1], upstreamArg = argv[argv.indexOf('--upstream-root') + 1], probeArg = argv[argv.indexOf('--probe-target') + 1];
 if (!runArg || !inputArg || !upstreamArg || !probeArg)
@@ -31,7 +31,7 @@ process.on('SIGINT', () => { stopRequested = true; });
 process.on('SIGTERM', () => { stopRequested = true; });
 // Each command in a process group of its own (issue #113): a Ctrl-C reaches the runner, which stops in order, and not
 // the command it is running, whose failure would cut the teardown short.
-async function cmd(args: string[], cwd?: string) { const p = Bun.spawn(args, { cwd, stdout: 'pipe', stderr: 'pipe', detached: true }); const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]); if (code) {
+async function cmd(args: string[], cwd?: string, env?: Record<string, string>) { const p = Bun.spawn(args, { cwd, stdout: 'pipe', stderr: 'pipe', detached: true, ...(env ? { env: { ...process.env, ...env } } : {}) }); const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]); if (code) {
     let detail = stderr.trim(); let errorCode: string | undefined;
     if (!detail) { try { const parsed = JSON.parse(stdout); errorCode = parsed.error?.code; detail = typeof parsed.error === 'string' ? parsed.error : [parsed.error?.code, parsed.error?.message].filter(Boolean).join(': '); } catch { detail = `exit ${code}`; } }
     throw new NativeCommandError(args[0] + ': ' + detail.slice(0, 350), errorCode);
@@ -184,7 +184,11 @@ for (const path of protectedRoots)
 const protectedModes = new Map<string, number>(), siblingLedgers = new Map<string, any>();
 let trustLedger: any;
 let protectedRestored = false;
-function persistLedger() { writeFileSync(join(runs, 'restoration-ledger.json'), JSON.stringify({ protected: { paths: Object.fromEntries(protectedModes), restored: protectedRestored }, siblings: Object.fromEntries(siblingLedgers), trust: trustLedger }, null, 2), { mode: 0o600 }); }
+// The ledger `restore.ts` works from (issue #113): what was locked, and every process each arm started, with this
+// runner's own identity, so a recovery can tell a running runner or arm from one that is gone.
+const actorLedger = new Map<string, Actor[]>();
+const runnerIdentity = processTable()?.find(r => r.pid === process.pid);
+function persistLedger() { writeFileSync(join(runs, 'restoration-ledger.json'), JSON.stringify({ runner: runnerIdentity && { pid: runnerIdentity.pid, started: runnerIdentity.started }, protected: { paths: Object.fromEntries(protectedModes), restored: protectedRestored }, siblings: Object.fromEntries(siblingLedgers), actors: Object.fromEntries(actorLedger), trust: trustLedger }, null, 2), { mode: 0o600 }); }
 async function protectInputs() { const fs = await import('node:fs/promises'); for (const root of protectedRoots) {
     if (!existsSync(root))
         throw new Error('protected source missing');
@@ -392,11 +396,17 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         const add = (a: Actor | undefined) => { if (a && !mine.has(a.pid)) owners.set(`${a.pid}@${a.started}`, a); };
         let hubPid = NaN;
         try { hubPid = Number(readFileSync(join(state, 'hub.pid'), 'utf8').trim()); } catch { }
-        if (table.some(r => r.pid === hubPid && daemonRoot(r.command) === dir)) add(actorOf(table, hubPid, 'daemon', 'the pid in its state dir; its argv serves this fixture'));
+        // Once the arm's daemon is recorded, another in the state dir is a replacement, never adopted.
+        if (![...owners.values()].some(a => a.role === 'daemon') && table.some(r => r.pid === hubPid && daemonRoot(r.command) === dir)) add(actorOf(table, hubPid, 'daemon', 'the pid in its state dir; its argv serves this fixture'));
         const launchedAs = new RegExp(`--session-id'?\\s+'?${claudeId}(?=['\\s]|$)`); // the launcher's argv, or the terminal shell's quoted one
         for (const r of table) if (launchedAs.test(r.command)) add(actorOf(table, r.pid, 'claude', `this arm's session id as its --session-id`));
         for (const d of [...owners.values()].filter(a => a.role === 'daemon' && table.some(r => r.pid === a.pid && r.started === a.started)))
             for (const r of table) if (r.ppid === d.pid && / app-server /.test(r.command)) add(actorOf(table, r.pid, 'codex-app-server', `child of the arm's daemon ${d.pid}`));
+        // What runs below them now, a tool command's background job included, before its parent can exit.
+        extend(owners, table);
+        for (const pid of mine) for (const [k, a] of owners) if (a.pid === pid) owners.delete(k);
+        actorLedger.set(dir, [...owners.values()]);
+        persistLedger();
     };
     const captured = (role: Actor['role']) => { capture(); if (![...owners.values()].some(a => a.role === role)) throw new Error(`could not prove which ${role} process is this arm's`); };
     try {
@@ -453,7 +463,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             await waitClaudeTui(claudeHandle);
             await wait(async () => claudeProbe(nativeTranscript, probeCommand), 'Claude native sandbox read-denial probe');
             // The turn-end marker the completion wait relies on, proved on this session's probe turn (issue #113).
-            readiness.claude.completionMarker = await wait(async () => { const rows = transcriptRows(nativeTranscript); return rows && turnEnded(rows, claudeId) ? 'turn_duration' : undefined; }, 'Claude turn-end marker', 15000).catch(() => undefined);
+            readiness.claude.completionMarker = await wait(async () => { const rows = transcriptRows(nativeTranscript); return rows && turnEnded(rows, claudeId) ? 'turn_duration' : undefined; }, 'Claude turn-end marker', 15000).catch((e) => { if (stopRequested) throw e; return undefined; });
             const transcriptSessions = new Set(readFileSync(nativeTranscript, 'utf8').split('\n').flatMap(line => {
                 try { const row = JSON.parse(line); return typeof row.sessionId === 'string' ? [row.sessionId] : []; } catch { return []; }
             }));
@@ -515,7 +525,9 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         }
         log('arm-start', { index, kind, setupMs: started - setup });
         let settled = 0, finished = false;
+        let captureAt = 0;
         while (Date.now() - started < 300000 && !stopRequested) {
+            if (Date.now() - captureAt >= 5000) { capture(); captureAt = Date.now(); } // follow what the agents start (issue #113)
             taskStates = await Promise.all(ids.map(id => op('task_show', { id }).then(JSON.parse)));
             const s = await status();
             if (structuredQuota(codexMessages)) {
@@ -568,6 +580,8 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         const activeEnd = Date.now();
         const elapsedMs = started ? activeEnd - started : 0;
         const teardownErrors: string[] = []; // restoration and evidence; the process cleanup keeps its own record
+        // What makes an attempt invalid besides how it ended (issue #113): kept beside the end reason, never over it.
+        const endFlags: string[] = [];
         const note = (error: string) => { teardownErrors.push(error); log('cleanup-error', { index, kind, error }); };
         // Nothing new reaches an agent from here on (issue #113): its in-flight turn is all that can still write.
         if (client)
@@ -619,8 +633,8 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
                 readiness.claude.nativeUsage = evidence.usage;
             }
             catch { note('Claude transcript evidence could not be read'); }
-            if (!readiness.claude.modelVerified && endReason !== 'interrupted')
-                endReason = 'model-unverified';
+            if (!readiness.claude.modelVerified)
+                endFlags.push('model-unverified');
         }
         // Claude Code may still append rows after this: the attempt is this prefix, and only it (issue #110).
         if (readiness.claude?.transcriptPath && existsSync(readiness.claude.transcriptPath)) {
@@ -634,7 +648,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         }
         const metadataClean = fixtureMetadataHash(dir) === metadataBaseline;
         if (!metadataClean)
-            endReason = 'metadata-modified';
+            endFlags.push('metadata-modified');
         let patch = '';
         try {
             await cmd(['git', 'add', '-N', '--', '.'], dir);
@@ -663,26 +677,31 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         }
         persistLedger();
         const restorationMs = Date.now() - restoration0;
-        const out = restoration.siblings === 'restored' ? runs : join(runs, 'recovery');
-        mkdirSync(join(out, 'runs'), { recursive: true, mode: 0o700 });
-        mkdirSync(join(out, 'patches'), { recursive: true, mode: 0o700 });
-        const patchFile = join(out, 'patches', name + '.patch');
+        const recordRoot = restoration.siblings === 'restored' ? runs : join(runs, 'recovery');
+        mkdirSync(join(recordRoot, 'runs'), { recursive: true, mode: 0o700 });
+        mkdirSync(join(recordRoot, 'patches'), { recursive: true, mode: 0o700 });
+        const patchFile = join(recordRoot, 'patches', name + '.patch');
         writeFileSync(patchFile, patch, { mode: 0o600 });
         let events: any[] = [];
         try { events = readEvents(join(state, 'events.jsonl')); } catch { note('hub events could not be read'); }
-        const result = { protocol: 'native-cc-v1', index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: sealedBase.trim(), models: manifest.models, requestedModels: actors.reduce((o: any, a: string) => (o[a] = manifest.models[a], o), {}), readiness, patchFile, model: actors.length === 1 ? manifest.models[actors[0]!] : undefined, setupMs: started ? started - setup : Date.now() - setup, elapsedMs, stoppedMs: stoppedAt ? stoppedAt - activeEnd : undefined, teardownMs: Date.now() - activeEnd, stages: { completionMs: completion.ms, shutdownMs: cleanup.normal.ms, settleMs: cleanup.ms.settle, fallbackMs: cleanup.ms.fallback, captureMs, restorationMs }, end_reason: endReason === 'infrastructure-error' ? 'infrastructure-error' : endReason === 'provider-quota' ? 'provider-quota' : endReason === 'budget-paused' ? 'budget-paused' : endReason === 'model-unverified' || endReason === 'metadata-modified' ? 'infrastructure-error' : endReason === 'completed' ? 'completed' : endReason === 'delivery-unsettled' ? 'delivery-unsettled' : endReason === 'wall-timeout' ? 'timeout' : 'interrupted', end_reason_detail: endReason, error: error ? String(error).replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 300) : undefined, taskStates, effort: manifest.effort, events, codexMessages, codexTaskStart, startedAt: started || undefined, repeat, conditions, codexUsage: codexUsage(codexMessages, thread?.thread?.id), nativeVersions: { codex: codexVersion, claude: claudeVersion }, codexBinarySha256: sourceHash(codexBin), claudeSessionId: actors.includes('claude') ? claudeId : undefined, codexThreadId: thread?.thread?.id, completion, cleanup, restoration, trust_restored: trustRestored, cleanup_complete: contained, teardown_errors: teardownErrors.length ? teardownErrors : undefined, metadata_clean: metadataClean, metadata_sha256: metadataBaseline, delivery_status: finalStatus?.peers };
-        writeFileSync(join(out, 'runs', name + '.json'), JSON.stringify(result, null, 2), { mode: 0o600 });
+        const result = { protocol: 'native-cc-v1', index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: sealedBase.trim(), models: manifest.models, requestedModels: actors.reduce((o: any, a: string) => (o[a] = manifest.models[a], o), {}), readiness, patchFile, model: actors.length === 1 ? manifest.models[actors[0]!] : undefined, setupMs: started ? started - setup : Date.now() - setup, elapsedMs, stoppedMs: stoppedAt ? stoppedAt - activeEnd : undefined, teardownMs: Date.now() - activeEnd, stages: { completionMs: completion.ms, shutdownMs: cleanup.normal.ms, settleMs: cleanup.ms.settle, fallbackMs: cleanup.ms.fallback, captureMs, restorationMs }, end_reason: endReason === 'infrastructure-error' ? 'infrastructure-error' : endReason === 'provider-quota' ? 'provider-quota' : endReason === 'budget-paused' ? 'budget-paused' : endFlags.length && endReason !== 'interrupted' ? 'infrastructure-error' : endReason === 'completed' ? 'completed' : endReason === 'delivery-unsettled' ? 'delivery-unsettled' : endReason === 'wall-timeout' ? 'timeout' : 'interrupted', end_reason_detail: endReason, end_flags: endFlags.length ? endFlags : undefined, error: error ? String(error).replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 300) : undefined, taskStates, effort: manifest.effort, events, codexMessages, codexTaskStart, startedAt: started || undefined, repeat, conditions, codexUsage: codexUsage(codexMessages, thread?.thread?.id), nativeVersions: { codex: codexVersion, claude: claudeVersion }, codexBinarySha256: sourceHash(codexBin), claudeSessionId: actors.includes('claude') ? claudeId : undefined, codexThreadId: thread?.thread?.id, completion, cleanup, restoration, trust_restored: trustRestored, cleanup_complete: contained, teardown_errors: teardownErrors.length ? teardownErrors : undefined, metadata_clean: metadataClean, metadata_sha256: metadataBaseline, delivery_status: finalStatus?.peers };
+        writeFileSync(join(recordRoot, 'runs', name + '.json'), JSON.stringify(result, null, 2), { mode: 0o600 });
         log('arm-end', { index, kind, elapsedMs, endReason, cleanup: cleanup.outcome, completion: completion.outcome, patchLines: patch.split('\n').length });
         if (!contained)
-            throw new Error(`cleanup ${cleanup.outcome}: ${cleanup.reasons.join('; ')}; inputs stay locked, record in ${join(out, 'runs', name + '.json')}`);
+            throw new Error(`cleanup ${cleanup.outcome}: ${cleanup.reasons.join('; ')}; inputs stay locked, record in ${join(recordRoot, 'runs', name + '.json')}`);
         if (teardownErrors.length)
             throw new Error('teardown incomplete; stopping cohort: ' + teardownErrors.join('; '));
     }
 }
-/** The tree's diff against the sealed baseline, hashed: what a wait might have let an agent write. */
+/**
+ * The tree's tracked diff against the sealed baseline and its untracked files' contents, hashed: what a wait might have
+ * let an agent write. Read-only for the agent's repository: no index write, no optional lock.
+ */
 async function treeHash(dir: string, sealed: string) {
-    await cmd(['git', 'add', '-N', '--', '.'], dir);
-    return hash(await cmd(['git', 'diff', sealed.trim(), '--', '.'], dir));
+    const env = { GIT_OPTIONAL_LOCKS: '0' };
+    const tracked = await cmd(['git', 'diff', sealed.trim(), '--', '.'], dir, env);
+    const untracked = (await cmd(['git', 'ls-files', '-z', '-o', '--exclude-standard', '--', '.'], dir, env)).split('\0').filter(Boolean).sort();
+    return hash(JSON.stringify([tracked, untracked.map(f => { try { return [f, hash(readFileSync(join(dir, f)))]; } catch { return [f, null]; } })]));
 }
 let containmentUncertain = false;
 const setupOnly = argv.includes('--setup-only');
@@ -708,7 +727,7 @@ if (codexUserServers.some(n => !/^[A-Za-z0-9_-]+$/.test(n)))
 const codexIsolation = ['--disable', 'plugins', '--disable', 'apps', '--disable', 'multi_agent', '-c', 'notify=[]', ...codexUserServers.flatMap(n => ['-c', `mcp_servers.${n}.enabled=false`])];
 mkdirSync(join(runs, 'runs'), { recursive: true, mode: 0o700 });
 mkdirSync(join(runs, 'patches'), { recursive: true, mode: 0o700 });
-writeFileSync(join(runs, 'cohort.json'), JSON.stringify({ schema: m.schema, manifest_sha256: sourceHash(join(runs, 'manifest.json')), cases: selected, calibration: setupOnly, repeat, private_case_sha256: Object.fromEntries(selected.map(i => [i, privateCaseHashes[i]])), arms: m.arms, runner_sha256: prepared.runner_sha256, native_runner_sha256: prepared.native_runner_sha256 }), { mode: 0o600 });
+writeFileSync(join(runs, 'cohort.json'), JSON.stringify({ schema: m.schema, manifest_sha256: sourceHash(join(runs, 'manifest.json')), cases: selected, calibration: setupOnly, repeat, private_case_sha256: Object.fromEntries(selected.map(i => [i, privateCaseHashes[i]])), arms: m.arms, runner_sha256: prepared.runner_sha256, native_runner_sha256: prepared.native_runner_sha256, teardown_sha256: prepared.teardown_sha256 }), { mode: 0o600 });
 try {
     await protectInputs();
     for (const i of selected) {
@@ -734,7 +753,9 @@ finally {
     }
     else {
         await restoreInputs();
-        writeFileSync(join(runs, 'restoration.json'), JSON.stringify({ restored: true, paths: protectedModes.size, interrupted: stopRequested }), { mode: 0o600 });
+        // Protected inputs are back; an arm whose own sibling locks failed to come off keeps the run unrestored.
+        const locked = [...siblingLedgers.entries()].filter(([, l]) => !l.restored).map(([d]) => d);
+        writeFileSync(join(runs, 'restoration.json'), JSON.stringify({ restored: !locked.length, paths: protectedModes.size, ...(locked.length ? { reason: `sibling read locks of ${locked.length} arm(s) are still in place`, recover: `bun scripts/benchmarks/restore.ts --run ${runs}` } : {}), interrupted: stopRequested }), { mode: 0o600 });
     }
 }
 log('run-complete');
