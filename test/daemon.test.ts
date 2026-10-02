@@ -26,8 +26,8 @@ const until = async (cond: () => boolean, what = "condition") => {
   if (!cond()) throw new Error(`timed out waiting for ${what}`);
 };
 
-async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities; coordination?: string } = {}) {
-  const { memoryUrl, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, coordination, ...rest } = extra;
+async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities; coordination?: string; experiments?: typeof DEFAULT_CONFIG.experiments } = {}) {
+  const { memoryUrl, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, coordination, experiments, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
     cwd: ROOT,
@@ -49,6 +49,7 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?:
       ...(limits ? { limits } : {}),
       ...(capabilities ? { capabilities } : {}),
       ...(coordination ? { coordination: coordination as typeof DEFAULT_CONFIG.coordination } : {}),
+      ...(experiments ? { experiments } : {}),
     },
     permissionTimeoutMs: 200,
     ...rest,
@@ -1222,7 +1223,8 @@ test("conflicts: a turn changing another owner's file warns both, once; a file o
 });
 
 // issue #106: a conflict notice for a task closed before it reaches its owner is dropped, never delivered as a turn.
-test("conflicts: the notice for an owner whose task closed before delivery is dropped and recorded as stale", async () => {
+// The #106 ablation switch (issue #110) turns the drop off and nothing else: the same notice is delivered as before.
+for (const staleOff of [false, true]) test(staleOff ? "conflicts: with experiments.stale_notices deliver, the same notice reaches the owner whose task closed" : "conflicts: the notice for an owner whose task closed before delivery is dropped and recorded as stale", async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-staleconflict-")));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const git = (...a: string[]) => Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...a]);
@@ -1230,7 +1232,7 @@ test("conflicts: the notice for an owner whose task closed before delivery is dr
   writeFileSync(join(dir, "shared.txt"), "base\n");
   git("add", "-A");
   git("commit", "-qm", "base");
-  const { stateDir, daemon, console_ } = await hub({ cwd: dir, snapshots: { enabled: true, keep: 20 } });
+  const { stateDir, daemon, console_ } = await hub({ cwd: dir, snapshots: { enabled: true, keep: 20 }, ...(staleOff ? { experiments: { stale_notices: "deliver" as const } } : {}) });
   class Scripted extends BasePeer {
     got: string[] = [];
     work: (() => void) | undefined;
@@ -1278,6 +1280,12 @@ test("conflicts: the notice for an owner whose task closed before delivery is dr
   expect(daemon.bus.queued("kimi")).toBeGreaterThan(0);
   await op("hub_review", { id: 1, verdict: "approved" });
   kimi.release();
+  if (staleOff) {
+    await until(() => kimi.got.some((b) => b.includes("codex's last turn") || b.includes("Concurrent edit")), "the notice, delivered");
+    expect(readEvents(file).some((e) => e.type === "stale")).toBe(false);
+    expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("experiment: stale notices are delivered as before 0.12.4");
+    return;
+  }
   await until(() => readEvents(file).some((e) => e.type === "stale"), "the dropped notice");
   // The turn-end notice, and the concurrent-edit one when the two turns overlapped: each was only about kimi's #1.
   const stale = readEvents(file).filter((e) => e.type === "stale");
@@ -1545,6 +1553,8 @@ test("turn-free end to end: verified context paths, a silent cohort, held-back m
   await codexTurn("after done");
   const asked = (await claude.request({ t: "task", op: "hub_task_done", args: { id: 2, summary: "claude part done" } })).text as string;
   expect(asked).toStartWith("Before task #2 is recorded as done: you are the last of turn-free cohort #1 to finish.");
+  expect((await claude.request({ t: "task", op: "hub_task_done", args: { id: 2, summary: "retry" } })).text).toStartWith("Before task #2"); // a retry within 2 s
+  await Bun.sleep(2100); // the time a model takes to check its work
   const done = (await claude.request({ t: "task", op: "hub_task_done", args: { id: 2, summary: "claude part done, checked" } })).text as string;
   expect(done).toStartWith("task #2:");
   const history = JSON.parse((await console_.request({ t: "task", op: "task_show", args: { id: 2 } })).text).history.map((h: any) => h.event);
@@ -1554,9 +1564,49 @@ test("turn-free end to end: verified context paths, a silent cohort, held-back m
   expect((await claude.request({ t: "send", body: "late reply", to: ["codex"] })).ok).toBe(false);
   await stop();
   expect((await claude.request({ t: "send", body: "next topic", to: ["codex"] })).ok).toBe(true);
-});
 
-test("turn-free falls back to advisory: no facts and messages go out while a PII task is open, and in an advisory project", async () => {
+  // 7. The other way round, as Claude does it: its done through the tool hooks, its turn's Stop; then Codex integrates,
+  // and Claude having stopped is what lets Codex's next done count.
+  // As in the benchmark, the overlap shows only in the plans the accepts carry, so the cohort forms at an accept.
+  writeFileSync(join(dir, "b.txt"), "b\n");
+  await op("hub_task_propose", { title: "codex b", class: "implement", owner: "codex" });
+  await op("hub_task_propose", { title: "claude b", class: "implement", owner: "claude" });
+  for (let i = 0; i < 100 && !(daemon.bus.stateOf("codex") === "idle" && daemon.bus.queued("codex") === 0); i++) await Bun.sleep(100); // codex took its second task
+  await claude.request({ t: "task", op: "hub_task_accept", args: { id: 4, plan: { paths: ["b.txt"] } } });
+  await codexTools.request({ t: "task", op: "hub_task_accept", args: { id: 3, plan: { paths: ["b.txt"] } } });
+  const doneCall = `t${++n}`;
+  await hook("PreToolUse", "mcp__agent-hub__hub_task_done", { id: 4 }, doneCall);
+  expect((await claude.request({ t: "task", op: "hub_task_done", args: { id: 4, summary: "claude b done" } })).text).toStartWith("task #4:");
+  await hook("PostToolUse", "mcp__agent-hub__hub_task_done", { id: 4 }, doneCall);
+  await stop();
+  expect((await codexTools.request({ t: "task", op: "hub_task_done", args: { id: 3, summary: "codex b done" } })).text).toStartWith("Before task #3 is recorded as done");
+  await Bun.sleep(2100);
+  const confirmed = await codexTools.request({ t: "task", op: "hub_task_done", args: { id: 3, summary: "codex b done, checked" } });
+  expect(confirmed.text ?? confirmed.error).toStartWith("task #3:");
+
+  // 8. A PII task opens: no facts and no silence while it is open, whoever polls. When it closes, nothing written
+  // meanwhile is shown as a diff; the member is told which file to read again.
+  writeFileSync(join(dir, "c.txt"), "c\n");
+  await op("hub_task_propose", { title: "claude c", class: "implement", owner: "claude", refs: { paths: ["c.txt"] } });
+  await op("hub_task_propose", { title: "codex c", class: "implement", owner: "codex", refs: { paths: ["c.txt"] } });
+  for (let i = 0; i < 100 && !(daemon.bus.stateOf("codex") === "idle" && daemon.bus.queued("codex") === 0); i++) await Bun.sleep(100); // codex took its third task
+  await claudeTool("Read", { file_path: join(dir, "c.txt") }); // claude's view of c.txt
+  await op("hub_task_propose", { title: "patient 900101-1234567 follow-up", class: "implement" }); // #7: PII, open
+  writeFileSync(join(dir, "c.txt"), "c\nsecret record\n");
+  expect(await claudeTool("Read", { file_path: join(dir, "c.txt") })).toBeUndefined();
+  expect((await claude.request({ t: "send", body: "while PII is open", to: ["codex"] })).ok).toBe(true);
+  expect((await console_.request({ t: "task", op: "hub_task_done", args: { id: 7, summary: "handled" } })).ok).toBe(true); // closes it
+  const after = await claudeTool("Edit", { file_path: join(dir, "c.txt"), old_string: "c\n", new_string: "c2\n" });
+  expect(after).toMatch(/changes before that are not covered; read [^\n]*c\.txt/);
+  expect(after).not.toContain("secret record");
+  expect(after).not.toContain("b.txt"); // the earlier cohort, whose tasks are closed, is not in its scope
+
+  // 9. A peer that goes offline loses its verified context path: the session that comes back proves it again.
+  claude.close();
+  await until(() => events().some((e) => e.type === "capability" && e.peer === "claude" && e.state === "lost"), "claude's lost path");
+}, 30_000);
+
+test("turn-free offers no facts or probes while a PII task is open, an advisory project none at all, and a typo is advisory", async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-facts-")));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   writeFileSync(join(dir, "a.txt"), "one\n");

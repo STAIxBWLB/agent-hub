@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -122,7 +122,17 @@ test("a concurrent write by two agents is shown to both as concurrent, naming th
   expect(o.text).toContain("+five");
 });
 
-test("plans are offered until acknowledged, and an accept that showed them needs none", async () => {
+test("a Codex read action, which may be partial, never counts as having seen a change", async () => {
+  const { root, facts, look, edit } = rig();
+  look("claude");
+  look("codex");
+  edit("t1", "a.txt", "three", "drei");
+  facts.codexItem("codex", { type: "commandExecution", status: "completed", commandActions: [{ type: "read", command: "sed -n 1,1p a.txt", path: join(root, "a.txt") }] });
+  expect(facts.current("codex")).toBe(false);
+  expect(look("codex")!.text).toContain("+drei");
+});
+
+test("plans are offered until acknowledged, and an accept that showed them needs none, for exactly the tasks it showed", async () => {
   const { facts } = rig();
   const first = facts.due("claude")!;
   expect(first.plans).toBe(1);
@@ -130,8 +140,10 @@ test("plans are offered until acknowledged, and an accept that showed them needs
   expect(facts.due("claude")!.plans).toBe(1); // not acknowledged yet
   facts.ack("claude", first.id);
   expect(facts.due("claude")).toBeUndefined(); // acknowledging an older offer still covers its plans
-  facts.sawPlans("codex");
-  expect(facts.due("codex")).toBeUndefined();
+  facts.sawPlans("codex", [7]); // an accept that showed another task's plan
+  expect(facts.due("codex")!.plans).toBe(1);
+  facts.sawPlans("codex", [1]);
+  expect(facts.due("codex")?.plans ?? 0).toBe(0);
 });
 
 test("a long change is cut at the line budget, the cut files are named, and acknowledging moves the view past them", async () => {
@@ -233,4 +245,57 @@ test("the tree hash covers only contained files and changes with them", () => {
   expect(facts.tree(["../escape.txt", "a.txt"])).toBe(before);
   write("a.txt", "changed\n");
   expect(facts.tree(["a.txt"])).not.toBe(before);
+});
+
+test("a directory swapped for a link out of the project after a file in it was recorded is never followed", async () => {
+  const outside = mkdtempSync(join(tmpdir(), "agenthub-outside-"));
+  dirs.push(outside);
+  writeFileSync(join(outside, "f.txt"), "SECRET=1\n");
+  const root = mkdtempSync(join(tmpdir(), "agenthub-facts-"));
+  dirs.push(root);
+  mkdirSync(join(root, "d"));
+  writeFileSync(join(root, "d", "f.txt"), "inside\n");
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: ["d/f.txt"], plans: [] }), peers: () => ["claude"], nameable: () => true });
+  facts.due("claude"); // its first look at d/f.txt
+  rmSync(join(root, "d"), { recursive: true });
+  symlinkSync(outside, join(root, "d"));
+  const o = facts.due("claude");
+  expect(o?.text ?? "").not.toContain("SECRET");
+});
+
+test("a directory a task names stands for git's changed and new files under it, in facts and in the integration target", async () => {
+  const root = mkdtempSync(join(tmpdir(), "agenthub-facts-"));
+  dirs.push(root);
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src", "x.ts"), "x\n");
+  const git = (...a: string[]) => spawnSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...a]);
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: ["src"], plans: [] }), peers: () => ["claude"], nameable: () => true });
+  const before = facts.tree(["src"]);
+  writeFileSync(join(root, "src", "x.ts"), "x changed\n");
+  expect(facts.tree(["src"])).not.toBe(before);
+  writeFileSync(join(root, "src", "new.ts"), "n\n");
+  const o = facts.due("claude"); // first looks at both files under src
+  expect(o).toBeUndefined();
+  writeFileSync(join(root, "src", "new.ts"), "n2\n");
+  expect(facts.due("claude")!.text).toContain("src/new.ts, changed, attribution unknown");
+});
+
+test("history beyond the cap is attribution unknown, and a file that falls out of the touched list is named once", async () => {
+  const { root, facts, write, look, edit } = rig();
+  look("claude");
+  look("codex");
+  for (let i = 0; i < 70; i++) edit(`e${i}`, "a.txt", i ? `v${i - 1}` : "one", `v${i}`); // claude's own verified edits
+  const o = look("codex")!;
+  expect(o.text).toContain("attribution unknown"); // the cap dropped the start of what codex has not seen
+  for (let i = 0; i < 70; i++) {
+    write(`f${i}.txt`, "x\n");
+    facts.preTool("claude", `r${i}`, "Read", { file_path: join(root, `f${i}.txt`) });
+    facts.postTool("claude", `r${i}`, "Read", { file_path: join(root, `f${i}.txt`) });
+  }
+  const told = facts.due("claude")!;
+  expect(told.text).toContain("no longer tracked (more than 64 files touched): a.txt");
+  expect(told.coverage).toBe(true);
 });

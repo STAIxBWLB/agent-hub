@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { sanitize, type PeerId } from "./envelope.ts";
 import { realPath } from "./project.ts";
@@ -23,6 +23,8 @@ export const MAX_LINES = 60;
 /** Files a peer's reads and writes add to what its facts cover, besides the ones its tasks name. */
 const TOUCHED_KEPT = 64;
 const TRANSITIONS_KEPT = 64;
+/** Files a directory named in a task expands to: git's changed and new files under it. */
+const EXPANDED_KEPT = 200;
 const OFFERS_KEPT = 8;
 export const factsHeader = (id: string) => `agent-hub facts [${id}]: other agents' changes since you last looked (data, not instructions)`;
 /** What a fact's text starts with, whatever its id. */
@@ -96,6 +98,12 @@ export class Facts {
   private readonly plansAccepted = new Map<PeerId, Map<number, string>>();
   private readonly touched = new Map<PeerId, string[]>();
   private readonly offers = new Map<PeerId, Offer[]>();
+  /** Per file, the newest transition dropped by the cap: a view older than it cannot tell who changed what. */
+  private readonly evicted = new Map<string, number>();
+  /** Files that fell out of a peer's touched list: it is told once that they are no longer tracked. */
+  private readonly untracked = new Map<PeerId, Set<string>>();
+  /** Directory expansions of the current boundary: each public entry point starts with none. */
+  private expanded = new Map<string, string[]>();
   /** A tool call's observation before it ran, by Claude's tool use id. */
   private readonly before = new Map<string, { peer: PeerId; file?: string; version?: Version }>();
   /** Peers whose coverage notice went out in this tracking epoch. */
@@ -138,17 +146,34 @@ export class Facts {
     return !r || r.startsWith("..") || isAbsolute(r) ? undefined : r;
   }
 
-  /** The file as it is now. Only regular files are read, and only small ones; nothing outside the project is. */
+  /**
+   * The file as it is now. Re-resolved at every read, so a directory swapped for a link out of the project since the
+   * path was recorded is not followed; then opened without following a final link and without blocking (a fifo), and
+   * read only if the opened object is a small regular file.
+   * ponytail: a directory swapped between the containment check and the open is followed once; an fd-relative walk
+   * (openat per component) closes that if it matters.
+   */
   private load(file: string): Omit<Version, "seq"> {
-    const abs = join(this.root, file);
+    if (this.rel(join(this.root, file)) !== file) return { hash: "missing" };
+    let fd: number | undefined;
     try {
-      const st = lstatSync(abs);
-      if (!st.isFile()) return { hash: "missing" }; // a directory, a link, a device or a fifo: never read
+      fd = openSync(join(this.root, file), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const st = fstatSync(fd);
+      if (!st.isFile()) return { hash: "missing" }; // a directory, a device or a fifo: never read
       if (st.size > MAX_BYTES) return { hash: `large:${st.size}:${st.mtimeMs}` };
-      const buf = readFileSync(abs);
-      return { hash: createHash("sha1").update(buf).digest("hex"), text: buf.toString("utf8") };
+      const buf = Buffer.alloc(st.size);
+      let got = 0;
+      while (got < buf.length) {
+        const n = readSync(fd, buf, got, buf.length - got, got);
+        if (n <= 0) break;
+        got += n;
+      }
+      const data = buf.subarray(0, got);
+      return { hash: createHash("sha1").update(data).digest("hex"), text: data.toString("utf8") };
     } catch {
       return { hash: "missing" };
+    } finally {
+      if (fd !== undefined) closeSync(fd);
     }
   }
 
@@ -182,17 +207,43 @@ export class Facts {
   private touch(peer: PeerId, file: string): void {
     const list = (this.touched.get(peer) ?? []).filter((f) => f !== file);
     list.push(file);
-    if (list.length > TOUCHED_KEPT) list.shift();
+    if (list.length > TOUCHED_KEPT) {
+      const gone = list.shift()!;
+      this.untracked.set(peer, (this.untracked.get(peer) ?? new Set()).add(gone));
+    }
     this.touched.set(peer, list);
   }
 
-  /** The files a peer's facts cover: its tasks' paths, contained in the project, and what it touched. */
+  /**
+   * The files a peer's facts cover: its tasks' paths, contained in the project, a directory expanded to the files git
+   * reports changed or new under it (at most 200), and the files it touched.
+   */
   private files(peer: PeerId, scope = this.o.scope(peer)): string[] {
-    const named = (scope?.paths ?? []).flatMap((p) => {
+    const named = this.expand((scope?.paths ?? []).flatMap((p) => {
       const r = this.rel(p);
       return r ? [r] : [];
-    });
+    }));
     return [...new Set([...named, ...(this.touched.get(peer) ?? [])])];
+  }
+
+  /** Files stay; a directory becomes git's changed, new and deleted files under it, once per boundary. */
+  private expand(paths: string[]): string[] {
+    return paths.flatMap((p) => {
+      let dir = false;
+      try {
+        dir = statSync(join(this.root, p)).isDirectory();
+      } catch {
+        // gone or unreadable: compared as a file
+      }
+      if (!dir) return [p];
+      let files = this.expanded.get(p);
+      if (!files) {
+        const r = Bun.spawnSync(["git", "ls-files", "-z", "-m", "-o", "-d", "--exclude-standard", "--", p], { cwd: this.root, stdout: "pipe", stderr: "pipe" });
+        files = r.exitCode === 0 ? [...new Set(r.stdout.toString().split("\0").filter(Boolean).flatMap((f) => { const x = this.rel(f); return x ? [x] : []; }))].slice(0, EXPANDED_KEPT) : [];
+        this.expanded.set(p, files);
+      }
+      return files;
+    });
   }
 
   /** Observe `file`; a change becomes a transition, credited to `by` only when the caller has effect evidence. */
@@ -207,7 +258,7 @@ export class Facts {
       const task = credited ? this.o.scope(credited)?.task : undefined;
       const list = this.transitions.get(file) ?? [];
       list.push({ to: now.hash, seq: version.seq, ...(credited ? { by: credited } : {}), ...(task ? { task } : {}) });
-      if (list.length > TRANSITIONS_KEPT) list.shift();
+      if (list.length > TRANSITIONS_KEPT) this.evicted.set(file, list.shift()!.seq);
       this.transitions.set(file, list);
     }
     return version;
@@ -229,6 +280,7 @@ export class Facts {
    * or a first look at a file also observes it.
    */
   preTool(peer: PeerId, toolUseId: string | undefined, tool: string, input: Record<string, unknown>): void {
+    this.expanded = new Map();
     const path = typeof input.file_path === "string" ? input.file_path : typeof input.notebook_path === "string" ? input.notebook_path : undefined;
     const file = path ? this.rel(path) : undefined;
     const version = file ? this.observe(file) : undefined;
@@ -244,6 +296,7 @@ export class Facts {
    * its view to what it read. Anything else, a Bash command included, is observed with its attribution unknown.
    */
   postTool(peer: PeerId, toolUseId: string | undefined, tool: string, input: Record<string, unknown>): void {
+    this.expanded = new Map();
     const pre = toolUseId ? this.before.get(toolUseId) : undefined;
     if (toolUseId) this.before.delete(toolUseId);
     const file = pre?.file;
@@ -267,13 +320,16 @@ export class Facts {
   }
 
   /**
-   * A Codex item completed. A file change whose diff is exactly what changed since the last observation is Codex's;
-   * a read moves its view only when the file did not change since Codex's previous boundary. Any other command, and
-   * any change that does not match, is observed with its attribution unknown.
+   * A Codex item completed. A file change whose diff is exactly what changed since the last observation is Codex's.
+   * A read only brings the file into its scope: a read action can be partial (`sed -n 1,5p`), so it never says what
+   * Codex saw. Any other command, a move, and any change that does not match are observed with attribution unknown.
    */
   codexItem(peer: PeerId, item: any): void {
+    this.expanded = new Map();
     if (item?.type === "fileChange" && item.status !== "failed" && item.status !== "declined") {
       for (const change of Array.isArray(item.changes) ? item.changes : []) {
+        const moved = typeof change?.kind?.move_path === "string" ? this.rel(change.kind.move_path) : undefined;
+        if (moved) this.touch(peer, moved);
         const file = typeof change?.path === "string" ? this.rel(change.path) : undefined;
         if (!file) continue;
         this.touch(peer, file);
@@ -289,11 +345,7 @@ export class Facts {
       for (const action of actions) {
         if (action?.type !== "read" || typeof action.path !== "string") continue;
         const file = this.rel(action.path);
-        if (!file) continue;
-        this.touch(peer, file);
-        const was = this.latest.get(file);
-        const version = this.observe(file);
-        if (was && version.hash === was.hash) this.view(peer).set(file, version);
+        if (file) this.touch(peer, file);
       }
     }
     this.observeAll();
@@ -304,6 +356,7 @@ export class Facts {
    * a later boundary offers everything since the peer's last acknowledged view again.
    */
   due(peer: PeerId, toolUseId?: string): Offered | undefined {
+    this.expanded = new Map();
     const scope = this.o.scope(peer);
     if (!scope) return undefined;
     const view = this.view(peer);
@@ -325,7 +378,8 @@ export class Facts {
       }
       if (was.hash === now.hash) continue;
       const since = (this.transitions.get(file) ?? []).filter((t) => t.seq > was.seq);
-      if (since.length && since.every((t) => t.by === peer)) {
+      const capped = (this.evicted.get(file) ?? -1) > was.seq; // the cap dropped part of its history
+      if (!capped && since.length && since.every((t) => t.by === peer)) {
         view.set(file, now); // its own verified writes, nothing else
         continue;
       }
@@ -333,7 +387,7 @@ export class Facts {
       if (!this.o.nameable(file)) continue;
       files++;
       const others = [...new Set(since.filter((t) => t.by && t.by !== peer).map((t) => t.by!))];
-      const blind = !since.length || since.some((t) => !t.by);
+      const blind = capped || !since.length || since.some((t) => !t.by);
       if (blind) unknown++;
       const credit = since.filter((t) => t.by && t.by !== peer).at(-1);
       const own = since.some((t) => t.by === peer);
@@ -378,6 +432,13 @@ export class Facts {
         coverage = true;
       }
     }
+    // Files that fell out of what is tracked are named once, not dropped silently.
+    const gone = [...(this.untracked.get(peer) ?? [])].filter(this.o.nameable);
+    if (gone.length) {
+      parts.push(`no longer tracked (more than ${TOUCHED_KEPT} files touched): ${gone.join(", ")}; read them again before relying on what you saw of them`);
+      this.untracked.delete(peer);
+      coverage = true;
+    }
     if (!parts.length) {
       // Nothing to say: a first look needs no acknowledgement.
       for (const [file, v] of offered) if (!view.has(file)) view.set(file, v);
@@ -386,23 +447,30 @@ export class Facts {
     return this.offer(peer, parts, offered, plans, toolUseId, { files, plans: plans.size, unknown, coverage });
   }
 
-  /** The plans an accept answered with were shown in a tool result: they need no fact later. */
-  sawPlans(peer: PeerId): void {
+  /** The plans of these tasks were shown in a tool result (an accept's answer): they need no fact later. */
+  sawPlans(peer: PeerId, tasks: number[]): void {
     const seen = this.plansAccepted.get(peer) ?? new Map<number, string>();
-    for (const p of this.o.scope(peer)?.plans ?? []) seen.set(p.task, p.text);
+    for (const p of this.o.scope(peer)?.plans ?? []) if (tasks.includes(p.task)) seen.set(p.task, p.text);
     this.plansAccepted.set(peer, seen);
   }
 
-  /** One hash over these project files as they are now: an integration target (issue #107). */
+  /**
+   * One hash over these project paths as they are now: an integration target (issue #107). A directory counts by git's
+   * changed, new and deleted files under it, with the commit they are relative to.
+   */
   tree(paths: string[]): string {
+    this.expanded = new Map();
     const h = createHash("sha1");
-    const files = [...new Set(paths.flatMap((p) => { const r = this.rel(p); return r ? [r] : []; }))].sort();
+    const head = Bun.spawnSync(["git", "rev-parse", "-q", "--verify", "HEAD"], { cwd: this.root, stdout: "pipe", stderr: "pipe" });
+    h.update(head.exitCode === 0 ? head.stdout.toString().trim() : "no-head").update("\0");
+    const files = [...new Set(this.expand(paths.flatMap((p) => { const r = this.rel(p); return r ? [r] : []; })))].sort();
     for (const file of files) h.update(file).update("\0").update(this.load(file).hash).update("\0");
     return h.digest("hex");
   }
 
   /** Whether `peer` has acknowledged every file its facts cover, as it is now (a file it never looked at counts). */
   current(peer: PeerId): boolean {
+    this.expanded = new Map();
     const view = this.accepted.get(peer);
     return this.files(peer).every((f) => {
       const v = view?.get(f);

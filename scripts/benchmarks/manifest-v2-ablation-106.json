@@ -19,15 +19,13 @@
     "claude": "medium"
   },
   "arms": [
-    "solo-codex",
-    "solo-claude",
     "hub-codex-claude",
-    "hub-turnfree-codex-claude"
+    "hub-staleoff-codex-claude"
   ],
   "wall_limit_s": 300,
   "memory": false,
   "inference": false,
-  "topology": "Solo native Codex; solo native Claude; Codex plus Claude on one shared fixture checkout with advisory coordination (with 0.12.4 stale-notice dropping, the #106 ablation); and the same pair with turn-free coordination: a silent cohort once both context paths are verified by readback, facts at tool boundaries (Claude hooks, Codex steers), and an integration request (at most three) for the member that finishes last. Task allocation is fixed by case index in both joint arms; the split rule is recorded as a shadow prediction only. Every final artifact is graded by official tests.",
+  "topology": "The #106 ablation: Codex plus Claude on one shared fixture checkout with advisory coordination, with and without stale-notice dropping (experiments.stale_notices: deliver), on the same release, models and conditions; the solo and turn-free arms are in manifest-v2.json.",
   "cases": [
     {
       "repo": "pallets_click_task",
@@ -199,7 +197,7 @@
     "The release pilot repeats one pair; it shows feasibility, not a performance difference"
   ],
   "sampling": "All official flash pairs from three selected task images, fixed before inference as a local-resource convenience sample; not representative of the full suite.",
-  "actor_assignment": "In both joint arms, Codex receives the first feature at even case indices and Claude at odd indices; the other actor receives the second feature.",
+  "actor_assignment": "As in manifest-v2.json: Codex receives the first feature at even case indices and Claude at odd indices.",
   "order_rule": "Rotate arm order by (case index + repeat) modulo the number of arms, so repeats of one case change which arm runs last.",
   "stop_conditions": [
     "all assigned tasks approved and deliveries settled",
@@ -215,8 +213,8 @@
         0
       ],
       "repeats": 3,
-      "attempts": 12,
-      "active_ceiling_s": 3600
+      "attempts": 6,
+      "active_ceiling_s": 1800
     },
     "study": {
       "purpose": "after release, on the owner's go-ahead",
@@ -233,14 +231,8 @@
         9
       ],
       "repeats": 2,
-      "attempts": 80,
-      "active_ceiling_s": 24000
-    },
-    "ablation_order": [
-      "#106 stale notices: manifest-v2-ablation-106.json, the advisory arm with and without stale-notice dropping on the same release",
-      "#107/#108 cohort silence with acknowledged facts and revision-fenced integration (turn-free arm)",
-      "#109 split rule: shadow predictions only, allocation fixed"
-    ],
-    "adoption_gate": "advisory stays the default; a change needs prespecified paired quality and resource criteria and held-out repository/task instances (docs/cooperbench.md, Preregistration)"
+      "attempts": 40,
+      "active_ceiling_s": 12000
+    }
   }
 }

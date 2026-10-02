@@ -35,6 +35,8 @@ export interface Integration {
   /** The files as they were at the last request: the next done is accepted only for this target. */
   tree: string;
   requests: number;
+  /** When the last request went out: a done right after it is a retry, not a confirmation. */
+  at: number;
   /** The fact offer that went out with the last request: the next done acknowledges it. */
   offer?: string;
   confirmed?: boolean;
@@ -48,7 +50,8 @@ export interface Cohort {
   silent: boolean;
   intents: Map<number, { gen: number; at: number }>;
   integration?: Integration;
-  unresolved?: string;
+  /** Members whose completed-change notice the silence withheld: what replaces it if no integration runs. */
+  held: Set<number>;
 }
 
 export interface CohortDeps {
@@ -63,7 +66,7 @@ export interface CohortDeps {
 
 export type Completion =
   | { action: "proceed"; integrated?: boolean }
-  | { action: "request"; why: string; requests: number; cohort: Cohort }
+  | { action: "request"; why: string; requests: number; cohort: Cohort; repeat?: boolean }
   | { action: "unresolved"; why: string; cohort: Cohort };
 
 export class Cohorts {
@@ -91,16 +94,18 @@ export class Cohorts {
     const all = [task, ...others].filter((t) => t.owner);
     const found = [...new Set(all.map((t) => this.of(t.id)).filter((c): c is Cohort => !!c))];
     if (!found.length && all.length < 2) return undefined;
+    const wasSilent = found.some((c) => c.silent);
     let cohort = found[0];
     const formed = !cohort;
     if (!cohort) {
-      cohort = { id: this.next++, revision: 0, members: new Map(), silent: false, intents: new Map() };
+      cohort = { id: this.next++, revision: 0, members: new Map(), silent: false, intents: new Map(), held: new Set() };
       this.live.push(cohort);
     }
     let changed = formed;
     for (const other of found.slice(1)) {
       for (const [id, m] of other.members) cohort.members.set(id, m);
       for (const [id, i] of other.intents) cohort.intents.set(id, i);
+      for (const id of other.held) cohort.held.add(id);
       cohort.silent &&= other.silent;
       this.live.splice(this.live.indexOf(other), 1);
       changed = true;
@@ -115,13 +120,10 @@ export class Cohorts {
     }
     if (changed) cohort.revision++;
     const owners = [...new Set([...cohort.members.values()].map((m) => m.owner))];
-    let lifted = false;
     if (formed) cohort.silent = this.d.silence(owners);
-    else if (cohort.silent && changed && !this.d.silence(owners)) {
-      cohort.silent = false;
-      lifted = true;
-    }
-    return { cohort, formed, lifted };
+    else if (cohort.silent && changed && !this.d.silence(owners)) cohort.silent = false;
+    // Lifted: a silent cohort (or a silent one merged into this) is no longer silent, and its members must hear it.
+    return { cohort, formed, lifted: wasSilent && !cohort.silent };
   }
 
   /** An owner lost its context path (or PII opened): every silent cohort it is in speaks again. */
@@ -180,10 +182,11 @@ export class Cohorts {
     const ig = c.integration;
     if (ig && ig.revision === c.revision && ig.task !== task.id) return { action: "proceed" }; // another member integrates
     if (!ig || ig.revision !== c.revision || ig.task !== task.id || ig.gen !== now.gen || ig.owner !== task.owner) {
-      c.integration = { task: task.id, owner: task.owner!, gen: now.gen, revision: c.revision, tree: now.tree, requests: 1 };
-      delete c.unresolved;
+      c.integration = { task: task.id, owner: task.owner!, gen: now.gen, revision: c.revision, tree: now.tree, requests: 1, at: Date.now() };
       return { action: "request", why: "", requests: 1, cohort: c };
     }
+    // A done within two seconds of the request is a retry of a call whose answer was lost, not a check of the work.
+    if (Date.now() - ig.at < 2000) return { action: "request", why: ig.requests === 1 ? "" : "repeat", requests: ig.requests, cohort: c, repeat: true };
     // Its next done: accepted only for the same target, once every other member has stopped.
     const others = [...c.members.values()].filter((x) => x.task !== task.id);
     const running = others.filter((x) => !this.d.quiescent(x.owner, c.intents.get(x.task)!.at)).map((x) => x.owner);
@@ -195,12 +198,10 @@ export class Cohorts {
       ig.confirmed = true;
       return { action: "proceed", integrated: true };
     }
-    if (ig.requests >= MAX_REQUESTS) {
-      c.unresolved = why;
-      return { action: "unresolved", why, cohort: c };
-    }
+    if (ig.requests >= MAX_REQUESTS) return { action: "unresolved", why, cohort: c };
     ig.requests++;
     ig.tree = now.tree;
+    ig.at = Date.now();
     delete ig.offer;
     return { action: "request", why, requests: ig.requests, cohort: c };
   }

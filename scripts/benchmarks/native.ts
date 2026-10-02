@@ -351,6 +351,8 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         throw new Error('fresh fixture baseline content/path mismatch');
     // The turn-free arm (issue #110) differs only in how owners coordinate: no messages, facts from the hub.
     const turnFree = kind === 'hub-turnfree-codex-claude';
+    // The #106 ablation (issue #110): the advisory arm with stale-notice dropping switched off, nothing else different.
+    const staleOff = kind === 'hub-staleoff-codex-claude';
     const coordination = turnFree
         ? 'Accept with a concrete plan, then complete with hub_task_done. Do not message the other peer: the hub shows you its changes at your tool calls and asks the last to finish to check its work.'
         : 'Accept with a concrete plan, coordinate interface contracts with the named peer when source overlaps, then complete with hub_task_done.';
@@ -360,17 +362,19 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     mkdirSync(join(dir, '.agenthub'), { recursive: true, mode: 0o700 });
     mkdirSync(join(dir, '.claude'), { mode: 0o700 });
     const denied = [...protectedRoots, ...[join(runs, 'runs'), join(runs, 'patches'), join(runs, 'private'), ...(await (async () => { const fs = await import('node:fs/promises'); return (await fs.readdir(join(runs, 'fixtures'))).map(x => join(runs, 'fixtures', x)).filter(x => resolve(x) !== resolve(dir)); })())]];
-    writeFileSync(join(dir, '.agenthub/config.json'), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, snapshots: { enabled: true, keep: 50 }, watchdog_ms: 360000, batch_ms: 0, batch_max: 1, tasks: { release_after_min: 0 }, roles: { codex: ['implementer'], claude: ['implementer'] }, budget: { poll_min: 1 }, approvals: { notify: false }, codex_bin: codexBin, ...(turnFree ? { coordination: 'turn-free' } : {}) }));
+    writeFileSync(join(dir, '.agenthub/config.json'), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, snapshots: { enabled: true, keep: 50 }, watchdog_ms: 360000, batch_ms: 0, batch_max: 1, tasks: { release_after_min: 0 }, roles: { codex: ['implementer'], claude: ['implementer'] }, budget: { poll_min: 1 }, approvals: { notify: false }, codex_bin: codexBin, ...(turnFree ? { coordination: 'turn-free' } : {}), ...(staleOff ? { experiments: { stale_notices: 'deliver' } } : {}) }));
     writeFileSync(join(dir, '.agenthub/routing.toml'), '[local]\nfixed_model="coding"\n[classes.implement]\npeers=["codex","claude"]\nescalate_to=[]\n[classes.review]\npeers=[]\nlocal_allowed=false\n');
     const permissions = { defaultMode: 'acceptEdits', allow: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', ...hubNames.map(n => 'mcp__agent-hub__' + n)], deny: ['WebFetch', 'WebSearch', 'Agent', 'Skill', 'Read(./.agenthub/**)', 'Read(./.claude/**)', 'Edit(./.agenthub/**)', 'Edit(./.claude/**)', 'Edit(./AGENTS.md)', 'Edit(./.gitignore)', 'Edit(./tests/**)'] };
     // Hooks are equal across arms (issue #110): none of the user's or a plugin's; the turn-free arm runs the hub's own
     // facts hook, which is part of its treatment. `--setting-sources project` keeps user settings out.
     const tee = { script: join(repo, 'src/cli/statusline-tee.ts'), stateDir: state };
     const session = JSON.parse(turnFree ? sessionSettings(tee, { script: join(repo, 'src/cli/facts-hook.ts'), stateDir: state }) : statusLineSettings(tee));
-    const settings = { statusLine: session.statusLine, permissions, ...(turnFree ? { disableAllHooks: false, hooks: session.hooks } : { disableAllHooks: true }), sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: denied } } };
+    // No arm runs a status line (issue #110): `disableAllHooks` turns it off in the other arms, so the turn-free arm,
+    // which needs hooks on, leaves it out. Claude's quota therefore reaches the hub in no arm.
+    const settings = { permissions, ...(turnFree ? { disableAllHooks: false, hooks: session.hooks } : { disableAllHooks: true }), sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: denied } } };
     writeFileSync(join(dir, '.claude/settings.json'), JSON.stringify(settings));
     // The conditions each attempt ran with (issue #110): bound to its record, next to the capability readbacks in its events.
-    const conditions = { claude: { settingSources: 'project', strictMcpConfig: true, disableAllHooks: !turnFree, hookEvents: turnFree ? Object.keys(session.hooks ?? {}).sort() : [], settingsSha256: hash(JSON.stringify(settings)) }, codex: { hooksFeature: false, memories: false, externalAgentMemoryImport: false }, coordination: turnFree ? 'turn-free' : kind.startsWith('hub-') ? 'advisory' : 'solo' };
+    const conditions = { claude: { settingSources: 'project', strictMcpConfig: true, disableAllHooks: !turnFree, statusLine: false, hookEvents: turnFree ? Object.keys(session.hooks ?? {}).sort() : [], settingsSha256: hash(JSON.stringify(settings)) }, codex: { hooksFeature: false, memories: false, externalAgentMemoryImport: false }, coordination: turnFree ? 'turn-free' : kind.startsWith('hub-') ? 'advisory' : 'solo', ...(staleOff ? { experiments: { stale_notices: 'deliver' } } : {}) };
     const candidateMcp = join(dir, '.claude/candidate-mcp.json');
     writeFileSync(candidateMcp, JSON.stringify({ mcpServers: { 'agent-hub': { command: 'bun', args: [join(repo, 'plugins/agent-hub/server.js')], env: { AGENTHUB_STATE_DIR: state, AGENTHUB_PROJECT_DIR: dir, AGENTHUB_PEER_ID: 'claude' } } } }), { mode: 0o600 });
     await cmd(['git', 'add', '-A'], dir);

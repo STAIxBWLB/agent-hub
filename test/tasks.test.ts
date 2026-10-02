@@ -1275,8 +1275,8 @@ test("after a restart, or once its record is evicted, a notice is delivered as b
 
 // issue #107: turn-free cohorts. Owners of overlapping tasks whose context paths are verified form a silent cohort; the
 // member whose done completes the set integrates, and its next done counts only for the same target.
-async function turnFreeRig(extra: Partial<ConstructorParameters<typeof Tasks>[0]> = {}) {
-  const ctx = await setup(["claude", "codex", "kimi"]);
+async function turnFreeRig(extra: Partial<ConstructorParameters<typeof Tasks>[0]> = {}, peerIds = ["claude", "codex", "kimi"]) {
+  const ctx = await setup(peerIds);
   const told: string[] = [];
   const state = { capable: new Set(["claude", "codex", "kimi"]), stopped: new Map<string, number>(), tree: "t1", offers: 0, acked: [] as string[], current: true };
   const tasks = new Tasks({
@@ -1291,7 +1291,13 @@ async function turnFreeRig(extra: Partial<ConstructorParameters<typeof Tasks>[0]
   });
   /** A native turn end of `peer` from now on. */
   const stop = (peer: string) => state.stopped.set(peer, Date.now() + 1);
-  return { ...ctx, tasks, told, state, stop };
+  // A clock the test moves: a done within two seconds of an integration request is a retry, not a check.
+  const realNow = Date.now;
+  let offset = 0;
+  Date.now = () => realNow() + offset;
+  cleanup.push(() => (Date.now = realNow));
+  const later = (ms = 3000) => (offset += ms);
+  return { ...ctx, tasks, told, state, stop, later };
 }
 const pair = async (tasks: Tasks, a = "kimi", b = "codex") => {
   const first = await tasks.propose(a, { title: "multi-file edit", class: "implement", owner: a, refs: { paths: ["src/click/termui.py"] }, plan: { signatures: ["edit(filename: str | Iterable[str])"] } });
@@ -1358,7 +1364,7 @@ test("a member's messages are held back until it has stopped after its task clos
 });
 
 test("the member whose done completes the set integrates: one request with its facts, then its done for the same target", async () => {
-  const { tasks, board, state, stop } = await turnFreeRig();
+  const { tasks, board, state, stop, later } = await turnFreeRig();
   const { first, second } = await pair(tasks);
   const early = await tasks.done("kimi", first.id, "edit takes several files\nmore");
   expect(early.history.at(-1)!.event).toBe("done"); // an earlier member is never held
@@ -1375,6 +1381,10 @@ test("the member whose done completes the set integrates: one request with its f
     "  summary: edit takes several files",
     "facts for codex",
   ].join("\n"));
+  // A done right after the request is a retry of a lost answer: the same request again, nothing acknowledged.
+  expect((await tasks.done("codex", second.id, "retry")).history.filter((h) => h.event === "integration requested")).toHaveLength(1);
+  expect(state.acked).toEqual([]);
+  later();
   const recorded = await tasks.done("codex", second.id, "added process_priority, checked against #1");
   expect(recorded.history.slice(-2).map((h) => h.event)).toEqual(["integrated", "done"]);
   expect(state.acked).toEqual(["codex:f1"]); // the second done is the proof the request arrived
@@ -1391,18 +1401,21 @@ test("concurrent dones select exactly one integrating member", async () => {
 });
 
 test("edits between calls, owner replacement and a changed cohort move the target; a member still running blocks it", async () => {
-  const { tasks, state, stop, board } = await turnFreeRig();
+  const { tasks, state, stop, later } = await turnFreeRig();
   const { first, second } = await pair(tasks);
   await tasks.done("kimi", first.id, "a");
   await tasks.done("codex", second.id, "b"); // request 1
   // The member that integrates is not confirmed while kimi has not stopped since its done.
+  later();
   let again = await tasks.done("codex", second.id, "b");
   expect(again.history.at(-1)!.note).toContain("integration request 2 of 3): kimi has not stopped since its done");
   stop("kimi");
   // Its own edits between two calls move the target: asked once more.
   state.tree = "t2";
+  later();
   again = await tasks.done("codex", second.id, "b");
   expect(again.history.at(-1)!.note).toContain("integration request 3 of 3): the files changed since the last request");
+  later();
   again = await tasks.done("codex", second.id, "b");
   expect(again.history.slice(-2).map((h) => h.event)).toEqual(["integrated", "done"]);
   // A new member joining before the confirm makes the integrating member an earlier finisher: it proceeds.
@@ -1424,14 +1437,16 @@ test("edits between calls, owner replacement and a changed cohort move the targe
   await moved.tasks.assignTo(p3.second.id, "claude");
   const fresh = await moved.tasks.done("claude", p3.second.id, "b by claude");
   expect(fresh.history.at(-1)!.note).toContain("you are the last of turn-free cohort");
-  expect(board).toBeDefined();
 });
 
 test("past three requests the outcome is unresolved, recorded with the done, never as integrated", async () => {
-  const { tasks, notices } = await turnFreeRig();
+  const { tasks, notices, later } = await turnFreeRig();
   const { first, second } = await pair(tasks);
   await tasks.done("kimi", first.id, "a");
-  for (let i = 0; i < 3; i++) await tasks.done("codex", second.id, "b"); // kimi never stops
+  for (let i = 0; i < 3; i++) {
+    await tasks.done("codex", second.id, "b"); // kimi never stops
+    later();
+  }
   const last = await tasks.done("codex", second.id, "b");
   expect(last.history.slice(-2).map((h) => h.event)).toEqual(["integration unresolved", "done"]);
   expect(last.history.some((h) => h.event === "integrated")).toBe(false);
@@ -1441,7 +1456,7 @@ test("past three requests the outcome is unresolved, recorded with the done, nev
 test("a failed check or a reopened review voids the member's intent; a check finished on a moved target does not count", async () => {
   let release!: (code: number) => void;
   const results: Promise<number>[] = [];
-  const { tasks, board, stop } = await turnFreeRig({
+  const { tasks, board, stop, later } = await turnFreeRig({
     check: (cls) => (cls === "implement" ? "make test" : undefined),
     runCheck: async () => ({ code: await (results.shift() ?? Promise.resolve(0)), timedOut: false, tail: "" }),
   });
@@ -1450,6 +1465,7 @@ test("a failed check or a reopened review voids the member's intent; a check fin
   await tasks.done("kimi", first.id, "a"); // its check is running: its intent counts
   stop("kimi");
   expect((await tasks.done("codex", second.id, "b")).history.at(-1)!.event).toBe("integration requested");
+  later();
   await tasks.done("codex", second.id, "b"); // confirmed; codex's check is queued behind kimi's
   release(1); // kimi's check fails: its intent is void, and the cohort moves on
   await until(() => board.get(second.id)!.history.some((h) => h.event === "check finished late"));
@@ -1483,16 +1499,77 @@ test("the console user is never asked to integrate, a PII task joins no cohort, 
   const { first, second } = await pair(tasks);
   await tasks.done("kimi", first.id, "a done");
   expect((await tasks.done(USER, second.id, "by hand")).history.at(-1)!.event).toBe("done");
-  // A PII task joins no cohort (the daemon test covers the hub switching to advisory while one is open).
-  const pii = await turnFreeRig();
+  // A PII task, owned by the on-prem worker on the same file, joins no cohort (the daemon test covers the hub
+  // switching to advisory while one is open).
+  const pii = await turnFreeRig({}, ["claude", "codex", "kimi", "local"]);
   const secret = await pii.tasks.propose("claude", { title: "note for 900101-1234567", class: "implement", refs: { paths: ["src/click/termui.py"] } });
-  await pair(pii.tasks);
+  expect(secret.owner).toBe("local");
+  const p = await pair(pii.tasks);
   expect(pii.tasks.cohorts.of(secret.id)).toBeUndefined();
+  expect([...pii.tasks.cohorts.of(p.second.id)!.members.keys()].sort()).toEqual([p.first.id, p.second.id]);
   const advisory = await setup(["claude", "codex", "kimi"]);
   await advisory.tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
   const c = await advisory.tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
   await advisory.tasks.done("kimi", 1, "a done");
   expect((await advisory.tasks.done("codex", c.id, "b done")).history.at(-1)!.event).toBe("done");
+});
+
+test("the last member still at work keeps the others' paths and plans in its facts after they finished; a finished member has none", async () => {
+  const { tasks } = await turnFreeRig();
+  const { first, second } = await pair(tasks);
+  await tasks.done("kimi", first.id, "a");
+  expect(tasks.factScope("kimi")).toBeUndefined();
+  expect(tasks.factScope("codex")).toMatchObject({ paths: ["src/click/termui.py"], plans: [{ task: first.id, owner: "kimi", text: "signatures: edit(filename: str | Iterable[str])" }], task: { id: second.id } });
+});
+
+test("held notices replace the integration step that does not run: on a lift, for a done in a lost silence, and for the console", async () => {
+  // Lifted after kimi's done: codex, still at work, gets kimi's completed-change notice with the lift.
+  const lifted = await turnFreeRig();
+  const a = await pair(lifted.tasks);
+  await lifted.tasks.done("kimi", a.first.id, "edit takes several files");
+  for (const c of lifted.tasks.cohorts.lift("kimi")) lifted.tasks.announceLift(c, "kimi's context path is no longer verified");
+  await tick();
+  const toCodex = lifted.peers.codex!.got.map((e) => e.body).find((b) => b.includes("silence is lifted"))!;
+  expect(toCodex).toContain(`Task #${a.first.id} (owner kimi) is done and touches your open #${a.second.id}`);
+  expect(lifted.peers.kimi!.got.some((e) => e.body.includes("silence is lifted"))).toBe(false); // its task is closed: no turn for it
+  // Turn-free switched off before the last done (a PII task opened): the done carries the held notice instead.
+  let on = true;
+  const off = await turnFreeRig({ turnFree: () => on });
+  const b = await pair(off.tasks);
+  await off.tasks.done("kimi", b.first.id, "edit takes several files");
+  on = false;
+  expect((await off.tasks.done("codex", b.second.id, "b")).history.at(-1)!.event).toBe("done");
+  expect(off.tasks.takeDoneNote(b.second.id)).toContain(`Overlapping work finished while you worked (no turn-free integration step ran):\nTask #${b.first.id} (owner kimi) is done`);
+  // The console finishing the last task: the console hears it.
+  const byHand = await turnFreeRig();
+  const c = await pair(byHand.tasks);
+  await byHand.tasks.done("kimi", c.first.id, "edit takes several files");
+  await byHand.tasks.done(USER, c.second.id, "by hand");
+  expect(byHand.notices.some((n) => n.includes(`done by the console; overlapping work finished meanwhile:\nTask #${c.first.id} (owner kimi) is done`))).toBe(true);
+});
+
+test("in a silent cohort only members' notices are held: an open task outside it still hears of the change", async () => {
+  const { tasks, peers } = await turnFreeRig();
+  const { second } = await pair(tasks);
+  const outsider = await tasks.propose("claude", { title: "docs", class: "implement", owner: "claude", refs: { paths: ["docs/edit.md"] } });
+  await tasks.done("codex", second.id, "changed termui and docs", { paths: ["src/click/termui.py", "docs/edit.md"] });
+  await tick();
+  expect(peers.claude!.got.some((e) => e.body.startsWith(`Task #${second.id} (owner codex) is done and touches your open #${outsider.id}`))).toBe(true);
+  expect(completedNotices(peers.kimi!)).toEqual([]); // the member's is held
+});
+
+test("merging a silent cohort into one that is not lifts it, and its members hear so", async () => {
+  const { tasks, state, peers } = await turnFreeRig();
+  const { second } = await pair(tasks); // silent: kimi and codex on termui.py
+  state.capable.delete("claude");
+  await tasks.propose("claude", { title: "docs", class: "implement", owner: "claude", refs: { paths: ["docs/a.md"] } });
+  await tasks.propose("claude", { title: "docs 2", class: "implement", owner: "kimi", refs: { paths: ["docs/a.md"] } }); // with claude: not silent
+  expect(tasks.silentFor(second.id)).toBe(true);
+  // A task on both files joins the two cohorts into one: claude cannot be shown facts, so the merged cohort speaks.
+  await tasks.propose("claude", { title: "both", class: "implement", owner: "codex", refs: { paths: ["src/click/termui.py", "docs/a.md"] } });
+  await tick();
+  expect(tasks.silentFor(second.id)).toBe(false);
+  expect(peers.codex!.got.some((e) => e.body.includes("silence is lifted"))).toBe(true);
 });
 
 test("a silent cohort publishes no completed-change notice: the integrating member checks instead", async () => {
@@ -1527,6 +1604,7 @@ test("split observations: tasks handed out in this hub run, claims and accepts m
     await tasks.review(board.get(failed.id)!.reviewer!, failed.id, "changes_requested", "no");
     const claim = await tasks.propose("kimi", { title: "claimed", class: "implement", owner: "kimi" });
     await tasks.done("kimi", claim.id, "done");
+    await tasks.review(board.get(claim.id)!.reviewer!, claim.id, "approved"); // approved: left out as a claim, not as open work
     expect(tasks.splitObservations("implement", "kimi")).toEqual([
       { outcome: "approved", orient: 10_000, work: 40_000 },
       { outcome: "approved", orient: 10_000, work: 40_000 },

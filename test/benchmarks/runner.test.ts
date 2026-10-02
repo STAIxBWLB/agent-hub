@@ -146,7 +146,7 @@ test("a v2 manifest prepares the turn-free arm too, and an arm list that matches
 });
 
 // issue #110: grading binds the actors of every v2 arm, and a manifest's planned attempts match its arms, cases and repeats.
-test("grading names the actors of all four arms; a plan whose attempts or ceiling do not add up is refused", () => {
+test("grading names the actors of every arm and refuses an unverified turn-free run; a plan that does not add up is refused", () => {
   const code = `import importlib.util,json
 s=importlib.util.spec_from_file_location('r',${JSON.stringify(script)});m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 assert [m.required_actors(a) for a in ['solo-codex','solo-claude','hub-codex-claude','hub-turnfree-codex-claude']]==[['codex'],['claude'],['codex','claude'],['codex','claude']]
@@ -156,6 +156,21 @@ assert v2['plan']['pilot']['attempts']==12 and v2['plan']['study']['attempts']==
 v2['plan']['study']['attempts']=60
 try: m.validate_manifest(v2); raise AssertionError('a wrong plan was accepted')
 except m.BenchError as e: assert 'do not match 80 attempts' in str(e)
+v2['plan']['study']['attempts']=80
+for bad,why in (({'cases':[0,99],'repeats':1,'attempts':8,'active_ceiling_s':2400},'distinct indices'),({'cases':[0],'repeats':1.5,'attempts':4,'active_ceiling_s':1200},'whole number')):
+    v2['plan']['bad']=bad
+    try: m.validate_manifest(v2); raise AssertionError('a malformed plan was accepted')
+    except m.BenchError as e: assert why in str(e), str(e)
+del v2['plan']['bad']
+ab=json.load(open(${JSON.stringify(join(import.meta.dir, "../../scripts/benchmarks/manifest-v2-ablation-106.json"))}))
+m.validate_manifest(ab)
+assert ab['arms']==['hub-codex-claude','hub-staleoff-codex-claude'] and m.required_actors('hub-staleoff-codex-claude')==['codex','claude']
+# A turn-free attempt is graded only if both context paths were verified before its tasks.
+run={'taskStates':[{'history':[{'event':'proposed','at':1_800_000_000_000}]}],'events':[{'type':'capability','peer':'claude','state':'verified','at':'2027-01-15T08:00:00Z'}]}
+assert m.treatment_failure('hub-codex-claude',run) is None
+assert m.treatment_failure('hub-turnfree-codex-claude',run)=='turn-free context path not verified before the tasks: codex', m.treatment_failure('hub-turnfree-codex-claude',run)
+run['events'].append({'type':'capability','peer':'codex','state':'verified','at':'2027-01-15T07:59:59Z'})
+assert m.treatment_failure('hub-turnfree-codex-claude',run) is None
 `;
   const r = spawnSync("python3", ["-B", "-c", code], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(r.stderr);

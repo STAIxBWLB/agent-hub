@@ -375,9 +375,10 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   the row Claude Code writes in its transcript for the hook's additional
   context, matched by tool use id and the offer's id; for Codex the steered
   input coming back as a user message item of the turn. A new native session,
-  or three offers past a minute without a readback, makes it unverified again.
-  Kimi, Pi and the local worker have no path yet, so a cohort with one of them
-  is never silent.
+  the peer going offline, or three offers past a minute without a readback,
+  makes it unverified again; a peer without a verified path that left three
+  offers unread gets none until a readback arrives. Kimi, Pi and the local
+  worker have no path yet, so a cohort with one of them is never silent.
 - Silence. While a cohort is silent, an agent message from a member to another
   member is held back for that recipient only: other recipients and the console
   get it unchanged, and `events.jsonl` records a `quiet` event. `hub_send`
@@ -386,22 +387,30 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   its next delivery. Workflow messages from the hub are never held back. A
   member's messages stay held until its native turn has ended after its task
   closed (Codex's turn completes, or Claude's Stop hook runs), so a late answer
-  is still the cohort's; its next turn is new work.
+  is still the cohort's; its next turn is new work. Only a tool call starting
+  counts as activity after a turn end.
 - Facts. At each tool call (Claude) or completed tool item (Codex) of a cohort
-  member, the hub offers what changed in its files since it last acknowledged
-  them, with the overlapping owners' new plans. A change is credited to an agent
+  member with an open task, the hub offers what changed since it last
+  acknowledged them in the files every member's task names and in the files it
+  touched, with the other members' new plans; the last member still at work
+  keeps the others' files after they finish. A directory a task names stands for
+  git's changed, new and deleted files under it (200 at most). A change is credited to an agent
   only with effect evidence: a Claude Edit, MultiEdit or Write whose result is
   exactly its input applied to the file as observed before it, or a Codex patch
   whose diff is exactly what changed. Shell commands, concurrent writers and
   unreported changes are shown with their attribution unknown, never credited by
-  elimination; an agent's own verified writes are not shown back to it. Only an
-  acknowledgement (a readback, or the next `hub_task_done` for facts sent with an
-  integration request) moves the peer's view, so a fact that does not arrive is
+  elimination; an agent's own verified writes are not shown back to it. A Codex
+  read action never counts as having seen a file (it may be partial); a whole
+  Claude Read does. Only an acknowledgement (a readback, or the next
+  `hub_task_done` for facts sent with an integration request) moves the peer's
+  view, so a fact that does not arrive is
   offered again at a later boundary; no turn is ever started for one. An
   acknowledgement says the context reached the native session, not that the
-  model read it. 60 changed lines are shown at most, the cut files named. Only
-  regular files of 256 KB or less inside the project are read; larger ones are
-  named without a diff. Facts never go through the bus or the delivery journal;
+  model read it. 60 changed lines are shown at most, the cut files named; a
+  history longer than the hub keeps is shown with its attribution unknown, and a
+  file that falls out of the 64 a peer touched is named once. Only regular files
+  of 256 KB or less inside the project are read, re-resolved at every read and
+  opened without following links; larger ones are named without a diff. Facts never go through the bus or the delivery journal;
   `events.jsonl` records `fact`, `fact_ack` and `capability` events with bytes
   and latencies.
 - Integration. A member's `hub_task_done` is a completion intent. The member
@@ -411,11 +420,15 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   call counts only for the same target: the same owner, cohort revision and
   files, with every other member's native turn ended after its done. Edits in
   between, a new member, an owner change, a failed check or a reopened review ask
-  again; after three requests the done is recorded with `integration
-  unresolved`, never as integrated. A configured check of the integrating member
+  again; a done within two seconds of a request is taken as a retry and gets the
+  same request again; after three requests the done is recorded with
+  `integration unresolved`, never as integrated. A configured check of the integrating member
   counts only for the target it confirmed. After a hub restart an open request is
-  recorded as unresolved. No completed-change notice is sent inside a silent
-  cohort.
+  recorded as unresolved. Inside a silent cohort a member's completed-change
+  notice is held, not sent; where no integration step runs for the others (the
+  silence was lifted, a PII task opened, the console finished the task), the
+  held notices go with the lift notice or the done result, or to the console.
+  Open tasks outside the cohort get their notices as usual.
 - While any PII task is open the project behaves as advisory: no facts, no
   silence and no integration step. When it closes, the hub forgets what it had
   observed, so nothing changed meanwhile is shown as a diff; each member is told
@@ -431,7 +444,11 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   alone, from this hub run's recorded task stages. It is unknown unless the units
   are equal and known, both peers are available with no other open work, and each
   has five measured tasks with no more than 30% failures and comparable work
-  times.
+  times. The work stage of a task ends at its first `hub_task_done`, and the
+  routed task itself is never one of its own observations.
+- `"experiments": {"stale_notices": "deliver"}` in `.agenthub/config.json`
+  turns the stale-notice drop off, for a controlled comparison only (the #106
+  ablation in `docs/cooperbench.md`); the hub logs it at start.
 
 ## Approvals and pauses
 

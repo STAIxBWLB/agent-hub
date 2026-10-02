@@ -15,7 +15,7 @@ export type HubEvent =
   | { type: "fact"; peer: string; id: string; files: number; plans: number; unknown: number; bytes: number; via: "hook" | "steer" | "done"; ms?: number; hookMs?: number; accepted?: boolean; probe?: boolean; coverage?: boolean }
   | { type: "fact_ack"; peer: string; id: string; via: string; ms: number }
   | { type: "capability"; peer: string; state: "verified" | "lost"; via?: string }
-  | { type: "split"; task: number; verdict: "split" | "single" | "unknown"; single?: string; splitS?: number; singleS?: number; reason?: string }
+  | { type: "split"; task: number; verdict: "split" | "single" | "unknown"; single?: string; splitS?: number; singleS?: number; reason?: string; trace?: string[] }
   | { type: "state"; peer: string; state: string }
   | { type: "turn_start"; peer: string; turn: string }
   | { type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number }

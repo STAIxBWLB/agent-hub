@@ -20,7 +20,7 @@ marked `private: true`, and PII tasks `pii: true`.
 | `fact_ack` | `peer`, `id`, `via` (`hook` and `steer`: a readback found the offer in the native session; `done`: the next `hub_task_done`), `ms` (from the offer): an acknowledged offer, the only thing that moves a peer's view |
 | `capability` | `peer`, `state` (`verified` or `lost`), `via`: a peer's context path for facts |
 | `native_turn_end` | `peer`: Claude's Stop hook, the end of its turn (Codex's is its `turn_end`); quiescence evidence for an integration |
-| `split` | `task`, `verdict` (`split`, `single`, `unknown`), `single` (the peer that would finish both units alone soonest), `splitS`, `singleS`, `reason` (for `unknown`): a shadow split prediction at a routed assignment; it never changes the assignment (issue #109) |
+| `split` | `task`, `verdict` (`split`, `single`, `unknown`), `single` (the peer that would finish both units alone soonest), `splitS`, `singleS`, `reason` (for `unknown`), `trace` (the inputs and steps: peer names and numbers only): a shadow split prediction at a routed assignment; it never changes the assignment (issue #109) |
 | `state` | `peer`, `state` |
 | `turn_start` | `peer`, `turn` (`<peer>#<hub run>.<n>`, unique across restarts). A turn follows the adapter: pausing a busy peer does not end it |
 | `turn_end` | `peer`, `turn`, `ms`, `tokens` (when the adapter reported any during the turn), `files` and `snapshotMs` (when snapshots are on: how many files the turn changed, and the time both snapshots took) |

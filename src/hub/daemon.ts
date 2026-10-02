@@ -91,6 +91,8 @@ export interface HubConfig {
    * them work without messages while the hub derives what they need to know. Anything else is advisory.
    */
   coordination: "advisory" | "turn-free";
+  /** Switches for controlled ablations only (issue #110): `stale_notices: "deliver"` turns #106's dropping off. */
+  experiments?: { stale_notices?: "drop" | "deliver" };
   /** Machine-local fields a config file set but git could not vouch for, and why (issue #17). */
   ignored?: string[];
   /** Settings that were removed or are about to be (issue #83): what each does now, for `hub.log` and `ahub doctor`. */
@@ -411,7 +413,9 @@ export async function startDaemon(opts: DaemonOptions) {
   const hubStartedAt = Date.now();
   // The bus exists before `Tasks`, which knows whether a queued notice still matters (issue #106).
   let relevantNotice: (peer: PeerId, env: Envelope) => boolean = () => true;
-  const bus = new Bus({ journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => relevantNotice(peer, env), silence });
+  const staleOff = config.experiments?.stale_notices === "deliver";
+  if (staleOff) log("experiment: stale notices are delivered as before 0.12.4 (the issue #106 ablation)");
+  const bus = new Bus({ journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => staleOff || relevantNotice(peer, env), silence });
   startupCleanup.push(() => bus.closeJournal());
   const manualPaused = new Set<PeerId>(bus.manualPausedPeers()); // recovery never lifts an operator's pause
   let recoveryOperationId: string | undefined;
@@ -533,14 +537,16 @@ export async function startDaemon(opts: DaemonOptions) {
     treeHash: (paths) => facts.tree(paths),
     integrationFacts: (peer) => {
       if (!factsOn()) return undefined;
-      const offered = facts.due(peer);
+      let offered: ReturnType<Facts["due"]>;
+      try { offered = facts.due(peer); } catch (error) { log(`integration facts for ${peer}: ${(error as Error).message}`); return undefined; }
       if (offered) event({ type: "fact", peer, id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "done" });
       return offered ? { id: offered.id, text: offered.text } : undefined;
     },
     ackFacts: (peer, id) => acked(peer, id, "done"),
     factsCurrent: (peer) => !factsOn() || facts.current(peer),
     since: hubStartedAt,
-    recordSplit: (task, p) => event({ type: "split", task, verdict: p.verdict, ...(p.single ? { single: p.single, splitS: p.splitS, singleS: p.singleS } : {}), ...(p.verdict === "unknown" ? { reason: p.trace.at(-1)!.replace(/^ {2}unknown: /, "").slice(0, 200) } : {}) }),
+    // The trace holds peer names and numbers only (never task text): it is the inputs a later check of the prediction needs.
+    recordSplit: (task, p) => event({ type: "split", task, verdict: p.verdict, ...(p.single ? { single: p.single, splitS: p.splitS, singleS: p.singleS } : {}), ...(p.verdict === "unknown" ? { reason: p.trace.at(-1)!.replace(/^ {2}unknown: /, "").slice(0, 200) } : {}), trace: p.trace.slice(1).map((l) => l.trim()).slice(0, 10) }),
     failing: () => bus.failingPeers(),
     held: () => Object.fromEntries(bus.knownPeers().flatMap((peer) => { const hold = queueHold(peer); return hold ? [[peer, hold]] : []; })),
   });
@@ -595,8 +601,13 @@ export async function startDaemon(opts: DaemonOptions) {
       loseCapability(peer, "three facts found no readback");
     }
   };
-  /** An offer for this boundary: the facts due, or, until the context path is verified, a probe (three per session). */
+  /**
+   * An offer for this boundary: the facts due, or, until the context path is verified, a probe (three per session).
+   * A peer without a verified path that left three offers unread gets none until a readback arrives: the same diff is
+   * not injected at every tool call.
+   */
   const offerFor = (peer: PeerId, toolUseId?: string) => {
+    if (!capable.has(peer) && facts.pending(peer).length >= 3) return undefined;
     const due = facts.due(peer, toolUseId);
     if (due || capable.has(peer) || facts.pending(peer).some((o) => o.probe) || (probes.get(peer) ?? 0) >= 3) return due;
     probes.set(peer, (probes.get(peer) ?? 0) + 1);
@@ -658,9 +669,15 @@ export async function startDaemon(opts: DaemonOptions) {
     if (end === undefined || end < since || (activeAt.get(peer) ?? 0) > end) return false;
     return peer === "claude" || (bus.peers.get(peer)?.state ?? "offline") !== "busy";
   };
+  /** What quiescence was judged on, for the log when an integration waits on it. */
+  const stopEvidence = (peer: PeerId) => `${peer}: turn end ${turnEnded.has(peer) ? new Date(turnEnded.get(peer)!).toISOString() : "none"}, last tool call ${activeAt.has(peer) ? new Date(activeAt.get(peer)!).toISOString() : "none"}, ${bus.peers.get(peer)?.state ?? "offline"}`;
   board.onChange = (t, h) => {
     turnFreeNow = undefined;
     scopes = new Map();
+    factsOn(); // a PII task opening or closing switches tracking at once, not at the next boundary (issue #108)
+    if ((h.event === "integration requested" || h.event === "integration unresolved") && /has not stopped/.test(h.note ?? "")) {
+      for (const m of tasks.cohorts.of(t.id)?.members.values() ?? []) if (m.task !== t.id) log(`turn-free: task #${t.id} waits on ${stopEvidence(m.owner)}`);
+    }
     event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, pii: tasks.isPii(t) });
     // Models can self-claim after their turn begins; preserve that ownership even if they finish before settlement.
     const turn = t.owner ? turns.get(t.owner) : undefined;
@@ -859,7 +876,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // A silent cohort (issue #107): the owners' plans come with every accept, as what the newcomer works from.
         const silent = tasks.silentFor(t.id);
         const overlap = a.plan == null && !silent ? "" : tasks.overlaps(t);
-        if (silent && factsOn()) facts.sawPlans(by); // the plans in this answer need no fact later
+        if (silent && factsOn()) facts.sawPlans(by, tasks.overlapTasks(t)); // the plans in this answer need no fact later
         return overlap ? `${line(t)}\n${overlap}` : line(t);
       }
       case "hub_task_decline":
@@ -869,7 +886,9 @@ export async function startDaemon(opts: DaemonOptions) {
         // A silent cohort (issue #107): the member that integrates is asked to check its work first; no done yet.
         const last = t.history.at(-1);
         if (last?.event === "integration requested" && last.by === HUB) return last.note ?? "";
-        return tasks.isChecking(t.id) ? `${line(t)}; its check is queued or running, and the result comes as a task message` : line(t);
+        const extra = tasks.takeDoneNote(t.id); // the notices a silence held, when no integration step ran
+        const result = tasks.isChecking(t.id) ? `${line(t)}; its check is queued or running, and the result comes as a task message` : line(t);
+        return extra ? `${result}\n${extra}` : result;
       }
       case "hub_review":
         return line(await tasks.review(by, a.id, a.verdict, a.note, a.unmet));
@@ -1276,6 +1295,8 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       if (e.state === "offline") offlineSince.set(e.peer, offlineSince.get(e.peer) ?? Date.now());
       else offlineSince.delete(e.peer);
+      // A session that ended may come back without hooks: its context path is verified again or not at all (issue #108).
+      if (e.state === "offline" && capable.delete(e.peer)) loseCapability(e.peer, "it went offline");
       // After a crash, a peer's first attach brings the loss notice: it leads its next delivery (issue #37).
       if (e.state !== "offline" && lost.has(e.peer)) {
         const still = lost.get(e.peer)!.filter((d) => { try { return journal.get(d.id)?.state === "needs_review"; } catch { return false; } });
@@ -1478,6 +1499,7 @@ export async function startDaemon(opts: DaemonOptions) {
         onTurn: (native) => {
           const open = turns.get("codex");
           if (open) turnLog?.native(open.id, native);
+          if (factsOn()) factSession("codex", codex.thread); // a new thread is unverified before its first item
         },
         // Turn-free facts (issue #108): its items are the boundaries; a fact goes into the running turn by steer, and
         // the steered input coming back as a user message item is its readback.
@@ -2044,17 +2066,20 @@ export async function startDaemon(opts: DaemonOptions) {
         const toolUseId = typeof msg.toolUseId === "string" && msg.toolUseId ? msg.toolUseId.slice(0, 128) : undefined;
         const sessionId = typeof msg.sessionId === "string" && msg.sessionId ? msg.sessionId.slice(0, 128) : undefined;
         try {
-          if (!factsOn()) return void reply({ t: "facts", ok: true });
           const peer = c.peer;
-          factSession(peer, sessionId);
-          const transcript = claudeTranscript(sessionId, msg.transcriptPath);
+          // Quiescence evidence is kept in every regime: a PII window must not make an active peer look stopped. Only
+          // a tool call starting is new activity: a PostToolUse of an earlier call can arrive after the Stop.
           if (phase === "stop") {
             turnEnded.set(peer, Date.now());
             event({ type: "native_turn_end", peer });
+          } else if (phase === "pre") activeAt.set(peer, Date.now());
+          if (!factsOn()) return void reply({ t: "facts", ok: true });
+          factSession(peer, sessionId);
+          const transcript = claudeTranscript(sessionId, msg.transcriptPath);
+          if (phase === "stop") {
             readbacks(peer, transcript);
             return void reply({ t: "facts", ok: true });
           }
-          activeAt.set(peer, Date.now());
           if (phase === "post") {
             facts.postTool(peer, toolUseId, tool, input);
             readbacks(peer, transcript);

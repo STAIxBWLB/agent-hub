@@ -6,8 +6,9 @@ from pathlib import Path, PurePosixPath
 
 SCHEMA = "agent-hub.cooperbench-run/v1"
 ARMS_V1 = ("solo-codex", "solo-claude", "hub-codex-claude")
-# Issue #110: manifest v2 adds the turn-free collaboration arm; a v1 manifest keeps its three arms for earlier cohorts.
-PROTOCOL_ARMS = (ARMS_V1, ARMS_V1 + ("hub-turnfree-codex-claude",))
+# Issue #110: manifest v2 adds the turn-free collaboration arm; a v1 manifest keeps its three arms for earlier cohorts;
+# the #106 ablation compares the advisory arm with the same arm with stale-notice dropping off.
+PROTOCOL_ARMS = (ARMS_V1, ARMS_V1 + ("hub-turnfree-codex-claude",), ("hub-codex-claude", "hub-staleoff-codex-claude"))
 
 class BenchError(RuntimeError): pass
 
@@ -36,9 +37,24 @@ def check_plan(m):
     """Issue #110: a manifest's planned attempts and active-time ceilings are what its arms, cases and repeats make."""
     for name,plan in (m.get("plan") or {}).items():
         if not isinstance(plan,dict) or "attempts" not in plan: continue
-        attempts=len(m["arms"])*len(plan.get("cases",[]))*plan.get("repeats",0)
+        cases,repeats=plan.get("cases"),plan.get("repeats")
+        if not isinstance(cases,list) or not cases or any(not isinstance(c,int) or isinstance(c,bool) or not 0<=c<len(m.get("cases",[])) for c in cases) or len(set(cases))!=len(cases):
+            raise BenchError(f"plan {name}: cases must be distinct indices of the manifest's cases")
+        if not isinstance(repeats,int) or isinstance(repeats,bool) or repeats<1: raise BenchError(f"plan {name}: repeats must be a whole number of at least 1")
+        attempts=len(m["arms"])*len(cases)*repeats
         if plan["attempts"]!=attempts or plan.get("active_ceiling_s")!=attempts*m.get("wall_limit_s",0):
             raise BenchError(f"plan {name}: {plan['attempts']} attempts / {plan.get('active_ceiling_s')} s do not match {attempts} attempts of {m.get('wall_limit_s')} s")
+
+def treatment_failure(arm, run):
+    """Issue #110: a turn-free attempt whose context paths were not both verified before its tasks is not a turn-free run."""
+    if arm!="hub-turnfree-codex-claude": return None
+    proposals=[h.get("at") for t in run.get("taskStates") or [] for h in t.get("history",[]) if h.get("event")=="proposed"]
+    if not proposals: return None
+    from datetime import datetime
+    t0=min(proposals)/1000
+    verified={e.get("peer") for e in run.get("events") or [] if e.get("type")=="capability" and e.get("state")=="verified" and datetime.fromisoformat(str(e.get("at")).replace("Z","+00:00")).timestamp()<=t0}
+    missing=sorted({"claude","codex"}-verified)
+    return f"turn-free context path not verified before the tasks: {', '.join(missing)}" if missing else None
 
 def validate_manifest(m):
     if m.get("schema") != SCHEMA or m.get("upstream", {}).get("commit") != "63b9d44d9f39a02fccf5bf0052db48a917a011fd":
@@ -213,7 +229,10 @@ def grade(args):
         if run.get("cwd")!=str(cwd) or not identities or run.get("cleanup_complete") is not True or run.get("metadata_clean") is not True or run.get("metadata_sha256")!=fixture_metadata_sha256(cwd) or ("claude" in actors and run.get("trust_restored") is not True):
             rows.append({"case":case,"arm":arm,"status":"unavailable","reason":"native identity/model/readiness/cleanup gate failed","pass":None}); continue
         if run.get("end_reason") in ("setup-error","provider-quota","budget-paused","delivery-unsettled","interrupted","infrastructure-error"):
-            rows.append({"case":case,"arm":arm,"status":"unavailable","reason":run["end_reason"],"pass":None}); continue
+            rows.append({"case":case,"arm":arm,"status":"unavailable","reason":run.get("end_reason_detail") or run["end_reason"],"pass":None}); continue
+        failure=treatment_failure(arm,run)
+        if failure:
+            rows.append({"case":case,"arm":arm,"status":"unavailable","reason":failure,"pass":None}); continue
         sealed=run.get("sealedCommit")
         if not isinstance(sealed,str):
             rows.append({"case":case,"arm":arm,"status":"unavailable","reason":"sealed baseline identity mismatch","pass":None}); continue
