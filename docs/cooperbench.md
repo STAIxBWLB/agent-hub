@@ -2,7 +2,7 @@
 
 The runner and report use Python's standard library. The versioned evaluator adapter also needs the optional Docker Python SDK in the supplied CooperBench evaluation environment. The checked-in `scripts/benchmarks/manifest-v1.json` fixes the upstream CooperBench commit, ten feature pairs, image digests, base commits, prompt digests, native model/version labels, topology and time limit. Prompt bodies, hidden tests, gold solutions, transcripts and vendor state are intentionally external and are not stored in this repository.
 
-Run it from the canonical Orca-owned repository context. Before creating anything, `prepare` reads `orca worktree current --json` and requires the reported canonical root to contain this repository. It extracts each pinned archive into a new fixture directory and initializes a git baseline after extraction, so pre-existing and untracked archive files are both represented. Symlinks, special tar entries and paths that escape the fixture are rejected.
+Fixture preparation is independent of the editor. Before native execution, `native.ts` reads `orca worktree current --json` and requires the reported canonical root to contain this repository. It extracts each pinned archive into a new fixture directory and initializes a git baseline after extraction, so pre-existing and untracked archive files are both represented. Symlinks, special tar entries and paths that escape the fixture are rejected.
 
 ## Prepare
 

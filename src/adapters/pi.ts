@@ -56,6 +56,7 @@ export class PiPeer extends BasePeer {
   private sessionFile = "";
   private executionBudgetTimer?: ReturnType<typeof setTimeout>;
   private executionAbort?: AbortController;
+  private readonly budgetStops = new Map<number, string>();
   private readonly idleBashReservations = new Map<string, { generation: number; expiresAt: number; deadlineAt?: number }>();
   private budgetGeneration = 0;
   private emptyResumeVerified = false;
@@ -142,6 +143,17 @@ export class PiPeer extends BasePeer {
   /** Envelopes belonging to the currently executing Pi turn, for relay-side model-call admission. */
   get budgetEnvelopes(): Envelope[] { return this.agentRunning && this.state === "busy" ? this.activeEnvs.slice() : []; }
 
+  /** Mark an authoritative relay admission stop against the current Pi turn, never a later turn. */
+  recordBudgetStop(decision: ExecutionBudgetDecision): { generation: number; reason: string } | undefined {
+    if (!this.agentRunning || this.state !== "busy") return undefined;
+    const generation = this.budgetGeneration;
+    const reason = `execution budget ${decision.reason ?? "exhausted"}: ${decision.scope} ${decision.unit} used ${decision.used}${decision.limit === null ? "" : ` of ${decision.limit}`}; ${decision.remaining === null ? "remaining unknown" : `${decision.remaining} remaining`}`;
+    this.budgetStops.set(generation, reason);
+    this.executionAbort?.abort();
+    for (const old of this.budgetStops.keys()) if (old < generation - 8) this.budgetStops.delete(old);
+    return { generation, reason };
+  }
+
   async start(): Promise<void> {
     if (this.starting) return this.starting;
     this.starting = this.startImpl();
@@ -197,10 +209,15 @@ export class PiPeer extends BasePeer {
       this.idleBashReservations.set(reservation, { generation: body.generation, expiresAt: Date.now() + 30_000, ...(remaining === undefined ? {} : { deadlineAt: Date.now() + remaining }) });
     }
     clearTimeout(this.executionBudgetTimer);
-    if (!denied && remaining !== undefined && this.state === "busy") this.executionBudgetTimer = setTimeout(() => {
-      this.executionAbort?.abort();
-      void this.sendTui({ type: "abort_budget" }).catch((error) => this.opts.log?.(`[${this.id}] elapsed budget stop could not reach Pi: ${(error as Error).message}`));
-    }, Math.max(0, remaining));
+        if (!denied && remaining !== undefined && this.state === "busy") {
+          const generation = this.budgetGeneration;
+          const controller = this.executionAbort;
+          this.executionBudgetTimer = setTimeout(() => {
+            if (!this.agentRunning || generation !== this.budgetGeneration || controller !== this.executionAbort) return;
+            controller?.abort();
+            void this.sendTui({ type: "abort_budget", generation }).catch((error) => this.opts.log?.(`[${this.id}] elapsed budget stop could not reach Pi: ${(error as Error).message}`));
+          }, Math.max(0, remaining));
+        }
     return Response.json({ decisions, ...(reservation ? { reservation } : {}) });
   }
 
@@ -393,7 +410,11 @@ export class PiPeer extends BasePeer {
       this.startOwnerMonitor(); if (this.opts.mode === "tui") this.setState("idle");
     }
     if (event.type === "session_shutdown") { this.stopping = true; this.ownerClaimed = false; this.clearOwnerMonitor(); this.resolveTuiExit?.(); this.resolveTuiExit = undefined; this.fail(new Error("Pi session shut down before settlement")); }
-    if (event.type === "agent_start") { this.usageSeen.clear(); this.idleBashReservations.clear(); this.executionAbort = new AbortController(); this.budgetGeneration = Number.isSafeInteger(event.generation) ? event.generation : this.budgetGeneration + 1; this.noteActivity(); this.agentRunning = true; this.setState("busy"); }
+    if (event.type === "agent_start") {
+      const generation = Number.isSafeInteger(event.generation) ? event.generation : this.budgetGeneration + 1;
+      if (generation <= this.budgetGeneration) return;
+      this.usageSeen.clear(); this.idleBashReservations.clear(); this.executionAbort = new AbortController(); this.budgetGeneration = generation; this.noteActivity(); this.agentRunning = true; this.setState("busy");
+    }
     if (event.type === "activity" && this.state === "busy") this.touch();
     if (event.type === "tokens" && this.state === "busy" && typeof event.id === "string" && event.id.length <= 100 && Number.isSafeInteger(event.tokens) && event.tokens >= 0 && !this.usageSeen.has(event.id)) {
       this.usageSeen.add(event.id);
@@ -401,17 +422,23 @@ export class PiPeer extends BasePeer {
       if (event.tokens > 0) this.opts.onTokens?.(event.tokens);
     }
     if (event.type === "agent_end") {
+      if (Number.isSafeInteger(event.generation) && event.generation !== this.budgetGeneration) return;
       clearTimeout(this.executionBudgetTimer); this.executionBudgetTimer = undefined;
-      if (String(event.error ?? "").startsWith("execution budget")) this.executionAbort?.abort();
+      const generation = Number.isSafeInteger(event.generation) ? event.generation : this.budgetGeneration;
+      const budgetStop = this.budgetStops.get(generation);
+      if (budgetStop) this.executionAbort?.abort();
       this.settledText = typeof event.text === "string" ? event.text : "";
-      this.settledCancelled = event.cancelled === true;
-      this.settledError = event.failed ? String(event.error ?? "Pi agent run failed") : "";
+      this.settledCancelled = !budgetStop && event.cancelled === true;
+      this.settledError = budgetStop ?? (event.failed ? String(event.error ?? "Pi agent run failed") : "");
     }
     if (event.type === "agent_settled") {
+      if (Number.isSafeInteger(event.generation) && event.generation !== this.budgetGeneration) return;
       clearTimeout(this.executionBudgetTimer); this.executionBudgetTimer = undefined;
       this.agentRunning = false;
       if (typeof event.text === "string" && event.text.trim()) this.settledText = event.text;
-      const text = this.settledText.trim(); const error = this.settledError; const cancelled = this.settledCancelled;
+      const generation = Number.isSafeInteger(event.generation) ? event.generation : this.budgetGeneration;
+      const text = this.settledText.trim(); const error = this.budgetStops.get(generation) ?? this.settledError; const cancelled = !error && this.settledCancelled;
+      this.budgetStops.delete(generation);
       this.settledText = ""; this.settledError = ""; this.settledCancelled = false;
       // Answer the peers this turn was for, not every peer on the bus (issue #29). activeEnvs still holds the
       // whole delivery here, steered additions included.

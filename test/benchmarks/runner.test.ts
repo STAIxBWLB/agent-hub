@@ -93,3 +93,36 @@ describe("benchmark runner contracts", () => {
     } finally { if(existsSync(join(root,"hidden")))chmodSync(join(root,"hidden"),0o700);if(existsSync(join(root,"hidden","source.json")))chmodSync(join(root,"hidden","source.json"),0o600);rmSync(root,{recursive:true,force:true}); }
   });
 });
+
+test("case binding rejects a different pair on the same task image and changed input bytes", () => {
+  const root=fixture();
+  try {
+    const path=join(root,"case.json");
+    const code = `import importlib.util,pathlib,json,hashlib
+spec=importlib.util.spec_from_file_location('bench',${JSON.stringify(script)})
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+p=pathlib.Path(${JSON.stringify(path)})
+expected={'repo':'click','task':2068,'features':[1,6]}
+p.write_text(json.dumps(expected));pin=m.file_sha(p)
+assert m.validate_private_case(p,expected,pin)==expected
+p.write_text(json.dumps({'repo':'click','task':2068,'features':[2,10]}))
+try: m.validate_private_case(p,expected,m.file_sha(p));raise AssertionError('swapped pair accepted')
+except m.BenchError as e: assert 'identity' in str(e)
+p.write_text(json.dumps(expected)+' ')
+try: m.validate_private_case(p,expected,pin);raise AssertionError('changed bytes accepted')
+except m.BenchError as e: assert 'changed' in str(e)
+`;
+    const r=spawnSync("python3",["-B","-c",code],{encoding:"utf8"});expect(r.status).toBe(0);
+  } finally {rmSync(root,{recursive:true,force:true});}
+});
+
+test("crash trust restoration preserves native updates to unrelated project fields", () => {
+  const root=fixture();
+  try {
+    const trust=join(root,"trust.json"),project=join(root,"project");mkdirSync(project);
+    writeFileSync(trust,JSON.stringify({projects:{[project]:{hasTrustDialogAccepted:true,lastCost:2},other:{untouched:true}}}));
+    writeFileSync(join(root,"restoration-ledger.json"),JSON.stringify({protected:{paths:{},restored:false},siblings:{},trust:{file:trust,project,previous:{hasTrustDialogAccepted:false,lastCost:1},written:{hasTrustDialogAccepted:true,lastCost:1},restored:false,hadProjects:true,mode:384}}));
+    const r=spawnSync("python3",["-B",script,"restore","--run",root],{encoding:"utf8"});expect(r.status).toBe(0);
+    const value=JSON.parse(readFileSync(trust,"utf8"));expect(value.projects[project]).toEqual({hasTrustDialogAccepted:false,lastCost:2});expect(value.projects.other).toEqual({untouched:true});
+  } finally {rmSync(root,{recursive:true,force:true});}
+});

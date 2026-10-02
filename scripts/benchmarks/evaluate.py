@@ -3,6 +3,8 @@
 from __future__ import annotations
 import hashlib, json, pathlib, subprocess, sys, tempfile, types
 
+sys.dont_write_bytecode = True
+
 EXPECTED_UPSTREAM = "63b9d44d9f39a02fccf5bf0052db48a917a011fd"
 SCHEMA = "agent-hub.cooperbench-run/v1"
 

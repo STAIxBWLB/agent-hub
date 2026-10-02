@@ -35,13 +35,25 @@ test("#94 the Pi bridge records usage once per message before releasing the turn
 test("#94 the actual extension forwards assistant message usage and does not recount it at agent_end", async () => {
   const posts: any[] = [];
   let budgetOffline = false;
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) { const body = await req.json() as any; posts.push(body); if (new URL(req.url).pathname === "/budget" && budgetOffline) return Response.json({ error: "stale Pi budget request" }, { status: 409 }); return Response.json({ ok: true }); } });
+  let queued: any;
+  let stopPolling: (() => Promise<unknown>) | undefined;
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
+    const path = new URL(req.url).pathname;
+    if (req.method === "GET" && path === "/commands") {
+      if (queued) { const command = queued; queued = undefined; return Response.json({ command }); }
+      await Bun.sleep(10); return Response.json({ command: null });
+    }
+    const body = await req.json() as any; posts.push(body);
+    if (path === "/budget" && budgetOffline) return Response.json({ error: "stale Pi budget request" }, { status: 409 });
+    return Response.json({ ok: true });
+  } });
   const previousUrl = process.env.AGENTHUB_PI_BRIDGE_URL; const previousToken = process.env.AGENTHUB_PI_BRIDGE_TOKEN;
   process.env.AGENTHUB_PI_BRIDGE_URL = `http://127.0.0.1:${server.port}`; process.env.AGENTHUB_PI_BRIDGE_TOKEN = "test-token";
   try {
     const { default: extension } = await import("../src/pi/extension.ts");
     const handlers = new Map<string, (event: any, ctx?: any) => Promise<unknown>>();
     extension({ on: (name: string, handler: (event: any, ctx?: any) => Promise<unknown>) => handlers.set(name, handler), registerProvider: () => {}, registerTool: () => {} });
+    stopPolling = () => handlers.get("session_shutdown")!({});
     const message = { role: "assistant", content: [{ type: "text", text: "done" }], usage: { totalTokens: 57 } };
     await handlers.get("message_end")!({ message }); await handlers.get("agent_end")!({ messages: [message] });
     expect(posts.filter((p) => p.type === "tokens")).toMatchObject([{ id: "usage-1", tokens: 57 }]);
@@ -52,7 +64,20 @@ test("#94 the actual extension forwards assistant message usage and does not rec
     await handlers.get("before_provider_request")!({}, { model: { provider: "agent-hub-local" }, abort: () => { aborted = true; } });
     expect(aborted).toBe(true);
     expect(posts.some((p) => p.type === "agent_end" && String(p.error).includes("admission unavailable"))).toBe(true);
+
+    budgetOffline = false;
+    let aborts = 0;
+    const ctx = { modelRegistry: {}, shutdown: () => {}, abort: () => { aborts++; }, sessionManager: { getHeader: () => ({ id: "session-1" }), getSessionFile: () => "/tmp/session-1.jsonl" } };
+    await handlers.get("session_start")!({}, ctx);
+    await handlers.get("agent_start")!({}); // generation 1
+    await handlers.get("agent_start")!({}); // generation 2 owns the current context
+    queued = { id: "late-budget-stop", type: "abort_budget", generation: 1 };
+    for (let i = 0; i < 100 && !posts.some((p) => p.id === "late-budget-stop" && p.ok === true); i++) await Bun.sleep(10);
+    expect(posts.some((p) => p.id === "late-budget-stop" && p.ok === true)).toBe(true);
+    expect(aborts).toBe(0);
+    expect(posts.some((p) => p.type === "agent_end" && String(p.error).includes("elapsed_ms wall cap"))).toBe(false);
   } finally {
+    try { await stopPolling?.(); } catch { /* test server cleanup below */ }
     server.stop(true);
     if (previousUrl === undefined) delete process.env.AGENTHUB_PI_BRIDGE_URL; else process.env.AGENTHUB_PI_BRIDGE_URL = previousUrl;
     if (previousToken === undefined) delete process.env.AGENTHUB_PI_BRIDGE_TOKEN; else process.env.AGENTHUB_PI_BRIDGE_TOKEN = previousToken;

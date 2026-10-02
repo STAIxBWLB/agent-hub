@@ -85,7 +85,7 @@ def check_orca_context(repo: Path):
 
 def prepare(args):
     repo=Path(__file__).resolve().parents[2]
-    check_orca_context(repo)
+    # Preparation is a pure fixture operation; native.ts proves Orca ownership before launch.
     m=load(args.manifest); validate_manifest(m); root=args.output.resolve()
     for c in m["cases"]:
         c["archive"] = str((args.archives / f"{c['repo']}-{c['task']}.tar").resolve())
@@ -125,6 +125,12 @@ def collect_patch(cwd: Path, base: str = "HEAD"):
     if p.returncode: raise BenchError("cannot collect fixture diff")
     return p.stdout
 
+def validate_private_case(path:Path, expected:dict, pinned_hash:str|None):
+    data=load(path)
+    if (data.get("repo"),data.get("task"),data.get("features"))!=(expected["repo"],expected["task"],expected["features"]): raise BenchError("private case identity differs from the selected feature pair")
+    if pinned_hash!=file_sha(path): raise BenchError("private case changed after native execution")
+    return data
+
 def grade(args):
     root=args.run.resolve(); prep=load(root/"prepared.json"); m=load(root/"manifest.json"); cohort=load(root/"cohort.json")
     if prep["manifest_sha256"]!=file_sha(root/"manifest.json") or cohort.get("manifest_sha256")!=prep["manifest_sha256"]: raise BenchError("prepared manifest changed")
@@ -154,11 +160,13 @@ def grade(args):
         if case["image_digest"] not in digests: raise BenchError(f"evaluation image digest differs from manifest for case {case_index}")
         private_case=private_inputs/f"case-{case_index:02d}.json"
         if not private_case.is_file(): raise BenchError(f"private evaluator case is missing for case {case_index}")
+        validate_private_case(private_case,case,cohort.get("private_case_sha256",{}).get(str(case_index)))
         output=root/"evaluations"/f"{case_index:02d}-{label}.json"; output.parent.mkdir(exist_ok=True); output.unlink(missing_ok=True)
-        p=subprocess.run([str(args.python),str(args.evaluator),str(upstream),prep["upstream_source_sha256"],str(private_case),mode,str(patch) if patch else "-",str(output)],capture_output=True,text=True)
+        p=subprocess.run([str(args.python),"-B",str(args.evaluator),str(upstream),prep["upstream_source_sha256"],str(private_case),mode,str(patch) if patch else "-",str(output)],capture_output=True,text=True)
         if p.returncode or not output.is_file(): raise BenchError(f"official evaluation failed for {label}")
         ev=load(output)
         if ev.get("schema")!=SCHEMA or ev.get("upstream_commit")!=m["upstream"]["commit"] or ev.get("case_sha256")!=file_sha(private_case) or ev.get("image_digest")!=case["image_digest"] or ev.get("evaluator_sha256")!=eval_hash: raise BenchError(f"evaluator provenance mismatch for {label}")
+        if (ev.get("repo"),ev.get("task"),ev.get("features"))!=(case["repo"],case["task"],case["features"]): raise BenchError("evaluator returned a different qualified feature pair")
         return output,ev
 
     for case_index in selected:
@@ -249,9 +257,13 @@ def restore(args):
     trust=ledger.get("trust")
     if trust and not trust.get("restored"):
         path=Path(trust["file"]);state=load(path);current=state.get("projects",{}).get(trust["project"])
-        if current==trust.get("written"):
+        if isinstance(current,dict) and current.get("hasTrustDialogAccepted") is True:
             if trust.get("previous") is None: del state["projects"][trust["project"]]
-            else: state["projects"][trust["project"]]=trust["previous"]
+            else:
+                previous=trust["previous"]
+                if "hasTrustDialogAccepted" in previous: current["hasTrustDialogAccepted"]=previous["hasTrustDialogAccepted"]
+                else: current.pop("hasTrustDialogAccepted",None)
+                state["projects"][trust["project"]]=current
             if not trust.get("hadProjects") and not state.get("projects"): state.pop("projects",None)
             tmp=path.with_name(path.name+f".restore-{os.getpid()}");tmp.write_text(json.dumps(state,indent=2)+"\n",encoding="utf-8");os.chmod(tmp,int(trust.get("mode",0o600)));os.replace(tmp,path)
         elif current!=trust.get("previous"):

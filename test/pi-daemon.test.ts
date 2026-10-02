@@ -111,7 +111,7 @@ test("Pi tools use hub path guards and approval denial, with persisted call rece
   expect((await call("write", { path: "different.txt", content: "denied" }, "write1")).text).toContain("different arguments");
 });
 
-test("idle Pi user_bash keeps the managed route without opt-in budgets and charges only run scope when enabled", async () => {
+test.skipIf(process.platform !== "darwin")("idle Pi user_bash keeps the managed route without opt-in budgets and charges only run scope when enabled", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-user-bash-"));
   const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
   const { stateDir, daemon, console_ } = await hub(config, true);

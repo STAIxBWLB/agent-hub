@@ -170,6 +170,33 @@ test("a successful Pi retry clears its provisional agent_end failure", async () 
   } finally { await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
 });
 
+test("relay execution-budget denial is reported as needs-review without failure escalation", async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-relay-budget-stop-"));
+  const failures: string[] = [], messages: string[] = [], receipts: string[] = [];
+  const peer = new PiPeer("pi", { cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx", cmd: ["bun", join(import.meta.dir, "fakes/pi-rpc.ts")], relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [{ id: "dgx/coding" }] }, tools: [], executeTool: async () => "ok", onTurnFailure: async (_envs, why) => { failures.push(why); } });
+  peer.onMessage = (text) => messages.push(text);
+  peer.onDelivery = (receipt) => receipts.push(receipt.state);
+  try {
+    await peer.start();
+    await peer.deliver([newEnvelope("user", "budgeted task", { to: ["pi"], refs: { task: "42" } })], "budgeted-delivery");
+    const launch = peer.tuiLaunch!;
+    const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
+    const url = launch.env.AGENTHUB_PI_BRIDGE_URL!;
+    await fetch(`${url}/event`, { method: "POST", headers, body: JSON.stringify({ type: "agent_start", generation: 1 }) });
+    expect(peer.recordBudgetStop({ allowed: false, scope: "task:42", unit: "model_calls", used: 3, limit: 3, remaining: 0, reason: "exhausted" })).toMatchObject({ generation: 1, reason: "execution budget exhausted: task:42 model_calls used 3 of 3; 0 remaining" });
+    await fetch(`${url}/event`, { method: "POST", headers, body: JSON.stringify({ type: "agent_end", generation: 0, failed: true, error: "stale provider error" }) });
+    await fetch(`${url}/event`, { method: "POST", headers, body: JSON.stringify({ type: "agent_settled", generation: 0 }) });
+    expect(receipts).toEqual(["accepted"]); // delayed events from an older generation cannot settle this delivery
+    // The relay returns a generic HTTP failure after its authoritative typed denial.
+    await fetch(`${url}/event`, { method: "POST", headers, body: JSON.stringify({ type: "agent_end", generation: 1, failed: true, error: "backend returned HTTP 502" }) });
+    await fetch(`${url}/event`, { method: "POST", headers, body: JSON.stringify({ type: "agent_settled", generation: 1 }) });
+    expect(failures).toEqual([]);
+    expect(messages.at(-1)).toContain("Pi stopped at the execution budget: execution budget exhausted: task:42 model_calls used 3 of 3; 0 remaining");
+    expect(receipts).toEqual(["accepted", "needs_review"]);
+    expect(peer.recordBudgetStop({ allowed: false, scope: "run:late", unit: "model_calls", used: 1, limit: 1, remaining: 0, reason: "exhausted" })).toBeUndefined();
+  } finally { await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+});
+
 test("user-cancelled Pi turns are reported without automatic cloud escalation", async () => {
   const stateDir = mkdtempSync(join(process.cwd(), ".pi-cancel-"));
   const failures: string[] = [], messages: string[] = [];

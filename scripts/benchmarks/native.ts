@@ -148,6 +148,12 @@ for (let i = 0; i < cachedInputs.length; i++)
     for (let k = 0; k < 2; k++)
         if (hash(cachedInputs[i].prompts[k]) !== m.cases[i].prompt_sha256[k])
             throw new Error('private prompt hash mismatch');
+const privateCaseHashes: Record<number, string> = {};
+for (let i = 0; i < cachedInputs.length; i++) {
+    const input = cachedInputs[i], expected = m.cases[i];
+    if (input.repo !== expected.repo || input.task !== expected.task || JSON.stringify(input.features) !== JSON.stringify(expected.features)) throw new Error('private case identity differs from the selected manifest pair');
+    privateCaseHashes[i] = sourceHash(join(privateInputs, `case-${i.toString().padStart(2, '0')}.json`));
+}
 const probeTarget = realPath(probeArg);
 const protectedRoots = [privateInputs, upstreamRoot];
 for (let i = 0; i < argv.length; i++)
@@ -442,10 +448,11 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             await rpc('initialize', { clientInfo: { name: 'ahub-native-benchmark', version: '1' }, capabilities: { experimentalApi: true } });
             w.send(JSON.stringify({ method: 'initialized' }));
             thread = await rpc('thread/start', { cwd: dir, model: manifest.models.codex, approvalPolicy: 'never', sandbox: 'workspace-write', config: { 'features.memories': false, 'features.external_agent_memory_import': false, model_reasoning_effort: manifest.effort.codex, web_search: 'disabled', sandbox_workspace_write: { network_access: false, exclude_slash_tmp: true, exclude_tmpdir_env_var: true } } });
+            if (typeof thread.thread?.cwd !== 'string' || realPath(thread.thread.cwd) !== realPath(dir)) throw new Error('Codex native thread cwd mismatch');
             if (thread.model !== manifest.models.codex)
                 throw new Error('Codex model mismatch');
             await wait(async () => codexMessages.some(x => x.method === 'mcpServer/startupStatus/updated' && x.params?.name === 'agent-hub' && x.params?.status === 'ready'), 'Codex MCP');
-            readiness.codex = { threadId: thread.thread?.id, model: thread.model, effort: manifest.effort.codex, cwd: dir, mcpReady: true };
+            readiness.codex = { threadId: thread.thread?.id, model: thread.model, effort: manifest.effort.codex, cwd: realPath(thread.thread.cwd), mcpReady: true };
             if (!protectedModes.has(probeTarget))
                 throw new Error('sandbox probe target was not locked before native startup');
             const probeCommand = `if head -c 1 ${shellQuote(probeTarget)} >/dev/null 2>&1; then printf 'AHUB_PROBE_READABLE'; else printf 'AHUB_PROBE_DENIED'; fi`, probePrompt = `Unscored setup-only sandbox probe. Use your local command tool to run exactly this command, do not inspect or print file contents, and finish with [FYI] followed by the command output: ${probeCommand}`, probeStart = codexMessages.length;
@@ -630,7 +637,7 @@ if (existsSync(join(runs, 'runs')) && readdirSync(join(runs, 'runs')).length)
 mkdirSync(join(runs, 'private'), { recursive: true, mode: 0o700 });
 mkdirSync(join(runs, 'runs'), { recursive: true, mode: 0o700 });
 mkdirSync(join(runs, 'patches'), { recursive: true, mode: 0o700 });
-writeFileSync(join(runs, 'cohort.json'), JSON.stringify({ schema: m.schema, manifest_sha256: sourceHash(join(runs, 'manifest.json')), cases: selected, calibration: setupOnly, arms: m.arms, runner_sha256: prepared.runner_sha256, native_runner_sha256: prepared.native_runner_sha256 }), { mode: 0o600 });
+writeFileSync(join(runs, 'cohort.json'), JSON.stringify({ schema: m.schema, manifest_sha256: sourceHash(join(runs, 'manifest.json')), cases: selected, calibration: setupOnly, private_case_sha256: Object.fromEntries(selected.map(i => [i, privateCaseHashes[i]])), arms: m.arms, runner_sha256: prepared.runner_sha256, native_runner_sha256: prepared.native_runner_sha256 }), { mode: 0o600 });
 try {
     await protectInputs();
     for (const i of selected) {

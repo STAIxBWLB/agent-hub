@@ -1468,8 +1468,9 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!(current instanceof PiPeer)) return { allowed: false, reason: "Pi owner is not active" };
     const decisions = tasks.admitExecutionEnvelopes(current.budgetEnvelopes, "pi", "model_calls");
     const denied = decisions.find(d => !d.allowed);
+    const stop = denied ? current.recordBudgetStop(denied) : undefined;
     const deadline = decisions.filter(d => d.unit === "elapsed_ms" && d.remaining !== null).map(d => d.remaining!);
-    return { allowed: !denied, ...(denied ? { reason: `execution budget ${denied.reason}: ${denied.scope}` } : {}), ...(deadline.length ? { remainingMs: Math.min(...deadline) } : {}) };
+    return { allowed: !denied, ...(denied ? { reason: stop?.reason ?? `execution budget ${denied.reason}: ${denied.scope}` } : {}), ...(deadline.length ? { remainingMs: Math.min(...deadline) } : {}) };
   }
 
   async function validateLocalChoice(route: string | undefined, fixedModel: string): Promise<void> {
