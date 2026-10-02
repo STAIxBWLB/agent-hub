@@ -59,9 +59,37 @@ test("after a crash cut the last line short, the next event still lands on a lin
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("usage since filters against its source timestamp, not when a transcript poll noticed it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-events-"));
+  const file = join(dir, "events.jsonl");
+  writeFileSync(file, `${JSON.stringify({ v: 1, at: "2026-10-02T02:00:00.000Z", measuredAt: "2026-10-01T20:00:00.000Z", type: "usage", peer: "claude", source: "claude_transcript", id: "opaque" })}\n`);
+  try { expect(readEvents(file, Date.parse("2026-10-02T00:00:00Z"))).toEqual([]); } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // Review of #49: edit conflicts are counted in the report.
 test("summarize counts conflict events, and the report says so", () => {
   const r = summarize([ev(0, { type: "conflict", peer: "codex", task: 2, other: 1, owner: "kimi", paths: ["a.ts"], concurrent: false }), ev(1, { type: "conflict", peer: "kimi", other: 2, owner: "codex", paths: ["b.ts"], concurrent: true })]);
   expect(r.conflicts).toBe(2);
   expect(formatReport(r).join("\n")).toContain("edit conflicts: 2");
+});
+
+test("usage report deduplicates resumed transcript records and keeps missing counters unknown", () => {
+  const r = summarize([
+    ev(0, { type: "usage", peer: "local", source: "omniroute", id: "call-1", requestedModel: "coding", servedModel: "vendor/model", provider: "vllm", inputTokens: 20, outputTokens: 4, totalTokens: 24 }),
+    ev(1, { type: "usage", peer: "claude", source: "claude_transcript", id: "opaque-hash", inputTokens: 9, cacheReadTokens: 30, outputTokens: 2 }),
+    ev(2, { type: "usage", peer: "claude", source: "claude_transcript", id: "opaque-hash", inputTokens: 9, cacheReadTokens: 30, outputTokens: 2 }),
+    ev(3, { type: "usage", peer: "local", source: "omniroute", id: "call-2", requestedModel: "coding" }),
+  ]);
+  expect(r.usage.peers.claude).toMatchObject({ records: 1, withUsage: 1, withoutUsage: 0, inputTokens: 9, inputRecords: 1, cacheReadTokens: 30 });
+  expect(r.usage.peers.local).toMatchObject({ records: 2, withUsage: 1, withoutUsage: 1, inputTokens: 20, outputTokens: 4 });
+  expect(r.usage.totals.totalTokens).toBe(24);
+  expect(r.usage.completeCoverage).toBe(false);
+  expect(formatReport(r).join("\n")).toContain("estimated price unknown; measured spend unknown");
+});
+
+test("usage report does not print a zero team total when no peer reported counters", () => {
+  const r = summarize([ev(0, { type: "state", peer: "claude", state: "idle" })]);
+  expect(r.usage.completeCoverage).toBe(false);
+  expect(r.usage.unknownPeers).toEqual(["claude"]);
+  expect(formatReport(r).join("\n")).toContain("reported token total unknown (0 known records)");
 });

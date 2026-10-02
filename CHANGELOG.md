@@ -2,6 +2,14 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## 0.12.3
+
+- Fix live Claude delivery settlement holds, add generation-bound explicit completion and pending-settlement status (#100).
+- Record local provider usage and optional native Claude usage with served-model provenance and explicit coverage (#101).
+- Add opt-in persistent shared execution budgets for instrumented local and Pi peers; preserve legacy step units (#102).
+- Version the fixed-sample native CooperBench runner and artifact audit (#103).
+- Limit the test leak guard to verified processes owned by the current suite (#104).
+
 ## 0.12.2
 
 - An edit approved after another peer changed the file now applies its fragment replacement to current contents. It rechecks that the old fragment still matches exactly once and refuses a stale match. Both write and edit revalidate their paths after approval, so a path replaced with an escaping symlink during the wait is refused (#98).

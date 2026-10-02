@@ -4,6 +4,7 @@ import { CLASSES, OUTCOMES_KEPT_MS, PLAN_KEYS, type Board, type Task, type TaskC
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import { assign, detectSignals, LOCAL, PI, type Assignment, type Routing } from "./routing.ts";
+import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
 
 export interface TasksDeps {
   board: Board;
@@ -27,6 +28,8 @@ export interface TasksDeps {
   recordOverlap?: (task: number, owner: PeerId, others: { task: number; owner: PeerId; paths: string[]; symbols?: string[] }[]) => void;
   /** Quota per peer from fresh readings (issue #36): routing drains the windows that reset soonest first. */
   quota?: () => Record<PeerId, { headroom: number; resetsAt?: number }>;
+  /** Optional persisted task/run execution limits (issue #102). */
+  executionBudget?: ExecutionBudget;
   /** Reviewer choice from recorded review outcomes (issue #35); off unless the project config turns it on. */
   review?: { adaptive: boolean; min_reviews: number };
   /** Peers whose recent deliveries all failed, with the reason (issue #89); routing skips them. */
@@ -107,6 +110,25 @@ export class Tasks {
   }
 
   isPii = (task: Pick<Task, "signals">) => task.signals.includes("pii") && this.d.routing().constraints.pii === "local_only";
+
+  configureExecutionBudget = (config: ExecutionBudgetConfig): ExecutionBudgetStatus | undefined => {
+    if (!this.d.executionBudget) return undefined;
+    if (config.kind === "task" && (!config.taskId || !this.d.board.get(config.taskId))) throw new Error(`task #${config.taskId ?? "?"} does not exist`);
+    return this.d.executionBudget.configure(config);
+  };
+  disableExecutionBudget = (id: string): boolean => this.d.executionBudget?.disable(id) ?? false;
+  executionBudgetStatus = (id?: string): ExecutionBudgetStatus | ExecutionBudgetStatus[] | undefined => this.d.executionBudget?.status(id);
+  /** Charge only budgets matching the task actually delivered to this peer, plus active run budgets. */
+  admitExecution = (taskId: number | undefined, peer: PeerId, unit: ExecutionUnit, amount = 1): ExecutionBudgetDecision[] => this.d.executionBudget?.admitTask(taskId, peer, unit, amount) ?? [];
+  /** A digest may include several tasks. Charge each matching task budget and each run budget once, atomically. */
+  admitExecutionEnvelopes = (envs: Envelope[], peer: PeerId, unit: ExecutionUnit, amount = 1): ExecutionBudgetDecision[] => {
+    const ids = [...new Set(envs.flatMap((e) => {
+      const value = e.refs?.task;
+      const id = typeof value === "string" ? Number(value) : NaN;
+      return Number.isSafeInteger(id) && id > 0 ? [id] : [];
+    }))];
+    return this.d.executionBudget?.admitTasks(ids, peer, unit, amount) ?? [];
+  };
 
   /** What peers other than the owner, the console stream and the log may see of a task. */
   publicTitle = (task: Task) => (this.isPii(task) ? `#${task.id} [pii]` : `#${task.id} ${task.title}`);

@@ -1,5 +1,22 @@
 // Launchers inject only the flags the hub owns and refuse user-supplied duplicates.
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 export const CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub";
+
+/** A scoped candidate MCP server can be selected without promoting the installed plugin. */
+function claudeChannel(userArgs: string[]): string {
+  const bundle = resolve(import.meta.dir, "../../plugins/agent-hub/server.js");
+  for (let i = 0; i < userArgs.length; i++) {
+    const arg = userArgs[i]!;
+    const path = arg === "--mcp-config" ? userArgs[i + 1] : arg.startsWith("--mcp-config=") ? arg.slice("--mcp-config=".length) : undefined;
+    if (!path) continue;
+    try {
+      const server = JSON.parse(readFileSync(resolve(path), "utf8")).mcpServers?.["agent-hub"];
+      if (server?.command === "bun" && Array.isArray(server.args) && server.args.some((value: unknown) => typeof value === "string" && resolve(value) === bundle)) return "server:agent-hub";
+    } catch { /* The native CLI reports invalid user-supplied MCP configuration. */ }
+  }
+  return CLAUDE_CHANNEL;
+}
 
 const OWNED: Record<"claude" | "codex", string[]> = {
   claude: ["--dangerously-load-development-channels", "--dangerously-skip-permissions"],
@@ -53,7 +70,7 @@ export function buildLaunch(
     const notes = [unattended ? UNATTENDED_WARNING : "", ctx.statusLine && own ? "note: you passed --settings, so the hub's status line tee is off and the budget coordinator cannot see Claude's quota (ahub budget set claude <0..1> still works)." : ""].filter(Boolean);
     return {
       cmd: "claude",
-      args: ["--dangerously-load-development-channels", CLAUDE_CHANNEL, ...(unattended ? ["--dangerously-skip-permissions"] : []), ...tee, ...passthrough],
+      args: ["--dangerously-load-development-channels", claudeChannel(passthrough), ...(unattended ? ["--dangerously-skip-permissions"] : []), ...tee, ...passthrough],
       ...(notes.length ? { warning: notes.join("\n") } : {}),
     };
   }

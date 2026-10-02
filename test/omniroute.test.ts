@@ -86,6 +86,15 @@ test("through the sidecar: no key is sent, the session id is, the selected model
   expect(res.selectedModel).toBe("vllm/x");
 });
 
+test("provider usage and served-model provenance are normalized without filling missing counters", async () => {
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (req) => new URL(req.url).pathname.endsWith("/models") ? Response.json({ data: [] }) : Response.json({ model: "vendor/served-7b", usage: { prompt_tokens: 12, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 3 } }, choices: [{ message: { role: "assistant", content: "ok" } }] }, { headers: { "x-omniroute-provider": "vllm" } }) });
+  cleanup.push(() => server.stop(true));
+  process.env.OMNIROUTE_API_KEY = "k";
+  const result = await new OmniRoute({ urls: [`http://127.0.0.1:${server.port}/v1`], access_hosts: [] }).chat({ model: "coding", messages: [] });
+  expect(result).toMatchObject({ servedModel: "vendor/served-7b", provider: "vllm", usage: { inputTokens: 12, outputTokens: 5, cacheReadTokens: 3 } });
+  expect(result.usage).not.toHaveProperty("cacheWriteTokens");
+});
+
 test("routing.toml: shipped default loads; a project file wins; a file without fixed_model is refused", () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const routing = loadRouting(dir);

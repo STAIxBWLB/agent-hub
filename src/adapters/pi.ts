@@ -6,6 +6,7 @@ import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } 
 import { BasePeer } from "../hub/peers.ts";
 import { stopOwnedProcess } from "../hub/child-process.ts";
 import { realPath } from "../hub/project.ts";
+import type { ExecutionBudgetDecision, ExecutionUnit } from "../hub/execution-budget.ts";
 
 export interface PiModelDescriptor { id: string; name?: string; contextWindow?: number; maxTokens?: number; reasoning?: boolean; }
 export interface PiToolSchema { name: string; description?: string; parameters: Record<string, unknown>; }
@@ -13,9 +14,11 @@ export interface PiRelay { url: string; token: string; models: PiModelDescriptor
 export interface PiOptions {
   cwd: string; stateDir: string; cmd?: string[]; mode: "headless" | "tui"; backend: "auto" | "dgx" | "mlx"; sessionFile?: string; sessionId?: string;
   model?: string;
-  relay: PiRelay; executeTool: (name: string, args: unknown, toolCallId: string, sessionId?: string) => Promise<string>; tools: PiToolSchema[];
+  relay: PiRelay; executeTool: (name: string, args: unknown, toolCallId: string, sessionId?: string, signal?: AbortSignal) => Promise<string>; tools: PiToolSchema[];
   preamble?: string;
   selectModel?: (envs: Envelope[]) => Promise<string | undefined>; maxSteps?: number;
+  /** Atomic task/run admission immediately before provider requests or tool execution. */
+  admitBudget?: (envs: Envelope[], unit: ExecutionUnit) => Promise<ExecutionBudgetDecision[]>;
   /** Reported message usage as increments, before agent_settled releases the turn. */
   onTokens?: (added: number) => void;
   onTurnFailure?: (envs: Envelope[], reason: string) => Promise<void>;
@@ -51,6 +54,11 @@ export class PiPeer extends BasePeer {
   private currentReply?: Envelope;
   private sessionId = "";
   private sessionFile = "";
+  private executionBudgetTimer?: ReturnType<typeof setTimeout>;
+  private executionAbort?: AbortController;
+  private readonly budgetStops = new Map<number, string>();
+  private readonly idleBashReservations = new Map<string, { generation: number; expiresAt: number; deadlineAt?: number }>();
+  private budgetGeneration = 0;
   private emptyResumeVerified = false;
   private verifiedEmptyResume?: VerifiedEmptyResume;
   private activityObserved = false;
@@ -132,11 +140,87 @@ export class PiPeer extends BasePeer {
     this.verifiedEmptyResume = undefined;
   }
 
+  /** Envelopes belonging to the currently executing Pi turn, for relay-side model-call admission. */
+  get budgetEnvelopes(): Envelope[] { return this.agentRunning && this.state === "busy" ? this.activeEnvs.slice() : []; }
+
+  /** Mark an authoritative relay admission stop against the current Pi turn, never a later turn. */
+  recordBudgetStop(decision: ExecutionBudgetDecision): { generation: number; reason: string } | undefined {
+    if (!this.agentRunning || this.state !== "busy") return undefined;
+    const generation = this.budgetGeneration;
+    const reason = `execution budget ${decision.reason ?? "exhausted"}: ${decision.scope} ${decision.unit} used ${decision.used}${decision.limit === null ? "" : ` of ${decision.limit}`}; ${decision.remaining === null ? "remaining unknown" : `${decision.remaining} remaining`}`;
+    this.budgetStops.set(generation, reason);
+    this.executionAbort?.abort();
+    for (const old of this.budgetStops.keys()) if (old < generation - 8) this.budgetStops.delete(old);
+    return { generation, reason };
+  }
+
   async start(): Promise<void> {
     if (this.starting) return this.starting;
     this.starting = this.startImpl();
     try { await this.starting; } finally { this.starting = undefined; }
   }
+  private async handleToolRequest(body: any): Promise<Response> {
+    if (this.stopping || this.state === "offline") return Response.json({ text: "error: Pi owner is stopped" }, { status: 409 });
+    let executionSignal = this.executionAbort?.signal;
+    let idleBashTimer: ReturnType<typeof setTimeout> | undefined;
+    if (body.purpose === "idle_user_bash") {
+      const reservation = typeof body.reservation === "string" ? this.idleBashReservations.get(body.reservation) : undefined;
+      if (!reservation || reservation.expiresAt < Date.now() || reservation.generation !== body.generation || !this.ownerClaimed || this.ownerPid === undefined || this.state !== "idle" || this.agentRunning || this.activeTools > 0 || this.activeEnvs.length > 0 || !Number.isSafeInteger(body.generation) || body.generation !== this.budgetGeneration) return Response.json({ text: "error: stale or non-idle Pi user shell request" }, { status: 409 });
+      if (reservation.deadlineAt !== undefined && reservation.deadlineAt <= Date.now()) {
+        this.idleBashReservations.delete(String(body.reservation));
+        return Response.json({ text: "error: Pi user shell execution budget expired" }, { status: 409 });
+      }
+      this.idleBashReservations.delete(String(body.reservation));
+      const idleBashAbort = new AbortController();
+      executionSignal = idleBashAbort.signal;
+      if (reservation.deadlineAt !== undefined) idleBashTimer = setTimeout(() => idleBashAbort.abort(), Math.max(0, reservation.deadlineAt - Date.now()));
+    }
+    this.noteActivity();
+    this.activeTools++;
+    if (this.state === "idle") this.setState("busy");
+    if (this.state === "busy") this.touch();
+    try { return Response.json({ text: await this.opts.executeTool(String(body.name), body.args, String(body.toolCallId ?? ""), this.sessionId, executionSignal) }); }
+    catch (error) { return Response.json({ text: `error: ${(error as Error).message}` }, { status: 200 }); }
+    finally {
+      clearTimeout(idleBashTimer);
+      this.activeTools--;
+      if (this.state === "busy") {
+        if (!this.activeTools && !this.agentRunning && !this.activeEnvs.length) this.setState("idle");
+        else this.touch();
+      }
+    }
+  }
+
+  private async handleBudgetRequest(body: any): Promise<Response> {
+    if (!["model_calls", "tool_calls"].includes(String(body.unit))) return Response.json({ error: "invalid Pi budget unit" }, { status: 400 });
+    const idleUserBash = body.idleUserBash === true;
+    const current = Number.isSafeInteger(body.generation) && body.generation === this.budgetGeneration;
+    const idleOwner = this.ownerClaimed && this.ownerPid !== undefined && this.state === "idle" && !this.agentRunning && this.activeTools === 0 && this.activeEnvs.length === 0;
+    if (!current || (idleUserBash ? !idleOwner : !this.agentRunning || this.state !== "busy")) return Response.json({ error: "stale Pi budget request" }, { status: 409 });
+    // An interactive user shell has no task delivery. It may spend an eligible run budget only.
+    const envs = idleUserBash ? [] : this.budgetEnvelopes;
+    const decisions = this.opts.admitBudget ? await this.opts.admitBudget(envs, body.unit as ExecutionUnit) : [];
+    const denied = decisions.find((decision) => !decision.allowed);
+    const remaining = decisions.filter((decision) => decision.unit === "elapsed_ms" && decision.remaining !== null).reduce<number | undefined>((min, decision) => min === undefined ? decision.remaining! : Math.min(min, decision.remaining!), undefined);
+    let reservation: string | undefined;
+    if (idleUserBash && !denied) {
+      for (const [key, value] of this.idleBashReservations) if (value.expiresAt < Date.now()) this.idleBashReservations.delete(key);
+      reservation = randomUUID();
+      this.idleBashReservations.set(reservation, { generation: body.generation, expiresAt: Date.now() + 30_000, ...(remaining === undefined ? {} : { deadlineAt: Date.now() + remaining }) });
+    }
+    clearTimeout(this.executionBudgetTimer);
+        if (!denied && remaining !== undefined && this.state === "busy") {
+          const generation = this.budgetGeneration;
+          const controller = this.executionAbort;
+          this.executionBudgetTimer = setTimeout(() => {
+            if (!this.agentRunning || generation !== this.budgetGeneration || controller !== this.executionAbort) return;
+            controller?.abort();
+            void this.sendTui({ type: "abort_budget", generation }).catch((error) => this.opts.log?.(`[${this.id}] elapsed budget stop could not reach Pi: ${(error as Error).message}`));
+          }, Math.max(0, remaining));
+        }
+    return Response.json({ decisions, ...(reservation ? { reservation } : {}) });
+  }
+
   private async startImpl(): Promise<void> {
     this.stopping = false;
     mkdirSync(this.opts.stateDir, { recursive: true });
@@ -168,22 +252,8 @@ export class PiPeer extends BasePeer {
         this.tuiCommands.delete(String(body.id)); body.ok ? pending.resolve(body.result) : pending.reject(new Error(String(body.error ?? "Pi TUI command failed")));
         return Response.json({ ok: true });
       }
-      if (url.pathname === "/tool") {
-        if (this.stopping || this.state === "offline") return Response.json({ text: "error: Pi owner is stopped" }, { status: 409 });
-        this.noteActivity();
-        this.activeTools++;
-        if (this.state === "idle") this.setState("busy");
-        if (this.state === "busy") this.touch();
-        try { return Response.json({ text: await this.opts.executeTool(String(body.name), body.args, String(body.toolCallId ?? ""), this.sessionId) }); }
-        catch (error) { return Response.json({ text: `error: ${(error as Error).message}` }, { status: 200 }); }
-        finally {
-          this.activeTools--;
-          if (this.state === "busy") {
-            if (!this.activeTools && !this.agentRunning && !this.activeEnvs.length) this.setState("idle");
-            else this.touch();
-          }
-        }
-      }
+      if (url.pathname === "/tool") return this.handleToolRequest(body);
+      if (url.pathname === "/budget") return this.handleBudgetRequest(body);
       return new Response("not found", { status: 404 });
     } });
     this.server = bridge;
@@ -340,7 +410,11 @@ export class PiPeer extends BasePeer {
       this.startOwnerMonitor(); if (this.opts.mode === "tui") this.setState("idle");
     }
     if (event.type === "session_shutdown") { this.stopping = true; this.ownerClaimed = false; this.clearOwnerMonitor(); this.resolveTuiExit?.(); this.resolveTuiExit = undefined; this.fail(new Error("Pi session shut down before settlement")); }
-    if (event.type === "agent_start") { this.usageSeen.clear(); this.noteActivity(); this.agentRunning = true; this.setState("busy"); }
+    if (event.type === "agent_start") {
+      const generation = Number.isSafeInteger(event.generation) ? event.generation : this.budgetGeneration + 1;
+      if (generation <= this.budgetGeneration) return;
+      this.usageSeen.clear(); this.idleBashReservations.clear(); this.executionAbort = new AbortController(); this.budgetGeneration = generation; this.noteActivity(); this.agentRunning = true; this.setState("busy");
+    }
     if (event.type === "activity" && this.state === "busy") this.touch();
     if (event.type === "tokens" && this.state === "busy" && typeof event.id === "string" && event.id.length <= 100 && Number.isSafeInteger(event.tokens) && event.tokens >= 0 && !this.usageSeen.has(event.id)) {
       this.usageSeen.add(event.id);
@@ -348,24 +422,35 @@ export class PiPeer extends BasePeer {
       if (event.tokens > 0) this.opts.onTokens?.(event.tokens);
     }
     if (event.type === "agent_end") {
+      if (Number.isSafeInteger(event.generation) && event.generation !== this.budgetGeneration) return;
+      clearTimeout(this.executionBudgetTimer); this.executionBudgetTimer = undefined;
+      const generation = Number.isSafeInteger(event.generation) ? event.generation : this.budgetGeneration;
+      const budgetStop = this.budgetStops.get(generation);
+      if (budgetStop) this.executionAbort?.abort();
       this.settledText = typeof event.text === "string" ? event.text : "";
-      this.settledCancelled = event.cancelled === true;
-      this.settledError = event.failed ? String(event.error ?? "Pi agent run failed") : "";
+      this.settledCancelled = !budgetStop && event.cancelled === true;
+      this.settledError = budgetStop ?? (event.failed ? String(event.error ?? "Pi agent run failed") : "");
     }
     if (event.type === "agent_settled") {
+      if (Number.isSafeInteger(event.generation) && event.generation !== this.budgetGeneration) return;
+      clearTimeout(this.executionBudgetTimer); this.executionBudgetTimer = undefined;
       this.agentRunning = false;
       if (typeof event.text === "string" && event.text.trim()) this.settledText = event.text;
-      const text = this.settledText.trim(); const error = this.settledError; const cancelled = this.settledCancelled;
+      const generation = Number.isSafeInteger(event.generation) ? event.generation : this.budgetGeneration;
+      const text = this.settledText.trim(); const error = this.budgetStops.get(generation) ?? this.settledError; const cancelled = !error && this.settledCancelled;
+      this.budgetStops.delete(generation);
       this.settledText = ""; this.settledError = ""; this.settledCancelled = false;
       // Answer the peers this turn was for, not every peer on the bus (issue #29). activeEnvs still holds the
       // whole delivery here, steered additions included.
       const reply = { inReplyTo: this.currentReply, to: replyAudience(this.activeEnvs) };
       if (cancelled) this.onMessage?.("Pi turn cancelled; inspect any partial effects before continuing.", reply);
+      else if (error?.startsWith("execution budget")) this.onMessage?.(`Pi stopped at the execution budget: ${error}. Inspect partial work before continuing.`, reply);
       else if (error) void this.opts.onTurnFailure?.(this.activeEnvs, error);
       else if (text) this.onMessage?.(text, reply);
       for (const id of this.activeDeliveryIds) this.delivery({ id, state: error || cancelled ? "needs_review" : "completed", ...(error || cancelled ? { reason: error || "Pi turn cancelled; partial effects are possible" } : {}) });
       this.activeDeliveryIds.clear();
       this.currentReply = undefined; this.activeEnvs = []; if (this.state === "busy" && !this.activeTools) this.setState("idle");
+      this.executionAbort = undefined;
     }
   }
 

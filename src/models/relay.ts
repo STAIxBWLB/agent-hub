@@ -32,6 +32,8 @@ export interface ModelRelayStatus {
 
 export interface ModelRelayOptions {
   omni: OmniRoute;
+  /** Authoritative admission immediately before each upstream request, including fallbacks. */
+  admitRequest?: () => Promise<{ allowed: boolean; reason?: string; remainingMs?: number }>;
   host?: string;
   port?: number;
   token?: string;
@@ -59,6 +61,8 @@ interface ActiveRequest {
   cancel?: (reason?: unknown) => Promise<void>;
   cleanup: () => void;
 }
+
+class ExecutionAdmissionError extends Error {}
 
 const safeHeader = (value: string | null): string | undefined => value && value.length < 256 ? value : undefined;
 
@@ -111,8 +115,9 @@ function sseResponse(response: Response, release: () => void, onModel?: (model: 
     for (const line of lines) {
       if (!line.startsWith("data:") || line.slice(5).trim() === "[DONE]") continue;
       try {
-        const value = JSON.parse(line.slice(5).trim()) as { model?: unknown };
-        if (typeof value.model === "string" && value.model.length < 256) {
+        const value = JSON.parse(line.slice(5).trim()) as { model?: unknown; choices?: unknown[] };
+        // Gateway heartbeat events can name a synthetic "keepalive" model with no choices.
+        if (Array.isArray(value.choices) && value.choices.length && typeof value.model === "string" && value.model.length < 256) {
           inspectedModel = true;
           onModel(value.model);
           return;
@@ -220,7 +225,10 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       const boundedRequest = isOllama
         ? { ...request, max_tokens: request.max_tokens ?? options.mlx!.maxTokens ?? 2048, reasoning_effort: request.reasoning_effort ?? "none" }
         : request;
-      response = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, { method: "POST", ...(isOllama ? { redirect: "error" as const } : {}), headers, body: JSON.stringify(bodyForUpstream(boundedRequest, model)), signal: AbortSignal.any([signal, AbortSignal.timeout(180_000)]) });
+      const decision = await options.admitRequest?.();
+      if (decision && !decision.allowed) throw new ExecutionAdmissionError(decision.reason ?? "execution budget exhausted");
+      const deadline = decision?.remainingMs === undefined ? 180_000 : Math.max(1, Math.min(180_000, decision.remainingMs));
+      response = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, { method: "POST", ...(isOllama ? { redirect: "error" as const } : {}), headers, body: JSON.stringify(bodyForUpstream(boundedRequest, model)), signal: AbortSignal.any([signal, AbortSignal.timeout(deadline)]) });
     } catch (error) {
       releaseOnce();
       setState(backend, { state: "error", lastError: error instanceof Error ? error.message.slice(0, 160) : "upstream request failed" });
@@ -307,7 +315,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
         record.release = release;
         return sseResponse(result.response, release, result.onModel, (cancel) => { record.cancel = cancel; });
       } catch (error) {
-        if (!fallback || controller.signal.aborted) {
+        if (!fallback || controller.signal.aborted || error instanceof ExecutionAdmissionError) {
           record.cleanup();
           activeRequests.delete(record);
           return Response.json({ error: error instanceof Error ? error.message : "backend unavailable" }, { status: 502 });

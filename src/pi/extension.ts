@@ -2,6 +2,7 @@ import { assistantTokens } from "./usage.ts";
 type ExtensionAPI = any;
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+type BudgetUnit = "model_calls" | "tool_calls";
 
 type BridgeEvent = { type: string; text?: string; sessionId?: string; sessionFile?: string; error?: string };
 
@@ -14,10 +15,12 @@ const models = (() => {
   try { return JSON.parse(process.env.AGENTHUB_PI_MODELS ?? "[]") as unknown[]; } catch { return []; }
 })();
 let pollStarted = false;
+let pollStopped = false;
 let toolSteps = 0;
 let lastActivity = 0;
 let usageSeq = 0;
 let forcedFailure = "";
+let turnGeneration = 0;
 const maxSteps = Number(process.env.AGENTHUB_PI_MAX_STEPS ?? 30);
 let shutdown: (() => void) | undefined;
 let runtimeCtx: any;
@@ -29,10 +32,27 @@ async function post(path: string, body: unknown): Promise<any> {
   if (!response.ok) throw new Error(`Pi bridge HTTP ${response.status}`);
   return response.json();
 }
+async function admitBudget(unit: BudgetUnit, idleUserBash = false): Promise<{ allowed: boolean; reservation?: string }> {
+  try {
+    const result = await post("/budget", { unit, generation: turnGeneration, ...(idleUserBash ? { idleUserBash: true } : {}) });
+    const decisions = Array.isArray(result?.decisions) ? result.decisions : [];
+    const denied = decisions.find((item: any) => item?.allowed === false);
+    if (!denied) return { allowed: true, ...(idleUserBash && typeof result?.reservation === "string" ? { reservation: result.reservation } : {}) };
+    const reason = `execution budget ${denied.reason ?? "exhausted"}: ${denied.scope} ${denied.unit ?? unit} used ${denied.used}${denied.limit === null ? "" : ` of ${denied.limit}`}`;
+    if (idleUserBash) return { allowed: false };
+    forcedFailure = reason;
+  } catch (error) {
+    if (idleUserBash) return { allowed: false };
+    forcedFailure = `execution budget admission unavailable: ${(error as Error).message}`;
+  }
+  try { await post("/event", { type: "agent_end", generation: turnGeneration, failed: true, error: forcedFailure }); } catch { /* abort remains authoritative when the bridge is unavailable */ }
+  runtimeCtx?.abort?.();
+  return { allowed: false };
+}
 function processSignature(): string | undefined { try { const text = execFileSync("ps", ["-p", String(process.pid), "-o", "lstart=,comm="], { encoding: "utf8" }).trim(); return text ? createHash("sha256").update(text).digest("hex") : undefined; } catch { return undefined; } }
 
 async function poll(pi: ExtensionAPI): Promise<void> {
-  while (true) {
+  while (!pollStopped) {
     try {
       const response = await fetch(`${bridgeUrl}/commands`, { headers: { authorization: `Bearer ${bridgeToken}` } });
       const payload = await response.json() as { command?: any };
@@ -54,7 +74,15 @@ async function poll(pi: ExtensionAPI): Promise<void> {
           const model = modelRegistry?.find(String(command.provider), String(command.modelId));
           if (!model || !(await (pi as any).setModel?.(model))) throw new Error("Pi model is not available");
         } else if (command.type === "shutdown") {
+          pollStopped = true;
           shutdown?.();
+        } else if (command.type === "abort_budget") {
+          if (Number.isSafeInteger(command.generation) && command.generation === turnGeneration) {
+            const reason = "execution budget exhausted: elapsed_ms wall cap reached";
+            forcedFailure = reason;
+            await post("/event", { type: "agent_end", generation: turnGeneration, failed: true, error: reason });
+            runtimeCtx?.abort?.();
+          }
         }
         await post("/ack", { id: command.id, ok: true });
       } catch (error) { await post("/ack", { id: command.id, ok: false, error: (error as Error).message }); }
@@ -89,7 +117,7 @@ export default function(pi: ExtensionAPI): void {
     const text = message?.content?.filter((c: any) => c?.type === "text").map((c: any) => c.text).join("")?.trim();
     const failed = !!forcedFailure || message?.stopReason === "error";
     const cancelled = !forcedFailure && message?.stopReason === "aborted";
-    await post("/event", { type: "agent_end", text: text ?? "", failed, cancelled, ...(failed ? { error: forcedFailure || message?.errorMessage || message?.stopReason } : {}) });
+    await post("/event", { type: "agent_end", generation: turnGeneration, text: text ?? "", failed, cancelled, ...(failed ? { error: forcedFailure || message?.errorMessage || message?.stopReason } : {}) });
   });
   pi.on("message_end", async (event: any) => {
     const tokens = assistantTokens(event.message);
@@ -104,21 +132,28 @@ export default function(pi: ExtensionAPI): void {
     lastActivity = now;
     try { await post("/event", { type: "activity" }); } catch { /* shutdown owns bridge cleanup */ }
   });
-  pi.on("agent_start", async () => { toolSteps = 0; forcedFailure = ""; await post("/event", { type: "agent_start" }); });
+  pi.on("agent_start", async () => { toolSteps = 0; forcedFailure = ""; turnGeneration++; await post("/event", { type: "agent_start", generation: turnGeneration }); });
   pi.on("model_select", async (_event: any, ctx: any) => { if (ctx.model?.provider && ctx.model.provider !== "agent-hub-local") ctx.shutdown?.(); });
   pi.on("before_agent_start", async (event: any, ctx: any) => {
     if (ctx.model?.provider && ctx.model.provider !== "agent-hub-local") { ctx.abort?.(); return { systemPrompt: event.systemPrompt }; }
     return undefined;
   });
-  pi.on("before_provider_request", async (_event: any, ctx: any) => { if (ctx.model?.provider && ctx.model.provider !== "agent-hub-local") ctx.abort?.(); return undefined; });
+  pi.on("before_provider_request", async (_event: any, ctx: any) => {
+    if (ctx.model?.provider && ctx.model.provider !== "agent-hub-local") { ctx.abort?.(); return undefined; }
+    try { if (!(await admitBudget("model_calls")).allowed) ctx.abort?.(); }
+    catch (error) { forcedFailure = `execution budget admission failed: ${(error as Error).message}`; ctx.abort?.(); }
+    return undefined;
+  });
   pi.on("agent_settled", async (_event: any, ctx: any) => {
     const entries = ctx.sessionManager?.getEntries?.() ?? [];
     const message = entries.slice().reverse().find((entry: any) => entry.type === "message" && entry.message?.role === "assistant")?.message;
     const text = message?.content?.filter((c: any) => c?.type === "text").map((c: any) => c.text).join("")?.trim();
-    await post("/event", { type: "agent_settled", ...(text ? { text } : {}) });
+    await post("/event", { type: "agent_settled", generation: turnGeneration, ...(text ? { text } : {}) });
   });
   pi.on("user_bash", async (event: any) => {
-    const result = await post("/tool", { name: "bash", args: { command: event.command, cwd: event.cwd }, toolCallId: `pi-shell-${Date.now()}` });
+    const admission = await admitBudget("tool_calls", true);
+    if (!admission.allowed || !admission.reservation) return { cancel: true };
+    const result = await post("/tool", { name: "bash", args: { command: event.command, cwd: event.cwd }, toolCallId: `pi-shell-${Date.now()}`, purpose: "idle_user_bash", generation: turnGeneration, reservation: admission.reservation });
     return { result: { output: String(result.text ?? result), exitCode: 0, cancelled: false, truncated: false } };
   });
   // Managed sessions may only be handed over by PiPeer after it has fenced the
@@ -126,11 +161,12 @@ export default function(pi: ExtensionAPI): void {
   // otherwise silently detach the hub from its recorded session.
   pi.on("session_before_switch", async () => ({ cancel: true }));
   pi.on("session_before_fork", async () => ({ cancel: true }));
-  pi.on("session_shutdown", async () => { await post("/event", { type: "session_shutdown" }); });
+  pi.on("session_shutdown", async () => { pollStopped = true; await post("/event", { type: "session_shutdown" }); });
   for (const raw of (() => { try { return JSON.parse(process.env.AGENTHUB_PI_TOOLS ?? "[]") as any[]; } catch { return []; } })()) {
     if (!raw || typeof raw.name !== "string" || !raw.parameters) continue;
     pi.registerTool({ name: raw.name, label: raw.name, description: raw.description ?? raw.name, parameters: raw.parameters, async execute(toolCallId: string, params: unknown) {
-      if (toolSteps++ >= maxSteps) { const reason = `Pi tool step limit ${maxSteps} reached`; forcedFailure = reason; await post("/event", { type: "agent_end", failed: true, error: reason }); runtimeCtx?.abort?.(); return { content: [{ type: "text", text: `error: ${reason}` }], details: {}, isError: true }; }
+      if (!(await admitBudget("tool_calls")).allowed) return { content: [{ type: "text", text: `error: ${forcedFailure}` }], details: {}, isError: true };
+      if (toolSteps++ >= maxSteps) { const reason = `Pi tool step limit ${maxSteps} reached`; forcedFailure = reason; await post("/event", { type: "agent_end", generation: turnGeneration, failed: true, error: reason }); runtimeCtx?.abort?.(); return { content: [{ type: "text", text: `error: ${reason}` }], details: {}, isError: true }; }
       const result = await post("/tool", { name: raw.name, args: params, toolCallId });
       return { content: [{ type: "text", text: String(result.text ?? result) }], details: {} };
     } });

@@ -397,6 +397,16 @@ inside a peer.
   not paused again, and still gets the resume envelope once it attaches. With no status line
   of the user's own to wrap, the tee prints a short usage line instead of a blank one.
 
+### Execution budgets (issue #102)
+
+- Execution budgets are opt-in records in `hub.db`, separate from provider quota-window budgets. Configure and inspect them with `ahub budget execution configure <config.json>`, `ahub budget execution status [id]`, and `ahub budget execution disable <id>`. The JSON names a stable `id`, `kind` (`task` or `run`), eligible `peers`, optional `taskId` for task scope, and `limits` keyed by `model_calls`, `tool_calls`, `elapsed_ms`, or `tokens`.
+- A run budget configuration can be saved as JSON and passed to `configure`, for example `{"id":"run:cooperbench-1","kind":"run","peers":["pi","local"],"limits":{"model_calls":40,"tool_calls":32,"elapsed_ms":180000}}`. A task configuration uses `{"id":"task:42","kind":"task","taskId":42,"peers":["pi","local"],"limits":{"model_calls":8,"tool_calls":12}}`. `status` reports scope, eligible peers, limits, measured usage, and the remaining amount or exhaustion reason.
+- Task scope applies only when that task appears in the delivery's `refs.task`; run scope applies across all eligible peers' turns until disabled. If a digest carries several matching tasks, all applicable task scopes and each run scope are admitted atomically. Configuration and counters survive new turns and daemon restarts. Reconfiguring the same id changes limits/eligible peers without resetting consumed usage; a scope id cannot be rebound to a different task or scope kind.
+- `model_calls` counts each admitted provider request. `tool_calls` counts each admitted tool execution (including Pi user shell commands). These reservations happen before requests or effects. The existing `pi.max_steps` remains a per-agent-turn tool execution ceiling; `local.max_steps` remains a per-agent-turn model-loop iteration ceiling. Neither legacy default is reinterpreted or disabled.
+- `elapsed_ms` starts when the budget is configured and is checked at every model/tool admission. `tokens` is explicit only when usage telemetry is available; because a future request's token cost is not known before sending it, a configured token cap without a safe reservation estimate stops the next model request with `unknown_usage`, rather than treating missing usage as zero.
+- Exhaustion ends the delivery without automatic replay. A stop before side effects is reported as `needs_review`; after side effects it reports that partial work may exist and also requires review. Provider quota interruption, budget exhaustion, legacy step caps, and successful native completion remain distinct reasons.
+- Only `pi` and `local` are currently accepted as budgeted peers because they expose a pre-request and pre-tool admission point. Native Claude/Codex/Kimi limits are rejected until their adapters can enforce the same contract. With no execution budget configured, the new meter has no effect.
+
 ### Shared memory (claude-mem)
 
 - Capture. Claude: native plugin hooks. Codex: claude-mem Codex plugin. Kimi: `dot ai
@@ -861,6 +871,14 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   the issue's design listed. `ahub queue list` and hub.log keep them; a later
   schema version can add them without changing the meaning of a field.
 
+## Amendment: provider usage provenance (issue #101)
+
+- OmniRoute keeps validated optional usage counters from the provider response and sanitized served-model/provider labels. The caller's requested route/model remains separate from the reported served model.
+- Local worker records one usage event per successful provider response, including a response with no usage counters so reports can show missing coverage. Credentials, Access headers, prompts, completions, task text, session ids and transcript paths never enter telemetry.
+- An optional Claude transcript reader accepts explicit session identity and transcript path, but emits only completed assistant-message usage with an opaque session/message hash. Repeated streaming records collapse to the final record for that message; event reports deduplicate repeated polling and resumed transcript reads.
+- Reports sum only provider-reported counters and show per-counter known-record coverage. Missing usage remains unknown. Estimated price and measured provider spend are separate and remain unknown unless sourced; token counts are not prices.
+- `ahub report` coverage describes recorded provider calls; it does not claim complete account or billing coverage.
+
 ## Amendment: per-turn snapshots and undo (issue #33)
 
 - Backend: git tree objects only, written through a copy of the index
@@ -1151,3 +1169,22 @@ check, then reads current contents after approval and requires the old fragment
 to occur exactly once. The approved replacement applies to those current bytes,
 so another peer's unrelated edits made during the wait are retained. A changed
 fragment or an escaping path returns an error without a write.
+
+## Live channel settlement (issues #100-#104 follow-up)
+
+Wire protocol 12 separates live notification acceptance from recovery uncertainty.
+A live `accepted` Claude notification remains visible as `liveAccepted` in status
+while later notifications can arrive. A correlated reply settles only its own
+message. Task acceptance, completion and approval are independent of delivery
+settlement and cannot complete unrelated messages.
+
+The Claude channel API does not expose a verified native turn-end event. Instead,
+channel metadata supplies `delivery_id` and a connection `delivery_generation`;
+`hub_delivery_done` is an explicit acknowledgement of handled work. The daemon
+requires the current peer socket, matching generation, a delivery actually handed
+to that socket, and a live accepted journal row. This acknowledgement is not proof
+of a native turn boundary. Failed notifications, disconnects, replaced sessions
+and interrupted daemon instances retain `needs_review`, with no automatic replay.
+A person inspects and resolves uncertain work through the existing revision-fenced
+`ahub queue` commands. Older source protocols 9, 10 and 11 remain authenticated
+upgrade sources; ordinary clients must use protocol 12.

@@ -226,3 +226,74 @@ test("#91 self-claims after both turns start still associate concurrent edits wi
   expect(readEvents(file).filter((e) => e.type === "conflict" && e.concurrent)).toHaveLength(1);
   await until(() => k.got.flat().some((e) => e.body.includes("Concurrent edit:")) && c.got.flat().some((e) => e.body.includes("Concurrent edit:")));
 });
+
+test("#100 live Claude acceptance survives a newer reply; explicit settlement is generation-bound", async () => {
+  const h = await hub();
+  const claude = await ControlClient.connect(h.stateDir, { role: "peer", peer: "claude" });
+  clean.push(() => claude.close());
+  const deliveries: any[] = [];
+  claude.onPush = m => { if (m.t === "deliver") deliveries.push(m); };
+  await h.op("hub_task_propose", { title: "handle workflow", class: "implement", owner: "claude" });
+  await until(() => deliveries.length === 1);
+  const task = deliveries[0];
+  const receipt = (d: any) => claude.request({ t: "delivery_receipt", deliveryId: d.deliveryId, generation: d.generation, state: "accepted" });
+  expect((await receipt(task)).ok).toBe(true);
+  await h.console_.request({ t: "send", to: ["claude"], body: "direct followup" });
+  await until(() => deliveries.length === 2);
+  const chat = deliveries[1]; expect((await receipt(chat)).ok).toBe(true);
+  expect((await claude.request({ t: "send", body: "[FYI] handled followup", reply_to: chat.envs.at(-1).id })).ok).toBe(true);
+  await claude.request({ t: "task", op: "hub_task_accept", args: { id: 1 } });
+  expect((await claude.request({ t: "task", op: "hub_task_done", args: { id: 1, summary: "workflow handled" } })).ok).toBe(true);
+  expect(h.daemon.bus.queueShow(task.deliveryId)?.state).toBe("accepted");
+  expect(h.daemon.bus.queueShow(chat.deliveryId)?.state).toBe("completed");
+  expect(h.daemon.bus.queueSummary("claude").heldBy).toBeUndefined();
+  expect(h.daemon.bus.queueSummary("claude").liveAccepted).toContain(task.deliveryId);
+  const complete = (id: string, generation: string) => claude.request({ t: "delivery_complete", deliveryId: id, generation });
+  expect((await complete(task.deliveryId, "stale-generation")).ok).toBe(false);
+  expect((await complete("unrelated-id", task.generation)).ok).toBe(false);
+  const wrong = await ControlClient.connect(h.stateDir, { role: "peer", peer: "claude-other" });
+  clean.push(() => wrong.close());
+  expect((await wrong.request({ t: "delivery_complete", deliveryId: task.deliveryId, generation: task.generation })).ok).toBe(false);
+  expect((await complete(task.deliveryId, task.generation)).ok).toBe(true);
+  expect((await complete(task.deliveryId, task.generation)).ok).toBe(true); // idempotent same-generation retry
+  expect(h.daemon.bus.queueShow(task.deliveryId)?.state).toBe("completed");
+  const count = deliveries.length;
+  await h.console_.request({ t: "send", to: ["claude"], body: "[IMPORTANT] later request" });
+  await until(() => deliveries.length > count);
+});
+
+test("#100 disconnected accepted notifications retain an actionable recovery hold", async () => {
+  const h = await hub();
+  const first = await ControlClient.connect(h.stateDir, { role: "peer", peer: "claude" });
+  let delivery: any;
+  first.onPush = m => { if (m.t === "deliver") delivery = m; };
+  await h.console_.request({ t: "send", to: ["claude"], body: "possibly applied work" });
+  await until(() => !!delivery);
+  await first.request({ t: "delivery_receipt", deliveryId: delivery.deliveryId, generation: delivery.generation, state: "accepted" });
+  first.close(); await until(() => h.daemon.bus.queueSummary("claude").needsReview === 1);
+  const second = await ControlClient.connect(h.stateDir, { role: "peer", peer: "claude" }); clean.push(() => second.close());
+  expect((await second.request({ t: "delivery_complete", deliveryId: delivery.deliveryId, generation: delivery.generation })).ok).toBe(false);
+  await h.console_.request({ t: "send", to: ["claude"], body: "[IMPORTANT] do not replay uncertain work" });
+  expect(h.daemon.bus.queueSummary("claude").heldBy).toBe(delivery.deliveryId);
+  expect(h.daemon.bus.queueShow(delivery.deliveryId)?.state).toBe("needs_review");
+  const status = await h.console_.request({ t: "status" });
+  expect(status.status.peers.claude.holdNote).toContain("ahub queue resolve");
+});
+
+test("#102 control config meters a local peer across turns without resetting its shared run", async () => {
+  const previous = process.env.OMNIROUTE_API_KEY; process.env.OMNIROUTE_API_KEY = "fixture-key";
+  clean.push(() => { if (previous === undefined) delete process.env.OMNIROUTE_API_KEY; else process.env.OMNIROUTE_API_KEY = previous; });
+  const model = startFakeModelServer({ key: "fixture-key" }); clean.push(model.stop);
+  const h = await hub(model.url);
+  const configured = await h.console_.request({ t: "execution_budget", op: "configure", config: { id: "repeat", kind: "run", peers: ["local"], limits: { model_calls: 1 } } });
+  expect(configured.ok).toBe(true);
+  expect((await h.console_.request({ t: "start", peer: "local", args: { model: "m" } })).ok).toBe(true);
+  await h.console_.request({ t: "send", to: ["local"], body: "first actual call" });
+  await until(() => model.requests.length === 1 && h.daemon.bus.stateOf("local") === "idle");
+  await h.console_.request({ t: "send", to: ["local"], body: "second turn exhausted" });
+  await until(() => h.daemon.bus.queueSummary("local").needsReview === 1);
+  expect(model.requests).toHaveLength(1);
+  const status = await h.console_.request({ t: "execution_budget", op: "status", id: "repeat" });
+  expect(status.budgets.used.model_calls).toBe(1);
+  expect((await h.console_.request({ t: "execution_budget", op: "configure", config: { id: "native", kind: "run", peers: ["codex"], limits: { tool_calls: 1 } } })).ok).toBe(false);
+});
