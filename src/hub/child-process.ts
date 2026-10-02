@@ -20,11 +20,14 @@ export interface ProcRow {
   command: string;
 }
 
-/** `ps -axo pid=,ppid=,pgid=,lstart=,command=` output (unlimited width when not on a terminal), read in the C locale. */
+/**
+ * `ps -axo pid=,ppid=,pgid=,stat=,lstart=,command=` output (unlimited width when not on a terminal), read in the C
+ * locale. A zombie is left out: it has exited, and only its parent's wait is missing.
+ */
 export function parseProcessTable(text: string): ProcRow[] {
   return text.split("\n").flatMap((line) => {
-    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\w{3} \w{3} [ \d]\d \d\d:\d\d:\d\d \d{4})\s+(.*)$/.exec(line);
-    return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), started: m[4]!, command: m[5]! }] : [];
+    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\w{3} \w{3} [ \d]\d \d\d:\d\d:\d\d \d{4})\s+(.*)$/.exec(line);
+    return m && !m[4]!.startsWith("Z") ? [{ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), started: m[5]!, command: m[6]! }] : [];
   });
 }
 
@@ -34,7 +37,7 @@ export function parseProcessTable(text: string): ProcRow[] {
  */
 export function processTable(): ProcRow[] | undefined {
   try {
-    const r = Bun.spawnSync(["ps", "-axo", "pid=,ppid=,pgid=,lstart=,command="], { stdout: "pipe", stderr: "pipe", env: { ...process.env, LC_ALL: "C" } });
+    const r = Bun.spawnSync(["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart=,command="], { stdout: "pipe", stderr: "pipe", env: { ...process.env, LC_ALL: "C" } });
     if (r.exitCode !== 0) return undefined;
     const rows = parseProcessTable(r.stdout.toString());
     return rows.some((row) => row.pid === process.pid) ? rows : undefined;

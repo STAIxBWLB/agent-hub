@@ -1,0 +1,197 @@
+import { afterEach, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ProcRow } from "../../src/hub/child-process.ts";
+import { processTable } from "../../src/hub/child-process.ts";
+import { actorOf, awaitTurnEnd, daemonRoot, restoreModes, restoreTrust, teardown, turnEnded, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
+
+// issue #113: an arm's teardown proves what it stops by identity (pid and start time), never by a name in argv.
+const dirs: string[] = [];
+const kills: number[] = [];
+afterEach(() => {
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  for (const pid of kills.splice(0)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+});
+
+const DIR = "/private/tmp/ahub-run/fixtures/00-hub-codex-claude";
+const T = "Sat Oct  3 08:00:00 2026";
+const row = (pid: number, ppid: number, pgid: number, command: string, started = T): ProcRow => ({ pid, ppid, pgid, started, command });
+// The arm: its daemon, Codex's launcher and native app-server (whose argv does not name the fixture), a tool command
+// Codex runs in a group of its own, and Claude.
+const daemon = row(100, 1, 100, `/opt/bun /r/src/cli/main.ts --project ${DIR} daemon`);
+const launcher = row(105, 100, 105, "node /opt/codex/bin/codex.js app-server --listen ws://127.0.0.1:4611");
+const native = row(106, 105, 105, "/opt/codex/vendor/codex app-server --listen ws://127.0.0.1:4611");
+const tool = row(107, 106, 107, "sleep 40");
+const claude = row(120, 1, 120, `claude --session-id s-1 --mcp-config ${DIR}/.claude/candidate-mcp.json`);
+const runner = row(50, 49, 50, "bun scripts/benchmarks/native.ts");
+const actors = (rows: ProcRow[]): Actor[] => [actorOf(rows, 100, "daemon", "hub.pid")!, actorOf(rows, 105, "codex-app-server", "child of the daemon")!, actorOf(rows, 120, "claude", "launch record")!];
+
+/** A process table in memory: signals remove what they reach unless `stubborn`; the clock moves with sleep. */
+function world(start: ProcRow[], opts: { stubborn?: number[]; shutdown?: (w: { rows: ProcRow[] }) => string[]; unreadable?: () => boolean } = {}) {
+  const w = { rows: [...start], signals: [] as [number, string][], clock: 0 };
+  const deps: Deps = {
+    table: () => (opts.unreadable?.() ? undefined : [...w.rows]),
+    signal: (pid, sig) => {
+      w.signals.push([pid, sig]);
+      w.rows = w.rows.filter((r) => opts.stubborn?.includes(r.pid) || !(pid < 0 ? r.pgid === -pid : r.pid === pid));
+    },
+    sleep: async (ms) => void (w.clock += ms),
+    now: () => w.clock,
+    self: 50,
+  };
+  const shutdown = async () => opts.shutdown?.(w) ?? [];
+  return { w, deps, shutdown };
+}
+const everything = [runner, daemon, launcher, native, tool, claude];
+
+test("a normal shutdown that stops every actor and what runs below them is clean, with nothing signalled", async () => {
+  const { w, deps, shutdown } = world(everything, { shutdown: (x) => { x.rows = [runner]; return []; } });
+  const c = await teardown(actors(everything), DIR, shutdown, deps);
+  expect(c.outcome).toBe("clean");
+  expect(c.owned.map((a) => [a.pid, a.role])).toEqual([[100, "daemon"], [105, "codex-app-server"], [120, "claude"], [106, "below"], [107, "below"]]);
+  expect(w.signals).toEqual([]);
+});
+
+test("a lost acknowledgement is followed by a fallback on proven identities only, groups by their leader: clean_with_fallback", async () => {
+  // `ahub kill` said nothing and stopped nothing: Codex's tool command, in a group of its own, is found below the native.
+  const { w, deps, shutdown } = world(everything, { shutdown: () => ["ahub kill: hub did not acknowledge shutdown"] });
+  const c = await teardown(actors(everything), DIR, shutdown, deps);
+  expect(c.outcome).toBe("clean_with_fallback");
+  expect(c.normal.errors).toEqual(["ahub kill: hub did not acknowledge shutdown"]);
+  expect(w.signals).toEqual([[-100, "SIGTERM"], [-105, "SIGTERM"], [-120, "SIGTERM"], [-107, "SIGTERM"]]);
+  expect(w.rows).toEqual([runner]);
+});
+
+test("a fallback that cannot stop an actor leaves the cleanup incomplete, and says which", async () => {
+  const { deps, shutdown } = world(everything, { stubborn: [106] });
+  const c = await teardown(actors(everything), DIR, shutdown, deps);
+  expect(c.outcome).toBe("incomplete_or_unknown");
+  expect(c.remaining.map((a) => a.pid)).toEqual([106]);
+  expect(c.reasons).toEqual(["still running: below 106"]);
+  expect(c.fallback.filter((f) => f.signal === "SIGKILL").map((f) => f.pid)).toEqual([106]); // its leader is gone: by pid
+});
+
+test("a process table that cannot be read proves nothing: the cleanup is unknown, never clean", async () => {
+  let reads = 0;
+  const { deps, shutdown } = world(everything, { shutdown: (x) => { x.rows = [runner]; return []; }, unreadable: () => ++reads > 1 });
+  const c = await teardown(actors(everything), DIR, shutdown, deps);
+  expect(c.outcome).toBe("incomplete_or_unknown");
+  expect(c.reasons).toEqual(["the process table could not be read after the shutdown: whether the arm stopped is unknown"]);
+});
+
+test("a reused pid, a replacement hub on the same fixture and a foreign process are never signalled", async () => {
+  // The daemon exited and its pid now belongs to someone else; a new hub instance serves the same fixture; an editor
+  // has a fixture file open; the runner's own `ahub kill` names the fixture too.
+  const reused = row(100, 1, 100, "/usr/bin/vim notes.txt", "Sat Oct  3 08:05:00 2026");
+  const replacement = row(200, 1, 200, `/opt/bun /r/src/cli/main.ts --project ${DIR} daemon`, "Sat Oct  3 08:06:00 2026");
+  const editor = row(300, 1, 300, `/usr/bin/vim ${DIR}/src/a.py`);
+  const own = row(51, 50, 51, `bun /r/src/cli/main.ts --project ${DIR} kill`);
+  const recorded = actors(everything);
+  const { w, deps, shutdown } = world([runner, own, reused, launcher, native, replacement, editor], { shutdown: (x) => { x.rows = x.rows.filter((r) => ![105, 106].includes(r.pid)); return []; } });
+  const c = await teardown(recorded, DIR, shutdown, deps);
+  expect(w.signals).toEqual([]);
+  expect(w.rows.map((r) => r.pid)).toEqual([50, 51, 100, 200, 300]);
+  expect(c.owned.map((a) => a.pid)).toEqual([105, 106]); // the daemon and Claude were gone before teardown
+  expect(c.unresolved.map((u) => u.pid)).toEqual([200, 300]);
+  expect(c.outcome).toBe("incomplete_or_unknown");
+  expect(daemonRoot(replacement.command)).toBe(DIR);
+});
+
+test("against the real process table: a stray group below an actor is stopped by the fallback", async () => {
+  // An actor whose child leads a group of its own and outlives a shutdown that did nothing.
+  const proc = spawn("sh", ["-c", `trap "" TERM; ${process.execPath} -e 'require("node:child_process").spawn("sleep", ["30"], { detached: true, stdio: "ignore" })' & sleep 0.5; pgrep -P $! sleep; wait`], { stdio: ["ignore", "pipe", "ignore"], detached: true });
+  kills.push(proc.pid!);
+  const child = Number(await new Promise<string>((resolve) => proc.stdout!.once("data", (d) => resolve(String(d)))));
+  kills.push(child);
+  const a = actorOf(processTable()!, proc.pid!, "codex-app-server", "spawned by the test")!;
+  const c = await teardown([a], "/nonexistent-fixture", async () => [], undefined, { settleMs: 300, fallbackMs: 2000 });
+  expect({ outcome: c.outcome, reasons: c.reasons }).toEqual({ outcome: "clean_with_fallback", reasons: [] });
+  expect(c.owned.some((o) => o.pid === child)).toBe(true);
+  const left = processTable()!;
+  expect(left.some((r) => r.pid === child || r.pid === proc.pid)).toBe(false);
+});
+
+const S = "s-1";
+const prompt = { type: "user", sessionId: S, message: { content: "[agent-hub] task #1" } };
+const toolUse = { type: "assistant", sessionId: S, message: { stop_reason: "tool_use", content: [{ type: "tool_use", id: "t1" }] } };
+const toolResult = { type: "user", sessionId: S, message: { content: [{ type: "tool_result", tool_use_id: "t1" }] } };
+const answer = { type: "assistant", sessionId: S, message: { stop_reason: "end_turn", content: [{ type: "text", text: "[FYI] done" }] } };
+const ended = { type: "system", subtype: "turn_duration", sessionId: S, durationMs: 4000 };
+
+test("a turn has ended only when the session's turn_duration row follows its last activity", () => {
+  expect(turnEnded([prompt, toolUse, toolResult], S)).toBe(false); // tool use only
+  expect(turnEnded([prompt, toolUse, toolResult, answer], S)).toBe(false); // a final answer alone is not the end
+  expect(turnEnded([prompt, toolUse, toolResult, answer, ended], S)).toBe(true);
+  expect(turnEnded([prompt, answer, { ...ended, sessionId: "other" }], S)).toBe(false); // another session's row
+  expect(turnEnded([prompt, answer, ended, { type: "attachment", sessionId: S }, prompt], S)).toBe(false); // a new turn began
+  expect(turnEnded([], S)).toBe(false);
+});
+
+test("the wait for the turn's end: ended when the row arrives, timeout at the bound, interrupted by a stop, unreadable without a file", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(dir);
+  const file = join(dir, "s.jsonl");
+  writeFileSync(file, [prompt, toolUse, toolResult].map((r) => JSON.stringify(r)).join("\n") + "\n");
+  let clock = 0;
+  // The final answer is written while the wait runs.
+  const late = { now: () => clock, sleep: async (ms: number) => { clock += ms; if (clock === 750) appendFileSync(file, [answer, ended].map((r) => JSON.stringify(r)).join("\n") + "\n"); } };
+  expect(await awaitTurnEnd(file, S, 30_000, () => false, late)).toEqual({ outcome: "ended", ms: 750 });
+  writeFileSync(file, JSON.stringify(prompt) + "\n");
+  clock = 0;
+  const idle = { now: () => clock, sleep: async (ms: number) => void (clock += ms) };
+  expect(await awaitTurnEnd(file, S, 30_000, () => false, idle)).toEqual({ outcome: "timeout", ms: 30_000 });
+  clock = 0;
+  expect((await awaitTurnEnd(file, S, 30_000, () => clock >= 500, idle)).outcome).toBe("interrupted");
+  expect((await awaitTurnEnd(join(dir, "missing.jsonl"), S, 30_000, () => false, idle)).outcome).toBe("unreadable");
+});
+
+test("restoration: modes come back parents first and failures are named; a trust entry the user changed is kept", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(dir);
+  mkdirSync(join(dir, "a"));
+  writeFileSync(join(dir, "a", "f"), "x");
+  chmodSync(join(dir, "a", "f"), 0);
+  chmodSync(join(dir, "a"), 0);
+  const failed = restoreModes([[join(dir, "a", "f"), 0o640], [join(dir, "a"), 0o750], [join(dir, "gone"), 0o600]]);
+  expect(failed).toEqual([join(dir, "gone")]); // a lost read-lock acknowledgement is reported, not assumed
+  expect(statSync(join(dir, "a", "f")).mode & 0o777).toBe(0o640);
+
+  const file = join(dir, "claude.json");
+  const fixture = "/private/tmp/f";
+  writeFileSync(file, JSON.stringify({ projects: { [fixture]: { hasTrustDialogAccepted: true, other: 1 } } }));
+  expect(restoreTrust({ file, previous: undefined, hadProjects: false, mode: 0o600 }, fixture)).toBe("restored");
+  expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({});
+  writeFileSync(file, JSON.stringify({ projects: { [fixture]: { hasTrustDialogAccepted: false } } })); // the user's change
+  expect(restoreTrust({ file, previous: undefined, hadProjects: false, mode: 0o600 }, fixture)).toBe("changed_concurrently");
+  expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ projects: { [fixture]: { hasTrustDialogAccepted: false } } });
+  expect(restoreTrust({ file: join(dir, "missing.json"), previous: undefined, hadProjects: false, mode: 0o600 }, fixture)).toBe("failed");
+});
+
+test("recovery puts the withheld read modes back only when nothing the arm left is running", async () => {
+  const { recover } = await import("../../scripts/benchmarks/restore.ts");
+  const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(run);
+  const input = join(run, "gold.patch"), sibling = join(run, "sibling.json");
+  writeFileSync(input, "x");
+  writeFileSync(sibling, "{}");
+  chmodSync(input, 0);
+  chmodSync(sibling, 0);
+  writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ protected: { paths: { [input]: 0o600 }, restored: false }, siblings: { [join(run, "fixtures/00-x")]: { modes: { [sibling]: 0o600 }, restored: false } } }));
+  mkdirSync(join(run, "recovery", "runs"), { recursive: true });
+  const record = (owned: object[]) => writeFileSync(join(run, "recovery", "runs", "00-x.json"), JSON.stringify({ cwd: join(run, "fixtures/00-x"), cleanup: { owned, unresolved: [] } }));
+  const table = processTable()!;
+  const me = table.find((r) => r.pid === process.pid)!;
+  // A recorded process still runs (here: this test's own): nothing is restored.
+  record([{ role: "below", pid: me.pid, started: me.started }]);
+  const blocked = recover(run, table, -1);
+  expect(blocked.restored).toBe(false);
+  expect(blocked.blockers).toEqual([`00-x.json: below ${me.pid} is still running`]);
+  expect(statSync(input).mode & 0o777).toBe(0);
+  // Gone (the same pid would have to have started at another time): the modes come back and the run says so.
+  record([{ role: "below", pid: me.pid, started: "Thu Jan  1 00:00:00 1970" }]);
+  expect(recover(run, table, -1)).toEqual({ restored: true, blockers: [], failed: [] });
+  expect([statSync(input).mode & 0o777, statSync(sibling).mode & 0o777]).toEqual([0o600, 0o600]);
+  expect(JSON.parse(readFileSync(join(run, "restoration.json"), "utf8"))).toMatchObject({ restored: true, recovered: true });
+});

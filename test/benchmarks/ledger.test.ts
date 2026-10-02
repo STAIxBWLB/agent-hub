@@ -82,7 +82,7 @@ test("every measure of a turn-free attempt, with its unit, from the records nati
         { type: "fact", peer: "codex", id: "f4", via: "steer", files: 1, plans: 0, unknown: 0, bytes: 100, ms: 5, rttMs: 40, accepted: true, at: iso(45) },
         { type: "fact", peer: "claude", id: "f3", via: "done", files: 0, plans: 0, unknown: 0, named: 2, bytes: 80, at: iso(75) }, // names only (#112)
         { type: "stale", id: "n1", peer: "codex", at: iso(72) },
-        { type: "split", task: 2, verdict: "unknown", reason: "codex has 0 measured task(s)", trace: ["unknown: codex has 0 measured task(s)"], at: iso(1) },
+        { type: "split", task: 2, where: "cohort", verdict: "unknown", reason: "codex has 0 measured task(s)", trace: ["unknown: codex has 0 measured task(s)"], at: iso(1) },
         // Teardown, after the active time: Claude's session closes and its path is lost. Not part of the treatment.
         { type: "capability", peer: "claude", state: "lost", at: iso(103) },
         { type: "cohort", id: 1, event: "lifted", silent: false, tasks: [1, 2], at: iso(103) },
@@ -136,10 +136,10 @@ test("every measure of a turn-free attempt, with its unit, from the records nati
     expect(row.facts.hook).toMatchObject({ offers: 1, acknowledged: 1, bytes_offered: 300, bytes_acknowledged: 300, build_ms_median: 4, hook_startup_ms_median: 120 });
     expect(row.facts.steer).toMatchObject({ offers: 2, acknowledged: 0, bytes_offered: 600, bytes_acknowledged: 0, unknown_attribution_files: 1, steers_refused: 1, steers_unanswered: 0, steer_rtt_ms_median: 40 });
     expect(row.facts.done).toMatchObject({ offers: 1, bytes_offered: 80, bytes_acknowledged: 0, directory_files_named: 2 });
-    expect(row.facts.hook.directory_files_named).toBe(0); // an event from before #112 has no count
+    expect(row.facts.hook.directory_files_named).toBeNull(); // an event from before #112 has no count: unknown, not none
     expect([row.facts.hook.probes, row.facts.hook.coverage_notices, row.facts.steer.probes]).toEqual([0, 0, 0]);
     expect(row.facts.ack_ms_median).toBe(900);
-    expect(row.split_predictions).toEqual([{ task: 2, verdict: "unknown", reason: "codex has 0 measured task(s)", trace: ["unknown: codex has 0 measured task(s)"] }]);
+    expect(row.split_predictions).toEqual([{ task: 2, where: "cohort", verdict: "unknown", reason: "codex has 0 measured task(s)", trace: ["unknown: codex has 0 measured task(s)"] }]);
     expect(row.hooks).toMatchObject({
       claude_transcript_rows: { "PreToolUse:Edit agent-hub facts hook": 1, "Stop agent-hub facts hook": 1 }, claude_hook_ms: { timed_rows: 2, median: 33, total: 66 }, foreign: [],
       facts_hook_timing: { calls: 4, startup_ms_total: 200, hub_ms_total: 12, startup_ms_max: 80 }, codex_hook_runs: 0, conditions: { codex: { hooksFeature: false } },
@@ -290,6 +290,39 @@ test("a measure that does not apply is not unknown, an unknown settlement or a p
     expect(joint.settlement).toEqual({ codex: null, claude: null }); // a missing record is unknown, never left out
     expect(joint.settlement_s).toBeNull();
     expect(out.summary["hub-codex-claude"]).toMatchObject({ lost_identifiers_unknown: 1, lost_fragments_unknown: 1 }); // Claude's writes were not counted
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// issue #113: a final answer written after the attempt's prefix was taken is never counted: the prefix stays as recorded,
+// the late bytes are reported, and the settlement of a turn still open in the prefix is unknown.
+test("a late transcript append keeps the frozen prefix, is reported, and leaves an open turn's settlement unknown", () => {
+  const { root, cwd, sealedCommit, run, ledger, ms, iso } = fixture();
+  try {
+    const transcript = join(root, "claude.jsonl");
+    const rows = [
+      { type: "assistant", sessionId: "s", timestamp: iso(10), message: { id: "m1", stop_reason: "tool_use", content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }] } },
+      { type: "user", sessionId: "s", timestamp: iso(11), message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] } },
+    ].map((r) => JSON.stringify(r)).join("\n") + "\n";
+    writeFileSync(transcript, rows);
+    const late = [
+      { type: "assistant", sessionId: "s", timestamp: iso(40), message: { id: "m2", stop_reason: "end_turn", content: [{ type: "text", text: "[FYI] done" }] } },
+      { type: "system", subtype: "turn_duration", sessionId: "s", timestamp: iso(40) },
+    ].map((r) => JSON.stringify(r)).join("\n") + "\n";
+    const { createHash } = require("node:crypto");
+    run("00-solo-claude", {
+      index: 0, kind: "solo-claude", end_reason: "completed", cwd, sealedCommit, codexMessages: [], events: [], startedAt: ms(0), elapsedMs: 30_000,
+      readiness: { claude: { transcriptPath: transcript, transcriptBytes: Buffer.byteLength(rows), transcriptSha256: createHash("sha256").update(rows).digest("hex") } },
+      taskStates: [{ id: 1, owner: "claude", state: "approved", history: [{ event: "proposed", at: ms(0) }, { event: "done", at: ms(9) }] }],
+      completion: { outcome: "timeout", ms: 30_000, treeChanged: false },
+      cleanup: { outcome: "clean", reasons: [], fallback: [] }, restoration: { siblings: "restored", trust: "restored" },
+    });
+    writeFileSync(transcript, rows + late); // Claude Code wrote its answer after the prefix was taken
+    const row = ledger().rows[0];
+    expect(row.settlement.claude).toBeNull(); // the turn is open in the prefix: unknown, not counted from the late rows
+    expect(row.teardown).toEqual({ completion: { outcome: "timeout", ms: 30_000, treeChanged: false }, cleanup: "clean", cleanup_reasons: [], fallback_signals: 0, restoration: { siblings: "restored", trust: "restored" }, late_append_bytes: Buffer.byteLength(late) });
+    expect(row.validity.valid).not.toBe(false); // the prefix still matches its hash: readable
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
