@@ -457,7 +457,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             await rpc('initialize', { clientInfo: { name: 'ahub-native-benchmark', version: '1' }, capabilities: { experimentalApi: true } });
             w.send(JSON.stringify({ method: 'initialized' }));
             // No user or plugin hooks in any arm (issue #110): they cost Codex a median 5.7 s per session on 0.12.2.
-            thread = await rpc('thread/start', { cwd: dir, model: manifest.models.codex, approvalPolicy: 'never', sandbox: 'workspace-write', config: { 'features.memories': false, 'features.external_agent_memory_import': false, 'features.codex_hooks': false, model_reasoning_effort: manifest.effort.codex, web_search: 'disabled', sandbox_workspace_write: { network_access: false, exclude_slash_tmp: true, exclude_tmpdir_env_var: true } } });
+            thread = await rpc('thread/start', { cwd: dir, model: manifest.models.codex, approvalPolicy: 'never', sandbox: 'workspace-write', config: { 'features.memories': false, 'features.external_agent_memory_import': false, 'features.hooks': false, model_reasoning_effort: manifest.effort.codex, web_search: 'disabled', sandbox_workspace_write: { network_access: false, exclude_slash_tmp: true, exclude_tmpdir_env_var: true } } });
             if (typeof thread.thread?.cwd !== 'string' || realPath(thread.thread.cwd) !== realPath(dir)) throw new Error('Codex native thread cwd mismatch');
             if (thread.model !== manifest.models.codex)
                 throw new Error('Codex model mismatch');

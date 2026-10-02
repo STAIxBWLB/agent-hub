@@ -57,7 +57,7 @@ Every run record, diff, PTY/provider trace and evaluation artifact stays in the 
 
 `scripts/benchmarks/manifest-v2.json` keeps v1's cases, models and limits and adds a fourth arm, `hub-turnfree-codex-claude` (issue #110): the same two agents and assignment rotation as `hub-codex-claude`, with `coordination: "turn-free"` in the fixture's hub config and fixture instructions that tell the owners not to message each other. A v1 manifest still prepares, runs and grades its three arms; the runner accepts only these two arm lists.
 
-Hooks are equal across arms. No arm runs the user's or a plugin's hooks: Claude starts with `--setting-sources project` and `disableAllHooks`, and every Codex thread starts with `features.codex_hooks` off. The turn-free arm's Claude settings carry the hub's own facts hook and nothing else, because that hook is part of the treatment.
+Hooks are equal across arms. No arm runs the user's or a plugin's hooks: Claude starts with `--setting-sources project` and `disableAllHooks`, and every Codex thread starts with `features.hooks` off. The turn-free arm's Claude settings carry the hub's own facts hook and nothing else, because that hook is part of the treatment.
 
 ## Coordination ledger
 
