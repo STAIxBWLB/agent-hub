@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { sanitize, type PeerId } from "./envelope.ts";
+import { isDenied } from "../local/deny.ts";
 import { realPath } from "./project.ts";
 
 /**
@@ -57,6 +58,8 @@ export interface FactsOptions {
   peers: () => PeerId[];
   /** A path whose name matches a PII pattern is never named. */
   nameable: (s: string) => boolean;
+  /** `local.deny` entries: with the one denylist (`src/local/deny.ts`), paths facts never read or show. */
+  deny?: string[];
 }
 
 interface Version {
@@ -107,6 +110,13 @@ export class Facts {
   private readonly untracked = new Map<PeerId, Set<string>>();
   /** Directory expansions of the current boundary: each public entry point starts with none. */
   private expanded = new Map<string, string[]>();
+  /** Directories of the current boundary whose changed files were more than the cap. */
+  private expandedCut = new Set<string>();
+  /**
+   * What a peer saw of a file it touched before it had a view of it (a partial read, its own write): the baseline of
+   * that file's first fact, so a change landing between the touch and the next boundary is shown, not absorbed.
+   */
+  private readonly firstSeen = new Map<PeerId, Map<string, Version>>();
   /** A tool call's observation before it ran, by Claude's tool use id. */
   private readonly before = new Map<string, { peer: PeerId; file?: string; version?: Version }>();
   /** Peers whose coverage notice went out in this tracking epoch. */
@@ -146,7 +156,9 @@ export class Facts {
       }
     }
     const r = relative(this.root, real);
-    return !r || r.startsWith("..") || isAbsolute(r) ? undefined : r;
+    if (!r || r.startsWith("..") || isAbsolute(r)) return undefined;
+    // Never git's own files, and never what the denylist keeps from every agent.
+    return /^\.git(\/|$)/i.test(r) || isDenied(r, this.o.deny ?? []) ? undefined : r;
   }
 
   /**
@@ -192,6 +204,7 @@ export class Facts {
     this.offers.clear();
     this.before.clear();
     this.covered.clear();
+    this.firstSeen.clear();
     this.epoch = Date.now();
   }
 
@@ -205,16 +218,29 @@ export class Facts {
     this.plansAccepted.delete(peer);
     this.offers.delete(peer);
     this.covered.delete(peer);
+    this.firstSeen.delete(peer);
   }
 
-  private touch(peer: PeerId, file: string): void {
+  /** A new boundary: directories are expanded afresh. */
+  private boundary(): void {
+    this.expanded = new Map();
+    this.expandedCut = new Set();
+  }
+
+  /** `peer` worked on `file`; `seen` is the file as it was when it did, the baseline if it has no view of it yet. */
+  private touch(peer: PeerId, file: string, seen?: Version): void {
     const list = (this.touched.get(peer) ?? []).filter((f) => f !== file);
     list.push(file);
     if (list.length > TOUCHED_KEPT) {
       const gone = list.shift()!;
       this.untracked.set(peer, (this.untracked.get(peer) ?? new Set()).add(gone));
+      this.firstSeen.get(peer)?.delete(gone);
     }
     this.touched.set(peer, list);
+    if (!seen || this.view(peer).has(file)) return;
+    const first = this.firstSeen.get(peer) ?? new Map<string, Version>();
+    if (!first.has(file)) first.set(file, seen);
+    this.firstSeen.set(peer, first);
   }
 
   /**
@@ -229,7 +255,10 @@ export class Facts {
     return [...new Set([...named, ...(this.touched.get(peer) ?? [])])];
   }
 
-  /** Files stay; a directory becomes git's changed, new and deleted files under it, once per boundary. */
+  /**
+   * Files stay; a directory becomes git's changed (staged or not), new and deleted files under it against HEAD, once
+   * per boundary. More than the cap are cut, and the boundary's fact says so.
+   */
   private expand(paths: string[]): string[] {
     return paths.flatMap((p) => {
       let dir = false;
@@ -241,8 +270,15 @@ export class Facts {
       if (!dir) return [p];
       let files = this.expanded.get(p);
       if (!files) {
-        const r = Bun.spawnSync(["git", "ls-files", "-z", "-m", "-o", "-d", "--exclude-standard", "--", p], { cwd: this.root, stdout: "pipe", stderr: "pipe" });
-        files = r.exitCode === 0 ? [...new Set(r.stdout.toString().split("\0").filter(Boolean).flatMap((f) => { const x = this.rel(f); return x ? [x] : []; }))].slice(0, EXPANDED_KEPT) : [];
+        const git = (...args: string[]) => {
+          const r = Bun.spawnSync(["git", ...args, "--", p], { cwd: this.root, stdout: "pipe", stderr: "pipe" });
+          return r.exitCode === 0 ? r.stdout.toString().split("\0").filter(Boolean) : undefined;
+        };
+        // Against HEAD, so a staged change counts; a repository without a commit yet has only the index to go by.
+        const changed = git("diff", "--name-only", "--relative", "-z", "HEAD") ?? git("ls-files", "-z", "-m", "-d") ?? [];
+        const all = [...new Set([...changed, ...(git("ls-files", "-z", "-o", "--exclude-standard") ?? [])].flatMap((f) => { const x = this.rel(f); return x ? [x] : []; }))];
+        if (all.length > EXPANDED_KEPT) this.expandedCut.add(p);
+        files = all.slice(0, EXPANDED_KEPT);
         this.expanded.set(p, files);
       }
       return files;
@@ -283,7 +319,7 @@ export class Facts {
    * or a first look at a file also observes it.
    */
   preTool(peer: PeerId, toolUseId: string | undefined, tool: string, input: Record<string, unknown>): void {
-    this.expanded = new Map();
+    this.boundary();
     const path = [input.file_path, input.notebook_path].find((p): p is string => typeof p === "string");
     const file = path ? this.rel(path) : undefined;
     const version = file ? this.observe(file) : undefined;
@@ -299,12 +335,12 @@ export class Facts {
    * its view to what it read. Anything else, a Bash command included, is observed with its attribution unknown.
    */
   postTool(peer: PeerId, toolUseId: string | undefined, tool: string, input: Record<string, unknown>): void {
-    this.expanded = new Map();
+    this.boundary();
     const pre = toolUseId ? this.before.get(toolUseId) : undefined;
     if (toolUseId) this.before.delete(toolUseId);
     const file = pre?.file;
     if (file && pre?.version) {
-      this.touch(peer, file);
+      this.touch(peer, file, pre.version);
       if (["Edit", "MultiEdit", "Write"].includes(tool)) {
         const expected = this.latest.get(file)?.hash === pre.version.hash ? applyEdit(pre.version.text, tool, input) : undefined;
         const version = this.observe(file, expected === undefined ? undefined : { peer, expected: sha1(expected) });
@@ -329,15 +365,15 @@ export class Facts {
    */
   // any: an app-server item is untyped JSON; every field is checked before use.
   codexItem(peer: PeerId, item: any): void {
-    this.expanded = new Map();
+    this.boundary();
     if (item?.type === "fileChange" && item.status !== "failed" && item.status !== "declined") {
       for (const change of Array.isArray(item.changes) ? item.changes : []) {
         const moved = typeof change?.kind?.move_path === "string" ? this.rel(change.kind.move_path) : undefined;
         if (moved) this.touch(peer, moved);
         const file = typeof change?.path === "string" ? this.rel(change.path) : undefined;
         if (!file) continue;
-        this.touch(peer, file);
         const was = this.latest.get(file);
+        this.touch(peer, file, was);
         const now = this.load(file);
         const matches = was ? codexEffect(was.text, now, change, (a, b) => this.diff(a, b)) : false;
         const version = this.observe(file, matches ? { peer, expected: now.hash } : undefined);
@@ -349,7 +385,7 @@ export class Facts {
       for (const action of actions) {
         if (action?.type !== "read" || typeof action.path !== "string") continue;
         const file = this.rel(action.path);
-        if (file) this.touch(peer, file);
+        if (file) this.touch(peer, file, this.observe(file));
       }
     }
     this.observeAll();
@@ -360,7 +396,7 @@ export class Facts {
    * a later boundary offers everything since the peer's last acknowledged view again.
    */
   due(peer: PeerId, toolUseId?: string): Offered | undefined {
-    this.expanded = new Map();
+    this.boundary();
     const scope = this.o.scope(peer);
     if (!scope) return undefined;
     const view = this.view(peer);
@@ -375,13 +411,16 @@ export class Facts {
     const firstLooks: string[] = [];
     for (const file of this.files(peer, scope)) {
       const now = this.observe(file);
-      const was = view.get(file);
+      const was = view.get(file) ?? this.firstSeen.get(peer)?.get(file);
       if (!was) {
         firstLooks.push(file);
         offered.set(file, now); // what the peer sees from here on; nothing to compare with
         continue;
       }
-      if (was.hash === now.hash) continue;
+      if (was.hash === now.hash) {
+        if (!view.has(file)) offered.set(file, now); // unchanged since it was touched: its first look
+        continue;
+      }
       const since = (this.transitions.get(file) ?? []).filter((t) => t.seq > was.seq);
       const capped = (this.evicted.get(file) ?? -1) > was.seq; // the cap dropped part of its history
       if (!capped && since.length && since.every((t) => t.by === peer)) {
@@ -432,6 +471,8 @@ export class Facts {
     }
     if (cut) parts.push(`(${cut} more changed line(s) not shown; read ${cutFiles.join(", ")})`);
     if (unnamed) parts.push(`${unnamed} more changed file(s) in your scope, not named here: their names match a private-data pattern`);
+    const cutDirs = [...this.expandedCut].filter(this.o.nameable);
+    if (cutDirs.length) parts.push(`more than ${EXPANDED_KEPT} files changed under ${cutDirs.join(", ")}: the rest are not shown; check them yourself`);
     const plans = new Map<number, string>();
     const seen = this.plansAccepted.get(peer) ?? new Map<number, string>();
     for (const p of scope.plans) {
@@ -471,22 +512,25 @@ export class Facts {
   }
 
   /**
-   * One hash over these project paths as they are now: an integration target (issue #107). A directory counts by git's
-   * changed, new and deleted files under it, with the commit they are relative to.
+   * One hash over these project paths and the files these peers touched, as they are now: an integration target (issue
+   * #107). A directory counts by git's changed, new and deleted files under it, with the commit they are relative to.
    */
-  tree(paths: string[]): string {
-    this.expanded = new Map();
+  tree(paths: string[], peers: PeerId[] = []): string {
+    this.boundary();
     const h = createHash("sha1");
     const head = Bun.spawnSync(["git", "rev-parse", "-q", "--verify", "HEAD"], { cwd: this.root, stdout: "pipe", stderr: "pipe" });
     h.update(head.exitCode === 0 ? head.stdout.toString().trim() : "no-head").update("\0");
-    const files = [...new Set(this.expand(paths.flatMap((p) => { const r = this.rel(p); return r ? [r] : []; })))].sort();
+    // The files the members touched count too: a symbol-only overlap names no path, and an edit outside the named
+    // paths still moves the work the integration checked.
+    const touched = peers.flatMap((p) => this.touched.get(p) ?? []);
+    const files = [...new Set([...this.expand(paths.flatMap((p) => { const r = this.rel(p); return r ? [r] : []; })), ...touched])].sort();
     for (const file of files) h.update(file).update("\0").update(this.load(file).hash).update("\0");
     return h.digest("hex");
   }
 
   /** Whether `peer` has acknowledged every file its facts cover, as it is now (a file it never looked at counts). */
   current(peer: PeerId): boolean {
-    this.expanded = new Map();
+    this.boundary();
     const view = this.accepted.get(peer);
     return this.files(peer).every((f) => {
       const v = view?.get(f);
@@ -524,7 +568,10 @@ export class Facts {
     if (i === -1) return undefined;
     const offer = list[i]!;
     const view = this.view(peer);
-    for (const [file, v] of offer.files) if ((view.get(file)?.seq ?? -1) < v.seq) view.set(file, v);
+    for (const [file, v] of offer.files) {
+      if ((view.get(file)?.seq ?? -1) < v.seq) view.set(file, v);
+      this.firstSeen.get(peer)?.delete(file);
+    }
     const seen = this.plansAccepted.get(peer) ?? new Map<number, string>();
     for (const [task, text] of offer.plans) seen.set(task, text);
     this.plansAccepted.set(peer, seen);

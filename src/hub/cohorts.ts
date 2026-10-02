@@ -51,7 +51,7 @@ export interface Integration {
 
 export interface Cohort {
   id: number;
-  /** Bumps on every change of membership, owner or completion intent. */
+  /** Bumps on every change of membership or owner, and when an intent is withdrawn. */
   revision: number;
   members: Map<number, Member>;
   silent: boolean;
@@ -82,8 +82,9 @@ export class Cohorts {
 
   constructor(private readonly d: CohortDeps) {}
 
-  /** The live cohort `task` is in. */
+  /** The live cohort `task` is in. A cohort is over the moment its members have all finished, whoever asks. */
   of(task: number): Cohort | undefined {
+    this.gc();
     return this.live.find((c) => c.members.has(task));
   }
 
@@ -98,6 +99,7 @@ export class Cohorts {
    * an owner without verified facts joins. Returns what happened, for the notices.
    */
   join(task: Task, others: Task[], gen: (t: Task) => number): { cohort: Cohort; formed: boolean; lifted: boolean } | undefined {
+    this.gc();
     const all = [task, ...others].filter((t) => t.owner);
     const found = [...new Set(all.map((t) => this.of(t.id)).filter((c): c is Cohort => !!c))];
     if (!found.length && all.length < 2) return undefined;
@@ -144,6 +146,7 @@ export class Cohorts {
   }
 
   private liftWhere(pick: (c: Cohort) => boolean): Cohort[] {
+    this.gc(); // a finished cohort is not lifted: a peer leaving after the work (a benchmark's teardown) changes nothing
     const out = this.live.filter((c) => c.silent && pick(c));
     for (const c of out) {
       c.silent = false;
@@ -185,7 +188,10 @@ export class Cohorts {
     }
   }
 
-  /** The task is open again for its owner (a failed check, changes requested, a reopen): its intent is void. */
+  /**
+   * The task is open again for its owner (a failed check, changes requested, a reopen): its intent is void, and while
+   * its cohort is live it is that cohort's work again. A cohort that is over stays over.
+   */
   withdraw(task: number): void {
     const c = this.of(task);
     if (!c) return;
@@ -241,7 +247,8 @@ export class Cohorts {
     }
     // Its next done: accepted only for the same target, once every other member has settled. A later turn of a settled
     // member that touches these files moves the target, which the file hash catches.
-    const running = [...c.members.values()].filter((x) => x.task !== task.id && x.stoppedAt === undefined).map((x) => x.owner);
+    // Other owners only: the integrating owner's own other tasks in the cohort stop with this very turn.
+    const running = [...c.members.values()].filter((x) => x.owner !== task.owner && x.stoppedAt === undefined).map((x) => x.owner);
     let why = "";
     if (running.length) why = `${[...new Set(running)].join(", ")} has not stopped since its done, so its changes may not be final`;
     else if (now.tree !== ig.tree) why = "the files changed since the last request";
@@ -255,6 +262,7 @@ export class Cohorts {
     ig.tree = now.tree;
     ig.at = Date.now();
     delete ig.offer;
+    delete ig.confirmed; // asked again: a done right after this is a retry, and only a later one can confirm
     return { action: "request", why, requests: ig.requests, cohort: c };
   }
 

@@ -69,6 +69,8 @@ export function startFakeAppServer(
         reply({ turn });
         note("turn/started", { threadId, turn });
         await Bun.sleep(delayMs);
+        const slow = /SLOW:(\d+)/.exec(text); // a turn that keeps running for this many ms
+        if (slow) await Bun.sleep(Number(slow[1]));
         if (text.includes("EDIT:")) {
           // A real patch (issue #108): one line appended to the file, reported with a diff that matches it.
           const path = /EDIT:(\S+)/.exec(text)![1]!;

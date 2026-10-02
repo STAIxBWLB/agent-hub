@@ -27,7 +27,7 @@
   "wall_limit_s": 300,
   "memory": false,
   "inference": false,
-  "topology": "Solo native Codex; solo native Claude; Codex plus Claude on one shared fixture checkout with advisory coordination (with 0.12.4 stale-notice dropping, the #106 ablation); and the same pair with turn-free coordination: a silent cohort once both context paths are verified by readback, facts at tool boundaries (Claude hooks, Codex steers), and an integration request (at most three) for the member that finishes last. Task allocation is fixed by case index in both joint arms; the split rule is recorded as a shadow prediction only. Every final artifact is graded by official tests.",
+  "topology": "Solo native Codex; solo native Claude; Codex plus Claude on one shared fixture checkout with advisory coordination (0.12.4 drops stale notices; the #106 ablation, with and without that, is manifest-v2-ablation-106.json); and the same pair with turn-free coordination: a silent cohort once both context paths are verified by readback, facts at tool boundaries (Claude hooks, Codex steers), and an integration request (at most three) for the member that finishes last. Task allocation is fixed by case index in both joint arms; the split rule is recorded as a shadow prediction only. Every final artifact is graded by official tests.",
   "cases": [
     {
       "repo": "pallets_click_task",

@@ -147,7 +147,7 @@ test("a v2 manifest prepares the turn-free arm too, and an arm list that matches
 
 // issue #110: grading binds the actors of every v2 arm, applies one validity gate to every run record, and a manifest's
 // planned attempts match its arms, cases and repeats.
-test("grading names the actors of every arm and grades only valid attempts (graded ends, treatment, hook isolation); a plan that does not add up is refused", () => {
+test("grading names the actors of every arm; its validity gate (graded ends, context paths while the agents worked, hook and MCP isolation) decides what is graded; a plan that does not add up is refused", () => {
   const code = `import importlib.util,json,os,tempfile
 s=importlib.util.spec_from_file_location('r',${JSON.stringify(script)});m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 assert [m.required_actors(a) for a in ['solo-codex','solo-claude','hub-codex-claude','hub-turnfree-codex-claude']]==[['codex'],['claude'],['codex','claude'],['codex','claude']]
@@ -168,13 +168,24 @@ m.validate_manifest(ab)
 assert ab['arms']==['hub-codex-claude','hub-staleoff-codex-claude'] and m.required_actors('hub-staleoff-codex-claude')==['codex','claude']
 # The gate grade() applies to every run record that passed the identity checks.
 tf='hub-turnfree-codex-claude'
-run={'end_reason':'completed','taskStates':[{'id':1},{'id':2}],'events':[],'codexMessages':[]}
-assert m.unavailable_reason(tf,run)=='turn-free treatment absent: the tasks never formed a silent cohort'
-assert m.unavailable_reason('hub-codex-claude',run) is None
-run['events']=[{'type':'cohort','id':1,'event':'formed','silent':True,'tasks':[1,2]}]
-assert m.unavailable_reason(tf,run) is None
-run['events'].append({'type':'cohort','id':1,'event':'lifted','silent':False,'tasks':[1,2]})
-assert m.unavailable_reason(tf,run)=="turn-free treatment lost: the cohort's silence was lifted"
+T0=1_800_000_000_000
+iso=lambda s: __import__('datetime').datetime.fromtimestamp((T0+s*1000)/1000,__import__('datetime').timezone.utc).isoformat()
+run={'kind':tf,'end_reason':'completed','startedAt':T0,'elapsedMs':60_000,'taskStates':[{'id':1,'history':[{'event':'proposed','at':T0}]},{'id':2,'history':[{'event':'proposed','at':T0}]}],'events':[],'codexMessages':[]}
+assert m.unavailable_reason(tf,run)=='turn-free context path not verified before the tasks: claude, codex'
+assert m.unavailable_reason('hub-codex-claude',{**run,'kind':'hub-codex-claude','readiness':{}})=='hook isolation unknown: no transcript path'
+run['events']=[{'type':'capability','peer':p,'state':'verified','at':iso(-5)} for p in ('claude','codex')]
+t=tempfile.NamedTemporaryFile('w',suffix='.jsonl',delete=False)
+t.write(json.dumps({'type':'attachment','attachment':{'type':'hook_success','command':"bun '/x/src/cli/facts-hook.ts'"}})+'\\n'); t.close()
+run['readiness']={'claude':{'transcriptPath':t.name}}
+assert m.unavailable_reason(tf,run) is None  # valid with no cohort at all: the plans' overlap is the agents' doing
+run['events'].append({'type':'cohort','id':1,'event':'lifted','silent':False,'tasks':[1,2],'at':iso(70)})
+run['events'].append({'type':'capability','peer':'claude','state':'lost','at':iso(70)})
+assert m.unavailable_reason(tf,run) is None  # teardown, after the 60 s of work
+run['events'].append({'type':'capability','peer':'codex','state':'lost','at':iso(30)})
+assert m.unavailable_reason(tf,run)=='turn-free context path lost while the agents worked: codex'
+run['events'].pop()
+run['events'].append({'type':'cohort','id':2,'event':'formed','silent':False,'tasks':[1,2],'at':iso(10)})
+assert m.unavailable_reason(tf,run)=='turn-free cohort not silent while the agents worked'
 run['events'].pop()
 run['end_reason']='timeout'; run['end_reason_detail']='wall-timeout'
 assert m.unavailable_reason(tf,run) is None  # a timed-out attempt's final artifact is graded
@@ -182,15 +193,14 @@ run['end_reason']='interrupted'; run['end_reason_detail']='needs-review'
 assert m.unavailable_reason(tf,run)=='needs-review'
 run['end_reason']='completed'
 run['codexMessages']=[{'method':'hook/started'}]
-assert m.unavailable_reason('solo-codex',run)=='hook isolation failed: Codex ran hooks'
+assert m.unavailable_reason('solo-codex',{**run,'kind':'solo-codex'})=='hook isolation failed: Codex ran hooks'
+run['codexMessages']=[{'method':'mcpServer/startupStatus/updated','params':{'name':'agent-hub','status':'ready'}},{'method':'mcpServer/startupStatus/updated','params':{'name':'obsidian','status':'starting'}}]
+assert m.unavailable_reason(tf,run)=='MCP isolation failed: Codex started obsidian'
 run['codexMessages']=[]
-t=tempfile.NamedTemporaryFile('w',suffix='.jsonl',delete=False)
-t.write(json.dumps({'type':'attachment','attachment':{'type':'hook_success','command':"bun '/x/src/cli/facts-hook.ts'"}})+'\\n'); t.close()
-run['readiness']={'claude':{'transcriptPath':t.name}}
-assert m.unavailable_reason(tf,run) is None
 with open(t.name,'a') as f: f.write(json.dumps({'type':'system','subtype':'stop_hook_summary','hookInfos':[{'command':'~/.claude/hooks/notify.sh'}]})+'\\n')
 assert m.unavailable_reason(tf,run)=="hook isolation failed: Claude ran a hook that is not the hub's"
 os.unlink(t.name)
+assert m.unavailable_reason(tf,run).startswith('hook isolation unknown: transcript unreadable')
 `;
   const r = spawnSync("python3", ["-B", "-c", code], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(r.stderr);

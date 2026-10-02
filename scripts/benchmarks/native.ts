@@ -362,7 +362,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     mkdirSync(join(dir, '.agenthub'), { recursive: true, mode: 0o700 });
     mkdirSync(join(dir, '.claude'), { mode: 0o700 });
     const denied = [...protectedRoots, ...[join(runs, 'runs'), join(runs, 'patches'), join(runs, 'private'), ...(await (async () => { const fs = await import('node:fs/promises'); return (await fs.readdir(join(runs, 'fixtures'))).map(x => join(runs, 'fixtures', x)).filter(x => resolve(x) !== resolve(dir)); })())]];
-    writeFileSync(join(dir, '.agenthub/config.json'), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, snapshots: { enabled: true, keep: 50 }, watchdog_ms: 360000, batch_ms: 0, batch_max: 1, tasks: { release_after_min: 0 }, roles: { codex: ['implementer'], claude: ['implementer'] }, budget: { poll_min: 1 }, approvals: { notify: false }, codex_bin: codexBin, ...(turnFree ? { coordination: 'turn-free' } : {}), ...(staleOff ? { experiments: { stale_notices: 'deliver' } } : {}) }));
+    writeFileSync(join(dir, '.agenthub/config.json'), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, snapshots: { enabled: true, keep: 50 }, watchdog_ms: 360000, batch_ms: 0, batch_max: 1, tasks: { release_after_min: 0 }, roles: { codex: ['implementer'], claude: ['implementer'] }, budget: { poll_min: 1 }, approvals: { notify: false }, codex_bin: codexIsolated, ...(turnFree ? { coordination: 'turn-free' } : {}), ...(staleOff ? { experiments: { stale_notices: 'deliver' } } : {}) }));
     writeFileSync(join(dir, '.agenthub/routing.toml'), '[local]\nfixed_model="coding"\n[classes.implement]\npeers=["codex","claude"]\nescalate_to=[]\n[classes.review]\npeers=[]\nlocal_allowed=false\n');
     const permissions = { defaultMode: 'acceptEdits', allow: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', ...hubNames.map(n => 'mcp__agent-hub__' + n)], deny: ['WebFetch', 'WebSearch', 'Agent', 'Skill', 'Read(./.agenthub/**)', 'Read(./.claude/**)', 'Edit(./.agenthub/**)', 'Edit(./.claude/**)', 'Edit(./AGENTS.md)', 'Edit(./.gitignore)', 'Edit(./tests/**)'] };
     // Hooks are equal across arms (issue #110): none of the user's or a plugin's; the turn-free arm runs the hub's own
@@ -374,7 +374,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const settings = { permissions, ...(turnFree ? { disableAllHooks: false, hooks: session.hooks } : { disableAllHooks: true }), sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: denied } } };
     writeFileSync(join(dir, '.claude/settings.json'), JSON.stringify(settings));
     // The conditions each attempt ran with (issue #110): bound to its record, next to the capability readbacks in its events.
-    const conditions = { claude: { settingSources: 'project', strictMcpConfig: true, disableAllHooks: !turnFree, statusLine: false, hookEvents: turnFree ? Object.keys(session.hooks ?? {}).sort() : [], settingsSha256: hash(JSON.stringify(settings)) }, codex: { hooksFeature: false, memories: false, externalAgentMemoryImport: false }, coordination: turnFree ? 'turn-free' : kind.startsWith('hub-') ? 'advisory' : 'solo', ...(staleOff ? { experiments: { stale_notices: 'deliver' } } : {}) };
+    const conditions = { claude: { settingSources: 'project', strictMcpConfig: true, disableAllHooks: !turnFree, statusLine: false, hookEvents: turnFree ? Object.keys(session.hooks ?? {}).sort() : [], settingsSha256: hash(JSON.stringify(settings)), instructions: 'fixture AGENTS.md via --append-system-prompt-file' }, codex: { hooksFeature: false, memories: false, externalAgentMemoryImport: false, plugins: false, apps: false, multiAgent: false, notify: false, disabledMcpServers: codexUserServers, instructions: 'fixture AGENTS.md as project doc; the user\'s global AGENTS.md too' }, coordination: turnFree ? 'turn-free' : kind.startsWith('hub-') ? 'advisory' : 'solo', ...(staleOff ? { experiments: { stale_notices: 'deliver' } } : {}) };
     const candidateMcp = join(dir, '.claude/candidate-mcp.json');
     writeFileSync(candidateMcp, JSON.stringify({ mcpServers: { 'agent-hub': { command: 'bun', args: [join(repo, 'plugins/agent-hub/server.js')], env: { AGENTHUB_STATE_DIR: state, AGENTHUB_PROJECT_DIR: dir, AGENTHUB_PEER_ID: 'claude' } } } }), { mode: 0o600 });
     await cmd(['git', 'add', '-A'], dir);
@@ -413,7 +413,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             renameSync(trustTemp, trustFile);
             trustLedger.stage = 'written';
             persistLedger();
-            const claudeArgs = ['--restricted', '--strict-mcp-config', '--mcp-config', candidateMcp, '--model', manifest.models.claude, '--effort', manifest.effort.claude, '--session-id', claudeId, '--permission-mode', 'acceptEdits', '--settings', join(dir, '.claude/settings.json'), '--setting-sources', 'project', '--tools', 'Read,Edit,Write,Glob,Grep,Bash', '--allowedTools', ...permissions.allow];
+            const claudeArgs = ['--restricted', '--strict-mcp-config', '--mcp-config', candidateMcp, '--model', manifest.models.claude, '--effort', manifest.effort.claude, '--session-id', claudeId, '--permission-mode', 'acceptEdits', '--settings', join(dir, '.claude/settings.json'), '--setting-sources', 'project', '--append-system-prompt-file', join(dir, 'AGENTS.md'), '--tools', 'Read,Edit,Write,Glob,Grep,Bash', '--allowedTools', ...permissions.allow];
             const command = `bun ${shellQuote(cliPath)} --project ${shellQuote(dir)} claude ${claudeArgs.map(shellQuote).join(' ')}`;
             const claudeHandle = await createOrcaTerminal(orcaProject!.worktreeId, `bench-claude-${name}`, command);
             claudeTerminal = claudeHandle;
@@ -488,11 +488,11 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         codexTaskStart = codexMessages.length; // what came before is setup and the probe, never task work (issue #110)
         for (let k = 0; k < assigned.length; k++) {
             const prompts = assigned.length === 1 ? input.prompts : [input.prompts[k]];
-            const r = await op('hub_task_propose', { class: 'implement', owner: assigned[k], refs: { paths: cas.paths ?? [] }, plan: 'Implement only the assigned CooperBench feature in its source files; leave fixtures and tests unchanged.', title: `CooperBench ${index} ${kind} feature ${assigned.length === 1 ? cas.features.join(',') : cas.features[k]}`, detail: detail + prompts.join('\n\n') });
+            const r = await op('hub_task_propose', { class: 'implement', owner: assigned[k], refs: { paths: cas.paths ?? [] }, title: `CooperBench ${index} ${kind} feature ${assigned.length === 1 ? cas.features.join(',') : cas.features[k]}`, detail: detail + prompts.join('\n\n') });
             ids.push(Number(/#(\d+)/.exec(r)![1]));
         }
         log('arm-start', { index, kind, setupMs: started - setup });
-        let settled = 0;
+        let settled = 0, finished = false;
         while (Date.now() - started < 300000 && !stopRequested) {
             taskStates = await Promise.all(ids.map(id => op('task_show', { id }).then(JSON.parse)));
             const s = await status();
@@ -508,8 +508,10 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             const idle = actors.every(a => s.peers[a]?.state === 'idle' && s.peers[a]?.queued === 0 && !s.peers[a]?.liveAccepted?.length && !s.peers[a]?.needsReview);
             if (done && idle) {
                 settled ||= Date.now();
-                if (Date.now() - settled > 5000)
+                if (Date.now() - settled > 5000) {
+                    finished = true;
                     break;
+                }
             }
             else
                 settled = 0;
@@ -527,10 +529,13 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             }
             await Bun.sleep(300);
         }
-        if (Date.now() - started >= 300000)
+        // Only a loop that ran out of time is a timeout: a stop for another reason in the iteration that crossed the limit
+        // keeps its own reason.
+        if (!finished && endReason === 'completed' && Date.now() - started >= 300000)
             endReason = 'wall-timeout';
-        else if (stopRequested)
+        else if (!finished && endReason === 'completed' && stopRequested)
             endReason = 'interrupted';
+        taskStates = await Promise.all(ids.map(id => op('task_show', { id }).then(JSON.parse))).catch(() => taskStates); // as the work ended
     }
     catch (e) {
         error = String(e);
@@ -538,7 +543,9 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         log('arm-error', { index, kind, error });
     }
     finally {
-        const elapsedMs = started ? Date.now() - started : 0;
+        const activeEnd = Date.now();
+        const elapsedMs = started ? activeEnd - started : 0;
+        let stoppedAt = 0; // when every actor this attempt started was stopped: writes can land until then
         if (client) {
             for (const actor of actors)
                 await client.request({ t: 'pause', peer: actor }).catch(() => { });
@@ -570,6 +577,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         if (orcaProject) {
             try {
                 await cmd(['bun', cliPath, '--project', dir, 'kill'], dir);
+                stoppedAt = Date.now();
                 if (projectId) await cmd(['bun', cliPath, 'projects', 'remove', String(projectId)], dir);
             }
             catch {
@@ -636,7 +644,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         const patchFile = join(runs, 'patches', name + '.patch');
         writeFileSync(patchFile, patch, { mode: 0o600 });
         const events = readEvents(join(state, 'events.jsonl'));
-        const result = { protocol: 'native-cc-v1', index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: sealedBase.trim(), models: manifest.models, requestedModels: actors.reduce((o: any, a: string) => (o[a] = manifest.models[a], o), {}), readiness, patchFile, model: actors.length === 1 ? manifest.models[actors[0]!] : undefined, setupMs: started ? started - setup : Date.now() - setup, elapsedMs, end_reason: cleanupFailed ? 'infrastructure-error' : endReason === 'infrastructure-error' ? 'infrastructure-error' : endReason === 'provider-quota' ? 'provider-quota' : endReason === 'budget-paused' ? 'budget-paused' : endReason === 'model-unverified' || endReason === 'metadata-modified' ? 'infrastructure-error' : endReason === 'completed' ? 'completed' : endReason === 'delivery-unsettled' ? 'delivery-unsettled' : endReason === 'wall-timeout' ? 'timeout' : 'interrupted', end_reason_detail: endReason, error: error ? String(error).replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 300) : undefined, taskStates, effort: manifest.effort, events, codexMessages, codexTaskStart, startedAt: started || undefined, repeat, conditions, codexUsage: codexUsage(codexMessages, thread?.thread?.id), nativeVersions: { codex: codexVersion, claude: claudeVersion }, codexBinarySha256: sourceHash(codexBin), claudeSessionId: actors.includes('claude') ? claudeId : undefined, codexThreadId: thread?.thread?.id, trust_restored: trustRestored, cleanup_complete: !cleanupFailed, metadata_clean: metadataClean, metadata_sha256: metadataBaseline, delivery_status: finalStatus?.peers };
+        const result = { protocol: 'native-cc-v1', index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: sealedBase.trim(), models: manifest.models, requestedModels: actors.reduce((o: any, a: string) => (o[a] = manifest.models[a], o), {}), readiness, patchFile, model: actors.length === 1 ? manifest.models[actors[0]!] : undefined, setupMs: started ? started - setup : Date.now() - setup, elapsedMs, stoppedMs: stoppedAt ? stoppedAt - activeEnd : undefined, teardownMs: Date.now() - activeEnd, end_reason: cleanupFailed ? 'infrastructure-error' : endReason === 'infrastructure-error' ? 'infrastructure-error' : endReason === 'provider-quota' ? 'provider-quota' : endReason === 'budget-paused' ? 'budget-paused' : endReason === 'model-unverified' || endReason === 'metadata-modified' ? 'infrastructure-error' : endReason === 'completed' ? 'completed' : endReason === 'delivery-unsettled' ? 'delivery-unsettled' : endReason === 'wall-timeout' ? 'timeout' : 'interrupted', end_reason_detail: endReason, error: error ? String(error).replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 300) : undefined, taskStates, effort: manifest.effort, events, codexMessages, codexTaskStart, startedAt: started || undefined, repeat, conditions, codexUsage: codexUsage(codexMessages, thread?.thread?.id), nativeVersions: { codex: codexVersion, claude: claudeVersion }, codexBinarySha256: sourceHash(codexBin), claudeSessionId: actors.includes('claude') ? claudeId : undefined, codexThreadId: thread?.thread?.id, trust_restored: trustRestored, cleanup_complete: !cleanupFailed, metadata_clean: metadataClean, metadata_sha256: metadataBaseline, delivery_status: finalStatus?.peers };
         writeFileSync(join(runs, 'runs', name + '.json'), JSON.stringify(result, null, 2), { mode: 0o600 });
         log('arm-end', { index, kind, elapsedMs, endReason, patchLines: patch.split('\n').length });
         if (cleanupFailed)
@@ -657,6 +665,15 @@ if (!selected.length || new Set(selected).size !== selected.length || selected.s
 if (existsSync(join(runs, 'runs')) && readdirSync(join(runs, 'runs')).length)
     throw new Error('run directory already contains attempts; use a new attempt directory');
 mkdirSync(join(runs, 'private'), { recursive: true, mode: 0o700 });
+// Strict MCP isolation for Codex in every arm (issue #110): the user's plugins, apps, sub-agents and turn-end notifier
+// are off, and each MCP server the user's config defines is disabled by name; the hub adds only its own. Nothing in the
+// user's config is changed: the hub runs Codex through this wrapper.
+const codexUserServers = (JSON.parse(await cmd([codexBin, '--disable', 'plugins', 'mcp', 'list', '--json'], runs)) as { name: unknown }[]).map(x => String(x.name)).filter(n => n !== 'agent-hub');
+if (codexUserServers.some(n => !/^[A-Za-z0-9_-]+$/.test(n)))
+    throw new Error('a Codex MCP server name cannot be disabled by a -c override; isolate it by hand before a run');
+const codexIsolation = ['--disable', 'plugins', '--disable', 'apps', '--disable', 'multi_agent', '-c', 'notify=[]', ...codexUserServers.flatMap(n => ['-c', `mcp_servers.${n}.enabled=false`])];
+const codexIsolated = join(runs, 'private', 'codex-isolated.sh');
+writeFileSync(codexIsolated, `#!/bin/sh\nexec ${shellQuote(codexBin)} "$@" ${codexIsolation.map(shellQuote).join(' ')}\n`, { mode: 0o700 });
 mkdirSync(join(runs, 'runs'), { recursive: true, mode: 0o700 });
 mkdirSync(join(runs, 'patches'), { recursive: true, mode: 0o700 });
 writeFileSync(join(runs, 'cohort.json'), JSON.stringify({ schema: m.schema, manifest_sha256: sourceHash(join(runs, 'manifest.json')), cases: selected, calibration: setupOnly, repeat, private_case_sha256: Object.fromEntries(selected.map(i => [i, privateCaseHashes[i]])), arms: m.arms, runner_sha256: prepared.runner_sha256, native_runner_sha256: prepared.native_runner_sha256 }), { mode: 0o600 });
@@ -665,8 +682,10 @@ try {
     for (const i of selected) {
         if (stopRequested)
             break;
-        const offset = (i + repeat) % m.arms.length;
-        const order = [...m.arms.slice(offset), ...m.arms.slice(0, offset)];
+        // A Williams design (issue #110): row (case + repeat) of n arms is 0, 1, n-1, 2, n-2, ... shifted by the row, so
+        // over n consecutive rows every arm runs right before every other one once (for an even n).
+        const n = m.arms.length, row = (i + repeat) % n;
+        const order = Array.from({ length: n }, (_, j) => m.arms[((j === 0 ? 0 : j % 2 ? (j + 1) / 2 : n - j / 2) + row) % n]);
         for (const kind of order) {
             if (stopRequested)
                 break;

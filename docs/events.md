@@ -21,7 +21,7 @@ marked `private: true`, and PII tasks `pii: true`.
 | `capability` | `peer`, `state` (`verified` or `lost`), `via`: a peer's context path for facts |
 | `native_turn_end` | `peer`: Claude's Stop hook, the end of its turn (Codex's is its `turn_end`); quiescence evidence for an integration |
 | `hook_stats` | `peer`, `n` (facts hook calls in the turn, its Stop included), `startupMs` and `maxStartupMs` (the hook processes' start-up and connect time, summed and the largest), `hubMs` (the hub's own time for them): at Claude's Stop (issue #108) |
-| `cohort` | `id`, `event` (`formed`, `joined`, `lifted`), `silent`, `tasks`, `owners`: a turn-free cohort formed, changed membership or stopped being silent (issue #107) |
+| `cohort` | `id`, `event` (`formed`, `joined`, `lifted`), `silent`, `tasks`, `owners`: owners of overlapping tasks formed a cohort, it changed membership, or it stopped being silent (issue #107). Recorded in every regime; only a turn-free project's cohorts can be silent |
 | `split` | `task`, `verdict` (`split`, `single`, `unknown`), `single` (the peer that would finish both units alone soonest), `splitS`, `singleS`, `reason` (for `unknown`), `trace` (the inputs and steps: peer names and numbers only): a shadow split prediction where an overlap forms or changes a cohort, routed or named; it never changes the assignment (issue #109) |
 | `state` | `peer`, `state` |
 | `turn_start` | `peer`, `turn` (`<peer>#<hub run>.<n>`, unique across restarts). A turn follows the adapter: pausing a busy peer does not end it |

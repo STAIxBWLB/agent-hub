@@ -378,7 +378,10 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   context, matched by tool use id and the offer's id; for Codex the steered
   input coming back as a user message item of the turn. A new native session,
   the peer going offline, or three offers past a minute without a readback
-  (checked at its boundaries and every 30 seconds), makes it unverified again; a peer without a verified path that left three
+  (checked at its boundaries and every 30 seconds), makes it unverified again,
+  and a Claude session whose transcript the hub cannot find gets no facts at
+  all. A session whose hooks stop altogether leaves no offer unread, so it
+  stays verified; a peer without a verified path that left three
   offers unread gets none until a readback arrives. Kimi, Pi and the local
   worker have no path yet, so a cohort with one of them is never silent.
 - Silence. While a cohort is silent, an agent message from a member to another
@@ -388,11 +391,12 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   ...` when some recipients got it); a native turn answer's sender hears it on
   its next delivery. Workflow messages from the hub are never held back. A
   member's messages stay held until its native turn has ended after its task
-  closed (Codex's turn completes, or Claude's Stop hook runs; a member that is
-  between turns when its task closes, or goes offline, has stopped), so a late
-  answer is still the cohort's. That settlement is recorded when it happens and
+  closed (Codex's turn completes, or Claude's Stop hook runs; a member already
+  between turns when its task closes has stopped; a paused peer may still be in
+  its turn, and Claude's channel going offline says nothing about its session),
+  so a late answer is still the cohort's. That settlement is recorded when it happens and
   never undone: the member's next turn is new work, and once every member has
-  settled the cohort is over. Only a tool call starting counts as activity after
+  settled the cohort is over (a task reopened after that is outside it). Only a tool call starting counts as activity after
   a turn end. A message held back from all its recipients does not count
   against the sender's limits.
 - Facts. At each tool call (Claude) or completed tool item (Codex) of a cohort
@@ -400,7 +404,12 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   acknowledged them in the files every member's task names and in the files it
   touched, with the other members' new plans; the last member still at work
   keeps the others' files after they finish. A directory a task names stands for
-  git's changed, new and deleted files under it (200 at most). A change is credited to an agent
+  git's changed (staged or not) files against HEAD, new and deleted files under
+  it (200 at most; the fact says when more were cut). `.git` and what the
+  denylist keeps from every agent (`src/local/deny.ts` and `local.deny`) are
+  never read or shown. A file a peer touched before it had a view of it (a
+  partial read, say) is compared with what it was then, so a change landing in
+  between is shown. A change is credited to an agent
   only with effect evidence: a Claude Edit, MultiEdit or Write whose result is
   exactly its input applied to the file as observed before it, or a Codex patch
   whose diff is exactly what changed. Shell commands, concurrent writers and
@@ -427,8 +436,10 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   against the others' (their files, signatures and summaries, plus its own facts)
   and to call `hub_task_done` again; nothing is recorded as done yet. The next
   call counts only for the same target: the same owner, cohort revision and
-  files, with every other member's native turn ended after its done (or the
-  member idle when it finished). A done of a member by the console counts as its
+  files (the named ones and those its members touched, so a symbol-only overlap
+  and edits outside the named paths count), with every other owner's native turn
+  ended after its done (or that owner idle when it finished); the integrating
+  owner's own other tasks in the cohort never count as still running. A done of a member by the console counts as its
   intent too. Edits in between, a new member, an owner change, a failed check or
   a reopened review ask again; a done within two seconds of a request is taken as a retry and gets the
   same request again; after three requests the done is recorded with
@@ -439,7 +450,9 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   where no integration step runs for the others (the silence was lifted, a PII
   task opened), the held notices go with the lift notice or the done result, and
   for a task the console finishes, to the console. Open tasks outside the cohort
-  get their notices as usual. Cohorts live in memory: after a hub restart an open
+  get their notices as usual. Facts sent with an integration request are
+  offered again at the next boundary until the next done acknowledges them.
+  Cohorts live in memory: after a hub restart an open
   request is recorded as unresolved, and when a peer first attaches, each of its
   open tasks that overlaps other work hears that overlaps are settled by message
   again, with the completed-change notices of overlapping tasks finished since
@@ -598,7 +611,7 @@ Rows without a live process are stale registrations; forget them with
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-or 11 (0.12.1) and only
+11 (0.12.1 and 0.12.2) or 12 (0.12.3) and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the

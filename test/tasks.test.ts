@@ -1419,7 +1419,7 @@ test("the next done acknowledges the facts sent with the request before the targ
   expect(state.acked).toEqual(["codex:f1"]);
 });
 
-test("concurrent dones select exactly one integrating member", async () => {
+test("two dones in one tick select exactly one integrating member", async () => {
   const { tasks, board } = await turnFreeRig();
   const { first, second } = await pair(tasks);
   const [a, b] = await Promise.all([tasks.done("kimi", first.id, "a"), tasks.done("codex", second.id, "b")]);
@@ -1465,6 +1465,61 @@ test("edits between calls, owner replacement and a changed cohort move the targe
   await moved.tasks.assignTo(p3.second.id, "claude");
   const fresh = await moved.tasks.done("claude", p3.second.id, "b by claude");
   expect(fresh.history.at(-1)!.note).toContain("you are the last of turn-free cohort");
+});
+
+test("the integrating owner's own other task in the cohort never counts as a member still at work", async () => {
+  const { tasks, stop, later } = await turnFreeRig();
+  const a = await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/x.ts"] } });
+  const b = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/x.ts"] } });
+  const c = await tasks.propose("kimi", { title: "c", class: "implement", owner: "kimi", refs: { paths: ["src/x.ts"] } });
+  expect(tasks.cohorts.of(c.id)?.members.size).toBe(3);
+  await tasks.done("codex", b.id, "b");
+  stop("codex");
+  await tasks.done("kimi", a.id, "a"); // one turn: both of kimi's tasks
+  expect((await tasks.done("kimi", c.id, "c")).history.at(-1)!.event).toBe("integration requested");
+  later();
+  expect((await tasks.done("kimi", c.id, "c, checked")).history.slice(-2).map((h) => h.event)).toEqual(["integrated", "done"]);
+});
+
+test("a done right after a repeated request is a retry too; only a later one confirms", async () => {
+  const { tasks, state, stop, later } = await turnFreeRig();
+  const { first, second } = await pair(tasks);
+  await tasks.done("kimi", first.id, "a");
+  stop("kimi");
+  await tasks.done("codex", second.id, "b"); // request 1
+  later();
+  state.tree = "t2"; // its own edits since: asked again
+  expect((await tasks.done("codex", second.id, "b")).history.at(-1)!.note).toContain("integration request 2 of 3");
+  expect((await tasks.done("codex", second.id, "b")).history.filter((h) => h.event === "integration requested")).toHaveLength(2); // a retry
+  later();
+  expect((await tasks.done("codex", second.id, "b")).history.slice(-2).map((h) => h.event)).toEqual(["integrated", "done"]);
+});
+
+test("a cohort whose members have all settled is over: a peer leaving afterwards lifts nothing, and a reopen stays outside it", async () => {
+  const { tasks, stop, later, notices } = await turnFreeRig();
+  const { first, second } = await pair(tasks);
+  await tasks.done("kimi", first.id, "a");
+  stop("kimi");
+  await tasks.done("codex", second.id, "b");
+  later();
+  await tasks.done("codex", second.id, "b");
+  stop("codex");
+  // A benchmark's teardown: a member's path is lost once the work is over. Nothing is lifted, nothing announced.
+  expect(tasks.cohorts.lift("claude")).toEqual([]);
+  expect(tasks.cohorts.lift("kimi")).toEqual([]);
+  expect(notices.some((n) => n.includes("no longer silent"))).toBe(false);
+  expect(tasks.cohorts.of(first.id)).toBeUndefined();
+  await tasks.review("claude", first.id, "changes_requested", "fix it"); // reopened after the cohort was over
+  expect(tasks.silenced("kimi", "codex")).toBeUndefined();
+});
+
+test("an absolute path inside the project and its relative spelling are one place", async () => {
+  const { tasks, dir } = await turnFreeRig();
+  const a = await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: [`${dir}/src/click/termui.py`] } });
+  const b = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["./src/click/termui.py"] } });
+  expect(tasks.cohorts.of(b.id)?.members.has(a.id)).toBe(true);
+  const outside = await tasks.propose("claude", { title: "c", class: "implement", owner: "claude", refs: { paths: ["/elsewhere/src/click/termui.py"] } });
+  expect(tasks.cohorts.of(outside.id)).toBeUndefined();
 });
 
 test("past three requests the outcome is unresolved, recorded with the done, never as integrated", async () => {
@@ -1710,4 +1765,8 @@ test("the shadow prediction never changes assignment: routed and named work go w
   expect(named.owner).toBe("codex");
   // Recorded where the overlap forms a cohort, named owner or not: the record is what the prediction is checked on.
   expect(recorded).toEqual([{ task: routed.id, verdict: "unknown" }, { task: named.id, verdict: "unknown" }]);
+  // explain shows the prediction for the pair the record is about: the task's own owner.
+  const kimiNamed = await tasks.propose("claude", { title: "kimi named", class: "implement", owner: "kimi", refs: { paths: ["src/b.ts"] } });
+  await tasks.propose("claude", { title: "codex on b", class: "implement", owner: "codex", refs: { paths: ["src/b.ts"] } });
+  expect(tasks.explain(kimiNamed.id).join("\n")).toContain("unknown: kimi has 1 other open task(s)"); // kimi's, not routing's pick
 });

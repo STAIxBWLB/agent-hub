@@ -534,7 +534,7 @@ export async function startDaemon(opts: DaemonOptions) {
     turnFree,
     capable: (peer) => capable.has(peer),
     idle: (peer) => idle(peer),
-    treeHash: (paths) => facts.tree(paths),
+    treeHash: (paths, owners) => facts.tree(paths, owners),
     integrationFacts: (peer) => {
       if (!factsOn()) return undefined;
       let offered: ReturnType<Facts["due"]>;
@@ -558,7 +558,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // Turn-free facts (issue #108): what the others changed in an owner's files, at its tool calls. Scopes are read from
   // the board once per change of it: every boundary asks for them.
   let scopes = new Map<PeerId, FactScope | undefined>();
-  const facts: Facts = new Facts({ root: opts.cwd, tmp: join(opts.stateDir, "facts"), instance: instanceId.slice(0, 8), scope: (peer) => (scopes.has(peer) ? scopes.get(peer) : scopes.set(peer, tasks.factScope(peer)).get(peer)), peers: () => [...bus.peers.keys()], nameable: tasks.nameable });
+  const facts: Facts = new Facts({ root: opts.cwd, tmp: join(opts.stateDir, "facts"), instance: instanceId.slice(0, 8), scope: (peer) => (scopes.has(peer) ? scopes.get(peer) : scopes.set(peer, tasks.factScope(peer)).get(peer)), peers: () => [...bus.peers.keys()], nameable: tasks.nameable, deny: config.local.deny });
   /** Whether facts are tracked now. When tracking resumes (a PII task closed), everything observed before is dropped. */
   let factsWereOn = false;
   const factsOn = (): boolean => {
@@ -674,12 +674,14 @@ export async function startDaemon(opts: DaemonOptions) {
   const activeAt = new Map<PeerId, number>();
   /** Every Claude hook call's own start-up and the hub's time for it, summed per turn (issue #108): reported at Stop. */
   const hookStats = new Map<PeerId, { n: number; startupMs: number; hubMs: number; maxStartupMs: number }>();
-  /** Between native turns now: gone, or Claude stopped after its last tool call began, or any other peer not busy. */
+  /**
+   * Between native turns now: Claude stopped after its last tool call began (its channel going offline says nothing
+   * about its session, whose hooks may still run); any other peer's adapter is not in a turn. The adapter's own state,
+   * never `stateOf`: a paused peer may still be in its turn.
+   */
   const idle = (peer: PeerId): boolean => {
-    const state = bus.stateOf(peer);
-    if (state === "offline") return true;
-    if (peer !== "claude") return state !== "busy";
-    return (turnEnded.get(peer) ?? -1) >= (activeAt.get(peer) ?? 0);
+    if (peer === "claude") return (turnEnded.get(peer) ?? -1) >= (activeAt.get(peer) ?? 0);
+    return (bus.peers.get(peer)?.state ?? "offline") !== "busy";
   };
   /** What quiescence was judged on, for the log when an integration waits on it. */
   const stopEvidence = (peer: PeerId) => `${peer}: turn end ${turnEnded.has(peer) ? new Date(turnEnded.get(peer)!).toISOString() : "none"}, last tool call ${activeAt.has(peer) ? new Date(activeAt.get(peer)!).toISOString() : "none"}, ${bus.peers.get(peer)?.state ?? "offline"}`;
@@ -883,6 +885,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_task_propose": {
         const t = await tasks.propose(by, a);
         const overlap = tasks.overlaps(t, t.owner === by);
+        if (t.owner === by && tasks.silentFor(t.id) && factsOn()) facts.sawPlans(by, tasks.overlapTasks(t)); // as for an accept
         return overlap ? `${line(t)}\n${overlap}` : line(t);
       }
       case "hub_task_accept": {
@@ -1310,7 +1313,6 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         try { afterTurn?.(); } catch (error) { log(`conflict check after ${open.id}: ${(error as Error).message}`); }
       }
-      if (e.state === "offline") tasks.cohorts.turnEnded(e.peer); // a session that is gone writes nothing more
       if (e.state === "offline") offlineSince.set(e.peer, offlineSince.get(e.peer) ?? Date.now());
       else offlineSince.delete(e.peer);
       // A session that ended may come back without hooks: its context path is verified again or not at all (issue #108).
@@ -2128,8 +2130,13 @@ export async function startDaemon(opts: DaemonOptions) {
           checkCapability(peer);
           const started = performance.now();
           facts.preTool(peer, toolUseId, tool, input);
-          // Without a transcript to read back from, a probe could never be confirmed: offer none.
-          const offered = transcript ? offerFor(peer, toolUseId) : facts.due(peer, toolUseId);
+          // Without a transcript nothing offered could ever be read back: a verified path is lost, and nothing is offered
+          // (the same diff would otherwise go in at every tool call).
+          if (!transcript) {
+            if (capable.delete(peer)) loseCapability(peer, "its transcript cannot be found");
+            return void reply({ t: "facts", ok: true });
+          }
+          const offered = offerFor(peer, toolUseId);
           if (offered) event({ type: "fact", peer, id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "hook", ms: Math.round(performance.now() - started), ...(typeof msg.startedMs === "number" && Number.isFinite(msg.startedMs) ? { hookMs: Math.round(msg.startedMs) } : {}), ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
           return void reply({ t: "facts", ok: true, ...(offered ? { text: offered.text, id: offered.id } : {}) });
         } catch (error) {

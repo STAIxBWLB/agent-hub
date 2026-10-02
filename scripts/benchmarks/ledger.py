@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """Coordination ledger for a native CooperBench run directory (issue #110). Standard library only.
 
-Usage: python3 scripts/benchmarks/ledger.py --run RUN_DIR [--run RUN_DIR ...] [--json]
+Usage: python3 scripts/benchmarks/ledger.py --run RUN_DIR [--run RUN_DIR ...] [--plan NAME] [--json]
 
 Reads runs/<NN>-<arm>.json written by native.ts, the Claude transcript each names, and the fixture's git history.
-Writes ledger.json into the first run directory (with one, next to its records). Every measure names its unit and coverage in UNITS below; a measure the records
+Writes ledger.json into the first run directory (with one, next to its records). ledger.json holds code fragments
+from the agents' writes and local paths: it is private run data, never committed; the summary on stdout is not. Every measure names its unit and coverage in UNITS below; a measure the records
 cannot support is null with a reason, never zero. Times are seconds from the first task proposal of the attempt.
 
 Correctness is the official grader's: nothing here certifies a correct or loss-free result. The contribution measures
 can only expose possible loss.
 """
 from __future__ import annotations
-import argparse, json, re, statistics, subprocess, sys
+import argparse, json, keyword, re, statistics, subprocess, sys
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from runner import isolation_failure, treatment_failure  # noqa: E402  the grader's gates: one definition of validity
+from runner import TURN_FREE, active_window, hook_rows, isolation_failure, transcript, treatment_failure  # noqa: E402  the grader's gates: one definition
 
 UNITS = {
     "end_reason": "the runner's class (completed, timeout, interrupted, infrastructure-error, ...); end_reason_detail "
@@ -32,56 +33,70 @@ UNITS = {
     "integration": "integration requests and unresolved outcomes recorded on the board (turn-free cohorts)",
     "integrated_s": "seconds to an integration confirmed for a turn-free cohort; null without one",
     "check_s": "seconds to a configured check's result; null when no check ran (none are configured in the benchmark)",
-    "settlement": "per agent, seconds to when it had stopped after the last done, read from its own record: the last "
-                  "done itself when it was idle then (no Codex turn running; Claude's latest response before it ended its "
-                  "turn), else its first native turn end after it (Codex turn/completed, Claude's end_turn response); "
-                  "null when it was still at work at the end of the record. settlement_s is the later of the two",
-    "codex": "Codex from task assignment to its last done on the board (in task): turns (turn/started), "
+    "settlement": "per agent, seconds to the end of its last native turn after the last done (turns that late "
+                  "messages started included), read from its own record (Codex turn/completed, Claude's end_turn "
+                  "responses); the last done itself when it did not work after it; null when it was still in a turn "
+                  "when its record ended. settlement_s is the later of the two",
+    "codex": "Codex on its own thread (a sub-agent's left out) from task assignment to its last done on the board (in "
+             "task): turns (turn/started), "
              "assistant_messages (agentMessage items), usage_growth (token-usage updates whose running total grew past "
              "the total before the window: one per model call; compaction estimates, rate-limit refreshes and replays "
              "left out), usage_events (all updates), tokens (growth of the running total over the window), "
-             "provider_requests (unique rawResponse ids when the stream carries them, else null: unknown), hub_send, "
-             "board_reads (hub_task_list)",
+             "provider_requests (unique rawResponse ids when the stream carries them; app-server 0.159 does not send "
+             "them, so null: unknown), hub_send, board_reads (hub_task_list)",
     "codex_attempt": "the same over the whole attempt, from task assignment to the end of the record. In-task windows "
                      "end at different points by arm (a turn-free integration step comes before the done, an advisory "
                      "completed-change notice turn after it), so arms are compared on this",
     "claude": "Claude from task assignment to its last done: assistant_messages (unique message ids: successful "
               "main-loop responses), turns (end_turn responses), tokens (input, cache creation, cache read and output "
-              "tokens of those messages; null when no usage was recorded); provider_requests is null: side requests "
-              "such as titles and retried calls are not in the transcript",
+              "tokens of those messages; null when no usage was recorded), provider_requests (unique request ids of "
+              "those messages: main-loop requests only; side requests such as titles and retried calls are not in the "
+              "transcript; null when none is recorded)",
     "claude_attempt": "the same over the whole attempt, from task assignment to the end of the transcript",
     "post_done_turns": "Codex turns started after its last done, with what their first injected message held; null when "
                        "Codex has no done",
     "late_replies": "Claude messages that reached Codex only after its done (by steer into a running turn, or at the "
                     "next turn start): seconds from sending to arrival. Held, dropped, overflowed and undeliverable "
                     "envelopes are left out; null when Codex has no done",
-    "facts": "the hub's fact offers in the task window (from the first task proposal) by path (hook, steer, done): "
-             "offers, acknowledged, probes, coverage notices, files shown with attribution unknown, injected bytes, "
-             "build time, the hook process's start-up time, steer round trip, refused steers; ack_ms_median is "
-             "offer-to-acknowledgement",
+    "facts": "the hub's fact offers in the task window (from the first task proposal to the end of the active time) by "
+             "path (hook, steer, done): offers, acknowledged, probes, coverage notices, files shown with attribution "
+             "unknown, bytes offered (a re-offer and a refused steer count again) and bytes acknowledged (offers a "
+             "readback or done confirmed), build time, the hook process's start-up time, steer round trip, refused "
+             "steers; ack_ms_median is offer-to-acknowledgement",
     "capability": "per peer, the hub's capability events (verified or lost) with their time, setup included",
-    "validity": "whether the attempt is a valid run of its arm, by the grader's own gates: a turn-free attempt needs its "
-                "tasks in one silent cohort that was never lifted, and every arm needs hook isolation (no Codex hooks; "
-                "only the hub's facts hook in Claude's transcript). null with a reason when Claude's transcript cannot "
-                "be read. Invalid and unknown attempts are left out of the summary's medians",
+    "validity": "whether the attempt is a valid run of its arm, by the grader's own gates: a turn-free attempt needs both "
+                "context paths verified before its tasks and none lost, no cohort lifted and none formed open while the "
+                "agents worked (teardown is after that); every arm needs isolation (no Codex hook, no Codex MCP server "
+                "but the hub's, only the hub's facts hook in Claude's transcript). null with a reason when Claude's "
+                "transcript cannot be read. Invalid and unknown attempts are left out of the summary's medians",
+    "treatment": "turn-free only: whether the treatment was received, a silent cohort holding every task of the attempt "
+                 "while the agents worked. Not a validity condition: whether the plans overlapped is the agents' doing "
+                 "after assignment, so every valid attempt counts for the arm (intention to treat); the summary also "
+                 "gives the median over treated attempts",
     "quiet": "agent messages a silent cohort held back from a member (the hub's quiet events), in the task window",
     "fyi": "agent messages sent as [FYI] in the task window (recorded, nobody's turn), the final [FYI] the instructions "
            "ask for included",
     "stale": "notices dropped as stale at delivery (#106), in the task window",
+    "stopped_s": "seconds from the end of the active time until every actor the attempt started was stopped: what a "
+                 "timed-out attempt could still write before its tree was collected; teardown_s is to the patch",
     "split_predictions": "the hub's shadow split predictions (#109) with their traces; they never changed an assignment",
-    "hooks": "hooks each agent ran as its own records show: Claude transcript hook rows by hook and command, with the "
-             "durationMs they carry (Claude Code writes rows for hooks that printed something and for Stop hooks), "
-             "Codex hook/started items, and any hook command that is not the hub's (foreign); the hub's own timing of "
-             "every facts hook call (calls, process start-up and hub time, from hook_stats); the attempt's configured "
-             "conditions. Claude's part is null with a reason when its transcript cannot be read",
-    "contributions": "identifiers and changed fragments an agent's applied writes introduced that the final tree lacks "
-                     "and that agent did not remove itself (a fragment counts as present anywhere in the file; a moved "
-                     "file's contributions follow it to its new path); a heuristic, with what it could not see listed "
-                     "in coverage",
-    "summary": "per arm, over every run directory given: attempts, completions with the reasons for the rest, attempts "
-               "left out as invalid or unknown (excluded), and expected attempts that wrote no record (missing, from "
-               "cohort.json); medians over valid completed attempts, and over the (case, repeat) pairs every arm "
-               "completed validly (common); totals over all attempts",
+    "hooks": "hooks each agent ran as its own records show: Claude transcript hook rows by hook and command label (the "
+             "hub's facts hook, or other: the program's name; never paths or arguments), with the durationMs they "
+             "carry (Claude Code writes rows for hooks that printed something and for Stop hooks), Codex hook/started "
+             "items, and the labels of hooks that are not the hub's (foreign); the hub's own timing of every facts "
+             "hook call (calls, process start-up and hub time, from hook_stats); the attempt's configured conditions. "
+             "Claude's part is null with a reason when its transcript cannot be read",
+    "contributions": "identifiers (Python keywords left out) and changed fragments an agent's applied writes "
+                     "introduced that the final tree lacks and that agent did not remove itself (a fragment counts as "
+                     "present anywhere in the file; a moved file's contributions follow it to its new path); a "
+                     "heuristic, with what it could not see listed in coverage",
+    "summary": "per arm, over every run directory given (one repeat per directory; a repeat given twice is refused): "
+               "attempts, completions with the reasons for the rest, attempts left out as invalid or unknown "
+               "(excluded), and planned attempts that wrote no record (missing: from each directory's cohort.json, or "
+               "with --plan from the manifest's plan, whole repeats included); medians over valid completed attempts, "
+               "over the (case, repeat) pairs every arm completed validly (common) and, for turn-free, over treated "
+               "attempts; totals over all attempts, each with the number of attempts where it was unknown "
+               "(<name>_unknown) and the coverage notes of the contribution heuristic",
 }
 IDENT = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{3,}\b")
 SHELL_READS = ("read", "listFiles", "search")
@@ -129,14 +144,21 @@ def task_times(run):
 
 # ---- Codex -------------------------------------------------------------------------------------------------------
 
+def on_thread(run, m):
+    """Whether a Codex message is about the benchmark's own thread (or about no thread at all)."""
+    tid = (m.get("params") or {}).get("threadId")
+    return not run.get("codexThreadId") or not tid or tid == run["codexThreadId"]
+
+
 def codex_window(run, done_ms):
-    """Codex's messages from task assignment to its last done on the board (all of them when it has none)."""
+    """Codex's messages on its own thread from task assignment to its last done on the board (all of them when it has
+    none)."""
     msgs = run.get("codexMessages") or []
     start = run.get("codexTaskStart") or 0
     out = []
     for m in msgs[start:]:
         if done_ms is not None and m.get("emittedAtMs") is not None and m["emittedAtMs"] > done_ms: break
-        out.append(m)
+        if on_thread(run, m): out.append(m)
     return out
 
 
@@ -153,7 +175,7 @@ def codex_usage(run, done_ms, label):
     window = codex_window(run, done_ms)
     tools = [item_of(m).get("tool") for m in window if m.get("method") == "item/completed" and item_of(m).get("type") == "mcpToolCall"]
     # The running total before the window (the setup probe's): the window's first model call grows past it.
-    base = max((t for t in map(total_of, msgs[:run.get("codexTaskStart") or 0]) if t is not None), default=0)
+    base = max((t for t in map(total_of, [m for m in msgs[:run.get("codexTaskStart") or 0] if on_thread(run, m)]) if t is not None), default=0)
     total, growth, events, responses = base, 0, 0, set()
     for m in window:
         if m.get("method") == "rawResponse/completed":
@@ -219,15 +241,7 @@ def late_replies(run, codex_done):
 
 def transcript_rows(run):
     """The Claude transcript's rows, or (None, why)."""
-    raw = ((run.get("readiness") or {}).get("claude") or {}).get("transcriptPath")
-    if not raw: return None, "no transcript path"
-    try: text = Path(raw).read_text(encoding="utf-8", errors="replace")
-    except OSError as e: return None, f"transcript unreadable ({e.__class__.__name__})"
-    rows = []
-    for line in text.splitlines():
-        try: rows.append(json.loads(line))
-        except ValueError: continue
-    return rows, None
+    return transcript(run)
 
 
 def row_ms(row):
@@ -248,7 +262,7 @@ def results_of(rows):
 
 def claude_usage(rows, start_ms, end_ms):
     if rows is None: return None
-    usage, turns = {}, set()
+    usage, turns, requests = {}, set(), set()
     for r in rows:
         if r.get("type") != "assistant": continue
         msg = r.get("message") or {}
@@ -257,10 +271,11 @@ def claude_usage(rows, start_ms, end_ms):
         # One response is written as a row per content block, each with its usage: the last row's counts stand.
         if msg["id"] not in usage or msg.get("usage"): usage[msg["id"]] = msg.get("usage")
         if msg.get("stop_reason") == "end_turn": turns.add(msg["id"])
+        if r.get("requestId"): requests.add(r["requestId"])
     counted = [u for u in usage.values() if isinstance(u, dict)]
     keys = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
     tokens = sum(u.get(k) or 0 for u in counted for k in keys) if counted else None
-    return {"assistant_messages": len(usage), "turns": len(turns), "tokens": tokens, "provider_requests": None}
+    return {"assistant_messages": len(usage), "turns": len(turns), "tokens": tokens, "provider_requests": len(requests) if requests else None}
 
 
 # ---- shared ------------------------------------------------------------------------------------------------------
@@ -269,13 +284,15 @@ def settlement(run, rows, t0, last_done):
     if last_done is None: return {}
     out = {}
     if run.get("codexMessages"):
-        running = first(codex_turns(run), lambda t: t[0] <= last_done and (t[1] is None or t[1] > last_done))
-        out["codex"] = secs(t0, last_done if running is None else running[1])
+        turns = codex_turns(run)
+        still = turns and turns[-1][1] is None  # its record ended inside a turn
+        out["codex"] = None if still else secs(t0, max([last_done] + [e for _, e in turns if e is not None and e >= last_done]))
     if rows is not None:
         replies = sorted((row_ms(r), (r.get("message") or {}).get("stop_reason")) for r in rows if r.get("type") == "assistant" and row_ms(r) is not None)
-        before = [stop for ms, stop in replies if ms <= last_done]
-        if not before or before[-1] == "end_turn": out["claude"] = secs(t0, last_done)  # idle when the last done came
-        else: out["claude"] = secs(t0, first([ms for ms, stop in replies if stop == "end_turn" and ms >= last_done], lambda _: True))
+        after = [(ms, stop) for ms, stop in replies if ms >= last_done]
+        before = [stop for ms, stop in replies if ms < last_done]
+        still = (after and after[-1][1] != "end_turn") or (not after and before and before[-1] != "end_turn")
+        out["claude"] = None if still else secs(t0, max([last_done] + [ms for ms, stop in after if stop == "end_turn"]))
     return out
 
 
@@ -289,7 +306,8 @@ def facts_of(events):
         mine = [e for e in offers if e.get("via") == via]
         out[via] = {"offers": len(mine), "acknowledged": sum(1 for e in mine if e.get("id") in acked), "probes": sum(1 for e in mine if e.get("probe")),
                     "coverage_notices": sum(1 for e in mine if e.get("coverage")), "unknown_attribution_files": sum(e.get("unknown", 0) for e in mine),
-                    "bytes": sum(e.get("bytes", 0) for e in mine), "build_ms_median": median(num(mine, "ms")), "hook_startup_ms_median": median(num(mine, "hookMs")),
+                    "bytes_offered": sum(e.get("bytes", 0) for e in mine), "bytes_acknowledged": sum(e.get("bytes", 0) for e in mine if e.get("id") in acked),
+                    "build_ms_median": median(num(mine, "ms")), "hook_startup_ms_median": median(num(mine, "hookMs")),
                     "steer_rtt_ms_median": median(num(mine, "rttMs")), "steers_refused": sum(1 for e in mine if e.get("accepted") is False)}
     out["ack_ms_median"] = median(num(acks, "ms"))
     return out
@@ -303,12 +321,24 @@ def capability_of(events, t0):
     return out
 
 
-def validity_of(run, rows, rows_why):
-    arm = str(run.get("kind") or "")
-    why = treatment_failure(arm, run) or isolation_failure(run)
-    if why: return {"valid": False, "why": why}
-    if rows is None and "claude" in arm: return {"valid": None, "why": f"hook isolation unknown: {rows_why}"}
-    return {"valid": True, "why": None}
+def validity_of(run):
+    why = treatment_failure(str(run.get("kind") or ""), run) or isolation_failure(run)
+    if why and why.startswith("hook isolation unknown"): return {"valid": None, "why": why}
+    return {"valid": not why, "why": why}
+
+
+def treatment_of(run, window):
+    if run.get("kind") != TURN_FREE: return None
+    ids = {t.get("id") for t in run.get("taskStates") or []}
+    return {"silent_cohort": any(e.get("type") == "cohort" and e.get("silent") and ids <= set(e.get("tasks") or []) for e in window)}
+
+
+def hook_label(command):
+    """A hook command as a label: never its paths or arguments (they can carry a home path or a token)."""
+    if not command: return "(command not recorded)"
+    if "facts-hook.ts" in command: return "agent-hub facts hook"
+    program = command.strip().split()[0].strip("'\"") if command.strip() else ""
+    return f"other: {Path(program).name or '?'}"
 
 
 def hooks_seen(run, rows, rows_why, events):
@@ -320,16 +350,11 @@ def hooks_seen(run, rows, rows_why, events):
     if "claude" not in str(run.get("kind") or ""): return out
     if rows is None: return {**out, "claude_transcript_rows": None, "claude_hook_ms": None, "foreign": None, "claude_why": rows_why}
     seen, durations, foreign = {}, [], set()
-    for r in rows:
-        a = r.get("attachment") or {}
-        found = []
-        if str(a.get("type", "")).startswith("hook") and a.get("type") != "hook_additional_context": found.append((a.get("hookName") or a.get("hookEvent"), a.get("command"), a.get("durationMs")))
-        if r.get("type") == "system" and r.get("subtype") == "stop_hook_summary": found += [("Stop", h.get("command"), h.get("durationMs")) for h in r.get("hookInfos") or [] if isinstance(h, dict)]
-        for name, command, ms in found:
-            key = f"{name} {command or '(command not recorded)'}"
-            seen[key] = seen.get(key, 0) + 1
-            if isinstance(ms, (int, float)): durations.append(ms)
-            if command and "facts-hook.ts" not in command: foreign.add(command[:200])
+    for name, command, ms in hook_rows(rows):
+        label = hook_label(command)
+        seen[f"{name} {label}"] = seen.get(f"{name} {label}", 0) + 1
+        if isinstance(ms, (int, float)): durations.append(ms)
+        if command and "facts-hook.ts" not in command: foreign.add(label)
     return {**out, "claude_transcript_rows": seen, "claude_hook_ms": {"timed_rows": len(durations), "median": median(durations), "total": sum(durations)}, "foreign": sorted(foreign)}
 
 
@@ -390,6 +415,10 @@ def writes_of(run, rows, root):
     return sorted((w for w in out if w[2]), key=lambda w: w[0]), shell
 
 
+def idents(text):
+    return {x for x in IDENT.findall(text) if not keyword.iskeyword(x)}
+
+
 def fragments(text):
     return {l.strip() for l in text.split("\n") if len(l.strip()) >= 8}
 
@@ -427,18 +456,18 @@ def contributions(run, rows, rows_why):
         others_frags = set().union(*[v["frags"] for (a, p), v in own.items() if p == path and a != agent] or [set()])
         if kind == "delete": mine["ids"].clear(); mine["frags"].clear(); continue
         if kind == "replace":  # what it no longer writes, it removed itself; what others wrote is not its
-            mine["ids"] &= set(IDENT.findall(added)); mine["frags"] = {f for f in mine["frags"] if f in added}
-            mine["ids"] |= set(IDENT.findall(added)) - set(IDENT.findall(base)) - others_ids
+            mine["ids"] &= idents(added); mine["frags"] = {f for f in mine["frags"] if f in added}
+            mine["ids"] |= idents(added) - idents(base) - others_ids
             mine["frags"] |= fragments(added) - fragments(base) - others_frags
             continue
-        mine["ids"] -= set(IDENT.findall(removed)) - set(IDENT.findall(added)); mine["frags"] -= fragments(removed)
-        mine["ids"] |= set(IDENT.findall(added)) - set(IDENT.findall(removed)) - set(IDENT.findall(base))
+        mine["ids"] -= idents(removed) - idents(added); mine["frags"] -= fragments(removed)
+        mine["ids"] |= idents(added) - idents(removed) - idents(base)
         mine["frags"] |= fragments(added) - fragments(removed) - fragments(base)
     lost_ids, lost_frags = [], []
     for (agent, path), mine in sorted(own.items()):
         final = final_text(path)
         if final is None: coverage.append(f"{path} could not be read"); continue
-        for ident in sorted(mine["ids"] - set(IDENT.findall(final))): lost_ids.append({"agent": agent, "path": path, "identifier": ident})
+        for ident in sorted(mine["ids"] - idents(final)): lost_ids.append({"agent": agent, "path": path, "identifier": ident})
         for frag in sorted(f for f in mine["frags"] if f not in final): lost_frags.append({"agent": agent, "path": path, "fragment": frag[:200]})
     return {"identifiers": lost_ids, "fragments": lost_frags, "coverage": coverage}
 
@@ -455,7 +484,9 @@ def ledger_of(run):
         row.update({"completed": False, "status": "no tasks: a setup-only or failed-before-assignment attempt"})
         return row
     rows, rows_why = transcript_rows(run) if "claude" in str(run.get("kind") or "") else (None, "no Claude in this arm")
-    window = [e for e in events if e.get("at") is not None and at_ms(e["at"]) >= t0]  # the task window: setup probes left out
+    end = active_window(run)[1]
+    # The task window: setup probes before it and teardown after it are left out.
+    window = [e for e in events if e.get("at") is not None and at_ms(e["at"]) >= t0 and (end is None or at_ms(e["at"]) <= end)]
     codex_done = max((t["done"] for t in tasks if t["owner"] == "codex" and t["done"] is not None), default=None)
     claude_done = max((t["done"] for t in tasks if t["owner"] == "claude" and t["done"] is not None), default=None)
     all_done = all(t["done"] is not None for t in tasks)
@@ -483,7 +514,10 @@ def ledger_of(run):
         "late_replies": late_replies(run, codex_done),
         "facts": facts_of(window),
         "capability": capability_of(events, t0),
-        "validity": validity_of(run, rows, rows_why),
+        "validity": validity_of(run),
+        "treatment": treatment_of(run, window),
+        "stopped_s": round(run["stoppedMs"] / 1000, 1) if isinstance(run.get("stoppedMs"), (int, float)) else None,
+        "teardown_s": round(run["teardownMs"] / 1000, 1) if isinstance(run.get("teardownMs"), (int, float)) else None,
         "quiet": sum(1 for e in window if e.get("type") == "quiet"),
         "fyi": sum(1 for e in window if e.get("type") == "envelope" and e.get("from") in ("claude", "codex") and e.get("dropped") == "fyi"),
         "stale": sum(1 for e in window if e.get("type") == "stale"),
@@ -501,12 +535,22 @@ def summarize(rows, missing=()):
     arms = set(by)
     pairs = {(r["case"], r.get("repeat")) for r in rows}
     common = {p for p in pairs if all(any(r["case"] == p[0] and r.get("repeat") == p[1] and ok(r) for r in by[a]) for a in arms)}
-    total = lambda rs, f: sum(f(r) for r in rs)
     med = lambda rs, part, key: median([r[part][key] for r in rs if r.get(part) and r[part].get(key) is not None])
+    worked = lambda rs: [r for r in rs if r.get("done_s") is not None]  # attempts whose tasks were handed out
+
+    def total(rs, name, get):
+        """A total over the attempts that know it, and how many did not: an unknown is never a zero."""
+        values = [get(r) for r in worked(rs)]
+        return {f"{name}_total": sum(v for v in values if v is not None), f"{name}_unknown": sum(1 for v in values if v is None)}
+
+    def size(v):
+        return None if v is None else len(v)
+
     out = {}
     for arm, rs in by.items():
         done = [r for r in rs if ok(r)]
         shared = [r for r in done if (r["case"], r.get("repeat")) in common]
+        treated = [r for r in done if (r.get("treatment") or {}).get("silent_cohort")]
         out[arm] = {
             "attempts": len(rs), "completed": sum(1 for r in rs if r.get("completed")), "valid_completed": len(done),
             "not_completed": sorted(str(r.get("end_reason_detail") or r.get("end_reason")) for r in rs if not r.get("completed")),
@@ -514,25 +558,32 @@ def summarize(rows, missing=()):
             "missing": sorted(f"case {c} repeat {rep}" for c, a, rep in missing if a == arm),
             "both_done_s_median": median([r["both_done_s"] for r in done]),
             "both_done_s_median_common": median([r["both_done_s"] for r in shared]),
+            "settlement_s_median": median([r["settlement_s"] for r in done if r.get("settlement_s") is not None]),
             "setup_s_median": median([r["setup_s"] for r in rs if r.get("setup_s") is not None]),
             "codex_turns_median": med(done, "codex", "turns"),
             "codex_usage_growth_median": med(done, "codex", "usage_growth"),
+            "codex_attempt_turns_median": med(done, "codex_attempt", "turns"),
             "codex_attempt_usage_growth_median": med(done, "codex_attempt", "usage_growth"),
             "codex_attempt_tokens_median": med(done, "codex_attempt", "tokens"),
+            "codex_attempt_tokens_median_common": med(shared, "codex_attempt", "tokens"),
             "claude_assistant_messages_median": med(done, "claude", "assistant_messages"),
             "claude_attempt_assistant_messages_median": med(done, "claude_attempt", "assistant_messages"),
             "claude_attempt_tokens_median": med(done, "claude_attempt", "tokens"),
-            "hub_send_total": total(rs, lambda r: (r.get("codex") or {}).get("hub_send", 0)),
-            "post_done_turns_total": total(rs, lambda r: len(r.get("post_done_turns") or [])),
-            "late_replies_total": total(rs, lambda r: len(r.get("late_replies") or [])),
-            "quiet_total": total(rs, lambda r: r.get("quiet", 0)),
-            "stale_total": total(rs, lambda r: r.get("stale", 0)),
-            "fact_offers_total": total(rs, lambda r: sum(r["facts"][v]["offers"] for v in ("hook", "steer", "done")) if r.get("facts") else 0),
-            "fact_bytes_total": total(rs, lambda r: sum(r["facts"][v]["bytes"] for v in ("hook", "steer", "done")) if r.get("facts") else 0),
-            "integration_requests_total": total(rs, lambda r: (r.get("integration") or {}).get("requests", 0)),
-            "integration_unresolved_total": total(rs, lambda r: len((r.get("integration") or {}).get("unresolved", []))),
-            "lost_identifiers_total": total(rs, lambda r: len((r.get("contributions") or {}).get("identifiers") or [])),
-            "lost_fragments_total": total(rs, lambda r: len((r.get("contributions") or {}).get("fragments") or [])),
+            "claude_attempt_tokens_median_common": med(shared, "claude_attempt", "tokens"),
+            **({"treatment_received": len(treated), "both_done_s_median_treated": median([r["both_done_s"] for r in treated])} if arm == TURN_FREE else {}),
+            **total(rs, "hub_send", lambda r: (r.get("codex") or {}).get("hub_send")),
+            **total(rs, "post_done_turns", lambda r: size(r.get("post_done_turns"))),
+            **total(rs, "late_replies", lambda r: size(r.get("late_replies"))),
+            **total(rs, "quiet", lambda r: r.get("quiet")),
+            **total(rs, "stale", lambda r: r.get("stale")),
+            **total(rs, "fact_offers", lambda r: sum(r["facts"][v]["offers"] for v in ("hook", "steer", "done")) if r.get("facts") else None),
+            **total(rs, "fact_bytes_offered", lambda r: sum(r["facts"][v]["bytes_offered"] for v in ("hook", "steer", "done")) if r.get("facts") else None),
+            **total(rs, "fact_bytes_acknowledged", lambda r: sum(r["facts"][v]["bytes_acknowledged"] for v in ("hook", "steer", "done")) if r.get("facts") else None),
+            **total(rs, "integration_requests", lambda r: (r.get("integration") or {}).get("requests")),
+            **total(rs, "integration_unresolved", lambda r: size((r.get("integration") or {}).get("unresolved"))),
+            **total(rs, "lost_identifiers", lambda r: size((r.get("contributions") or {}).get("identifiers"))),
+            **total(rs, "lost_fragments", lambda r: size((r.get("contributions") or {}).get("fragments"))),
+            "contribution_coverage_notes": sum(len((r.get("contributions") or {}).get("coverage") or []) for r in worked(rs)),
         }
     return out
 
@@ -544,16 +595,31 @@ def expected(run_dir):
     return {(case, arm, c.get("repeat")) for case in c.get("cases") or [] for arm in c.get("arms") or []}
 
 
+def planned(run_dir, plan):
+    """(case, arm, repeat) of every attempt the manifest's plan names, whole repeats included."""
+    m = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    spec = (m.get("plan") or {}).get(plan)
+    if not isinstance(spec, dict): raise SystemExit(f"ledger: the manifest has no plan {plan!r}")
+    return {(case, arm, rep) for case in spec.get("cases") or [] for arm in m.get("arms") or [] for rep in range(spec.get("repeats") or 0)}
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--run", type=Path, action="append", required=True, help="a run directory; give several to pool repeats")
+    p.add_argument("--plan", help="the manifest plan these directories carry out (pilot, study): its whole repeats are expected")
     p.add_argument("--json", action="store_true")
     a = p.parse_args()
-    rows, planned = [], set()
+    rows, plan = [], set()
     for run_dir in a.run:
         for f in sorted((run_dir / "runs").glob("*.json")): rows.append({**ledger_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name})
-        planned |= expected(run_dir)
-    missing = sorted(planned - {(r["case"], r["arm"], r.get("repeat")) for r in rows}, key=str)
+        plan |= expected(run_dir)
+    if a.plan: plan |= planned(a.run[0], a.plan)
+    seen = {}
+    for r in rows:
+        key = (r["case"], r["arm"], r.get("repeat"))
+        if key in seen: raise SystemExit(f"ledger: case {key[0]} {key[1]} repeat {key[2]} is in both {seen[key]} and {r['run']}")
+        seen[key] = r["run"]
+    missing = sorted(plan - set(seen), key=str)
     out = {"units": UNITS, "rows": rows, "missing": [{"case": c, "arm": arm, "repeat": rep} for c, arm, rep in missing], "summary": summarize(rows, missing)}
     (a.run[0] / "ledger.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if a.json: print(json.dumps(out, indent=2, sort_keys=True))

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -336,4 +336,60 @@ test("a diff that matches a PII pattern is not shown, and a file whose name does
   expect(o.text).not.toMatch(secret);
   facts.ack("claude", o.id);
   expect(facts.current("claude")).toBe(true); // what it was told of counts as seen, the unnamed file too
+});
+
+test("a change landing between a partial read and the next boundary is shown, not absorbed into a first look", async () => {
+  const { root, facts, write, look } = rig();
+  look("claude");
+  look("codex");
+  write("other.txt", "x\ny\n");
+  const input = { file_path: join(root, "other.txt"), offset: 1, limit: 1 }; // a partial read: no view of other.txt
+  facts.preTool("claude", "r1", "Read", input);
+  facts.postTool("claude", "r1", "Read", input);
+  write("other.txt", "x\ny\ncodex\n");
+  facts.codexItem("codex", { type: "fileChange", status: "completed", changes: [{ path: join(root, "other.txt"), kind: { type: "update" }, diff: "@@ -2 +2,2 @@\n y\n+codex" }] });
+  const o = look("claude")!;
+  expect(o.text).toContain("other.txt, changed by codex");
+  expect(o.text).toContain("+codex");
+  expect(facts.current("claude")).toBe(true);
+});
+
+test("a directory's staged changes count, more than the cap are said to be cut, and denylisted files are never read or shown", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-facts-")));
+  dirs.push(root);
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src", "x.ts"), "x\n");
+  writeFileSync(join(root, "src", ".env"), "TOKEN=one\n");
+  const git = (...a: string[]) => spawnSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...a]);
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: ["src", ".env", ".git/config"], plans: [] }), peers: () => ["claude"], nameable: () => true });
+  expect(facts.rel(".git/config")).toBeUndefined();
+  expect(facts.rel("src/.env")).toBeUndefined();
+  const staged = facts.tree(["src"]);
+  writeFileSync(join(root, "src", "x.ts"), "x staged\n");
+  git("add", "src/x.ts");
+  expect(facts.tree(["src"])).not.toBe(staged); // staged, not only worktree changes, move the target
+  facts.due("claude"); // first looks
+  writeFileSync(join(root, "src", "x.ts"), "x again\n");
+  writeFileSync(join(root, "src", ".env"), "TOKEN=two\n");
+  const o = facts.due("claude")!;
+  expect(o.text).toContain("src/x.ts");
+  expect(o.text).not.toContain("TOKEN");
+  expect(o.text).not.toContain(".env");
+  for (let i = 0; i < 205; i++) writeFileSync(join(root, "src", `n${i}.ts`), "n\n");
+  expect(facts.due("claude")!.text).toContain("more than 200 files changed under src: the rest are not shown");
+});
+
+test("the integration target counts the files the members touched, a symbol-only overlap too", async () => {
+  const { root, facts, write } = rig();
+  const input = { file_path: join(root, "other.txt"), old_string: "x", new_string: "y" };
+  facts.preTool("claude", "e1", "Edit", input);
+  write("other.txt", "y\n");
+  facts.postTool("claude", "e1", "Edit", input);
+  const before = facts.tree([], ["claude"]);
+  expect(facts.tree([], [])).not.toBe(before); // other.txt is in it only through what claude touched
+  write("other.txt", "z\n");
+  expect(facts.tree([], ["claude"])).not.toBe(before);
 });

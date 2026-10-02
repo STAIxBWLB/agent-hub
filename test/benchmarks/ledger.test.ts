@@ -51,13 +51,13 @@ test("every measure of a turn-free attempt, with its unit, from the records nati
       JSON.stringify({ type: "attachment", attachment: { type: "hook_additional_context", hookName: "PreToolUse:Edit", toolUseID: "t1", content: ["x"] } }),
       use("t3", "Read", { file_path: join(cwd, "a.py") }, 30),
       result("t3", 31),
-      JSON.stringify({ type: "assistant", timestamp: iso(85), message: { id: "msg-end", stop_reason: "end_turn", content: [{ type: "text", text: "done" }], usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 100, output_tokens: 5 } } }),
+      JSON.stringify({ type: "assistant", timestamp: iso(85), requestId: "req-end", message: { id: "msg-end", stop_reason: "end_turn", content: [{ type: "text", text: "done" }], usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 100, output_tokens: 5 } } }),
       JSON.stringify({ type: "system", subtype: "stop_hook_summary", hookInfos: [{ command: "bun facts-hook.ts", durationMs: 30 }], timestamp: iso(85) }),
     ].join("\n"));
     const item = (item: Record<string, unknown>, s: number) => ({ method: "item/completed", params: { item }, emittedAtMs: ms(s) });
     const usage = (s: number, total: number) => ({ method: "thread/tokenUsage/updated", params: { tokenUsage: { total: { totalTokens: total }, last: { totalTokens: 1 } } }, emittedAtMs: ms(s) });
     run("00-hub-turnfree-codex-claude", {
-      index: 0, kind: "hub-turnfree-codex-claude", repeat: 1, end_reason: "completed", end_reason_detail: "completed", setupMs: 20_000, elapsedMs: 95_000, cwd, sealedCommit, startedAt: ms(0),
+      index: 0, kind: "hub-turnfree-codex-claude", repeat: 1, end_reason: "completed", end_reason_detail: "completed", setupMs: 20_000, elapsedMs: 100_000, stoppedMs: 4000, teardownMs: 9000, cwd, sealedCommit, startedAt: ms(0),
       readiness: { claude: { transcriptPath: transcript } },
       conditions: { claude: { hookEvents: ["PostToolUse", "PreToolUse", "Stop"] }, codex: { hooksFeature: false } },
       codexTaskStart: 2,
@@ -82,6 +82,9 @@ test("every measure of a turn-free attempt, with its unit, from the records nati
         { type: "fact", peer: "claude", id: "f3", via: "done", files: 0, plans: 0, unknown: 0, bytes: 80, at: iso(75) },
         { type: "stale", id: "n1", peer: "codex", at: iso(72) },
         { type: "split", task: 2, verdict: "unknown", reason: "codex has 0 measured task(s)", trace: ["unknown: codex has 0 measured task(s)"], at: iso(1) },
+        // Teardown, after the active time: Claude's session closes and its path is lost. Not part of the treatment.
+        { type: "capability", peer: "claude", state: "lost", at: iso(103) },
+        { type: "cohort", id: 1, event: "lifted", silent: false, tasks: [1, 2], at: iso(103) },
       ],
       codexMessages: [
         { method: "turn/started", params: {}, emittedAtMs: ms(-10) }, // the probe turn: before codexTaskStart
@@ -105,34 +108,38 @@ test("every measure of a turn-free attempt, with its unit, from the records nati
       ],
     });
     const out = ledger();
-    expect(Object.keys(out.units)).toEqual(expect.arrayContaining(["contributions", "validity", "settlement", "summary", "hooks", "split_predictions", "codex_attempt", "claude_attempt"]));
+    expect(Object.keys(out.units)).toEqual(expect.arrayContaining(["contributions", "validity", "treatment", "settlement", "summary", "hooks", "split_predictions", "codex_attempt", "claude_attempt", "stopped_s"]));
     const row = out.rows[0];
-    expect(row).toMatchObject({ arm: "hub-turnfree-codex-claude", repeat: 1, end_reason_detail: "completed", completed: true, both_done_s: 80, setup_s: 20, elapsed_s: 95, first_candidate_s: 9, integrated_s: 80, check_s: null });
+    expect(row).toMatchObject({ arm: "hub-turnfree-codex-claude", repeat: 1, end_reason_detail: "completed", completed: true, both_done_s: 80, setup_s: 20, elapsed_s: 100, first_candidate_s: 9, integrated_s: 80, check_s: null });
     expect(row.done_s).toEqual({ 1: 70, 2: 80 });
     expect(row.intents_s).toEqual({ 1: 70, 2: 75 });
     expect(row.integration).toEqual({ requests: 1, unresolved: [] });
-    // Each from its own record: Codex was idle at the last done (its turn ended at 72 s); Claude stopped at its end_turn.
-    expect(row.settlement).toEqual({ codex: 80, claude: 85 });
-    expect(row.settlement_s).toBe(85);
+    // Each from its own record, late turns included: Codex's notice turn after the last done ended at 100 s.
+    expect(row.settlement).toEqual({ codex: 100, claude: 85 });
+    expect(row.settlement_s).toBe(100);
+    expect(row).toMatchObject({ stopped_s: 4, teardown_s: 9 });
     // In task: up to its done on the board (70 s); the post-done turn's refused hub_task_done is not in-task. The first
     // in-task model call grows past the setup probe's total (1000), so it counts.
     expect(row.codex).toEqual({ turns: 1, assistant_messages: 1, usage_growth: 3, usage_events: 4, tokens: 3000, provider_requests: null, hub_send: 1, board_reads: 1, window: "to its last done" });
     expect(row.codex_attempt).toEqual({ turns: 2, assistant_messages: 1, usage_growth: 4, usage_events: 5, tokens: 4000, provider_requests: null, hub_send: 1, board_reads: 1, window: "to the end of the record" });
     expect(row.claude).toEqual({ assistant_messages: 4, turns: 0, tokens: null, provider_requests: null }); // t1, t2, t4, t3: no usage recorded
-    expect(row.claude_attempt).toEqual({ assistant_messages: 5, turns: 1, tokens: 115, provider_requests: null });
+    expect(row.claude_attempt).toEqual({ assistant_messages: 5, turns: 1, tokens: 115, provider_requests: 1 });
     expect(row.post_done_turns).toEqual([{ started_s: 90, trigger: "notice" }]);
     // The broadcast at 60 s reached codex at its next turn (90 s); the steered one at 95 s landed at once, after the done;
     // the held one never reached it.
     expect(row.late_replies).toEqual([30, 0]);
-    expect(row.validity).toEqual({ valid: true, why: null });
+    expect(row.capability).toEqual({ claude: [{ state: "verified", via: "hook", at_s: -4 }, { state: "lost", via: null, at_s: 103 }], codex: [{ state: "verified", via: "steer", at_s: -2 }] });
+    expect(row.validity).toEqual({ valid: true, why: null }); // the teardown's lost path and lift come after the work
+    expect(row.treatment).toEqual({ silent_cohort: true });
     expect(row).toMatchObject({ quiet: 1, fyi: 1, stale: 1 }); // the setup probe's [FYI] is not in the task window
-    expect(row.facts.hook).toMatchObject({ offers: 1, acknowledged: 1, bytes: 300, build_ms_median: 4, hook_startup_ms_median: 120 });
-    expect(row.facts.steer).toMatchObject({ offers: 1, acknowledged: 0, unknown_attribution_files: 1, steers_refused: 1, steer_rtt_ms_median: 40 });
-    expect(row.facts.done).toMatchObject({ offers: 1, bytes: 80 });
+    expect(row.facts.hook).toMatchObject({ offers: 1, acknowledged: 1, bytes_offered: 300, bytes_acknowledged: 300, build_ms_median: 4, hook_startup_ms_median: 120 });
+    expect(row.facts.steer).toMatchObject({ offers: 1, acknowledged: 0, bytes_offered: 500, bytes_acknowledged: 0, unknown_attribution_files: 1, steers_refused: 1, steer_rtt_ms_median: 40 });
+    expect(row.facts.done).toMatchObject({ offers: 1, bytes_offered: 80, bytes_acknowledged: 0 });
+    expect([row.facts.hook.probes, row.facts.hook.coverage_notices, row.facts.steer.probes]).toEqual([0, 0, 0]);
     expect(row.facts.ack_ms_median).toBe(900);
     expect(row.split_predictions).toEqual([{ task: 2, verdict: "unknown", reason: "codex has 0 measured task(s)", trace: ["unknown: codex has 0 measured task(s)"] }]);
     expect(row.hooks).toMatchObject({
-      claude_transcript_rows: { "PreToolUse:Edit bun facts-hook.ts": 1, "Stop bun facts-hook.ts": 1 }, claude_hook_ms: { timed_rows: 2, median: 33, total: 66 }, foreign: [],
+      claude_transcript_rows: { "PreToolUse:Edit agent-hub facts hook": 1, "Stop agent-hub facts hook": 1 }, claude_hook_ms: { timed_rows: 2, median: 33, total: 66 }, foreign: [],
       facts_hook_timing: { calls: 4, startup_ms_total: 200, hub_ms_total: 12, startup_ms_max: 80 }, codex_hook_runs: 0, conditions: { codex: { hooksFeature: false } },
     });
     expect(row.contributions.identifiers).toEqual([
@@ -147,8 +154,9 @@ test("every measure of a turn-free attempt, with its unit, from the records nati
     ]);
     expect(row.contributions.coverage).toEqual(["codex ran 1 shell command(s) during the task; what they wrote is not attributed"]); // the setup Bash is before the task
     expect(out.summary["hub-turnfree-codex-claude"]).toMatchObject({
-      attempts: 1, completed: 1, valid_completed: 1, excluded: [], missing: [], both_done_s_median: 80, both_done_s_median_common: 80, quiet_total: 1, fact_offers_total: 3,
-      integration_requests_total: 1, lost_identifiers_total: 3, codex_attempt_tokens_median: 4000, claude_attempt_tokens_median: 115,
+      attempts: 1, completed: 1, valid_completed: 1, excluded: [], missing: [], both_done_s_median: 80, both_done_s_median_common: 80, settlement_s_median: 100, quiet_total: 1, quiet_unknown: 0,
+      fact_offers_total: 3, fact_bytes_offered_total: 880, fact_bytes_acknowledged_total: 300, integration_requests_total: 1, lost_identifiers_total: 3, lost_identifiers_unknown: 0,
+      codex_attempt_tokens_median: 4000, claude_attempt_tokens_median: 115, treatment_received: 1, both_done_s_median_treated: 80,
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -190,7 +198,7 @@ test("overwrites and own rewrites, partial-line edits, a Write that carries a pe
     const out = ledger();
     const tf = out.rows.find((r: { arm: string }) => r.arm === "hub-turnfree-codex-claude");
     expect(tf).toMatchObject({ completed: false, both_done_s: null, end_reason_detail: "wall-timeout" });
-    expect(tf.validity).toEqual({ valid: false, why: "turn-free treatment absent: the tasks never formed a silent cohort" });
+    expect(tf.validity).toEqual({ valid: false, why: "turn-free context path not verified before the tasks: codex" });
     // helper_alpha: removed by Claude's own Write. codex_name: Codex's, carried by Claude's Write, renamed by Codex itself.
     // claude_feature_fn: Claude's, in a file Codex moved afterwards, intact at the new path.
     expect(tf.contributions.identifiers).toEqual([]);
@@ -232,17 +240,22 @@ test("several run directories pool their repeats; a planned attempt without a re
       taskStates: [{ id: 1, owner: "codex", state: "approved", history: [{ event: "proposed", at: f.t0 }, { event: "done", at: f.t0 + repeat * 10_000 }] }],
     });
     for (const [f, repeat] of [[a, 1], [b, 2]] as const) writeFileSync(join(f.root, "cohort.json"), JSON.stringify({ cases: [0], arms: ["solo-codex", "hub-turnfree-codex-claude"], repeat }));
+    writeFileSync(join(a.root, "manifest.json"), JSON.stringify({ arms: ["solo-codex", "hub-turnfree-codex-claude"], plan: { pilot: { cases: [0], repeats: 3 } } }));
     a.run("00-solo-codex", record(a, "solo-codex", 1));
     b.run("00-solo-codex", record(b, "solo-codex", 2));
     a.run("00-hub-turnfree-codex-claude", record(a, "hub-turnfree-codex-claude", 1, [{ type: "cohort", id: 1, event: "formed", silent: false, tasks: [1], at: a.iso(1) }]));
-    const r = spawnSync("python3", [script, "--run", a.root, "--run", b.root], { encoding: "utf8" });
+    const twice = spawnSync("python3", [script, "--run", a.root, "--run", a.root], { encoding: "utf8" });
+    expect(twice.status).not.toBe(0); // one repeat given twice would count twice
+    expect(twice.stderr).toContain("repeat 1 is in both");
+    const r = spawnSync("python3", [script, "--run", a.root, "--run", b.root, "--plan", "pilot"], { encoding: "utf8" });
     if (r.status !== 0) throw new Error(r.stderr);
     const out = JSON.parse(readFileSync(join(a.root, "ledger.json"), "utf8"));
     expect(out.rows.map((x: { run: string; repeat: number }) => x.repeat).sort()).toEqual([1, 1, 2]);
-    expect(out.missing).toEqual([{ case: 0, arm: "hub-turnfree-codex-claude", repeat: 2 }]);
+    // The plan's first repeat never ran at all: every arm of it is missing, as is the turn-free attempt of repeat 2.
+    expect(out.missing).toEqual([{ case: 0, arm: "hub-turnfree-codex-claude", repeat: 0 }, { case: 0, arm: "hub-turnfree-codex-claude", repeat: 2 }, { case: 0, arm: "solo-codex", repeat: 0 }]);
     expect(out.summary["solo-codex"]).toMatchObject({ attempts: 2, valid_completed: 2, both_done_s_median: 15 });
     expect(out.summary["hub-turnfree-codex-claude"]).toMatchObject({
-      attempts: 1, completed: 1, valid_completed: 0, excluded: ["turn-free treatment absent: the tasks never formed a silent cohort"], missing: ["case 0 repeat 2"], both_done_s_median: null,
+      attempts: 1, completed: 1, valid_completed: 0, excluded: ["turn-free context path not verified before the tasks: claude, codex"], missing: ["case 0 repeat 0", "case 0 repeat 2"], both_done_s_median: null,
     });
   } finally {
     for (const f of [a, b]) rmSync(f.root, { recursive: true, force: true });

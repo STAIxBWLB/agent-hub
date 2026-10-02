@@ -46,30 +46,77 @@ def check_plan(m):
         if plan["attempts"]!=attempts or plan.get("active_ceiling_s")!=attempts*m.get("wall_limit_s",0):
             raise BenchError(f"plan {name}: {plan['attempts']} attempts / {plan.get('active_ceiling_s')} s do not match {attempts} attempts of {m.get('wall_limit_s')} s")
 
+TURN_FREE="hub-turnfree-codex-claude"
+
+def at_ms(value):
+    """Milliseconds since the epoch of a record's time: a number already, or an ISO string."""
+    if isinstance(value,(int,float)) and not isinstance(value,bool): return float(value)
+    from datetime import datetime
+    return datetime.fromisoformat(str(value).replace("Z","+00:00")).timestamp()*1000
+
+def active_window(run):
+    """(start, end) of an attempt's work in ms: from its first task proposal to the end of its active time, before
+    teardown. Either is None when the record cannot say."""
+    proposals=[h.get("at") for t in run.get("taskStates") or [] for h in t.get("history",[]) if h.get("event")=="proposed" and h.get("at") is not None]
+    start=min(map(at_ms,proposals)) if proposals else None
+    began,elapsed=run.get("startedAt"),run.get("elapsedMs")
+    end=at_ms(began)+elapsed if isinstance(began,(int,float)) and isinstance(elapsed,(int,float)) else None
+    return start,end
+
 def treatment_failure(arm, run):
-    """Issue #110: a turn-free attempt is one only if its two tasks formed a silent cohort that was never lifted (the hub
-    lifts it when a context path is lost); otherwise the agents worked as advisory peers told not to message."""
-    if arm!="hub-turnfree-codex-claude": return None
-    ids={t.get("id") for t in run.get("taskStates") or []}
-    if not ids: return None
-    events=[e for e in run.get("events") or [] if e.get("type")=="cohort"]
-    silent={e.get("id") for e in events if e.get("silent") and ids<=set(e.get("tasks") or [])}
-    if not silent: return "turn-free treatment absent: the tasks never formed a silent cohort"
-    if any(e.get("event")=="lifted" and e.get("id") in silent for e in events): return "turn-free treatment lost: the cohort's silence was lifted"
+    """Issue #110: a turn-free attempt is valid only with its context paths working, which is decided before the
+    agents start and must hold while they work: both paths verified before the first task, none lost and no cohort lifted
+    or formed not silent until the work ended. Teardown comes after and does not count. Whether the agents' plans
+    overlapped, so that a cohort formed at all, is their doing after assignment and never makes an attempt invalid: the
+    ledger reports it as the treatment received."""
+    if arm!=TURN_FREE: return None
+    t0,end=active_window(run)
+    if t0 is None: return None
+    events=[e for e in run.get("events") or [] if e.get("at") is not None]
+    verified={e.get("peer") for e in events if e.get("type")=="capability" and e.get("state")=="verified" and at_ms(e["at"])<=t0}
+    missing=sorted({"claude","codex"}-verified)
+    if missing: return f"turn-free context path not verified before the tasks: {', '.join(missing)}"
+    work=[e for e in events if at_ms(e["at"])>t0 and (end is None or at_ms(e["at"])<=end)]
+    lost=sorted({str(e.get("peer")) for e in work if e.get("type")=="capability" and e.get("state")=="lost"})
+    if lost: return f"turn-free context path lost while the agents worked: {', '.join(lost)}"
+    if any(e.get("type")=="cohort" and (e.get("event")=="lifted" or not e.get("silent")) for e in work): return "turn-free cohort not silent while the agents worked"
     return None
 
-def isolation_failure(run):
-    """Issue #110: no arm may run foreign hooks. Codex runs none; Claude's transcript may show only the hub's facts hook."""
-    if any(m.get("method")=="hook/started" for m in run.get("codexMessages") or []): return "hook isolation failed: Codex ran hooks"
+def hook_rows(rows):
+    """(hook, command, durationMs) of every hook row in a Claude transcript: hook attachments (Claude Code writes them for
+    hooks that printed something) and Stop hook summaries. A hook that printed nothing leaves no row."""
+    out=[]
+    for row in rows:
+        a=row.get("attachment") or {}
+        kind=str(a.get("type",""))
+        if kind.startswith("hook") and kind!="hook_additional_context": out.append((a.get("hookName") or a.get("hookEvent"),a.get("command"),a.get("durationMs")))
+        if row.get("type")=="system" and row.get("subtype")=="stop_hook_summary":
+            out+=[("Stop",h.get("command"),h.get("durationMs")) for h in row.get("hookInfos") or [] if isinstance(h,dict)]
+    return out
+
+def transcript(run):
+    """The rows of the attempt's Claude transcript, or (None, why)."""
     path=((run.get("readiness") or {}).get("claude") or {}).get("transcriptPath")
-    if not path: return None
+    if not path: return None,"no transcript path"
     try: lines=Path(path).read_text(encoding="utf-8",errors="replace").splitlines()
-    except OSError: return None  # unreadable: the ledger reports isolation as unknown
+    except OSError as e: return None,f"transcript unreadable ({e.__class__.__name__})"
+    rows=[]
     for line in lines:
-        try: row=json.loads(line)
+        try: rows.append(json.loads(line))
         except ValueError: continue
-        commands=[(row.get("attachment") or {}).get("command")]+[h.get("command") for h in row.get("hookInfos") or [] if isinstance(h,dict)]
-        if any(c and "facts-hook.ts" not in c for c in commands): return "hook isolation failed: Claude ran a hook that is not the hub's"
+    return rows,None
+
+def isolation_failure(run):
+    """Issue #110: no arm may run a foreign hook or MCP server. Codex runs no hooks and starts no MCP server but the hub's;
+    Claude's transcript may show only the hub's facts hook. Without the transcript isolation cannot be shown."""
+    msgs=run.get("codexMessages") or []
+    if any(m.get("method")=="hook/started" for m in msgs): return "hook isolation failed: Codex ran hooks"
+    started=sorted({str((m.get("params") or {}).get("name")) for m in msgs if m.get("method")=="mcpServer/startupStatus/updated" and (m.get("params") or {}).get("name")!="agent-hub" and (m.get("params") or {}).get("status")!="disabled"})
+    if started: return f"MCP isolation failed: Codex started {', '.join(started)}"
+    if "claude" not in str(run.get("kind") or ""): return None
+    rows,why=transcript(run)
+    if rows is None: return f"hook isolation unknown: {why}"
+    if any(c and "facts-hook.ts" not in c for _,c,_ in hook_rows(rows)): return "hook isolation failed: Claude ran a hook that is not the hub's"
     return None
 
 GRADED_ENDS=("completed","timeout")

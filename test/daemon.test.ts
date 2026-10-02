@@ -1612,10 +1612,55 @@ test("turn-free end to end: verified context paths, a silent cohort, held-back m
   expect(after).not.toContain("secret record");
   expect(after).not.toContain("b.txt"); // the earlier cohort, whose tasks are closed, is not in its scope
 
+  // 8b. A paused peer may still be in its turn (issue #107): Codex, paused in a long turn after its done, has not
+  // stopped, so Claude's next done is asked again instead of counting.
+  writeFileSync(join(dir, "d.txt"), "d\n");
+  await op("hub_task_propose", { title: "codex d", class: "implement", owner: "codex", refs: { paths: ["d.txt"] } }); // #8
+  await op("hub_task_propose", { title: "claude d", class: "implement", owner: "claude", refs: { paths: ["d.txt"] } }); // #9
+  for (let i = 0; i < 100 && !(daemon.bus.stateOf("codex") === "idle" && daemon.bus.queued("codex") === 0); i++) await Bun.sleep(100);
+  const longTurn = answers().length;
+  tui.send(JSON.stringify({ id: 100 + ++turns, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: "SLOW:6000 still working" }] } }));
+  await until(() => daemon.bus.stateOf("codex") === "busy", "codex in a long turn");
+  await console_.request({ t: "pause", peer: "codex" });
+  expect((await codexTools.request({ t: "task", op: "hub_task_done", args: { id: 8, summary: "codex d done" } })).text).toStartWith("task #8:");
+  expect((await claude.request({ t: "task", op: "hub_task_done", args: { id: 9, summary: "claude d done" } })).text).toStartWith("Before task #9");
+  await Bun.sleep(2100);
+  expect((await claude.request({ t: "task", op: "hub_task_done", args: { id: 9, summary: "claude d done" } })).text).toContain("codex has not stopped since its done");
+  await console_.request({ t: "resume", peer: "codex" });
+  for (let i = 0; i < 100 && answers().length <= longTurn; i++) await Bun.sleep(100); // the rest of its six seconds
+  expect(answers().length).toBeGreaterThan(longTurn);
+
   // 9. A peer that goes offline loses its verified context path: the session that comes back proves it again.
   claude.close();
   await until(() => events().some((e) => e.type === "capability" && e.peer === "claude" && e.state === "lost"), "claude's lost path");
-}, 30_000);
+}, 45_000);
+
+test("without a transcript to read a fact back from, nothing is offered: no probe, and no diff at every tool call", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-facts-")));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, "a.txt"), "one\n");
+  const { stateDir, daemon, console_ } = await hub({ cwd: dir, coordination: "turn-free" });
+  class Quiet extends BasePeer {
+    async start() { this.setState("idle"); }
+    async deliver() {}
+    async stop() { this.setState("offline"); }
+  }
+  const kimi = new Quiet("kimi");
+  daemon.bus.add(kimi);
+  await kimi.start();
+  const claude = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" });
+  cleanup.push(() => claude.close());
+  await until(() => daemon.bus.stateOf("claude") === "idle", "claude attached");
+  const op = async (o: string, args: unknown) => console_.request({ t: "task", op: o, args });
+  await op("hub_task_propose", { title: "kimi part", class: "implement", owner: "kimi", refs: { paths: ["a.txt"] } });
+  await op("hub_task_propose", { title: "claude part", class: "implement", owner: "claude", refs: { paths: ["a.txt"] } });
+  // No transcript_path in the hook input and no status line session: the hub has nowhere to read a readback from.
+  const hook = (id: string) => factsHook(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: join(dir, "a.txt") }, tool_use_id: id, session_id: "s1" }), stateDir, "claude");
+  expect(await hook("t1")).toBeUndefined(); // its first look
+  writeFileSync(join(dir, "a.txt"), "one\ntwo\n");
+  for (const id of ["t2", "t3", "t4"]) expect(await hook(id)).toBeUndefined();
+  expect(readEvents(join(stateDir, "events.jsonl")).filter((e) => e.type === "fact")).toEqual([]);
+});
 
 test("turn-free offers no facts or probes while a PII task is open, an advisory project none at all, and a typo is advisory", async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-facts-")));

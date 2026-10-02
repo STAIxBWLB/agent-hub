@@ -1,3 +1,4 @@
+import { isAbsolute, relative } from "node:path";
 import type { Briefs } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
 import { CLASSES, OUTCOMES_KEPT_MS, PLAN_KEYS, type Board, type Task, type TaskClass, type TaskPlan, type TaskRefs } from "./board.ts";
@@ -6,6 +7,7 @@ import { HUB, newEnvelope, NOTE_KINDS, noteLine, USER, type Envelope, type PeerI
 import { assign, detectSignals, LOCAL, PI, predictSplit, type Assignment, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
+import { realPath } from "./project.ts";
 
 export interface TasksDeps {
   board: Board;
@@ -48,7 +50,7 @@ export interface TasksDeps {
   /** Whether `peer` is between native turns now (issue #107): Codex not busy, Claude stopped since its last tool call. */
   idle?: (peer: PeerId) => boolean;
   /** One hash over these project files as they are now: an integration target (issue #107). */
-  treeHash?: (paths: string[]) => string;
+  treeHash?: (paths: string[], owners: PeerId[]) => string;
   /** The facts due for a peer, offered with an integration request; acknowledged by its next done. */
   integrationFacts?: (peer: PeerId) => { id: string; text: string } | undefined;
   ackFacts?: (peer: PeerId, id: string) => void;
@@ -480,9 +482,28 @@ export class Tasks {
     return shown.length ? shown.join(", ") : "a path whose name is withheld (it matches a PII pattern)";
   }
 
-  /** Paths from refs and plan, symbols from the plan: the places a task says it touches (issue #31). */
+  /**
+   * Paths from refs and plan, symbols from the plan: the places a task says it touches (issue #31). Models write paths
+   * absolute or relative: one inside the project is compared in its project-relative spelling.
+   */
   private places(task: Task): { paths: string[]; symbols: string[] } {
-    return { paths: [...new Set([...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])])], symbols: task.plan?.symbols ?? [] };
+    const paths = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])].map((p) => this.projectPath(p));
+    return { paths: [...new Set(paths)], symbols: task.plan?.symbols ?? [] };
+  }
+
+  private roots?: string[];
+  private projectPath(p: string): string {
+    if (!isAbsolute(p)) return normPath(p);
+    if (!this.roots) {
+      let real = this.d.cwd;
+      try { real = realPath(this.d.cwd); } catch { /* compared as given */ }
+      this.roots = [...new Set([this.d.cwd, real])];
+    }
+    for (const root of this.roots) {
+      const r = relative(root, p);
+      if (!r.startsWith("..") && !isAbsolute(r)) return normPath(r || ".");
+    }
+    return p;
   }
 
   private overlapHits(task: Task): { task: Task; paths: string[]; symbols: string[] }[] {
@@ -555,7 +576,8 @@ export class Tasks {
       const task = this.d.board.get(target);
       if (!task) throw new Error(`no task #${target}`);
       const a = assign(task, this.states(), routing, { exclude: this.declined(task), waitsFor: this.waitsFor(task), ...this.weights(task.class) });
-      return [`task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"})`, "if it were assigned now:", ...a.trace, ...(this.splitShadow(task, a.owner)?.trace ?? [])];
+      // The split trace is for the pair the record is about: the task's owner when it has one (issue #109).
+      return [`task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"})`, "if it were assigned now:", ...a.trace, ...(this.splitShadow(task, task.owner ?? a.owner)?.trace ?? [])];
     }
     const draft = { title: target.title, detail: target.detail ?? "", refs: target.refs ?? {} };
     return assign({ class: target.class, signals: detectSignals(draft, routing, this.d.cwd) }, this.states(), routing, this.weights(target.class)).trace;
@@ -871,10 +893,10 @@ export class Tasks {
     }
   }
 
-  /** One hash over the files a cohort's tasks name, as they are now: the integration target (issue #107). */
+  /** One hash over the files a cohort's tasks name and its owners touched, as they are now: the integration target (issue #107). */
   private tree(cohort: Cohort): string {
     const paths = [...new Set([...cohort.members.keys()].flatMap((id) => { const t = this.d.board.get(id); return t ? this.places(t).paths : []; }))];
-    return this.d.treeHash?.(paths) ?? "";
+    return this.d.treeHash?.(paths, [...new Set([...cohort.members.values()].map((m) => m.owner))]) ?? "";
   }
 
   /**
