@@ -28,10 +28,23 @@ def arms_of(m):
     if arms not in PROTOCOL_ARMS: raise BenchError("arms must match a versioned protocol")
     return arms
 
+def required_actors(arm):
+    """The native actors an arm's run record must show: both for a joint arm, one for a solo arm."""
+    return ["codex","claude"] if arm.startswith("hub-") else [arm.removeprefix("solo-")]
+
+def check_plan(m):
+    """Issue #110: a manifest's planned attempts and active-time ceilings are what its arms, cases and repeats make."""
+    for name,plan in (m.get("plan") or {}).items():
+        if not isinstance(plan,dict) or "attempts" not in plan: continue
+        attempts=len(m["arms"])*len(plan.get("cases",[]))*plan.get("repeats",0)
+        if plan["attempts"]!=attempts or plan.get("active_ceiling_s")!=attempts*m.get("wall_limit_s",0):
+            raise BenchError(f"plan {name}: {plan['attempts']} attempts / {plan.get('active_ceiling_s')} s do not match {attempts} attempts of {m.get('wall_limit_s')} s")
+
 def validate_manifest(m):
     if m.get("schema") != SCHEMA or m.get("upstream", {}).get("commit") != "63b9d44d9f39a02fccf5bf0052db48a917a011fd":
         raise BenchError("unsupported schema or upstream commit")
     arms_of(m)
+    check_plan(m)
     cases=m.get("cases")
     if not isinstance(cases,list) or not cases: raise BenchError("manifest has no cases")
     seen=set()
@@ -192,12 +205,12 @@ def grade(args):
         if not cwd.is_dir() or cwd.resolve().parent!=(root/"fixtures").resolve(): raise BenchError("fixture cwd identity mismatch")
         run_path=root/"runs"/f"{case:02d}-{arm}.json"
         if not run_path.is_file(): rows.append({"case":case,"arm":arm,"status":"missing","pass":None}); continue
-        run=load(run_path); required_actors={"solo-codex":["codex"],"solo-claude":["claude"],"hub-codex-claude":["codex","claude"]}[arm]
+        run=load(run_path); actors=required_actors(arm)
         ready=run.get("readiness") if isinstance(run.get("readiness"),dict) else {}
-        identities=all(isinstance(ready.get(actor),dict) and ready[actor].get("cwd")==str(cwd) and ready[actor].get("requestedModel",ready[actor].get("model"))==m.get("models",{}).get(actor) and (ready[actor].get("sessionId") if actor=="claude" else ready[actor].get("threadId")) and isinstance(ready[actor].get("sandboxProbe"),dict) and ready[actor]["sandboxProbe"].get("checked") is True and ready[actor]["sandboxProbe"].get("result")=="denied" for actor in required_actors)
-        claude_ready=ready.get("claude",{}) if "claude" in required_actors else {}
+        identities=all(isinstance(ready.get(actor),dict) and ready[actor].get("cwd")==str(cwd) and ready[actor].get("requestedModel",ready[actor].get("model"))==m.get("models",{}).get(actor) and (ready[actor].get("sessionId") if actor=="claude" else ready[actor].get("threadId")) and isinstance(ready[actor].get("sandboxProbe"),dict) and ready[actor]["sandboxProbe"].get("checked") is True and ready[actor]["sandboxProbe"].get("result")=="denied" for actor in actors)
+        claude_ready=ready.get("claude",{}) if "claude" in actors else {}
         if claude_ready and claude_ready.get("modelVerified") is not True: identities=False
-        if run.get("cwd")!=str(cwd) or not identities or run.get("cleanup_complete") is not True or run.get("metadata_clean") is not True or run.get("metadata_sha256")!=fixture_metadata_sha256(cwd) or ("claude" in required_actors and run.get("trust_restored") is not True):
+        if run.get("cwd")!=str(cwd) or not identities or run.get("cleanup_complete") is not True or run.get("metadata_clean") is not True or run.get("metadata_sha256")!=fixture_metadata_sha256(cwd) or ("claude" in actors and run.get("trust_restored") is not True):
             rows.append({"case":case,"arm":arm,"status":"unavailable","reason":"native identity/model/readiness/cleanup gate failed","pass":None}); continue
         if run.get("end_reason") in ("setup-error","provider-quota","budget-paused","delivery-unsettled","interrupted","infrastructure-error"):
             rows.append({"case":case,"arm":arm,"status":"unavailable","reason":run["end_reason"],"pass":None}); continue

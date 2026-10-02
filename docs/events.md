@@ -14,8 +14,13 @@ marked `private: true`, and PII tasks `pii: true`.
 |---|---|
 | `envelope` | `id`, `from`, `to` (absent for broadcast), `priority`, `hop`, `kind`, `task` (task id from refs), `bytes` (UTF-8 size of the body; absent on a private envelope, whose size would say something about the PII text), `private`, `dropped` (`hop` or `fyi` when not delivered) |
 | `overflow`, `undeliverable` | `id`, `from`, `peer` |
-| `stale` | `id`, `from`, `peer`, `task`: a notice about the recipient's open task, dropped unsent because that task was closed by the time it would have been delivered (issue #106) |
-| `fact` | `peer`, `files` (files whose diff it carried), `plans` (plans it carried), `via` (`hook` for Claude, `steer` for Codex), `dropped` (a steer that found no running turn): one turn-free fact (issue #108) |
+| `stale` | `id`, `from`, `peer`, `task`: a notice about the recipient's open task, dropped unsent because, right before it would have been handed over, that task was closed, had another owner or was gone (issue #106) |
+| `quiet` | `id`, `from`, `peers`: an agent message held back from these members of a silent turn-free cohort; its other recipients got it (issue #107) |
+| `fact` | `peer`, `id` (the offer), `files` (files whose diff it carried), `plans`, `unknown` (files whose change it showed with attribution unknown), `bytes` (the injected text), `via` (`hook` for Claude, `steer` for Codex, `done` with an integration request), `ms` (the hub's time to build it), `hookMs` (the hook process's own start-up and connect time), `accepted` (whether app-server took the steer), `probe` (a context check), `coverage` (it named files earlier changes are not covered for): one fact offer (issue #108) |
+| `fact_ack` | `peer`, `id`, `via` (`hook` and `steer`: a readback found the offer in the native session; `done`: the next `hub_task_done`), `ms` (from the offer): an acknowledged offer, the only thing that moves a peer's view |
+| `capability` | `peer`, `state` (`verified` or `lost`), `via`: a peer's context path for facts |
+| `native_turn_end` | `peer`: Claude's Stop hook, the end of its turn (Codex's is its `turn_end`); quiescence evidence for an integration |
+| `split` | `task`, `verdict` (`split`, `single`, `unknown`), `single` (the peer that would finish both units alone soonest), `splitS`, `singleS`, `reason` (for `unknown`): a shadow split prediction at a routed assignment; it never changes the assignment (issue #109) |
 | `state` | `peer`, `state` |
 | `turn_start` | `peer`, `turn` (`<peer>#<hub run>.<n>`, unique across restarts). A turn follows the adapter: pausing a busy peer does not end it |
 | `turn_end` | `peer`, `turn`, `ms`, `tokens` (when the adapter reported any during the turn), `files` and `snapshotMs` (when snapshots are on: how many files the turn changed, and the time both snapshots took) |

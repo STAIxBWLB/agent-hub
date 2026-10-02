@@ -144,3 +144,19 @@ test("a v2 manifest prepares the turn-free arm too, and an arm list that matches
     expect(odd.stderr).toContain("versioned protocol");
   } finally {rmSync(root,{recursive:true,force:true});}
 });
+
+// issue #110: grading binds the actors of every v2 arm, and a manifest's planned attempts match its arms, cases and repeats.
+test("grading names the actors of all four arms; a plan whose attempts or ceiling do not add up is refused", () => {
+  const code = `import importlib.util,json
+s=importlib.util.spec_from_file_location('r',${JSON.stringify(script)});m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+assert [m.required_actors(a) for a in ['solo-codex','solo-claude','hub-codex-claude','hub-turnfree-codex-claude']]==[['codex'],['claude'],['codex','claude'],['codex','claude']]
+v2=json.load(open(${JSON.stringify(join(import.meta.dir, "../../scripts/benchmarks/manifest-v2.json"))}))
+m.validate_manifest(v2)
+assert v2['plan']['pilot']['attempts']==12 and v2['plan']['study']['attempts']==80 and v2['plan']['study']['active_ceiling_s']==24000
+v2['plan']['study']['attempts']=60
+try: m.validate_manifest(v2); raise AssertionError('a wrong plan was accepted')
+except m.BenchError as e: assert 'do not match 80 attempts' in str(e)
+`;
+  const r = spawnSync("python3", ["-B", "-c", code], { encoding: "utf8" });
+  if (r.status !== 0) throw new Error(r.stderr);
+});

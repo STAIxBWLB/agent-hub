@@ -55,17 +55,31 @@ Every run record, diff, PTY/provider trace and evaluation artifact stays in the 
 
 ## Manifest v2: the turn-free arm
 
-`scripts/benchmarks/manifest-v2.json` keeps v1's cases, models and limits and adds a fourth arm, `hub-turnfree-codex-claude` (issue #110): the same two agents and assignment rotation as `hub-codex-claude`, with `coordination: "turn-free"` in the fixture's hub config and fixture instructions that tell the owners not to message each other. A v1 manifest still prepares, runs and grades its three arms; the runner accepts only these two arm lists.
+`scripts/benchmarks/manifest-v2.json` keeps v1's cases, models and limits and adds a fourth arm, `hub-turnfree-codex-claude` (issue #110): the same two agents and assignment rotation as `hub-codex-claude`, with `coordination: "turn-free"` in the fixture's hub config and fixture instructions that tell the owners not to message each other. A v1 manifest still prepares, grades and reports; running it needs the 0.12.3 release it pins, since `native.ts` refuses a manifest whose hub version is not the checkout's.
 
-Hooks are equal across arms. No arm runs the user's or a plugin's hooks: Claude starts with `--setting-sources project` and `disableAllHooks`, and every Codex thread starts with `features.hooks` off. The turn-free arm's Claude settings carry the hub's own facts hook and nothing else, because that hook is part of the treatment.
+Hooks are equal across arms: no arm runs the user's or a plugin's hooks. Claude starts with `--setting-sources project` and `--strict-mcp-config`; the solo and advisory arms set `disableAllHooks`, and the turn-free arm's session settings carry the hub's own hooks (before and after every tool call, and at Stop) and nothing else, because they are the treatment. Every Codex thread starts with `features.hooks` off: the turn-free arm's Codex boundary is the adapter's steer into the running turn, whose readback is the steered input coming back as a user message item. Each run record carries these `conditions`; its `events` carry the hub's `capability` readbacks, so an attempt in which a context path was never verified shows it.
+
+Pass `--repeat <n>` for the n-th repeat of a case (0 for the first): the arm order rotates by case index plus repeat, so repeats of one pair change which arm runs last. The manifest's `plan` names the release pilot (case 0, three repeats, 12 attempts, an active-time ceiling of one hour) and the study (ten cases, two repeats, 80 attempts, 6 hours 40 minutes at 300 s each, setup, grading and teardown excluded); `runner.py` refuses a plan whose attempts or ceiling do not follow from its arms, cases and repeats.
 
 ## Coordination ledger
 
 ```sh
-python3 scripts/benchmarks/ledger.py --run /private/tmp/ahub-0124-case0
+python3 scripts/benchmarks/ledger.py --run /private/tmp/ahub-0124-r1
 ```
 
-It reads each run record, the Claude transcript it names and the fixture's git history, and writes `ledger.json` beside them: time to both done, Codex requests and hub tool calls before its last `hub_task_done`, Codex turns after its done and what started them, late replies, the hub's facts, stale notices, integration prompts and hushed messages, and lost contributions (identifiers an agent wrote that the final tree lacks and that agent did not remove itself). The script's docstring defines each measure; the lost-contribution count is a heuristic and also counts identifiers in comments and strings.
+It reads each run record, the Claude transcript it names and the fixture's git history, and writes `ledger.json` beside them with a `units` table that names the unit and coverage of every measure. Per attempt: completion (the end reason and whether every task has a done); first candidate, completion intents, integration, check and native settlement times; Codex turns, assistant messages and usage events from task assignment to its last successful `hub_task_done` (usage events are a request proxy: the stream has no request identities, so provider requests are unknown), with its `hub_send` calls and board reads; Claude's provider requests as unique message ids in its transcript; Codex turns after its done and what started them; late replies; the hub's fact offers, acknowledgements, bytes and latencies by path; capability readbacks; held-back messages (`quiet` events) apart from voluntary FYIs; stale notices; shadow split predictions; the hooks each agent's own records show; and contributions. Summaries pool only completed attempts and list the others' end reasons.
+
+Contributions are a heuristic for possible loss, never a certificate: per agent and file, the identifiers and whole lines its applied writes introduced (a refused Claude tool call or a failed Codex patch counts for nothing; a Write replaces the agent's earlier contribution; a delete removes it) that the final tree lacks. A same-name overwrite shows as a lost line. Shell writes are not attributed and are listed under `coverage`, with a missing transcript or an unreadable file. Correctness comes from the official grader, for every arm.
+
+## Preregistration (v2)
+
+Fixed before outcomes are collected (issue #110):
+
+- Order of ablations: the stale-notice change first (#106: the 0.12.4 advisory arm against 0.12.3's), then cohort silence with acknowledged facts and the revision-fenced integration (#107 and #108, the turn-free arm). The split rule (#109) is recorded as shadow predictions only; task allocation stays fixed by case index in both joint arms.
+- Primary outcome: the final submitted artifact of each attempt, graded by the official tests with the same controls for every arm. Time to both done is reported only with completion, failures, timeouts and unavailable attempts beside it, and timing comparisons use attempts that completed in every compared arm.
+- Resource outcomes per provider, in the units the ledger names: Codex turns and usage events, Claude provider requests, hook and fact bytes and latencies. A 35% time and 30% usage reduction are hypotheses, not targets met; counters of different providers are not added together.
+- Every preregistered attempt is retained, including failed and infrastructure-unavailable ones; no repeat is selected after inspecting results.
+- The release pilot (case 0, three repeats of four arms) is feasibility evidence only. Changing the default from advisory needs paired quality and resource criteria fixed in advance, held-out repository and task instances, and comparison with both solo controls and the current advisory arm; any fact loss, missed integration, stale-generation injection or held-back workflow event is a safety result that blocks it.
 
 ## Grade and report
 

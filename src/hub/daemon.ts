@@ -2050,6 +2050,7 @@ export async function startDaemon(opts: DaemonOptions) {
           const transcript = claudeTranscript(sessionId, msg.transcriptPath);
           if (phase === "stop") {
             turnEnded.set(peer, Date.now());
+            event({ type: "native_turn_end", peer });
             readbacks(peer, transcript);
             return void reply({ t: "facts", ok: true });
           }

@@ -369,6 +369,8 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const session = JSON.parse(turnFree ? sessionSettings(tee, { script: join(repo, 'src/cli/facts-hook.ts'), stateDir: state }) : statusLineSettings(tee));
     const settings = { statusLine: session.statusLine, permissions, ...(turnFree ? { disableAllHooks: false, hooks: session.hooks } : { disableAllHooks: true }), sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: denied } } };
     writeFileSync(join(dir, '.claude/settings.json'), JSON.stringify(settings));
+    // The conditions each attempt ran with (issue #110): bound to its record, next to the capability readbacks in its events.
+    const conditions = { claude: { settingSources: 'project', strictMcpConfig: true, disableAllHooks: !turnFree, hookEvents: turnFree ? Object.keys(session.hooks ?? {}).sort() : [], settingsSha256: hash(JSON.stringify(settings)) }, codex: { hooksFeature: false, memories: false, externalAgentMemoryImport: false }, coordination: turnFree ? 'turn-free' : kind.startsWith('hub-') ? 'advisory' : 'solo' };
     const candidateMcp = join(dir, '.claude/candidate-mcp.json');
     writeFileSync(candidateMcp, JSON.stringify({ mcpServers: { 'agent-hub': { command: 'bun', args: [join(repo, 'plugins/agent-hub/server.js')], env: { AGENTHUB_STATE_DIR: state, AGENTHUB_PROJECT_DIR: dir, AGENTHUB_PEER_ID: 'claude' } } } }), { mode: 0o600 });
     await cmd(['git', 'add', '-A'], dir);
@@ -377,7 +379,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const metadataBaseline = fixtureMetadataHash(dir);
     const setup = Date.now();
     let client: ControlClient | undefined, ws: WebSocket | undefined, claudeTerminal: string | undefined, managerTerminal: string | undefined, orcaProject: any, projectId: any, started = 0, endReason = 'completed', error: string | undefined, armModes = new Map<string, number>();
-    let claudeId = randomUUID(), thread: any, trustLease: any, codexMessages: any[] = [], taskStates: any[] = [], ids: number[] = [], pending = new Map<number, any>(), rpcId = 1;
+    let claudeId = randomUUID(), thread: any, trustLease: any, codexMessages: any[] = [], taskStates: any[] = [], ids: number[] = [], pending = new Map<number, any>(), rpcId = 1, codexTaskStart = 0;
     const actors = kind === 'solo-codex' ? ['codex'] : kind === 'solo-claude' ? ['claude'] : ['codex', 'claude'], readiness: any = {};
     try {
         await lockSiblingArtifacts(dir, armModes);
@@ -479,6 +481,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         const input = cachedInputs[index];
         const detail = `Implement only the assigned feature(s) below in the sealed source tree. You have a 300 second active-work limit with no artificial tool-step cap. Do not touch fixture metadata, tests, history or other directories; no installs, web or external apps. Use hub_task_accept with a concrete source plan and hub_task_done on completion. ${turnFree ? 'Do not message the other owner; the hub shows you its changes as you work.' : 'Coordinate shared-file interfaces with the named other owner when present.'} Do not acknowledge FYI or conflict notices unless work is needed. Final [FYI].\n\n`;
         started = Date.now();
+        codexTaskStart = codexMessages.length; // what came before is setup and the probe, never task work (issue #110)
         for (let k = 0; k < assigned.length; k++) {
             const prompts = assigned.length === 1 ? input.prompts : [input.prompts[k]];
             const r = await op('hub_task_propose', { class: 'implement', owner: assigned[k], refs: { paths: cas.paths ?? [] }, plan: 'Implement only the assigned CooperBench feature in its source files; leave fixtures and tests unchanged.', title: `CooperBench ${index} ${kind} feature ${assigned.length === 1 ? cas.features.join(',') : cas.features[k]}`, detail: detail + prompts.join('\n\n') });
@@ -629,7 +632,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         const patchFile = join(runs, 'patches', name + '.patch');
         writeFileSync(patchFile, patch, { mode: 0o600 });
         const events = readEvents(join(state, 'events.jsonl'));
-        const result = { protocol: 'native-cc-v1', index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: sealedBase.trim(), models: manifest.models, requestedModels: actors.reduce((o: any, a: string) => (o[a] = manifest.models[a], o), {}), readiness, patchFile, model: actors.length === 1 ? manifest.models[actors[0]!] : undefined, setupMs: started ? started - setup : Date.now() - setup, elapsedMs, end_reason: cleanupFailed ? 'infrastructure-error' : endReason === 'infrastructure-error' ? 'infrastructure-error' : endReason === 'provider-quota' ? 'provider-quota' : endReason === 'budget-paused' ? 'budget-paused' : endReason === 'model-unverified' || endReason === 'metadata-modified' ? 'infrastructure-error' : endReason === 'completed' ? 'completed' : endReason === 'delivery-unsettled' ? 'delivery-unsettled' : 'interrupted', end_reason_detail: endReason, error: error ? String(error).replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 300) : undefined, taskStates, effort: manifest.effort, events, codexMessages, codexUsage: codexUsage(codexMessages, thread?.thread?.id), nativeVersions: { codex: codexVersion, claude: claudeVersion }, codexBinarySha256: sourceHash(codexBin), claudeSessionId: actors.includes('claude') ? claudeId : undefined, codexThreadId: thread?.thread?.id, trust_restored: trustRestored, cleanup_complete: !cleanupFailed, metadata_clean: metadataClean, metadata_sha256: metadataBaseline, delivery_status: finalStatus?.peers };
+        const result = { protocol: 'native-cc-v1', index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: sealedBase.trim(), models: manifest.models, requestedModels: actors.reduce((o: any, a: string) => (o[a] = manifest.models[a], o), {}), readiness, patchFile, model: actors.length === 1 ? manifest.models[actors[0]!] : undefined, setupMs: started ? started - setup : Date.now() - setup, elapsedMs, end_reason: cleanupFailed ? 'infrastructure-error' : endReason === 'infrastructure-error' ? 'infrastructure-error' : endReason === 'provider-quota' ? 'provider-quota' : endReason === 'budget-paused' ? 'budget-paused' : endReason === 'model-unverified' || endReason === 'metadata-modified' ? 'infrastructure-error' : endReason === 'completed' ? 'completed' : endReason === 'delivery-unsettled' ? 'delivery-unsettled' : 'interrupted', end_reason_detail: endReason, error: error ? String(error).replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 300) : undefined, taskStates, effort: manifest.effort, events, codexMessages, codexTaskStart, startedAt: started || undefined, repeat, conditions, codexUsage: codexUsage(codexMessages, thread?.thread?.id), nativeVersions: { codex: codexVersion, claude: claudeVersion }, codexBinarySha256: sourceHash(codexBin), claudeSessionId: actors.includes('claude') ? claudeId : undefined, codexThreadId: thread?.thread?.id, trust_restored: trustRestored, cleanup_complete: !cleanupFailed, metadata_clean: metadataClean, metadata_sha256: metadataBaseline, delivery_status: finalStatus?.peers };
         writeFileSync(join(runs, 'runs', name + '.json'), JSON.stringify(result, null, 2), { mode: 0o600 });
         log('arm-end', { index, kind, elapsedMs, endReason, patchLines: patch.split('\n').length });
         if (cleanupFailed)
@@ -637,6 +640,11 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     }
 }
 const setupOnly = argv.includes('--setup-only');
+// Repeats of one case (issue #110) rotate the arm order too, so no arm always runs last.
+const repeatIndex = argv.indexOf('--repeat');
+const repeat = repeatIndex >= 0 ? Number(argv[repeatIndex + 1]) : 0;
+if (!Number.isInteger(repeat) || repeat < 0)
+    throw new Error('--repeat takes a whole number (0 for the first repeat)');
 const selectedIndex = argv.indexOf('--cases');
 const selectedArg = selectedIndex >= 0 ? argv[selectedIndex + 1] : undefined;
 const selected: number[] = selectedArg ? selectedArg.split(',').map(Number) : m.cases.map((_: any, i: number) => i);
@@ -647,13 +655,14 @@ if (existsSync(join(runs, 'runs')) && readdirSync(join(runs, 'runs')).length)
 mkdirSync(join(runs, 'private'), { recursive: true, mode: 0o700 });
 mkdirSync(join(runs, 'runs'), { recursive: true, mode: 0o700 });
 mkdirSync(join(runs, 'patches'), { recursive: true, mode: 0o700 });
-writeFileSync(join(runs, 'cohort.json'), JSON.stringify({ schema: m.schema, manifest_sha256: sourceHash(join(runs, 'manifest.json')), cases: selected, calibration: setupOnly, private_case_sha256: Object.fromEntries(selected.map(i => [i, privateCaseHashes[i]])), arms: m.arms, runner_sha256: prepared.runner_sha256, native_runner_sha256: prepared.native_runner_sha256 }), { mode: 0o600 });
+writeFileSync(join(runs, 'cohort.json'), JSON.stringify({ schema: m.schema, manifest_sha256: sourceHash(join(runs, 'manifest.json')), cases: selected, calibration: setupOnly, repeat, private_case_sha256: Object.fromEntries(selected.map(i => [i, privateCaseHashes[i]])), arms: m.arms, runner_sha256: prepared.runner_sha256, native_runner_sha256: prepared.native_runner_sha256 }), { mode: 0o600 });
 try {
     await protectInputs();
     for (const i of selected) {
         if (stopRequested)
             break;
-        const order = [...m.arms.slice(i % m.arms.length), ...m.arms.slice(0, i % m.arms.length)];
+        const offset = (i + repeat) % m.arms.length;
+        const order = [...m.arms.slice(offset), ...m.arms.slice(0, offset)];
         for (const kind of order) {
             if (stopRequested)
                 break;

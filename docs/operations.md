@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.2 and control protocol 11. Live verification
+This guide describes ahub 0.12.4 and control protocol 13. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Install and start
@@ -347,55 +347,91 @@ be on the PATH Claude Code's hooks see; otherwise every edit shows a hook error
 ## Turn-free coordination
 
 A notice about an open task of its recipient (the completed-change notice and the
-edit-conflict messages above) is checked again when it would be delivered: if
-that task has closed meanwhile, the notice is dropped instead of starting a turn,
+edit-conflict messages above) is checked again for each recipient right before it
+is handed over, after any digest condensation: if that recipient's task has
+closed, changed owner or is gone, its copy is dropped instead of starting a turn,
 the journal records it as `discarded`, `hub.log` has a `STALE` line and
-`events.jsonl` a `stale` event. Approvals, check results and review requests are
-always delivered.
+`events.jsonl` a `stale` event. Other recipients keep their copies. Approvals,
+check results, review requests, assignments and budget, permission and recovery
+messages are never dropped this way, and a dropped notice never resolves another
+delivery. The condition lives in memory: after a restart, or for the oldest of
+more than 1024 notices, the notice is delivered as before.
 
-Set `"coordination": "turn-free"` in `.agenthub/config.json` to have owners of
+Set `"coordination": "turn-free"` in `.agenthub/config.json` to let owners of
 overlapping open tasks (the overlap rules above) work without messaging each
-other. The default, `"advisory"`, keeps the behaviour described so far.
+other. The default, `"advisory"`, keeps the behaviour described so far, and it
+stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
 
-- A message between two such owners is recorded as `[FYI]` (console, log,
-  events) and not delivered. `hub_send` answers `not sent: recorded as [FYI]
-  only: ...` with the reason; an agent's turn answer gets the same reason on its
-  next delivery. A reply to the console user, and messages between peers whose
-  tasks do not overlap, go out as before.
-- Overlap texts name the other owner and its plan and say not to message it;
-  `hub_task_accept` answers with the overlapping owners' plans whether or not the
-  caller sent one. No completed-change notice is sent.
-- The last owner to finish an overlapping set is asked once, at its
-  `hub_task_done`, to check its work against what the others finished: the call
-  returns the list (owner, title, files, signatures, first summary line) and
-  records `integration prompted` instead of done; the next `hub_task_done`
-  records it. An owner that finishes while another is still at work is never
-  held. A configured check runs after the recorded done, so the last finisher's
-  check sees the integrated tree.
-- Facts: at each tool call an owner of overlapping work makes, the hub hands it
-  what the other agents changed since it last looked in the files its tasks
-  name or it has read or written: a diff of each file with who changed it and
-  for which task (60 changed lines at most, then a count), plus the overlapping
-  owners' new plans, once. Claude gets them with the tool result through a
-  hook that `ahub claude` adds to the session's `--settings` next to the status
-  line tee (a `--settings` of your own turns both off; `templates/claude-hooks.json`
-  has the same hook as `ahub facts --hook` for a manual setup). Codex gets them
-  by steer into its running turn; a fact with no running turn is dropped. Facts
-  never go through the bus or the delivery journal; `events.jsonl` records each
-  one as a `fact` event. Kimi, Pi and the local worker get none yet.
-- Attribution: every Claude tool call is bracketed by the hook, so its writes,
-  shell commands included, are reported; Codex reports its patches. A change no
-  report explains counts as Codex's own from its side and as "another agent's"
-  from Claude's.
-- While any PII task is open the project behaves as advisory: no facts (they
-  would carry file contents to cloud peers) and no silence.
-- Routing (split rule): a routed task (no owner named) that overlaps another
-  owner's open task goes to the faster of the routed peer and that owner when a
-  split cannot finish sooner: when the slower peer's orientation plus one task
-  takes at least as long as the faster peer's orientation plus two. Speeds are
-  medians over each peer's last 20 approved tasks in the class that it was
-  handed and did itself (at least 3); without them routing is unchanged.
-  `ahub route explain <id>` shows the rule's line.
+- Cohorts. Owners of overlapping tasks form a cohort when the overlap is found.
+  It is silent only if, at that moment, turn-free is on, no PII task is open and
+  every owner's context path is verified (below). It never turns silent later;
+  it stops being silent when an owner without a verified path joins or a path
+  is lost, and every member is told it may message again.
+- Verified context path. A hub-launched Claude session (`ahub claude`) gets the
+  hub's hook before and after every tool call and at the end of each turn, in
+  its `--settings` next to the status line tee (a `--settings` of your own turns
+  them off). Codex gets context by steer into its running turn. Until a fact or a
+  one-line probe has been read back, the peer counts as unverified: for Claude
+  the row Claude Code writes in its transcript for the hook's additional
+  context, matched by tool use id and the offer's id; for Codex the steered
+  input coming back as a user message item of the turn. A new native session,
+  or three offers past a minute without a readback, makes it unverified again.
+  Kimi, Pi and the local worker have no path yet, so a cohort with one of them
+  is never silent.
+- Silence. While a cohort is silent, an agent message from a member to another
+  member is held back for that recipient only: other recipients and the console
+  get it unchanged, and `events.jsonl` records a `quiet` event. `hub_send`
+  answers `not delivered to <peer>: ...` (or `sent to: ...; not delivered to
+  ...` when some recipients got it); a native turn answer's sender hears it on
+  its next delivery. Workflow messages from the hub are never held back. A
+  member's messages stay held until its native turn has ended after its task
+  closed (Codex's turn completes, or Claude's Stop hook runs), so a late answer
+  is still the cohort's; its next turn is new work.
+- Facts. At each tool call (Claude) or completed tool item (Codex) of a cohort
+  member, the hub offers what changed in its files since it last acknowledged
+  them, with the overlapping owners' new plans. A change is credited to an agent
+  only with effect evidence: a Claude Edit, MultiEdit or Write whose result is
+  exactly its input applied to the file as observed before it, or a Codex patch
+  whose diff is exactly what changed. Shell commands, concurrent writers and
+  unreported changes are shown with their attribution unknown, never credited by
+  elimination; an agent's own verified writes are not shown back to it. Only an
+  acknowledgement (a readback, or the next `hub_task_done` for facts sent with an
+  integration request) moves the peer's view, so a fact that does not arrive is
+  offered again at a later boundary; no turn is ever started for one. An
+  acknowledgement says the context reached the native session, not that the
+  model read it. 60 changed lines are shown at most, the cut files named. Only
+  regular files of 256 KB or less inside the project are read; larger ones are
+  named without a diff. Facts never go through the bus or the delivery journal;
+  `events.jsonl` records `fact`, `fact_ack` and `capability` events with bytes
+  and latencies.
+- Integration. A member's `hub_task_done` is a completion intent. The member
+  whose intent completes the set is asked, as its done result, to check its work
+  against the others' (their files, signatures and summaries, plus its own facts)
+  and to call `hub_task_done` again; nothing is recorded as done yet. The next
+  call counts only for the same target: the same owner, cohort revision and
+  files, with every other member's native turn ended after its done. Edits in
+  between, a new member, an owner change, a failed check or a reopened review ask
+  again; after three requests the done is recorded with `integration
+  unresolved`, never as integrated. A configured check of the integrating member
+  counts only for the target it confirmed. After a hub restart an open request is
+  recorded as unresolved. No completed-change notice is sent inside a silent
+  cohort.
+- While any PII task is open the project behaves as advisory: no facts, no
+  silence and no integration step. When it closes, the hub forgets what it had
+  observed, so nothing changed meanwhile is shown as a diff; each member is told
+  which of its files to read again.
+- `ahub check-path` asks the hub whether the owner of the claimed path shares a
+  silent cohort with the caller, and only then leaves out the request to settle
+  by message. `templates/claude-hooks.json` holds only the check-path hook; the
+  facts hooks need a hub-launched session.
+- Routing does not change. For a routed task that overlaps another owner's open
+  task the hub records a shadow split prediction (`split` event; `ahub route
+  explain <id>` shows its trace): whether splitting two equal units between the
+  two peers (`o_s + u_s < o_f + 2u_f`) would finish sooner than the faster one
+  alone, from this hub run's recorded task stages. It is unknown unless the units
+  are equal and known, both peers are available with no other open work, and each
+  has five measured tasks with no more than 30% failures and comparable work
+  times.
 
 ## Approvals and pauses
 
@@ -534,14 +570,14 @@ source and carries every recovery fix released up to it. Protocol 8 and older
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.2 ahub upgrade --to 0.12.2 --dry-run
-bunx --package @staix/agent-hub@0.12.2 ahub upgrade --to 0.12.2 --yes
+bunx --package @staix/agent-hub@0.12.4 ahub upgrade --to 0.12.4 --dry-run
+bunx --package @staix/agent-hub@0.12.4 ahub upgrade --to 0.12.4 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
