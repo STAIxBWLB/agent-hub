@@ -78,7 +78,7 @@ export function startFakeAppServer(
           await Bun.write(path, `${before}codex line\n`);
           const n = before.split("\n").length - 1;
           note("item/completed", { threadId, turnId: turn.id, completedAtMs: Date.now(), item: { type: "fileChange", id: "f2", status: "completed", changes: [{ path, kind: { type: "update", move_path: null }, diff: `@@ -${n} +${n},2 @@\n+codex line` }] } });
-          await Bun.sleep(delayMs); // room for a steer from the item handler
+          await Bun.sleep(Math.max(delayMs, 250)); // room for a steer from the item handler, on a slow CI runner too
         }
         if (text.includes("ITEMS")) {
           // Tool items as Codex 0.159 reports them (issue #108): a patch, then a read the CLI parsed into an action.
@@ -86,7 +86,7 @@ export function startFakeAppServer(
           const path = /ITEMS:(\S+)/.exec(text)?.[1];
           note("item/completed", { threadId, turnId: turn.id, completedAtMs: Date.now(), item: { type: "fileChange", id: "f1", status: "completed", changes: [{ path: path ?? "/abs/src/a.ts", kind: { type: "update", move_path: null }, diff: "@@ -1 +1 @@\n-a\n+b" }] } });
           note("item/completed", { threadId, turnId: turn.id, completedAtMs: Date.now(), item: { type: "commandExecution", id: "c1", status: "completed", command: "sed -n 1,5p src/b.ts", commandActions: [{ type: "read", command: "sed -n 1,5p src/b.ts", name: "b.ts", path: path ?? "/abs/src/b.ts" }] } });
-          await Bun.sleep(delayMs); // room for a steer from the item handler
+          await Bun.sleep(Math.max(delayMs, 250)); // room for a steer from the item handler, on a slow CI runner too
         }
         const item = (id: string, phase: string, t: string) =>
           note("item/completed", { threadId, turnId: turn.id, completedAtMs: Date.now(), item: { type: "agentMessage", id, phase, text: t } });

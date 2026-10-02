@@ -278,8 +278,13 @@ test("a directory a task names stands for git's changed and new files under it, 
   writeFileSync(join(root, "src", "x.ts"), "x changed\n");
   expect(facts.tree(["src"])).not.toBe(before);
   writeFileSync(join(root, "src", "new.ts"), "n\n");
-  const o = facts.due("claude"); // first looks at both files under src: nothing to compare with
-  expect(o).toBeUndefined();
+  // First looks at both files under src: named, never diffed (what happened before is not shown), until read back.
+  expect(facts.current("claude")).toBe(false);
+  const o = facts.due("claude")!;
+  expect(o.text).toContain("changed or new under a directory your task names, not shown as a diff (read before relying on it): src/x.ts, src/new.ts");
+  expect(o.text).not.toContain("x changed");
+  facts.ack("claude", o.id);
+  expect(facts.current("claude")).toBe(true);
   writeFileSync(join(root, "src", "new.ts"), "n2\n");
   const next = facts.due("claude")!;
   expect(next.text).toContain("src/new.ts, changed, attribution unknown");
@@ -475,4 +480,23 @@ test("a tracked file edited and put back is no change, whatever git's stat data 
   expect(facts.tree(["src"])).toBe(clean);
   git("status", "--short"); // an agent's own git command refreshes the index
   expect(facts.tree(["src"])).toBe(clean);
+});
+
+test("after a PII window, a file written under a named directory meanwhile is named, never shown as a diff", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-facts-")));
+  dirs.push(root);
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src", "x.ts"), "x\n");
+  const git = (...a: string[]) => spawnSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...a]);
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: ["src"], plans: [] }), peers: () => ["claude"], nameable: () => true });
+  expect(facts.due("claude")).toBeUndefined();
+  facts.reset(); // a PII task closed: what happened meanwhile is not shown
+  writeFileSync(join(root, "src", "customers.txt"), "patient record\n");
+  writeFileSync(join(root, "src", "x.ts"), "x, with patient record\n");
+  const o = facts.due("claude")!;
+  expect(o.text).toContain("src/x.ts, src/customers.txt");
+  expect(o.text).not.toContain("patient record");
 });

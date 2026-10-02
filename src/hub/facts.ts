@@ -118,6 +118,8 @@ export class Facts {
   private expanded = new Map<string, string[]>();
   /** Directories of the current boundary whose changed files were more than the cap. */
   private expandedCut = new Set<string>();
+  /** Files a peer saw that fell out of its covered set (over the cap): named once. */
+  private readonly seenDropped = new Map<PeerId, Set<string>>();
   /** Directories each peer acknowledged being told were cut: once per session, not at every boundary. */
   private readonly cutTold = new Map<PeerId, Set<string>>();
   /**
@@ -221,6 +223,7 @@ export class Facts {
     this.covered.clear();
     this.firstSeen.clear();
     this.cutTold.clear();
+    this.seenDropped.clear();
     this.writes.clear();
     this.epoch = Date.now();
   }
@@ -287,13 +290,22 @@ export class Facts {
   private files(peer: PeerId, scope = this.o.scope(peer)): string[] {
     const paths = this.scopePaths(scope);
     // A file the peer has seen under a named directory stays covered after git stops listing it (put back to HEAD's
-    // bytes, or the directory moved away): the way back is a change too. The most recently seen 200 at most.
-    const seen = [...(this.accepted.get(peer)?.entries() ?? [])]
-      .filter(([f]) => paths.some((p) => f.startsWith(`${p}/`)))
-      .sort((a, b) => b[1].seq - a[1].seq)
-      .slice(0, EXPANDED_KEPT)
-      .map(([f]) => f);
-    return [...new Set([...this.expand(paths), ...(this.touched.get(peer) ?? []), ...seen])];
+    // bytes, or the directory moved away): the way back is a change too. 200 at most, the newest versions first; the
+    // rest are named once as no longer tracked.
+    const under = [...(this.accepted.get(peer)?.entries() ?? [])].filter(([f]) => paths.some((p) => f.startsWith(`${p}/`))).sort((a, b) => b[1].seq - a[1].seq);
+    const told = this.seenDropped.get(peer) ?? new Set<string>();
+    for (const [f] of under.slice(EXPANDED_KEPT)) {
+      if (told.has(f)) continue;
+      told.add(f);
+      this.untracked.set(peer, (this.untracked.get(peer) ?? new Set()).add(f));
+    }
+    this.seenDropped.set(peer, told);
+    return [...new Set([...this.expand(paths), ...(this.touched.get(peer) ?? []), ...under.slice(0, EXPANDED_KEPT).map(([f]) => f)])];
+  }
+
+  /** A file a peer has never been shown that stands in for a named directory: it only appears once someone changed it. */
+  private dirLook(peer: PeerId, scope: FactScope | undefined, file: string): boolean {
+    return !this.scopePaths(scope).includes(file) && !(this.touched.get(peer) ?? []).includes(file) && !this.accepted.get(peer)?.has(file) && !this.firstSeen.get(peer)?.has(file);
   }
 
   private scopePaths(scope: FactScope | undefined): string[] {
@@ -537,6 +549,14 @@ export class Facts {
       if (cutHere) cutFiles.push(file);
     }
     if (cut) parts.push(`(${cut} more changed line(s) not shown; read ${cutFiles.join(", ")})`);
+    // A directory file appears only once someone changed or created it: its first look is no change to absorb in
+    // silence. It is named, without a diff (whatever happened before tracking began is never shown), until read back.
+    const dirLooks = firstLooks.filter((f) => this.dirLook(peer, scope, f));
+    if (dirLooks.length) {
+      const named = dirLooks.filter(this.o.nameable).slice(0, 20);
+      const rest = dirLooks.length - named.length;
+      parts.push(`changed or new under a directory your task names, not shown as a diff (read before relying on it): ${[named.join(", "), rest ? `${rest} more` : ""].filter(Boolean).join("; ")}`);
+    }
     if (unnamed) parts.push(`${unnamed} more changed file(s) in your scope, not named here: their names match a private-data pattern`);
     const told = this.cutTold.get(peer);
     const cutDirs = [...this.expandedCut].filter((d) => this.o.nameable(d) && !told?.has(d));
@@ -601,9 +621,11 @@ export class Facts {
   current(peer: PeerId): boolean {
     this.boundary();
     const view = this.accepted.get(peer);
-    return this.files(peer).every((f) => {
+    const scope = this.o.scope(peer);
+    return this.files(peer, scope).every((f) => {
       const v = view?.get(f) ?? this.firstSeen.get(peer)?.get(f);
-      return !v || v.hash === this.observe(f).hash;
+      if (!v) return !this.dirLook(peer, scope, f); // a named file's first look needs nothing; a directory file needs naming
+      return v.hash === this.observe(f).hash;
     });
   }
 

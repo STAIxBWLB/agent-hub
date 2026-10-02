@@ -411,10 +411,11 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   it (200 at most; the fact says when more were cut, until it is read back and
   again in a new session). A file the peer has seen there stays covered after git
   stops listing it (put back to HEAD's bytes, or the directory moved away), so
-  the way back is shown; the most recently seen 200 at most. A file there that
-  the peer has neither seen nor touched is a first look when it first appears:
-  another agent's first change to it is not shown as a diff, and the peer reads
-  the file when it needs it. `.git` directories
+  the way back is shown (200 at most, the newest versions first; the rest are
+  named once as no longer tracked). A file there that the peer has neither seen
+  nor touched appears once someone changed or created it: it is named without a
+  diff (what happened before is never shown) until the peer reads the fact back,
+  and until then it counts as a change the peer has not been shown. `.git` directories
   at any depth and what the denylist keeps from every agent
   (`src/local/deny.ts` and `local.deny`) are never read or shown. A file a peer touched before it had a view of it (a
   partial read, say) is compared with what it was then, so a change landing in

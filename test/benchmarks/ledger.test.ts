@@ -78,7 +78,7 @@ test("every measure of a turn-free attempt, with its unit, from the records nati
         { type: "envelope", id: "e3", from: "codex", priority: "fyi", kind: "chat", dropped: "fyi", at: iso(61) },
         { type: "fact", peer: "claude", id: "f1", via: "hook", files: 1, plans: 0, unknown: 0, bytes: 300, ms: 4, hookMs: 120, at: iso(31) },
         { type: "fact_ack", peer: "claude", id: "f1", via: "hook", ms: 900, at: iso(32) },
-        { type: "fact", peer: "codex", id: "f2", via: "steer", files: 1, plans: 0, unknown: 1, bytes: 500, ms: 6, accepted: false, at: iso(40) }, // refused: no round trip
+        { type: "fact", peer: "codex", id: "f2", via: "steer", files: 1, plans: 0, unknown: 1, bytes: 500, ms: 6, rttMs: 9000, accepted: false, at: iso(40) }, // refused: not a round trip
         { type: "fact", peer: "codex", id: "f4", via: "steer", files: 1, plans: 0, unknown: 0, bytes: 100, ms: 5, rttMs: 40, accepted: true, at: iso(45) },
         { type: "fact", peer: "claude", id: "f3", via: "done", files: 0, plans: 0, unknown: 0, bytes: 80, at: iso(75) },
         { type: "stale", id: "n1", peer: "codex", at: iso(72) },
