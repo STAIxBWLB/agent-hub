@@ -673,3 +673,19 @@ test("an envelope still relevant when its delivery is built goes out as before",
   expect(codex.got.map((e) => e.body)).toEqual(["notice"]);
   expect(events.some((e) => e.t === "stale")).toBe(false);
 });
+
+// issue #107: in turn-free coordination an agent's turn answer to an overlapping owner is recorded, not delivered.
+test("a quiet turn answer goes out as fyi, reaches nobody, and its sender hears why on its next delivery", async () => {
+  const events: BusEvent[] = [];
+  const { bus, claude, codex } = await trio(undefined, { quiet: (env) => (env.from === "codex" && env.to?.includes("claude") ? "recorded as [FYI] only: claude owns a task that overlaps yours" : undefined) });
+  bus.tap((e) => events.push(e));
+  const ask = newEnvelope("claude", "which signature?", { to: ["codex"] });
+  const refused = codex.onMessage!("process_priority comes last", { inReplyTo: ask });
+  expect(refused).toBe("recorded as [FYI] only: claude owns a task that overlaps yours");
+  await tick();
+  expect(claude.got).toEqual([]);
+  expect(events.filter((e) => e.t === "envelope" && e.env.from === "codex")).toMatchObject([{ dropped: "fyi", env: { body: "process_priority comes last" } }]);
+  bus.publish(newEnvelope("user", "next", { to: ["codex"] }));
+  await tick();
+  expect(codex.got[0]!.body).toContain("your message was recorded as [FYI] only: claude owns a task that overlaps yours");
+});

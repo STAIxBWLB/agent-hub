@@ -1195,3 +1195,11 @@ upgrade sources; ordinary clients must use protocol 12.
 - Why at delivery: a status envelope to a busy Codex waits for its turn to end. On the 2026-10-02 native CooperBench run (0.12.2) the notice started or helped start 8 of 9 post-done Codex turns, 8 of which changed no file.
 - Approvals, check results, review requests and assignments are never conditional: they matter after a task closes.
 - The conditions live in memory, so after a restart such a notice is delivered whatever its task's state.
+
+## Amendment: turn-free coordination (issue #107)
+
+- `coordination` in the project config: `"advisory"` (default) or `"turn-free"`; anything else is advisory with a log line. Turn-free applies between owners of overlapping open tasks by the rules of #31 (`Tasks.overlapping`); PII tasks never overlap.
+- Silence: the control WS `send` handler and the bus `quiet` option (turn answers of Codex, Kimi, Pi and the local worker) publish a chat message to an overlapping owner as fyi and tell the sender why; the `send` reply is `ok: false` with the reason, so no plugin change is needed. A reply to the console user is never quiet. One overlapping recipient silences the whole message, broadcast included.
+- Texts: overlap results and notices name the plan and say not to message; `hub_task_accept` returns the overlapping plans with every accept; the conflict notices and `ahub check-path` drop "settle it via hub_send"; `templates/AGENTS.block.md` says how turn-free projects differ. `tellCompleted` sends nothing.
+- Integration prompt (`Tasks.done`): for a non-PII task done by a peer, when overlapping tasks of other owners finished (a `done` or `done (checking)` since the task was last handed to its owner) and none is still open without a running check, the first call records `integration prompted` by `hub` with the list as its note and the handler returns that note; the next call records done. Earlier finishers are never held.
+- Measured motivation (2026-10-02 native CooperBench runs): up to `hub_task_done`, Codex made 119 requests and 34 `hub_send` calls in the ten hub pairs against 78 requests solo, and took as long for one feature as solo for two; in 7 of 10 pairs a peer's answer reached Codex after its task was done.

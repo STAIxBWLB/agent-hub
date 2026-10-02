@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## 0.12.4
 
 - A completed-change or edit-conflict notice about its recipient's open task is dropped when it would be delivered after that task closed, instead of starting a turn; the journal records it as discarded and `events.jsonl` as `stale` (#106).
+- Opt-in `coordination: "turn-free"`: owners of overlapping tasks do not message each other (such messages are recorded as fyi with the reason), overlap texts carry the other owner's plan instead of asking to settle by message, and the last owner to finish an overlapping set is asked once at `hub_task_done` to check its work against the others before its done is recorded (#107).
 
 ## 0.12.3
 

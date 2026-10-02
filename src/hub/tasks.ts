@@ -40,6 +40,8 @@ export interface TasksDeps {
   roles?: Record<string, string[]>;
   /** Optional: name a class for a task proposed without one. `onCampus` says whether the model call stays on campus. */
   triage?: { classify: (title: string, detail: string) => Promise<TaskClass | undefined>; onCampus: () => Promise<boolean> };
+  /** Turn-free coordination (issue #107): owners of overlapping tasks do not message each other. Asked at each use. */
+  turnFree?: () => boolean;
 }
 
 const ESCALATE_AFTER = 2;
@@ -302,8 +304,24 @@ export class Tasks {
   overlaps(task: Task, forOwner = true, found = this.overlapHits(task)): string {
     const hits = found.map((h) => `#${h.task.id} (owner ${h.task.owner}) on ${this.where(h)}`);
     if (!hits.length) return "";
+    if (this.turnFree()) {
+      // Turn-free (issue #107): the plans are facts the owner can work from, and nobody negotiates by message.
+      const plans = found.map((h) => (planText(h.task.plan) ? `#${h.task.id}'s plan: ${planText(h.task.plan)}` : "")).filter(Boolean);
+      const who = forOwner
+        ? `Do not message ${found.length > 1 ? "those owners" : "that owner"}: in turn-free coordination the hub shows you their changes as you work.${plans.length ? ` ${plans.join(" | ")}` : ""}`
+        : `${task.owner ?? "Whoever takes it"} works alongside without messages (turn-free).`;
+      return `Overlaps ${hits.join("; ")}. ${who}`;
+    }
     const who = forOwner ? "Settle it with that owner via hub_send before editing those paths." : `${task.owner ?? "Whoever takes it"} is told to settle it.`;
     return `Overlaps ${hits.join("; ")}. ${who}`;
+  }
+
+  turnFree = (): boolean => this.d.turnFree?.() ?? false;
+
+  /** Whether some open task of `a` overlaps some open task of `b` (paths or symbols, issue #31). */
+  overlapping(a: PeerId, b: PeerId): boolean {
+    if (a === b) return false;
+    return this.d.board.list().some((t) => t.owner === a && OPEN.includes(t.state) && this.overlapHits(t).some((h) => h.task.owner === b));
   }
 
   /** While a gone owner's tasks move, its other tasks are about to move too: they are no one to settle with. */
@@ -387,7 +405,8 @@ export class Tasks {
     const plan = planText(task.plan);
     for (const hit of hits) {
       if (hit.task.owner === USER || hit.task.owner === HUB) continue;
-      this.d.tell(hit.task.owner!, noteLine(HUB, "finding", `task #${task.id} (owner ${task.owner}) now overlaps your #${hit.task.id} on ${this.where(hit)}; ${task.owner} is told to settle it${plan ? `. Its plan (full: hub_task_list): ${plan}` : ""}`));
+      const how = this.turnFree() ? `do not message ${task.owner}: in turn-free coordination the hub shows you its changes as you work` : `${task.owner} is told to settle it`;
+      this.d.tell(hit.task.owner!, noteLine(HUB, "finding", `task #${task.id} (owner ${task.owner}) now overlaps your #${hit.task.id} on ${this.where(hit)}; ${how}${plan ? `. Its plan (full: hub_task_list): ${plan}` : ""}`));
     }
   }
 
@@ -609,6 +628,9 @@ export class Tasks {
       // The result goes only to the owner the check was started for: anyone who took the task since hears nothing.
       throw new Error(this.checking.get(task.id) === task.owner ? `task #${task.id}: its check is still running; its result comes as a task message` : `task #${task.id}: a check from before it changed hands is still running; call hub_task_done again in a few minutes`);
     }
+    // The last finisher of an overlapping set checks its work against the others first (issue #107): not recorded yet.
+    const prompt = this.integrationPrompt(task, by);
+    if (prompt) return this.d.board.update(task.id, HUB, "integration prompted", {}, prompt);
     if (task.state === "proposed" || task.state === "changes_requested") task = this.d.board.update(task.id, by, "accepted", { state: "in_progress" }); // done without a separate accept
     const command = this.d.runCheck ? this.d.check?.(task.class) : undefined;
     if (!command) return this.complete(task, by, summary, refs);
@@ -623,6 +645,44 @@ export class Tasks {
       .catch((e: Error) => this.d.notify(`task #${pending.id}: its check result could not be recorded: ${e.message}`))
       .finally(() => this.pendingChecks--);
     return pending;
+  }
+
+  /**
+   * Turn-free (issue #107): the last owner to finish an overlapping set is asked once, at its done, to check its work
+   * against what the others finished while it worked. The one instruction the completed-change notice carried, given
+   * inside the turn instead of starting a turn after it. Earlier finishers are never held. Undefined: record the done.
+   */
+  private integrationPrompt(task: Task, by: PeerId): string | undefined {
+    if (!this.turnFree() || by === USER || !task.owner || this.isPii(task)) return undefined;
+    const mine = this.places(task);
+    if (!mine.paths.length && !mine.symbols.length) return undefined;
+    const overlaps = (t: Task) => {
+      const theirs = this.places(t);
+      return mine.paths.some((p) => theirs.paths.some((q) => samePlace(p, q))) || mine.symbols.some((x) => theirs.symbols.includes(x));
+    };
+    const others = this.d.board.list().filter((t) => t.id !== task.id && t.owner && t.owner !== task.owner && !this.isPii(t) && overlaps(t));
+    // One still at work: this owner is not the last to finish, and the later one integrates.
+    if (others.some((t) => OPEN.includes(t.state) && !this.checking.has(t.id))) return undefined;
+    // The work counts from when the task was last handed to its current owner.
+    const since = [...task.history].reverse().find((h) => OWNERSHIP_EVENTS.has(h.event) && h.event !== "unassigned" && (h.owner === undefined || h.owner === task.owner))?.at ?? task.history[0]?.at ?? 0;
+    const doneAt = (t: Task) => [...t.history].reverse().find((h) => h.event === "done" || h.event === "done (checking)");
+    const finished = others.filter((t) => (doneAt(t)?.at ?? -1) >= since); // same millisecond: still after the handover
+    if (!finished.length) return undefined;
+    const latest = Math.max(...finished.map((t) => doneAt(t)!.at));
+    const asked = [...task.history].reverse().find((h) => h.event === "integration prompted")?.at;
+    if (asked !== undefined && asked >= latest) return undefined; // asked about these already: this is the second call
+    const lines = finished.map((t) => {
+      const files = this.places(t).paths.filter(this.nameable);
+      const signatures = (t.plan?.signatures ?? []).filter(this.nameable);
+      const first = (doneAt(t)?.note ?? "").split("\n").find((l) => l.trim())?.trim().slice(0, 300);
+      return [
+        `- ${this.publicTitle(t)} (owner ${t.owner})`,
+        files.length ? `  changed files: ${files.join(", ")}` : "",
+        signatures.length ? `  signatures: ${signatures.join("; ")}` : "",
+        first && this.nameable(first) ? `  summary: ${first}` : "",
+      ].filter(Boolean).join("\n");
+    });
+    return [`Before task #${task.id} is recorded as done: ${finished.length} overlapping task(s) finished while you worked. Check your work against them, then call hub_task_done again.`, ...lines].join("\n");
   }
 
   private async finishChecked(id: number, by: PeerId, summary: string | undefined, command: string, seen: { events: number; owner: PeerId | null }): Promise<void> {
@@ -674,6 +734,8 @@ export class Tasks {
    * ride-along line: an owner in the middle of those files needs it before its next task arrives.
    */
   private tellCompleted(task: Task, summary?: string): void {
+    // Turn-free (issue #107): no notice as a message; the last finisher is asked at its done instead (integrationPrompt).
+    if (this.turnFree()) return;
     const hits = this.overlapHits(task).filter((h) => h.task.owner !== USER && h.task.owner !== HUB);
     if (!hits.length) return;
     // Files, signatures and the summary are the owner's own words (paths given at done included): any item that

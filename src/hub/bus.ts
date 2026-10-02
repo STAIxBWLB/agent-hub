@@ -35,6 +35,11 @@ export interface BusOptions {
    * reason drops it unsent: the journal records it as discarded and taps see a `stale` event.
    */
   stale?: (peer: PeerId, env: Envelope) => string | undefined;
+  /**
+   * Optional: why an agent's message is recorded instead of delivered (issue #107, turn-free coordination). It goes
+   * out as fyi, so the console and the log still have it, and the sender hears why on its next delivery.
+   */
+  quiet?: (env: Envelope) => string | undefined;
 }
 
 /** Serializable delivery state used by the controlled restart coordinator. Bodies stay in the private daemon file. */
@@ -151,6 +156,12 @@ export class Bus {
       // Limits count what is sent: the envelope as built (a reply goes to its parent's sender, `digest` is resolved,
       // the priority is capped), never the raw `to`.
       const parent = opts?.inReplyTo?.id;
+      const hush = this.opts.quiet?.(env);
+      if (hush) {
+        this.publish({ ...env, priority: "fyi" });
+        this.note(peer.id, noteLine(HUB, "decision", `your message was ${hush}`));
+        return hush;
+      }
       let refused = this.opts.admit?.(env, parent);
       // A turn answer has no caller to refuse: over its important budget it goes out as status, not at all.
       if (refused && env.priority === "important" && !this.opts.admit?.({ ...env, priority: "status" }, parent)) {

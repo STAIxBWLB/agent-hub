@@ -83,6 +83,11 @@ export interface HubConfig {
   recovery: { auto_resume_after_crash: boolean };
   /** Per peer, the hub-tool capabilities it has (issue #39); a peer not listed has all of them. */
   capabilities: Record<string, string[]>;
+  /**
+   * How owners of overlapping tasks coordinate (issue #107): "advisory" lets them message each other; "turn-free" has
+   * them work without messages while the hub derives what they need to know. Anything else is advisory.
+   */
+  coordination: "advisory" | "turn-free";
   /** Machine-local fields a config file set but git could not vouch for, and why (issue #17). */
   ignored?: string[];
   /** Settings that were removed or are about to be (issue #83): what each does now, for `hub.log` and `ahub doctor`. */
@@ -113,6 +118,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   review: { adaptive: false, min_reviews: 5 },
   recovery: { auto_resume_after_crash: false },
   capabilities: {},
+  coordination: "advisory",
 };
 
 export { stateDirFor };
@@ -350,6 +356,20 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   // Agents only: the console user and the hub itself are never limited (issue #38).
   // A typo such as "12/min" would read as 0, which turns a limit off without a word: the project default instead.
+  // Turn-free coordination (issue #107): owners of overlapping tasks work without messages.
+  const coordination = config.coordination === "turn-free" ? "turn-free" : "advisory";
+  if (config.coordination !== coordination) log(`coordination: ${JSON.stringify(config.coordination)} is not "advisory" or "turn-free"; advisory applies`);
+  const turnFree = () => coordination === "turn-free";
+  /** Why a peer's message to an overlapping owner is only recorded (issue #107); undefined when it may go out. */
+  const quiet = (env: Envelope): string | undefined => {
+    if (!turnFree() || env.from === USER || env.from === HUB || env.from === DIGEST || env.priority === "fyi" || env.kind !== "chat") return undefined;
+    const audience = env.to ?? [...bus.peers.keys()].filter((id) => id !== env.from);
+    // ponytail: one overlapping recipient silences the whole message, broadcast included; split the audience if mixed
+    // audiences turn out to matter.
+    const owners = audience.filter((p) => p !== USER && p !== HUB && tasks.overlapping(env.from, p));
+    if (!owners.length) return undefined;
+    return `recorded as [FYI] only: ${owners.join(", ")} ${owners.length > 1 ? "own tasks that overlap" : "owns a task that overlaps"} yours, and in turn-free coordination owners of overlapping tasks do not message each other; the hub shows each of you the other's changes as you work. Message the console user if you are blocked.`;
+  };
   for (const k of Object.keys(config.limits)) if (!(k in PROJECT_LIMITS)) log(`limits.${k} is not a known limit; ignored`);
   const limits = Object.fromEntries(Object.entries(PROJECT_LIMITS).map(([k, fallback]) => {
     const v = config.limits[k as keyof LimitsConfig];
@@ -381,7 +401,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   // The bus exists before `Tasks`, which knows whether a queued notice still matters (issue #106).
   let staleNotice: (peer: PeerId, env: Envelope) => string | undefined = () => undefined;
-  const bus = new Bus({ journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, stale: (peer, env) => staleNotice(peer, env) });
+  const bus = new Bus({ journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, stale: (peer, env) => staleNotice(peer, env), quiet });
   startupCleanup.push(() => bus.closeJournal());
   const manualPaused = new Set<PeerId>(bus.manualPausedPeers()); // recovery never lifts an operator's pause
   let recoveryOperationId: string | undefined;
@@ -497,6 +517,7 @@ export async function startDaemon(opts: DaemonOptions) {
     quota: (): ReturnType<Budget["headroom"]> => budget.headroom(), // budget is built below; this runs at assignment time
     review: config.review,
     roles: config.roles,
+    turnFree,
     failing: () => bus.failingPeers(),
     held: () => Object.fromEntries(bus.knownPeers().flatMap((peer) => { const hold = queueHold(peer); return hold ? [[peer, hold]] : []; })),
   });
@@ -697,13 +718,17 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "hub_task_accept": {
         const t = tasks.accept(by, a.id, a.plan);
-        const overlap = a.plan == null ? "" : tasks.overlaps(t);
+        // Turn-free (issue #107): the owners' plans come with every accept, as the facts the newcomer works from.
+        const overlap = a.plan == null && !turnFree() ? "" : tasks.overlaps(t);
         return overlap ? `${line(t)}\n${overlap}` : line(t);
       }
       case "hub_task_decline":
         return line(await tasks.decline(by, a.id, a.reason));
       case "hub_task_done": {
         const t = await tasks.done(by, a.id, a.summary, a.refs);
+        // Turn-free (issue #107): the last finisher is asked to check its work first; nothing was recorded yet.
+        const last = t.history.at(-1);
+        if (last?.event === "integration prompted" && last.by === HUB) return last.note ?? "";
         return tasks.isChecking(t.id) ? `${line(t)}; its check is queued or running, and the result comes as a task message` : line(t);
       }
       case "hub_review":
@@ -975,7 +1000,8 @@ export async function startDaemon(opts: DaemonOptions) {
         for (const path of paths) conflictSeen.add(`concurrent:${pair}:${path}`);
         const named = paths.filter(tasks.nameable);
         const files = [...named, ...(paths.length > named.length ? [`${paths.length - named.length} file(s) whose names are withheld (they match a PII pattern)`] : [])].join(", ");
-        const text = `Concurrent edit: ${record.id} (task #${ours.id}) and ${otherTurn.id} (task #${theirs.id}) both include changes to ${files}. These snapshots do not attribute the changes to either peer. Check the working tree together before continuing.`;
+        const together = turnFree() ? "Check the working tree before continuing; do not message the other owner (turn-free coordination)." : "Check the working tree together before continuing.";
+        const text = `Concurrent edit: ${record.id} (task #${ours.id}) and ${otherTurn.id} (task #${theirs.id}) both include changes to ${files}. These snapshots do not attribute the changes to either peer. ${together}`;
         notify(`conflict: ${text}`);
         event({ type: "conflict", peer: record.peer, task: ours.id, other: theirs.id, owner: otherTurn.peer, paths: named, concurrent: true, turns: [record.id, otherTurn.id] });
         // Each owner hears it while its own task is open; once that task is closed the notice is dropped (issue #106).
@@ -1015,7 +1041,8 @@ export async function startDaemon(opts: DaemonOptions) {
       notify(`conflict: ${peer}${ours} changed ${files}, which #${task.id} (owner ${owner}) changed before${others.length ? ` (concurrent: ${others.join(", ")})` : ""}`);
       event({ type: "conflict", peer, ...(mine[0] ? { task: mine[0].id } : {}), other: task.id, owner, paths: named, concurrent: others.length > 0 });
       // Both notices are about an open task of their recipient: dropped at delivery once it is closed (issue #106).
-      const toPeer = `Your last turn${ours} changed ${files}, which ${owner}'s open task (${tasks.publicTitle(task)}) changed before it. Check that you did not overwrite that work, and settle it with ${owner} via hub_send.${concurrent}`;
+      const settle = turnFree() ? `; do not message ${owner} (turn-free coordination): the hub shows you its changes` : `, and settle it with ${owner} via hub_send`;
+      const toPeer = `Your last turn${ours} changed ${files}, which ${owner}'s open task (${tasks.publicTitle(task)}) changed before it. Check that you did not overwrite that work${settle}.${concurrent}`;
       if (mine[0]) tasks.whileOpen(peer, mine[0].id, toPeer);
       else bus.publish(newEnvelope(HUB, toPeer, { to: [peer], kind: "task" }));
       if (owner !== USER && owner !== HUB) tasks.whileOpen(owner, task.id, `${peer}'s last turn${ours} changed ${files}, which your open task #${task.id} changed before it. Check that your work there is intact.${concurrent}`);
@@ -1827,6 +1854,13 @@ export async function startDaemon(opts: DaemonOptions) {
         const inReplyTo = msg.reply_to ? bus.get(String(msg.reply_to)) : undefined;
         // Built first: limits count the audience it really has (a reply goes to the parent's sender).
         const env = newEnvelope(c.peer ?? USER, body, { priority, ...(to ? { to } : {}), ...(inReplyTo ? { inReplyTo } : {}) });
+        // Turn-free (issue #107): to an overlapping owner it is recorded, not delivered; the sender is told why.
+        const hush = c.peer ? quiet(env) : undefined;
+        if (hush) {
+          bus.publish({ ...env, priority: "fyi" });
+          if (inReplyTo) bus.completeReply(c.peer!, inReplyTo.id); // the delivery it answers was handled all the same
+          return void reply({ t: "sent", ok: false, error: hush });
+        }
         const refused = c.peer ? admit(env, inReplyTo?.id) : undefined;
         if (refused) return void reply({ t: "sent", ok: false, error: refused });
         const targets = bus.publish(env);

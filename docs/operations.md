@@ -344,6 +344,35 @@ are quoted and marked as other agents' text. The hook runs `ahub`, so it has to
 be on the PATH Claude Code's hooks see; otherwise every edit shows a hook error
 (it never blocks). `ahub check-path <file>` prints the same list in a terminal.
 
+## Turn-free coordination
+
+A notice about an open task of its recipient (the completed-change notice and the
+edit-conflict messages above) is checked again when it would be delivered: if
+that task has closed meanwhile, the notice is dropped instead of starting a turn,
+the journal records it as `discarded`, `hub.log` has a `STALE` line and
+`events.jsonl` a `stale` event. Approvals, check results and review requests are
+always delivered.
+
+Set `"coordination": "turn-free"` in `.agenthub/config.json` to have owners of
+overlapping open tasks (the overlap rules above) work without messaging each
+other. The default, `"advisory"`, keeps the behaviour described so far.
+
+- A message between two such owners is recorded as `[FYI]` (console, log,
+  events) and not delivered. `hub_send` answers `not sent: recorded as [FYI]
+  only: ...` with the reason; an agent's turn answer gets the same reason on its
+  next delivery. A reply to the console user, and messages between peers whose
+  tasks do not overlap, go out as before.
+- Overlap texts name the other owner and its plan and say not to message it;
+  `hub_task_accept` answers with the overlapping owners' plans whether or not the
+  caller sent one. No completed-change notice is sent.
+- The last owner to finish an overlapping set is asked once, at its
+  `hub_task_done`, to check its work against what the others finished: the call
+  returns the list (owner, title, files, signatures, first summary line) and
+  records `integration prompted` instead of done; the next `hub_task_done`
+  records it. An owner that finishes while another is still at work is never
+  held. A configured check runs after the recorded done, so the last finisher's
+  check sees the integrated tree.
+
 ## Approvals and pauses
 
 Inspect permission requests in the terminal:

@@ -1220,3 +1220,102 @@ test("the same notice is delivered while the owner's task is still open, and oth
   expect(peers.kimi!.got.some((e) => e.body.startsWith(`Task #${kimis.id} approved by claude`))).toBe(true);
   expect(events.some((e) => e.t === "stale")).toBe(false);
 });
+
+// issue #107: turn-free coordination. Owners of overlapping tasks do not message each other; the hub hands them facts
+// and asks the last to finish to check its work.
+async function turnFreeRig(extra: Partial<ConstructorParameters<typeof Tasks>[0]> = {}) {
+  const ctx = await setup(["claude", "codex", "kimi"]);
+  const told: string[] = [];
+  const tasks = new Tasks({ board: ctx.board, bus: ctx.bus, routing: () => loadRouting(ctx.dir), cwd: ctx.dir, project: "agent-hub", notify: (l) => ctx.notices.push(l), tell: (peer, line) => told.push(`${peer}|${line}`), turnFree: () => true, ...extra });
+  return { ...ctx, tasks, told };
+}
+
+test("overlapping() is true only between owners whose open tasks share a place", async () => {
+  const { tasks, board } = await turnFreeRig();
+  const a = await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
+  await tasks.propose("claude", { title: "c", class: "implement", owner: "claude", refs: { paths: ["docs/c.md"] } });
+  expect(tasks.overlapping("kimi", "codex")).toBe(true);
+  expect(tasks.overlapping("codex", "kimi")).toBe(true);
+  expect(tasks.overlapping("kimi", "claude")).toBe(false);
+  expect(tasks.overlapping("kimi", "kimi")).toBe(false);
+  board.update(a.id, "kimi", "done", { state: "in_review" });
+  expect(tasks.overlapping("kimi", "codex")).toBe(false); // kimi has no open task left
+});
+
+test("turn-free texts name the overlap and the other owner's plan, and never ask to settle it by message", async () => {
+  const { tasks, told, notices } = await turnFreeRig();
+  await tasks.propose("kimi", { title: "bus refactor", class: "implement", owner: "kimi", refs: { paths: ["src/hub/bus.ts"] }, plan: { symbols: ["Bus.publish"], signatures: ["publish(env: Envelope): PeerId[]"] } });
+  const offered = await tasks.propose("claude", { title: "retry", class: "implement", owner: "codex" });
+  const accepted = tasks.accept("codex", offered.id, { paths: ["src/hub/retry.ts"], symbols: ["Bus.publish"] });
+  const forOwner = tasks.overlaps(accepted);
+  expect(forOwner).toBe("Overlaps #1 (owner kimi) on symbol Bus.publish. Do not message that owner: in turn-free coordination the hub shows you their changes as you work. #1's plan: symbols: Bus.publish | signatures: publish(env: Envelope): PeerId[]");
+  expect(told).toEqual(["kimi|note from hub [finding]: task #2 (owner codex) now overlaps your #1 on symbol Bus.publish; do not message codex: in turn-free coordination the hub shows you its changes as you work. Its plan (full: hub_task_list): paths: src/hub/retry.ts | symbols: Bus.publish"]);
+  expect(notices).toContain("task #2 retry (codex): Overlaps #1 (owner kimi) on symbol Bus.publish. codex works alongside without messages (turn-free).");
+  for (const text of [forOwner, ...told, ...notices]) expect(text).not.toContain("via hub_send");
+});
+
+test("turn-free publishes no completed-change notice", async () => {
+  const { tasks, peers } = await turnFreeRig();
+  await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  const t = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
+  await tasks.done("codex", t.id, "changed a");
+  await tick();
+  expect(completedNotices(peers.kimi!)).toEqual([]);
+});
+
+test("the last finisher is asked once to check its work; the second call records done; an earlier finisher is never held", async () => {
+  const { tasks, board } = await turnFreeRig();
+  const first = await tasks.propose("kimi", { title: "multi-file edit", class: "implement", owner: "kimi", refs: { paths: ["src/click/termui.py"] }, plan: { signatures: ["edit(filename: str | Iterable[str])"] } });
+  const last = await tasks.propose("codex", { title: "priority", class: "implement", owner: "codex", refs: { paths: ["src/click/termui.py"] } });
+  // The earlier finisher: the other task is still open, so its done is recorded at once.
+  const early = await tasks.done("kimi", first.id, "edit takes several files\nmore");
+  expect(early.history.at(-1)!.event).toBe("done");
+  // The last finisher: answered, not recorded.
+  const asked = await tasks.done("codex", last.id, "added process_priority");
+  expect(asked.state).toBe("in_progress");
+  expect(asked.history.at(-1)).toMatchObject({ event: "integration prompted", by: HUB });
+  expect(asked.history.at(-1)!.note).toBe([
+    `Before task #${last.id} is recorded as done: 1 overlapping task(s) finished while you worked. Check your work against them, then call hub_task_done again.`,
+    `- #${first.id} multi-file edit (owner kimi)`,
+    "  changed files: src/click/termui.py",
+    "  signatures: edit(filename: str | Iterable[str])",
+    "  summary: edit takes several files",
+  ].join("\n"));
+  const recorded = await tasks.done("codex", last.id, "added process_priority, checked against #1");
+  expect(recorded.history.at(-1)!.event).toBe("done");
+  expect(board.get(last.id)!.history.filter((h) => h.event === "integration prompted")).toHaveLength(1);
+});
+
+test("the console user and PII tasks are never prompted, and advisory never prompts", async () => {
+  const { tasks } = await turnFreeRig();
+  await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  const b = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
+  await tasks.done("kimi", 1, "a done");
+  expect((await tasks.done(USER, b.id, "by hand")).history.at(-1)!.event).toBe("done");
+
+  const advisory = await setup(["claude", "codex", "kimi"]);
+  await advisory.tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  const c = await advisory.tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
+  await advisory.tasks.done("kimi", 1, "a done");
+  expect((await advisory.tasks.done("codex", c.id, "b done")).history.at(-1)!.event).toBe("done");
+});
+
+test("with a check configured, the prompt comes first and the check runs only after the recorded done", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const ran: string[] = [];
+  const { tasks, board } = await turnFreeRig({ check: (cls) => (cls === "implement" ? "make test" : undefined), runCheck: async (command) => (ran.push(command), await gate, { code: 0, timedOut: false, tail: "ok" }) });
+  await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  const b = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
+  await tasks.done("kimi", 1, "a done"); // its check is queued: kimi's task counts as finished
+  expect(tasks.isChecking(1)).toBe(true);
+  const asked = await tasks.done("codex", b.id, "b done");
+  expect(asked.history.at(-1)!.event).toBe("integration prompted");
+  expect(tasks.isChecking(b.id)).toBe(false);
+  await tasks.done("codex", b.id, "b done, checked");
+  expect(tasks.isChecking(b.id)).toBe(true);
+  release();
+  await until(() => board.get(b.id)!.history.some((h) => h.event === "check passed"));
+  expect(ran).toEqual(["make test", "make test"]);
+});

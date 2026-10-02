@@ -25,8 +25,8 @@ const until = async (cond: () => boolean, what = "condition") => {
   if (!cond()) throw new Error(`timed out waiting for ${what}`);
 };
 
-async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities } = {}) {
-  const { memoryUrl, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, ...rest } = extra;
+async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities; coordination?: string } = {}) {
+  const { memoryUrl, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, coordination, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
     cwd: ROOT,
@@ -47,6 +47,7 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?:
       ...(codex_bin ? { codex_bin } : {}),
       ...(limits ? { limits } : {}),
       ...(capabilities ? { capabilities } : {}),
+      ...(coordination ? { coordination: coordination as typeof DEFAULT_CONFIG.coordination } : {}),
     },
     permissionTimeoutMs: 200,
     ...rest,
@@ -1434,4 +1435,68 @@ test("a peer can never answer a permission request: not over the control link, n
   await until(() => replies().length === 1, "the console's answer");
   expect(replies()[0]).toEndWith("permission=yes");
   peer.close();
+});
+
+// issue #107: turn-free coordination at the control WS and on the board's results.
+test("turn-free: hub_send between owners of overlapping tasks is recorded, not delivered; replies to the console and other peers go out", async () => {
+  const { stateDir, daemon, console_ } = await hub({ coordination: "turn-free" });
+  class Quiet extends BasePeer {
+    got: string[] = [];
+    async start() { this.setState("idle"); }
+    async deliver(envs: { body: string }[]) { this.got.push(...envs.map((e) => e.body)); }
+    async stop() { this.setState("offline"); }
+  }
+  const kimi = new Quiet("kimi");
+  const codex = new Quiet("codex");
+  for (const p of [kimi, codex]) {
+    daemon.bus.add(p);
+    await p.start();
+  }
+  const claude = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" });
+  const pushed: any[] = [];
+  claude.onPush = (m) => pushed.push(m);
+  const op = async (o: string, args: unknown) => console_.request({ t: "task", op: o, args });
+  await op("hub_task_propose", { title: "edit files", class: "implement", owner: "kimi", refs: { paths: ["src/click/termui.py"] } });
+  await op("hub_task_propose", { title: "priority", class: "implement", owner: "claude", refs: { paths: ["src/click/termui.py"] } });
+  await op("hub_task_propose", { title: "docs", class: "implement", owner: "codex", refs: { paths: ["docs/x.md"] } });
+  const silenced = await claude.request({ t: "send", body: "I will add process_priority after filename", to: ["kimi"] });
+  expect(silenced.ok).toBe(false);
+  expect(silenced.error).toStartWith("recorded as [FYI] only: kimi owns a task that overlaps yours");
+  const unrelated = await claude.request({ t: "send", body: "docs look fine", to: ["codex"] });
+  expect(unrelated.ok).toBe(true);
+  await until(() => codex.got.some((b) => b.includes("docs look fine")), "codex's message");
+  expect(kimi.got.some((b) => b.includes("process_priority"))).toBe(false);
+  const env = readEvents(join(stateDir, "events.jsonl")).find((e) => e.type === "envelope" && e.from === "claude" && e.to?.includes("kimi"));
+  expect(env).toMatchObject({ dropped: "fyi" });
+  // A reply to the console user is never quiet.
+  await console_.request({ t: "send", body: "status?", to: ["claude"] });
+  await until(() => pushed.some((m) => m.t === "deliver" && m.envs.some((e: any) => e.body === "status?")), "the console question");
+  const question = pushed.find((m) => m.t === "deliver" && m.envs.some((e: any) => e.body === "status?")).envs.find((e: any) => e.body === "status?");
+  const answer = await claude.request({ t: "send", body: "working on it", reply_to: question.id });
+  expect(answer.ok).toBe(true);
+  claude.close();
+});
+
+test("turn-free: an accept answers with the overlapping owners' plans, and a typo in coordination is advisory with a log line", async () => {
+  const { daemon, console_ } = await hub({ coordination: "turn-free" });
+  class Quiet extends BasePeer {
+    async start() { this.setState("idle"); }
+    async deliver() {}
+    async stop() { this.setState("offline"); }
+  }
+  for (const id of ["kimi", "codex"]) {
+    const p = new Quiet(id);
+    daemon.bus.add(p);
+    await p.start();
+  }
+  const op = async (o: string, args: unknown) => (await console_.request({ t: "task", op: o, args })).text as string;
+  await op("hub_task_propose", { title: "edit files", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  await console_.request({ t: "task", op: "hub_task_accept", args: { id: 1, plan: { paths: ["src/a.ts"], signatures: ["edit(filename: str)"] } } });
+  await op("hub_task_propose", { title: "priority", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
+  const accepted = await op("hub_task_accept", { id: 2 }); // no plan of its own: the others' plans come all the same
+  expect(accepted).toContain("#1's plan: paths: src/a.ts | signatures: edit(filename: str)");
+  expect(accepted).not.toContain("via hub_send");
+
+  const typo = await hub({ coordination: "turn_free" });
+  await until(() => readFileSync(join(typo.stateDir, "hub.log"), "utf8").includes('coordination: "turn_free" is not "advisory" or "turn-free"; advisory applies'), "the log line");
 });
