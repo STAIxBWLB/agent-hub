@@ -561,7 +561,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     }
     catch (e) {
         error = String(e);
-        endReason = 'infrastructure-error';
+        endReason = stopRequested ? 'interrupted' : 'infrastructure-error'; // a stop during setup is still a stop (issue #113)
         log('arm-error', { index, kind, error });
     }
     finally {
@@ -619,7 +619,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
                 readiness.claude.nativeUsage = evidence.usage;
             }
             catch { note('Claude transcript evidence could not be read'); }
-            if (!readiness.claude.modelVerified)
+            if (!readiness.claude.modelVerified && endReason !== 'interrupted')
                 endReason = 'model-unverified';
         }
         // Claude Code may still append rows after this: the attempt is this prefix, and only it (issue #110).

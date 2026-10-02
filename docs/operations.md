@@ -486,9 +486,9 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   silent cohort with the caller, and only then leaves out the request to settle
   by message. `templates/claude-hooks.json` holds only the check-path hook; the
   facts hooks need a hub-launched session.
-- Routing does not change. When routing chooses the owner of a task that
+- Routing does not change. When routing chooses the first owner of a task that
   overlaps another owner's task not started yet (`where: "routing"`, the record
-  calibration reads), and when an overlap forms or changes a cohort, routed or
+  calibration reads; an escalation, relay or reassignment is not one), and when an overlap forms or changes a cohort, routed or
   named (`where: "cohort"`), the hub records a shadow split prediction (`split`
   event; `ahub route explain <id>` shows its trace as it would be now): whether
   splitting two equal units between the two peers (`o_s + u_s < o_f + 2u_f`)
