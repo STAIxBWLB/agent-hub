@@ -7,7 +7,7 @@ import { Board } from "../src/hub/board.ts";
 import { Bus, type BusEvent } from "../src/hub/bus.ts";
 import { HUB, newEnvelope, USER, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
-import { assign, currentRouting, detectSignals, loadRouting } from "../src/hub/routing.ts";
+import { assign, currentRouting, detectSignals, loadRouting, SPLIT_MIN } from "../src/hub/routing.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { Briefs, parseRows } from "../src/memory/brief.ts";
 import { MemoryClient } from "../src/memory/client.ts";
@@ -1503,47 +1503,59 @@ test("a silent cohort publishes no completed-change notice: the integrating memb
   expect(completedNotices(peers.kimi!)).toEqual([]);
 });
 
-// issue #109: recorded speeds decide whether overlapping routed work is split.
-test("speeds come from tasks a peer was handed and did itself; claims and other classes do not count", async () => {
-  const { tasks, board } = await turnFreeRig();
+// issue #109: split observations come from this hub run's tasks, typed; the shadow prediction never changes assignment.
+test("split observations: tasks handed out in this hub run, claims and accepts made by the done left out of the stages, failures typed", async () => {
+  const { tasks, board } = await turnFreeRig({ since: 0 });
   let now = 1_800_000_000_000;
-  const at = (ms: number) => (now += ms);
   const realNow = Date.now;
   Date.now = () => now;
   try {
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 2; i++) {
       const t = await tasks.propose("claude", { title: `offered ${i}`, class: "implement", owner: "kimi" });
-      at(10_000);
+      now += 10_000;
       tasks.accept("kimi", t.id);
-      at(40_000);
+      now += 40_000;
       await tasks.done("kimi", t.id, "done");
       await tasks.review(board.get(t.id)!.reviewer!, t.id, "approved");
     }
-    const claim = await tasks.propose("codex", { title: "claimed", class: "implement", owner: "codex" });
-    at(5_000);
-    await tasks.done("codex", claim.id, "done");
-    await tasks.review(board.get(claim.id)!.reviewer!, claim.id, "approved");
-    expect(tasks.speeds("implement", now)).toEqual({ kimi: { o: 10_000, u: 40_000, n: 3 } });
-    expect(tasks.speeds("review", now)).toEqual({});
+    const quick = await tasks.propose("claude", { title: "done at once", class: "implement", owner: "kimi" });
+    now += 5_000;
+    await tasks.done("kimi", quick.id, "done"); // no separate accept: its stages are unknown
+    await tasks.review(board.get(quick.id)!.reviewer!, quick.id, "approved");
+    const failed = await tasks.propose("claude", { title: "failed", class: "implement", owner: "kimi" });
+    await tasks.done("kimi", failed.id, "done");
+    await tasks.review(board.get(failed.id)!.reviewer!, failed.id, "changes_requested", "no");
+    const claim = await tasks.propose("kimi", { title: "claimed", class: "implement", owner: "kimi" });
+    await tasks.done("kimi", claim.id, "done");
+    expect(tasks.splitObservations("implement", "kimi")).toEqual([
+      { outcome: "approved", orient: 10_000, work: 40_000 },
+      { outcome: "approved", orient: 10_000, work: 40_000 },
+      { outcome: "approved" },
+      { outcome: "failed" },
+    ]);
+    expect(tasks.splitObservations("review", "kimi")).toEqual([]);
   } finally {
     Date.now = realNow;
   }
+  // Tasks handed out before this hub run started are not observations.
+  const later = await turnFreeRig({ since: Date.now() + 60_000 });
+  const t = await later.tasks.propose("claude", { title: "old", class: "implement", owner: "kimi" });
+  later.tasks.accept("kimi", t.id);
+  await later.tasks.done("kimi", t.id, "done");
+  expect(later.tasks.splitObservations("implement", "kimi")).toEqual([]);
 });
 
-test("the split rule applies to routed work in turn-free only, never to an explicit owner, and explain shows it", async () => {
-  const { tasks, board } = await turnFreeRig();
-  // kimi is fast, codex slow, by the records the rule reads.
-  (tasks as any).speeds = () => ({ codex: { o: 15_000, u: 60_000, n: 5 }, kimi: { o: 10_000, u: 25_000, n: 5 } });
+test("the shadow prediction never changes assignment: routed and named work go where routing sends them; explain and the record show it", async () => {
+  const recorded: { task: number; verdict: string }[] = [];
+  const { tasks } = await turnFreeRig({ recordSplit: (task, p) => recorded.push({ task, verdict: p.verdict }) });
   await tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
   const routed = await tasks.propose("claude", { title: "routed part", class: "implement", refs: { paths: ["src/a.ts"] } });
-  expect(routed.owner).toBe("kimi");
-  expect(tasks.explain(routed.id).join("\n")).toContain("split rule: codex needs 75 s for one unit, kimi 60 s for two: no split, kimi takes it");
+  expect(routed.owner).toBe("codex"); // the configured order, whatever the records say
+  expect(recorded).toEqual([{ task: routed.id, verdict: "unknown" }]);
+  const explained = tasks.explain(routed.id).join("\n");
+  expect(explained).toContain("shadow split prediction (it never changes assignment):");
+  expect(explained).toContain(`unknown: codex has 0 measured task(s) in this hub run; ${SPLIT_MIN} are needed`);
   const named = await tasks.propose("claude", { title: "named part", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
   expect(named.owner).toBe("codex");
-
-  const advisory = await setup(["claude", "codex", "kimi"]);
-  (advisory.tasks as any).speeds = () => ({ codex: { o: 15_000, u: 60_000, n: 5 }, kimi: { o: 10_000, u: 25_000, n: 5 } });
-  await advisory.tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
-  expect((await advisory.tasks.propose("claude", { title: "routed part", class: "implement", refs: { paths: ["src/a.ts"] } })).owner).toBe("codex");
-  expect(board.get(routed.id)!.owner).toBe("kimi");
+  expect(recorded).toHaveLength(1); // named work is not routed: nothing to predict
 });

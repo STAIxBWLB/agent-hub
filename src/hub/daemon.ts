@@ -407,6 +407,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (refused) log(`limits: ${env.from}: ${refused}`);
     return refused;
   };
+  /** This hub run's start: offline owners count from it (issue #6), split predictions read tasks since (issue #109). */
+  const hubStartedAt = Date.now();
   // The bus exists before `Tasks`, which knows whether a queued notice still matters (issue #106).
   let relevantNotice: (peer: PeerId, env: Envelope) => boolean = () => true;
   const bus = new Bus({ journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => relevantNotice(peer, env), silence });
@@ -537,6 +539,8 @@ export async function startDaemon(opts: DaemonOptions) {
     },
     ackFacts: (peer, id) => acked(peer, id, "done"),
     factsCurrent: (peer) => !factsOn() || facts.current(peer),
+    since: hubStartedAt,
+    recordSplit: (task, p) => event({ type: "split", task, verdict: p.verdict, ...(p.single ? { single: p.single, splitS: p.splitS, singleS: p.singleS } : {}), ...(p.verdict === "unknown" ? { reason: p.trace.at(-1)!.replace(/^ {2}unknown: /, "").slice(0, 200) } : {}) }),
     failing: () => bus.failingPeers(),
     held: () => Object.fromEntries(bus.knownPeers().flatMap((peer) => { const hold = queueHold(peer); return hold ? [[peer, hold]] : []; })),
   });
@@ -1091,7 +1095,6 @@ export async function startDaemon(opts: DaemonOptions) {
 
   // When each peer went offline; a peer never seen attached counts from hub start (issue #6).
   const offlineSince = new Map<PeerId, number>();
-  const hubStartedAt = Date.now();
   const releaseGoneOwners = async () => {
     const limit = config.tasks.release_after_min;
     if (releasing || stopping || recoveryActive()) return;

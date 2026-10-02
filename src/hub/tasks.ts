@@ -3,7 +3,7 @@ import type { MemoryClient } from "../memory/client.ts";
 import { CLASSES, OUTCOMES_KEPT_MS, PLAN_KEYS, type Board, type Task, type TaskClass, type TaskPlan, type TaskRefs } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
-import { assign, detectSignals, LOCAL, PI, type Assignment, type Routing } from "./routing.ts";
+import { assign, detectSignals, LOCAL, PI, predictSplit, type Assignment, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 
@@ -54,6 +54,10 @@ export interface TasksDeps {
   ackFacts?: (peer: PeerId, id: string) => void;
   /** Whether a peer has been shown every change to its files. */
   factsCurrent?: (peer: PeerId) => boolean;
+  /** When this hub run started: split observations come from it only, one version and one hook profile (issue #109). */
+  since?: number;
+  /** A shadow split prediction made at an assignment, for the record (issue #109). */
+  recordSplit?: (task: number, prediction: SplitPrediction) => void;
 }
 
 const ESCALATE_AFTER = 2;
@@ -79,6 +83,8 @@ export const samePlace = (a: string, b: string) => {
 
 /** Events that hand a task to an owner (or take it away); newer history records that owner on them (#67). */
 const OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassigned"]);
+/** The note on an accept recorded by the done call itself: its stages are unknown to the split prediction (issue #109). */
+const WITH_DONE = "with its done";
 /** How many times a task changed hands: a cohort member's generation (issue #107). */
 const ownerGen = (t: Task) => t.history.filter((h) => OWNERSHIP_EVENTS.has(h.event)).length;
 
@@ -241,38 +247,46 @@ export class Tasks {
   }
 
   /**
-   * Recorded speeds per peer for a class (issue #109): over its last 20 tasks approved within the outcome window that it
-   * was handed and did itself, the median time from being handed the task to `accepted` (orientation) and from
-   * `accepted` to `done` (one unit). Claims are left out: their accept follows at once. Fewer than 3 tasks: no record.
+   * A peer's tasks of a class in this hub run, as split observations (issue #109): handed to it by someone else (claims
+   * left out), typed by outcome. Stages are the board's own proxies and stay unknown when the accept came with the done.
    */
-  speeds(cls: TaskClass, now = Date.now()): Record<PeerId, { o: number; u: number; n: number }> {
-    const samples = new Map<PeerId, { o: number[]; u: number[] }>();
-    const recent = this.d.board.list("approved").filter((t) => t.class === cls && t.owner && t.owner !== USER).sort((a, b) => b.updated - a.updated);
-    for (const t of recent) {
-      const given = [...t.history].reverse().find((h) => OWNERSHIP_EVENTS.has(h.event) && h.event !== "unassigned" && (h.owner === undefined || h.owner === t.owner));
-      if (!given || given.by === t.owner) continue; // a claim
-      const accepted = t.history.find((h) => h.event === "accepted" && h.by === t.owner && h.at >= given.at);
-      const done = [...t.history].reverse().find((h) => h.event === "done" && h.by === t.owner);
-      if (!accepted || !done || done.at < accepted.at || now - done.at > OUTCOMES_KEPT_MS) continue;
-      const s = samples.get(t.owner!) ?? { o: [], u: [] };
-      if (s.o.length >= 20) continue;
-      s.o.push(accepted.at - given.at);
-      s.u.push(done.at - accepted.at);
-      samples.set(t.owner!, s);
-    }
-    const median = (xs: number[]) => {
-      const v = [...xs].sort((a, b) => a - b);
-      return v.length % 2 ? v[(v.length - 1) / 2]! : (v[v.length / 2 - 1]! + v[v.length / 2]!) / 2;
-    };
-    return Object.fromEntries([...samples].filter(([, s]) => s.o.length >= 3).map(([p, s]) => [p, { o: median(s.o), u: median(s.u), n: s.o.length }]));
+  splitObservations(cls: TaskClass, peer: PeerId): SplitObservation[] {
+    const since = this.d.since ?? 0;
+    return this.d.board.list().flatMap((t): SplitObservation[] => {
+      if (t.class !== cls || t.owner !== peer) return [];
+      const given = [...t.history].reverse().find((h) => OWNERSHIP_EVENTS.has(h.event) && h.event !== "unassigned" && (h.owner === undefined || h.owner === peer));
+      if (!given || given.at < since || given.by === peer) return [];
+      const after = t.history.filter((h) => h.at >= given.at);
+      if (after.some((h) => ["check failed", "changes_requested", "escalated", "released", "declined", "integration unresolved"].includes(h.event))) return [{ outcome: "failed" }];
+      if (t.state !== "approved") return [];
+      const accepted = after.find((h) => h.event === "accepted" && h.by === peer);
+      const done = [...after].reverse().find((h) => h.event === "done" && h.by === peer);
+      if (!accepted || !done || accepted.note === WITH_DONE) return [{ outcome: "approved" }];
+      return [{ outcome: "approved", orient: accepted.at - given.at, work: done.at - accepted.at }];
+    });
   }
 
-  /** The split rule's input for routing a task in turn-free (issue #109): owners it overlaps, and their speeds. */
-  private splitInput(task: Task): { split?: { owners: PeerId[]; speeds: Record<PeerId, { o: number; u: number; n: number }> } } {
-    if (!this.turnFree()) return {};
-    // As if unassigned, so `explain` on an assigned task sees what assignment saw (its own owner's other tasks too).
-    const owners = [...new Set(this.overlapHits({ ...task, owner: null }).map((h) => h.task.owner!).filter((p) => p !== USER && p !== HUB))];
-    return owners.length ? { split: { owners, speeds: this.speeds(task.class) } } : {};
+  /**
+   * The shadow split prediction for routing `task` to `candidate` (issue #109): the pair it would form with the owner of
+   * an open task it overlaps. Assignment never reads it; `route explain` shows it and assignment records it.
+   */
+  splitShadow(task: Task, candidate: PeerId | undefined): SplitPrediction | undefined {
+    if (!candidate) return undefined;
+    const other = this.overlapHits({ ...task, owner: null }).map((h) => h.task).find((t) => t.owner && t.owner !== candidate && t.owner !== USER && t.owner !== HUB);
+    if (!other) return undefined;
+    const peers: [PeerId, PeerId] = [candidate, other.owner!];
+    const states = this.states();
+    const failing = this.d.failing?.() ?? {};
+    const open = this.d.board.list().filter((t) => OPEN.includes(t.state) && t.id !== task.id && t.id !== other.id);
+    // One task of a class is one unit: the only normalization the board supports, so another class is unknown.
+    const unit = task.class === other.class ? 1 : undefined;
+    return predictSplit({
+      peers,
+      observations: Object.fromEntries(peers.map((p) => [p, this.splitObservations(task.class, p)])),
+      units: [unit, unit],
+      backlog: Object.fromEntries(peers.map((p) => [p, open.filter((t) => t.owner === p).length])),
+      available: Object.fromEntries(peers.map((p) => [p, (states[p] === "idle" || states[p] === "busy") && !failing[p]])),
+    });
   }
 
   /**
@@ -528,7 +542,8 @@ export class Tasks {
     if (typeof target === "number") {
       const task = this.d.board.get(target);
       if (!task) throw new Error(`no task #${target}`);
-      return [`task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"})`, "if it were assigned now:", ...assign(task, this.states(), routing, { exclude: this.declined(task), waitsFor: this.waitsFor(task), ...this.splitInput(task), ...this.weights(task.class) }).trace];
+      const a = assign(task, this.states(), routing, { exclude: this.declined(task), waitsFor: this.waitsFor(task), ...this.weights(task.class) });
+      return [`task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"})`, "if it were assigned now:", ...a.trace, ...(this.splitShadow(task, a.owner)?.trace ?? [])];
     }
     const draft = { title: target.title, detail: target.detail ?? "", refs: target.refs ?? {} };
     return assign({ class: target.class, signals: detectSignals(draft, routing, this.d.cwd) }, this.states(), routing, this.weights(target.class)).trace;
@@ -553,7 +568,12 @@ export class Tasks {
 
   private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; claim?: boolean } = {}): Promise<Task> {
     const waits = this.waitsFor(task);
-    const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : this.splitInput(task)), waitsFor: waits, ...this.weights(task.class) });
+    const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class) });
+    // Routed work only: a shadow split prediction for the record (issue #109). Assignment above never reads it.
+    if (!opts.candidates && a.owner && !waits.length && !this.isPii(task)) {
+      const shadow = this.splitShadow(task, a.owner);
+      if (shadow) this.d.recordSplit?.(task.id, shadow);
+    }
     if (waits.length) {
       this.d.notify(`task ${this.publicTitle(task)} waits for ${waits.map((id) => `#${id}`).join(", ")}; it is offered once they are approved`);
       return task;
@@ -747,7 +767,7 @@ export class Tasks {
         task = this.d.board.update(task.id, HUB, "integration unresolved", {}, r.why);
       } else if (r.integrated) task = this.d.board.update(task.id, HUB, "integrated", {}, `cohort #${cohort.id}, revision ${cohort.revision}`);
     }
-    if (task.state === "proposed" || task.state === "changes_requested") task = this.d.board.update(task.id, by, "accepted", { state: "in_progress" }); // done without a separate accept
+    if (task.state === "proposed" || task.state === "changes_requested") task = this.d.board.update(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE); // done without a separate accept
     const command = this.d.runCheck ? this.d.check?.(task.class) : undefined;
     if (!command) return this.complete(task, by, summary, refs);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
