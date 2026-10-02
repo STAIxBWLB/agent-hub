@@ -1560,10 +1560,19 @@ test("turn-free end to end: verified context paths, a silent cohort, held-back m
   const history = JSON.parse((await console_.request({ t: "task", op: "task_show", args: { id: 2 } })).text).history.map((h: any) => h.event);
   expect(history.slice(-3)).toEqual(["integration requested", "integrated", "done"]);
 
-  // 6. Until Claude's turn has ended, a late message from it is still the cohort's; after its Stop it is new work.
-  expect((await claude.request({ t: "send", body: "late reply", to: ["codex"] })).ok).toBe(false);
+  // 6. Until Claude's turn has ended, a late message from it is still the cohort's; after its Stop it is new work, for
+  // good: the tool call of each later hub_send is activity, and it does not undo the settlement.
+  const send = async (body: string) => {
+    const id = `t${++n}`;
+    await hook("PreToolUse", "mcp__agent-hub__hub_send", { body }, id);
+    const sent = await claude.request({ t: "send", body, to: ["codex"] });
+    await hook("PostToolUse", "mcp__agent-hub__hub_send", { body }, id);
+    return sent;
+  };
+  expect((await send("late reply")).ok).toBe(false);
   await stop();
-  expect((await claude.request({ t: "send", body: "next topic", to: ["codex"] })).ok).toBe(true);
+  expect((await send("next topic")).ok).toBe(true);
+  expect((await send("and one more")).ok).toBe(true);
 
   // 7. The other way round, as Claude does it: its done through the tool hooks, its turn's Stop; then Codex integrates,
   // and Claude having stopped is what lets Codex's next done count.
@@ -1592,6 +1601,8 @@ test("turn-free end to end: verified context paths, a silent cohort, held-back m
   for (let i = 0; i < 100 && !(daemon.bus.stateOf("codex") === "idle" && daemon.bus.queued("codex") === 0); i++) await Bun.sleep(100); // codex took its third task
   await claudeTool("Read", { file_path: join(dir, "c.txt") }); // claude's view of c.txt
   await op("hub_task_propose", { title: "patient 900101-1234567 follow-up", class: "implement" }); // #7: PII, open
+  // The silent cohort of #5 and #6 speaks again at once, for good, and says so.
+  expect(events().find((e) => e.type === "cohort" && e.event === "lifted")).toMatchObject({ tasks: [5, 6], silent: false });
   writeFileSync(join(dir, "c.txt"), "c\nsecret record\n");
   expect(await claudeTool("Read", { file_path: join(dir, "c.txt") })).toBeUndefined();
   expect((await claude.request({ t: "send", body: "while PII is open", to: ["codex"] })).ok).toBe(true);

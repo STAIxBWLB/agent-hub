@@ -159,7 +159,10 @@ export class Bus {
       // Limits count what is sent: the envelope as built (a reply goes to its parent's sender, `digest` is resolved,
       // the priority is capped), never the raw `to`.
       const parent = opts?.inReplyTo?.id;
-      let refused = this.opts.admit?.(env, parent);
+      // Held back from every recipient (issue #107): nothing goes out, so nothing counts against the sender's limits.
+      const hushed = this.hushed(env);
+      const heldBack = hushed.length > 0 && hushed.length === this.audience(env).length;
+      let refused = heldBack ? undefined : this.opts.admit?.(env, parent);
       // A turn answer has no caller to refuse: over its important budget it goes out as status, not at all.
       if (refused && env.priority === "important" && !this.opts.admit?.({ ...env, priority: "status" }, parent)) {
         // It went out, so the advice on how to send it does not apply.
@@ -171,11 +174,11 @@ export class Bus {
         this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered: ${refused}`));
         return refused;
       }
-      const hushed = this.hushed(env);
       this.publish(env);
-      // The sender's result (issue #107): a turn answer has no caller, so it hears it on its next delivery.
+      // The sender's result (issue #107): a turn answer has no caller, so it hears it on its next delivery. It counts as
+      // not sent only when nobody got it.
       if (hushed.length) this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}`));
-      return hushed.length ? hushed[0]!.reason : undefined;
+      return heldBack ? hushed[0]!.reason : undefined;
     };
     peer.onFailed = (envs) => {
       // The adapter got the condensed list; what has to come back is what that list replaced.
@@ -542,7 +545,7 @@ export class Bus {
   }
 
   /** Who an envelope is queued for: its `to`, or every peer but its sender. */
-  private audience(env: Envelope): PeerId[] {
+  audience(env: Envelope): PeerId[] {
     const known = new Set([...this.peers.keys(), ...this.queues.keys(), ...(this.journal?.list().map((d) => d.peer) ?? [])]);
     return (env.to ?? [...this.peers.keys()]).filter((id) => id !== env.from && known.has(id));
   }

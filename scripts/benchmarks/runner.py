@@ -36,7 +36,8 @@ def required_actors(arm):
 def check_plan(m):
     """Issue #110: a manifest's planned attempts and active-time ceilings are what its arms, cases and repeats make."""
     for name,plan in (m.get("plan") or {}).items():
-        if not isinstance(plan,dict) or "attempts" not in plan: continue
+        if not isinstance(plan,dict): continue
+        if "attempts" not in plan: raise BenchError(f"plan {name}: no attempts")
         cases,repeats=plan.get("cases"),plan.get("repeats")
         if not isinstance(cases,list) or not cases or any(not isinstance(c,int) or isinstance(c,bool) or not 0<=c<len(m.get("cases",[])) for c in cases) or len(set(cases))!=len(cases):
             raise BenchError(f"plan {name}: cases must be distinct indices of the manifest's cases")
@@ -46,15 +47,37 @@ def check_plan(m):
             raise BenchError(f"plan {name}: {plan['attempts']} attempts / {plan.get('active_ceiling_s')} s do not match {attempts} attempts of {m.get('wall_limit_s')} s")
 
 def treatment_failure(arm, run):
-    """Issue #110: a turn-free attempt whose context paths were not both verified before its tasks is not a turn-free run."""
+    """Issue #110: a turn-free attempt is one only if its two tasks formed a silent cohort that was never lifted (the hub
+    lifts it when a context path is lost); otherwise the agents worked as advisory peers told not to message."""
     if arm!="hub-turnfree-codex-claude": return None
-    proposals=[h.get("at") for t in run.get("taskStates") or [] for h in t.get("history",[]) if h.get("event")=="proposed"]
-    if not proposals: return None
-    from datetime import datetime
-    t0=min(proposals)/1000
-    verified={e.get("peer") for e in run.get("events") or [] if e.get("type")=="capability" and e.get("state")=="verified" and datetime.fromisoformat(str(e.get("at")).replace("Z","+00:00")).timestamp()<=t0}
-    missing=sorted({"claude","codex"}-verified)
-    return f"turn-free context path not verified before the tasks: {', '.join(missing)}" if missing else None
+    ids={t.get("id") for t in run.get("taskStates") or []}
+    if not ids: return None
+    events=[e for e in run.get("events") or [] if e.get("type")=="cohort"]
+    silent={e.get("id") for e in events if e.get("silent") and ids<=set(e.get("tasks") or [])}
+    if not silent: return "turn-free treatment absent: the tasks never formed a silent cohort"
+    if any(e.get("event")=="lifted" and e.get("id") in silent for e in events): return "turn-free treatment lost: the cohort's silence was lifted"
+    return None
+
+def isolation_failure(run):
+    """Issue #110: no arm may run foreign hooks. Codex runs none; Claude's transcript may show only the hub's facts hook."""
+    if any(m.get("method")=="hook/started" for m in run.get("codexMessages") or []): return "hook isolation failed: Codex ran hooks"
+    path=((run.get("readiness") or {}).get("claude") or {}).get("transcriptPath")
+    if not path: return None
+    try: lines=Path(path).read_text(encoding="utf-8",errors="replace").splitlines()
+    except OSError: return None  # unreadable: the ledger reports isolation as unknown
+    for line in lines:
+        try: row=json.loads(line)
+        except ValueError: continue
+        commands=[(row.get("attachment") or {}).get("command")]+[h.get("command") for h in row.get("hookInfos") or [] if isinstance(h,dict)]
+        if any(c and "facts-hook.ts" not in c for c in commands): return "hook isolation failed: Claude ran a hook that is not the hub's"
+    return None
+
+GRADED_ENDS=("completed","timeout")
+
+def unavailable_reason(arm, run):
+    """Why an attempt with a run record is not graded, or None. Completed and timed-out attempts are graded."""
+    if run.get("end_reason") not in GRADED_ENDS: return run.get("end_reason_detail") or run.get("end_reason") or "no end reason"
+    return treatment_failure(arm,run) or isolation_failure(run)
 
 def validate_manifest(m):
     if m.get("schema") != SCHEMA or m.get("upstream", {}).get("commit") != "63b9d44d9f39a02fccf5bf0052db48a917a011fd":
@@ -228,9 +251,7 @@ def grade(args):
         if claude_ready and claude_ready.get("modelVerified") is not True: identities=False
         if run.get("cwd")!=str(cwd) or not identities or run.get("cleanup_complete") is not True or run.get("metadata_clean") is not True or run.get("metadata_sha256")!=fixture_metadata_sha256(cwd) or ("claude" in actors and run.get("trust_restored") is not True):
             rows.append({"case":case,"arm":arm,"status":"unavailable","reason":"native identity/model/readiness/cleanup gate failed","pass":None}); continue
-        if run.get("end_reason") in ("setup-error","provider-quota","budget-paused","delivery-unsettled","interrupted","infrastructure-error"):
-            rows.append({"case":case,"arm":arm,"status":"unavailable","reason":run.get("end_reason_detail") or run["end_reason"],"pass":None}); continue
-        failure=treatment_failure(arm,run)
+        failure=unavailable_reason(arm,run)
         if failure:
             rows.append({"case":case,"arm":arm,"status":"unavailable","reason":failure,"pass":None}); continue
         sealed=run.get("sealedCommit")

@@ -365,8 +365,10 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
 - Cohorts. Owners of overlapping tasks form a cohort when the overlap is found.
   It is silent only if, at that moment, turn-free is on, no PII task is open and
   every owner's context path is verified (below). It never turns silent later;
-  it stops being silent when an owner without a verified path joins or a path
-  is lost, and every member is told it may message again.
+  it stops being silent, for good, when an owner without a verified path joins,
+  a path is lost or a PII task opens, and every member still at work is told at
+  once that it may message again, with the completed-change notices the silence
+  held.
 - Verified context path. A hub-launched Claude session (`ahub claude`) gets the
   hub's hook before and after every tool call and at the end of each turn, in
   its `--settings` next to the status line tee (a `--settings` of your own turns
@@ -375,8 +377,8 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   the row Claude Code writes in its transcript for the hook's additional
   context, matched by tool use id and the offer's id; for Codex the steered
   input coming back as a user message item of the turn. A new native session,
-  the peer going offline, or three offers past a minute without a readback,
-  makes it unverified again; a peer without a verified path that left three
+  the peer going offline, or three offers past a minute without a readback
+  (checked at its boundaries and every 30 seconds), makes it unverified again; a peer without a verified path that left three
   offers unread gets none until a readback arrives. Kimi, Pi and the local
   worker have no path yet, so a cohort with one of them is never silent.
 - Silence. While a cohort is silent, an agent message from a member to another
@@ -386,9 +388,13 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   ...` when some recipients got it); a native turn answer's sender hears it on
   its next delivery. Workflow messages from the hub are never held back. A
   member's messages stay held until its native turn has ended after its task
-  closed (Codex's turn completes, or Claude's Stop hook runs), so a late answer
-  is still the cohort's; its next turn is new work. Only a tool call starting
-  counts as activity after a turn end.
+  closed (Codex's turn completes, or Claude's Stop hook runs; a member that is
+  between turns when its task closes, or goes offline, has stopped), so a late
+  answer is still the cohort's. That settlement is recorded when it happens and
+  never undone: the member's next turn is new work, and once every member has
+  settled the cohort is over. Only a tool call starting counts as activity after
+  a turn end. A message held back from all its recipients does not count
+  against the sender's limits.
 - Facts. At each tool call (Claude) or completed tool item (Codex) of a cohort
   member with an open task, the hub offers what changed since it last
   acknowledged them in the files every member's task names and in the files it
@@ -400,8 +406,11 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   whose diff is exactly what changed. Shell commands, concurrent writers and
   unreported changes are shown with their attribution unknown, never credited by
   elimination; an agent's own verified writes are not shown back to it. A Codex
-  read action never counts as having seen a file (it may be partial); a whole
-  Claude Read does. Only an acknowledgement (a readback, or the next
+  read action never counts as having seen a file (it may be partial); a Claude
+  Read does when it returns the whole file: no offset or limit, at most 2000
+  lines and no line over 2000 characters. A diff that matches a PII pattern is
+  not shown (the file is named, to be read), and a changed file whose name
+  matches one is counted, not named. Only an acknowledgement (a readback, or the next
   `hub_task_done` for facts sent with an integration request) moves the peer's
   view, so a fact that does not arrive is
   offered again at a later boundary; no turn is ever started for one. An
@@ -418,34 +427,43 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   against the others' (their files, signatures and summaries, plus its own facts)
   and to call `hub_task_done` again; nothing is recorded as done yet. The next
   call counts only for the same target: the same owner, cohort revision and
-  files, with every other member's native turn ended after its done. Edits in
-  between, a new member, an owner change, a failed check or a reopened review ask
-  again; a done within two seconds of a request is taken as a retry and gets the
+  files, with every other member's native turn ended after its done (or the
+  member idle when it finished). A done of a member by the console counts as its
+  intent too. Edits in between, a new member, an owner change, a failed check or
+  a reopened review ask again; a done within two seconds of a request is taken as a retry and gets the
   same request again; after three requests the done is recorded with
   `integration unresolved`, never as integrated. A configured check of the integrating member
-  counts only for the target it confirmed. After a hub restart an open request is
-  recorded as unresolved. Inside a silent cohort a member's completed-change
-  notice is held, not sent; where no integration step runs for the others (the
-  silence was lifted, a PII task opened, the console finished the task), the
-  held notices go with the lift notice or the done result, or to the console.
-  Open tasks outside the cohort get their notices as usual.
+  counts only for the target it confirmed; when another member reopens its task,
+  that member integrates instead and the earlier one's check counts as usual.
+  Inside a silent cohort a member's completed-change notice is held, not sent;
+  where no integration step runs for the others (the silence was lifted, a PII
+  task opened), the held notices go with the lift notice or the done result, and
+  for a task the console finishes, to the console. Open tasks outside the cohort
+  get their notices as usual. Cohorts live in memory: after a hub restart an open
+  request is recorded as unresolved, and when a peer first attaches, each of its
+  open tasks that overlaps other work hears that overlaps are settled by message
+  again, with the completed-change notices of overlapping tasks finished since
+  it was handed the task (a notice may come twice; none is lost).
 - While any PII task is open the project behaves as advisory: no facts, no
-  silence and no integration step. When it closes, the hub forgets what it had
-  observed, so nothing changed meanwhile is shown as a diff; each member is told
-  which of its files to read again.
+  silence and no integration step, and the cohorts that were silent stay lifted.
+  When it closes, the hub forgets what it had observed, so nothing changed
+  meanwhile is shown as a diff; each member is told which of its files to read
+  again.
 - `ahub check-path` asks the hub whether the owner of the claimed path shares a
   silent cohort with the caller, and only then leaves out the request to settle
   by message. `templates/claude-hooks.json` holds only the check-path hook; the
   facts hooks need a hub-launched session.
-- Routing does not change. For a routed task that overlaps another owner's open
-  task the hub records a shadow split prediction (`split` event; `ahub route
-  explain <id>` shows its trace): whether splitting two equal units between the
-  two peers (`o_s + u_s < o_f + 2u_f`) would finish sooner than the faster one
-  alone, from this hub run's recorded task stages. It is unknown unless the units
-  are equal and known, both peers are available with no other open work, and each
-  has five measured tasks with no more than 30% failures and comparable work
-  times. The work stage of a task ends at its first `hub_task_done`, and the
-  routed task itself is never one of its own observations.
+- Routing does not change. When a task's overlap with another owner's open task
+  forms or changes a cohort, routed or named, the hub records a shadow split
+  prediction (`split` event; `ahub route explain <id>` shows its trace as it would
+  be now): whether splitting two equal units between the two peers
+  (`o_s + u_s < o_f + 2u_f`) would finish sooner than the faster one alone, from
+  this hub run's recorded task stages. It is unknown unless the units are equal
+  and known, both peers are available (the other owner idle; the task's own peer
+  idle or busy taking it) with no other open work (an overlapping task its owner
+  has started counts), and each has five measured tasks with no more than 30%
+  failures and comparable work times. The work stage of a task ends at its first
+  `hub_task_done`, and the task itself is never one of its own observations.
 - `"experiments": {"stale_notices": "deliver"}` in `.agenthub/config.json`
   turns the stale-notice drop off, for a controlled comparison only (the #106
   ablation in `docs/cooperbench.md`); the hub logs it at start.

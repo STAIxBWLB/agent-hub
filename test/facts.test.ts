@@ -29,10 +29,10 @@ function rig(scopes: Record<string, FactScope | undefined> = {}, nameable = (_: 
     return o;
   };
   /** A Claude Edit through both hooks. */
-  const edit = (id: string, file: string, from: string, to: string, apply = true) => {
+  const edit = (id: string, file: string, from: string, to: string) => {
     const input = { file_path: join(root, file), old_string: from, new_string: to };
     facts.preTool("claude", id, "Edit", input);
-    if (apply) write(file, readFileSync(join(root, file), "utf8").replace(from, to));
+    write(file, readFileSync(join(root, file), "utf8").replace(from, to));
     facts.postTool("claude", id, "Edit", input);
   };
   return { root, facts, write, look, edit };
@@ -96,9 +96,10 @@ test("changes during a Bash command, an unreported write and an unverified edit 
     expect(o.text).toContain("+shell");
   }
   // An edit whose result is not its input applied (someone else wrote in between): unknown, and Claude sees it too.
-  edit("t2", "a.txt", "shell", "SHELL", false);
+  const input = { file_path: join(root, "a.txt"), old_string: "shell", new_string: "SHELL" };
+  facts.preTool("claude", "t2", "Edit", input);
   write("a.txt", "one\ntwo\nthree\nsomething else\n");
-  facts.postTool("claude", "t2", "Edit", {});
+  facts.postTool("claude", "t2", "Edit", input);
   const toClaude = look("claude")!;
   expect(toClaude.text).toContain("attribution unknown");
   // A Codex shell command (an opaque action) is never Codex's by elimination: Codex is shown the change too.
@@ -298,4 +299,41 @@ test("history beyond the cap is attribution unknown, and a file that falls out o
   const told = facts.due("claude")!;
   expect(told.text).toContain("no longer tracked (more than 64 files touched): a.txt");
   expect(told.coverage).toBe(true);
+});
+
+test("a default Claude Read moves the view only when Read returns the whole file", async () => {
+  const { root, facts, write, look } = rig();
+  look("claude");
+  const read = (id: string, input: Record<string, unknown> = {}) => {
+    facts.preTool("claude", id, "Read", { file_path: join(root, "a.txt"), ...input });
+    facts.postTool("claude", id, "Read", { file_path: join(root, "a.txt"), ...input });
+  };
+  write("a.txt", "one\ntwo\nthree\nfour\n");
+  read("r1");
+  expect(facts.due("claude")).toBeUndefined(); // a whole read of the change: seen
+  // Read stops at 2000 lines, and cuts lines at 2000 characters: neither read says what the peer saw.
+  write("a.txt", Array.from({ length: 2400 }, (_, i) => `line ${i}`).join("\n"));
+  read("r2");
+  expect(facts.due("claude")?.text).toContain("more changed line(s) not shown; read a.txt");
+  write("a.txt", `${"x".repeat(2500)}\n`);
+  read("r3");
+  expect(facts.due("claude")?.text).toContain("a.txt");
+  read("r4", { offset: 1, limit: 10 });
+  expect(facts.due("claude")?.text).toContain("a.txt");
+});
+
+test("a diff that matches a PII pattern is not shown, and a file whose name does is counted, not named", async () => {
+  const secret = /900101-1234567|secret\.txt/;
+  const { facts, write, look } = rig({ claude: { paths: ["a.txt", "secret.txt"], plans: [] } }, (t) => !secret.test(t));
+  write("secret.txt", "x\n");
+  look("claude");
+  write("a.txt", "one\ntwo\nthree\n900101-1234567\n");
+  write("secret.txt", "y\n");
+  const o = facts.due("claude")!;
+  expect(o.text).toContain("a.txt, changed, attribution unknown");
+  expect(o.text).toContain("(not shown: the change matches a private-data pattern; read the file)");
+  expect(o.text).toContain("1 more changed file(s) in your scope, not named here");
+  expect(o.text).not.toMatch(secret);
+  facts.ack("claude", o.id);
+  expect(facts.current("claude")).toBe(true); // what it was told of counts as seen, the unnamed file too
 });

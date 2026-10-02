@@ -5,26 +5,33 @@ import type { PeerId } from "./envelope.ts";
  * Turn-free cohorts (issue #107): the owners of overlapping tasks, frozen into one group from the moment the overlap is
  * found until each of them has stopped after its task closed. Whether a cohort is silent is decided when it is formed
  * (turn-free on, no PII, every owner's context path verified) and never switched on later; it is lifted when an owner
- * that cannot receive facts joins or loses that path. Membership does not end when the board closes a task: a member
- * stays in until its native turn has ended after that, so a late final answer is still the cohort's.
+ * that cannot receive facts joins, a path is lost, or a PII task opens. Membership does not end when the board closes a
+ * task: a member stays in until its native turn has ended after that, so a late final answer is still the cohort's.
+ * That settlement is recorded when it happens and never undone: a settled member's later turns are new work.
  *
  * Completion is two-step. Each member's done is an intent. The member whose intent completes the set is selected, in
  * one synchronous step, to integrate: it is asked to check its work against the others before its done is recorded,
  * and its next done is accepted only for the same target (owner generation, cohort revision, files) once every other
- * member has stopped. Anything that changes the target asks again, a bounded number of times; past that the outcome is
+ * member has settled. Anything that changes the target asks again, a bounded number of times; past that the outcome is
  * recorded as unresolved, never as integrated.
  */
 
 /** Integration requests for one cohort revision before the outcome is recorded as unresolved. */
 export const MAX_REQUESTS = 3;
+/** A done this soon after an integration request is a retry of a lost answer, not a check of the work. */
+export const RETRY_MS = 2000;
 
 export interface Member {
   task: number;
   owner: PeerId;
   /** Changes whenever the task changes hands. */
   gen: number;
-  /** When the task left the open states for its owner; its next native turn end settles it. */
+  /** When the task left the open states for its owner. */
   closedAt?: number;
+  /** When its owner's native turn first ended after that (or the task closed while the owner was idle). */
+  settledAt?: number;
+  /** When its owner's native turn first ended after its current intent: its writes for the task have stopped. */
+  stoppedAt?: number;
 }
 
 export interface Integration {
@@ -58,15 +65,15 @@ export interface CohortDeps {
   /** Whether these owners may work without messages: turn-free on, no PII, every owner's context path verified. */
   silence: (owners: PeerId[]) => boolean;
   /**
-   * Whether `peer`'s native turn ended after `since` and nothing of it ran since. Evidence is a native turn end (Codex
-   * turn/completed, Claude's Stop hook), never a task approval or a delivery acknowledgement.
+   * Whether `peer` is between native turns now (Codex not busy; Claude's last tool call started before its last Stop).
+   * Evidence is a native turn end, never a task approval or a delivery acknowledgement.
    */
-  quiescent: (peer: PeerId, since: number) => boolean;
+  idle: (peer: PeerId) => boolean;
 }
 
 export type Completion =
   | { action: "proceed"; integrated?: boolean }
-  | { action: "request"; why: string; requests: number; cohort: Cohort; repeat?: boolean }
+  | { action: "request"; why: string; requests: number; cohort: Cohort }
   | { action: "unresolved"; why: string; cohort: Cohort };
 
 export class Cohorts {
@@ -126,9 +133,18 @@ export class Cohorts {
     return { cohort, formed, lifted: wasSilent && !cohort.silent };
   }
 
-  /** An owner lost its context path (or PII opened): every silent cohort it is in speaks again. */
+  /** An owner lost its context path: every silent cohort it is in speaks again. */
   lift(peer: PeerId): Cohort[] {
-    const out = this.live.filter((c) => c.silent && [...c.members.values()].some((m) => m.owner === peer));
+    return this.liftWhere((c) => [...c.members.values()].some((m) => m.owner === peer));
+  }
+
+  /** A PII task opened: every silent cohort speaks again, at once (issue #108). */
+  liftAll(): Cohort[] {
+    return this.liftWhere(() => true);
+  }
+
+  private liftWhere(pick: (c: Cohort) => boolean): Cohort[] {
+    const out = this.live.filter((c) => c.silent && pick(c));
     for (const c of out) {
       c.silent = false;
       c.revision++;
@@ -138,21 +154,35 @@ export class Cohorts {
 
   /**
    * The silent cohort that makes a message from `from` to `to` cohort coordination: `from` is a member that has not
-   * stopped since its task closed, and `to` is a member too. A member that settled works on something else now.
+   * settled since its task closed, and `to` is a member too. A settled member works on something else now.
    */
   silenced(from: PeerId, to: PeerId): Cohort | undefined {
     this.gc();
     return this.live.find((c) => {
       if (!c.silent) return false;
       const members = [...c.members.values()];
-      return members.some((m) => m.owner === from && !this.settled(m)) && members.some((m) => m.owner === to);
+      return members.some((m) => m.owner === from && m.settledAt === undefined) && members.some((m) => m.owner === to);
     });
   }
 
-  /** The task left the open states for its owner (done, approved, in review): its owner's next turn end settles it. */
+  /** The task left the open states for its owner (done, approved, in review); an idle owner settles at once. */
   closed(task: number, at = Date.now()): void {
     const m = this.of(task)?.members.get(task);
-    if (m) m.closedAt ??= at;
+    if (!m) return;
+    m.closedAt ??= at;
+    if (m.settledAt === undefined && this.d.idle(m.owner)) m.settledAt = at;
+  }
+
+  /** `peer`'s native turn ended: its members whose tasks closed before settle, and those with an intent stop, for good. */
+  turnEnded(peer: PeerId, at = Date.now()): void {
+    for (const c of this.live) {
+      for (const m of c.members.values()) {
+        if (m.owner !== peer) continue;
+        if (m.closedAt !== undefined && m.closedAt <= at && m.settledAt === undefined) m.settledAt = at;
+        const intent = c.intents.get(m.task);
+        if (intent && intent.gen === m.gen && intent.at <= at && m.stoppedAt === undefined) m.stoppedAt = at;
+      }
+    }
   }
 
   /** The task is open again for its owner (a failed check, changes requested, a reopen): its intent is void. */
@@ -160,9 +190,33 @@ export class Cohorts {
     const c = this.of(task);
     if (!c) return;
     const m = c.members.get(task);
-    if (m) delete m.closedAt;
+    if (m) {
+      delete m.closedAt;
+      delete m.settledAt;
+      delete m.stoppedAt;
+    }
     c.intents.delete(task);
     c.revision++;
+  }
+
+  /**
+   * A done of `task` that selects nobody and asks nothing: the console finishing a member (issue #107). It still counts
+   * as that member's intent, so the member whose done completes the set integrates.
+   */
+  intent(c: Cohort, task: Task, gen: number): void {
+    if (c.intents.has(task.id) && c.intents.get(task.id)!.gen === gen) return;
+    c.intents.set(task.id, { gen, at: Date.now() });
+    const m = c.members.get(task.id);
+    if (!m) return;
+    // An owner between turns (the console finished the task, say) has stopped already; one in a turn stops when it ends.
+    if (this.d.idle(m.owner)) m.stoppedAt = Date.now();
+    else delete m.stoppedAt;
+  }
+
+  /** Whether this done of the integrating member is a retry of a lost answer: then nothing counts or is acknowledged. */
+  isRetry(c: Cohort, task: Task, gen: number): boolean {
+    const ig = c.integration;
+    return !!ig && ig.task === task.id && ig.gen === gen && ig.owner === task.owner && ig.revision === c.revision && !ig.confirmed && Date.now() - ig.at < RETRY_MS;
   }
 
   /**
@@ -176,7 +230,7 @@ export class Cohorts {
       c.members.set(task.id, { task: task.id, owner: task.owner!, gen: now.gen });
       c.revision++;
     }
-    c.intents.set(task.id, { gen: now.gen, at: c.intents.get(task.id)?.gen === now.gen ? c.intents.get(task.id)!.at : Date.now() });
+    this.intent(c, task, now.gen);
     const missing = [...c.members.values()].filter((x) => c.intents.get(x.task)?.gen !== x.gen);
     if (missing.length) return { action: "proceed" };
     const ig = c.integration;
@@ -185,11 +239,9 @@ export class Cohorts {
       c.integration = { task: task.id, owner: task.owner!, gen: now.gen, revision: c.revision, tree: now.tree, requests: 1, at: Date.now() };
       return { action: "request", why: "", requests: 1, cohort: c };
     }
-    // A done within two seconds of the request is a retry of a call whose answer was lost, not a check of the work.
-    if (Date.now() - ig.at < 2000) return { action: "request", why: ig.requests === 1 ? "" : "repeat", requests: ig.requests, cohort: c, repeat: true };
-    // Its next done: accepted only for the same target, once every other member has stopped.
-    const others = [...c.members.values()].filter((x) => x.task !== task.id);
-    const running = others.filter((x) => !this.d.quiescent(x.owner, c.intents.get(x.task)!.at)).map((x) => x.owner);
+    // Its next done: accepted only for the same target, once every other member has settled. A later turn of a settled
+    // member that touches these files moves the target, which the file hash catches.
+    const running = [...c.members.values()].filter((x) => x.task !== task.id && x.stoppedAt === undefined).map((x) => x.owner);
     let why = "";
     if (running.length) why = `${[...new Set(running)].join(", ")} has not stopped since its done, so its changes may not be final`;
     else if (now.tree !== ig.tree) why = "the files changed since the last request";
@@ -207,18 +259,15 @@ export class Cohorts {
   }
 
   /**
-   * Whether `task`'s confirmed integration still holds for `tree`: a check that ran on it counts only for the target
-   * that was confirmed (owner generation, cohort revision, files).
+   * Whether a check that passed for `task` counts: always, unless `task` is the confirmed integrating member of its
+   * cohort's current revision, whose check counts only for the target it confirmed. A member that stopped being the
+   * last to finish (the revision moved) is an earlier finisher again, and its own check counts.
    */
   holds(task: number, gen: number, tree: string): boolean {
     const c = this.of(task);
     const ig = c?.integration;
-    if (!c || !c.silent || !ig || ig.task !== task) return true; // not an integration owner: nothing to hold
-    return !!ig.confirmed && ig.gen === gen && ig.revision === c.revision && ig.tree === tree;
-  }
-
-  private settled(m: Member): boolean {
-    return m.closedAt !== undefined && this.d.quiescent(m.owner, m.closedAt);
+    if (!c || !c.silent || !ig || ig.task !== task || ig.revision !== c.revision) return true;
+    return !!ig.confirmed && ig.gen === gen && ig.tree === tree;
   }
 
   /** The task lost its owner (released, unassigned): it leaves the cohort, and the revision moves on. */
@@ -231,13 +280,13 @@ export class Cohorts {
   }
 
   /**
-   * A cohort is over once every member closed its task and stopped (silent), or closed it (not silent: nothing is
-   * held back, so nothing waits for a turn end).
+   * A cohort is over once every member closed its task and settled (silent), or closed it (not silent: nothing is held
+   * back, so nothing waits for a turn end).
    */
   private gc(): void {
     for (const c of [...this.live]) {
       const members = [...c.members.values()];
-      if (members.every((m) => (c.silent ? this.settled(m) : m.closedAt !== undefined))) this.live.splice(this.live.indexOf(c), 1);
+      if (members.every((m) => (c.silent ? m.settledAt !== undefined : m.closedAt !== undefined))) this.live.splice(this.live.indexOf(c), 1);
     }
   }
 }

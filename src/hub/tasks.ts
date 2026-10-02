@@ -45,8 +45,8 @@ export interface TasksDeps {
   turnFree?: () => boolean;
   /** Whether a peer's context path for facts is verified in its current session (issue #108). */
   capable?: (peer: PeerId) => boolean;
-  /** Whether `peer`'s native turn ended after `since` and nothing of it ran since (issue #107). */
-  quiescent?: (peer: PeerId, since: number) => boolean;
+  /** Whether `peer` is between native turns now (issue #107): Codex not busy, Claude stopped since its last tool call. */
+  idle?: (peer: PeerId) => boolean;
   /** One hash over these project files as they are now: an integration target (issue #107). */
   treeHash?: (paths: string[]) => string;
   /** The facts due for a peer, offered with an integration request; acknowledged by its next done. */
@@ -58,6 +58,8 @@ export interface TasksDeps {
   since?: number;
   /** A shadow split prediction made at an assignment, for the record (issue #109). */
   recordSplit?: (task: number, prediction: SplitPrediction) => void;
+  /** A cohort formed, changed or was lifted (issue #107), for the record: the benchmark's treatment check reads it. */
+  recordCohort?: (cohort: { id: number; event: "formed" | "joined" | "lifted"; silent: boolean; tasks: number[]; owners: PeerId[] }) => void;
 }
 
 const ESCALATE_AFTER = 2;
@@ -124,7 +126,7 @@ export class Tasks {
   constructor(private readonly d: TasksDeps) {
     this.cohorts = new Cohorts({
       silence: (owners) => this.turnFree() && owners.every((p) => p !== USER && p !== HUB && (this.d.capable?.(p) ?? false)),
-      quiescent: (peer, since) => this.d.quiescent?.(peer, since) ?? false,
+      idle: (peer) => this.d.idle?.(peer) ?? false,
     });
     // What the on-prem worker says about a PII task is private on the bus (console tail and log show a stub), so the
     // board keeps the text: `ahub task show <id>` is where the console user reads it, a refusal included.
@@ -278,7 +280,9 @@ export class Tasks {
     const peers: [PeerId, PeerId] = [candidate, other.owner!];
     const states = this.states();
     const failing = this.d.failing?.() ?? {};
-    const open = this.d.board.list().filter((t) => OPEN.includes(t.state) && t.id !== task.id && t.id !== other.id);
+    // Other open work, and the overlapping task itself once its owner has started it: either way that owner would not
+    // start from orientation plus two whole units.
+    const open = this.d.board.list().filter((t) => OPEN.includes(t.state) && t.id !== task.id && (t.id !== other.id || t.state !== "proposed"));
     // One task of a class is one unit: the only normalization the board supports, so another class is unknown.
     const unit = task.class === other.class ? 1 : undefined;
     return predictSplit({
@@ -286,7 +290,8 @@ export class Tasks {
       observations: Object.fromEntries(peers.map((p) => [p, this.splitObservations(task.class, p, task.id)])),
       units: [unit, unit],
       backlog: Object.fromEntries(peers.map((p) => [p, open.filter((t) => t.owner === p).length])),
-      available: Object.fromEntries(peers.map((p) => [p, (states[p] === "idle" || states[p] === "busy") && !failing[p]])),
+      // The routed peer may be busy taking this very task; the other owner, busy, is at work on something already.
+      available: Object.fromEntries(peers.map((p) => [p, !failing[p] && (states[p] === "idle" || (states[p] === "busy" && p === candidate))])),
     });
   }
 
@@ -576,11 +581,7 @@ export class Tasks {
   private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; claim?: boolean } = {}): Promise<Task> {
     const waits = this.waitsFor(task);
     const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class) });
-    // Routed work only: a shadow split prediction for the record (issue #109). Assignment above never reads it.
-    if (!opts.candidates && a.owner && !waits.length && !this.isPii(task)) {
-      const shadow = this.splitShadow(task, a.owner);
-      if (shadow) this.d.recordSplit?.(task.id, shadow);
-    }
+
     if (waits.length) {
       this.d.notify(`task ${this.publicTitle(task)} waits for ${waits.map((id) => `#${id}`).join(", ")}; it is offered once they are approved`);
       return task;
@@ -721,14 +722,24 @@ export class Tasks {
    */
   private formCohort(task: Task, hits: ReturnType<Tasks["overlapHits"]>): void {
     if (!task.owner || this.isPii(task)) return;
+    const before = this.cohorts.of(task.id)?.revision;
     const joined = this.cohorts.join(task, hits.map((h) => h.task), ownerGen);
-    if (joined?.lifted) this.announceLift(joined.cohort, `${task.owner} cannot be shown the others' changes`);
+    if (!joined) return;
+    const c = joined.cohort;
+    if (joined.formed || c.revision !== before) {
+      this.d.recordCohort?.({ id: c.id, event: joined.formed ? "formed" : "joined", silent: c.silent, tasks: [...c.members.keys()].sort((a, b) => a - b), owners: [...new Set([...c.members.values()].map((m) => m.owner))].sort() });
+      // A shadow split prediction for the pair that just overlapped, named owner or not (issue #109): for the record only.
+      const shadow = this.splitShadow(task, task.owner);
+      if (shadow) this.d.recordSplit?.(task.id, shadow);
+    }
+    if (joined.lifted) this.announceLift(c, `${task.owner} cannot be shown the others' changes`);
   }
 
   /** Members of a cohort that is no longer silent may message each other again. */
   announceLift(cohort: Cohort, why: string): void {
     const owners = [...new Set([...cohort.members.values()].map((m) => m.owner))];
     this.d.notify(`turn-free cohort #${cohort.id} (${owners.join(", ")}) is no longer silent: ${why}`);
+    this.d.recordCohort?.({ id: cohort.id, event: "lifted", silent: false, tasks: [...cohort.members.keys()].sort((a, b) => a - b), owners: [...owners].sort() });
     // Members still at work hear it, with the completed-change notices the silence held (they replace the integration
     // step that will not run); a member whose task closed is not started on a turn for it (#106).
     for (const m of cohort.members.values()) {
@@ -777,20 +788,28 @@ export class Tasks {
     }
     // A member of a silent cohort (issue #107): its done is an intent, and the last of them integrates first.
     const cohort = this.cohorts.of(task.id);
-    if (cohort?.silent && this.turnFree() && by !== USER && task.owner && !this.isPii(task)) {
-      const ig = cohort.integration;
-      const r = this.cohorts.completion(cohort, task, { gen: ownerGen(task), tree: this.tree(cohort), factsCurrent: this.d.factsCurrent?.(task.owner) ?? true });
+    const silentMember = !!cohort?.silent && this.turnFree() && !!task.owner && !this.isPii(task);
+    if (silentMember && by === USER) {
+      // The console finishing a member: its done still counts as an intent, so the last member integrates; what the
+      // silence held goes to the console.
+      this.cohorts.intent(cohort!, task, ownerGen(task));
+      const evidence = this.heldEvidence(cohort!, task);
+      if (evidence) this.d.notify(`task ${this.publicTitle(task)} done by the console; overlapping work finished meanwhile:\n${evidence}`);
+    } else if (silentMember) {
+      const gen = ownerGen(task);
       // A retry right after the request: the same request again, nothing acknowledged or counted.
-      if (r.action === "request" && r.repeat) return this.d.board.get(task.id)!;
-      if (ig?.task === task.id && ig.offer) this.d.ackFacts?.(task.owner, ig.offer); // this call is the proof the request arrived
+      if (this.cohorts.isRetry(cohort!, task, gen)) return this.d.board.get(task.id)!;
+      const ig = cohort!.integration;
+      if (ig?.task === task.id && ig.offer) this.d.ackFacts?.(task.owner!, ig.offer); // this call is the proof the request arrived
+      const r = this.cohorts.completion(cohort!, task, { gen, tree: this.tree(cohort!), factsCurrent: this.d.factsCurrent?.(task.owner!) ?? true });
       if (r.action === "request") return this.d.board.update(task.id, HUB, "integration requested", {}, this.integrationRequest(task, r));
       if (r.action === "unresolved") {
         this.d.notify(`task ${this.publicTitle(task)}: turn-free integration unresolved after ${MAX_REQUESTS} requests (${r.why}); its done is recorded, check the overlapping work by hand`);
         task = this.d.board.update(task.id, HUB, "integration unresolved", {}, r.why);
-      } else if (r.integrated) task = this.d.board.update(task.id, HUB, "integrated", {}, `cohort #${cohort.id}, revision ${cohort.revision}`);
+      } else if (r.integrated) task = this.d.board.update(task.id, HUB, "integrated", {}, `cohort #${cohort!.id}, revision ${cohort!.revision}`);
     } else if (cohort?.held.size && !this.isPii(task)) {
-      // No integration step for this member (silence lifted, a PII task open, the console finishing it): the notices the
-      // silence held stand in for it (issue #107, AC4).
+      // No integration step for this member (silence lifted, a PII task open): the notices the silence held stand in
+      // for it (issue #107, AC4).
       const evidence = this.heldEvidence(cohort, task);
       if (evidence && by === USER) this.d.notify(`task ${this.publicTitle(task)} done by the console; overlapping work finished meanwhile:\n${evidence}`);
       else if (evidence) this.doneNotes.set(task.id, `Overlapping work finished while you worked (no turn-free integration step ran):\n${evidence}`);
@@ -821,6 +840,34 @@ export class Tasks {
       if (!OPEN.includes(t.state) || [...t.history].reverse().find((h) => marks.has(h.event))?.event !== "integration requested") continue;
       this.d.board.update(t.id, HUB, "integration unresolved", {}, "the hub restarted before the integration was confirmed");
       this.d.notify(`task ${this.publicTitle(t)}: turn-free integration unresolved (the hub restarted); check the overlapping work by hand`);
+    }
+  }
+
+  /**
+   * After a restart in a turn-free project (issue #107) the cohorts are gone, and with them what their silence held. When
+   * `peer` first attaches, each of its open tasks that overlaps another owner's work hears that overlaps are settled by
+   * message again, with the completed-change notices of the overlapping tasks finished since it was handed over. A
+   * duplicate notice is the price of never losing one.
+   */
+  replayHeld(peer: PeerId): void {
+    const handed = (t: Task) => [...t.history].reverse().find((h) => OWNERSHIP_EVENTS.has(h.event) && h.event !== "unassigned")?.at ?? t.history[0]?.at ?? 0;
+    const finished = this.d.board.list().filter((u) => (u.state === "approved" || u.state === "in_review") && u.owner && !this.isPii(u));
+    for (const t of this.d.board.list()) {
+      if (!OPEN.includes(t.state) || t.owner !== peer || this.isPii(t)) continue;
+      const open = this.overlapHits(t).filter((h) => h.task.owner !== USER && h.task.owner !== HUB);
+      const mine = this.places(t);
+      const done = finished.flatMap((u) => {
+        const at = [...u.history].reverse().find((h) => h.event === "done");
+        if (u.owner === t.owner || !at || at.at < handed(t)) return [];
+        const theirs = this.places(u);
+        const paths = mine.paths.filter((p) => theirs.paths.some((q) => samePlace(p, q)));
+        const symbols = mine.symbols.filter((x) => theirs.symbols.includes(x));
+        return paths.length || symbols.length ? [this.completedNotice(u, { task: t, paths, symbols }, at.note)] : [];
+      });
+      if (!open.length && !done.length) continue;
+      const owners = [...new Set(open.map((h) => h.task.owner!))];
+      const head = owners.length ? `Task #${t.id}: the hub restarted, so overlaps with ${owners.join(", ")} are settled via hub_send again (any turn-free silence is lifted).` : `Task #${t.id}: the hub restarted; overlapping work finished meanwhile.`;
+      this.whileOpen(peer, t.id, [head, ...done].join("\n"));
     }
   }
 

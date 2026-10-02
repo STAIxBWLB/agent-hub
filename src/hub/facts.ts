@@ -20,6 +20,9 @@ import { realPath } from "./project.ts";
 const MAX_BYTES = 256 * 1024;
 /** Changed lines shown in one fact, all files together; the rest is counted and the files named. */
 export const MAX_LINES = 60;
+/** What Claude Code's Read returns by default: the first 2000 lines, each cut at 2000 characters. */
+const READ_LINES = 2000;
+const READ_LINE_CHARS = 2000;
 /** Files a peer's reads and writes add to what its facts cover, besides the ones its tasks name. */
 const TOUCHED_KEPT = 64;
 const TRANSITIONS_KEPT = 64;
@@ -281,7 +284,7 @@ export class Facts {
    */
   preTool(peer: PeerId, toolUseId: string | undefined, tool: string, input: Record<string, unknown>): void {
     this.expanded = new Map();
-    const path = typeof input.file_path === "string" ? input.file_path : typeof input.notebook_path === "string" ? input.notebook_path : undefined;
+    const path = [input.file_path, input.notebook_path].find((p): p is string => typeof p === "string");
     const file = path ? this.rel(path) : undefined;
     const version = file ? this.observe(file) : undefined;
     if (toolUseId) {
@@ -311,8 +314,8 @@ export class Facts {
       }
       if (tool === "Read") {
         const version = this.observe(file);
-        // Only a whole read of an unchanged file says what the peer saw.
-        if (version.hash === pre.version.hash && input.offset === undefined && input.limit === undefined) this.view(peer).set(file, version);
+        // Only a whole read of an unchanged file says what the peer saw: no offset or limit, and nothing Read cuts.
+        if (version.hash === pre.version.hash && input.offset === undefined && input.limit === undefined && readWhole(pre.version.text)) this.view(peer).set(file, version);
         return this.observeAll();
       }
     }
@@ -324,6 +327,7 @@ export class Facts {
    * A read only brings the file into its scope: a read action can be partial (`sed -n 1,5p`), so it never says what
    * Codex saw. Any other command, a move, and any change that does not match are observed with attribution unknown.
    */
+  // any: an app-server item is untyped JSON; every field is checked before use.
   codexItem(peer: PeerId, item: any): void {
     this.expanded = new Map();
     if (item?.type === "fileChange" && item.status !== "failed" && item.status !== "declined") {
@@ -366,6 +370,7 @@ export class Facts {
     let cut = 0;
     let files = 0;
     let unknown = 0;
+    let unnamed = 0;
     const cutFiles: string[] = [];
     const firstLooks: string[] = [];
     for (const file of this.files(peer, scope)) {
@@ -384,24 +389,34 @@ export class Facts {
         continue;
       }
       offered.set(file, now);
-      if (!this.o.nameable(file)) continue;
+      if (!this.o.nameable(file)) {
+        unnamed++;
+        continue;
+      }
       files++;
       const others = [...new Set(since.filter((t) => t.by && t.by !== peer).map((t) => t.by!))];
       const blind = capped || !since.length || since.some((t) => !t.by);
       if (blind) unknown++;
       const credit = since.filter((t) => t.by && t.by !== peer).at(-1);
       const own = since.some((t) => t.by === peer);
-      const who = blind
-        ? `changed, attribution unknown (concurrent or unreported writes${others.length ? `; ${others.join(", ")} also wrote it` : ""}${own ? "; your own writes are included" : ""})`
-        : `changed by ${others.join(" and ")}${others.length === 1 && credit?.task ? ` for task #${credit.task.id} ${JSON.stringify(credit.task.title)}` : ""}${own ? " (your own writes are included)" : ""}`;
-      const state = was.hash === "missing" ? " (created)" : now.hash === "missing" ? " (deleted)" : "";
+      let who = `changed by ${others.join(" and ")}${others.length === 1 && credit?.task ? ` for task #${credit.task.id} ${JSON.stringify(credit.task.title)}` : ""}${own ? " (your own writes are included)" : ""}`;
+      if (blind) who = `changed, attribution unknown (concurrent or unreported writes${others.length ? `; ${others.join(", ")} also wrote it` : ""}${own ? "; your own writes are included" : ""})`;
+      let state = "";
+      if (was.hash === "missing") state = " (created)";
+      else if (now.hash === "missing") state = " (deleted)";
       parts.push(`${file}${state}, ${who}:`);
       if ((was.text === undefined && was.hash !== "missing") || (now.text === undefined && now.hash !== "missing")) {
         parts.push("  (too large to show; read the file)");
         continue;
       }
+      const lines = this.diff(was.text ?? "", now.text ?? "");
+      // The diff goes to a cloud model: text that matches a PII pattern stays on this machine (#69), the file is named.
+      if (!this.o.nameable(lines.join("\n"))) {
+        parts.push("  (not shown: the change matches a private-data pattern; read the file)");
+        continue;
+      }
       let cutHere = false;
-      for (const line of this.diff(was.text ?? "", now.text ?? "")) {
+      for (const line of lines) {
         const changed = /^[+-]/.test(line);
         if (shown >= MAX_LINES) {
           if (changed) {
@@ -416,6 +431,7 @@ export class Facts {
       if (cutHere) cutFiles.push(file);
     }
     if (cut) parts.push(`(${cut} more changed line(s) not shown; read ${cutFiles.join(", ")})`);
+    if (unnamed) parts.push(`${unnamed} more changed file(s) in your scope, not named here: their names match a private-data pattern`);
     const plans = new Map<number, string>();
     const seen = this.plansAccepted.get(peer) ?? new Map<number, string>();
     for (const p of scope.plans) {
@@ -541,6 +557,14 @@ export class Facts {
 
 const sha1 = (text: string) => createHash("sha1").update(Buffer.from(text, "utf8")).digest("hex");
 
+/** Whether Claude Code's default Read returns all of this text. */
+function readWhole(text: string | undefined): boolean {
+  if (text === undefined) return false;
+  const lines = text.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  return lines.length <= READ_LINES && lines.every((l) => l.length <= READ_LINE_CHARS);
+}
+
 /** A Claude Edit, MultiEdit or Write applied to `text`, or undefined when its effect cannot be computed exactly. */
 export function applyEdit(text: string | undefined, tool: string, input: Record<string, unknown>): string | undefined {
   if (tool === "Write") return typeof input.content === "string" ? input.content : undefined;
@@ -570,6 +594,7 @@ function changedLines(lines: string[]): string[] {
  * Whether a Codex file change explains exactly what changed: an update's changed lines equal the observed diff's, an
  * add's content is the file, a delete left nothing. Anything else is not evidence.
  */
+// any: a file change from an untyped app-server item; every field is checked before use.
 export function codexEffect(before: string | undefined, now: { hash: string; text?: string }, change: any, diff: (a: string, b: string) => string[]): boolean {
   const kind = change?.kind?.type ?? change?.kind;
   const patch: string | undefined = typeof change?.diff === "string" ? change.diff : undefined;

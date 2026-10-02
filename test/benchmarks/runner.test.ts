@@ -145,9 +145,10 @@ test("a v2 manifest prepares the turn-free arm too, and an arm list that matches
   } finally {rmSync(root,{recursive:true,force:true});}
 });
 
-// issue #110: grading binds the actors of every v2 arm, and a manifest's planned attempts match its arms, cases and repeats.
-test("grading names the actors of every arm and refuses an unverified turn-free run; a plan that does not add up is refused", () => {
-  const code = `import importlib.util,json
+// issue #110: grading binds the actors of every v2 arm, applies one validity gate to every run record, and a manifest's
+// planned attempts match its arms, cases and repeats.
+test("grading names the actors of every arm and grades only valid attempts (graded ends, treatment, hook isolation); a plan that does not add up is refused", () => {
+  const code = `import importlib.util,json,os,tempfile
 s=importlib.util.spec_from_file_location('r',${JSON.stringify(script)});m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 assert [m.required_actors(a) for a in ['solo-codex','solo-claude','hub-codex-claude','hub-turnfree-codex-claude']]==[['codex'],['claude'],['codex','claude'],['codex','claude']]
 v2=json.load(open(${JSON.stringify(join(import.meta.dir, "../../scripts/benchmarks/manifest-v2.json"))}))
@@ -157,7 +158,7 @@ v2['plan']['study']['attempts']=60
 try: m.validate_manifest(v2); raise AssertionError('a wrong plan was accepted')
 except m.BenchError as e: assert 'do not match 80 attempts' in str(e)
 v2['plan']['study']['attempts']=80
-for bad,why in (({'cases':[0,99],'repeats':1,'attempts':8,'active_ceiling_s':2400},'distinct indices'),({'cases':[0],'repeats':1.5,'attempts':4,'active_ceiling_s':1200},'whole number')):
+for bad,why in (({'cases':[0,99],'repeats':1,'attempts':8,'active_ceiling_s':2400},'distinct indices'),({'cases':[0],'repeats':1.5,'attempts':4,'active_ceiling_s':1200},'whole number'),({'cases':[0],'repeats':1,'attempt':4},'no attempts')):
     v2['plan']['bad']=bad
     try: m.validate_manifest(v2); raise AssertionError('a malformed plan was accepted')
     except m.BenchError as e: assert why in str(e), str(e)
@@ -165,12 +166,31 @@ del v2['plan']['bad']
 ab=json.load(open(${JSON.stringify(join(import.meta.dir, "../../scripts/benchmarks/manifest-v2-ablation-106.json"))}))
 m.validate_manifest(ab)
 assert ab['arms']==['hub-codex-claude','hub-staleoff-codex-claude'] and m.required_actors('hub-staleoff-codex-claude')==['codex','claude']
-# A turn-free attempt is graded only if both context paths were verified before its tasks.
-run={'taskStates':[{'history':[{'event':'proposed','at':1_800_000_000_000}]}],'events':[{'type':'capability','peer':'claude','state':'verified','at':'2027-01-15T08:00:00Z'}]}
-assert m.treatment_failure('hub-codex-claude',run) is None
-assert m.treatment_failure('hub-turnfree-codex-claude',run)=='turn-free context path not verified before the tasks: codex', m.treatment_failure('hub-turnfree-codex-claude',run)
-run['events'].append({'type':'capability','peer':'codex','state':'verified','at':'2027-01-15T07:59:59Z'})
-assert m.treatment_failure('hub-turnfree-codex-claude',run) is None
+# The gate grade() applies to every run record that passed the identity checks.
+tf='hub-turnfree-codex-claude'
+run={'end_reason':'completed','taskStates':[{'id':1},{'id':2}],'events':[],'codexMessages':[]}
+assert m.unavailable_reason(tf,run)=='turn-free treatment absent: the tasks never formed a silent cohort'
+assert m.unavailable_reason('hub-codex-claude',run) is None
+run['events']=[{'type':'cohort','id':1,'event':'formed','silent':True,'tasks':[1,2]}]
+assert m.unavailable_reason(tf,run) is None
+run['events'].append({'type':'cohort','id':1,'event':'lifted','silent':False,'tasks':[1,2]})
+assert m.unavailable_reason(tf,run)=="turn-free treatment lost: the cohort's silence was lifted"
+run['events'].pop()
+run['end_reason']='timeout'; run['end_reason_detail']='wall-timeout'
+assert m.unavailable_reason(tf,run) is None  # a timed-out attempt's final artifact is graded
+run['end_reason']='interrupted'; run['end_reason_detail']='needs-review'
+assert m.unavailable_reason(tf,run)=='needs-review'
+run['end_reason']='completed'
+run['codexMessages']=[{'method':'hook/started'}]
+assert m.unavailable_reason('solo-codex',run)=='hook isolation failed: Codex ran hooks'
+run['codexMessages']=[]
+t=tempfile.NamedTemporaryFile('w',suffix='.jsonl',delete=False)
+t.write(json.dumps({'type':'attachment','attachment':{'type':'hook_success','command':"bun '/x/src/cli/facts-hook.ts'"}})+'\\n'); t.close()
+run['readiness']={'claude':{'transcriptPath':t.name}}
+assert m.unavailable_reason(tf,run) is None
+with open(t.name,'a') as f: f.write(json.dumps({'type':'system','subtype':'stop_hook_summary','hookInfos':[{'command':'~/.claude/hooks/notify.sh'}]})+'\\n')
+assert m.unavailable_reason(tf,run)=="hook isolation failed: Claude ran a hook that is not the hub's"
+os.unlink(t.name)
 `;
   const r = spawnSync("python3", ["-B", "-c", code], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(r.stderr);

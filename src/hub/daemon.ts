@@ -533,7 +533,7 @@ export async function startDaemon(opts: DaemonOptions) {
     roles: config.roles,
     turnFree,
     capable: (peer) => capable.has(peer),
-    quiescent: (peer, since) => quiescent(peer, since),
+    idle: (peer) => idle(peer),
     treeHash: (paths) => facts.tree(paths),
     integrationFacts: (peer) => {
       if (!factsOn()) return undefined;
@@ -545,6 +545,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ackFacts: (peer, id) => acked(peer, id, "done"),
     factsCurrent: (peer) => !factsOn() || facts.current(peer),
     since: hubStartedAt,
+    recordCohort: (c) => event({ type: "cohort", ...c }),
     // The trace holds peer names and numbers only (never task text): it is the inputs a later check of the prediction needs.
     recordSplit: (task, p) => event({ type: "split", task, verdict: p.verdict, ...(p.single ? { single: p.single, splitS: p.splitS, singleS: p.singleS } : {}), ...(p.verdict === "unknown" ? { reason: p.trace.at(-1)!.replace(/^ {2}unknown: /, "").slice(0, 200) } : {}), trace: p.trace.slice(1).map((l) => l.trim()).slice(0, 10) }),
     failing: () => bus.failingPeers(),
@@ -552,6 +553,8 @@ export async function startDaemon(opts: DaemonOptions) {
   });
   relevantNotice = tasks.relevant;
   tasks.recoverIntegrations();
+  /** Peers told, at their first attach, what the cohorts lost in the restart held for them (issue #107). */
+  const replayed = new Set<PeerId>();
   // Turn-free facts (issue #108): what the others changed in an owner's files, at its tool calls. Scopes are read from
   // the board once per change of it: every boundary asks for them.
   let scopes = new Map<PeerId, FactScope | undefined>();
@@ -561,6 +564,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const factsOn = (): boolean => {
     const on = turnFree();
     if (on && !factsWereOn) facts.reset();
+    // A PII task opened: every silent cohort speaks again, for good, and its members hear so at once (issue #108).
+    if (!on && factsWereOn) for (const cohort of tasks.cohorts.liftAll()) tasks.announceLift(cohort, "a private task opened, and facts are off while it is open");
     factsWereOn = on;
     return on;
   };
@@ -627,11 +632,13 @@ export async function startDaemon(opts: DaemonOptions) {
         const start = Math.max(transcriptRead.offset, st.size - 4 * 1024 * 1024);
         const buf = Buffer.alloc(st.size - start);
         readSync(fd, buf, 0, buf.length, start);
-        const text = buf.toString("utf8");
-        const end = text.lastIndexOf("\n");
+        // Lines end at a newline byte: decoding first would misplace the offset after a split multi-byte character.
+        const end = buf.lastIndexOf(10);
         if (end === -1) return;
-        transcriptRead.offset = start + Buffer.byteLength(text.slice(0, end + 1));
-        for (const line of text.slice(0, end).split("\n")) {
+        const lines = buf.subarray(0, end).toString("utf8").split("\n");
+        if (start > transcriptRead.offset) lines.shift(); // the window began inside a line
+        transcriptRead.offset = start + end + 1;
+        for (const line of lines) {
           if (!line.includes("hook_additional_context")) continue;
           try {
             const a = JSON.parse(line)?.attachment;
@@ -660,14 +667,19 @@ export async function startDaemon(opts: DaemonOptions) {
     readTranscript(transcript);
     for (const o of pending) if (injected.get(o.toolUseId!)?.includes(`[${o.id}]`)) acked(peer, o.id, "hook");
   };
-  // Quiescence (issue #107): a native turn end, and nothing of the peer ran after it. Codex's turn end is its adapter
-  // going idle; Claude's is its Stop hook. Never a task approval, never a delivery acknowledgement.
+  // Native turn ends (issue #107): Codex's is its adapter going idle, Claude's is its Stop hook. Never a task approval,
+  // never a delivery acknowledgement. Cohorts record them as they happen (`Cohorts.turnEnded`), so a later turn of the
+  // same peer cannot undo a settlement.
   const turnEnded = new Map<PeerId, number>();
   const activeAt = new Map<PeerId, number>();
-  const quiescent = (peer: PeerId, since: number): boolean => {
-    const end = turnEnded.get(peer);
-    if (end === undefined || end < since || (activeAt.get(peer) ?? 0) > end) return false;
-    return peer === "claude" || (bus.peers.get(peer)?.state ?? "offline") !== "busy";
+  /** Every Claude hook call's own start-up and the hub's time for it, summed per turn (issue #108): reported at Stop. */
+  const hookStats = new Map<PeerId, { n: number; startupMs: number; hubMs: number; maxStartupMs: number }>();
+  /** Between native turns now: gone, or Claude stopped after its last tool call began, or any other peer not busy. */
+  const idle = (peer: PeerId): boolean => {
+    const state = bus.stateOf(peer);
+    if (state === "offline") return true;
+    if (peer !== "claude") return state !== "busy";
+    return (turnEnded.get(peer) ?? -1) >= (activeAt.get(peer) ?? 0);
   };
   /** What quiescence was judged on, for the log when an integration waits on it. */
   const stopEvidence = (peer: PeerId) => `${peer}: turn end ${turnEnded.has(peer) ? new Date(turnEnded.get(peer)!).toISOString() : "none"}, last tool call ${activeAt.has(peer) ? new Date(activeAt.get(peer)!).toISOString() : "none"}, ${bus.peers.get(peer)?.state ?? "offline"}`;
@@ -786,6 +798,8 @@ export async function startDaemon(opts: DaemonOptions) {
   let claudeUsageSeen = 0;
   const intervals = [
     setInterval(() => budget.tick(), 30_000),
+    // A verified context path whose hooks stopped altogether has no boundary left to notice it at (issue #108).
+    setInterval(() => { for (const peer of [...capable]) checkCapability(peer); }, 30_000),
     setInterval(() => {
       try {
         const file = join(opts.stateDir, "claude-usage.json");
@@ -1290,13 +1304,21 @@ export async function startDaemon(opts: DaemonOptions) {
           if (changed.length) afterTurn = () => detectConflicts(e.peer, open.id, open.start, changed);
         }
         event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}) });
-        if (e.peer !== "claude") turnEnded.set(e.peer, Date.now()); // Claude's native turn end is its Stop hook
+        if (e.peer !== "claude") { // Claude's native turn end is its Stop hook
+          turnEnded.set(e.peer, Date.now());
+          tasks.cohorts.turnEnded(e.peer);
+        }
         try { afterTurn?.(); } catch (error) { log(`conflict check after ${open.id}: ${(error as Error).message}`); }
       }
+      if (e.state === "offline") tasks.cohorts.turnEnded(e.peer); // a session that is gone writes nothing more
       if (e.state === "offline") offlineSince.set(e.peer, offlineSince.get(e.peer) ?? Date.now());
       else offlineSince.delete(e.peer);
       // A session that ended may come back without hooks: its context path is verified again or not at all (issue #108).
       if (e.state === "offline" && capable.delete(e.peer)) loseCapability(e.peer, "it went offline");
+      if (e.state !== "offline" && coordination === "turn-free" && !replayed.has(e.peer)) {
+        replayed.add(e.peer);
+        tasks.replayHeld(e.peer);
+      }
       // After a crash, a peer's first attach brings the loss notice: it leads its next delivery (issue #37).
       if (e.state !== "offline" && lost.has(e.peer)) {
         const still = lost.get(e.peer)!.filter((d) => { try { return journal.get(d.id)?.state === "needs_review"; } catch { return false; } });
@@ -1519,9 +1541,10 @@ export async function startDaemon(opts: DaemonOptions) {
           if (!offered) return;
           const ms = Math.round(performance.now() - started);
           codexSteering = true;
+          const sent = performance.now();
           void codex.steerText(offered.text).then((accepted) => {
             codexSteering = false;
-            event({ type: "fact", peer: "codex", id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "steer", ms, accepted, ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
+            event({ type: "fact", peer: "codex", id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "steer", ms, rttMs: Math.round(performance.now() - sent), accepted, ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
           });
         },
         appPort: opts.codexAppPort,
@@ -2046,10 +2069,12 @@ export async function startDaemon(opts: DaemonOptions) {
         const inReplyTo = msg.reply_to ? bus.get(String(msg.reply_to)) : undefined;
         // Built first: limits count the audience it really has (a reply goes to the parent's sender).
         const env = newEnvelope(c.peer ?? USER, body, { priority, ...(to ? { to } : {}), ...(inReplyTo ? { inReplyTo } : {}) });
-        const refused = c.peer ? admit(env, inReplyTo?.id) : undefined;
-        if (refused) return void reply({ t: "sent", ok: false, error: refused });
-        // A silent cohort (issue #107): the members it is held back from are left out, the rest get it; the sender is told.
+        // A silent cohort (issue #107): the members it is held back from are left out, the rest get it; the sender is
+        // told. Held back from everyone, it costs the sender nothing against its limits.
         const hushed = bus.hushed(env);
+        const heldBack = hushed.length > 0 && hushed.length === bus.audience(env).length;
+        const refused = c.peer && !heldBack ? admit(env, inReplyTo?.id) : undefined;
+        if (refused) return void reply({ t: "sent", ok: false, error: refused });
         const targets = bus.publish(env);
         if (c.peer && inReplyTo) bus.completeReply(c.peer, inReplyTo.id); // the delivery it answers was handled all the same
         if (hushed.length && !targets.length) return void reply({ t: "sent", ok: false, error: `not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}` });
@@ -2060,19 +2085,33 @@ export async function startDaemon(opts: DaemonOptions) {
         // context), `post` after it (its effect, and the readback of what went in before), `stop` when its turn ends.
         // The hook never shows an error: on any failure the answer is just empty.
         if (!c.peer || c.role === "console") return void reply({ t: "facts", ok: false, error: "facts are for a peer" });
-        const phase = msg.phase === "post" ? "post" : msg.phase === "stop" ? "stop" : "pre";
+        const phase: "pre" | "post" | "stop" = msg.phase === "post" || msg.phase === "stop" ? msg.phase : "pre";
         const tool = typeof msg.tool === "string" ? msg.tool.slice(0, 64) : "";
         const input = msg.input && typeof msg.input === "object" && !Array.isArray(msg.input) ? msg.input : {};
         const toolUseId = typeof msg.toolUseId === "string" && msg.toolUseId ? msg.toolUseId.slice(0, 128) : undefined;
         const sessionId = typeof msg.sessionId === "string" && msg.sessionId ? msg.sessionId.slice(0, 128) : undefined;
+        const callStarted = performance.now();
+        const tally = (peer: PeerId) => {
+          const st = hookStats.get(peer) ?? { n: 0, startupMs: 0, hubMs: 0, maxStartupMs: 0 };
+          const startup = typeof msg.startedMs === "number" && Number.isFinite(msg.startedMs) ? Math.max(0, msg.startedMs) : 0;
+          hookStats.set(peer, { n: st.n + 1, startupMs: st.startupMs + startup, hubMs: st.hubMs + (performance.now() - callStarted), maxStartupMs: Math.max(st.maxStartupMs, startup) });
+        };
         try {
           const peer = c.peer;
           // Quiescence evidence is kept in every regime: a PII window must not make an active peer look stopped. Only
           // a tool call starting is new activity: a PostToolUse of an earlier call can arrive after the Stop.
           if (phase === "stop") {
             turnEnded.set(peer, Date.now());
+            tasks.cohorts.turnEnded(peer);
             event({ type: "native_turn_end", peer });
-          } else if (phase === "pre") activeAt.set(peer, Date.now());
+            tally(peer);
+            const st = hookStats.get(peer)!;
+            event({ type: "hook_stats", peer, n: st.n, startupMs: Math.round(st.startupMs), hubMs: Math.round(st.hubMs), maxStartupMs: Math.round(st.maxStartupMs) });
+            hookStats.delete(peer);
+          } else {
+            if (phase === "pre") activeAt.set(peer, Date.now());
+            queueMicrotask(() => tally(peer)); // after this call's own work below
+          }
           if (!factsOn()) return void reply({ t: "facts", ok: true });
           factSession(peer, sessionId);
           const transcript = claudeTranscript(sessionId, msg.transcriptPath);

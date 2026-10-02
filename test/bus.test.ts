@@ -717,14 +717,20 @@ const cohortOf = (from: string, to: string) => (env: Envelope, peer: string) => 
 
 test("a held-back recipient is left out, the others get the envelope unchanged, and the sender hears why", async () => {
   const events: BusEvent[] = [];
-  const { bus, claude, codex, kimi } = await trio(undefined, { silence: cohortOf("codex", "claude") });
+  let admitted = 0;
+  const { bus, claude, codex, kimi } = await trio(undefined, { silence: cohortOf("codex", "claude"), admit: () => void admitted++ });
   bus.tap((e) => events.push(e));
   const result = codex.onMessage!("[IMPORTANT] process_priority comes last");
-  expect(result).toBe("you are in one turn-free cohort");
+  expect(result).toBeUndefined(); // kimi got it: it was sent
+  expect(admitted).toBe(1);
+  // Held back from everyone it was for: not sent, and it costs the sender nothing against its limits.
+  expect(codex.onMessage!("only for claude", { to: ["claude"] })).toBe("you are in one turn-free cohort");
+  expect(admitted).toBe(1);
   await tick();
   expect(claude.got).toEqual([]);
   expect(kimi.got.map((e) => `${e.priority}:${e.body}`)).toEqual(["important:process_priority comes last"]);
-  expect(events.filter((e) => e.t === "quiet")).toMatchObject([{ t: "quiet", peers: ["claude"], reason: "you are in one turn-free cohort" }]);
+  const quiet = { t: "quiet", peers: ["claude"], reason: "you are in one turn-free cohort" };
+  expect(events.filter((e) => e.t === "quiet")).toMatchObject([quiet, quiet]);
   bus.publish(newEnvelope("user", "next", { to: ["codex"] }));
   await tick();
   expect(codex.got[0]!.body).toContain("your message was not delivered to claude: you are in one turn-free cohort");

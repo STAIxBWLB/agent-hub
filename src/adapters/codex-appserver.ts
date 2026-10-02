@@ -25,7 +25,8 @@ export interface CodexOptions {
   /**
    * Each completed `fileChange`, `commandExecution`, `mcpToolCall` and `userMessage` item, for turn-free facts (issue
    * #108): the first three are boundaries, a `userMessage` is the readback of a steered fact. Codex emits
-   * `item/started` about when a command has finished, so only completions are reported.
+   * `item/started` about when a command has finished, so only completions are reported. Untyped JSON (hence `any`):
+   * the receiver checks every field it reads.
    */
   onItem?: (item: any) => void;
   /** How often to ask app-server for the rate limits while a TUI is attached. */
