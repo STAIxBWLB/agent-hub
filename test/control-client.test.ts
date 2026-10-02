@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ControlClient, PROTOCOL, readControl } from "../src/hub/control-client.ts";
+import { ControlClient, PROTOCOL, readControl, RECOVERY_SOURCE_PROTOCOLS } from "../src/hub/control-client.ts";
 
 const ROOT = "/tmp/agent-hub-control-test";
 const cleanup: (() => void)[] = [];
@@ -63,7 +63,8 @@ test("manifest identity mismatch refuses before opening a socket", async () => {
 });
 
 test("matching source protocol can be selected explicitly for upgrade preflight", async () => {
-  expect(PROTOCOL).toBe(12);
+  expect(PROTOCOL).toBe(13);
+  expect(RECOVERY_SOURCE_PROTOCOLS).toContain(12); // the released 0.12.3 is a supported upgrade source (issue #108)
   const stateDir = mkdtempSync(join(tmpdir(), "agent-hub-control-legacy-"));
   const srv = Bun.serve<{ }>( {
     hostname: "127.0.0.1",

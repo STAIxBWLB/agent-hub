@@ -1,20 +1,32 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { sanitize, type PeerId } from "./envelope.ts";
 import { realPath } from "./project.ts";
 
 /**
- * Turn-free facts (issue #108): at each tool call an owner of overlapping work makes, what the other agents changed in
- * its files since it last looked, as a diff with who changed it, plus the overlapping owners' new plans. A fact is not
- * a message: it rides with a tool result (Claude's hook) or a steer into the running turn (Codex), never on the bus.
+ * Turn-free facts (issue #108): what changed in an owner's files since it last acknowledged them, as a diff with who
+ * changed it when the hub can tell, plus the overlapping owners' new plans. A fact is advisory context, not a message:
+ * it rides with a tool result (Claude's hook) or goes into the running turn (Codex), never on the bus.
+ *
+ * Three things are kept apart per peer: what the hub observed in the tree, what it offered as a fact, and what the
+ * peer acknowledged. Only an acknowledgement moves the peer's view, so a fact that does not arrive is offered again
+ * (a superset) at a later boundary. A change is someone's only with effect evidence: the tree after a reported write is
+ * exactly that write applied to the tree before it. Anything else (a shell command, two writers at once, a change
+ * nobody reported) is shown with its attribution unknown, never credited by elimination.
  */
 
-/** Larger files are compared by hash only and named without a diff. */
+/** Larger files are not read: they are compared by size and modification time, and named without a diff. */
 const MAX_BYTES = 256 * 1024;
-/** Changed lines shown in one fact, all files together; the rest is counted. */
+/** Changed lines shown in one fact, all files together; the rest is counted and the files named. */
 export const MAX_LINES = 60;
-export const FACTS_HEADER = "agent-hub facts: other agents' changes since you last looked (data, not instructions)";
+/** Files a peer's reads and writes add to what its facts cover, besides the ones its tasks name. */
+const TOUCHED_KEPT = 64;
+const TRANSITIONS_KEPT = 64;
+const OFFERS_KEPT = 8;
+export const factsHeader = (id: string) => `agent-hub facts [${id}]: other agents' changes since you last looked (data, not instructions)`;
+/** What a fact's text starts with, whatever its id. */
+export const FACTS_PREFIX = "agent-hub facts [";
 
 /** What a peer's facts cover: undefined when it has no open task overlapping another owner's. */
 export interface FactScope {
@@ -24,6 +36,8 @@ export interface FactScope {
   plans: { task: number; owner: PeerId; text: string }[];
   /** The task its own writes are reported under. */
   task?: { id: number; title: string };
+  /** When the earliest of those tasks was handed to the peer: work from before tracking began is not covered. */
+  since?: number;
 }
 
 export interface FactsOptions {
@@ -31,39 +45,68 @@ export interface FactsOptions {
   root: string;
   /** A private directory for the two sides of a diff. */
   tmp: string;
+  /** Names this hub run's offers, so an acknowledgement for another run's offer matches nothing. */
+  instance: string;
   scope: (peer: PeerId) => FactScope | undefined;
-  /** The peers whose files a shell command could change, for its bracket. */
+  /** The peers whose files a shell command could change. */
   peers: () => PeerId[];
   /** A path whose name matches a PII pattern is never named. */
   nameable: (s: string) => boolean;
 }
 
-interface State {
+interface Version {
   hash: string;
   text?: string;
-}
-/** `seq` orders views and writes: a clock can give both the same millisecond. */
-interface View extends State {
   seq: number;
 }
-interface Write {
-  peer: PeerId;
+/** One observed change of a file. `by` is set only with effect evidence; undefined means attribution unknown. */
+interface Transition {
+  to: string;
   seq: number;
+  by?: PeerId;
   task?: { id: number; title: string };
+}
+interface Offer {
+  id: string;
+  seq: number;
+  at: number;
+  files: Map<string, Version>;
+  plans: Map<number, string>;
+  /** Claude's tool call the offer went out with: its transcript row is the readback. */
+  toolUseId?: string;
+  probe?: boolean;
+}
+
+/** What `due` hands the adapter. `unknown`: files whose change is shown with its attribution unknown. */
+export interface Offered {
+  id: string;
+  text: string;
+  files: number;
+  plans: number;
+  unknown: number;
+  bytes: number;
+  probe?: boolean;
+  coverage?: boolean;
 }
 
 export class Facts {
-  /** Files each peer read or wrote, besides the ones its tasks name. */
-  private readonly touched = new Map<PeerId, Set<string>>();
-  private readonly views = new Map<PeerId, Map<string, View>>();
-  /** The last writes agents reported, per file. */
-  private readonly writes = new Map<string, Write[]>();
-  private readonly plansSeen = new Map<PeerId, Map<number, string>>();
-  /** File hashes before a peer's shell command, to see afterwards what it changed. */
-  private readonly brackets = new Map<PeerId, Map<string, string>>();
-
+  private readonly latest = new Map<string, Version>();
+  private readonly transitions = new Map<string, Transition[]>();
+  private readonly accepted = new Map<PeerId, Map<string, Version>>();
+  private readonly plansAccepted = new Map<PeerId, Map<number, string>>();
+  private readonly touched = new Map<PeerId, string[]>();
+  private readonly offers = new Map<PeerId, Offer[]>();
+  /** A tool call's observation before it ran, by Claude's tool use id. */
+  private readonly before = new Map<string, { peer: PeerId; file?: string; version?: Version }>();
+  /** Peers whose coverage notice went out in this tracking epoch. */
+  private readonly covered = new Set<PeerId>();
+  /** Each peer's native session or thread: a new one starts its views over. */
+  private readonly sessions = new Map<PeerId, string>();
+  /** When tracking began: work on a task handed over before that is not covered. */
+  private epoch = Date.now();
   private readonly root: string;
   private seq = 0;
+  private n = 0;
 
   constructor(private readonly o: FactsOptions) {
     let root = o.root;
@@ -75,7 +118,10 @@ export class Facts {
     this.root = root;
   }
 
-  /** A project-relative path, or undefined for one outside the project. Both sides as real paths (/tmp, /private/tmp). */
+  /**
+   * A project-relative path, or undefined for one outside the project. Resolved as a real path (symlinks and `..` are
+   * followed first), so neither a task's refs nor a tool's input can point the hub at a file outside the project.
+   */
   rel(path: string): string | undefined {
     const abs = isAbsolute(path) ? path : resolve(this.root, path);
     let real = abs;
@@ -85,144 +131,322 @@ export class Facts {
       try {
         real = join(realPath(dirname(abs)), basename(abs)); // a file not written yet
       } catch {
-        // neither exists: compare as given
+        return undefined; // neither it nor its directory exists inside anything we can resolve
       }
     }
     const r = relative(this.root, real);
     return !r || r.startsWith("..") || isAbsolute(r) ? undefined : r;
   }
 
-
-  private load(file: string): State {
+  /** The file as it is now. Only regular files are read, and only small ones; nothing outside the project is. */
+  private load(file: string): Omit<Version, "seq"> {
+    const abs = join(this.root, file);
     try {
-      const buf = readFileSync(join(this.root, file));
-      return { hash: createHash("sha1").update(buf).digest("hex"), ...(buf.length <= MAX_BYTES ? { text: buf.toString("utf8") } : {}) };
+      const st = lstatSync(abs);
+      if (!st.isFile()) return { hash: "missing" }; // a directory, a link, a device or a fifo: never read
+      if (st.size > MAX_BYTES) return { hash: `large:${st.size}:${st.mtimeMs}` };
+      const buf = readFileSync(abs);
+      return { hash: createHash("sha1").update(buf).digest("hex"), text: buf.toString("utf8") };
     } catch {
-      return { hash: "missing" }; // no such file, or a directory
-    }
-  }
-
-  private setView(peer: PeerId, file: string, state = this.load(file)): void {
-    let m = this.views.get(peer);
-    if (!m) this.views.set(peer, (m = new Map()));
-    m.set(file, { ...state, seq: ++this.seq });
-  }
-
-  private touch(peer: PeerId, file: string): void {
-    let s = this.touched.get(peer);
-    if (!s) this.touched.set(peer, (s = new Set()));
-    s.add(file);
-  }
-
-  private files(peer: PeerId, scope = this.o.scope(peer)): string[] {
-    return [...new Set([...(scope?.paths ?? []), ...(this.touched.get(peer) ?? [])])];
-  }
-
-  private log(peer: PeerId, file: string): void {
-    const task = this.o.scope(peer)?.task;
-    const list = this.writes.get(file) ?? [];
-    list.push({ peer, seq: ++this.seq, ...(task ? { task } : {}) });
-    if (list.length > 20) list.shift();
-    this.writes.set(file, list);
-  }
-
-  /** `peer` wrote `file` itself (Claude's Edit or Write, a Codex fileChange): logged for the others, current for it. */
-  wrote(peer: PeerId, path: string): void {
-    const file = this.rel(path);
-    if (!file) return;
-    this.touch(peer, file);
-    this.log(peer, file);
-    this.setView(peer, file);
-  }
-
-  /** `peer` read `file`: it joins what its facts cover, and what it read is its view. */
-  read(peer: PeerId, path: string): void {
-    const file = this.rel(path);
-    if (!file) return;
-    this.touch(peer, file);
-    this.setView(peer, file);
-  }
-
-  /** The plans an accept already answered with need no fact. */
-  sawPlans(peer: PeerId): void {
-    const seen = new Map<number, string>();
-    for (const p of this.o.scope(peer)?.plans ?? []) seen.set(p.task, p.text);
-    this.plansSeen.set(peer, seen);
-  }
-
-  /** Before a shell command of `peer`: remember every file any peer's facts cover. */
-  beforeShell(peer: PeerId): void {
-    const files = new Set(this.o.peers().flatMap((p) => this.files(p)));
-    this.brackets.set(peer, new Map([...files].map((f) => [f, this.load(f).hash])));
-  }
-
-  /** After it: whatever changed meanwhile is logged as that peer's write, and those files are current in its view. */
-  afterShell(peer: PeerId): void {
-    const before = this.brackets.get(peer);
-    this.brackets.delete(peer);
-    for (const [file, hash] of before ?? []) {
-      const now = this.load(file);
-      if (now.hash === hash) continue;
-      this.log(peer, file);
-      this.setView(peer, file, now);
+      return { hash: "missing" };
     }
   }
 
   /**
-   * The facts due for `peer` at a tool boundary, or undefined. Each covered file whose content differs from its view
-   * shows as a diff attributed to the latest write another agent reported since that view; new or changed plans of the
-   * overlapping tasks follow, once. Views become current. `ownUnexplained`: a change no other agent reported is the
-   * peer's own (Codex, whose shell writes are not reported); otherwise it is "another agent's".
+   * Forget everything observed (issue #108): tracking stops while a PII task is open, and when it starts again the
+   * changes made meanwhile are never shown as diffs. Each peer is told once which of its files are not covered.
    */
-  due(peer: PeerId, ownUnexplained: boolean): { text: string; files: number; plans: number } | undefined {
+  reset(): void {
+    this.latest.clear();
+    this.transitions.clear();
+    this.accepted.clear();
+    this.plansAccepted.clear();
+    this.offers.clear();
+    this.before.clear();
+    this.covered.clear();
+    this.epoch = Date.now();
+  }
+
+  /** A new native session or thread for `peer`: what the old one saw says nothing about the new one. */
+  session(peer: PeerId, id: string | undefined): void {
+    if (!id) return;
+    const was = this.sessions.get(peer);
+    this.sessions.set(peer, id);
+    if (was === undefined || was === id) return;
+    this.accepted.delete(peer);
+    this.plansAccepted.delete(peer);
+    this.offers.delete(peer);
+    this.covered.delete(peer);
+  }
+
+  private touch(peer: PeerId, file: string): void {
+    const list = (this.touched.get(peer) ?? []).filter((f) => f !== file);
+    list.push(file);
+    if (list.length > TOUCHED_KEPT) list.shift();
+    this.touched.set(peer, list);
+  }
+
+  /** The files a peer's facts cover: its tasks' paths, contained in the project, and what it touched. */
+  private files(peer: PeerId, scope = this.o.scope(peer)): string[] {
+    const named = (scope?.paths ?? []).flatMap((p) => {
+      const r = this.rel(p);
+      return r ? [r] : [];
+    });
+    return [...new Set([...named, ...(this.touched.get(peer) ?? [])])];
+  }
+
+  /** Observe `file`; a change becomes a transition, credited to `by` only when the caller has effect evidence. */
+  private observe(file: string, by?: { peer: PeerId; expected: string }): Version {
+    const now = this.load(file);
+    const was = this.latest.get(file);
+    if (was && was.hash === now.hash) return was;
+    const version = { ...now, seq: ++this.seq };
+    this.latest.set(file, version);
+    if (was) {
+      const credited = by && by.expected === now.hash ? by.peer : undefined;
+      const task = credited ? this.o.scope(credited)?.task : undefined;
+      const list = this.transitions.get(file) ?? [];
+      list.push({ to: now.hash, seq: version.seq, ...(credited ? { by: credited } : {}), ...(task ? { task } : {}) });
+      if (list.length > TRANSITIONS_KEPT) list.shift();
+      this.transitions.set(file, list);
+    }
+    return version;
+  }
+
+  private view(peer: PeerId): Map<string, Version> {
+    let m = this.accepted.get(peer);
+    if (!m) this.accepted.set(peer, (m = new Map()));
+    return m;
+  }
+
+  /** Everything any peer's facts cover, observed: a shell command or an unreported write may have changed any of it. */
+  private observeAll(): void {
+    for (const file of new Set(this.o.peers().flatMap((p) => this.files(p)))) this.observe(file);
+  }
+
+  /**
+   * Claude is about to run a tool. Its target is observed now, so the tool's effect can be checked afterwards; a read
+   * or a first look at a file also observes it.
+   */
+  preTool(peer: PeerId, toolUseId: string | undefined, tool: string, input: Record<string, unknown>): void {
+    const path = typeof input.file_path === "string" ? input.file_path : typeof input.notebook_path === "string" ? input.notebook_path : undefined;
+    const file = path ? this.rel(path) : undefined;
+    const version = file ? this.observe(file) : undefined;
+    if (toolUseId) {
+      this.before.set(toolUseId, { peer, ...(file ? { file } : {}), ...(version ? { version } : {}) });
+      if (this.before.size > 256) this.before.delete(this.before.keys().next().value as string);
+    }
+  }
+
+  /**
+   * Claude's tool ran. An Edit, MultiEdit or Write whose result is exactly its input applied to the file as observed
+   * before is Claude's change, and if Claude had acknowledged that earlier state its view moves on. A full Read moves
+   * its view to what it read. Anything else, a Bash command included, is observed with its attribution unknown.
+   */
+  postTool(peer: PeerId, toolUseId: string | undefined, tool: string, input: Record<string, unknown>): void {
+    const pre = toolUseId ? this.before.get(toolUseId) : undefined;
+    if (toolUseId) this.before.delete(toolUseId);
+    const file = pre?.file;
+    if (file && pre?.version) {
+      this.touch(peer, file);
+      if (["Edit", "MultiEdit", "Write"].includes(tool)) {
+        const expected = this.latest.get(file)?.hash === pre.version.hash ? applyEdit(pre.version.text, tool, input) : undefined;
+        const version = this.observe(file, expected === undefined ? undefined : { peer, expected: sha1(expected) });
+        const last = this.transitions.get(file)?.at(-1);
+        if (last?.seq === version.seq && last.by === peer && this.view(peer).get(file)?.hash === pre.version.hash) this.view(peer).set(file, version);
+        return this.observeAll();
+      }
+      if (tool === "Read") {
+        const version = this.observe(file);
+        // Only a whole read of an unchanged file says what the peer saw.
+        if (version.hash === pre.version.hash && input.offset === undefined && input.limit === undefined) this.view(peer).set(file, version);
+        return this.observeAll();
+      }
+    }
+    this.observeAll();
+  }
+
+  /**
+   * A Codex item completed. A file change whose diff is exactly what changed since the last observation is Codex's;
+   * a read moves its view only when the file did not change since Codex's previous boundary. Any other command, and
+   * any change that does not match, is observed with its attribution unknown.
+   */
+  codexItem(peer: PeerId, item: any): void {
+    if (item?.type === "fileChange" && item.status !== "failed" && item.status !== "declined") {
+      for (const change of Array.isArray(item.changes) ? item.changes : []) {
+        const file = typeof change?.path === "string" ? this.rel(change.path) : undefined;
+        if (!file) continue;
+        this.touch(peer, file);
+        const was = this.latest.get(file);
+        const now = this.load(file);
+        const matches = was ? codexEffect(was.text, now, change, (a, b) => this.diff(a, b)) : false;
+        const version = this.observe(file, matches ? { peer, expected: now.hash } : undefined);
+        const last = this.transitions.get(file)?.at(-1);
+        if (was && last?.seq === version.seq && last.by === peer && this.view(peer).get(file)?.hash === was.hash) this.view(peer).set(file, version);
+      }
+    } else if (item?.type === "commandExecution") {
+      const actions = Array.isArray(item.commandActions) ? item.commandActions : [];
+      for (const action of actions) {
+        if (action?.type !== "read" || typeof action.path !== "string") continue;
+        const file = this.rel(action.path);
+        if (!file) continue;
+        this.touch(peer, file);
+        const was = this.latest.get(file);
+        const version = this.observe(file);
+        if (was && version.hash === was.hash) this.view(peer).set(file, version);
+      }
+    }
+    this.observeAll();
+  }
+
+  /**
+   * The fact due for `peer` at a boundary, recorded as an offer, or undefined. Nothing moves until it is acknowledged:
+   * a later boundary offers everything since the peer's last acknowledged view again.
+   */
+  due(peer: PeerId, toolUseId?: string): Offered | undefined {
     const scope = this.o.scope(peer);
     if (!scope) return undefined;
+    const view = this.view(peer);
     const parts: string[] = [];
+    const offered = new Map<string, Version>();
     let shown = 0;
     let cut = 0;
     let files = 0;
+    let unknown = 0;
+    const cutFiles: string[] = [];
+    const firstLooks: string[] = [];
     for (const file of this.files(peer, scope)) {
-      const was = this.views.get(peer)?.get(file);
-      const now = this.load(file);
+      const now = this.observe(file);
+      const was = view.get(file);
       if (!was) {
-        this.setView(peer, file, now); // the first look: nothing to compare with
+        firstLooks.push(file);
+        offered.set(file, now); // what the peer sees from here on; nothing to compare with
         continue;
       }
       if (was.hash === now.hash) continue;
-      const by = (this.writes.get(file) ?? []).filter((w) => w.peer !== peer && w.seq > was.seq).at(-1);
-      this.setView(peer, file, now);
-      if ((!by && ownUnexplained) || !this.o.nameable(file)) continue;
+      const since = (this.transitions.get(file) ?? []).filter((t) => t.seq > was.seq);
+      if (since.length && since.every((t) => t.by === peer)) {
+        view.set(file, now); // its own verified writes, nothing else
+        continue;
+      }
+      offered.set(file, now);
+      if (!this.o.nameable(file)) continue;
       files++;
-      const who = by ? `${by.peer}${by.task ? ` for task #${by.task.id} ${JSON.stringify(by.task.title)}` : ""}` : "another agent";
+      const others = [...new Set(since.filter((t) => t.by && t.by !== peer).map((t) => t.by!))];
+      const blind = !since.length || since.some((t) => !t.by);
+      if (blind) unknown++;
+      const credit = since.filter((t) => t.by && t.by !== peer).at(-1);
+      const own = since.some((t) => t.by === peer);
+      const who = blind
+        ? `changed, attribution unknown (concurrent or unreported writes${others.length ? `; ${others.join(", ")} also wrote it` : ""}${own ? "; your own writes are included" : ""})`
+        : `changed by ${others.join(" and ")}${others.length === 1 && credit?.task ? ` for task #${credit.task.id} ${JSON.stringify(credit.task.title)}` : ""}${own ? " (your own writes are included)" : ""}`;
       const state = was.hash === "missing" ? " (created)" : now.hash === "missing" ? " (deleted)" : "";
-      parts.push(`${file}${state}, changed by ${who}:`);
+      parts.push(`${file}${state}, ${who}:`);
       if ((was.text === undefined && was.hash !== "missing") || (now.text === undefined && now.hash !== "missing")) {
         parts.push("  (too large to show; read the file)");
         continue;
       }
+      let cutHere = false;
       for (const line of this.diff(was.text ?? "", now.text ?? "")) {
         const changed = /^[+-]/.test(line);
-        if (changed && shown >= MAX_LINES) {
-          cut++;
+        if (shown >= MAX_LINES) {
+          if (changed) {
+            cut++;
+            cutHere = true;
+          }
           continue;
         }
-        if (shown >= MAX_LINES) continue;
         if (changed) shown++;
         parts.push(line);
       }
+      if (cutHere) cutFiles.push(file);
     }
-    if (cut) parts.push(`(${cut} more changed line(s) not shown; read the file)`);
-    let plans = 0;
-    const seen = this.plansSeen.get(peer) ?? new Map<number, string>();
-    this.plansSeen.set(peer, seen);
+    if (cut) parts.push(`(${cut} more changed line(s) not shown; read ${cutFiles.join(", ")})`);
+    const plans = new Map<number, string>();
+    const seen = this.plansAccepted.get(peer) ?? new Map<number, string>();
     for (const p of scope.plans) {
       if (seen.get(p.task) === p.text) continue;
-      seen.set(p.task, p.text);
-      plans++;
+      plans.set(p.task, p.text);
       parts.push(`task #${p.task} (owner ${p.owner}) plan: ${p.text}`);
     }
-    if (!parts.length) return undefined;
-    return { text: sanitize([FACTS_HEADER, ...parts].join("\n")), files, plans };
+    // Work that began before tracking did (a hub restart, a PII pause, a new session) is not covered: say so, once.
+    let coverage = false;
+    if (!this.covered.has(peer) && scope.since !== undefined && scope.since < this.epoch) {
+      const named = this.files(peer, scope).filter(this.o.nameable);
+      if (named.length) {
+        parts.unshift(`tracking started at ${new Date(this.epoch).toISOString()}: changes before that are not covered; read ${named.join(", ")} before relying on what you saw of them`);
+        coverage = true;
+      }
+    }
+    if (!parts.length) {
+      // Nothing to say: a first look needs no acknowledgement.
+      for (const [file, v] of offered) if (!view.has(file)) view.set(file, v);
+      return undefined;
+    }
+    return this.offer(peer, parts, offered, plans, toolUseId, { files, plans: plans.size, unknown, coverage });
+  }
+
+  /** The plans an accept answered with were shown in a tool result: they need no fact later. */
+  sawPlans(peer: PeerId): void {
+    const seen = this.plansAccepted.get(peer) ?? new Map<number, string>();
+    for (const p of this.o.scope(peer)?.plans ?? []) seen.set(p.task, p.text);
+    this.plansAccepted.set(peer, seen);
+  }
+
+  /** One hash over these project files as they are now: an integration target (issue #107). */
+  tree(paths: string[]): string {
+    const h = createHash("sha1");
+    const files = [...new Set(paths.flatMap((p) => { const r = this.rel(p); return r ? [r] : []; }))].sort();
+    for (const file of files) h.update(file).update("\0").update(this.load(file).hash).update("\0");
+    return h.digest("hex");
+  }
+
+  /** Whether `peer` has acknowledged every file its facts cover, as it is now (a file it never looked at counts). */
+  current(peer: PeerId): boolean {
+    const view = this.accepted.get(peer);
+    return this.files(peer).every((f) => {
+      const v = view?.get(f);
+      return !v || v.hash === this.observe(f).hash;
+    });
+  }
+
+  /** A one-line offer that proves the context path works before any coordination depends on it (issue #108). */
+  probe(peer: PeerId, toolUseId?: string): Offered {
+    return this.offer(peer, ["context check: nothing to act on"], new Map(), new Map(), toolUseId, { files: 0, plans: 0, unknown: 0, coverage: false, probe: true });
+  }
+
+  private offer(peer: PeerId, parts: string[], files: Map<string, Version>, plans: Map<number, string>, toolUseId: string | undefined, counts: { files: number; plans: number; unknown: number; coverage: boolean; probe?: boolean }): Offered {
+    const id = `${this.o.instance}-${++this.n}`;
+    const text = sanitize([factsHeader(id), ...parts].join("\n"));
+    const list = this.offers.get(peer) ?? [];
+    list.push({ id, seq: this.seq, at: Date.now(), files, plans, ...(toolUseId ? { toolUseId } : {}), ...(counts.probe ? { probe: true } : {}) });
+    if (list.length > OFFERS_KEPT) list.shift();
+    this.offers.set(peer, list);
+    return { id, text, files: counts.files, plans: counts.plans, unknown: counts.unknown, bytes: Buffer.byteLength(text), ...(counts.probe ? { probe: true } : {}), ...(counts.coverage ? { coverage: true } : {}) };
+  }
+
+  /** Offers not acknowledged yet, oldest first: their readback is still to be found. */
+  pending(peer: PeerId): { id: string; at: number; toolUseId?: string; probe?: boolean }[] {
+    return (this.offers.get(peer) ?? []).map((o) => ({ id: o.id, at: o.at, ...(o.toolUseId ? { toolUseId: o.toolUseId } : {}), ...(o.probe ? { probe: true } : {}) }));
+  }
+
+  /**
+   * The peer's context holds offer `id` (a readback found it). Its view moves to what the offer showed, never back;
+   * older offers are covered by it. Returns when the offer was made, or undefined for an id this run never offered.
+   */
+  ack(peer: PeerId, id: string): { at: number; probe?: boolean } | undefined {
+    const list = this.offers.get(peer) ?? [];
+    const i = list.findIndex((o) => o.id === id);
+    if (i === -1) return undefined;
+    const offer = list[i]!;
+    const view = this.view(peer);
+    for (const [file, v] of offer.files) if ((view.get(file)?.seq ?? -1) < v.seq) view.set(file, v);
+    const seen = this.plansAccepted.get(peer) ?? new Map<number, string>();
+    for (const [task, text] of offer.plans) seen.set(task, text);
+    this.plansAccepted.set(peer, seen);
+    if (offer.files.size || !offer.probe) this.covered.add(peer);
+    list.splice(0, i + 1);
+    return { at: offer.at, ...(offer.probe ? { probe: true } : {}) };
   }
 
   /** The hunks between two texts (`git diff --no-index`), without its file headers. */
@@ -245,4 +469,47 @@ export class Facts {
       rmSync(b, { force: true });
     }
   }
+}
+
+const sha1 = (text: string) => createHash("sha1").update(Buffer.from(text, "utf8")).digest("hex");
+
+/** A Claude Edit, MultiEdit or Write applied to `text`, or undefined when its effect cannot be computed exactly. */
+export function applyEdit(text: string | undefined, tool: string, input: Record<string, unknown>): string | undefined {
+  if (tool === "Write") return typeof input.content === "string" ? input.content : undefined;
+  if (text === undefined) return undefined;
+  const one = (t: string, e: Record<string, unknown>): string | undefined => {
+    const from = e.old_string, to = e.new_string;
+    if (typeof from !== "string" || typeof to !== "string" || !from) return undefined;
+    if (e.replace_all === true) return t.includes(from) ? t.split(from).join(to) : undefined;
+    const at = t.indexOf(from);
+    return at === -1 || t.indexOf(from, at + 1) !== -1 ? undefined : t.slice(0, at) + to + t.slice(at + from.length);
+  };
+  if (tool === "Edit") return one(text, input);
+  if (tool === "MultiEdit" && Array.isArray(input.edits)) {
+    let out: string | undefined = text;
+    for (const e of input.edits) out = out === undefined || !e || typeof e !== "object" ? undefined : one(out, e as Record<string, unknown>);
+    return out;
+  }
+  return undefined;
+}
+
+/** The changed lines of a unified diff, `+` and `-` kept, hunk headers and context dropped, as a sorted list. */
+function changedLines(lines: string[]): string[] {
+  return lines.filter((l) => /^[+-]/.test(l)).sort();
+}
+
+/**
+ * Whether a Codex file change explains exactly what changed: an update's changed lines equal the observed diff's, an
+ * add's content is the file, a delete left nothing. Anything else is not evidence.
+ */
+export function codexEffect(before: string | undefined, now: { hash: string; text?: string }, change: any, diff: (a: string, b: string) => string[]): boolean {
+  const kind = change?.kind?.type ?? change?.kind;
+  const patch: string | undefined = typeof change?.diff === "string" ? change.diff : undefined;
+  if (kind === "delete") return now.hash === "missing";
+  if (now.text === undefined) return false;
+  if (kind === "add") return patch !== undefined && (now.text === patch || now.text === `${patch}\n` || `${now.text}\n` === patch);
+  if (kind !== "update" || patch === undefined || before === undefined || change?.kind?.move_path) return false;
+  const reported = changedLines(patch.split("\n").filter((l) => !l.startsWith("+++ ") && !l.startsWith("--- ")));
+  const observed = changedLines(diff(before, now.text));
+  return reported.length > 0 && reported.length === observed.length && reported.every((l, i) => l === observed[i]);
 }

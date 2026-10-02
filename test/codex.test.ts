@@ -318,8 +318,9 @@ test("revert is refused while a turn runs", async () => {
   await expect(peer.revert("turn1")).rejects.toThrow("not idle");
 });
 
-// issue #108: completed tool items reach onItem, and a fact goes into the running turn by steer, outside the bus.
-test("completed file and command items reach onItem; steerText goes into the running turn and is refused without one", async () => {
+// issue #108: completed tool items reach onItem, and a fact goes into the running turn by steer, outside the bus; the
+// steered input comes back as a user message item, which is its readback.
+test("completed file and command items reach onItem; steerText goes into the running turn, is read back, and is refused without one", async () => {
   const items: any[] = [];
   const steered: boolean[] = [];
   let codex: CodexPeer | undefined;
@@ -335,8 +336,9 @@ test("completed file and command items reach onItem; steerText goes into the run
   await until(() => peer.state === "idle");
   tui.send(JSON.stringify({ id: 3, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: "ITEMS job" }] } }));
   await until(() => said.length === 1);
-  expect(items.map((i) => i.type)).toEqual(["fileChange", "commandExecution"]);
+  expect(items.map((i) => i.type)).toEqual(["fileChange", "commandExecution", "userMessage"]);
   expect(items[0].changes[0].path).toBe("/abs/src/a.ts");
+  expect(items[2].content).toEqual([{ type: "text", text: "agent-hub facts: header\nFACT LINE" }]);
   expect(steered).toEqual([true]);
   expect(said[0]!.body).toBe("echo: ITEMS job +steered: FACT LINE");
   expect(bus.queued("codex")).toBe(0);

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
 import { Bus, type BusEvent } from "../src/hub/bus.ts";
-import { HUB, USER, type Envelope, type PeerState } from "../src/hub/envelope.ts";
+import { HUB, newEnvelope, USER, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { assign, currentRouting, detectSignals, loadRouting } from "../src/hub/routing.ts";
 import { Tasks } from "../src/hub/tasks.ts";
@@ -1172,9 +1172,9 @@ test("failing peers are skipped by assignment, and a held owner queue is named i
 // issue #106: the completed-change notice is about the recipient's open task; it is dropped at delivery once that is closed.
 async function staleRig() {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-tasks-"));
-  let stale: (peer: string, env: Envelope) => string | undefined = () => undefined;
+  let relevant: (peer: string, env: Envelope) => boolean = () => true;
   const events: BusEvent[] = [];
-  const bus = new Bus({ batchMs: 0, stale: (peer, env) => stale(peer, env) }); // the daemon binds it the same way
+  const bus = new Bus({ batchMs: 0, relevant: (peer, env) => relevant(peer, env) }); // the daemon binds it the same way
   bus.tap((e) => events.push(e));
   const peers = Object.fromEntries(["claude", "codex", "kimi"].map((id) => [id, new FakePeer(id)]));
   for (const p of Object.values(peers)) {
@@ -1183,8 +1183,8 @@ async function staleRig() {
   }
   const board = new Board(join(dir, "hub.db"));
   const tasks = new Tasks({ board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: () => {} });
-  stale = tasks.stale;
-  return { bus, peers, board, tasks, events };
+  relevant = tasks.relevant;
+  return { bus, peers, board, tasks, events, dir, rebind: (t: Tasks) => (relevant = t.relevant) };
 }
 
 test("a completed-change notice queued for a busy owner is dropped once that owner's task is done", async () => {
@@ -1221,79 +1221,273 @@ test("the same notice is delivered while the owner's task is still open, and oth
   expect(events.some((e) => e.t === "stale")).toBe(false);
 });
 
-// issue #107: turn-free coordination. Owners of overlapping tasks do not message each other; the hub hands them facts
-// and asks the last to finish to check its work.
+test("a notice to an owner who lost the task is dropped; check results, reviews and assignments about closed tasks are not", async () => {
+  const { peers, tasks, board, bus, events } = await staleRig();
+  const kimis = await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  const codexs = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
+  peers.kimi!.set("busy");
+  await tasks.done("codex", codexs.id, "changed a"); // a completed-change notice for kimi's #a waits
+  await tasks.assignTo(kimis.id, "claude"); // #a changes hands: the notice is about work kimi no longer owns
+  peers.kimi!.set("idle");
+  await tick();
+  expect(completedNotices(peers.kimi!)).toEqual([]);
+  expect(events.filter((e) => e.t === "stale").map((e) => (e as { peer: string }).peer)).toEqual(["kimi"]);
+  // Workflow messages carry no condition, whatever their task's state by the time they arrive.
+  peers.codex!.set("busy");
+  expect(board.get(codexs.id)!.state).toBe("in_review"); // codex's own task is closed
+  for (const [kind, body] of [["task", `Task #${codexs.id}: its check failed.`], ["review", `Review task #${codexs.id}`], ["task", `Task #${codexs.id} [implement] b`]] as const) {
+    bus.publish(newEnvelope(HUB, body, { to: ["codex"], kind, refs: { task: String(codexs.id) } }));
+  }
+  peers.codex!.set("idle");
+  await tick();
+  expect(peers.codex!.got.map((e) => e.body.split("\n")[0])).toEqual([`Task #${codexs.id}: its check failed.`, `Review task #${codexs.id}`, `Task #${codexs.id} [implement] b`]);
+});
+
+test("after a restart, or once its record is evicted, a notice is delivered as before: its kind alone never makes it stale", async () => {
+  const { peers, tasks, board, bus, dir, rebind } = await staleRig();
+  const kimis = await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  const codexs = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
+  peers.kimi!.set("busy");
+  await tasks.done("codex", codexs.id, "changed a");
+  await tasks.done("kimi", kimis.id, "kimi's part");
+  // A new hub run: the queue came back from the journal, the records did not.
+  const restarted = new Tasks({ board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: () => {} });
+  rebind(restarted);
+  // An unrecorded notice about a closed task, kind task and all, is not guessed to be stale either.
+  bus.publish(newEnvelope(HUB, `Task #${codexs.id} (owner codex) is done and touches your open #${kimis.id}`, { to: ["kimi"], kind: "task", refs: { task: String(kimis.id) } }));
+  peers.kimi!.set("idle");
+  await tick();
+  expect(completedNotices(peers.kimi!)).toHaveLength(2);
+  // Eviction: the newest 1024 records are kept; an evicted one is delivered like an unrecorded one.
+  const first = await restarted.propose("claude", { title: "c", class: "implement", owner: "claude", refs: { paths: ["src/c.ts"] } });
+  const second = await restarted.propose("claude", { title: "d", class: "implement", owner: "claude", refs: { paths: ["src/d.ts"] } });
+  peers.claude!.set("busy");
+  restarted.whileOpen("claude", first.id, "the oldest notice");
+  for (let i = 0; i < 1024; i++) restarted.whileOpen("kimi", kimis.id, `filler ${i}`);
+  restarted.whileOpen("claude", second.id, "the newest notice");
+  for (const id of [first.id, second.id]) board.update(id, "claude", "done", { state: "approved" });
+  peers.claude!.set("idle");
+  await tick();
+  const got = peers.claude!.got.map((e) => e.body);
+  expect(got).toContain("the oldest notice");
+  expect(got).not.toContain("the newest notice");
+});
+
+// issue #107: turn-free cohorts. Owners of overlapping tasks whose context paths are verified form a silent cohort; the
+// member whose done completes the set integrates, and its next done counts only for the same target.
 async function turnFreeRig(extra: Partial<ConstructorParameters<typeof Tasks>[0]> = {}) {
   const ctx = await setup(["claude", "codex", "kimi"]);
   const told: string[] = [];
-  const tasks = new Tasks({ board: ctx.board, bus: ctx.bus, routing: () => loadRouting(ctx.dir), cwd: ctx.dir, project: "agent-hub", notify: (l) => ctx.notices.push(l), tell: (peer, line) => told.push(`${peer}|${line}`), turnFree: () => true, ...extra });
-  return { ...ctx, tasks, told };
+  const state = { capable: new Set(["claude", "codex", "kimi"]), stopped: new Map<string, number>(), tree: "t1", offers: 0, acked: [] as string[], current: true };
+  const tasks = new Tasks({
+    board: ctx.board, bus: ctx.bus, routing: () => loadRouting(ctx.dir), cwd: ctx.dir, project: "agent-hub", notify: (l) => ctx.notices.push(l), tell: (peer, line) => told.push(`${peer}|${line}`), turnFree: () => true,
+    capable: (p) => state.capable.has(p),
+    quiescent: (p, since) => (state.stopped.get(p) ?? -1) >= since,
+    treeHash: () => state.tree,
+    integrationFacts: (p) => ({ id: `f${++state.offers}`, text: `facts for ${p}` }),
+    ackFacts: (p, id) => void state.acked.push(`${p}:${id}`),
+    factsCurrent: () => state.current,
+    ...extra,
+  });
+  /** A native turn end of `peer` from now on. */
+  const stop = (peer: string) => state.stopped.set(peer, Date.now() + 1);
+  return { ...ctx, tasks, told, state, stop };
 }
+const pair = async (tasks: Tasks, a = "kimi", b = "codex") => {
+  const first = await tasks.propose(a, { title: "multi-file edit", class: "implement", owner: a, refs: { paths: ["src/click/termui.py"] }, plan: { signatures: ["edit(filename: str | Iterable[str])"] } });
+  const second = await tasks.propose(b, { title: "priority", class: "implement", owner: b, refs: { paths: ["src/click/termui.py"] } });
+  return { first, second };
+};
 
-test("overlapping() is true only between owners whose open tasks share a place", async () => {
-  const { tasks, board } = await turnFreeRig();
-  const a = await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
-  await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
-  await tasks.propose("claude", { title: "c", class: "implement", owner: "claude", refs: { paths: ["docs/c.md"] } });
-  expect(tasks.overlapping("kimi", "codex")).toBe(true);
-  expect(tasks.overlapping("codex", "kimi")).toBe(true);
-  expect(tasks.overlapping("kimi", "claude")).toBe(false);
-  expect(tasks.overlapping("kimi", "kimi")).toBe(false);
-  board.update(a.id, "kimi", "done", { state: "in_review" });
-  expect(tasks.overlapping("kimi", "codex")).toBe(false); // kimi has no open task left
-});
-
-test("turn-free texts name the overlap and the other owner's plan, and never ask to settle it by message", async () => {
+test("owners of overlapping tasks whose context paths are verified form one silent cohort; its texts carry plans, never a request to settle", async () => {
   const { tasks, told, notices } = await turnFreeRig();
   await tasks.propose("kimi", { title: "bus refactor", class: "implement", owner: "kimi", refs: { paths: ["src/hub/bus.ts"] }, plan: { symbols: ["Bus.publish"], signatures: ["publish(env: Envelope): PeerId[]"] } });
   const offered = await tasks.propose("claude", { title: "retry", class: "implement", owner: "codex" });
   const accepted = tasks.accept("codex", offered.id, { paths: ["src/hub/retry.ts"], symbols: ["Bus.publish"] });
+  expect(tasks.silentFor(accepted.id)).toBe(true);
   const forOwner = tasks.overlaps(accepted);
-  expect(forOwner).toBe("Overlaps #1 (owner kimi) on symbol Bus.publish. Do not message that owner: in turn-free coordination the hub shows you their changes as you work. #1's plan: symbols: Bus.publish | signatures: publish(env: Envelope): PeerId[]");
-  expect(told).toEqual(["kimi|note from hub [finding]: task #2 (owner codex) now overlaps your #1 on symbol Bus.publish; do not message codex: in turn-free coordination the hub shows you its changes as you work. Its plan (full: hub_task_list): paths: src/hub/retry.ts | symbols: Bus.publish"]);
+  expect(forOwner).toBe("Overlaps #1 (owner kimi) on symbol Bus.publish. Do not message that owner: you are in one turn-free cohort, the hub shows you their changes as you work and asks the last of you to finish to check the work against the others. #1's plan: symbols: Bus.publish | signatures: publish(env: Envelope): PeerId[]");
+  expect(told).toEqual(["kimi|note from hub [finding]: task #2 (owner codex) now overlaps your #1 on symbol Bus.publish; do not message codex: you are in one turn-free cohort and the hub shows you its changes as you work. Its plan (full: hub_task_list): paths: src/hub/retry.ts | symbols: Bus.publish"]);
   expect(notices).toContain("task #2 retry (codex): Overlaps #1 (owner kimi) on symbol Bus.publish. codex works alongside without messages (turn-free).");
   for (const text of [forOwner, ...told, ...notices]) expect(text).not.toContain("via hub_send");
 });
 
-test("turn-free publishes no completed-change notice", async () => {
-  const { tasks, peers } = await turnFreeRig();
-  await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
-  const t = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
-  await tasks.done("codex", t.id, "changed a");
+test("advisory fallback: an owner without a verified context path, a PII task, or turn-free off keeps messages, texts and notices as before", async () => {
+  // kimi cannot be shown facts: the cohort is formed, but not silent.
+  const unverified = await turnFreeRig();
+  unverified.state.capable.delete("kimi");
+  const { first, second } = await pair(unverified.tasks);
+  expect(unverified.tasks.silentFor(second.id)).toBe(false);
+  expect(unverified.tasks.overlaps(unverified.board.get(second.id)!)).toContain("Settle it with that owner via hub_send");
+  expect(unverified.tasks.silenced("codex", "kimi")).toBeUndefined();
+  unverified.peers.kimi!.set("busy");
+  await unverified.tasks.done("codex", second.id, "changed termui");
+  unverified.peers.kimi!.set("idle");
   await tick();
-  expect(completedNotices(peers.kimi!)).toEqual([]);
+  expect(completedNotices(unverified.peers.kimi!)).toHaveLength(1); // the completed-change notice still goes
+  expect((await unverified.tasks.done("kimi", first.id, "kimi done")).history.at(-1)!.event).toBe("done"); // no integration step
+  // Turn-free off (configured advisory, or a PII task open): nothing is silent.
+  const off = await turnFreeRig({ turnFree: () => false });
+  const both = await pair(off.tasks);
+  expect(off.tasks.silentFor(both.second.id)).toBe(false);
+  expect(off.tasks.silenced("codex", "kimi")).toBeUndefined();
 });
 
-test("the last finisher is asked once to check its work; the second call records done; an earlier finisher is never held", async () => {
-  const { tasks, board } = await turnFreeRig();
-  const first = await tasks.propose("kimi", { title: "multi-file edit", class: "implement", owner: "kimi", refs: { paths: ["src/click/termui.py"] }, plan: { signatures: ["edit(filename: str | Iterable[str])"] } });
-  const last = await tasks.propose("codex", { title: "priority", class: "implement", owner: "codex", refs: { paths: ["src/click/termui.py"] } });
-  // The earlier finisher: the other task is still open, so its done is recorded at once.
+test("an owner without facts joining a silent cohort lifts its silence, and every member hears so", async () => {
+  const { tasks, state, peers } = await turnFreeRig();
+  const { second } = await pair(tasks);
+  expect(tasks.silentFor(second.id)).toBe(true);
+  state.capable.delete("claude");
+  await tasks.propose("claude", { title: "docs", class: "implement", owner: "claude", refs: { paths: ["src/click/termui.py"] } });
+  expect(tasks.silentFor(second.id)).toBe(false);
+  await tick();
+  for (const p of ["kimi", "codex"]) expect(peers[p]!.got.some((e) => e.body.includes("turn-free silence is lifted"))).toBe(true);
+});
+
+test("a member's messages are held back until it has stopped after its task closed; a settled member's new work is unaffected", async () => {
+  const { tasks, stop } = await turnFreeRig();
+  const { first } = await pair(tasks);
+  expect(tasks.silenced("kimi", "codex")?.members.size).toBe(2);
+  expect(tasks.silenced("codex", "kimi")).toBeDefined();
+  expect(tasks.silenced("kimi", "claude")).toBeUndefined(); // not a member
+  await tasks.done("kimi", first.id, "kimi done"); // closed on the board, its turn still running
+  expect(tasks.silenced("kimi", "codex")).toBeDefined(); // a late final answer is still the cohort's
+  stop("kimi"); // its native turn ended: kimi has settled
+  expect(tasks.silenced("kimi", "codex")).toBeUndefined(); // kimi's next turn is new work
+  expect(tasks.silenced("codex", "kimi")).toBeDefined(); // codex is still at work in the cohort
+});
+
+test("the member whose done completes the set integrates: one request with its facts, then its done for the same target", async () => {
+  const { tasks, board, state, stop } = await turnFreeRig();
+  const { first, second } = await pair(tasks);
   const early = await tasks.done("kimi", first.id, "edit takes several files\nmore");
-  expect(early.history.at(-1)!.event).toBe("done");
-  // The last finisher: answered, not recorded.
-  const asked = await tasks.done("codex", last.id, "added process_priority");
+  expect(early.history.at(-1)!.event).toBe("done"); // an earlier member is never held
+  stop("kimi");
+  const asked = await tasks.done("codex", second.id, "added process_priority");
   expect(asked.state).toBe("in_progress");
-  expect(asked.history.at(-1)).toMatchObject({ event: "integration prompted", by: HUB });
+  expect(asked.history.at(-1)).toMatchObject({ event: "integration requested", by: HUB });
   expect(asked.history.at(-1)!.note).toBe([
-    `Before task #${last.id} is recorded as done: 1 overlapping task(s) finished while you worked. Check your work against them, then call hub_task_done again.`,
-    `- #${first.id} multi-file edit (owner kimi)`,
+    `Before task #${second.id} is recorded as done: you are the last of turn-free cohort #1 to finish. Check your work against the others' below, fix what conflicts, then call hub_task_done again.`,
+    "The done counts once the files did not change between two calls and the others have stopped.",
+    `- #${first.id} multi-file edit (owner kimi, in_review)`,
     "  changed files: src/click/termui.py",
     "  signatures: edit(filename: str | Iterable[str])",
     "  summary: edit takes several files",
+    "facts for codex",
   ].join("\n"));
-  const recorded = await tasks.done("codex", last.id, "added process_priority, checked against #1");
-  expect(recorded.history.at(-1)!.event).toBe("done");
-  expect(board.get(last.id)!.history.filter((h) => h.event === "integration prompted")).toHaveLength(1);
+  const recorded = await tasks.done("codex", second.id, "added process_priority, checked against #1");
+  expect(recorded.history.slice(-2).map((h) => h.event)).toEqual(["integrated", "done"]);
+  expect(state.acked).toEqual(["codex:f1"]); // the second done is the proof the request arrived
+  expect(board.get(second.id)!.history.filter((h) => h.event === "integration requested")).toHaveLength(1);
 });
 
-test("the console user and PII tasks are never prompted, and advisory never prompts", async () => {
-  const { tasks } = await turnFreeRig();
-  await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
-  const b = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
-  await tasks.done("kimi", 1, "a done");
-  expect((await tasks.done(USER, b.id, "by hand")).history.at(-1)!.event).toBe("done");
+test("concurrent dones select exactly one integrating member", async () => {
+  const { tasks, board } = await turnFreeRig();
+  const { first, second } = await pair(tasks);
+  const [a, b] = await Promise.all([tasks.done("kimi", first.id, "a"), tasks.done("codex", second.id, "b")]);
+  const asked = [a, b].filter((t) => t.history.at(-1)!.event === "integration requested");
+  expect(asked.map((t) => t.id)).toEqual([second.id]);
+  expect(board.get(first.id)!.history.at(-1)!.event).toBe("done");
+});
 
+test("edits between calls, owner replacement and a changed cohort move the target; a member still running blocks it", async () => {
+  const { tasks, state, stop, board } = await turnFreeRig();
+  const { first, second } = await pair(tasks);
+  await tasks.done("kimi", first.id, "a");
+  await tasks.done("codex", second.id, "b"); // request 1
+  // The member that integrates is not confirmed while kimi has not stopped since its done.
+  let again = await tasks.done("codex", second.id, "b");
+  expect(again.history.at(-1)!.note).toContain("integration request 2 of 3): kimi has not stopped since its done");
+  stop("kimi");
+  // Its own edits between two calls move the target: asked once more.
+  state.tree = "t2";
+  again = await tasks.done("codex", second.id, "b");
+  expect(again.history.at(-1)!.note).toContain("integration request 3 of 3): the files changed since the last request");
+  again = await tasks.done("codex", second.id, "b");
+  expect(again.history.slice(-2).map((h) => h.event)).toEqual(["integrated", "done"]);
+  // A new member joining before the confirm makes the integrating member an earlier finisher: it proceeds.
+  const other = await turnFreeRig();
+  const p2 = await pair(other.tasks);
+  await other.tasks.done("kimi", p2.first.id, "a");
+  await other.tasks.done("codex", p2.second.id, "b"); // request 1
+  const third = await other.tasks.propose("claude", { title: "late", class: "implement", owner: "claude", refs: { paths: ["src/click/termui.py"] } });
+  expect(other.tasks.cohorts.of(third.id)?.members.size).toBe(3);
+  expect((await other.tasks.done("codex", p2.second.id, "b")).history.at(-1)!.event).toBe("done");
+  other.stop("kimi");
+  other.stop("codex");
+  expect((await other.tasks.done("claude", third.id, "c")).history.at(-1)!.event).toBe("integration requested");
+  // Owner replacement: the task changes hands, and the new owner's done is a new request.
+  const moved = await turnFreeRig();
+  const p3 = await pair(moved.tasks);
+  await moved.tasks.done("kimi", p3.first.id, "a");
+  await moved.tasks.done("codex", p3.second.id, "b"); // request 1, to codex
+  await moved.tasks.assignTo(p3.second.id, "claude");
+  const fresh = await moved.tasks.done("claude", p3.second.id, "b by claude");
+  expect(fresh.history.at(-1)!.note).toContain("you are the last of turn-free cohort");
+  expect(board).toBeDefined();
+});
+
+test("past three requests the outcome is unresolved, recorded with the done, never as integrated", async () => {
+  const { tasks, notices } = await turnFreeRig();
+  const { first, second } = await pair(tasks);
+  await tasks.done("kimi", first.id, "a");
+  for (let i = 0; i < 3; i++) await tasks.done("codex", second.id, "b"); // kimi never stops
+  const last = await tasks.done("codex", second.id, "b");
+  expect(last.history.slice(-2).map((h) => h.event)).toEqual(["integration unresolved", "done"]);
+  expect(last.history.some((h) => h.event === "integrated")).toBe(false);
+  expect(notices.some((n) => n.includes("turn-free integration unresolved after 3 requests (kimi has not stopped since its done"))).toBe(true);
+});
+
+test("a failed check or a reopened review voids the member's intent; a check finished on a moved target does not count", async () => {
+  let release!: (code: number) => void;
+  const results: Promise<number>[] = [];
+  const { tasks, board, stop } = await turnFreeRig({
+    check: (cls) => (cls === "implement" ? "make test" : undefined),
+    runCheck: async () => ({ code: await (results.shift() ?? Promise.resolve(0)), timedOut: false, tail: "" }),
+  });
+  const { first, second } = await pair(tasks);
+  results.push(new Promise<number>((r) => (release = r))); // kimi's check: held
+  await tasks.done("kimi", first.id, "a"); // its check is running: its intent counts
+  stop("kimi");
+  expect((await tasks.done("codex", second.id, "b")).history.at(-1)!.event).toBe("integration requested");
+  await tasks.done("codex", second.id, "b"); // confirmed; codex's check is queued behind kimi's
+  release(1); // kimi's check fails: its intent is void, and the cohort moves on
+  await until(() => board.get(second.id)!.history.some((h) => h.event === "check finished late"));
+  expect(board.get(second.id)!.history.find((h) => h.event === "check finished late")!.note).toContain("the integration target changed while it ran");
+  expect(board.get(second.id)!.state).toBe("in_progress");
+  // kimi fixes it: now its done completes the set again, and kimi integrates.
+  const redo = await tasks.done("kimi", first.id, "a, fixed");
+  expect(redo.history.at(-1)!.event).toBe("integration requested");
+  // A reopened review voids an intent the same way.
+  const review = await turnFreeRig();
+  const p = await pair(review.tasks);
+  await review.tasks.done("kimi", p.first.id, "a");
+  await review.tasks.review("claude", p.first.id, "changes_requested", "fix it");
+  expect(review.tasks.cohorts.of(p.first.id)!.intents.has(p.first.id)).toBe(false);
+  expect((await review.tasks.done("codex", p.second.id, "b")).history.at(-1)!.event).toBe("done"); // kimi is at work again
+});
+
+test("after a restart an integration that was asked for is recorded as unresolved", async () => {
+  const { tasks, board, dir, bus, notices } = await turnFreeRig();
+  const { first, second } = await pair(tasks);
+  await tasks.done("kimi", first.id, "a");
+  await tasks.done("codex", second.id, "b"); // request 1, then the hub stops
+  const restarted = new Tasks({ board, bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: (l) => notices.push(l), turnFree: () => true });
+  restarted.recoverIntegrations();
+  expect(board.get(second.id)!.history.at(-1)).toMatchObject({ event: "integration unresolved", note: "the hub restarted before the integration was confirmed" });
+  expect((await restarted.done("codex", second.id, "b")).history.at(-1)!.event).toBe("done");
+});
+
+test("the console user is never asked to integrate, a PII task joins no cohort, and advisory never asks", async () => {
+  const { tasks } = await turnFreeRig();
+  const { first, second } = await pair(tasks);
+  await tasks.done("kimi", first.id, "a done");
+  expect((await tasks.done(USER, second.id, "by hand")).history.at(-1)!.event).toBe("done");
+  // A PII task joins no cohort (the daemon test covers the hub switching to advisory while one is open).
+  const pii = await turnFreeRig();
+  const secret = await pii.tasks.propose("claude", { title: "note for 900101-1234567", class: "implement", refs: { paths: ["src/click/termui.py"] } });
+  await pair(pii.tasks);
+  expect(pii.tasks.cohorts.of(secret.id)).toBeUndefined();
   const advisory = await setup(["claude", "codex", "kimi"]);
   await advisory.tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
   const c = await advisory.tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
@@ -1301,23 +1495,12 @@ test("the console user and PII tasks are never prompted, and advisory never prom
   expect((await advisory.tasks.done("codex", c.id, "b done")).history.at(-1)!.event).toBe("done");
 });
 
-test("with a check configured, the prompt comes first and the check runs only after the recorded done", async () => {
-  let release!: () => void;
-  const gate = new Promise<void>((r) => (release = r));
-  const ran: string[] = [];
-  const { tasks, board } = await turnFreeRig({ check: (cls) => (cls === "implement" ? "make test" : undefined), runCheck: async (command) => (ran.push(command), await gate, { code: 0, timedOut: false, tail: "ok" }) });
-  await tasks.propose("kimi", { title: "a", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
-  const b = await tasks.propose("codex", { title: "b", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
-  await tasks.done("kimi", 1, "a done"); // its check is queued: kimi's task counts as finished
-  expect(tasks.isChecking(1)).toBe(true);
-  const asked = await tasks.done("codex", b.id, "b done");
-  expect(asked.history.at(-1)!.event).toBe("integration prompted");
-  expect(tasks.isChecking(b.id)).toBe(false);
-  await tasks.done("codex", b.id, "b done, checked");
-  expect(tasks.isChecking(b.id)).toBe(true);
-  release();
-  await until(() => board.get(b.id)!.history.some((h) => h.event === "check passed"));
-  expect(ran).toEqual(["make test", "make test"]);
+test("a silent cohort publishes no completed-change notice: the integrating member checks instead", async () => {
+  const { tasks, peers } = await turnFreeRig();
+  const { second } = await pair(tasks);
+  await tasks.done("codex", second.id, "changed termui");
+  await tick();
+  expect(completedNotices(peers.kimi!)).toEqual([]);
 });
 
 // issue #109: recorded speeds decide whether overlapping routed work is split.

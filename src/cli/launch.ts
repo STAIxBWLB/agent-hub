@@ -59,13 +59,14 @@ export interface FactsHook {
 
 /**
  * The one `--settings` value of a hub-launched Claude session: the status line tee, and in a turn-free project the
- * facts hook before and after every tool call (issue #108).
+ * facts hook before and after every tool call and at the end of each turn (issue #108; the turn end is the quiescence
+ * evidence of issue #107).
  */
 export function sessionSettings(tee: StatusLineTee, facts?: FactsHook): string {
   const settings = JSON.parse(statusLineSettings(tee)) as Record<string, unknown>;
   if (facts) {
-    const hook = { matcher: "*", hooks: [{ type: "command", command: `AGENTHUB_STATE_DIR=${sh(facts.stateDir)} bun ${sh(facts.script)}`, timeout: 5 }] };
-    settings.hooks = { PreToolUse: [hook], PostToolUse: [hook] };
+    const hooks = [{ type: "command", command: `AGENTHUB_STATE_DIR=${sh(facts.stateDir)} bun ${sh(facts.script)}`, timeout: 5 }];
+    settings.hooks = { PreToolUse: [{ matcher: "*", hooks }], PostToolUse: [{ matcher: "*", hooks }], Stop: [{ hooks }] };
   }
   return JSON.stringify(settings);
 }

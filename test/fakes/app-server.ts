@@ -45,7 +45,9 @@ export function startFakeAppServer(
           }
           if (msg.params.input[0].text.includes("SILENT")) return; // app-server that never answers the steer
           steered.push(msg.params.input[0].text.split("\n").at(-1));
-          return reply({ turnId: activeTurnId });
+          reply({ turnId: activeTurnId });
+          // As app-server 0.159 does: the steered input becomes a user message item of the running turn.
+          return note("item/completed", { threadId: msg.params.threadId, turnId: activeTurnId, completedAtMs: Date.now(), item: { type: "userMessage", id: `u${steered.length}`, content: msg.params.input } });
         }
         if (msg.method !== "turn/start") return;
         if (active) return void ws.send(JSON.stringify({ id: msg.id, error: { code: -32000, message: "turn in progress" } }));
@@ -67,6 +69,15 @@ export function startFakeAppServer(
         reply({ turn });
         note("turn/started", { threadId, turn });
         await Bun.sleep(delayMs);
+        if (text.includes("EDIT:")) {
+          // A real patch (issue #108): one line appended to the file, reported with a diff that matches it.
+          const path = /EDIT:(\S+)/.exec(text)![1]!;
+          const before = await Bun.file(path).text();
+          await Bun.write(path, `${before}codex line\n`);
+          const n = before.split("\n").length - 1;
+          note("item/completed", { threadId, turnId: turn.id, completedAtMs: Date.now(), item: { type: "fileChange", id: "f2", status: "completed", changes: [{ path, kind: { type: "update", move_path: null }, diff: `@@ -${n} +${n},2 @@\n+codex line` }] } });
+          await Bun.sleep(delayMs); // room for a steer from the item handler
+        }
         if (text.includes("ITEMS")) {
           // Tool items as Codex 0.159 reports them (issue #108): a patch, then a read the CLI parsed into an action.
           // `ITEMS:<path>` names the file both items are about; the patch itself is up to the test.

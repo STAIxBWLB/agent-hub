@@ -15615,8 +15615,8 @@ function projectContext(cwd, env = process.env) {
 function stateDirFor(cwd) {
   return projectContext(cwd).stateDir;
 }
-var PROTOCOL = 12;
-var RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, PROTOCOL];
+var PROTOCOL = 13;
+var RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, PROTOCOL];
 function readControl(stateDir) {
   try {
     const status = JSON.parse(readFileSync2(join2(stateDir, "status.json"), "utf8"));
@@ -16039,7 +16039,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       return text(`not sent: ${res.error}`);
     if (res.recorded)
       return text("recorded only ([FYI]): it is on the hub console and log, and no peer spent a turn on it");
-    return text(`sent to: ${res.targets.join(", ") || "(no other peers attached)"}`);
+    const sent = `sent to: ${res.targets.join(", ") || "(no other peers attached)"}`;
+    return text(typeof res.notice === "string" ? `${sent}; ${res.notice}` : sent);
   }
   if (TASK_TOOL_NAMES.has(name)) {
     if (!hub)

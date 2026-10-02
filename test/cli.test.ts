@@ -153,15 +153,17 @@ test("ahub claude injects the tee through --settings, wraps the user's command, 
   expect(own.warning).toContain("status line tee is off");
 });
 
-// issue #108: a turn-free project's Claude session gets the facts hook before and after every tool call.
+// issue #108: a turn-free project's Claude session gets the facts hook before and after every tool call, and at the end
+// of each turn (the quiescence evidence of issue #107).
 test("ahub claude adds the facts hooks next to the tee in a turn-free project, and says so when a user --settings turns them off", () => {
   const tee = { script: "/repo/src/cli/statusline-tee.ts", stateDir: "/p/.agenthub/state" };
   const facts = { script: "/repo/src/cli/facts-hook.ts", stateDir: "/p/.agenthub/state" };
   const settings = JSON.parse(sessionSettings(tee, facts));
   expect(settings.statusLine.type).toBe("command");
-  for (const event of ["PreToolUse", "PostToolUse"]) {
-    expect(settings.hooks[event]).toEqual([{ matcher: "*", hooks: [{ type: "command", command: "AGENTHUB_STATE_DIR='/p/.agenthub/state' bun '/repo/src/cli/facts-hook.ts'", timeout: 5 }] }]);
-  }
+  const hooks = [{ type: "command", command: "AGENTHUB_STATE_DIR='/p/.agenthub/state' bun '/repo/src/cli/facts-hook.ts'", timeout: 5 }];
+  for (const event of ["PreToolUse", "PostToolUse"]) expect(settings.hooks[event]).toEqual([{ matcher: "*", hooks }]);
+  expect(settings.hooks.Stop).toEqual([{ hooks }]);
+  expect(Object.keys(settings.hooks).sort()).toEqual(["PostToolUse", "PreToolUse", "Stop"]); // the hub's own and nothing else
   expect(sessionSettings(tee)).toBe(statusLineSettings(tee)); // an advisory project: the tee alone, as before
   expect(buildLaunch("claude", [], { unattended: false, statusLine: tee, facts }).args.slice(2, 4)).toEqual(["--settings", sessionSettings(tee, facts)]);
   const own = buildLaunch("claude", ["--settings", "{}"], { unattended: false, statusLine: tee, facts });

@@ -649,7 +649,7 @@ test("a turn answer over its important budget goes out as status, and the sender
 test("a queued envelope that turned stale is dropped unsent and reported; the rest of the queue still goes out", async () => {
   let closed = false;
   const events: BusEvent[] = [];
-  const { bus, codex } = await trio(undefined, { stale: (peer, env) => (closed && env.body === "notice" ? `stale: task #1 is no longer open for ${peer}` : undefined) });
+  const { bus, codex } = await trio(undefined, { relevant: (_peer, env) => !(closed && env.body === "notice") });
   bus.tap((e) => events.push(e));
   codex.set("busy");
   bus.publish(newEnvelope(HUB, "notice", { to: ["codex"], kind: "task", refs: { task: "1" } }));
@@ -664,7 +664,7 @@ test("a queued envelope that turned stale is dropped unsent and reported; the re
 
 test("an envelope still relevant when its delivery is built goes out as before", async () => {
   const events: BusEvent[] = [];
-  const { bus, codex } = await trio(undefined, { stale: () => undefined });
+  const { bus, codex } = await trio(undefined, { relevant: () => true });
   bus.tap((e) => events.push(e));
   codex.set("busy");
   bus.publish(newEnvelope(HUB, "notice", { to: ["codex"], kind: "task", refs: { task: "1" } }));
@@ -674,18 +674,85 @@ test("an envelope still relevant when its delivery is built goes out as before",
   expect(events.some((e) => e.t === "stale")).toBe(false);
 });
 
-// issue #107: in turn-free coordination an agent's turn answer to an overlapping owner is recorded, not delivered.
-test("a quiet turn answer goes out as fyi, reaches nobody, and its sender hears why on its next delivery", async () => {
+test("a task closed while the delivery is condensed is caught by the recheck right before it is handed over", async () => {
+  let closed = false;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
   const events: BusEvent[] = [];
-  const { bus, claude, codex } = await trio(undefined, { quiet: (env) => (env.from === "codex" && env.to?.includes("claude") ? "recorded as [FYI] only: claude owns a task that overlaps yours" : undefined) });
+  const { bus, codex } = await trio(undefined, { batchMax: 2, relevant: (_peer, env) => !(closed && env.body === "notice"), condense: async (envs) => { await gate; return envs; } });
   bus.tap((e) => events.push(e));
-  const ask = newEnvelope("claude", "which signature?", { to: ["codex"] });
-  const refused = codex.onMessage!("process_priority comes last", { inReplyTo: ask });
-  expect(refused).toBe("recorded as [FYI] only: claude owns a task that overlaps yours");
+  codex.set("busy");
+  bus.publish(newEnvelope(HUB, "notice", { to: ["codex"], kind: "task", refs: { task: "1" } }));
+  bus.publish(newEnvelope(HUB, "review #2", { to: ["codex"], kind: "review", refs: { task: "2" } }));
+  codex.set("idle"); // the batch is built while the notice is still relevant, then waits on condensation
+  await tick();
+  closed = true;
+  release();
+  await tick();
+  await tick();
+  expect(codex.got.map((e) => e.body)).toEqual(["review #2"]);
+  expect(events.filter((e) => e.t === "stale").map((e) => (e as { env: Envelope }).env.body)).toEqual(["notice"]);
+});
+
+test("a stale copy is dropped for its recipient only: other recipients and other queued events still go out", async () => {
+  const events: BusEvent[] = [];
+  const { bus, codex, kimi } = await trio(undefined, { relevant: (peer, env) => !(peer === "codex" && env.body === "shared notice") });
+  bus.tap((e) => events.push(e));
+  codex.set("busy");
+  kimi.set("busy");
+  bus.publish(newEnvelope(HUB, "shared notice", { to: ["codex", "kimi"], kind: "task", refs: { task: "1" } }));
+  bus.publish(newEnvelope(HUB, "assignment #3", { to: ["codex"], kind: "task", priority: "status", refs: { task: "3" } }));
+  bus.publish(newEnvelope(HUB, "budget", { to: ["codex"], kind: "budget" }));
+  codex.set("idle");
+  kimi.set("idle");
+  await tick();
+  expect(codex.got.map((e) => e.body)).toEqual(["assignment #3", "budget"]);
+  expect(kimi.got.map((e) => e.body)).toEqual(["shared notice"]);
+  expect(events.filter((e) => e.t === "stale").map((e) => (e as { peer: string }).peer)).toEqual(["codex"]);
+});
+
+// issue #107: a silent cohort holds an agent's message back from the members it is about, per recipient, after the
+// audience is final; everyone else gets the envelope unchanged.
+const cohortOf = (from: string, to: string) => (env: Envelope, peer: string) => (env.from === from && peer === to && env.kind === "chat" ? "you are in one turn-free cohort" : undefined);
+
+test("a held-back recipient is left out, the others get the envelope unchanged, and the sender hears why", async () => {
+  const events: BusEvent[] = [];
+  const { bus, claude, codex, kimi } = await trio(undefined, { silence: cohortOf("codex", "claude") });
+  bus.tap((e) => events.push(e));
+  const result = codex.onMessage!("[IMPORTANT] process_priority comes last");
+  expect(result).toBe("you are in one turn-free cohort");
   await tick();
   expect(claude.got).toEqual([]);
-  expect(events.filter((e) => e.t === "envelope" && e.env.from === "codex")).toMatchObject([{ dropped: "fyi", env: { body: "process_priority comes last" } }]);
+  expect(kimi.got.map((e) => `${e.priority}:${e.body}`)).toEqual(["important:process_priority comes last"]);
+  expect(events.filter((e) => e.t === "quiet")).toMatchObject([{ t: "quiet", peers: ["claude"], reason: "you are in one turn-free cohort" }]);
   bus.publish(newEnvelope("user", "next", { to: ["codex"] }));
   await tick();
-  expect(codex.got[0]!.body).toContain("your message was recorded as [FYI] only: claude owns a task that overlaps yours");
+  expect(codex.got[0]!.body).toContain("your message was not delivered to claude: you are in one turn-free cohort");
+});
+
+test("an implicit reply to a condensed digest is held back from the cohort member among the original senders only", async () => {
+  const { bus, claude, codex, kimi } = await trio(undefined, {
+    batchMax: 2,
+    silence: cohortOf("codex", "claude"),
+    condense: async (envs) => (envs.length > 1 ? [{ ...newEnvelope(DIGEST, `digest of ${envs.length}`, { to: ["codex"] }), hop: Math.max(...envs.map((e) => e.hop)) }] : envs),
+  });
+  codex.set("busy");
+  bus.publish(newEnvelope("claude", "from claude", { to: ["codex"] }));
+  bus.publish(newEnvelope("kimi", "from kimi", { to: ["codex"] }));
+  codex.set("idle");
+  await tick();
+  const digest = codex.got.find((e) => e.from === DIGEST)!;
+  codex.onMessage!("answer to both", { inReplyTo: digest, to: [DIGEST] });
+  await tick();
+  expect(kimi.got.map((e) => e.body)).toEqual(["answer to both"]);
+  expect(claude.got).toEqual([]);
+  expect(kimi.got[0]!.hop).toBe(digest.hop + 1); // the hop and the reply parent are what they would have been
+  expect(kimi.got[0]!.trace).toBe(digest.trace);
+});
+
+test("hushed() leaves out fyi and hop-limited envelopes: those are never delivered anyway", async () => {
+  const { bus } = await trio(undefined, { silence: () => "cohort" });
+  expect(bus.hushed(newEnvelope("codex", "note", { priority: "fyi" }))).toEqual([]);
+  expect(bus.hushed({ ...newEnvelope("codex", "deep", {}), hop: 99 })).toEqual([]);
+  expect(bus.hushed(newEnvelope("codex", "hi", { to: ["claude"] }))).toEqual([{ peer: "claude", reason: "cohort" }]);
 });

@@ -177,7 +177,7 @@ test("a note that arrives while a delivery with the preface is in flight survive
 // issue #106: the journal keeps what was dropped, so an operator can see why a notice never arrived.
 test("a stale notice is recorded as discarded with its reason and never handed to the peer", async () => {
   let closed = false;
-  const { bus, durable } = setupBus({ stale: (peer, env) => (closed && env.body === "notice" ? `stale: task #1 is no longer open for ${peer}` : undefined) });
+  const { bus, durable } = setupBus({ relevant: (_peer, env) => !(closed && env.body === "notice") });
   const peer = new FakePeer("claude"); bus.add(peer);
   peer.setState("busy");
   const notice = newEnvelope("hub", "notice", { to: ["claude"], kind: "task", refs: { task: "1" } });
@@ -190,5 +190,28 @@ test("a stale notice is recorded as discarded with its reason and never handed t
   expect(row.originals.map((e) => e.id)).toEqual([notice.id]);
   expect(peer.deliveries).toEqual([]);
   expect(bus.queued("claude")).toBe(0);
+  durable.close();
+});
+
+// issue #106, AC8: a stale discard never resolves another delivery. An uncertain delivery stays needs_review and holds
+// the queue until an operator acts; only then is the stale notice behind it discarded, under its own row.
+test("a stale notice behind a needs_review delivery waits for the operator and leaves that delivery's record alone", async () => {
+  let closed = false;
+  const { bus, durable } = setupBus({ relevant: (_peer, env) => !(closed && env.body === "notice") });
+  let calls = 0;
+  const peer = new FakePeer("claude", async () => { if (++calls === 1) throw new Error("socket disappeared"); });
+  bus.add(peer);
+  bus.publish(newEnvelope("user", "uncertain", { to: ["claude"], priority: "important" }));
+  await waitFor(() => durable.list("claude").some((row) => row.state === "needs_review"), "the review hold");
+  bus.publish(newEnvelope("hub", "notice", { to: ["claude"], kind: "task", refs: { task: "1" } }));
+  closed = true;
+  await Bun.sleep(20);
+  const review = durable.list("claude").find((row) => row.state === "needs_review")!;
+  expect(review).toBeDefined(); // not resolved by anything but an operator
+  expect(durable.list("claude").some((row) => row.state === "discarded")).toBe(false); // held: nothing drained
+  bus.resolveDelivery(review.id, review.revision, "discard", "operator checked the peer");
+  await waitFor(() => durable.list("claude").some((row) => row.reason?.startsWith("stale:")), "the stale discard");
+  expect(durable.get(review.id)!.reason).toBe("operator checked the peer");
+  expect(calls).toBe(1);
   durable.close();
 });

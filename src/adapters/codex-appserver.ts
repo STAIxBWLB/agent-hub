@@ -23,8 +23,9 @@ export interface CodexOptions {
   /** The native id of each turn as it starts, after the peer turned busy (issue #33: `ahub undo --context`). */
   onTurn?: (turnId: string) => void;
   /**
-   * Each completed `fileChange`, `commandExecution` and `mcpToolCall` item, for turn-free facts (issue #108). Codex
-   * emits `item/started` about when a command has finished, so only completions are reported.
+   * Each completed `fileChange`, `commandExecution`, `mcpToolCall` and `userMessage` item, for turn-free facts (issue
+   * #108): the first three are boundaries, a `userMessage` is the readback of a steered fact. Codex emits
+   * `item/started` about when a command has finished, so only completions are reported.
    */
   onItem?: (item: any) => void;
   /** How often to ask app-server for the rate limits while a TUI is attached. */
@@ -91,6 +92,11 @@ export class CodexPeer extends BasePeer {
       launch: { kind: "codex", bin: this.opts.bin ?? "codex", cwd: this.opts.cwd, appPort: this.opts.appPort, proxyPort: this.opts.proxyPort },
       ...(this.threadId ? { threadId: this.threadId } : {}),
     };
+  }
+
+  /** The app-server thread the hub drives; a new one is a new native session. */
+  get thread(): string {
+    return this.threadId;
   }
 
   get proxyUrl(): string {
@@ -439,7 +445,7 @@ export class CodexPeer extends BasePeer {
       const buf = this.deltas.get(params.itemId) ?? [];
       buf.push(params.delta);
       this.deltas.set(params.itemId, buf);
-    } else if (method === "item/completed" && ["fileChange", "commandExecution", "mcpToolCall"].includes(params.item?.type)) {
+    } else if (method === "item/completed" && ["fileChange", "commandExecution", "mcpToolCall", "userMessage"].includes(params.item?.type)) {
       try {
         this.opts.onItem?.(params.item);
       } catch (error) {

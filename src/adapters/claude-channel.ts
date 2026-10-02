@@ -222,7 +222,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const res = await hub.request({ t: "send", body, to, reply_to });
     if (!res.ok) return text(`not sent: ${res.error}`);
     if (res.recorded) return text("recorded only ([FYI]): it is on the hub console and log, and no peer spent a turn on it");
-    return text(`sent to: ${res.targets.join(", ") || "(no other peers attached)"}`);
+    const sent = `sent to: ${res.targets.join(", ") || "(no other peers attached)"}`;
+    return text(typeof res.notice === "string" ? `${sent}; ${res.notice}` : sent);
   }
   if (TASK_TOOL_NAMES.has(name)) {
     if (!hub) return text(offline());
