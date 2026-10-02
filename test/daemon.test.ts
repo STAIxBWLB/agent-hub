@@ -11,6 +11,7 @@ import { BasePeer } from "../src/hub/peers.ts";
 import { Turns } from "../src/hub/snapshots.ts";
 import { readEvents } from "../src/hub/events.ts";
 import { summarize } from "../src/hub/report.ts";
+import { factsHook } from "../src/cli/facts-hook.ts";
 import { parse as parseOverlaps } from "../scripts/overlaps.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 import { startFakeModelServer, toolCall } from "./fakes/model-server.ts";
@@ -1270,7 +1271,12 @@ test("conflicts: the notice for an owner whose task closed before delivery is dr
   codex.work = () => writeFileSync(join(dir, "shared.txt"), "codex\n");
   await console_.request({ t: "send", body: "go", to: ["codex"] });
   await until(() => readEvents(file).some((e) => e.type === "conflict") && daemon.bus.queued("kimi") > 0, "the conflict and kimi's queued notice");
-  await op("hub_task_done", { id: 1 }); // kimi's task closes before kimi hears about the conflict
+  // kimi's task closes before kimi hears about the conflict. In review it would still be open for a conflict (#91).
+  await op("hub_task_done", { id: 1 });
+  const done = JSON.parse((await op("task_show", { id: 1 })).text);
+  expect(done.state).toBe("in_review");
+  expect(daemon.bus.queued("kimi")).toBeGreaterThan(0);
+  await op("hub_review", { id: 1, verdict: "approved" });
   kimi.release();
   await until(() => readEvents(file).some((e) => e.type === "stale"), "the dropped notice");
   // The turn-end notice, and the concurrent-edit one when the two turns overlapped: each was only about kimi's #1.
@@ -1499,4 +1505,90 @@ test("turn-free: an accept answers with the overlapping owners' plans, and a typ
 
   const typo = await hub({ coordination: "turn_free" });
   await until(() => readFileSync(join(typo.stateDir, "hub.log"), "utf8").includes('coordination: "turn_free" is not "advisory" or "turn-free"; advisory applies'), "the log line");
+});
+
+// issue #108: turn-free facts, through the Claude hook and into a running Codex turn.
+test("turn-free facts: a Claude hook sees another agent's change once; none in advisory, and none while a PII task is open", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-facts-")));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, "a.txt"), "one\n");
+  const { stateDir, daemon, console_ } = await hub({ cwd: dir, coordination: "turn-free" });
+  class Quiet extends BasePeer {
+    async start() { this.setState("idle"); }
+    async deliver() {}
+    async stop() { this.setState("offline"); }
+  }
+  const kimi = new Quiet("kimi");
+  daemon.bus.add(kimi);
+  await kimi.start();
+  const claude = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" });
+  cleanup.push(() => claude.close());
+  await until(() => daemon.bus.stateOf("claude") === "idle", "claude attached");
+  const op = async (o: string, args: unknown) => console_.request({ t: "task", op: o, args });
+  await op("hub_task_propose", { title: "kimi part", class: "implement", owner: "kimi", refs: { paths: ["a.txt"] } });
+  await op("hub_task_propose", { title: "claude part", class: "implement", owner: "claude", refs: { paths: ["a.txt"] } });
+  const hook = (event: "PreToolUse" | "PostToolUse", tool: string, input: Record<string, unknown> = {}) => factsHook(JSON.stringify({ hook_event_name: event, tool_name: tool, tool_input: input }), stateDir, "claude");
+  expect(await hook("PreToolUse", "Read", { file_path: join(dir, "a.txt") })).toBeUndefined(); // the first look
+  expect(await hook("PostToolUse", "Read", { file_path: join(dir, "a.txt") })).toBeUndefined();
+  writeFileSync(join(dir, "a.txt"), "one\ntwo\n"); // nobody reported this write
+  const out = JSON.parse((await hook("PreToolUse", "Edit", { file_path: join(dir, "a.txt") }))!);
+  expect(out.hookSpecificOutput.hookEventName).toBe("PreToolUse");
+  expect(out.hookSpecificOutput.additionalContext).toContain("a.txt, changed by another agent:\n@@ -1 +1,2 @@\n one\n+two");
+  expect(await hook("PreToolUse", "Edit", { file_path: join(dir, "a.txt") })).toBeUndefined(); // once
+  expect(readEvents(join(stateDir, "events.jsonl")).filter((e) => e.type === "fact")).toMatchObject([{ peer: "claude", files: 1, via: "hook" }]);
+  // A PII task anywhere: no facts, and messages between overlapping owners go out again.
+  await op("hub_task_propose", { title: "patient 900101-1234567 follow-up", class: "implement" });
+  writeFileSync(join(dir, "a.txt"), "one\ntwo\nthree\n");
+  expect(await hook("PreToolUse", "Edit", { file_path: join(dir, "a.txt") })).toBeUndefined();
+  expect((await claude.request({ t: "send", body: "plan for a.txt", to: ["kimi"] })).ok).toBe(true);
+
+  const advisory = await hub({ cwd: dir });
+  const peer = await ControlClient.connect(advisory.stateDir, { role: "peer", peer: "claude" });
+  cleanup.push(() => peer.close());
+  expect(await factsHook(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Read", tool_input: {} }), advisory.stateDir, "claude")).toBeUndefined();
+});
+
+test("turn-free facts: Claude's edit reaches a running Codex turn by steer, and Codex's own patch never comes back to it", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-factscodex-")));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, "a.txt"), "one\n");
+  writeFileSync(join(dir, "codex.txt"), "codex\n");
+  const bin = join(dir, "..", `${dir.split("/").at(-1)}-codex.sh`);
+  writeFileSync(bin, `#!/bin/sh\nexec bun ${join(ROOT, "test/fakes/codex-bin.ts")} "$@"\n`, { mode: 0o755 });
+  cleanup.push(() => rmSync(bin, { force: true }));
+  const freePort = () => { const s = Bun.serve({ port: 0, fetch: () => new Response() }); const p = s.port as number; s.stop(true); return p; };
+  const [appPort, proxyPort] = [freePort(), freePort()];
+  const { stateDir, daemon, console_ } = await hub({ cwd: dir, coordination: "turn-free", codex_bin: bin, codexAppPort: appPort, codexProxyPort: proxyPort });
+  expect((await console_.request({ t: "start", peer: "codex" })).ok).toBe(true);
+  const tui = new WebSocket(`ws://127.0.0.1:${proxyPort}`);
+  cleanup.push(() => tui.close());
+  const fromCodex: any[] = [];
+  tui.onmessage = (ev) => fromCodex.push(JSON.parse(String(ev.data)));
+  await new Promise((r) => (tui.onopen = r));
+  tui.send(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "fake-tui" } } }));
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => daemon.bus.stateOf("codex") === "idle", "codex thread");
+  const claude = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" });
+  cleanup.push(() => claude.close());
+  await until(() => daemon.bus.stateOf("claude") === "idle", "claude attached");
+  const op = async (o: string, args: unknown) => console_.request({ t: "task", op: o, args });
+  await op("hub_task_propose", { title: "codex part", class: "implement", owner: "codex", refs: { paths: ["a.txt", "codex.txt"] } });
+  await op("hub_task_propose", { title: "claude part", class: "implement", owner: "claude", refs: { paths: ["a.txt"] } });
+  await until(() => daemon.bus.stateOf("codex") === "idle" && daemon.bus.queued("codex") === 0, "codex took its task");
+  const answers = () => fromCodex.filter((m) => m.method === "item/completed" && m.params.item.type === "agentMessage" && m.params.item.phase === "final_answer").map((m) => m.params.item.text as string);
+  const turn = async (n: number) => {
+    tui.send(JSON.stringify({ id: 10 + n, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: `ITEMS:${join(dir, "codex.txt")} work ${n}` }] } }));
+    await until(() => answers().length >= n + 1, `codex turn ${n}`); // the offer of the task was the first answer
+  };
+  await turn(1); // Codex's first look at a.txt
+  writeFileSync(join(dir, "a.txt"), "one\nclaude line\n");
+  await factsHook(JSON.stringify({ hook_event_name: "PostToolUse", tool_name: "Edit", tool_input: { file_path: join(dir, "a.txt") } }), stateDir, "claude");
+  await turn(2);
+  expect(answers().at(-1)).toBe(`echo: ITEMS:${join(dir, "codex.txt")} work 2 +steered: +claude line`);
+  const steered = readEvents(join(stateDir, "events.jsonl")).filter((e) => e.type === "fact" && e.peer === "codex");
+  expect(steered).toMatchObject([{ peer: "codex", files: 1, via: "steer" }]);
+  expect(steered[0]).not.toHaveProperty("dropped");
+  // codex.txt is Codex's own patch in every turn: never a fact for Codex.
+  await turn(3);
+  expect(answers().at(-1)).toBe(`echo: ITEMS:${join(dir, "codex.txt")} work 3`);
 });

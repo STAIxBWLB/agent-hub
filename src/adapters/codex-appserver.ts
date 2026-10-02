@@ -22,6 +22,11 @@ export interface CodexOptions {
   onTokens?: (added: number) => void;
   /** The native id of each turn as it starts, after the peer turned busy (issue #33: `ahub undo --context`). */
   onTurn?: (turnId: string) => void;
+  /**
+   * Each completed `fileChange`, `commandExecution` and `mcpToolCall` item, for turn-free facts (issue #108). Codex
+   * emits `item/started` about when a command has finished, so only completions are reported.
+   */
+  onItem?: (item: any) => void;
   /** How often to ask app-server for the rate limits while a TUI is attached. */
   usagePollMs?: number;
   cwd: string;
@@ -217,6 +222,23 @@ export class CodexPeer extends BasePeer {
       });
       const input = [{ type: "text", text: this.render(envs) }];
       link.up.send(JSON.stringify({ method: "turn/steer", id, params: { threadId: this.threadId, expectedTurnId, input } }));
+    });
+  }
+
+  /**
+   * A turn-free fact for the running turn (issue #108). Not a message: no envelope, no delivery record, nothing the
+   * turn's answer is addressed to. Resolves false when there is no running turn or app-server refuses; the fact is dropped.
+   */
+  steerText(text: string): Promise<boolean> {
+    const link = this.link;
+    const expectedTurnId = [...this.activeTurns].reverse().find((t) => !t.startsWith("unknown:"));
+    if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId) return Promise.resolve(false);
+    const id = this.nextId--;
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => this.pending.delete(id) && resolve(false), 10_000);
+      timer.unref?.();
+      this.pending.set(id, { resolve: () => (clearTimeout(timer), resolve(true)), reject: () => (clearTimeout(timer), resolve(false)) });
+      link.up.send(JSON.stringify({ method: "turn/steer", id, params: { threadId: this.threadId, expectedTurnId, input: [{ type: "text", text }] } }));
     });
   }
 
@@ -417,6 +439,12 @@ export class CodexPeer extends BasePeer {
       const buf = this.deltas.get(params.itemId) ?? [];
       buf.push(params.delta);
       this.deltas.set(params.itemId, buf);
+    } else if (method === "item/completed" && ["fileChange", "commandExecution", "mcpToolCall"].includes(params.item?.type)) {
+      try {
+        this.opts.onItem?.(params.item);
+      } catch (error) {
+        this.opts.log?.(`[${this.id}] item handler failed: ${(error as Error).message}`); // the proxy keeps going
+      }
     } else if (method === "item/completed" && params.item?.type === "agentMessage") {
       const item = params.item;
       const text: string =

@@ -45,6 +45,7 @@ import { MemoryClient, workerUrl } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { projectChain, recallFor } from "../memory/recall.ts";
 import { conflictsOf } from "./conflicts.ts";
+import { Facts } from "./facts.ts";
 import { crashPlan, lossNotice, readSessions, removeSessions, writeSessions, type SessionsFile } from "./crash.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
@@ -359,7 +360,9 @@ export async function startDaemon(opts: DaemonOptions) {
   // Turn-free coordination (issue #107): owners of overlapping tasks work without messages.
   const coordination = config.coordination === "turn-free" ? "turn-free" : "advisory";
   if (config.coordination !== coordination) log(`coordination: ${JSON.stringify(config.coordination)} is not "advisory" or "turn-free"; advisory applies`);
-  const turnFree = () => coordination === "turn-free";
+  // While any PII task is open the regime is advisory (issue #108): facts would carry file contents to cloud peers, and
+  // silence without facts would leave overlapping owners blind.
+  const turnFree = (): boolean => coordination === "turn-free" && !board.list().some((t) => t.state !== "approved" && tasks.isPii(t));
   /** Why a peer's message to an overlapping owner is only recorded (issue #107); undefined when it may go out. */
   const quiet = (env: Envelope): string | undefined => {
     if (!turnFree() || env.from === USER || env.from === HUB || env.from === DIGEST || env.priority === "fyi" || env.kind !== "chat") return undefined;
@@ -522,6 +525,9 @@ export async function startDaemon(opts: DaemonOptions) {
     held: () => Object.fromEntries(bus.knownPeers().flatMap((peer) => { const hold = queueHold(peer); return hold ? [[peer, hold]] : []; })),
   });
   staleNotice = tasks.stale;
+  // Turn-free facts (issue #108): an owner of overlapping work hears what the others changed, at its tool calls.
+  const facts = new Facts({ root: opts.cwd, tmp: join(opts.stateDir, "facts"), scope: (peer) => tasks.factScope(peer), peers: () => [...bus.peers.keys()], nameable: tasks.nameable });
+  const factsFor = (peer: PeerId): boolean => turnFree() && !!tasks.factScope(peer);
   board.onChange = (t, h) => {
     event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, pii: tasks.isPii(t) });
     // Models can self-claim after their turn begins; preserve that ownership even if they finish before settlement.
@@ -720,6 +726,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const t = tasks.accept(by, a.id, a.plan);
         // Turn-free (issue #107): the owners' plans come with every accept, as the facts the newcomer works from.
         const overlap = a.plan == null && !turnFree() ? "" : tasks.overlaps(t);
+        if (turnFree()) facts.sawPlans(by); // the plans in this answer need no fact later
         return overlap ? `${line(t)}\n${overlap}` : line(t);
       }
       case "hub_task_decline":
@@ -986,6 +993,8 @@ export async function startDaemon(opts: DaemonOptions) {
   // before it. Warns both owners once per file and task; never blocks a write.
   const conflictSeen = new Set<string>();
   const turnTasks = new Map<string, number[]>();
+  /** Work a conflict notice is about: open tasks and tasks in review (#91); a notice for anything else is dropped (#106). */
+  const CONFLICT_STATES: Task["state"][] = ["proposed", "in_progress", "changes_requested", "in_review"];
   const detectConcurrentConflicts = (record: TurnRecord, mine: Task[]) => {
     for (const otherTurn of turnLog!.concurrentWith(record)) {
       const otherTasks = (turnTasks.get(otherTurn.id) ?? []).flatMap((id) => { const task = board.get(id); return task ? [task] : []; });
@@ -1005,12 +1014,12 @@ export async function startDaemon(opts: DaemonOptions) {
         notify(`conflict: ${text}`);
         event({ type: "conflict", peer: record.peer, task: ours.id, other: theirs.id, owner: otherTurn.peer, paths: named, concurrent: true, turns: [record.id, otherTurn.id] });
         // Each owner hears it while its own task is open; once that task is closed the notice is dropped (issue #106).
-        for (const [owner, task] of [[record.peer, ours.id], [otherTurn.peer, theirs.id]] as const) if (owner !== USER && owner !== HUB) tasks.whileOpen(owner, task, text);
+        for (const [owner, task] of [[record.peer, ours.id], [otherTurn.peer, theirs.id]] as const) if (owner !== USER && owner !== HUB) tasks.whileOpen(owner, task, text, CONFLICT_STATES);
       }
     }
   };
   const detectConflicts = (peer: PeerId, turnId: string, since: number, changed: string[]) => {
-    const open = board.list().filter((t) => t.owner && ["proposed", "in_progress", "changes_requested", "in_review"].includes(t.state));
+    const open = board.list().filter((t) => t.owner && CONFLICT_STATES.includes(t.state));
     const mine = (turnTasks.get(turnId) ?? []).flatMap((id) => { const task = board.get(id); return task ? [task] : []; });
     if (mine.some((t) => tasks.isPii(t))) return; // a PII turn's files are nobody else's business
     const visible = open.filter((t) => !tasks.isPii(t));
@@ -1043,9 +1052,9 @@ export async function startDaemon(opts: DaemonOptions) {
       // Both notices are about an open task of their recipient: dropped at delivery once it is closed (issue #106).
       const settle = turnFree() ? `; do not message ${owner} (turn-free coordination): the hub shows you its changes` : `, and settle it with ${owner} via hub_send`;
       const toPeer = `Your last turn${ours} changed ${files}, which ${owner}'s open task (${tasks.publicTitle(task)}) changed before it. Check that you did not overwrite that work${settle}.${concurrent}`;
-      if (mine[0]) tasks.whileOpen(peer, mine[0].id, toPeer);
+      if (mine[0]) tasks.whileOpen(peer, mine[0].id, toPeer, CONFLICT_STATES);
       else bus.publish(newEnvelope(HUB, toPeer, { to: [peer], kind: "task" }));
-      if (owner !== USER && owner !== HUB) tasks.whileOpen(owner, task.id, `${peer}'s last turn${ours} changed ${files}, which your open task #${task.id} changed before it. Check that your work there is intact.${concurrent}`);
+      if (owner !== USER && owner !== HUB) tasks.whileOpen(owner, task.id, `${peer}'s last turn${ours} changed ${files}, which your open task #${task.id} changed before it. Check that your work there is intact.${concurrent}`, CONFLICT_STATES);
     }
   };
 
@@ -1331,6 +1340,14 @@ export async function startDaemon(opts: DaemonOptions) {
         onTurn: (native) => {
           const open = turns.get("codex");
           if (open) turnLog?.native(open.id, native);
+        },
+        // Turn-free facts (issue #108): its own writes and reads come from the items, the facts go in by steer.
+        onItem: (item) => {
+          if (!factsFor("codex")) return;
+          if (item.type === "fileChange") for (const change of Array.isArray(item.changes) ? item.changes : []) if (typeof change?.path === "string") facts.wrote("codex", change.path);
+          if (item.type === "commandExecution") for (const action of Array.isArray(item.commandActions) ? item.commandActions : []) if (action?.type === "read" && typeof action.path === "string") facts.read("codex", action.path);
+          const due = facts.due("codex", true);
+          if (due) void codex.steerText(due.text).then((steered) => event({ type: "fact", peer: "codex", files: due.files, plans: due.plans, via: "steer", ...(steered ? {} : { dropped: true }) }));
         },
         appPort: opts.codexAppPort,
         proxyPort: opts.codexProxyPort,
@@ -1866,6 +1883,30 @@ export async function startDaemon(opts: DaemonOptions) {
         const targets = bus.publish(env);
         if (c.peer && inReplyTo) bus.completeReply(c.peer, inReplyTo.id);
         return void reply({ t: "sent", ok: true, targets, recorded: priority === "fyi" });
+      }
+      case "facts": {
+        // Turn-free facts (issue #108) for a Claude hook at a tool boundary. The hook never shows an error: on any
+        // failure the answer is just empty.
+        if (!c.peer || c.role === "console") return void reply({ t: "facts", ok: false, error: "facts are for a peer" });
+        const tool = typeof msg.tool === "string" ? msg.tool.slice(0, 64) : "";
+        const input = msg.input && typeof msg.input === "object" && !Array.isArray(msg.input) ? msg.input : {};
+        const file = typeof input.file_path === "string" ? input.file_path : typeof input.notebook_path === "string" ? input.notebook_path : undefined;
+        try {
+          if (!factsFor(c.peer)) return void reply({ t: "facts", ok: true });
+          if (msg.phase === "post") {
+            if (["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(tool) && file) facts.wrote(c.peer, file);
+            else if (tool === "Read" && file) facts.read(c.peer, file);
+            else if (tool === "Bash") facts.afterShell(c.peer);
+            return void reply({ t: "facts", ok: true });
+          }
+          const due = facts.due(c.peer, false);
+          if (tool === "Bash") facts.beforeShell(c.peer);
+          if (due) event({ type: "fact", peer: c.peer, files: due.files, plans: due.plans, via: "hook" });
+          return void reply({ t: "facts", ok: true, ...(due ? { text: due.text } : {}) });
+        } catch (error) {
+          log(`facts for ${c.peer}: ${(error as Error).message}`);
+          return void reply({ t: "facts", ok: true });
+        }
       }
       case "tail":
         if (c.role !== "console" || c.tail) return;

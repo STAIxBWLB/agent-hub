@@ -317,3 +317,27 @@ test("revert is refused while a turn runs", async () => {
   await until(() => peer.state === "busy");
   await expect(peer.revert("turn1")).rejects.toThrow("not idle");
 });
+
+// issue #108: completed tool items reach onItem, and a fact goes into the running turn by steer, outside the bus.
+test("completed file and command items reach onItem; steerText goes into the running turn and is refused without one", async () => {
+  const items: any[] = [];
+  const steered: boolean[] = [];
+  let codex: CodexPeer | undefined;
+  const { bus, peer, said, tui } = await setup(60, undefined, {
+    onItem: (item) => {
+      items.push(item);
+      if (item.type === "commandExecution") void codex!.steerText("agent-hub facts: header\nFACT LINE").then((ok) => steered.push(ok));
+    },
+  });
+  codex = peer;
+  expect(await peer.steerText("no turn yet")).toBe(false);
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => peer.state === "idle");
+  tui.send(JSON.stringify({ id: 3, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: "ITEMS job" }] } }));
+  await until(() => said.length === 1);
+  expect(items.map((i) => i.type)).toEqual(["fileChange", "commandExecution"]);
+  expect(items[0].changes[0].path).toBe("/abs/src/a.ts");
+  expect(steered).toEqual([true]);
+  expect(said[0]!.body).toBe("echo: ITEMS job +steered: FACT LINE");
+  expect(bus.queued("codex")).toBe(0);
+});

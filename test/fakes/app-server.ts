@@ -67,6 +67,14 @@ export function startFakeAppServer(
         reply({ turn });
         note("turn/started", { threadId, turn });
         await Bun.sleep(delayMs);
+        if (text.includes("ITEMS")) {
+          // Tool items as Codex 0.159 reports them (issue #108): a patch, then a read the CLI parsed into an action.
+          // `ITEMS:<path>` names the file both items are about; the patch itself is up to the test.
+          const path = /ITEMS:(\S+)/.exec(text)?.[1];
+          note("item/completed", { threadId, turnId: turn.id, completedAtMs: Date.now(), item: { type: "fileChange", id: "f1", status: "completed", changes: [{ path: path ?? "/abs/src/a.ts", kind: { type: "update", move_path: null }, diff: "@@ -1 +1 @@\n-a\n+b" }] } });
+          note("item/completed", { threadId, turnId: turn.id, completedAtMs: Date.now(), item: { type: "commandExecution", id: "c1", status: "completed", command: "sed -n 1,5p src/b.ts", commandActions: [{ type: "read", command: "sed -n 1,5p src/b.ts", name: "b.ts", path: path ?? "/abs/src/b.ts" }] } });
+          await Bun.sleep(delayMs); // room for a steer from the item handler
+        }
         const item = (id: string, phase: string, t: string) =>
           note("item/completed", { threadId, turnId: turn.id, completedAtMs: Date.now(), item: { type: "agentMessage", id, phase, text: t } });
         item("m1", "commentary", "thinking out loud");

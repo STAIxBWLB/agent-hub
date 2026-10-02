@@ -144,6 +144,12 @@ export function assign(
     held?: Record<PeerId, string>;
     /** Roles from `.agenthub/config.json` (issue #92): peers with the reviewer role join the reviewer candidates after the review class's. */
     roles?: Record<string, string[]>;
+    /**
+     * Turn-free (issue #109): owners of open tasks this one overlaps, and per peer the median orientation `o` and unit
+     * time `u` (ms) recorded for this class. The work goes to the faster of the routed owner and such an owner when a
+     * split cannot finish sooner.
+     */
+    split?: { owners: PeerId[]; speeds: Record<PeerId, { o: number; u: number; n: number }> };
   } = {},
 ): Assignment {
   const policy = routing.classes[task.class];
@@ -224,7 +230,30 @@ export function assign(
 
   // Never the task's current owner by default: a decline or an escalation has to reach the next peer in the list.
   const wanted = opts.candidates ?? policy?.peers ?? [];
-  const owner = pick(wanted, "owner");
+  let owner = pick(wanted, "owner");
+  // Turn-free (issue #109): splitting overlapping work between a faster and a slower peer finishes sooner only when the
+  // slower one's orientation plus one unit beats the faster one's orientation plus two units.
+  for (const other of owner && opts.split ? opts.split.owners : []) {
+    if (other === owner || !wanted.includes(other) || blocked(other, "owner")) continue;
+    const mine = opts.split!.speeds[owner!];
+    const theirs = opts.split!.speeds[other];
+    if (!mine || !theirs) {
+      trace.push(`  split rule: no record for ${mine ? other : owner} in this class (3 approved tasks needed); routing unchanged`);
+      continue;
+    }
+    const [fast, slow] = mine.o + mine.u <= theirs.o + theirs.u ? [owner!, other] : [other, owner!];
+    const f = opts.split!.speeds[fast]!;
+    const sl = opts.split!.speeds[slow]!;
+    const secs = (ms: number) => `${Math.round(ms / 1000)} s`;
+    const sums = `${slow} needs ${secs(sl.o + sl.u)} for one unit, ${fast} ${secs(f.o + 2 * f.u)} for two`;
+    if (sl.o + sl.u < f.o + 2 * f.u) {
+      trace.push(`  split rule: ${sums}: a split pays, routing unchanged`);
+      continue;
+    }
+    trace.push(`  split rule: ${sums}: no split, ${fast} takes it`);
+    owner = fast;
+    break;
+  }
   trace.push(owner ? `owner: ${owner}` : "owner: none available, task stays proposed (ahub task assign <id> <peer>)");
   if (owner && opts.held?.[owner]) trace.push(`  hold: ${owner}'s queue is held: ${opts.held[owner]} (it receives the task once the hold is resolved)`);
 

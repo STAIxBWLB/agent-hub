@@ -11,6 +11,7 @@ export type HubEvent =
   | { type: "envelope"; id: string; from: string; to?: string[]; priority: string; hop: number; kind?: string; task?: string; bytes?: number; private?: boolean; dropped?: string }
   | { type: "overflow" | "undeliverable"; id: string; from: string; peer: string }
   | { type: "stale"; id: string; from: string; peer: string; task?: string }
+  | { type: "fact"; peer: string; files: number; plans: number; via: "hook" | "steer"; dropped?: boolean }
   | { type: "state"; peer: string; state: string }
   | { type: "turn_start"; peer: string; turn: string }
   | { type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number }

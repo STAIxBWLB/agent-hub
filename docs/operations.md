@@ -372,6 +372,30 @@ other. The default, `"advisory"`, keeps the behaviour described so far.
   records it. An owner that finishes while another is still at work is never
   held. A configured check runs after the recorded done, so the last finisher's
   check sees the integrated tree.
+- Facts: at each tool call an owner of overlapping work makes, the hub hands it
+  what the other agents changed since it last looked in the files its tasks
+  name or it has read or written: a diff of each file with who changed it and
+  for which task (60 changed lines at most, then a count), plus the overlapping
+  owners' new plans, once. Claude gets them with the tool result through a
+  hook that `ahub claude` adds to the session's `--settings` next to the status
+  line tee (a `--settings` of your own turns both off; `templates/claude-hooks.json`
+  has the same hook as `ahub facts --hook` for a manual setup). Codex gets them
+  by steer into its running turn; a fact with no running turn is dropped. Facts
+  never go through the bus or the delivery journal; `events.jsonl` records each
+  one as a `fact` event. Kimi, Pi and the local worker get none yet.
+- Attribution: every Claude tool call is bracketed by the hook, so its writes,
+  shell commands included, are reported; Codex reports its patches. A change no
+  report explains counts as Codex's own from its side and as "another agent's"
+  from Claude's.
+- While any PII task is open the project behaves as advisory: no facts (they
+  would carry file contents to cloud peers) and no silence.
+- Routing (split rule): a routed task (no owner named) that overlaps another
+  owner's open task goes to the faster of the routed peer and that owner when a
+  split cannot finish sooner: when the slower peer's orientation plus one task
+  takes at least as long as the faster peer's orientation plus two. Speeds are
+  medians over each peer's last 20 approved tasks in the class that it was
+  handed and did itself (at least 3); without them routing is unchanged.
+  `ahub route explain <id>` shows the rule's line.
 
 ## Approvals and pauses
 

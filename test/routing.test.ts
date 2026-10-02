@@ -108,3 +108,32 @@ test("failing peers are skipped; held peers stay eligible and the trace names th
   const both = assign(t, { local: "idle", codex: "idle", claude: "idle" }, routing, { failing: { local: "x" }, held: { codex: "needs_review delivery d2" } });
   expect(both).toMatchObject({ owner: "codex", reviewer: "claude" });
 });
+
+// issue #109: overlapping work goes to one owner when a split between a faster and a slower peer cannot finish sooner.
+test("split rule: no split when the slower peer's one unit takes as long as the faster peer's two, and the trace says why", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-split-")));
+  const t = { class: "implement" as const, signals: [] };
+  const states = { codex: "idle", kimi: "busy" } as const;
+  expect(assign(t, states, routing).owner).toBe("codex"); // the configured order, without the rule
+  // kimi owns the overlapping task and is fast; codex, routed first, is slow: 15 + 60 >= 10 + 2 * 25.
+  const speeds = { codex: { o: 15_000, u: 60_000, n: 5 }, kimi: { o: 10_000, u: 25_000, n: 5 } };
+  const fused = assign(t, states, routing, { split: { owners: ["kimi"], speeds } });
+  expect(fused.owner).toBe("kimi");
+  expect(fused.trace).toContain("  split rule: codex needs 75 s for one unit, kimi 60 s for two: no split, kimi takes it");
+  // A fast codex (5 + 50) and a slow kimi (40 + 30): one unit of kimi's, 70 s, beats two of codex's, 105 s, so a split pays.
+  const pays = assign(t, states, routing, { split: { owners: ["kimi"], speeds: { codex: { o: 5_000, u: 50_000, n: 5 }, kimi: { o: 40_000, u: 30_000, n: 5 } } } });
+  expect(pays.owner).toBe("codex");
+  expect(pays.trace).toContain("  split rule: kimi needs 70 s for one unit, codex 105 s for two: a split pays, routing unchanged");
+});
+
+test("split rule: without a record for both peers, or for an owner routing would not pick, routing is unchanged", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-split-")));
+  const t = { class: "implement" as const, signals: [] };
+  const states = { codex: "idle", kimi: "idle" } as const;
+  const missing = assign(t, states, routing, { split: { owners: ["kimi"], speeds: { kimi: { o: 1, u: 1, n: 3 } } } });
+  expect(missing.owner).toBe("codex");
+  expect(missing.trace).toContain("  split rule: no record for codex in this class (3 approved tasks needed); routing unchanged");
+  const speeds = { codex: { o: 15_000, u: 60_000, n: 5 }, kimi: { o: 10_000, u: 25_000, n: 5 } };
+  expect(assign(t, states, routing, { split: { owners: ["kimi"], speeds }, exclude: ["kimi"] }).owner).toBe("codex"); // kimi declined
+  expect(assign(t, states, routing, { split: { owners: ["claude"], speeds: { ...speeds, claude: { o: 1, u: 1, n: 9 } } } }).owner).toBe("codex"); // not a candidate for this class
+});

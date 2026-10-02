@@ -220,6 +220,41 @@ export class Tasks {
   }
 
   /**
+   * Recorded speeds per peer for a class (issue #109): over its last 20 tasks approved within the outcome window that it
+   * was handed and did itself, the median time from being handed the task to `accepted` (orientation) and from
+   * `accepted` to `done` (one unit). Claims are left out: their accept follows at once. Fewer than 3 tasks: no record.
+   */
+  speeds(cls: TaskClass, now = Date.now()): Record<PeerId, { o: number; u: number; n: number }> {
+    const samples = new Map<PeerId, { o: number[]; u: number[] }>();
+    const recent = this.d.board.list("approved").filter((t) => t.class === cls && t.owner && t.owner !== USER).sort((a, b) => b.updated - a.updated);
+    for (const t of recent) {
+      const given = [...t.history].reverse().find((h) => OWNERSHIP_EVENTS.has(h.event) && h.event !== "unassigned" && (h.owner === undefined || h.owner === t.owner));
+      if (!given || given.by === t.owner) continue; // a claim
+      const accepted = t.history.find((h) => h.event === "accepted" && h.by === t.owner && h.at >= given.at);
+      const done = [...t.history].reverse().find((h) => h.event === "done" && h.by === t.owner);
+      if (!accepted || !done || done.at < accepted.at || now - done.at > OUTCOMES_KEPT_MS) continue;
+      const s = samples.get(t.owner!) ?? { o: [], u: [] };
+      if (s.o.length >= 20) continue;
+      s.o.push(accepted.at - given.at);
+      s.u.push(done.at - accepted.at);
+      samples.set(t.owner!, s);
+    }
+    const median = (xs: number[]) => {
+      const v = [...xs].sort((a, b) => a - b);
+      return v.length % 2 ? v[(v.length - 1) / 2]! : (v[v.length / 2 - 1]! + v[v.length / 2]!) / 2;
+    };
+    return Object.fromEntries([...samples].filter(([, s]) => s.o.length >= 3).map(([p, s]) => [p, { o: median(s.o), u: median(s.u), n: s.o.length }]));
+  }
+
+  /** The split rule's input for routing a task in turn-free (issue #109): owners it overlaps, and their speeds. */
+  private splitInput(task: Task): { split?: { owners: PeerId[]; speeds: Record<PeerId, { o: number; u: number; n: number }> } } {
+    if (!this.turnFree()) return {};
+    // As if unassigned, so `explain` on an assigned task sees what assignment saw (its own owner's other tasks too).
+    const owners = [...new Set(this.overlapHits({ ...task, owner: null }).map((h) => h.task.owner!).filter((p) => p !== USER && p !== HUB))];
+    return owners.length ? { split: { owners, speeds: this.speeds(task.class) } } : {};
+  }
+
+  /**
    * Work on these places failed (a check failure, or changes requested): approvals of other tasks on the same places
    * within the window were contradicted. Each approval counts once.
    */
@@ -318,6 +353,22 @@ export class Tasks {
 
   turnFree = (): boolean => this.d.turnFree?.() ?? false;
 
+  /**
+   * What `peer`'s turn-free facts cover (issue #108): the files its open tasks that overlap another owner's name, the
+   * plans of those other tasks, and the task its own writes are reported under. Undefined without such a task.
+   */
+  factScope = (peer: PeerId): { paths: string[]; plans: { task: number; owner: PeerId; text: string }[]; task?: { id: number; title: string } } | undefined => {
+    const mine = this.d.board.list().filter((t) => t.owner === peer && OPEN.includes(t.state) && !this.isPii(t));
+    const hits = mine.map((t) => ({ t, hits: this.overlapHits(t) })).filter((m) => m.hits.length);
+    if (!hits.length) return undefined;
+    const paths = [...new Set(hits.flatMap((m) => this.places(m.t).paths))].filter((p) => p !== "." && this.nameable(p));
+    const others = new Map<number, Task>();
+    for (const m of hits) for (const h of m.hits) others.set(h.task.id, h.task);
+    const plans = [...others.values()].map((t) => ({ task: t.id, owner: t.owner!, text: planText(t.plan) })).filter((p) => p.text);
+    const first = hits[0]!.t;
+    return { paths, plans, task: { id: first.id, title: first.title } };
+  };
+
   /** Whether some open task of `a` overlaps some open task of `b` (paths or symbols, issue #31). */
   overlapping(a: PeerId, b: PeerId): boolean {
     if (a === b) return false;
@@ -332,12 +383,15 @@ export class Tasks {
    * ponytail: kept in memory, so after a restart such a notice is delivered whatever its task's state; persist the
    * condition if stale notices after restarts show up.
    */
-  private readonly conditional = new Map<string, { peer: PeerId; task: number }>();
+  private readonly conditional = new Map<string, { peer: PeerId; task: number; states: Task["state"][] }>();
 
-  /** Publish a notice about `task`, which only matters to `to` while that task is open for it (issue #106). */
-  whileOpen(to: PeerId, task: number, body: string): void {
+  /**
+   * Publish a notice about `task`, which only matters to `to` while that task is in one of `states` for it (issue
+   * #106): open work by default; the conflict notices of #91 count a task in review too.
+   */
+  whileOpen(to: PeerId, task: number, body: string, states: Task["state"][] = OPEN): void {
     const env = newEnvelope(HUB, body, { to: [to], kind: "task", refs: { task: String(task) } });
-    this.conditional.set(env.id, { peer: to, task });
+    this.conditional.set(env.id, { peer: to, task, states });
     if (this.conditional.size > 1024) this.conditional.delete(this.conditional.keys().next().value as string);
     this.d.bus.publish(env);
   }
@@ -347,7 +401,7 @@ export class Tasks {
     const c = this.conditional.get(env.id);
     if (!c || c.peer !== peer) return undefined;
     const t = this.d.board.get(c.task);
-    if (t && t.owner === peer && OPEN.includes(t.state)) return undefined;
+    if (t && t.owner === peer && c.states.includes(t.state)) return undefined;
     this.conditional.delete(env.id);
     return `stale: task #${c.task} is no longer open for ${peer}`;
   };
@@ -447,7 +501,7 @@ export class Tasks {
     if (typeof target === "number") {
       const task = this.d.board.get(target);
       if (!task) throw new Error(`no task #${target}`);
-      return [`task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"})`, "if it were assigned now:", ...assign(task, this.states(), routing, { exclude: this.declined(task), waitsFor: this.waitsFor(task), ...this.weights(task.class) }).trace];
+      return [`task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"})`, "if it were assigned now:", ...assign(task, this.states(), routing, { exclude: this.declined(task), waitsFor: this.waitsFor(task), ...this.splitInput(task), ...this.weights(task.class) }).trace];
     }
     const draft = { title: target.title, detail: target.detail ?? "", refs: target.refs ?? {} };
     return assign({ class: target.class, signals: detectSignals(draft, routing, this.d.cwd) }, this.states(), routing, this.weights(target.class)).trace;
@@ -472,7 +526,7 @@ export class Tasks {
 
   private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; claim?: boolean } = {}): Promise<Task> {
     const waits = this.waitsFor(task);
-    const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class) });
+    const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : this.splitInput(task)), waitsFor: waits, ...this.weights(task.class) });
     if (waits.length) {
       this.d.notify(`task ${this.publicTitle(task)} waits for ${waits.map((id) => `#${id}`).join(", ")}; it is offered once they are approved`);
       return task;

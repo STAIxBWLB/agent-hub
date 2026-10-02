@@ -6,6 +6,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - A completed-change or edit-conflict notice about its recipient's open task is dropped when it would be delivered after that task closed, instead of starting a turn; the journal records it as discarded and `events.jsonl` as `stale` (#106).
 - Opt-in `coordination: "turn-free"`: owners of overlapping tasks do not message each other (such messages are recorded as fyi with the reason), overlap texts carry the other owner's plan instead of asking to settle by message, and the last owner to finish an overlapping set is asked once at `hub_task_done` to check its work against the others before its done is recorded (#107).
+- Turn-free facts: at each tool call an owner of overlapping work gets the other agents' changes to its files since it last looked, as attributed diffs, plus new plans; Claude through a hook that `ahub claude` adds in turn-free projects, Codex by steer into its running turn. No message, no delivery record. Off while a PII task is open (#108).
+- Turn-free split rule: a routed task that overlaps another owner's open task goes to the faster of the two peers when splitting cannot finish sooner, judged from recorded task times; `ahub route explain` shows it (#109).
 
 ## 0.12.3
 

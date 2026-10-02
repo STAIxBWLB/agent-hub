@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { ControlClient, readControl } from "../hub/control-client.ts";
 import { loadConfig } from "../hub/daemon.ts";
+import { factsHook } from "./facts-hook.ts";
 import { projectContext, realPath } from "../hub/project.ts";
 import { Registry, type Project } from "../hub/registry.ts";
 import { inspectProject, startProject, stopProject, runProjectDaemon } from "../hub/lifecycle.ts";
@@ -91,6 +92,7 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub report [--since 7d|<iso>] [--json]  turns, tokens, messages, overlaps and task events per period
   ahub check-path <file> [--peer <id>]  other owners' open tasks that claim or changed a file
   ahub check-path --hook        the same as a Claude Code PreToolUse hook (templates/claude-hooks.json); never blocks
+  ahub facts --hook             turn-free facts as a Claude Code PreToolUse and PostToolUse hook (issue #108); never blocks
   ahub turns [peer] [--limit N]  recent turns and the files each changed (a git work tree only)
   ahub undo <turn> [--yes] [--context]  put back the files a turn changed; refuses files changed since.
                                Without --yes it only lists them; --context also drops a Codex turn from its conversation
@@ -503,7 +505,9 @@ const commands: Record<string, () => Promise<void> | void> = {
         // no such file, or no status line in it
       }
     }
-    const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir, ...(original ? { original } : {}) } });
+    // A turn-free project (issue #108) gets the facts hook before and after every tool call.
+    const facts = projectConfig().coordination === "turn-free" ? { script: join(import.meta.dir, "facts-hook.ts"), stateDir } : undefined;
+    const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir, ...(original ? { original } : {}) }, ...(facts ? { facts } : {}) });
     if (launch.warning) console.error(launch.warning);
     exec(launch.cmd, launch.args);
   },
@@ -781,6 +785,15 @@ const commands: Record<string, () => Promise<void> | void> = {
   report: () => {
     const r = summarize(readEvents(join(stateDir, "events.jsonl"), since()));
     console.log(args.includes("--json") ? JSON.stringify(r, null, 2) : formatReport(r).join("\n"));
+  },
+  facts: async () => {
+    if (!args.includes("--hook")) return fail("usage: ahub facts --hook (a Claude Code PreToolUse and PostToolUse hook)");
+    try {
+      const out = await factsHook(await Bun.stdin.text(), stateDir, process.env.AGENTHUB_PEER_ID ?? "claude");
+      if (out) console.log(out);
+    } catch {
+      // a hook that fails must not get in the way of the tool call
+    }
   },
   "check-path": async () => {
     const hook = args.includes("--hook");
