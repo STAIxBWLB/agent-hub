@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
 import { ControlClient } from '../../src/hub/control-client.ts';
 import { realPath } from '../../src/hub/project.ts';
-import { statusLineSettings } from '../../src/cli/launch.ts';
+import { sessionSettings, statusLineSettings } from '../../src/cli/launch.ts';
 import { readEvents } from '../../src/hub/events.ts';
 process.umask(0o077);
 const argv = process.argv.slice(2), runArg = argv[argv.indexOf('--run') + 1], inputArg = argv[argv.indexOf('--private-inputs') + 1], upstreamArg = argv[argv.indexOf('--upstream-root') + 1], probeArg = argv[argv.indexOf('--probe-target') + 1];
@@ -349,16 +349,25 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const baselineJson = JSON.stringify(ordered);
     if (baselinePaths.length !== preparedFixture.baseline_paths || hash(baselineJson) !== preparedFixture.baseline_sha256)
         throw new Error('fresh fixture baseline content/path mismatch');
-    writeFileSync(join(dir, 'AGENTS.md'), '# Sealed CooperBench fixture\nYou are an authorized native coding agent in a disposable benchmark project. Work only inside this directory. No external apps/messages, installs, network requests, history lookup, commits, subagents, test edits or changes to .gitignore, AGENTS.md, .claude or .agenthub. Hidden tests and gold solutions are not available. Use native source tools and local shell when needed. Each assigned task is the only work to do. Accept with a concrete plan, coordinate interface contracts with the named peer when source overlaps, then complete with hub_task_done. Do not propose tasks. The other peer owns only its assigned feature. You may agree on integration, but do not silently overwrite its work. FYI needs no acknowledgement. Final answer [FYI]. Claude uses hub_send with reply_to for channel replies. No hidden test feedback is supplied.\n');
+    // The turn-free arm (issue #110) differs only in how owners coordinate: no messages, facts from the hub.
+    const turnFree = kind === 'hub-turnfree-codex-claude';
+    const coordination = turnFree
+        ? 'Accept with a concrete plan, then complete with hub_task_done. Do not message the other peer: the hub shows you its changes at your tool calls and asks the last to finish to check its work.'
+        : 'Accept with a concrete plan, coordinate interface contracts with the named peer when source overlaps, then complete with hub_task_done.';
+    writeFileSync(join(dir, 'AGENTS.md'), `# Sealed CooperBench fixture\nYou are an authorized native coding agent in a disposable benchmark project. Work only inside this directory. No external apps/messages, installs, network requests, history lookup, commits, subagents, test edits or changes to .gitignore, AGENTS.md, .claude or .agenthub. Hidden tests and gold solutions are not available. Use native source tools and local shell when needed. Each assigned task is the only work to do. ${coordination} Do not propose tasks. The other peer owns only its assigned feature. ${turnFree ? 'Do not silently overwrite its work.' : 'You may agree on integration, but do not silently overwrite its work.'} FYI needs no acknowledgement. Final answer [FYI]. Claude uses hub_send with reply_to for channel replies. No hidden test feedback is supplied.\n`);
     writeFileSync(join(dir, '.gitignore'), readFileSync(join(dir, '.gitignore'), 'utf8') + '\n.agenthub/\n.claude/\n');
     const state = join(dir, '.agenthub/state');
     mkdirSync(join(dir, '.agenthub'), { recursive: true, mode: 0o700 });
     mkdirSync(join(dir, '.claude'), { mode: 0o700 });
     const denied = [...protectedRoots, ...[join(runs, 'runs'), join(runs, 'patches'), join(runs, 'private'), ...(await (async () => { const fs = await import('node:fs/promises'); return (await fs.readdir(join(runs, 'fixtures'))).map(x => join(runs, 'fixtures', x)).filter(x => resolve(x) !== resolve(dir)); })())]];
-    writeFileSync(join(dir, '.agenthub/config.json'), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, snapshots: { enabled: true, keep: 50 }, watchdog_ms: 360000, batch_ms: 0, batch_max: 1, tasks: { release_after_min: 0 }, roles: { codex: ['implementer'], claude: ['implementer'] }, budget: { poll_min: 1 }, approvals: { notify: false }, codex_bin: codexBin }));
+    writeFileSync(join(dir, '.agenthub/config.json'), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, snapshots: { enabled: true, keep: 50 }, watchdog_ms: 360000, batch_ms: 0, batch_max: 1, tasks: { release_after_min: 0 }, roles: { codex: ['implementer'], claude: ['implementer'] }, budget: { poll_min: 1 }, approvals: { notify: false }, codex_bin: codexBin, ...(turnFree ? { coordination: 'turn-free' } : {}) }));
     writeFileSync(join(dir, '.agenthub/routing.toml'), '[local]\nfixed_model="coding"\n[classes.implement]\npeers=["codex","claude"]\nescalate_to=[]\n[classes.review]\npeers=[]\nlocal_allowed=false\n');
     const permissions = { defaultMode: 'acceptEdits', allow: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', ...hubNames.map(n => 'mcp__agent-hub__' + n)], deny: ['WebFetch', 'WebSearch', 'Agent', 'Skill', 'Read(./.agenthub/**)', 'Read(./.claude/**)', 'Edit(./.agenthub/**)', 'Edit(./.claude/**)', 'Edit(./AGENTS.md)', 'Edit(./.gitignore)', 'Edit(./tests/**)'] };
-    const settings = { statusLine: JSON.parse(statusLineSettings({ script: join(repo, 'src/cli/statusline-tee.ts'), stateDir: state })).statusLine, permissions, disableAllHooks: true, sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: denied } } };
+    // Hooks are equal across arms (issue #110): none of the user's or a plugin's; the turn-free arm runs the hub's own
+    // facts hook, which is part of its treatment. `--setting-sources project` keeps user settings out.
+    const tee = { script: join(repo, 'src/cli/statusline-tee.ts'), stateDir: state };
+    const session = JSON.parse(turnFree ? sessionSettings(tee, { script: join(repo, 'src/cli/facts-hook.ts'), stateDir: state }) : statusLineSettings(tee));
+    const settings = { statusLine: session.statusLine, permissions, ...(turnFree ? { disableAllHooks: false, hooks: session.hooks } : { disableAllHooks: true }), sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: denied } } };
     writeFileSync(join(dir, '.claude/settings.json'), JSON.stringify(settings));
     const candidateMcp = join(dir, '.claude/candidate-mcp.json');
     writeFileSync(candidateMcp, JSON.stringify({ mcpServers: { 'agent-hub': { command: 'bun', args: [join(repo, 'plugins/agent-hub/server.js')], env: { AGENTHUB_STATE_DIR: state, AGENTHUB_PROJECT_DIR: dir, AGENTHUB_PEER_ID: 'claude' } } } }), { mode: 0o600 });
@@ -447,7 +456,8 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             await new Promise<void>((res, rej) => { w.onopen = () => res(); w.onerror = () => rej(new Error('Codex proxy failed')); });
             await rpc('initialize', { clientInfo: { name: 'ahub-native-benchmark', version: '1' }, capabilities: { experimentalApi: true } });
             w.send(JSON.stringify({ method: 'initialized' }));
-            thread = await rpc('thread/start', { cwd: dir, model: manifest.models.codex, approvalPolicy: 'never', sandbox: 'workspace-write', config: { 'features.memories': false, 'features.external_agent_memory_import': false, model_reasoning_effort: manifest.effort.codex, web_search: 'disabled', sandbox_workspace_write: { network_access: false, exclude_slash_tmp: true, exclude_tmpdir_env_var: true } } });
+            // No user or plugin hooks in any arm (issue #110): they cost Codex a median 5.7 s per session on 0.12.2.
+            thread = await rpc('thread/start', { cwd: dir, model: manifest.models.codex, approvalPolicy: 'never', sandbox: 'workspace-write', config: { 'features.memories': false, 'features.external_agent_memory_import': false, 'features.codex_hooks': false, model_reasoning_effort: manifest.effort.codex, web_search: 'disabled', sandbox_workspace_write: { network_access: false, exclude_slash_tmp: true, exclude_tmpdir_env_var: true } } });
             if (typeof thread.thread?.cwd !== 'string' || realPath(thread.thread.cwd) !== realPath(dir)) throw new Error('Codex native thread cwd mismatch');
             if (thread.model !== manifest.models.codex)
                 throw new Error('Codex model mismatch');
@@ -465,9 +475,9 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         if (setupOnly) { endReason = 'setup-calibration'; return; }
         const op = async (op: string, args: any) => { const r = await c.request({ t: 'task', op, args }); if (!r.ok)
             throw new Error(r.error); return r.text; };
-        const assigned = kind === 'hub-codex-claude' && index % 2 ? ['claude', 'codex'] : actors;
+        const assigned = kind.startsWith('hub-') && index % 2 ? ['claude', 'codex'] : actors;
         const input = cachedInputs[index];
-        const detail = 'Implement only the assigned feature(s) below in the sealed source tree. You have a 300 second active-work limit with no artificial tool-step cap. Do not touch fixture metadata, tests, history or other directories; no installs, web or external apps. Use hub_task_accept with a concrete source plan and hub_task_done on completion. Coordinate shared-file interfaces with the named other owner when present. Do not acknowledge FYI or conflict notices unless work is needed. Final [FYI].\n\n';
+        const detail = `Implement only the assigned feature(s) below in the sealed source tree. You have a 300 second active-work limit with no artificial tool-step cap. Do not touch fixture metadata, tests, history or other directories; no installs, web or external apps. Use hub_task_accept with a concrete source plan and hub_task_done on completion. ${turnFree ? 'Do not message the other owner; the hub shows you its changes as you work.' : 'Coordinate shared-file interfaces with the named other owner when present.'} Do not acknowledge FYI or conflict notices unless work is needed. Final [FYI].\n\n`;
         started = Date.now();
         for (let k = 0; k < assigned.length; k++) {
             const prompts = assigned.length === 1 ? input.prompts : [input.prompts[k]];
@@ -643,7 +653,7 @@ try {
     for (const i of selected) {
         if (stopRequested)
             break;
-        const order = [...m.arms.slice(i % 3), ...m.arms.slice(0, i % 3)];
+        const order = [...m.arms.slice(i % m.arms.length), ...m.arms.slice(0, i % m.arms.length)];
         for (const kind of order) {
             if (stopRequested)
                 break;

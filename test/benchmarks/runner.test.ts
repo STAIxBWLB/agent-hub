@@ -126,3 +126,21 @@ test("crash trust restoration preserves native updates to unrelated project fiel
     const value=JSON.parse(readFileSync(trust,"utf8"));expect(value.projects[project]).toEqual({hasTrustDialogAccepted:false,lastCost:2});expect(value.projects.other).toEqual({untouched:true});
   } finally {rmSync(root,{recursive:true,force:true});}
 });
+
+test("a v2 manifest prepares the turn-free arm too, and an arm list that matches no protocol is refused", () => {
+  const root=fixture();
+  try {
+    const archive=join(root,"sample_repo-7.tar");
+    const pack=spawnSync("python3",["-c",`import tarfile,io; t=tarfile.open(${JSON.stringify(archive)},'w'); i=tarfile.TarInfo('tracked.py'); i.size=1; t.addfile(i,io.BytesIO(b'a')); t.close()`]);
+    expect(pack.status).toBe(0);
+    const archiveHash=createHash("sha256").update(readFileSync(archive)).digest("hex");
+    const manifest=(arms:string[])=>({schema:"agent-hub.cooperbench-run/v1",upstream:{commit:"63b9d44d9f39a02fccf5bf0052db48a917a011fd"},arms,cases:[{repo:"sample_repo",task:7,features:[1,2],image_digest:"sample@sha256:"+"d".repeat(64),base_commit:"e".repeat(40),archive_sha256:archiveHash,prompt_sha256:["a".repeat(64),"b".repeat(64)]}]});
+    const prepare=(arms:string[],out:string)=>{const path=join(root,`${out}.json`);writeFileSync(path,JSON.stringify(manifest(arms)));return spawnSync("python3",[script,"prepare","--manifest",path,"--archives",root,"--output",join(root,out)],{encoding:"utf8"});};
+    const v2=prepare(["solo-codex","solo-claude","hub-codex-claude","hub-turnfree-codex-claude"],"v2");
+    if(v2.status!==0) throw new Error(v2.stderr);
+    expect(JSON.parse(readFileSync(join(root,"v2","prepared.json"),"utf8")).fixtures.map((f:any)=>f.arm)).toEqual(["solo-codex","solo-claude","hub-codex-claude","hub-turnfree-codex-claude"]);
+    const odd=prepare(["solo-codex","hub-turnfree-codex-claude"],"odd");
+    expect(odd.status).not.toBe(0);
+    expect(odd.stderr).toContain("versioned protocol");
+  } finally {rmSync(root,{recursive:true,force:true});}
+});

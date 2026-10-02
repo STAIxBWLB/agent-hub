@@ -5,7 +5,9 @@ import argparse, hashlib, json, os, re, shutil, subprocess, sys, tarfile
 from pathlib import Path, PurePosixPath
 
 SCHEMA = "agent-hub.cooperbench-run/v1"
-ARMS = ("solo-codex", "solo-claude", "hub-codex-claude")
+ARMS_V1 = ("solo-codex", "solo-claude", "hub-codex-claude")
+# Issue #110: manifest v2 adds the turn-free collaboration arm; a v1 manifest keeps its three arms for earlier cohorts.
+PROTOCOL_ARMS = (ARMS_V1, ARMS_V1 + ("hub-turnfree-codex-claude",))
 
 class BenchError(RuntimeError): pass
 
@@ -21,10 +23,15 @@ def git(cwd: Path, *args: str):
     p = subprocess.run(["git", *args], cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if p.returncode: raise BenchError(p.stderr.strip() or "git operation failed")
     return p.stdout.strip()
+def arms_of(m):
+    arms=tuple(m.get("arms") or ())
+    if arms not in PROTOCOL_ARMS: raise BenchError("arms must match a versioned protocol")
+    return arms
+
 def validate_manifest(m):
     if m.get("schema") != SCHEMA or m.get("upstream", {}).get("commit") != "63b9d44d9f39a02fccf5bf0052db48a917a011fd":
         raise BenchError("unsupported schema or upstream commit")
-    if m.get("arms") != list(ARMS): raise BenchError("arms must match the versioned protocol")
+    arms_of(m)
     cases=m.get("cases")
     if not isinstance(cases,list) or not cases: raise BenchError("manifest has no cases")
     seen=set()
@@ -97,7 +104,7 @@ def prepare(args):
     for i,c in enumerate(m["cases"]):
         archive=Path(c["archive"]).resolve()
         if file_sha(archive)!=c["archive_sha256"]: raise BenchError(f"archive hash mismatch for case {i}")
-        for arm in ARMS:
+        for arm in arms_of(m):
             dest=root/"fixtures"/f"{i:02d}-{arm}"
             if dest.exists(): raise BenchError("fixture already exists")
             dest.mkdir(parents=True,mode=0o700)
@@ -137,9 +144,10 @@ def grade(args):
     if prep.get("runner_sha256")!=file_sha(Path(__file__)) or prep.get("native_runner_sha256")!=file_sha(Path(__file__).with_name("native.ts")) or prep.get("evaluator_sha256")!=file_sha(args.evaluator): raise BenchError("benchmark runner/evaluator changed after fixture preparation")
     if cohort.get("runner_sha256")!=prep.get("runner_sha256") or cohort.get("native_runner_sha256")!=prep.get("native_runner_sha256"): raise BenchError("run source pins differ from prepared fixture")
     if cohort.get("calibration"): raise BenchError("setup calibration is never graded")
-    if cohort.get("arms")!=list(ARMS): raise BenchError("run cohort does not contain every predeclared arm")
+    arms=arms_of(m)
+    if cohort.get("arms")!=list(arms): raise BenchError("run cohort does not contain every predeclared arm")
     prepared_keys=[(int(x["case"]),x["arm"]) for x in prep.get("fixtures",[])]
-    if len(prepared_keys)!=len(m["cases"])*len(ARMS) or len(set(prepared_keys))!=len(prepared_keys) or set(prepared_keys)!={(i,arm) for i in range(len(m["cases"])) for arm in ARMS}: raise BenchError("prepared fixture matrix is incomplete or duplicated")
+    if len(prepared_keys)!=len(m["cases"])*len(arms) or len(set(prepared_keys))!=len(prepared_keys) or set(prepared_keys)!={(i,arm) for i in range(len(m["cases"])) for arm in arms}: raise BenchError("prepared fixture matrix is incomplete or duplicated")
     try: restored=load(root/"restoration.json")
     except Exception as e: raise BenchError("protected inputs were not restored") from e
     if restored.get("restored") is not True: raise BenchError("protected inputs were not restored")
@@ -178,7 +186,7 @@ def grade(args):
 
     fixture_map={(int(x["case"]),x["arm"]):x for x in prep["fixtures"]}
     for case in selected:
-      for arm in ARMS:
+      for arm in arms:
         fixture=fixture_map[(case,arm)]
         cwd=Path(fixture["cwd"])
         if not cwd.is_dir() or cwd.resolve().parent!=(root/"fixtures").resolve(): raise BenchError("fixture cwd identity mismatch")
@@ -210,7 +218,7 @@ def grade(args):
         result=ev.get("both_passed")
         claude_usage=run.get("readiness",{}).get("claude",{}).get("nativeUsage")
         rows.append({"case":case,"arm":arm,"status":"scored" if isinstance(result,bool) else "unavailable","pass":result if isinstance(result,bool) else None,"input_sha256":input_hash,"patch_path":str(patch_path),"evaluation_path":str(output),"evaluation_sha256":file_sha(output),"evaluator_sha256":eval_hash,"native_usage":{"codex":run.get("codexUsage"),"claude":claude_usage}})
-    expected_rows=[(case,arm) for case in selected for arm in ARMS]
+    expected_rows=[(case,arm) for case in selected for arm in arms]
     actual_rows=[(row["case"],row["arm"]) for row in rows]
     if actual_rows!=expected_rows or len(set(actual_rows))!=len(actual_rows): raise BenchError("grade rows do not exactly cover the fixed cohort")
     dump(root/"grade.json",{"schema":SCHEMA,"manifest_sha256":prep["manifest_sha256"],"runner_sha256":prep["runner_sha256"],"native_runner_sha256":prep["native_runner_sha256"],"evaluator_sha256":eval_hash,"cohort":selected,"controls":controls,"rows":rows})
@@ -220,7 +228,8 @@ def report(args):
     root=args.run.resolve(); m=load(root/"manifest.json"); grade=load(root/"grade.json");cohort=load(root/"cohort.json")
     if grade.get("manifest_sha256")!=file_sha(root/"manifest.json") or cohort.get("manifest_sha256")!=grade.get("manifest_sha256"): raise BenchError("stale grade: manifest hash differs")
     if grade.get("runner_sha256")!=cohort.get("runner_sha256") or grade.get("native_runner_sha256")!=cohort.get("native_runner_sha256"): raise BenchError("stale grade: runner source hashes differ")
-    expected_rows=[(case,arm) for case in cohort["cases"] for arm in ARMS]
+    arms=arms_of(m)
+    expected_rows=[(case,arm) for case in cohort["cases"] for arm in arms]
     actual_rows=[(row.get("case"),row.get("arm")) for row in grade.get("rows",[])]
     if grade.get("cohort")!=cohort["cases"] or actual_rows!=expected_rows or len(set(actual_rows))!=len(actual_rows): raise BenchError("stale grade: row coverage differs from the fixed cohort")
     for row in grade.get("rows",[]):
@@ -234,7 +243,7 @@ def report(args):
             if not evaluation.is_file() or file_sha(evaluation)!=item.get("evaluation_sha256") or load(evaluation).get("input_sha256")!=item.get("input_sha256"):
                 raise BenchError("stale evaluation control: input or output hash differs")
     by_arm={}
-    for arm in ARMS:
+    for arm in arms:
         rows=[x for x in grade["rows"] if x["arm"]==arm]; scored=[x for x in rows if x["status"]=="scored"]
         codex_known=[r["native_usage"]["codex"].get("total_tokens") for r in scored if isinstance(r.get("native_usage",{}).get("codex"),dict) and r["native_usage"]["codex"].get("total_tokens") is not None]
         claude_known=[r["native_usage"]["claude"].get("output_tokens") for r in scored if isinstance(r.get("native_usage",{}).get("claude"),dict) and r["native_usage"]["claude"].get("output_tokens") is not None]

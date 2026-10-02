@@ -28,7 +28,7 @@ The manifest's archive and prompt hashes are checked before a fixture is accepte
 
 Stage `case-00.json` through `case-09.json` outside the repository. Each JSON file supplies the two exact feature prompts in feature order and the official evaluator's private case data. Pass each prior native Claude/Codex transcript as a separate `--protect <file>` argument. Do not expose those files, upstream evaluator/data tree, or prior run artifacts to the agents.
 
-Prepare a new private run directory, then execute a fixed cohort. `--cases 0` runs all three predeclared arms for case zero. It never selects individual arms or retries only a scored subset.
+Prepare a new private run directory, then execute a fixed cohort. `--cases 0` runs every predeclared arm of the manifest for case zero (three in v1, four in v2). It never selects individual arms or retries only a scored subset.
 
 ```sh
 python3 scripts/benchmarks/runner.py prepare \
@@ -51,7 +51,21 @@ bun scripts/benchmarks/native.ts \
 
 The runner registers each exact fixture root with Orca, uses the project CLI to start and stop each daemon, and requires exact worktree/cwd readback for native sessions. Claude starts through the canonical `ahub claude` guard and loads this checkout's candidate bundle through an exact session-only `--mcp-config` server (`server:agent-hub`); it does not promote or mutate the globally installed plugin. Codex uses the native app-server adapter and `workspace-write` sandbox. Each agent must execute a setup-only `head -c 1` probe against the exact protected file and produce only the denied marker before scored tasks begin. There is one native sandbox layer per agent.
 
-Every run record, diff, PTY/provider trace and evaluation artifact stays in the mode-0700 private run directory. Setup errors, structured provider quota errors, hub budget pauses, unsettled deliveries and interruptions stay separate and unscored. A quota snapshot or numeric `429` alone is not a provider error. The runner restores exact input/read-lock modes and the scoped Claude trust flag (removing its own fresh project entry) and sibling artifact modes on exit. It stops only its recorded Claude terminal, hub project and hub terminal handles. Orca currently has no repo removal command, so inactive exact-path fixture repos remain registered after a run; one case with three arms leaves three records.
+Every run record, diff, PTY/provider trace and evaluation artifact stays in the mode-0700 private run directory. Setup errors, structured provider quota errors, hub budget pauses, unsettled deliveries and interruptions stay separate and unscored. A quota snapshot or numeric `429` alone is not a provider error. The runner restores exact input/read-lock modes and the scoped Claude trust flag (removing its own fresh project entry) and sibling artifact modes on exit. It stops only its recorded Claude terminal, hub project and hub terminal handles. Orca currently has no repo removal command, so inactive exact-path fixture repos remain registered after a run; one case leaves one record per arm.
+
+## Manifest v2: the turn-free arm
+
+`scripts/benchmarks/manifest-v2.json` keeps v1's cases, models and limits and adds a fourth arm, `hub-turnfree-codex-claude` (issue #110): the same two agents and assignment rotation as `hub-codex-claude`, with `coordination: "turn-free"` in the fixture's hub config and fixture instructions that tell the owners not to message each other. A v1 manifest still prepares, runs and grades its three arms; the runner accepts only these two arm lists.
+
+Hooks are equal across arms. No arm runs the user's or a plugin's hooks: Claude starts with `--setting-sources project` and `disableAllHooks`, and every Codex thread starts with `features.codex_hooks` off. The turn-free arm's Claude settings carry the hub's own facts hook and nothing else, because that hook is part of the treatment.
+
+## Coordination ledger
+
+```sh
+python3 scripts/benchmarks/ledger.py --run /private/tmp/ahub-0124-case0
+```
+
+It reads each run record, the Claude transcript it names and the fixture's git history, and writes `ledger.json` beside them: time to both done, Codex requests and hub tool calls before its last `hub_task_done`, Codex turns after its done and what started them, late replies, the hub's facts, stale notices, integration prompts and hushed messages, and lost contributions (identifiers an agent wrote that the final tree lacks and that agent did not remove itself). The script's docstring defines each measure; the lost-contribution count is a heuristic and also counts identifiers in comments and strings.
 
 ## Grade and report
 
