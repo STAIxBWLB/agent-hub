@@ -290,7 +290,9 @@ export class Tasks {
    */
   splitShadow(task: Task, candidate: PeerId | undefined, unstarted = false): SplitPrediction | undefined {
     if (!candidate) return undefined;
-    const other = this.overlapHits({ ...task, owner: null }).map((h) => h.task).find((t) => t.owner && t.owner !== candidate && t.owner !== USER && t.owner !== HUB && (!unstarted || t.state === "proposed"));
+    const others = this.overlapHits({ ...task, owner: null }).map((h) => h.task).filter((t) => t.owner && t.owner !== candidate && t.owner !== USER && t.owner !== HUB);
+    // A task not started yet first: the pair the routing record is about, so explain and the record agree on it.
+    const other = others.find((t) => t.state === "proposed") ?? (unstarted ? undefined : others[0]);
     if (!other) return undefined;
     const peers: [PeerId, PeerId] = [candidate, other.owner!];
     const states = this.states();
@@ -632,9 +634,10 @@ export class Tasks {
     }
     const profile = this.d.splitProfile?.(a.owner);
     const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}) }, opts.note ?? `to ${a.owner}`, profile ? { profile } : {});
-    // What calibration reads (issue #109): routing chose the owner (no single named candidate, no claim), and the work
-    // overlaps another owner's task that has not started. For the record only.
-    if (!opts.claim && opts.candidates?.length !== 1) {
+    // What calibration reads (issue #109): routing chose the first owner (no single named candidate, no claim; not an
+    // escalation, relay or reassignment of work already begun), and the work overlaps another owner's task not started
+    // yet. For the record only.
+    if ((opts.event ?? "assigned") === "assigned" && !opts.claim && opts.candidates?.length !== 1) {
       const shadow = this.splitShadow(next, a.owner, true);
       if (shadow) this.d.recordSplit?.(next.id, shadow, "routing");
     }

@@ -1,8 +1,8 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { stopOwnedProcess } from "../src/hub/child-process.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { BasePeer } from "../src/hub/peers.ts";
@@ -78,24 +78,42 @@ test("the watchdog stops a daemon whose project root vanished", async () => {
 });
 
 // issue #113: Codex's `codex.js` forwards SIGTERM to its native app-server and waits; mid-turn the app-server does not
-// exit, the launcher alone is SIGKILLed, and the app-server is re-parented to init, still running.
+// exit, the launcher alone was SIGKILLed, and the app-server was re-parented to init, still running. The app-server in
+// turn runs its MCP servers and tool commands in process groups of their own.
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const gone = async (pid: number) => { for (let i = 0; i < 40 && alive(pid); i++) await Bun.sleep(50); return !alive(pid); };
+const launch = async (script: string, detached: boolean) => {
+  const proc = spawn("sh", ["-c", script], { stdio: ["ignore", "pipe", "ignore"], detached });
+  const child = Number(await new Promise<string>((resolve) => proc.stdout!.once("data", (d) => resolve(String(d)))));
+  cleanup.push(() => { try { process.kill(child, "SIGKILL"); } catch { /* gone */ } });
+  return { proc, child };
+};
+const cleanup: (() => void)[] = [];
+afterEach(() => { for (const fn of cleanup.splice(0)) fn(); });
+
 test("stopping a process group also stops the child its launcher waits for", async () => {
-  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-  const launch = async (detached: boolean) => {
-    // Both ignore SIGTERM: the launcher waits for its child, the child is busy.
-    const proc = spawn("sh", ["-c", 'trap "" TERM; (exec sleep 30) & echo $!; wait'], { stdio: ["ignore", "pipe", "ignore"], detached });
-    const child = Number(await new Promise<string>((resolve) => proc.stdout!.once("data", (d) => resolve(String(d)))));
-    return { proc, child };
-  };
-  const loose = await launch(false);
-  try {
-    await stopOwnedProcess(loose.proc, { termMs: 200 });
-    expect(alive(loose.child)).toBe(true); // what the hub did before
-  } finally { try { process.kill(loose.child, "SIGKILL"); } catch { /* gone */ } }
-  const grouped = await launch(true);
-  try {
-    await stopOwnedProcess(grouped.proc, { termMs: 200, group: true });
-    await Bun.sleep(100);
-    expect(alive(grouped.child)).toBe(false);
-  } finally { try { process.kill(grouped.child, "SIGKILL"); } catch { /* gone */ } }
+  // Both ignore SIGTERM: the launcher waits for its child, the child is busy.
+  const script = 'trap "" TERM; (exec sleep 30) & echo $!; wait';
+  const loose = await launch(script, false);
+  await stopOwnedProcess(loose.proc, { termMs: 200 });
+  expect(alive(loose.child)).toBe(true); // what the hub did before
+  const grouped = await launch(script, true);
+  await stopOwnedProcess(grouped.proc, { termMs: 200, group: true });
+  expect(await gone(grouped.child)).toBe(true);
+});
+
+test("a group member that outlives its leader is stopped too, and done means the group is gone", async () => {
+  // The leader dies at SIGTERM; its child ignores it.
+  const { proc, child } = await launch('(trap "" TERM; exec sleep 30) & echo $!; wait', true);
+  await stopOwnedProcess(proc, { termMs: 200, group: true });
+  expect(alive(child)).toBe(false); // the readback already waited for it
+});
+
+test("a descendant that leads a group of its own is found before the stop and stopped after it", async () => {
+  // A child in its own group, as Codex runs a tool command; the launcher ignores SIGTERM.
+  const own = `require("node:child_process").spawn("sleep", ["30"], { detached: true, stdio: "ignore" }); `;
+  const { proc, child } = await launch(`trap "" TERM; ${process.execPath} -e '${own}' & sleep 0.5; pgrep -P $! sleep; wait`, true);
+  expect(Number(execFileSync("ps", ["-o", "pgid=", "-p", String(child)], { encoding: "utf8" }).trim())).toBe(child);
+  await stopOwnedProcess(proc, { termMs: 200, group: true });
+  expect(alive(child)).toBe(false);
 });

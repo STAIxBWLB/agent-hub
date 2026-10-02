@@ -251,7 +251,8 @@ export class Facts {
     this.covered.delete(peer);
     this.firstSeen.delete(peer);
     this.cutTold.delete(peer);
-    // The new session saw none of it: what it drops is told afresh.
+    // The new session saw none of it: what it touched, and what it drops, start afresh.
+    this.touched.delete(peer);
     this.untracked.delete(peer);
     this.unfollowed.delete(peer);
     this.seenDropped.delete(peer);
@@ -266,6 +267,7 @@ export class Facts {
   /** HEAD's blob id of each of these project paths that HEAD has, in one read-only git call. */
   private headBlobs(files: string[]): Map<string, string> {
     const out = new Map<string, string>();
+    files = files.filter((f) => !f.includes("\n")); // one path per line: a name with a newline would shift the answers
     if (!files.length) return out;
     const r = Bun.spawnSync(["git", "cat-file", "--batch-check=%(objectname) %(objecttype)"], { cwd: this.root, stdin: new TextEncoder().encode(files.map((f) => `HEAD:./${f}`).join("\n") + "\n"), stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
     if (r.exitCode !== 0) return out;
@@ -276,10 +278,13 @@ export class Facts {
     return out;
   }
 
-  /** Of these files, the ones whose bytes are HEAD's: no change, whatever git's stat data lists (#112). */
-  private atHead(files: string[]): Set<string> {
+  /**
+   * Of these files, the ones whose bytes are HEAD's: no change, whatever git's stat data lists (#112). `blob` is the
+   * version the caller observed, so the answer is about the bytes it goes on to offer or compare.
+   */
+  private atHead(files: string[], blob: (f: string) => string | undefined = (f) => this.load(f).blob): Set<string> {
     const head = this.headBlobs(files);
-    return new Set(files.filter((f) => head.has(f) && this.load(f).blob === head.get(f)));
+    return new Set(files.filter((f) => head.has(f) && blob(f) === head.get(f)));
   }
 
   /** A new boundary: directories are expanded afresh. */
@@ -575,7 +580,7 @@ export class Facts {
     // Bytes equal to HEAD's are no change (a rewrite with the same bytes, listed until git refreshes its index): such a
     // file is neither named nor offered, so it is named once its bytes do differ (#112).
     const dirFirst = firstLooks.filter((f) => this.dirLook(peer, scope, f));
-    const same = this.atHead(dirFirst);
+    const same = this.atHead(dirFirst, (f) => offered.get(f)?.blob);
     for (const f of same) offered.delete(f);
     const dirLooks = dirFirst.filter((f) => !same.has(f));
     if (dirLooks.length) parts.push(`changed or new under a directory your task names, not shown as a diff (read before relying on it): ${names(dirLooks.filter(this.o.nameable), dirLooks.length)}`);
@@ -604,7 +609,7 @@ export class Facts {
     const untracked = [...(this.untracked.get(peer) ?? [])];
     const gone = untracked.filter(this.o.nameable);
     if (gone.length) {
-      parts.push(`no longer tracked (more than ${TOUCHED_KEPT} files touched): ${gone.join(", ")}; read them again before relying on what you saw of them`);
+      parts.push(`no longer tracked (more than ${TOUCHED_KEPT} files touched): ${names(gone, gone.length)}; read them again before relying on what you saw of them`);
       coverage = true;
     }
     const unfollowed = [...(this.unfollowed.get(peer) ?? [])];
@@ -654,7 +659,7 @@ export class Facts {
     const scope = this.o.scope(peer);
     const files = this.files(peer, scope);
     const seen = (f: string) => view?.get(f) ?? this.firstSeen.get(peer)?.get(f);
-    const same = this.atHead(files.filter((f) => !seen(f) && this.dirLook(peer, scope, f)));
+    const same = this.atHead(files.filter((f) => !seen(f) && this.dirLook(peer, scope, f)), (f) => this.observe(f).blob);
     return files.every((f) => {
       const v = seen(f);
       // A named file's first look needs nothing; a directory file needs naming, unless its bytes are HEAD's (#112).

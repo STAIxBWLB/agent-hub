@@ -1839,4 +1839,11 @@ test("the shadow prediction never changes assignment: routed and named work go w
   const kimiNamed = await tasks.propose("claude", { title: "kimi named", class: "implement", owner: "kimi", refs: { paths: ["src/b.ts"] } });
   await tasks.propose("claude", { title: "codex on b", class: "implement", owner: "codex", refs: { paths: ["src/b.ts"] } });
   expect(tasks.explain(kimiNamed.id).join("\n")).toContain("unknown: kimi has 1 other open task(s)"); // kimi's, not routing's pick
+  // A reassignment after a decline, and a claim, are no routing decisions about fresh work.
+  const fresh = await tasks.propose("claude", { title: "fresh part", class: "implement", refs: { paths: ["src/c.ts"] } });
+  await tasks.propose("codex", { title: "claude on c", class: "implement", owner: "claude", refs: { paths: ["src/c.ts"] } });
+  recorded.length = 0;
+  await tasks.decline(fresh.owner!, fresh.id, "not mine");
+  await tasks.propose("codex", { title: "codex claims c", class: "implement", owner: "codex", refs: { paths: ["src/c.ts"] } });
+  expect(recorded.filter((r) => r.where === "routing")).toEqual([]);
 });

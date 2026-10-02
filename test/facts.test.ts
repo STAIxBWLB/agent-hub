@@ -322,6 +322,17 @@ test("history beyond the cap is attribution unknown, and a file that falls out o
   expect(again.text).toContain("no longer tracked (more than 64 files touched): a.txt");
   facts.ack("claude", again.id);
   expect(facts.due("claude")?.text ?? "").not.toContain("no longer tracked");
+  // A new session touched nothing yet: the old session's files are not pushed out under its name.
+  facts.session("claude", "s1");
+  facts.session("claude", "s2");
+  for (let i = 0; i < 65; i++) {
+    write(`g${i}.txt`, "x\n");
+    facts.preTool("claude", `n${i}`, "Read", { file_path: join(root, `g${i}.txt`) });
+    facts.postTool("claude", `n${i}`, "Read", { file_path: join(root, `g${i}.txt`) });
+  }
+  const fresh = facts.due("claude")!;
+  expect(fresh.text).toContain("no longer tracked (more than 64 files touched): g0.txt;");
+  expect(fresh.text).not.toMatch(/no longer tracked[^\n]*f\d+\.txt/);
 });
 
 test("a default Claude Read moves the view only when Read returns the whole file", async () => {

@@ -28,7 +28,7 @@ import { Board, CLASSES, type Task, type TaskClass } from "./board.ts";
 import { Budget, claudeWindows, codexWindows, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
 import { HUB } from "./envelope.ts";
 import { trimToTokens } from "../memory/recall.ts";
-import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, constants as fsConstants, openSync, readSync, statSync } from "node:fs";
 import { basename, isAbsolute } from "node:path";
 import { realPath } from "./project.ts";
 import type { BusEvent } from "./bus.ts";
@@ -1018,24 +1018,32 @@ export async function startDaemon(opts: DaemonOptions) {
       };
     } catch { return {}; }
   };
-  /** Claude Code's version, from the last row of its transcript that names one (its rows carry it). */
+  /**
+   * Claude Code's version, from the last row of its transcript that names one (its rows carry it): the last MiB is read,
+   * opened without blocking and only as a regular file, and the last version found is kept for a tail of big rows.
+   */
+  const claudeVersions = new Map<string, string>();
   const claudeVersion = (): string | undefined => {
     const path = claudeSession().transcriptPath;
     if (!path) return undefined;
     let fd: number | undefined;
     try {
-      fd = openSync(path, "r");
-      const size = fstatSync(fd).size;
-      const buf = Buffer.alloc(Math.min(size, 64 * 1024));
-      readSync(fd, buf, 0, buf.length, size - buf.length);
+      fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+      const st = fstatSync(fd);
+      if (!st.isFile()) return claudeVersions.get(path);
+      const buf = Buffer.alloc(Math.min(st.size, 1024 * 1024));
+      readSync(fd, buf, 0, buf.length, st.size - buf.length);
       for (const line of buf.toString("utf8").split("\n").reverse()) {
         try {
           const version = JSON.parse(line)?.version;
-          if (typeof version === "string" && /^\d+\.\d+\.\d+/.test(version)) return version;
+          if (typeof version === "string" && /^\d+\.\d+\.\d+/.test(version)) {
+            claudeVersions.set(path, version);
+            return version;
+          }
         } catch { /* the cut first line, or not JSON */ }
       }
     } catch { /* no transcript yet */ } finally { if (fd !== undefined) closeSync(fd); }
-    return undefined;
+    return claudeVersions.get(path);
   };
   /**
    * A peer's split profile (issue #109): the hub's version, its agent's, and the hook profile, which is the hub's own (a
