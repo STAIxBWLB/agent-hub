@@ -80,7 +80,7 @@ test("every measure of a turn-free attempt, with its unit, from the records nati
         { type: "fact_ack", peer: "claude", id: "f1", via: "hook", ms: 900, at: iso(32) },
         { type: "fact", peer: "codex", id: "f2", via: "steer", files: 1, plans: 0, unknown: 1, bytes: 500, ms: 6, rttMs: 9000, accepted: false, at: iso(40) }, // refused: not a round trip
         { type: "fact", peer: "codex", id: "f4", via: "steer", files: 1, plans: 0, unknown: 0, bytes: 100, ms: 5, rttMs: 40, accepted: true, at: iso(45) },
-        { type: "fact", peer: "claude", id: "f3", via: "done", files: 0, plans: 0, unknown: 0, bytes: 80, at: iso(75) },
+        { type: "fact", peer: "claude", id: "f3", via: "done", files: 0, plans: 0, unknown: 0, named: 2, bytes: 80, at: iso(75) }, // names only (#112)
         { type: "stale", id: "n1", peer: "codex", at: iso(72) },
         { type: "split", task: 2, verdict: "unknown", reason: "codex has 0 measured task(s)", trace: ["unknown: codex has 0 measured task(s)"], at: iso(1) },
         // Teardown, after the active time: Claude's session closes and its path is lost. Not part of the treatment.
@@ -135,7 +135,8 @@ test("every measure of a turn-free attempt, with its unit, from the records nati
     expect(row).toMatchObject({ quiet: 1, fyi: 1, stale: 1 }); // the setup probe's [FYI] is not in the task window
     expect(row.facts.hook).toMatchObject({ offers: 1, acknowledged: 1, bytes_offered: 300, bytes_acknowledged: 300, build_ms_median: 4, hook_startup_ms_median: 120 });
     expect(row.facts.steer).toMatchObject({ offers: 2, acknowledged: 0, bytes_offered: 600, bytes_acknowledged: 0, unknown_attribution_files: 1, steers_refused: 1, steers_unanswered: 0, steer_rtt_ms_median: 40 });
-    expect(row.facts.done).toMatchObject({ offers: 1, bytes_offered: 80, bytes_acknowledged: 0 });
+    expect(row.facts.done).toMatchObject({ offers: 1, bytes_offered: 80, bytes_acknowledged: 0, directory_files_named: 2 });
+    expect(row.facts.hook.directory_files_named).toBe(0); // an event from before #112 has no count
     expect([row.facts.hook.probes, row.facts.hook.coverage_notices, row.facts.steer.probes]).toEqual([0, 0, 0]);
     expect(row.facts.ack_ms_median).toBe(900);
     expect(row.split_predictions).toEqual([{ task: 2, verdict: "unknown", reason: "codex has 0 measured task(s)", trace: ["unknown: codex has 0 measured task(s)"] }]);

@@ -61,7 +61,7 @@ UNITS = {
                     "envelopes are left out; null when Codex has no done",
     "facts": "the hub's fact offers in the task window (from the first task proposal to the end of the active time) by "
              "path (hook, steer, done): offers, acknowledged, probes, coverage notices, files shown with attribution "
-             "unknown, bytes offered (a re-offer and a refused steer count again) and bytes acknowledged (offers a "
+             "unknown, files under a named directory named without a diff, bytes offered (a re-offer and a refused steer count again) and bytes acknowledged (offers a "
              "readback or done confirmed), build time, the hook process's start-up time, steer round trip, refused "
              "and unanswered steers; ack_ms_median is offer-to-acknowledgement",
     "capability": "per peer, the hub's capability events (verified or lost) with their time, setup included",
@@ -312,7 +312,7 @@ def facts_of(events):
     for via in ("hook", "steer", "done"):
         mine = [e for e in offers if e.get("via") == via]
         out[via] = {"offers": len(mine), "acknowledged": sum(1 for e in mine if e.get("id") in acked), "probes": sum(1 for e in mine if e.get("probe")),
-                    "coverage_notices": sum(1 for e in mine if e.get("coverage")), "unknown_attribution_files": sum(e.get("unknown", 0) for e in mine),
+                    "coverage_notices": sum(1 for e in mine if e.get("coverage")), "unknown_attribution_files": sum(e.get("unknown", 0) for e in mine), "directory_files_named": sum(e.get("named", 0) for e in mine),
                     "bytes_offered": sum(e.get("bytes", 0) for e in mine), "bytes_acknowledged": sum(e.get("bytes", 0) for e in mine if e.get("id") in acked),
                     "build_ms_median": median(num(mine, "ms")), "hook_startup_ms_median": median(num(mine, "hookMs")),
                     "steers_unanswered": sum(1 for e in mine if e.get("unanswered")),

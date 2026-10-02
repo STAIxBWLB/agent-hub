@@ -412,10 +412,13 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   again in a new session). A file the peer has seen there stays covered after git
   stops listing it (put back to HEAD's bytes, or the directory moved away), so
   the way back is shown (200 at most, the newest versions first; the rest are
-  named once as no longer tracked). A file there that the peer has neither seen
-  nor touched appears once someone changed or created it: it is named without a
-  diff (what happened before is never shown) until the peer reads the fact back,
-  and until then it counts as a change the peer has not been shown. `.git` directories
+  named as no longer followed, until the peer reads that back and again in a new
+  session). A file there that the peer has neither seen nor touched appears once
+  someone changed it so that its bytes differ from HEAD's, or created it: it is
+  named without a diff (what happened before is never shown) until the peer reads
+  the fact back, and until then it counts as a change the peer has not been
+  shown. A rewrite with HEAD's bytes, which git lists until it refreshes its
+  index, is no change. `.git` directories
   at any depth and what the denylist keeps from every agent
   (`src/local/deny.ts` and `local.deny`) are never read or shown. A file a peer touched before it had a view of it (a
   partial read, say) is compared with what it was then, so a change landing in
@@ -436,7 +439,8 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   acknowledgement says the context reached the native session, not that the
   model read it. 60 changed lines are shown at most, the cut files named; a
   history longer than the hub keeps is shown with its attribution unknown, and a
-  file that falls out of the 64 a peer touched is named once. Only regular files
+  file that falls out of the 64 a peer touched is named until the peer reads
+  that back. Only regular files
   of 256 KB or less inside the project are read, re-resolved at every read and
   opened without following links; larger ones are named without a diff. Facts never go through the bus or the delivery journal;
   `events.jsonl` records `fact`, `fact_ack` and `capability` events with bytes

@@ -539,7 +539,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!factsOn()) return undefined;
       let offered: ReturnType<Facts["due"]>;
       try { offered = facts.due(peer, undefined, true); } catch (error) { log(`integration facts for ${peer}: ${(error as Error).message}`); return undefined; }
-      if (offered) event({ type: "fact", peer, id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "done" });
+      if (offered) event({ type: "fact", peer, id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, named: offered.named, bytes: offered.bytes, via: "done" });
       return offered ? { id: offered.id, text: offered.text } : undefined;
     },
     ackFacts: (peer, id) => acked(peer, id, "done"),
@@ -1552,7 +1552,7 @@ export async function startDaemon(opts: DaemonOptions) {
             // Refused, it never went in: not an unread offer, and the next boundary offers it again. Unanswered, it may
             // have: its readback can still come.
             if (outcome === "refused") facts.drop("codex", offered.id);
-            event({ type: "fact", peer: "codex", id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "steer", ms, ...(outcome === "accepted" ? { rttMs: Math.round(performance.now() - sent) } : {}), accepted: outcome === "accepted", ...(outcome === "unanswered" ? { unanswered: true } : {}), ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
+            event({ type: "fact", peer: "codex", id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, named: offered.named, bytes: offered.bytes, via: "steer", ms, ...(outcome === "accepted" ? { rttMs: Math.round(performance.now() - sent) } : {}), accepted: outcome === "accepted", ...(outcome === "unanswered" ? { unanswered: true } : {}), ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
           });
         },
         appPort: opts.codexAppPort,
@@ -2143,7 +2143,7 @@ export async function startDaemon(opts: DaemonOptions) {
             return void reply({ t: "facts", ok: true });
           }
           const offered = offerFor(peer, toolUseId);
-          if (offered) event({ type: "fact", peer, id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "hook", ms: Math.round(performance.now() - started), ...(typeof msg.startedMs === "number" && Number.isFinite(msg.startedMs) ? { hookMs: Math.round(msg.startedMs) } : {}), ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
+          if (offered) event({ type: "fact", peer, id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, named: offered.named, bytes: offered.bytes, via: "hook", ms: Math.round(performance.now() - started), ...(typeof msg.startedMs === "number" && Number.isFinite(msg.startedMs) ? { hookMs: Math.round(msg.startedMs) } : {}), ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
           return void reply({ t: "facts", ok: true, ...(offered ? { text: offered.text, id: offered.id } : {}) });
         } catch (error) {
           log(`facts for ${c.peer}: ${(error as Error).message}`);

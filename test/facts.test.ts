@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -316,6 +316,12 @@ test("history beyond the cap is attribution unknown, and a file that falls out o
   const told = facts.due("claude")!;
   expect(told.text).toContain("no longer tracked (more than 64 files touched): a.txt");
   expect(told.coverage).toBe(true);
+  // #112: spent by an acknowledgement, not by building the offer; a refused steer or a lost hook answer keeps it.
+  facts.drop("claude", told.id);
+  const again = facts.due("claude")!;
+  expect(again.text).toContain("no longer tracked (more than 64 files touched): a.txt");
+  facts.ack("claude", again.id);
+  expect(facts.due("claude")?.text ?? "").not.toContain("no longer tracked");
 });
 
 test("a default Claude Read moves the view only when Read returns the whole file", async () => {
@@ -499,4 +505,67 @@ test("after a PII window, a file written under a named directory meanwhile is na
   const o = facts.due("claude")!;
   expect(o.text).toContain("src/x.ts, src/customers.txt");
   expect(o.text).not.toContain("patient record");
+});
+
+// issue #112: the seen-file cap has a notice of its own, spent by an acknowledgement, and a new session hears it again.
+test("files seen under a named directory beyond the cap are named as not followed until that is read back, again in a new session", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-facts-")));
+  dirs.push(root);
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src", "keep.ts"), "k\n");
+  const git = (...a: string[]) => spawnSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...a]);
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: ["src"], plans: [] }), peers: () => ["claude"], nameable: () => true });
+  const look = () => { const o = facts.due("claude"); if (o) facts.ack("claude", o.id); return o; };
+  // 205 files seen under src: 200 first looks, committed (git stops listing them, they stay covered), then 5 more.
+  const see = (content: string, extra: string) => {
+    for (let i = 0; i < 200; i++) writeFileSync(join(root, "src", `n${i}.ts`), content);
+    expect(look()!.named).toBe(200);
+    git("add", "-A");
+    git("commit", "-qm", content);
+    for (let i = 0; i < 5; i++) writeFileSync(join(root, "src", `${extra}${i}.ts`), "x\n");
+    expect(look()!.named).toBe(5);
+  };
+  const dropped = (text: string) => /are not followed: ([^;]+);/.exec(text)?.[1];
+  see("n\n", "x");
+  const first = facts.due("claude")!;
+  expect(first.text).toContain("more than 200 files you saw under src are not followed: src/n");
+  expect(first.text).not.toContain("no longer tracked");
+  expect(first.coverage).toBe(true);
+  facts.drop("claude", first.id); // never went in: said again
+  const again = facts.due("claude")!;
+  expect(again.text).toContain("more than 200 files you saw under src are not followed");
+  facts.ack("claude", again.id);
+  expect(facts.due("claude")?.text ?? "").not.toContain("not followed");
+  facts.session("claude", "s1");
+  facts.session("claude", "s2");
+  see("n2\n", "y"); // the new session sees the same files again, and the cap drops the same five
+  expect(dropped(facts.due("claude")?.text ?? "")).toBe(dropped(first.text)!);
+}, 20_000); // hundreds of files: slow on a CI disk
+
+// issue #112: bytes equal to HEAD's are no change, for what a member is told and for whether it is current.
+test("a rewrite with HEAD's bytes under a named directory is not named and keeps a member current; a real change is named", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-facts-")));
+  dirs.push(root);
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src", "x.ts"), "x\n");
+  const git = (...a: string[]) => spawnSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...a]);
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: ["src"], plans: [] }), peers: () => ["claude"], nameable: () => true });
+  expect(facts.due("claude")).toBeUndefined();
+  writeFileSync(join(root, "src", "x.ts"), "x\n"); // `touch`, or `sed -i` with no match: same bytes, new stat data
+  const later = new Date(Date.now() + 60_000);
+  utimesSync(join(root, "src", "x.ts"), later, later);
+  expect(git("diff-index", "--name-only", "HEAD").stdout.toString()).toContain("src/x.ts"); // until git refreshes its index
+  expect(facts.current("claude")).toBe(true);
+  expect(facts.due("claude")).toBeUndefined();
+  writeFileSync(join(root, "src", "x.ts"), "x changed\n");
+  expect(facts.current("claude")).toBe(false);
+  const o = facts.due("claude")!;
+  expect(o.text).toContain("not shown as a diff (read before relying on it): src/x.ts");
+  expect([o.files, o.named]).toEqual([0, 1]); // a names-only offer counts its names
 });
