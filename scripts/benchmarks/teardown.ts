@@ -62,8 +62,17 @@ export function processCwds(): Map<number, string> | undefined {
     } catch { return undefined; }
 }
 
+/** One process's working directory, or undefined. */
+export function cwdOf(pid: number): string | undefined {
+    if (process.platform === 'linux') { try { return readlinkSync(`/proc/${pid}/cwd`); } catch { return undefined; } }
+    try {
+        const r = Bun.spawnSync(['lsof', '-a', '-d', 'cwd', '-p', String(pid), '-F', 'n'], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, LC_ALL: 'C' }, detached: true });
+        return r.stdout.toString().split('\n').find((l) => l.startsWith('n'))?.slice(1);
+    } catch { return undefined; }
+}
+
 /** Whether `path` is `dir` or inside it. */
-const inside = (path: string | undefined, dir: string) => path !== undefined && (path === dir || path.startsWith(`${dir}/`));
+export const inside = (path: string | undefined, dir: string) => path !== undefined && (path === dir || path.startsWith(`${dir}/`));
 
 export const key = (a: { pid: number; started: string }) => `${a.pid}@${a.started}`;
 

@@ -7,7 +7,7 @@ import { realPath } from '../../src/hub/project.ts';
 import { sessionSettings, statusLineSettings } from '../../src/cli/launch.ts';
 import { readEvents } from '../../src/hub/events.ts';
 import { descendantsOf, processTable } from '../../src/hub/child-process.ts';
-import { actorOf, awaitTurnEnd, daemonRoot, extend, restoreModes, restoreTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
+import { actorOf, awaitTurnEnd, cwdOf, daemonRoot, extend, inside, restoreModes, restoreTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
 process.umask(0o077);
 const argv = process.argv.slice(2), runArg = argv[argv.indexOf('--run') + 1], inputArg = argv[argv.indexOf('--private-inputs') + 1], upstreamArg = argv[argv.indexOf('--upstream-root') + 1], probeArg = argv[argv.indexOf('--probe-target') + 1];
 if (!runArg || !inputArg || !upstreamArg || !probeArg)
@@ -400,6 +400,12 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         if (![...owners.values()].some(a => a.role === 'daemon') && table.some(r => r.pid === hubPid && daemonRoot(r.command) === dir)) add(actorOf(table, hubPid, 'daemon', 'the pid in its state dir; its argv serves this fixture'));
         const launchedAs = new RegExp(`--session-id'?\\s+'?${claudeId}(?=['\\s]|$)`); // the launcher's argv, or the terminal shell's quoted one
         for (const r of table) if (launchedAs.test(r.command)) add(actorOf(table, r.pid, 'claude', `this arm's session id as its --session-id`));
+        // The Orca terminal's shell that runs that launcher: its parent, working in this fixture, outlives the close briefly.
+        for (const r of table.filter(x => launchedAs.test(x.command))) {
+            const parent = table.find(x => x.pid === r.ppid);
+            if (parent && parent.pid > 1 && !launchedAs.test(parent.command) && ![...owners.values()].some(a => a.pid === parent.pid && a.started === parent.started) && inside(cwdOf(parent.pid), dir))
+                add(actorOf(table, parent.pid, 'claude', `the terminal shell running this arm's Claude launcher, in this fixture`));
+        }
         for (const d of [...owners.values()].filter(a => a.role === 'daemon' && table.some(r => r.pid === a.pid && r.started === a.started)))
             for (const r of table) if (r.ppid === d.pid && / app-server /.test(r.command)) add(actorOf(table, r.pid, 'codex-app-server', `child of the arm's daemon ${d.pid}`));
         // What runs below them now, a tool command's background job included, before its parent can exit.
