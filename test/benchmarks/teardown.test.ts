@@ -333,6 +333,25 @@ test("a dead runner's pending write: only the exact entry it would have written 
   expect(setup({ hasTrustDialogAccepted: true }, true)).toEqual({ entry: { hasTrustDialogAccepted: true }, stage: "not_written" });
 });
 
+test("the recovery's own restore names its temp file by the runner's pid, which a later recovery removes", async () => {
+  const { recover } = await import("../../scripts/benchmarks/restore.ts");
+  const { restoreTemp } = await import("../../scripts/benchmarks/teardown.ts");
+  const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(run);
+  const fixture = join(run, "fixtures", "00-x");
+  mkdirSync(fixture, { recursive: true });
+  const trustFile = join(run, "claude.json");
+  writeFileSync(trustFile, JSON.stringify({ projects: { [fixture]: { hasTrustDialogAccepted: true } } }));
+  const runner = { pid: 99_999_994, started: "Thu Jan  1 00:00:00 1970" };
+  // A name under the recovery's own pid cannot be written: a restore that used it would fail.
+  mkdirSync(join(restoreTemp(trustFile, process.pid), "x"), { recursive: true });
+  try {
+    writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner, protected: { paths: {}, restored: true }, siblings: {}, actors: {}, trust: { file: trustFile, project: fixture, previous: undefined, written: { hasTrustDialogAccepted: true }, hadProjects: true, mode: 0o600, stage: "written", restored: false } }));
+    expect(recover(run, processTable()!, new Map(), -1)).toEqual({ restored: true, blockers: [], failed: [] });
+    expect(JSON.parse(readFileSync(trustFile, "utf8"))).toEqual({ projects: {} });
+  } finally { rmSync(restoreTemp(trustFile, process.pid), { recursive: true, force: true }); }
+});
+
 test("an entry the user changed meanwhile (changed_concurrently) is theirs: the recovery leaves it", async () => {
   const { recover } = await import("../../scripts/benchmarks/restore.ts");
   const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));

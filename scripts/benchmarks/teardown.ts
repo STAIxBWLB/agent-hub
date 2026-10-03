@@ -340,7 +340,8 @@ export function restoreModes(modes: Iterable<[string, number]>): string[] {
 
 /**
  * `previous` is the user's own project entry in `~/.claude.json`, kept as it was: its shape is Claude Code's. `written` is
- * the entry the runner's write puts there (ledgers from before 0.12.6 lack it).
+ * the entry the runner's write puts there: every restoration ledger since 0.12.3 records it, though the recovery passed it
+ * on only from 0.12.6.
  */
 export interface TrustLease { file: string; previous: any; written?: any; hadProjects: boolean; mode: number }
 
