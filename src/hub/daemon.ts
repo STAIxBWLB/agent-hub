@@ -1708,7 +1708,8 @@ export async function startDaemon(opts: DaemonOptions) {
           const taskId = envs.find(env => env.refs?.task)?.refs?.task;
           const task = taskId ? board.get(Number(taskId)) : undefined;
           const policyBackend = task ? currentRouting(opts.cwd, log).classes[task.class]?.pi_backend : undefined;
-          if (policyBackend) return policyBackend === "mlx" ? "mlx/fast" : "dgx/coding";
+          if (policyBackend === "mlx") return "mlx/fast";
+          if (policyBackend === "dgx") return task && ["bulk_edit", "test"].includes(task.class) ? "dgx/fast" : "dgx/coding";
           return "hub/auto";
         },
         onTokens: (added) => void addTokens("pi", added),
