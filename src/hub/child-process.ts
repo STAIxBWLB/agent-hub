@@ -111,7 +111,8 @@ export async function stopOwnedProcess(proc: ChildProcess, { termMs = 1_000, kil
     // Members still finishing their own exit get up to `killMs` before the stop fails.
     for (const end = Date.now() + killMs; ; await Bun.sleep(100)) {
       const rows = await table();
-      const members = rows ? (rows.some((r) => r.pid === proc.pid) ? [] : rows.filter((r) => r.pgid === proc.pid)) : undefined;
+      const reused = rows?.some((r) => r.pid === proc.pid);
+      const members = reused ? [] : rows?.filter((r) => r.pgid === proc.pid);
       if (members ? !members.length : groupGone(proc.pid)) return;
       if (Date.now() >= end) throw new Error(`owned child ${proc.pid} exited before the stop and its process group still has members${members ? ` (${members.map((r) => r.pid).join(", ")})` : ""}: not signalled; stop them to restart it`);
     }

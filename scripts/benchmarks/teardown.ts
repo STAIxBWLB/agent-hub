@@ -55,6 +55,8 @@ export function commOf(pid: number, started: string): string | undefined {
 
 /** The temp file a trust write goes through (`~/.claude.json.ahub-benchmark-<pid>`): a full copy of the user's state. */
 export const trustTemp = (file: string, pid: number) => `${file}.ahub-benchmark-${pid}`;
+/** The temp file a trust restore goes through, the same copy. */
+export const restoreTemp = (file: string, pid: number) => `${file}.ahub-benchmark-restore-${pid}`;
 
 export const same = (rows: ProcRow[], a: { pid: number; started: string }) => rows.find((r) => r.pid === a.pid && r.started === a.started);
 
@@ -355,7 +357,7 @@ export function restoreTrust(lease: TrustLease, dir: string, pending = false): '
             fresh.projects[dir] = current;
         }
         if (!lease.hadProjects && !Object.keys(fresh.projects).length) delete fresh.projects;
-        const temp = `${lease.file}.ahub-benchmark-restore-${process.pid}`;
+        const temp = restoreTemp(lease.file, process.pid);
         try {
             writeFileSync(temp, JSON.stringify(fresh, null, 2), { mode: lease.mode });
             chmodSync(temp, lease.mode);

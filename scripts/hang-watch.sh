@@ -20,7 +20,7 @@ while running; do
     echo "check: pid $pid still running after ${limit}s; where it is:" >&2
     if command -v sample >/dev/null 2>&1; then
       report=$(mktemp) # sample writes a report file of its own otherwise (in /tmp, whatever TMPDIR says)
-      sample "$pid" 3 -file "$report" >/dev/null 2>&1
+      sample "$pid" 3 -file "$report" >/dev/null 2>&1 || echo "check: sample failed" >&2
       sed -n '/Call graph:/,/Total number in stack/p' "$report" | head -120 >&2
       rm -f "$report"
     else

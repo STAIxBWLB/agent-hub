@@ -250,7 +250,8 @@ test("a peer cannot claim the console user's id or a hub-managed adapter's id", 
 });
 
 test("a tail opened after a permission request still sees it", async () => {
-  const { stateDir, console_, events } = await hub();
+  // The rig's 200 ms permission timeout is shorter than a loaded runner takes to connect and replay (#115).
+  const { stateDir, console_, events } = await hub({ permissionTimeoutMs: 30_000 });
   await console_.request({ t: "start", peer: "kimi" });
   await console_.request({ t: "send", body: "PERMISSION", to: ["kimi"] });
   await Bun.sleep(60);

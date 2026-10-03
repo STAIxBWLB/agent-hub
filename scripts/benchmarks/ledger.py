@@ -3,7 +3,7 @@
 
 Usage: python3 scripts/benchmarks/ledger.py --run RUN_DIR [--run RUN_DIR ...] [--plan NAME] [--json]
 
-Reads runs/<NN>-<arm>.json written by native.ts, the Claude transcript each names, and the fixture's git history.
+Reads runs/<NN>-<arm>.json written by native.ts (and recovery/runs/, records withheld until restore.ts moves them), the Claude transcript each names, and the fixture's git history.
 Writes ledger.json into the first run directory (with one, next to its records). ledger.json holds code fragments
 from the agents' writes and local paths: it is private run data, never committed; the summary on stdout is not. Every measure names its unit and coverage in UNITS below; a measure the records
 cannot support is null with a reason, never zero. Times are seconds from the first task proposal of the attempt.
@@ -96,7 +96,7 @@ UNITS = {
                 "processes still running and unresolved ones), restoration, and late_append_bytes: transcript bytes "
                 "written after the attempt's prefix was taken, never read (null when no prefix was recorded); completion "
                 "outcomes include unreadable (the transcript could not be read) and carry the bound used; normal_errors "
-                "are the normal shutdown's errors (a registration left behind, a terminal not closed), which the process "
+                "are the normal shutdown's errors (a hub project registration left behind, a terminal not closed), which the process "
                 "readback, not they, decides on; verified is false for a record from before 0.12.5. A row with "
                 "withheld true is a record kept in recovery/ because its cleanup was incomplete or its sibling read locks "
                 "could not be put back: an attempt, unavailable, until scripts/benchmarks/restore.ts moves it into runs/",
@@ -349,7 +349,7 @@ def teardown_of(run):
     cleanup = run.get("cleanup") or {}
     return {"completion": run.get("completion"), "cleanup": cleanup.get("outcome"), "cleanup_reasons": cleanup.get("reasons"),
             "fallback_signals": len(cleanup.get("fallback") or []), "restoration": run.get("restoration"), "late_append_bytes": late,
-            "normal_errors": (cleanup.get("normal") or {}).get("errors"),  # e.g. a registration `projects remove` left behind
+            "normal_errors": (cleanup.get("normal") or {}).get("errors"),  # e.g. a hub project registration `projects remove` left behind
             "tree_changed_after_active_time": run.get("tree_changed_after_active_time"),
             "verified": isinstance(cleanup.get("outcome"), str)}  # false before 0.12.5: no process readback was recorded
 
@@ -662,9 +662,15 @@ def main():
     a = p.parse_args()
     rows, plan = [], set()
     for run_dir in a.run:
-        for f in sorted((run_dir / "runs").glob("*.json")): rows.append({**ledger_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name})
+        # An incomplete cleanup leaves runs/ locked with the arm's siblings: a glob there sees nothing, not "no records".
+        for d in (run_dir / "runs", run_dir / "recovery" / "runs"):
+            if d.exists() and not os.access(d, os.R_OK | os.X_OK): raise SystemExit(f"ledger: {d} is locked (a cleanup is incomplete): run scripts/benchmarks/restore.ts --run {run_dir} first")
         # Kept back while a cleanup or a sibling-lock restoration was incomplete (#113): attempts, unavailable, not missing, until restore.ts moves them.
-        for f in sorted((run_dir / "recovery" / "runs").glob("*.json")): rows.append({**ledger_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name, "withheld": True})
+        # It writes each one to runs/ before removing it here, so a copy in both is still withheld.
+        held = sorted((run_dir / "recovery" / "runs").glob("*.json"))
+        for f in sorted((run_dir / "runs").glob("*.json")):
+            if f.name not in {h.name for h in held}: rows.append({**ledger_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name})
+        for f in held: rows.append({**ledger_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name, "withheld": True})
         plan |= expected(run_dir)
     if a.plan: plan |= planned(a.run[0], a.plan)
     seen = {}

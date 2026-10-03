@@ -251,9 +251,9 @@ test("recovery puts the withheld read modes back only when the runner, every rec
   expect(recover(run, undefined, undefined, -1).restored).toBe(true); // done once: nothing left to do
 });
 
-test("recovery after a runner that died mid trust write removes its temp file and records the write as never landed", async () => {
+test("recovery after a runner that died mid trust write removes its temp files and records the write as never landed", async () => {
   const { recover } = await import("../../scripts/benchmarks/restore.ts");
-  const { trustTemp } = await import("../../scripts/benchmarks/teardown.ts");
+  const { restoreTemp, trustTemp } = await import("../../scripts/benchmarks/teardown.ts");
   const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
   dirs.push(run);
   const fixture = join(run, "fixtures", "00-x");
@@ -262,9 +262,10 @@ test("recovery after a runner that died mid trust write removes its temp file an
   writeFileSync(trustFile, JSON.stringify({ projects: {} })); // the rename never happened
   const runner = { pid: 99_999_999, started: "Thu Jan  1 00:00:00 1970" };
   writeFileSync(trustTemp(trustFile, runner.pid), JSON.stringify({ projects: { [fixture]: { hasTrustDialogAccepted: true } } }));
+  writeFileSync(restoreTemp(trustFile, runner.pid), "{}"); // and one from a restore it died in
   writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner, protected: { paths: {}, restored: true }, siblings: {}, actors: {}, trust: { file: trustFile, project: fixture, previous: undefined, hadProjects: true, mode: 0o600, stage: "pending", restored: false } }));
   expect(recover(run, processTable()!, new Map(), -1)).toEqual({ restored: true, blockers: [], failed: [] });
-  expect(existsSync(trustTemp(trustFile, runner.pid))).toBe(false);
+  expect([existsSync(trustTemp(trustFile, runner.pid)), existsSync(restoreTemp(trustFile, runner.pid))]).toEqual([false, false]);
   expect(JSON.parse(readFileSync(join(run, "restoration-ledger.json"), "utf8")).trust).toMatchObject({ restored: true, stage: "not_written" });
 });
 

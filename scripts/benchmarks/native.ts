@@ -348,6 +348,9 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const preparedFixture = prepared.fixtures.find((x: any) => x.case === index && x.arm === kind);
     if (!preparedFixture || resolve(preparedFixture.cwd) !== resolve(dir) || (await cmd(['git', 'rev-parse', 'HEAD'], dir)).trim() !== preparedFixture.base_commit)
         throw new Error('fixture baseline identity mismatch');
+    // Looked up before the fixture is touched (#117): a registration gone since the preflight stops the run with the
+    // fixture still at its base, so it can be registered and run again.
+    const orcaProject = await ensureOrcaWorktree(dir);
     const fs = await import('node:fs/promises');
     const original: any = {};
     async function collect(path: string, rel: string) { for (const entry of await fs.readdir(path, { withFileTypes: true })) {
@@ -406,7 +409,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const sealedBase = await cmd(['git', 'rev-parse', 'HEAD'], dir);
     const metadataBaseline = fixtureMetadataHash(dir);
     const setup = Date.now();
-    let client: ControlClient | undefined, ws: WebSocket | undefined, claudeTerminal: string | undefined, orcaProject: any, projectId: any, started = 0, endReason = 'completed', error: string | undefined, armModes = new Map<string, number>();
+    let client: ControlClient | undefined, ws: WebSocket | undefined, claudeTerminal: string | undefined, hubMayRun = false, projectId: any, started = 0, endReason = 'completed', error: string | undefined, armModes = new Map<string, number>();
     let claudeId = randomUUID(), thread: any, trustLease: any, codexMessages: any[] = [], taskStates: any[] = [], ids: number[] = [], pending = new Map<number, any>(), unkept = new Set<number>(), rpcId = 1, codexTaskStart = 0;
     const actors = kind === 'solo-codex' ? ['codex'] : kind === 'solo-claude' ? ['claude'] : ['codex', 'claude'], readiness: any = {};
     // The processes this arm started (issue #113), each with what proves it: the daemon by the pid in its state dir and
@@ -429,7 +432,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const captured = (role: Actor['role']) => { capture(); if (![...owners.values()].some(a => a.role === role)) throw new Error(`could not prove which ${role} process is this arm's`); };
     try {
         await lockSiblingArtifacts(dir, armModes);
-        orcaProject = await ensureOrcaWorktree(dir);
+        hubMayRun = true;
         if (stopRequested)
             throw new Error('interrupted'); // before a hub is started for nothing
         await cmd(['bun', cliPath, '--project', dir, 'up'], dir);
@@ -642,7 +645,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         const cleanup = await teardown([...owners.values()], dir, async () => {
             const errors: string[] = [];
             if (claudeTerminal) await orcaClose(claudeTerminal).catch(() => { errors.push('Claude Orca terminal close failed'); }); // bounded by cmd
-            if (orcaProject) {
+            if (hubMayRun) {
                 // What `ahub kill` says is kept unless it is the plain answer: "hub is not running" with a live daemon was #113.
                 await cmd(['bun', cliPath, '--project', dir, 'kill'], dir, undefined, 60000).then((out) => { if (out.trim() !== 'hub stopped') errors.push(`ahub kill said: ${out.trim().slice(0, 200)}`); }, (e) => { errors.push(`ahub kill: ${String(e).slice(0, 200)}`); });
                 // An interrupt before the hub answered leaves its id unknown: the registration is found by its root.
@@ -781,10 +784,10 @@ if ((existsSync(join(runs, 'runs')) && readdirSync(join(runs, 'runs')).length) |
 const unregistered: string[] = [];
 for (const i of selected) for (const kind of m.arms) {
     const dir = join(runs, 'fixtures', `${i.toString().padStart(2, '0')}-${kind}`);
-    await ensureOrcaWorktree(dir).catch(() => unregistered.push(dir));
+    await ensureOrcaWorktree(dir).catch((e) => unregistered.push(`${dir} (${e instanceof Error ? e.message : String(e)})`));
 }
 if (unregistered.length)
-    throw new Error(`fixtures not registered in Orca (register them explicitly before the run; the runner never adds one): ${unregistered.join(', ')}`);
+    throw new Error(`fixtures not found in Orca (register them explicitly before the run; the runner never adds one): ${unregistered.join(', ')}`);
 mkdirSync(join(runs, 'private'), { recursive: true, mode: 0o700 });
 // Strict MCP isolation for Codex in every arm (issue #110): the user's plugins, apps, sub-agents and turn-end notifier
 // are off, and each MCP server the user's config defines is disabled by name; the hub adds only its own. Nothing in the

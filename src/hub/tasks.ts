@@ -143,6 +143,8 @@ export class Tasks {
     // What the on-prem worker says about a PII task is private on the bus (console tail and log show a stub), so the
     // board keeps the text: `ahub task show <id>` is where the console user reads it, a refusal included.
     d.bus.tap((e) => {
+      // A turn that ends takes its hand-overs with it: busy later is another turn (#115).
+      if (e.t === "state" && e.state !== "busy") for (const [k, p] of this.sent) if (p === e.peer) this.sent.delete(k);
       if (e.t !== "envelope" || !e.env.private || e.env.from === HUB || !e.env.refs?.task) return;
       try {
         d.board.update(Number(e.env.refs.task), e.env.from, "answer", {}, e.env.body.slice(0, 4000));
@@ -310,17 +312,17 @@ export class Tasks {
     const open = this.d.board.list().filter((t) => OPEN.includes(t.state) && t.id !== task.id && (t.id !== other.id || t.state !== "proposed"));
     // One task of a class is one unit: the only normalization the board supports, so another class is unknown.
     const unit = task.class === other.class ? 1 : undefined;
-    const taking = (p: PeerId) => states[p] === "busy" && this.d.bus.queued(p) === 0 && (p === candidate ? this.sent.has(handOver(task, p)) : other.state === "proposed" && this.sent.has(handOver(other, p)));
+    const taking = (p: PeerId) => states[p] === "busy" && (p === candidate ? this.sent.has(handOver(task, p)) : other.state === "proposed" && this.sent.has(handOver(other, p)));
     return predictSplit({
       peers,
       observations: Object.fromEntries(peers.map((p) => [p, this.splitObservations(task.class, p, task.id)])),
       units: [unit, unit],
       profiles: Object.fromEntries(peers.map((p) => [p, this.d.splitProfile?.(p)])),
       backlog: Object.fromEntries(peers.map((p) => [p, open.filter((t) => t.owner === p).length])),
-      // Busy is taking the task in question only once that task was sent to it and nothing waits in its queue (an owner
-      // goes busy as its task is delivered): the routed peer this very task, the other owner the overlapped one while it
-      // is not started. Busy otherwise, it is at work on something else (#109; a routing or cohort record is taken before
-      // the task is sent, so a busy candidate is not available then).
+      // Busy is taking the task in question only in the turn that task started (an owner goes busy as its task is
+      // delivered) or in which it claimed it: the routed peer this very task, the other owner the overlapped one while it
+      // is not started. Busy otherwise, it is at work on something else (#109, #115; a routing or cohort record is taken
+      // before the task is sent, so a busy candidate is not available then).
       available: Object.fromEntries(peers.map((p) => [p, !failing[p] && (states[p] === "idle" || taking(p))])),
     });
   }
@@ -656,7 +658,7 @@ export class Tasks {
       } catch { /* shadow only: never between the board write and the delivery */ }
     }
     // A claim is its own hand-over: the claimant took the task in the turn it is in, so it is taking it, not busy elsewhere.
-    if (opts.claim && a.owner === by) this.sent.add(handOver(next, by));
+    if (opts.claim && a.owner === by && this.d.bus.stateOf(by) === "busy") this.sent.set(handOver(next, by), by);
     const hits = this.overlapHits(next);
     this.formCohort(next, hits);
     if (hits.length) {
@@ -691,11 +693,14 @@ export class Tasks {
       context && !pii ? `Handoff from the previous owner:\n${this.screen(task, context, "handoff", a.owner).slice(0, 3000)}` : "",
       `Take it with hub_task_accept {id: ${task.id}, plan: {paths, symbols, signatures, insertion_points}} (what you will change, before you start${pii ? "" : "; owners of overlapping tasks see it"}) or pass with hub_task_decline. When finished: hub_task_done {id: ${task.id}, summary: what changed, why, and the check you ran with its result, refs}.`,
     ].filter(Boolean).join("\n\n");
-    // A hand-over the owner takes in a turn of its own (#109, #115): idle with nothing queued, this envelope starts its next
-    // turn. Busy, it is queued, or steered into a turn about something else (Codex, Pi): that is not taking it.
-    const startsTurn = this.d.bus.stateOf(task.owner!) === "idle" && this.d.bus.queued(task.owner!) === 0;
-    this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner!], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id) }, ...(pii ? { private: true } : {}) }));
-    if (startsTurn) this.sent.add(handOver(task, task.owner!));
+    // A hand-over the owner takes in a turn of its own (#109, #115): idle before, busy after and not queued, this envelope
+    // was in the delivery that started its turn. Busy before, it is queued, or steered into a turn about something else
+    // (Codex, Pi); held, it starts no turn yet: neither is taking it.
+    const owner = task.owner!;
+    const idle = this.d.bus.stateOf(owner) === "idle";
+    const env = newEnvelope(HUB, body, { to: [owner], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id) }, ...(pii ? { private: true } : {}) });
+    this.d.bus.publish(env);
+    if (idle && this.d.bus.stateOf(owner) === "busy" && !this.d.bus.queueIds(owner).includes(env.id)) this.sent.set(handOver(task, owner), owner);
   }
 
   /** Nobody, the console user included, works on a task before what it waits for is approved. */
@@ -713,7 +718,7 @@ export class Tasks {
   }
 
   private readonly offered = new Set<number>(); // ready tasks offered in this hub run
-  private readonly sent = new Set<string>(); // hand-overs (`handOver`) whose task envelope started the owner's turn in this hub run
+  private readonly sent = new Map<string, PeerId>(); // hand-over (`handOver`) -> owner, for the owner's current turn: its task envelope started it, or it claimed the task in it
 
   /**
    * A stop between an approval and the assignment of its dependents (both are saved on their own) leaves them ownerless

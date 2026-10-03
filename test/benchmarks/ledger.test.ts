@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -267,8 +267,21 @@ test("several run directories pool their repeats; a planned attempt without a re
     expect(held.missing).not.toContainEqual({ case: 0, arm: "hub-turnfree-codex-claude", repeat: 2 });
     const withheld = held.rows.find((x: { withheld?: boolean }) => x.withheld);
     expect([withheld.repeat, withheld.validity]).toEqual([2, { valid: false, why: "cleanup incomplete or unknown: still running: below 107" }]);
+    // restore.ts writes a record to runs/ before it removes it from recovery/: stopped in between, the record is in both
+    // and still withheld.
+    b.run("00-hub-turnfree-codex-claude", record(b, "hub-turnfree-codex-claude", 2));
+    const both = spawnSync("python3", [script, "--run", a.root, "--run", b.root, "--plan", "pilot"], { encoding: "utf8" });
+    if (both.status !== 0) throw new Error(both.stderr);
+    const moving = JSON.parse(readFileSync(join(a.root, "ledger.json"), "utf8")).rows.filter((x: { repeat: number; arm: string }) => x.repeat === 2 && x.arm === "hub-turnfree-codex-claude");
+    expect(moving.map((x: { withheld?: boolean }) => x.withheld)).toEqual([true]);
+    // runs/ locked with the arm's siblings (its cleanup incomplete): its records cannot be read, which is not "missing".
+    chmodSync(join(b.root, "runs"), 0o000);
+    const locked = spawnSync("python3", [script, "--run", a.root, "--run", b.root, "--plan", "pilot"], { encoding: "utf8" });
+    chmodSync(join(b.root, "runs"), 0o700);
+    expect(locked.status).not.toBe(0);
+    expect(locked.stderr).toContain("is locked");
   } finally {
-    for (const f of [a, b]) rmSync(f.root, { recursive: true, force: true });
+    for (const f of [a, b]) { try { chmodSync(join(f.root, "runs"), 0o700); } catch {} rmSync(f.root, { recursive: true, force: true }); }
   }
 });
 
