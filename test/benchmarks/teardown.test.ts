@@ -365,6 +365,8 @@ test("what a ledger holds unrestored, and whether a run directory may be used ag
   expect(unrestored({ ...done, siblings: { a: { restored: true }, b: { restored: false } } })).toEqual(["sibling read locks of 1 arm(s)"]);
   expect(unrestored({ ...done, trust: { stage: "pending", restored: false } })).toEqual(["the Claude trust entry"]);
   expect(unrestored({ ...done, trust: { stage: "changed_concurrently", restored: false } })).toEqual([]); // the user's
+  expect(unrestored({ ...done, trust: { stage: "not_written", restored: true } })).toEqual([]); // never written, temp gone
+  expect(unrestored({ ...done, trust: { stage: "not_written", restored: false } })).toEqual(["the trust write's temp file (a copy of ~/.claude.json)"]);
   const text = (o: unknown) => JSON.stringify(o);
   expect(reuseProblem(undefined, undefined)).toBeUndefined(); // a fresh directory
   expect(reuseProblem(text({ restored: true }), text(done))).toBeUndefined(); // an earlier invocation ended restored
@@ -389,6 +391,40 @@ test("a stale restored: true over a ledger that still holds locks is not trusted
   expect(recover(run, processTable()!, new Map(), process.pid)).toEqual({ restored: true, blockers: [], failed: [] });
   expect(statSync(input).mode & 0o777).toBe(0o644);
   expect(JSON.parse(readFileSync(join(run, "restoration.json"), "utf8"))).toMatchObject({ restored: true, recovered: true });
+});
+
+test("a ledger from before 0.12.5 (no runner identity) under restored: true is trusted as it was then: the user's entry stays", async () => {
+  const { recover } = await import("../../scripts/benchmarks/restore.ts");
+  const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(run);
+  const fixture = join(run, "fixtures", "00-x");
+  mkdirSync(fixture, { recursive: true });
+  const trustFile = join(run, "claude.json");
+  const theirs = { projects: { [fixture]: { hasTrustDialogAccepted: true, mine: "user" } } };
+  writeFileSync(trustFile, JSON.stringify(theirs));
+  // 0.12.3 and 0.12.4 wrote restored: true and left a concurrently changed entry at `written`, unrecorded.
+  writeFileSync(join(run, "restoration.json"), JSON.stringify({ restored: true, paths: 1 }));
+  writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ protected: { paths: {}, restored: true }, siblings: {}, actors: {}, trust: { file: trustFile, project: fixture, previous: undefined, written: { hasTrustDialogAccepted: true }, hadProjects: true, mode: 0o600, stage: "written", restored: false } }));
+  expect(recover(run, processTable()!, new Map(), -1, true)).toEqual({ restored: true, blockers: [], failed: [] });
+  expect(JSON.parse(readFileSync(trustFile, "utf8"))).toEqual(theirs);
+});
+
+test("a runner the process table missed, read before the files, is checked again right before anything is restored", async () => {
+  const { recover } = await import("../../scripts/benchmarks/restore.ts");
+  const me = processTable()!.find((r) => r.pid === process.pid)!;
+  const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(run);
+  const input = join(run, "input.txt");
+  writeFileSync(input, "x");
+  chmodSync(input, 0);
+  writeFileSync(join(run, "restoration.json"), JSON.stringify({ restored: false, runner: { pid: me.pid, started: me.started } }));
+  writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner: { pid: me.pid, started: me.started }, protected: { paths: { [input]: 0o644 }, restored: false }, siblings: {}, actors: {} }));
+  // The first table predates the runner; the files name it, and it runs.
+  const before = processTable()!.filter((r) => r.pid !== process.pid);
+  const result = recover(run, before, new Map(), -1);
+  expect(result.restored).toBe(false);
+  expect(result.blockers).toEqual([`the runner ${me.pid} is still running`]);
+  expect(statSync(input).mode & 0o777).toBe(0); // nothing restored under a running runner
 });
 
 test("the runner restoration.json names holds the recovery while it runs; dead, with no ledger, there is nothing to restore", async () => {

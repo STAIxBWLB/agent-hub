@@ -379,8 +379,10 @@ export function restoreTrust(lease: TrustLease, dir: string, pending = false, te
 
 /**
  * What a restoration ledger still holds unrestored (#120): empty when everything it locked is back and its trust entry is
- * settled (restored, never written, or the user's). A run directory whose ledger is missing holds nothing: the runner
- * persists the ledger before it locks anything.
+ * settled: restored, the user's (`changed_concurrently`), or never written with its temp file gone (`not_written`, restored);
+ * a `not_written` whose temp file is left still holds a copy of ~/.claude.json. A run directory whose ledger is missing holds
+ * nothing: the runner persists the ledger before it locks anything. `ledger` is the parsed restoration-ledger.json (`any`:
+ * its shape is native.ts's persistLedger, read back from disk).
  */
 export function unrestored(ledger: any): string[] {
     const left: string[] = [];
@@ -388,7 +390,7 @@ export function unrestored(ledger: any): string[] {
     const siblings = Object.values<any>(ledger?.siblings ?? {}).filter((s) => !s?.restored).length;
     if (siblings) left.push(`sibling read locks of ${siblings} arm(s)`);
     const trust = ledger?.trust;
-    if (trust && !trust.restored && trust.stage !== 'changed_concurrently') left.push('the Claude trust entry');
+    if (trust && !trust.restored && trust.stage !== 'changed_concurrently') left.push(trust.stage === 'not_written' ? "the trust write's temp file (a copy of ~/.claude.json)" : 'the Claude trust entry');
     return left;
 }
 
