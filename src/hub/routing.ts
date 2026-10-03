@@ -263,8 +263,13 @@ export interface SplitObservation {
 export interface SplitInput {
   /** The pair: the peer routing would pick for the task, and the owner of the open task it overlaps. */
   peers: [PeerId, PeerId];
-  /** Each peer's observations in this class, from this hub run only: one version, one hook profile. */
+  /**
+   * Each peer's observations in this class, across hub runs of the project, from the records tagged with the profile
+   * the peer has now (hub version, agent version, hook profile): only those describe the peer being predicted.
+   */
   observations: Record<PeerId, SplitObservation[]>;
+  /** Each peer's profile now; undefined while its agent's version is unknown, and then no record matches it. */
+  profiles: Record<PeerId, string | undefined>;
   /** Work units of the routed task and of the one it overlaps; undefined is unknown. */
   units: [number | undefined, number | undefined];
   /** Other open work each peer has: a busy owner does not start from orientation plus two whole units. */
@@ -302,6 +307,10 @@ export function predictSplit(input: SplitInput): SplitPrediction {
   const [ua, ub] = input.units;
   if (ua === undefined || ub === undefined || ua !== ub) return unknown(`work units ${ua ?? "?"} and ${ub ?? "?"}: the rule needs two equal, known units`);
   for (const p of [a, b]) {
+    if (!input.profiles[p]) return unknown(`${p}'s version is unknown: no record can be matched to it`);
+    trace.push(`  ${p}: ${input.profiles[p]}`);
+  }
+  for (const p of [a, b]) {
     if (!input.available[p]) return unknown(`${p} is not available`);
     if ((input.backlog[p] ?? 0) > 0) return unknown(`${p} has ${input.backlog[p]} other open task(s): it would not start from orientation plus two units`);
   }
@@ -314,7 +323,7 @@ export function predictSplit(input: SplitInput): SplitPrediction {
     const all = input.observations[p] ?? [];
     const failed = all.filter((o) => o.outcome !== "approved").length;
     const ok = all.filter((o): o is Required<SplitObservation> => o.outcome === "approved" && o.orient !== undefined && o.work !== undefined);
-    if (ok.length < SPLIT_MIN) return unknown(`${p} has ${ok.length} measured task(s) in this hub run; ${SPLIT_MIN} are needed`);
+    if (ok.length < SPLIT_MIN) return unknown(`${p} has ${ok.length} measured task(s) with this profile; ${SPLIT_MIN} are needed`);
     if (failed / all.length > SPLIT_FAILURE_SHARE) return unknown(`${failed} of ${all.length} of ${p}'s recorded tasks failed: its successes alone would understate its time`);
     const works = ok.map((o) => o.work).sort((x, y) => x - y);
     const u = median(works);

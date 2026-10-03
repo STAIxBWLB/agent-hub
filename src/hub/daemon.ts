@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, fstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
@@ -28,7 +28,7 @@ import { Board, CLASSES, type Task, type TaskClass } from "./board.ts";
 import { Budget, claudeWindows, codexWindows, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
 import { HUB } from "./envelope.ts";
 import { trimToTokens } from "../memory/recall.ts";
-import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, constants as fsConstants, openSync, readSync, statSync } from "node:fs";
 import { basename, isAbsolute } from "node:path";
 import { realPath } from "./project.ts";
 import type { BusEvent } from "./bus.ts";
@@ -539,15 +539,15 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!factsOn()) return undefined;
       let offered: ReturnType<Facts["due"]>;
       try { offered = facts.due(peer, undefined, true); } catch (error) { log(`integration facts for ${peer}: ${(error as Error).message}`); return undefined; }
-      if (offered) event({ type: "fact", peer, id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "done" });
+      if (offered) event({ type: "fact", peer, id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, named: offered.named, bytes: offered.bytes, via: "done" });
       return offered ? { id: offered.id, text: offered.text } : undefined;
     },
     ackFacts: (peer, id) => acked(peer, id, "done"),
     factsCurrent: (peer) => !factsOn() || facts.current(peer),
-    since: hubStartedAt,
+    splitProfile: (peer) => splitProfile(peer),
     recordCohort: (c) => event({ type: "cohort", ...c }),
     // The trace holds peer names and numbers only (never task text): it is the inputs a later check of the prediction needs.
-    recordSplit: (task, p) => event({ type: "split", task, verdict: p.verdict, ...(p.single ? { single: p.single, splitS: p.splitS, singleS: p.singleS } : {}), ...(p.verdict === "unknown" ? { reason: p.trace.at(-1)!.replace(/^ {2}unknown: /, "").slice(0, 200) } : {}), trace: p.trace.slice(1).map((l) => l.trim()).slice(0, 10) }),
+    recordSplit: (task, p, where) => event({ type: "split", task, where, verdict: p.verdict, ...(p.single ? { single: p.single, splitS: p.splitS, singleS: p.singleS } : {}), ...(p.verdict === "unknown" ? { reason: p.trace.at(-1)!.replace(/^ {2}unknown: /, "").slice(0, 200) } : {}), trace: p.trace.slice(1).map((l) => l.trim()).slice(0, 10) }),
     failing: () => bus.failingPeers(),
     held: () => Object.fromEntries(bus.knownPeers().flatMap((peer) => { const hold = queueHold(peer); return hold ? [[peer, hold]] : []; })),
   });
@@ -1018,6 +1018,46 @@ export async function startDaemon(opts: DaemonOptions) {
       };
     } catch { return {}; }
   };
+  /**
+   * Claude Code's version, from the last row of its transcript that names one (its rows carry it): the last MiB is read,
+   * opened without blocking and only as a regular file, and the last version found is kept for a tail of big rows.
+   */
+  const claudeVersions = new Map<string, string>();
+  const claudeVersion = (): string | undefined => {
+    const path = claudeSession().transcriptPath;
+    if (!path) return undefined;
+    let fd: number | undefined;
+    try {
+      fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+      const st = fstatSync(fd);
+      if (!st.isFile()) return claudeVersions.get(path);
+      const buf = Buffer.alloc(Math.min(st.size, 1024 * 1024));
+      readSync(fd, buf, 0, buf.length, st.size - buf.length);
+      for (const line of buf.toString("utf8").split("\n").reverse()) {
+        try {
+          const version = JSON.parse(line)?.version;
+          const found = typeof version === "string" ? /^\d+\.\d+\.\d+(?:-[\w.]+)?/.exec(version)?.[0] : undefined;
+          if (found) {
+            claudeVersions.set(path, found);
+            return found;
+          }
+        } catch { /* the cut first line, or not JSON */ }
+      }
+    } catch { /* no transcript yet */ } finally { if (fd !== undefined) closeSync(fd); }
+    return claudeVersions.get(path);
+  };
+  /**
+   * A peer's split profile (issue #109): the hub's version, its agent's, and the hook profile, which is the hub's own (a
+   * turn-free project runs the facts hooks in Claude and steers facts into Codex). Undefined while a version is unknown.
+   * ponytail: the user's and plugins' hooks are not seen here, and only Claude and Codex report a version; read hooks
+   * from the native records, as the benchmark ledger does, and add other agents' versions when a pair needs them.
+   */
+  function splitProfile(peer: PeerId): string | undefined {
+    try {
+      const version = peer === "codex" ? (bus.peers.get("codex") as { version?: string } | undefined)?.version : peer === "claude" ? claudeVersion() : undefined;
+      return version ? `hub ${VERSION}; ${peer} ${version}; ${turnFree() ? "turn-free" : "advisory"}` : undefined; // the regime in force: a PII task suspends turn-free
+    } catch { return undefined; } // asked before the daemon finished starting
+  }
   /** Claude persists projects/<slug>/<sessionId>.jsonl only with the first turn. Prefer the
    * path Claude itself reported through the status line; fall back to the slug computation. */
   const claudeTranscriptPersisted = (sessionId: string): boolean => {
@@ -1552,7 +1592,7 @@ export async function startDaemon(opts: DaemonOptions) {
             // Refused, it never went in: not an unread offer, and the next boundary offers it again. Unanswered, it may
             // have: its readback can still come.
             if (outcome === "refused") facts.drop("codex", offered.id);
-            event({ type: "fact", peer: "codex", id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "steer", ms, ...(outcome === "accepted" ? { rttMs: Math.round(performance.now() - sent) } : {}), accepted: outcome === "accepted", ...(outcome === "unanswered" ? { unanswered: true } : {}), ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
+            event({ type: "fact", peer: "codex", id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, named: offered.named, bytes: offered.bytes, via: "steer", ms, ...(outcome === "accepted" ? { rttMs: Math.round(performance.now() - sent) } : {}), accepted: outcome === "accepted", ...(outcome === "unanswered" ? { unanswered: true } : {}), ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
           });
         },
         appPort: opts.codexAppPort,
@@ -2143,7 +2183,7 @@ export async function startDaemon(opts: DaemonOptions) {
             return void reply({ t: "facts", ok: true });
           }
           const offered = offerFor(peer, toolUseId);
-          if (offered) event({ type: "fact", peer, id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, bytes: offered.bytes, via: "hook", ms: Math.round(performance.now() - started), ...(typeof msg.startedMs === "number" && Number.isFinite(msg.startedMs) ? { hookMs: Math.round(msg.startedMs) } : {}), ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
+          if (offered) event({ type: "fact", peer, id: offered.id, files: offered.files, plans: offered.plans, unknown: offered.unknown, named: offered.named, bytes: offered.bytes, via: "hook", ms: Math.round(performance.now() - started), ...(typeof msg.startedMs === "number" && Number.isFinite(msg.startedMs) ? { hookMs: Math.round(msg.startedMs) } : {}), ...(offered.probe ? { probe: true } : {}), ...(offered.coverage ? { coverage: true } : {}) });
           return void reply({ t: "facts", ok: true, ...(offered ? { text: offered.text, id: offered.id } : {}) });
         } catch (error) {
           log(`facts for ${c.peer}: ${(error as Error).message}`);

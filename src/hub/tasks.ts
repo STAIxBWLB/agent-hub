@@ -56,10 +56,16 @@ export interface TasksDeps {
   ackFacts?: (peer: PeerId, id: string) => void;
   /** Whether a peer has been shown every change to its files. */
   factsCurrent?: (peer: PeerId) => boolean;
-  /** When this hub run started: split observations come from it only, one version and one hook profile (issue #109). */
-  since?: number;
-  /** A shadow split prediction made at an assignment, for the record (issue #109). */
-  recordSplit?: (task: number, prediction: SplitPrediction) => void;
+  /**
+   * A peer's split profile now (issue #109): the hub's version, its agent's and the hook profile. Each hand-over is
+   * tagged with it, and only records with a peer's current profile are its observations. Undefined while unknown.
+   */
+  splitProfile?: (peer: PeerId) => string | undefined;
+  /**
+   * A shadow split prediction, for the record (issue #109): `routing` when routing chose the owner of a task that
+   * overlaps another owner's task not started yet (what calibration reads), `cohort` when an overlap formed a cohort.
+   */
+  recordSplit?: (task: number, prediction: SplitPrediction, where: "routing" | "cohort") => void;
   /** A cohort formed, changed or was lifted (issue #107), for the record: the benchmark's treatment check reads it. */
   recordCohort?: (cohort: { id: number; event: "formed" | "joined" | "lifted"; silent: boolean; tasks: number[]; owners: PeerId[] }) => void;
 }
@@ -253,33 +259,46 @@ export class Tasks {
   }
 
   /**
-   * A peer's tasks of a class in this hub run, as split observations (issue #109): handed to it by someone else (claims
-   * left out), typed by outcome. Stages are the board's own proxies and stay unknown when the accept came with the done.
+   * A peer's tasks of a class, across hub runs, as split observations (issue #109): each hand-over to it by someone
+   * else (claims left out) while it had the profile it has now, typed by outcome. Stages are the board's own proxies and
+   * stay unknown when the accept came with the done.
+   * ponytail: the profile is taken at the hand-over; a hub restarted with another version before the done mixes two in
+   * one record. Tag the done as well if that ever shows up in the data.
    */
   splitObservations(cls: TaskClass, peer: PeerId, exclude?: number): SplitObservation[] {
-    const since = this.d.since ?? 0;
+    const profile = this.d.splitProfile?.(peer);
+    if (!profile) return [];
+    const failed = ["check failed", "changes_requested", "escalated", "released", "declined", "integration unresolved"];
     return this.d.board.list().flatMap((t): SplitObservation[] => {
-      if (t.class !== cls || t.owner !== peer || t.id === exclude) return [];
-      const given = [...t.history].reverse().find((h) => OWNERSHIP_EVENTS.has(h.event) && h.event !== "unassigned" && (h.owner === undefined || h.owner === peer));
-      if (!given || given.at < since || given.by === peer) return [];
-      const after = t.history.filter((h) => h.at >= given.at);
-      if (after.some((h) => ["check failed", "changes_requested", "escalated", "released", "declined", "integration unresolved"].includes(h.event))) return [{ outcome: "failed" }];
-      if (t.state !== "approved") return [];
-      const accepted = after.find((h) => h.event === "accepted" && h.by === peer);
-      // The work stage ends at its first done call: checks and an integration step are not the work itself.
-      const intent = accepted && after.find((h) => h.at >= accepted.at && ["done", "done (checking)", "integration requested"].includes(h.event));
-      if (!accepted || !intent || accepted.note === WITH_DONE) return [{ outcome: "approved" }];
-      return [{ outcome: "approved", orient: accepted.at - given.at, work: intent.at - accepted.at }];
+      if (t.class !== cls || t.id === exclude) return [];
+      // One observation per time the task was handed to `peer` by someone else: what happened from that hand-over up to
+      // and with the next one is that peer's, so an escalation away or a decline counts against the peer that failed,
+      // never against the next owner, and work that ended elsewhere is still counted (no survivors only).
+      return t.history.flatMap((given, i): SplitObservation[] => {
+        if (!OWNERSHIP_EVENTS.has(given.event) || given.event === "unassigned" || given.owner !== peer || given.profile !== profile || given.by === peer) return [];
+        const next = t.history.findIndex((h, j) => j > i && OWNERSHIP_EVENTS.has(h.event));
+        const span = t.history.slice(i + 1, next < 0 ? undefined : next + 1);
+        if (span.some((h) => failed.includes(h.event))) return [{ outcome: "failed" }];
+        if (next >= 0 || t.state !== "approved") return []; // handed on without a failure (a relay), or still open
+        const accepted = span.find((h) => h.event === "accepted" && h.by === peer);
+        // The work stage ends at its first done call: checks and an integration step are not the work itself.
+        const intent = accepted && span.find((h) => h.at >= accepted.at && ["done", "done (checking)", "integration requested"].includes(h.event));
+        if (!accepted || !intent || accepted.note === WITH_DONE) return [{ outcome: "approved" }];
+        return [{ outcome: "approved", orient: accepted.at - given.at, work: intent.at - accepted.at }];
+      });
     });
   }
 
   /**
    * The shadow split prediction for routing `task` to `candidate` (issue #109): the pair it would form with the owner of
-   * an open task it overlaps. Assignment never reads it; `route explain` shows it and assignment records it.
+   * an open task it overlaps (`unstarted`: one not started yet). Assignment never reads it; `route explain` shows it and
+   * assignment records it.
    */
-  splitShadow(task: Task, candidate: PeerId | undefined): SplitPrediction | undefined {
+  splitShadow(task: Task, candidate: PeerId | undefined, unstarted = false): SplitPrediction | undefined {
     if (!candidate) return undefined;
-    const other = this.overlapHits({ ...task, owner: null }).map((h) => h.task).find((t) => t.owner && t.owner !== candidate && t.owner !== USER && t.owner !== HUB);
+    const others = this.overlapHits({ ...task, owner: null }).map((h) => h.task).filter((t) => t.owner && t.owner !== candidate && t.owner !== USER && t.owner !== HUB);
+    // A task not started yet first: the pair the routing record is about, so explain and the record agree on it.
+    const other = others.find((t) => t.state === "proposed") ?? (unstarted ? undefined : others[0]);
     if (!other) return undefined;
     const peers: [PeerId, PeerId] = [candidate, other.owner!];
     const states = this.states();
@@ -293,9 +312,11 @@ export class Tasks {
       peers,
       observations: Object.fromEntries(peers.map((p) => [p, this.splitObservations(task.class, p, task.id)])),
       units: [unit, unit],
+      profiles: Object.fromEntries(peers.map((p) => [p, this.d.splitProfile?.(p)])),
       backlog: Object.fromEntries(peers.map((p) => [p, open.filter((t) => t.owner === p).length])),
-      // The routed peer may be busy taking this very task; the other owner, busy, is at work on something already.
-      available: Object.fromEntries(peers.map((p) => [p, !failing[p] && (states[p] === "idle" || (states[p] === "busy" && p === candidate))])),
+      // The routed peer may be busy taking this very task, and the other owner taking the overlapped task while it is not
+      // started yet (an owner goes busy as its task is delivered); busy otherwise, it is at work on something already.
+      available: Object.fromEntries(peers.map((p) => [p, !failing[p] && (states[p] === "idle" || (states[p] === "busy" && (p === candidate || other.state === "proposed")))])),
     });
   }
 
@@ -618,7 +639,17 @@ export class Tasks {
       }
       return task;
     }
-    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}) }, opts.note ?? `to ${a.owner}`);
+    const profile = this.d.splitProfile?.(a.owner);
+    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}) }, opts.note ?? `to ${a.owner}`, profile ? { profile } : {});
+    // What calibration reads (issue #109): routing chose the first owner (no single named candidate, no claim; not an
+    // escalation, relay or reassignment of work already begun), and the work overlaps another owner's task not started
+    // yet. For the record only. Work routed back to its proposer is left out, as its observations are (by === owner).
+    if ((opts.event ?? "assigned") === "assigned" && !opts.claim && opts.candidates?.length !== 1 && a.owner !== by) {
+      try {
+        const shadow = this.splitShadow(next, a.owner, true);
+        if (shadow) this.d.recordSplit?.(next.id, shadow, "routing");
+      } catch { /* shadow only: never between the board write and the delivery */ }
+    }
     const hits = this.overlapHits(next);
     this.formCohort(next, hits);
     if (hits.length) {
@@ -753,7 +784,7 @@ export class Tasks {
       this.d.recordCohort?.({ id: c.id, event: joined.formed ? "formed" : "joined", silent: c.silent, tasks: [...c.members.keys()].sort((a, b) => a - b), owners: [...new Set([...c.members.values()].map((m) => m.owner))].sort() });
       // A shadow split prediction for the pair that just overlapped, named owner or not (issue #109): for the record only.
       const shadow = this.splitShadow(task, task.owner);
-      if (shadow) this.d.recordSplit?.(task.id, shadow);
+      if (shadow) this.d.recordSplit?.(task.id, shadow, "cohort");
     }
     if (joined.lifted) this.announceLift(c, `${task.owner} cannot be shown the others' changes`);
   }

@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.4 and control protocol 13. Live verification
+This guide describes ahub 0.12.5 and control protocol 13. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Install and start
@@ -408,14 +408,18 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   touched, with the other members' new plans; the last member still at work
   keeps the others' files after they finish. A directory a task names stands for
   git's changed (staged or not) files against HEAD, new and deleted files under
-  it (200 at most; the fact says when more were cut, until it is read back and
-  again in a new session). A file the peer has seen there stays covered after git
+  it (200 at most; the fact says when more were cut, until it is read back, and a
+  new session hears it again). A file the peer has seen there stays covered after git
   stops listing it (put back to HEAD's bytes, or the directory moved away), so
   the way back is shown (200 at most, the newest versions first; the rest are
-  named once as no longer tracked). A file there that the peer has neither seen
-  nor touched appears once someone changed or created it: it is named without a
-  diff (what happened before is never shown) until the peer reads the fact back,
-  and until then it counts as a change the peer has not been shown. `.git` directories
+  named as no longer followed, until the peer reads that back; a new session
+  hears only the drops of its own). A file there that the peer has neither seen nor touched appears once
+  someone changed it so that its bytes differ from HEAD's, or created it: it is
+  named without a diff (what happened before is never shown) until the peer reads
+  the fact back, and until then it counts as a change the peer has not been
+  shown. A rewrite with HEAD's bytes, which git lists until it refreshes its
+  index, is no change (a file too large to read is compared by git's own hash).
+  `.git` directories
   at any depth and what the denylist keeps from every agent
   (`src/local/deny.ts` and `local.deny`) are never read or shown. A file a peer touched before it had a view of it (a
   partial read, say) is compared with what it was then, so a change landing in
@@ -436,7 +440,8 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   acknowledgement says the context reached the native session, not that the
   model read it. 60 changed lines are shown at most, the cut files named; a
   history longer than the hub keeps is shown with its attribution unknown, and a
-  file that falls out of the 64 a peer touched is named once. Only regular files
+  file that falls out of the 64 a peer touched is named until the peer reads
+  that back. Only regular files
   of 256 KB or less inside the project are read, re-resolved at every read and
   opened without following links; larger ones are named without a diff. Facts never go through the bus or the delivery journal;
   `events.jsonl` records `fact`, `fact_ack` and `capability` events with bytes
@@ -482,14 +487,24 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   silent cohort with the caller, and only then leaves out the request to settle
   by message. `templates/claude-hooks.json` holds only the check-path hook; the
   facts hooks need a hub-launched session.
-- Routing does not change. When a task's overlap with another owner's open task
-  forms or changes a cohort, routed or named, the hub records a shadow split
-  prediction (`split` event; `ahub route explain <id>` shows its trace as it would
-  be now): whether splitting two equal units between the two peers
-  (`o_s + u_s < o_f + 2u_f`) would finish sooner than the faster one alone, from
-  this hub run's recorded task stages. It is unknown unless the units are equal
-  and known, both peers are available (the other owner idle; the task's own peer
-  idle or busy taking it) with no other open work (an overlapping task its owner
+- Routing does not change. When routing chooses the first owner of a task that
+  overlaps another owner's task not started yet (`where: "routing"`, the record
+  calibration reads; an escalation, relay or reassignment is not one), and when an overlap forms or changes a cohort, routed or
+  named (`where: "cohort"`), the hub records a shadow split prediction (`split`
+  event; `ahub route explain <id>` shows its trace as it would be now): whether
+  splitting two equal units between the two peers (`o_s + u_s < o_f + 2u_f`)
+  would finish sooner than the faster one alone, from the recorded task stages of
+  each peer under the profile it has now. Every hand-over is tagged with the new
+  owner's profile: the hub's version, the agent's (Codex's from app-server,
+  Claude Code's from its transcript; other agents report none yet) and the
+  coordination mode, which decides the hub's own hooks; records accumulate across
+  hub runs, one per hand-over (a decline or an escalation away counts against
+  the peer that failed, never the next owner), and a peer whose version is
+  unknown has no profile. The user's and
+  plugins' hooks are not part of it. It is unknown unless the units are equal
+  and known, both peers are available (the other owner idle, or busy taking the
+  overlapping task while it is not started; the task's own peer idle or busy
+  taking it) with no other open work (an overlapping task its owner
   has started counts), and each has five measured tasks with no more than 30%
   failures and comparable work times. The work stage of a task ends at its first
   `hub_task_done`, and the task itself is never one of its own observations.
@@ -627,21 +642,21 @@ Rows without a live process are stale registrations; forget them with
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2) or 12 (0.12.3) and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3) or 13 (0.12.4) and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.4 ahub upgrade --to 0.12.4 --dry-run
-bunx --package @staix/agent-hub@0.12.4 ahub upgrade --to 0.12.4 --yes
+bunx --package @staix/agent-hub@0.12.5 ahub upgrade --to 0.12.5 --dry-run
+bunx --package @staix/agent-hub@0.12.5 ahub upgrade --to 0.12.5 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 (protocol 13) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 

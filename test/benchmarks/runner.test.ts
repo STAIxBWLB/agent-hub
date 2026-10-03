@@ -76,6 +76,19 @@ describe("benchmark runner contracts", () => {
       expect(prepared.fixtures).toHaveLength(3);
       expect(prepared.fixtures[0].baseline_paths).toBe(2);
       expect(prepared.fixtures[0].qualified_feature_ids).toEqual(["sample_repo:7:1","sample_repo:7:2"]);
+      // The teardown and the process table it reads are pinned (#113): grading refuses once either changed, or a cohort ran other sources.
+      const sha=(f:string)=>createHash("sha256").update(readFileSync(join(import.meta.dir,f))).digest("hex");
+      expect(prepared.teardown_sha256).toBe(sha("../../scripts/benchmarks/teardown.ts"));
+      expect(prepared.process_table_sha256).toBe(sha("../../src/hub/child-process.ts"));
+      const out=join(root,"output"),grade=()=>spawnSync("python3",[script,"grade","--run",out,"--private-inputs",root,"--upstream-root",root],{encoding:"utf8"});
+      const cohort=(extra:object)=>writeFileSync(join(out,"cohort.json"),JSON.stringify({manifest_sha256:prepared.manifest_sha256,runner_sha256:prepared.runner_sha256,native_runner_sha256:prepared.native_runner_sha256,teardown_sha256:prepared.teardown_sha256,...extra}));
+      cohort({teardown_sha256:"0".repeat(64)});
+      expect(grade().stderr).toContain("run source pins differ");
+      for(const key of ["teardown_sha256","process_table_sha256"]){
+        writeFileSync(join(out,"prepared.json"),JSON.stringify({...prepared,[key]:"0".repeat(64)}));
+        cohort({[key]:"0".repeat(64)});
+        expect(grade().stderr).toContain("changed after fixture preparation");
+      }
     } finally { rmSync(root,{recursive:true,force:true}); }
   });
 
@@ -85,7 +98,8 @@ describe("benchmark runner contracts", () => {
       const protectedRoot=join(root,"hidden");mkdirSync(protectedRoot);const protectedFile=join(protectedRoot,"source.json");
       writeFileSync(protectedFile,"private");chmodSync(protectedFile,0);chmodSync(protectedRoot,0);
       writeFileSync(join(root,"restoration-ledger.json"),JSON.stringify({protected:{paths:{[protectedRoot]:0o700,[protectedFile]:0o600},restored:false},siblings:{},trust:null}));
-      const recovered=spawnSync("python3",[script,"restore","--run",root],{encoding:"utf8"});
+      expect(spawnSync("python3",[script,"restore","--run",root],{encoding:"utf8"}).status).not.toBe(0); // no runner identity (#113)
+      const recovered=spawnSync("python3",[script,"restore","--run",root,"--runner-exited"],{encoding:"utf8"});
       expect(recovered.status).toBe(0);
       expect(statSync(protectedRoot).mode&0o777).toBe(0o700);
       expect(statSync(protectedFile).mode&0o777).toBe(0o600);
@@ -122,7 +136,9 @@ test("crash trust restoration preserves native updates to unrelated project fiel
     const trust=join(root,"trust.json"),project=join(root,"project");mkdirSync(project);
     writeFileSync(trust,JSON.stringify({projects:{[project]:{hasTrustDialogAccepted:true,lastCost:2},other:{untouched:true}}}));
     writeFileSync(join(root,"restoration-ledger.json"),JSON.stringify({protected:{paths:{},restored:false},siblings:{},trust:{file:trust,project,previous:{hasTrustDialogAccepted:false,lastCost:1},written:{hasTrustDialogAccepted:true,lastCost:1},restored:false,hadProjects:true,mode:384}}));
-    const r=spawnSync("python3",["-B",script,"restore","--run",root],{encoding:"utf8"});expect(r.status).toBe(0);
+    // A ledger from before runner identities (#113): recovery is refused until the operator states the runner is gone.
+    expect(spawnSync("python3",["-B",script,"restore","--run",root],{encoding:"utf8"}).status).not.toBe(0);
+    const r=spawnSync("python3",["-B",script,"restore","--run",root,"--runner-exited"],{encoding:"utf8"});expect(r.status).toBe(0);
     const value=JSON.parse(readFileSync(trust,"utf8"));expect(value.projects[project]).toEqual({hasTrustDialogAccepted:false,lastCost:2});expect(value.projects.other).toEqual({untouched:true});
   } finally {rmSync(root,{recursive:true,force:true});}
 });

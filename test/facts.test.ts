@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -316,6 +316,41 @@ test("history beyond the cap is attribution unknown, and a file that falls out o
   const told = facts.due("claude")!;
   expect(told.text).toContain("no longer tracked (more than 64 files touched): a.txt");
   expect(told.coverage).toBe(true);
+  // #112: spent by an acknowledgement, not by building the offer; a refused steer or a lost hook answer keeps it.
+  facts.drop("claude", told.id);
+  const again = facts.due("claude")!;
+  expect(again.text).toContain("no longer tracked (more than 64 files touched): a.txt");
+  facts.ack("claude", again.id);
+  expect(facts.due("claude")?.text ?? "").not.toContain("no longer tracked");
+  // A new session touched nothing yet: the old session's files are not pushed out under its name.
+  facts.session("claude", "s1");
+  facts.session("claude", "s2");
+  for (let i = 0; i < 65; i++) {
+    write(`g${i}.txt`, "x\n");
+    facts.preTool("claude", `n${i}`, "Read", { file_path: join(root, `g${i}.txt`) });
+    facts.postTool("claude", `n${i}`, "Read", { file_path: join(root, `g${i}.txt`) });
+  }
+  const fresh = facts.due("claude")!;
+  expect(fresh.text).toContain("no longer tracked (more than 64 files touched): g0.txt;");
+  expect(fresh.text).not.toMatch(/no longer tracked[^\n]*f\d+\.txt/);
+});
+
+// issue #112: an offer read back late spends only what it told; a file tracked again and dropped again is told anew.
+test("an offer read back after its file was touched again and dropped again does not spend the second notice", async () => {
+  const { root, facts, write, look } = rig({}, (f) => f === "f0.txt");
+  look("claude");
+  const read = (file: string, id: string) => {
+    write(file, "x\n");
+    facts.preTool("claude", id, "Read", { file_path: join(root, file) });
+    facts.postTool("claude", id, "Read", { file_path: join(root, file) });
+  };
+  for (let i = 0; i < 65; i++) read(`f${i}.txt`, `r${i}`);
+  const early = facts.due("claude")!;
+  expect(early.text).toContain("no longer tracked (more than 64 files touched): f0.txt");
+  read("f0.txt", "again"); // tracked again before that offer is read back,
+  for (let i = 0; i < 64; i++) read(`g${i}.txt`, `g${i}`); // and dropped again
+  facts.ack("claude", early.id);
+  expect(facts.due("claude")!.text).toContain("files touched): f0.txt");
 });
 
 test("a default Claude Read moves the view only when Read returns the whole file", async () => {
@@ -500,3 +535,116 @@ test("after a PII window, a file written under a named directory meanwhile is na
   expect(o.text).toContain("src/x.ts, src/customers.txt");
   expect(o.text).not.toContain("patient record");
 });
+
+// issue #112: the seen-file cap has a notice of its own, spent by an acknowledgement, and a new session hears it again.
+test("files seen under a named directory beyond the cap are named as not followed until that is read back, again in a new session", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-facts-")));
+  dirs.push(root);
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src", "keep.ts"), "k\n");
+  const git = (...a: string[]) => spawnSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...a]);
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: ["src"], plans: [] }), peers: () => ["claude"], nameable: () => true });
+  const look = () => { const o = facts.due("claude"); if (o) facts.ack("claude", o.id); return o; };
+  // 205 files seen under src: 200 first looks, committed (git stops listing them, they stay covered), then 5 more.
+  const see = (content: string, extra: string) => {
+    for (let i = 0; i < 200; i++) writeFileSync(join(root, "src", `n${i}.ts`), content);
+    expect(look()!.named).toBe(200);
+    git("add", "-A");
+    git("commit", "-qm", content);
+    for (let i = 0; i < 5; i++) writeFileSync(join(root, "src", `${extra}${i}.ts`), "x\n");
+    expect(look()!.named).toBe(5);
+  };
+  const dropped = (text: string) => /are not followed: ([^;]+);/.exec(text)?.[1];
+  see("n\n", "x");
+  const first = facts.due("claude")!;
+  expect(first.text).toContain("more than 200 files you saw under src are not followed: src/n");
+  expect(first.text).not.toContain("no longer tracked");
+  expect(first.coverage).toBe(true);
+  facts.drop("claude", first.id); // never went in: said again
+  const again = facts.due("claude")!;
+  expect(again.text).toContain("more than 200 files you saw under src are not followed");
+  facts.ack("claude", again.id);
+  expect(facts.due("claude")?.text ?? "").not.toContain("not followed");
+  facts.session("claude", "s1");
+  facts.session("claude", "s2");
+  see("n2\n", "y"); // the new session sees the same files again, and the cap drops the same five
+  expect(dropped(facts.due("claude")?.text ?? "")).toBe(dropped(first.text)!);
+}, 20_000); // hundreds of files: slow on a CI disk
+
+// issue #112: bytes equal to HEAD's are no change, for what a member is told and for whether it is current.
+test("a rewrite with HEAD's bytes under a named directory is not named and keeps a member current; a real change is named", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-facts-")));
+  dirs.push(root);
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src", "x.ts"), "x\n");
+  const git = (...a: string[]) => spawnSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...a]);
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: ["src"], plans: [] }), peers: () => ["claude"], nameable: () => true });
+  expect(facts.due("claude")).toBeUndefined();
+  writeFileSync(join(root, "src", "x.ts"), "x\n"); // `touch`, or `sed -i` with no match: same bytes, new stat data
+  const later = new Date(Date.now() + 60_000);
+  utimesSync(join(root, "src", "x.ts"), later, later);
+  expect(git("diff-index", "--name-only", "HEAD").stdout.toString()).toContain("src/x.ts"); // until git refreshes its index
+  expect(facts.current("claude")).toBe(true);
+  expect(facts.due("claude")).toBeUndefined();
+  writeFileSync(join(root, "src", "x.ts"), "x changed\n");
+  expect(facts.current("claude")).toBe(false);
+  const o = facts.due("claude")!;
+  expect(o.text).toContain("not shown as a diff (read before relying on it): src/x.ts");
+  expect([o.files, o.named]).toEqual([0, 1]); // a names-only offer counts its names
+  // A file too large to read: git hashes it, and HEAD's bytes are no change for it either.
+  const big = "y".repeat(300 * 1024) + "\n";
+  writeFileSync(join(root, "src", "big.txt"), big);
+  git("add", "-A");
+  git("commit", "-qm", "big");
+  writeFileSync(join(root, "src", "big.txt"), big);
+  utimesSync(join(root, "src", "big.txt"), later, later);
+  expect(git("diff-index", "--name-only", "HEAD").stdout.toString()).toContain("src/big.txt");
+  expect(facts.due("claude")?.text ?? "").not.toContain("src/big.txt");
+  expect(facts.due("claude")?.text ?? "").not.toContain("src/big.txt"); // hashed once per version, answered again
+  writeFileSync(join(root, "src", "big.txt"), "z".repeat(300 * 1024) + "\n"); // same size, same mtime: another version
+  utimesSync(join(root, "src", "big.txt"), later, later);
+  expect(facts.due("claude")!.text).toContain("src/big.txt");
+});
+
+// issue #112: a file whose name matches a PII pattern is counted in a notice, never named, and never silently dropped.
+test("a PII-named file that falls out of the touched list is counted in the notice, not named", async () => {
+  const { root, facts, write } = rig({}, (t) => !/secret/.test(t));
+  const read = (file: string, id: string) => {
+    write(file, "x\n");
+    facts.preTool("claude", id, "Read", { file_path: join(root, file) });
+    facts.postTool("claude", id, "Read", { file_path: join(root, file) });
+  };
+  read("secret-notes.txt", "s");
+  for (let i = 0; i < 64; i++) read(`h${i}.txt`, `h${i}`);
+  const told = facts.due("claude")!;
+  expect(told.text).toContain("no longer tracked (more than 64 files touched): 1 more; read them again");
+  expect(told.text).not.toContain("secret");
+  facts.ack("claude", told.id);
+  expect(facts.due("claude")?.text ?? "").not.toContain("no longer tracked");
+});
+
+// issue #112: whether large files are compared with HEAD depends on their stat data only, never on what an earlier call
+// hashed, so an integration target does not move without a byte changing.
+test("over 64 MiB of large HEAD-equal files are not compared at all, and the integration target stays put", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-facts-")));
+  dirs.push(root);
+  mkdirSync(join(root, "src"));
+  const big = Buffer.alloc(33 * 1024 * 1024, 7);
+  for (const f of ["a.bin", "b.bin"]) writeFileSync(join(root, "src", f), big);
+  const git = (...a: string[]) => spawnSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...a]);
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const later = new Date(Date.now() + 60_000);
+  for (const f of ["a.bin", "b.bin"]) { writeFileSync(join(root, "src", f), big); utimesSync(join(root, "src", f), later, later); }
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: ["src"], plans: [] }), peers: () => ["claude"], nameable: () => true });
+  const first = facts.tree(["src"]);
+  expect(facts.tree(["src"])).toBe(first);
+  expect(facts.tree(["src"])).toBe(first);
+}, 30_000); // 66 MiB through git: slow on a CI disk

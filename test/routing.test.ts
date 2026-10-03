@@ -116,6 +116,7 @@ const splitInput = (over: Partial<SplitInput> = {}): SplitInput => ({
   peers: ["codex", "kimi"],
   observations: { codex: obs(15, 60), kimi: obs(10, 25) },
   units: [1, 1],
+  profiles: { codex: "hub 0.12.5; codex 0.159.3; advisory", kimi: "hub 0.12.5; kimi 2.1.1; advisory" },
   backlog: { codex: 0, kimi: 0 },
   available: { codex: true, kimi: true },
   ...over,
@@ -129,22 +130,23 @@ test("split prediction: equal units reproduce o_s + u_s < o_f + 2u_f both ways",
   // codex (5 + 50 = 55 s for one, 105 s for two) and kimi (40 + 30 = 70 s for one, 100 s for two): the split's 70 s wins.
   const split = predictSplit(splitInput({ observations: { codex: obs(5, 50), kimi: obs(40, 30) } }));
   expect(split).toMatchObject({ verdict: "split", single: "kimi", splitS: 70, singleS: 100 });
-  expect(split.trace[0]).toBe("shadow split prediction (it never changes assignment):");
+  expect(split.trace.slice(0, 3)).toEqual(["shadow split prediction (it never changes assignment):", "  codex: hub 0.12.5; codex 0.159.3; advisory", "  kimi: hub 0.12.5; kimi 2.1.1; advisory"]);
 });
 
 test("split prediction: unequal or unknown units, a queued or unavailable owner, thin, biased or scattered records are unknown", () => {
   const why = (over: Partial<SplitInput>) => predictSplit(splitInput(over)).trace.at(-1);
   expect(why({ units: [2, 1] })).toBe("  unknown: work units 2 and 1: the rule needs two equal, known units");
   expect(why({ units: [undefined, 1] })).toBe("  unknown: work units ? and 1: the rule needs two equal, known units");
+  expect(why({ profiles: { codex: undefined, kimi: "p" } })).toBe("  unknown: codex's version is unknown: no record can be matched to it");
   expect(why({ backlog: { codex: 0, kimi: 2 } })).toBe("  unknown: kimi has 2 other open task(s): it would not start from orientation plus two units");
   expect(why({ available: { codex: false, kimi: true } })).toBe("  unknown: codex is not available");
-  expect(why({ observations: { codex: obs(15, 60, 4), kimi: obs(10, 25) } })).toBe(`  unknown: codex has 4 measured task(s) in this hub run; ${SPLIT_MIN} are needed`);
+  expect(why({ observations: { codex: obs(15, 60, 4), kimi: obs(10, 25) } })).toBe(`  unknown: codex has 4 measured task(s) with this profile; ${SPLIT_MIN} are needed`);
   const failures = Array.from({ length: 4 }, () => ({ outcome: "failed" as const }));
   expect(why({ observations: { codex: [...obs(15, 60), ...failures], kimi: obs(10, 25) } })).toBe("  unknown: 4 of 9 of codex's recorded tasks failed: its successes alone would understate its time");
   const scattered = [5, 10, 60, 200, 400].map((u) => ({ outcome: "approved" as const, orient: 1000, work: u * 1000 }));
   expect(why({ observations: { codex: scattered, kimi: obs(10, 25) } })).toMatch(/^ {2}unknown: codex's work times spread too widely/);
   const unknownStages = Array.from({ length: SPLIT_MIN }, () => ({ outcome: "approved" as const }));
-  expect(why({ observations: { codex: unknownStages, kimi: obs(10, 25) } })).toBe(`  unknown: codex has 0 measured task(s) in this hub run; ${SPLIT_MIN} are needed`);
+  expect(why({ observations: { codex: unknownStages, kimi: obs(10, 25) } })).toBe(`  unknown: codex has 0 measured task(s) with this profile; ${SPLIT_MIN} are needed`);
   // split 60 s against kimi alone 65 s: under a tenth apart, inconclusive.
   expect(predictSplit(splitInput({ observations: { codex: obs(30, 30), kimi: obs(5, 30) } }))).toMatchObject({ verdict: "unknown", splitS: 60, singleS: 65 });
 });

@@ -1769,9 +1769,11 @@ test("a silent cohort publishes no completed-change notice: the integrating memb
   expect(completedNotices(peers.kimi!)).toEqual([]);
 });
 
-// issue #109: split observations come from this hub run's tasks, typed; the shadow prediction never changes assignment.
-test("split observations: tasks handed out in this hub run, claims and accepts made by the done left out of the stages, failures typed", async () => {
-  const { tasks, board } = await turnFreeRig({ since: 0 });
+// issue #109: split observations are the tasks handed to a peer with the profile it has now, typed; the shadow prediction
+// never changes assignment.
+test("split observations: tasks handed out with the peer's current profile, claims and accepts made by the done left out of the stages, failures typed", async () => {
+  let profile: string | undefined = "hub 0.12.5; kimi 2.1.1; turn-free";
+  const { tasks, board } = await turnFreeRig({ splitProfile: () => profile });
   let now = 1_800_000_000_000;
   const realNow = Date.now;
   Date.now = () => now;
@@ -1804,30 +1806,109 @@ test("split observations: tasks handed out in this hub run, claims and accepts m
   } finally {
     Date.now = realNow;
   }
-  // Tasks handed out before this hub run started are not observations.
-  const later = await turnFreeRig({ since: Date.now() + 60_000 });
-  const t = await later.tasks.propose("claude", { title: "old", class: "implement", owner: "kimi" });
-  later.tasks.accept("kimi", t.id);
-  await later.tasks.done("kimi", t.id, "done");
-  expect(later.tasks.splitObservations("implement", "kimi")).toEqual([]);
+  // Another profile (a new version of the hub or the agent) is another peer as far as the records go; none known, none.
+  profile = "hub 0.12.6; kimi 2.1.1; turn-free";
+  expect(tasks.splitObservations("implement", "kimi")).toEqual([]);
+  profile = undefined;
+  expect(tasks.splitObservations("implement", "kimi")).toEqual([]);
+});
+
+test("a split observation counts what happened from a hand-over to the next one: a decline is the decliner's, never the next owner's", async () => {
+  const { tasks, board } = await turnFreeRig({ splitProfile: (p) => `hub 0.12.5; ${p} 1.0.0; turn-free` });
+  const t = await tasks.propose("claude", { title: "declined first", class: "implement", owner: "codex" });
+  await tasks.decline("codex", t.id, "not mine");
+  const next = board.get(t.id)!;
+  expect(next.owner).toBe("kimi");
+  tasks.accept("kimi", t.id);
+  await tasks.done("kimi", t.id, "done");
+  await tasks.review(board.get(t.id)!.reviewer!, t.id, "approved");
+  expect(tasks.splitObservations("implement", "kimi").map((o) => o.outcome)).toEqual(["approved"]);
+  expect(tasks.splitObservations("implement", "codex")).toEqual([{ outcome: "failed" }]); // the decline is the decliner's
+});
+
+test("an escalation away is the previous owner's failure; work that waited for another task is routed when ready, and recorded", async () => {
+  const recorded: { task: number; where: string }[] = [];
+  const { tasks, board } = await turnFreeRig({ recordSplit: (task, _p, where) => recorded.push({ task, where }), splitProfile: (p) => `hub 0.12.5; ${p} 1.0.0; turn-free` });
+  const t = await tasks.propose("claude", { title: "escalated", class: "implement", owner: "codex" });
+  tasks.accept("codex", t.id);
+  await tasks.escalate("user", t.id);
+  const next = board.get(t.id)!.owner!;
+  expect(next).not.toBe("codex");
+  tasks.accept(next, t.id);
+  await tasks.done(next, t.id, "done");
+  await tasks.review(board.get(t.id)!.reviewer!, t.id, "approved");
+  expect(tasks.splitObservations("implement", "codex")).toEqual([{ outcome: "failed" }]); // the escalation is codex's
+  expect(tasks.splitObservations("implement", next).map((o) => o.outcome)).toEqual(["approved"]);
+  // A task that waited for another is assigned by routing once that is approved: a routing record, as for fresh work.
+  const first = await tasks.propose("claude", { title: "first", class: "implement", owner: "kimi" });
+  await tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/d.ts"] } });
+  const waiting = await tasks.propose("claude", { title: "after first", class: "implement", after: [first.id], refs: { paths: ["src/d.ts"] } });
+  expect(board.get(waiting.id)!.owner).toBeFalsy();
+  recorded.length = 0;
+  await tasks.done("kimi", first.id, "done");
+  await tasks.review(board.get(first.id)!.reviewer!, first.id, "approved");
+  expect(board.get(waiting.id)!.owner).toBeTruthy();
+  expect(recorded).toContainEqual({ task: waiting.id, where: "routing" });
 });
 
 test("the shadow prediction never changes assignment: routed and named work go where routing sends them; explain and the record show it", async () => {
-  const recorded: { task: number; verdict: string }[] = [];
-  const { tasks } = await turnFreeRig({ recordSplit: (task, p) => recorded.push({ task, verdict: p.verdict }) });
-  await tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
+  const recorded: { task: number; verdict: string; where: string }[] = [];
+  const { tasks } = await turnFreeRig({ recordSplit: (task, p, where) => recorded.push({ task, verdict: p.verdict, where }), splitProfile: (p) => `hub 0.12.5; ${p} 1.0.0; turn-free` });
+  const kimiPart = await tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/a.ts"] } });
   const routed = await tasks.propose("claude", { title: "routed part", class: "implement", refs: { paths: ["src/a.ts"] } });
   expect(routed.owner).toBe("codex"); // the configured order, whatever the records say
-  expect(recorded).toEqual([{ task: routed.id, verdict: "unknown" }]);
+  // Routing chose the owner, and the overlapped task has not started: the prediction calibration reads.
+  expect(recorded).toEqual([{ task: routed.id, verdict: "unknown", where: "routing" }, { task: routed.id, verdict: "unknown", where: "cohort" }]);
   const explained = tasks.explain(routed.id).join("\n");
   expect(explained).toContain("shadow split prediction (it never changes assignment):");
-  expect(explained).toContain(`unknown: codex has 0 measured task(s) in this hub run; ${SPLIT_MIN} are needed`);
+  expect(explained).toContain("codex: hub 0.12.5; codex 1.0.0; turn-free");
+  expect(explained).toContain(`unknown: codex has 0 measured task(s) with this profile; ${SPLIT_MIN} are needed`);
   const named = await tasks.propose("claude", { title: "named part", class: "implement", owner: "codex", refs: { paths: ["src/a.ts"] } });
   expect(named.owner).toBe("codex");
-  // Recorded where the overlap forms a cohort, named owner or not: the record is what the prediction is checked on.
-  expect(recorded).toEqual([{ task: routed.id, verdict: "unknown" }, { task: named.id, verdict: "unknown" }]);
+  // Recorded where the overlap forms a cohort, named owner or not; a named owner is no routing decision.
+  expect(recorded.slice(2)).toEqual([{ task: named.id, verdict: "unknown", where: "cohort" }]);
+  // Once the overlapped task has started, routing records nothing for calibration: that owner is at work already.
+  tasks.accept("kimi", kimiPart.id);
+  recorded.length = 0;
+  const late = await tasks.propose("claude", { title: "late part", class: "implement", refs: { paths: ["src/a.ts"] } });
+  expect(recorded.filter((r) => r.where === "routing")).toEqual([]);
+  expect(late.history.find((h) => h.event === "assigned")?.profile).toBe(`hub 0.12.5; ${late.owner} 1.0.0; turn-free`);
   // explain shows the prediction for the pair the record is about: the task's own owner.
   const kimiNamed = await tasks.propose("claude", { title: "kimi named", class: "implement", owner: "kimi", refs: { paths: ["src/b.ts"] } });
   await tasks.propose("claude", { title: "codex on b", class: "implement", owner: "codex", refs: { paths: ["src/b.ts"] } });
   expect(tasks.explain(kimiNamed.id).join("\n")).toContain("unknown: kimi has 1 other open task(s)"); // kimi's, not routing's pick
+  // A reassignment after a decline, and a claim, are no routing decisions about fresh work.
+  const fresh = await tasks.propose("claude", { title: "fresh part", class: "implement", refs: { paths: ["src/c.ts"] } });
+  await tasks.propose("codex", { title: "claude on c", class: "implement", owner: "claude", refs: { paths: ["src/c.ts"] } });
+  recorded.length = 0;
+  await tasks.decline(fresh.owner!, fresh.id, "not mine");
+  await tasks.propose("codex", { title: "codex claims c", class: "implement", owner: "codex", refs: { paths: ["src/c.ts"] } });
+  expect(recorded.filter((r) => r.where === "routing")).toEqual([]);
+  // Work routing gives back to its proposer is no hand-over the observations count, so no calibration record either.
+  const own = await tasks.propose("codex", { title: "codex's own on c", class: "implement", refs: { paths: ["src/c.ts"] } });
+  expect(own.owner).toBe("codex"); // the configured order; claude's task on src/c.ts has not started
+  expect(recorded.filter((r) => r.where === "routing")).toEqual([]);
+});
+
+// issue #109: an owner goes busy as its task is delivered, so at routing time the overlapped task's owner is busy taking
+// it; the routing record must not read that as "not available", or no calibration record could ever be known.
+test("the routing record counts the overlapped task's owner as available while it is busy taking that task", async () => {
+  class Taking extends BasePeer {
+    async deliver() { this.setState("busy"); }
+    async start() { this.setState("idle"); }
+    async stop() {}
+  }
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-tasks-"));
+  const bus = new Bus({ batchMs: 0 });
+  for (const id of ["claude", "codex", "kimi"]) { const p = new Taking(id); bus.add(p); await p.start(); }
+  const recorded: { where: string; trace: string[] }[] = [];
+  const tasks = new Tasks({ board: new Board(join(dir, "hub.db")), bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: () => {}, tell: () => {}, turnFree: () => true,
+    splitProfile: (p) => `hub 0.12.5; ${p} 1.0.0; turn-free`, recordSplit: (_task, p, where) => recorded.push({ where, trace: p.trace }) });
+  const a = await tasks.propose("claude", { title: "part a", class: "implement", refs: { paths: ["src/a.ts"] } });
+  await Bun.sleep(20);
+  expect(bus.stateOf(a.owner!)).toBe("busy"); // taking part a
+  await tasks.propose("claude", { title: "part b", class: "implement", refs: { paths: ["src/a.ts"] } });
+  const routing = recorded.find((r) => r.where === "routing");
+  expect(routing).toBeDefined();
+  expect(routing!.trace.join("\n")).not.toContain("not available");
 });

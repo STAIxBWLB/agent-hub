@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { Server, ServerWebSocket } from "bun";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
-import { childEnv, stopOwnedProcess } from "../hub/child-process.ts";
+import { childEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 
 export interface CodexOptions {
   /** Port the TUI attaches to: `codex --enable tui_app_server --remote ws://127.0.0.1:<proxyPort>`. */
@@ -79,6 +79,8 @@ export class CodexPeer extends BasePeer {
   private lastAnswer = "";
   private readonly deltas = new Map<string, string[]>();
   private primed = false;
+  /** The Codex version app-server reported in its `initialize` answer (`<client>/<version> (...)`), once seen. */
+  version: string | undefined;
   private readonly steers = new Set<number>(); // request ids of turn/steer calls app-server has not answered yet
   private readonly turnDeliveries = new Map<string, Set<string>>();
   private readonly unboundDeliveries = new Set<string>();
@@ -138,7 +140,7 @@ export class CodexPeer extends BasePeer {
     } catch (error) {
       const proc = this.proc;
       if (proc) {
-        await stopOwnedProcess(proc);
+        await stopOwnedProcess(proc, { group: true });
         if (this.proc === proc) this.proc = undefined;
       }
       throw error;
@@ -149,9 +151,11 @@ export class CodexPeer extends BasePeer {
     this.server?.stop(true);
     this.claimedTui?.tui.close(1001, "hub shutting down");
     const proc = this.proc;
-    if (proc && proc.exitCode === null) {
-      // Wait for the port to be released: `ahub codex` may restart the adapter right away.
-      await stopOwnedProcess(proc);
+    if (proc) {
+      // Wait for the port to be released: `ahub codex` may restart the adapter right away. A launcher that already
+      // exited still has its pipes dropped there, so nothing it left can keep the hub alive, and a group it left members
+      // in fails the stop rather than freeing the port for a restart.
+      await stopOwnedProcess(proc, { group: true });
       if (this.proc === proc) this.proc = undefined;
     }
     this.setState("offline");
@@ -298,7 +302,9 @@ export class CodexPeer extends BasePeer {
       cwd: this.opts.cwd,
       env: childEnv({ ...process.env, ...(this.opts.env ?? {}) }),
       stdio: ["ignore", "ignore", "pipe"],
+      detached: true, // its own process group, stopped as a whole (#113): `codex` is a launcher with a native child
     });
+    trackGroup(this.proc);
     this.proc.stderr?.on("data", (d) => this.opts.log?.(`[${this.id}] ${String(d).trimEnd()}`));
     this.proc.on("error", (e) => (gone = `cannot run ${this.opts.bin ?? "codex"}: ${e.message}`));
     this.proc.on("exit", (code) => {
@@ -312,7 +318,7 @@ export class CodexPeer extends BasePeer {
     }
     if (gone) throw new Error(gone);
     const proc = this.proc;
-    await stopOwnedProcess(proc);
+    await stopOwnedProcess(proc, { group: true });
     if (this.proc === proc) this.proc = undefined;
     throw new Error("codex app-server did not become healthy within 10 s");
   }
@@ -375,6 +381,7 @@ export class CodexPeer extends BasePeer {
       else p?.resolve(msg.result);
       return; // ours: the TUI never asked for it
     }
+    if (typeof msg.result?.userAgent === "string") this.version = /^[^/\s]+\/(\d+\.\d+\.\d+(?:-[\w.]+)?)/.exec(msg.result.userAgent)?.[1] ?? this.version;
     const tracked = msg.id !== undefined && !msg.method ? link.tracked.get(msg.id) : undefined;
     if (tracked && link.tracked.delete(msg.id)) this.adopt(link, msg.result?.thread?.id, tracked === "thread/start");
     else if (msg.method) this.onNotification(link, msg.method, msg.params ?? {});

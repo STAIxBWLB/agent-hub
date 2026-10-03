@@ -12,19 +12,21 @@ Correctness is the official grader's: nothing here certifies a correct or loss-f
 can only expose possible loss.
 """
 from __future__ import annotations
-import argparse, json, keyword, re, shlex, statistics, subprocess, sys
+import argparse, json, keyword, os, re, shlex, statistics, subprocess, sys
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from runner import TURN_FREE, active_window, hook_rows, isolation_failure, transcript, treatment_failure  # noqa: E402  the grader's gates: one definition
+from runner import TURN_FREE, active_window, end_story, hook_rows, isolation_failure, teardown_failure, transcript, treatment_failure  # noqa: E402  the grader's gates: one definition
 
 UNITS = {
     "end_reason": "the runner's class (completed, timeout, interrupted, infrastructure-error, ...); end_reason_detail "
-                  "says which (wall-timeout, needs-review, claude-exited, ...). Completed and timed-out attempts are graded",
+                  "says which (wall-timeout, needs-review, claude-exited, ...), and end_story adds the end_flags that "
+                  "made it an infrastructure error (#113). Completed and timed-out attempts are graded unless the "
+                  "teardown gate (see validity) says otherwise",
     "completed": "the runner completed the attempt and every task has a done",
     "setup_s": "seconds of setup before the first task (native launches, readiness and sandbox probes)",
-    "elapsed_s": "the runner's active-work seconds for the attempt (teardown is not recorded)",
+    "elapsed_s": "the runner's active-work seconds for the attempt (teardown is apart: stopped_s, teardown_s, teardown)",
     "done_s": "per task: seconds to its last done",
     "both_done_s": "seconds to the last task's done; null unless every task has one",
     "intents_s": "per task: seconds to its first hub_task_done (done, done (checking) or integration requested)",
@@ -61,11 +63,14 @@ UNITS = {
                     "envelopes are left out; null when Codex has no done",
     "facts": "the hub's fact offers in the task window (from the first task proposal to the end of the active time) by "
              "path (hook, steer, done): offers, acknowledged, probes, coverage notices, files shown with attribution "
-             "unknown, bytes offered (a re-offer and a refused steer count again) and bytes acknowledged (offers a "
+             "unknown, files under a named directory named without a diff, bytes offered (a re-offer and a refused steer count again) and bytes acknowledged (offers a "
              "readback or done confirmed), build time, the hook process's start-up time, steer round trip, refused "
              "and unanswered steers; ack_ms_median is offer-to-acknowledgement",
     "capability": "per peer, the hub's capability events (verified or lost) with their time, setup included",
-    "validity": "whether the attempt is a valid run of its arm, by the grader's own gates: a turn-free attempt needs both "
+    "validity": "whether the attempt is a valid run of its arm, by the grader's own gates: its teardown complete (no "
+                "process of it known to be left, its evidence taken, the trust entry taken back; #113; a record from "
+                "before 0.12.5 is judged by its own cleanup_complete and trust_restored, as then, and its teardown is "
+                "shown with verified false: those flags did not mean the processes were seen gone); a turn-free attempt needs both "
                 "context paths verified before its tasks and none lost, no cohort lifted and none formed open while the "
                 "agents worked (teardown is after that); every arm needs isolation (no Codex hook, no Codex MCP server "
                 "but the hub's, only the hub's facts hook in Claude's transcript). null with a reason when Claude's "
@@ -79,8 +84,18 @@ UNITS = {
     "fyi": "agent messages sent as [FYI] in the task window (recorded, nobody's turn), the final [FYI] the instructions "
            "ask for included",
     "stale": "notices dropped as stale at delivery (#106), in the task window",
-    "stopped_s": "seconds from the end of the active time until every actor the attempt started was stopped: what a "
-                 "timed-out attempt could still write before its tree was collected; teardown_s is to the patch",
+    "stopped_s": "seconds from the end of the active time until the final process-table read and working-directory "
+                 "scan showed every process the attempt started gone (a completed arm's wait for Claude's turn end "
+                 "included; the scan itself can take seconds): an upper bound on what the agents could still write before "
+                 "the tree was collected; null when the cleanup is incomplete or unknown; teardown_s is to the record",
+    "teardown": "the runner's own teardown record (#113): completion (Claude's turn end awaited by its transcript marker: "
+                "ended, timeout, interrupted, unsupported, not_awaited or not_applicable, with its time and bound), "
+                "tree_changed_after_active_time (a completed arm's tree hashed at the end of its active time and again "
+                "after the teardown: true, false, null when either hash failed, absent when not checked; true and null "
+                "also stand in end_story), cleanup (clean, clean_with_fallback or incomplete_or_unknown, with fallback signals, "
+                "processes still running and unresolved ones), restoration, and late_append_bytes: transcript bytes "
+                "written after the attempt's prefix was taken, never read (null when no prefix was recorded); completion "
+                "outcomes include unreadable (the transcript could not be read) and carry the bound used",
     "split_predictions": "the hub's shadow split predictions (#109) with their traces; they never changed an assignment",
     "hooks": "hooks each agent ran as its own records show: Claude transcript hook rows by hook and command label (the "
              "hub's facts hook, or other: the program's name; never paths or arguments), with the durationMs they "
@@ -312,13 +327,26 @@ def facts_of(events):
     for via in ("hook", "steer", "done"):
         mine = [e for e in offers if e.get("via") == via]
         out[via] = {"offers": len(mine), "acknowledged": sum(1 for e in mine if e.get("id") in acked), "probes": sum(1 for e in mine if e.get("probe")),
-                    "coverage_notices": sum(1 for e in mine if e.get("coverage")), "unknown_attribution_files": sum(e.get("unknown", 0) for e in mine),
+                    "coverage_notices": sum(1 for e in mine if e.get("coverage")), "unknown_attribution_files": sum(e.get("unknown", 0) for e in mine), "directory_files_named": None if any("named" not in e for e in mine) else sum(e["named"] for e in mine),
                     "bytes_offered": sum(e.get("bytes", 0) for e in mine), "bytes_acknowledged": sum(e.get("bytes", 0) for e in mine if e.get("id") in acked),
                     "build_ms_median": median(num(mine, "ms")), "hook_startup_ms_median": median(num(mine, "hookMs")),
                     "steers_unanswered": sum(1 for e in mine if e.get("unanswered")),
                     "steer_rtt_ms_median": median(num([e for e in mine if e.get("accepted")], "rttMs")), "steers_refused": sum(1 for e in mine if e.get("accepted") is False and not e.get("unanswered"))}
     out["ack_ms_median"] = median(num(acks, "ms"))
     return out
+
+
+def teardown_of(run):
+    claude = (run.get("readiness") or {}).get("claude") or {}
+    size, late = claude.get("transcriptBytes"), None
+    if isinstance(size, int) and not isinstance(size, bool) and claude.get("transcriptPath"):
+        try: late = max(0, os.path.getsize(claude["transcriptPath"]) - size)
+        except OSError: late = None
+    cleanup = run.get("cleanup") or {}
+    return {"completion": run.get("completion"), "cleanup": cleanup.get("outcome"), "cleanup_reasons": cleanup.get("reasons"),
+            "fallback_signals": len(cleanup.get("fallback") or []), "restoration": run.get("restoration"), "late_append_bytes": late,
+            "tree_changed_after_active_time": run.get("tree_changed_after_active_time"),
+            "verified": isinstance(cleanup.get("outcome"), str)}  # false before 0.12.5: no process readback was recorded
 
 
 def capability_of(events, t0):
@@ -330,7 +358,7 @@ def capability_of(events, t0):
 
 
 def validity_of(run):
-    why = treatment_failure(str(run.get("kind") or ""), run) or isolation_failure(run)
+    why = teardown_failure(run) or treatment_failure(str(run.get("kind") or ""), run) or isolation_failure(run)
     if why and why.startswith("hook isolation unknown"): return {"valid": None, "why": why}
     return {"valid": not why, "why": why}
 
@@ -487,7 +515,7 @@ def contributions(run, rows, rows_why):
 def ledger_of(run):
     t0, tasks = task_times(run)
     events = run.get("events") or []
-    row = {"case": run.get("index"), "arm": run.get("kind"), "repeat": run.get("repeat"), "end_reason": run.get("end_reason"), "end_reason_detail": run.get("end_reason_detail"),
+    row = {"case": run.get("index"), "arm": run.get("kind"), "repeat": run.get("repeat"), "end_reason": run.get("end_reason"), "end_reason_detail": run.get("end_reason_detail"), "end_story": end_story(run),
            "setup_s": round(run["setupMs"] / 1000, 1) if isinstance(run.get("setupMs"), (int, float)) else None,
            "elapsed_s": round(run["elapsedMs"] / 1000, 1) if isinstance(run.get("elapsedMs"), (int, float)) else None}
     if t0 is None:
@@ -528,10 +556,11 @@ def ledger_of(run):
         "treatment": treatment_of(run, window),
         "stopped_s": round(run["stoppedMs"] / 1000, 1) if isinstance(run.get("stoppedMs"), (int, float)) else None,
         "teardown_s": round(run["teardownMs"] / 1000, 1) if isinstance(run.get("teardownMs"), (int, float)) else None,
+        "teardown": teardown_of(run),
         "quiet": sum(1 for e in window if e.get("type") == "quiet"),
         "fyi": sum(1 for e in window if e.get("type") == "envelope" and e.get("from") in ("claude", "codex") and e.get("dropped") == "fyi"),
         "stale": sum(1 for e in window if e.get("type") == "stale"),
-        "split_predictions": [{k: e.get(k) for k in ("task", "verdict", "single", "splitS", "singleS", "reason", "trace") if e.get(k) is not None} for e in events if e.get("type") == "split"],
+        "split_predictions": [{k: e.get(k) for k in ("task", "where", "verdict", "single", "splitS", "singleS", "reason", "trace") if e.get(k) is not None} for e in events if e.get("type") == "split"],
         "hooks": hooks_seen(run, rows, rows_why, events),
         "contributions": contributions(run, rows, rows_why),
     })
@@ -570,7 +599,7 @@ def summarize(rows, missing=()):
         treated = [r for r in done if (r.get("treatment") or {}).get("silent_cohort")]
         out[arm] = {
             "attempts": len(rs), "completed": sum(1 for r in rs if r.get("completed")), "valid_completed": len(done),
-            "not_completed": sorted(str(r.get("end_reason_detail") or r.get("end_reason")) for r in rs if not r.get("completed")),
+            "not_completed": sorted(r["end_story"] for r in rs if not r.get("completed")),
             "excluded": sorted(str((r.get("validity") or {}).get("why")) for r in rs if r.get("completed") and not ok(r)),
             "missing": sorted(f"case {c} repeat {rep}" for c, a, rep in missing if a == arm),
             "both_done_s_median": median([r["both_done_s"] for r in done]),
