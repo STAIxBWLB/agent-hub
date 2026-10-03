@@ -8,7 +8,7 @@ import { BasePeer } from "../hub/peers.ts";
 import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { runTool, toolResultFailed, TOOL_SCHEMAS, touchedPaths, type ToolContext } from "../local/tools.ts";
 import type { Capture } from "../memory/capture.ts";
-import type { ChatMessage, ChatResult, OmniRoute } from "../omniroute/client.ts";
+import type { ChatMessage, ChatResult, OmniRoute, ToolCall } from "../omniroute/client.ts";
 import { safeModelLabel } from "../omniroute/usage.ts";
 import type { Sidecar } from "../switchyard/sidecar.ts";
 import type { ExecutionBudgetDecision } from "../hub/execution-budget.ts";
@@ -211,8 +211,6 @@ export class LocalPeer extends BasePeer {
     }
     this.routeEnvs = envs;
     this.routePii = !!policy?.pii;
-    const routeId = policy?.route ?? this.opts.route;
-    const scope = policy?.pii ? `${this.sessionId}:pii:${turn}` : this.sessionId;
     const ctx = this.toolContext(envs, turnSignal, !!policy?.pii, reply);
     let usedTools = false;
     for (let step = 0; step < maxSteps; step++) {
@@ -223,15 +221,11 @@ export class LocalPeer extends BasePeer {
       msgs.push(res.message);
       progress.last = res.message.content?.trim() || progress.last;
       if (!res.message.tool_calls?.length) {
-        const routeConfig = routeId?.startsWith("hub/") ? this.opts.hubRoutes?.()[routeId] : undefined;
-        if (routeId && routeConfig) {
-          const feedback = await this.routes.review(routeId, routeConfig, [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...msgs], scope, !!policy?.pii, turnSignal);
-          if (turn !== this.turn) return "";
-          if (feedback && step + 1 < maxSteps) { msgs.push({ role: "user", content: feedback }); continue; }
-          if (feedback) progress.last = `(review requested changes; step limit reached) ${progress.last}`;
-        }
-        if (usedTools) capture?.summarize(progress.last);
-        return progress.last;
+        const concluded = await this.conclude(msgs, policy, turn, step, maxSteps, progress.last, turnSignal);
+        if (turn !== this.turn) return "";
+        if (concluded === undefined) continue;
+        if (usedTools) capture?.summarize(concluded);
+        return concluded;
       }
       for (const call of res.message.tool_calls) {
         // A tool has its own timeout (bash up to 600 s) and an approval can take 120 s: neither is the model going silent.
@@ -248,9 +242,7 @@ export class LocalPeer extends BasePeer {
         usedTools = true;
         if (SIDE_EFFECTS.has(call.function.name) && !output.startsWith("error:")) progress.sideEffects++;
         msgs.push({ role: "tool", tool_call_id: call.id, content: output, is_error: toolResultFailed(name, output) });
-        if (!policy?.pii) {
-          try { this.opts.onTool?.({ name, ...(typeof safeParse(call.function.arguments).command === "string" ? { command: safeParse(call.function.arguments).command as string } : {}), resultText: output, isError: toolResultFailed(name, output), source: "local" }, policy?.task); } catch { /* optional research observations */ }
-        }
+        this.observeTool(call, output, policy);
         capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
       }
     }
@@ -328,14 +320,9 @@ export class LocalPeer extends BasePeer {
     const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? TASK_TOOLS.map(asFunction) : [])];
     const signal = this.abort!.signal;
     const messages: ChatMessage[] = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
-    if (route?.startsWith("hub/")) {
-      const config = this.opts.hubRoutes?.()[route];
-      if (config) {
-        try { return await this.routes.call(route, config, messages, policy?.pii ? `${this.sessionId}:pii:${this.turn}` : this.sessionId, !!policy?.pii, signal); }
-        catch (error) { if (signal.aborted || error instanceof ExecutionBudgetStop) throw error; this.opts.log?.(`hub route ${route} unavailable; using fixed model`); }
-      }
-    }
-    const via = route && !route.startsWith("hub/") && !policy?.pii ? await sidecar?.endpoint() : undefined;
+    const routed = await this.hubCall(route, messages, policy, signal);
+    if (routed) return routed;
+    const via = await this.sidecarEndpoint(route, !!policy?.pii);
     if (via) {
       await this.requireBudget(envs, "model_calls");
       try {
@@ -353,6 +340,49 @@ export class LocalPeer extends BasePeer {
     this.lastServedBy = `omniroute ${fixedModel} (provider ${res.provider ?? "?"})`;
     this.recordUsage(res, fixedModel);
     return res;
+  }
+
+  private hubConfig(route?: string): HubRoute | undefined {
+    try { return route?.startsWith("hub/") ? this.opts.hubRoutes?.()[route] : undefined; }
+    catch { return undefined; } // optional model policy must not fail a turn
+  }
+
+  private routeScope(pii: boolean, turn = this.turn): string {
+    return pii ? `${this.sessionId}:pii:${turn}` : this.sessionId;
+  }
+
+  private async hubCall(route: string | undefined, messages: ChatMessage[], policy: { pii?: boolean } | undefined, signal: AbortSignal): Promise<ChatResult | undefined> {
+    const config = this.hubConfig(route);
+    if (!route || !config) return undefined;
+    try { return await this.routes.call(route, config, messages, this.routeScope(!!policy?.pii), !!policy?.pii, signal); }
+    catch (error) {
+      if (signal.aborted || error instanceof ExecutionBudgetStop) throw error;
+      this.opts.log?.(`hub route ${route} unavailable; using fixed model`);
+      return undefined;
+    }
+  }
+
+  private async sidecarEndpoint(route: string | undefined, pii: boolean): Promise<string | undefined> {
+    if (!route || route.startsWith("hub/") || pii) return undefined;
+    return this.opts.sidecar?.endpoint();
+  }
+
+  private async conclude(msgs: ChatMessage[], policy: { route?: string; pii: boolean } | undefined, turn: number, step: number, maxSteps: number, answer: string, signal: AbortSignal): Promise<string | undefined> {
+    const route = policy?.route ?? this.opts.route, config = this.hubConfig(route);
+    if (!route || !config) return answer;
+    const messages: ChatMessage[] = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...msgs];
+    const feedback = await this.routes.review(route, config, messages, this.routeScope(!!policy?.pii, turn), !!policy?.pii, signal);
+    if (turn !== this.turn || !feedback) return answer;
+    msgs.push({ role: "user", content: feedback });
+    return step + 1 < maxSteps ? undefined : `(review requested changes; step limit reached) ${answer}`;
+  }
+
+  private observeTool(call: ToolCall, output: string, policy: { pii: boolean; task?: string } | undefined): void {
+    if (policy?.pii) return;
+    try {
+      const command = safeParse(call.function.arguments).command;
+      this.opts.onTool?.({ name: call.function.name, ...(typeof command === "string" ? { command } : {}), resultText: output, isError: toolResultFailed(call.function.name, output), source: "local" }, policy?.task);
+    } catch { /* optional research observations */ }
   }
 
   private recordUsage(res: ChatResult, requestedModel: string): void {
