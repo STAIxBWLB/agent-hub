@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProcRow } from "../../src/hub/child-process.ts";
@@ -188,6 +188,13 @@ test("restoration: modes come back parents first and failures are named; a trust
   const failed = restoreModes([[join(dir, "a", "f"), 0o640], [join(dir, "a"), 0o750], [join(dir, "gone"), 0o600]]);
   expect(failed).toEqual([join(dir, "gone")]); // a lost read-lock acknowledgement is reported, not assumed
   expect(statSync(join(dir, "a", "f")).mode & 0o777).toBe(0o640);
+  // A locked directory replaced by a link: refused, and nothing below it is reached through the link.
+  mkdirSync(join(dir, "outside"));
+  writeFileSync(join(dir, "outside", "f"), "x");
+  chmodSync(join(dir, "outside", "f"), 0o600);
+  symlinkSync(join(dir, "outside"), join(dir, "b"));
+  expect(restoreModes([[join(dir, "b", "f"), 0o644], [join(dir, "b"), 0o755]])).toEqual([join(dir, "b"), join(dir, "b", "f")]);
+  expect(statSync(join(dir, "outside", "f")).mode & 0o777).toBe(0o600);
 
   const file = join(dir, "claude.json");
   const fixture = "/private/tmp/f";

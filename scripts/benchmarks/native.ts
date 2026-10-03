@@ -6,7 +6,7 @@ import { ControlClient } from '../../src/hub/control-client.ts';
 import { realPath } from '../../src/hub/project.ts';
 import { sessionSettings, statusLineSettings } from '../../src/cli/launch.ts';
 import { readEvents } from '../../src/hub/events.ts';
-import { descendantsOf, processTable } from '../../src/hub/child-process.ts';
+import { processTable } from '../../src/hub/child-process.ts';
 import { awaitTurnEnd, captureActors, cwdOf, restoreModes, restoreTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
 process.umask(0o077);
 const argv = process.argv.slice(2), runArg = argv[argv.indexOf('--run') + 1], inputArg = argv[argv.indexOf('--private-inputs') + 1], upstreamArg = argv[argv.indexOf('--upstream-root') + 1], probeArg = argv[argv.indexOf('--probe-target') + 1];
@@ -262,7 +262,8 @@ function codexUsage(messages: any[], threadId: string | undefined) { let total: 
     return undefined; return { input_tokens: numeric(total.inputTokens ?? total.input_tokens) ?? null, output_tokens: numeric(total.outputTokens ?? total.output_tokens) ?? null, cache_read_tokens: numeric(total.cachedInputTokens ?? total.cacheReadInputTokens ?? total.cache_read_input_tokens) ?? null, reasoning_output_tokens: numeric(total.reasoningOutputTokens ?? total.reasoning_output_tokens) ?? null, total_tokens: numeric(total.totalTokens ?? total.total_tokens) ?? null, source: 'Codex thread/tokenUsage/updated cumulative total', scope: 'whole native session including the unscored sandbox probe' }; }
 function fixtureMetadataHash(root: string) { const names = ['AGENTS.md', '.gitignore', '.claude/settings.json', '.agenthub/config.json', '.agenthub/routing.toml'], values: any = {}; for (const name of names) {
     const path = join(root, name);
-    values[name] = existsSync(path) ? hash(readFileSync(path)) : null;
+    let st; try { st = lstatSync(path); } catch { st = undefined; }
+    values[name] = !st ? null : st.isFile() ? hash(readFileSync(path)) : `not a regular file: ${st.mode & 0o170000}`; // a fifo would block the read
 } return hash(JSON.stringify(values)); }
 function claudeEvidence(transcriptPath: string | undefined) { if (!transcriptPath || !existsSync(transcriptPath))
     return { models: [], usage: undefined }; const latest = new Map<string, any>(), models = new Set<string>(); for (const line of readFileSync(transcriptPath, 'utf8').split('\n')) {
@@ -394,13 +395,17 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     // an argv that serves this fixture, Claude's launch chain by this arm's own session id, the Codex app-server as the
     // daemon's child. Captured as each starts, and again at teardown for an interrupt in between.
     const owners = new Map<string, Actor>();
+    let persistedActors = '';
     const capture = () => {
         const table = processTable();
         if (!table) return;
         let hubPid = NaN;
         try { hubPid = Number(readFileSync(join(state, 'hub.pid'), 'utf8').trim()); } catch { }
         captureActors(owners, table, { dir, hubPid, claudeId, self: process.pid, cwdOf });
-        actorLedger.set(dir, [...owners.values()]);
+        const now = [...owners.values()], seen = JSON.stringify(now);
+        if (seen === persistedActors) return; // the ledger is rewritten only when what it records changed
+        persistedActors = seen;
+        actorLedger.set(dir, now);
         persistLedger();
     };
     const captured = (role: Actor['role']) => { capture(); if (![...owners.values()].some(a => a.role === role)) throw new Error(`could not prove which ${role} process is this arm's`); };
@@ -658,7 +663,8 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             treeAfterActive = treeAtEnd === undefined || after === undefined ? null : treeAtEnd !== after;
             if (treeAfterActive !== false) endFlags.push(treeAfterActive ? 'tree-changed-after-active-time' : 'tree-unverified-after-active-time');
         }
-        const metadataClean = fixtureMetadataHash(dir) === metadataBaseline;
+        let metadataClean = false;
+        try { metadataClean = fixtureMetadataHash(dir) === metadataBaseline; } catch (e) { note(`fixture metadata could not be read: ${String(e).slice(0, 200)}`); }
         if (!metadataClean)
             endFlags.push('metadata-modified');
         let patch = '';
@@ -676,7 +682,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             const failed = restoreModes(armModes);
             restoration.siblings = failed.length ? `failed: ${failed.length} path(s)` : 'restored';
             const sibling = siblingLedgers.get(dir);
-            if (sibling) sibling.restored = !failed.length;
+            if (sibling) { sibling.restored = !failed.length; if (sibling.restored) sibling.modes = {}; } // nothing left to restore: not rewritten with every later write
             if (failed.length) note('sibling artifact read locks could not be restored');
         }
         let trustRestored = true;

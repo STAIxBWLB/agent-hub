@@ -3,6 +3,10 @@ import { CodexPeer, type CodexOptions } from "../src/adapters/codex-appserver.ts
 import { Bus } from "../src/hub/bus.ts";
 import { DIGEST, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { startFakeAppServer } from "./fakes/app-server.ts";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { processTable } from "../src/hub/child-process.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(() => {
@@ -348,3 +352,20 @@ test("completed file and command items reach onItem; steerText goes into the run
   expect(said[0]!.body).toBe("echo: ITEMS job +steered: FACT LINE");
   expect(bus.queued("codex")).toBe(0);
 });
+
+// issue #113: `codex` is a launcher with a native child. The adapter spawns it in a process group of its own and stops
+// that group as one; without the group, a launcher that ignores SIGTERM is never signalled and the stop fails.
+test("the adapter stops a launcher that ignores SIGTERM together with the native app-server it waits for", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-codex-launcher-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const pidFile = join(dir, "native.pid"), launcherFile = join(dir, "launcher.pid"), bin = join(dir, "codex");
+  writeFileSync(bin, `#!/bin/sh\necho $$ > ${launcherFile}\ntrap "" TERM\nbun ${join(import.meta.dir, "fakes/codex-bin.ts")} "$@" &\necho $! > ${pidFile}\nwhile :; do sleep 1; done\n`, { mode: 0o755 });
+  const freePort = () => { const s = Bun.serve({ port: 0, fetch: () => new Response() }); const p = s.port as number; s.stop(true); return p; };
+  const peer = new CodexPeer("codex", { proxyPort: 0, appPort: freePort(), bin, cwd: dir });
+  await peer.start();
+  const native = Number(readFileSync(pidFile, "utf8")), launcher = Number(readFileSync(launcherFile, "utf8"));
+  cleanup.push(() => { for (const pid of [native, launcher]) if (processTable()?.some((r) => r.pid === pid && /codex/.test(r.command))) process.kill(pid, "SIGKILL"); });
+  await peer.stop();
+  const table = processTable()!;
+  expect(table.some((r) => r.pid === native)).toBe(false);
+}, 20_000);

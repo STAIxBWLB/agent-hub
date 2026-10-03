@@ -19,6 +19,8 @@ import { realPath } from "./project.ts";
 
 /** Larger files are not read: they are compared by size and modification time, and named without a diff. */
 const MAX_BYTES = 256 * 1024;
+/** Larger files that are not read are hashed for the HEAD comparison up to this size; beyond it, no claim is made. */
+const HASHED_BYTES = 64 * 1024 * 1024;
 /** Changed lines shown in one fact, all files together; the rest is counted and the files named. */
 export const MAX_LINES = 60;
 /** What Claude Code's Read returns by default: the first 2000 lines, each cut at 2000 characters. */
@@ -270,7 +272,8 @@ export class Facts {
   /** HEAD's blob id of each of these project paths that HEAD has, in one read-only git call. */
   private headBlobs(files: string[]): Map<string, string> {
     const out = new Map<string, string>();
-    files = files.filter((f) => !f.includes("\n")); // one path per line: a name with a newline would shift the answers
+    // One path per line: a newline in a name would shift the answers, and git drops a final carriage return (another file).
+    files = files.filter((f) => !/[\r\n]/.test(f));
     if (!files.length) return out;
     const r = Bun.spawnSync(["git", "cat-file", "--batch-check=%(objectname) %(objecttype)"], { cwd: this.root, stdin: new TextEncoder().encode(files.map((f) => `HEAD:./${f}`).join("\n") + "\n"), stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
     if (r.exitCode !== 0) return out;
@@ -304,7 +307,7 @@ export class Facts {
     try {
       fd = openSync(join(this.root, file), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const st = fstatSync(fd);
-      if (!st.isFile() || st.size > 64 * 1024 * 1024) return undefined;
+      if (!st.isFile() || st.size > HASHED_BYTES) return undefined;
       // A file that stays stat-dirty but equal to HEAD is looked at again at every boundary: hashed once per version.
       const stamp = `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`, known = this.largeBlobs.get(file);
       if (known?.stamp === stamp) return known.blob;

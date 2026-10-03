@@ -315,13 +315,13 @@ test("a late transcript append keeps the frozen prefix, is reported, and leaves 
       index: 0, cleanup_complete: true, trust_restored: true, kind: "solo-claude", end_reason: "completed", cwd, sealedCommit, codexMessages: [], events: [], startedAt: ms(0), elapsedMs: 30_000,
       readiness: { claude: { transcriptPath: transcript, transcriptBytes: Buffer.byteLength(rows), transcriptSha256: createHash("sha256").update(rows).digest("hex") } },
       taskStates: [{ id: 1, owner: "claude", state: "approved", history: [{ event: "proposed", at: ms(0) }, { event: "done", at: ms(9) }] }],
-      completion: { outcome: "timeout", ms: 30_000, treeChanged: false },
+      completion: { outcome: "timeout", ms: 30_000, boundMs: 30_000 }, tree_changed_after_active_time: false,
       cleanup: { outcome: "clean", reasons: [], fallback: [] }, restoration: { siblings: "restored", trust: "restored" },
     });
     writeFileSync(transcript, rows + late); // Claude Code wrote its answer after the prefix was taken
     const row = ledger().rows[0];
     expect(row.settlement.claude).toBeNull(); // the turn is open in the prefix: unknown, not counted from the late rows
-    expect(row.teardown).toEqual({ completion: { outcome: "timeout", ms: 30_000, treeChanged: false }, cleanup: "clean", cleanup_reasons: [], fallback_signals: 0, restoration: { siblings: "restored", trust: "restored" }, late_append_bytes: Buffer.byteLength(late) });
+    expect(row.teardown).toEqual({ completion: { outcome: "timeout", ms: 30_000, boundMs: 30_000 }, cleanup: "clean", cleanup_reasons: [], fallback_signals: 0, restoration: { siblings: "restored", trust: "restored" }, late_append_bytes: Buffer.byteLength(late), tree_changed_after_active_time: false });
     expect(row.validity.valid).not.toBe(false); // the prefix still matches its hash: readable
     // An attempt whose cleanup was not complete is unavailable to the ledger as to grading, whatever its end reason.
     run("00-solo-claude", { ...JSON.parse(readFileSync(join(root, "runs", "00-solo-claude.json"), "utf8")), cleanup_complete: false, cleanup: { outcome: "incomplete_or_unknown", reasons: ["still running: below 107"] } });
@@ -330,8 +330,10 @@ test("a late transcript append keeps the frozen prefix, is reported, and leaves 
     const { cleanup_complete: _, ...older } = JSON.parse(readFileSync(join(root, "runs", "00-solo-claude.json"), "utf8"));
     run("00-solo-claude", older);
     expect(ledger().rows[0].validity).toEqual({ valid: null, why: "cleanup not recorded (a record from before 0.12.3)" });
+    run("00-solo-claude", { ...older, kind: "solo-codex", codexMessages: [{ method: "hook/started" }] }); // a definite failure still shows
+    expect(ledger().rows[0].validity).toEqual({ valid: false, why: "hook isolation failed: Codex ran hooks" });
     // A flag beside the end reason is part of how the attempt ended: reported, not a bare "completed".
-    run("00-solo-claude", { ...JSON.parse(readFileSync(join(root, "runs", "00-solo-claude.json"), "utf8")), cleanup_complete: true, end_reason: "infrastructure-error", end_reason_detail: "completed", end_flags: ["tree-changed-after-active-time"] });
+    run("00-solo-claude", { ...JSON.parse(readFileSync(join(root, "runs", "00-solo-claude.json"), "utf8")), kind: "solo-claude", codexMessages: [], cleanup_complete: true, end_reason: "infrastructure-error", end_reason_detail: "completed", end_flags: ["tree-changed-after-active-time"] });
     const flagged = ledger();
     expect(flagged.rows[0].end_story).toBe("completed, then tree-changed-after-active-time");
     expect(flagged.summary["solo-claude"].not_completed).toEqual(["completed, then tree-changed-after-active-time"]);

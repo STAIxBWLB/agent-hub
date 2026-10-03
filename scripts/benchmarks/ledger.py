@@ -86,8 +86,10 @@ UNITS = {
                  "(a completed arm's wait for Claude's turn end included): what the agents could still write before the "
                  "tree was collected; null when the cleanup is incomplete or unknown; teardown_s is to the record",
     "teardown": "the runner's own teardown record (#113): completion (Claude's turn end awaited by its transcript marker: "
-                "ended, timeout, interrupted, unsupported, not_awaited or not_applicable, with whether the tree changed "
-                "in the wait), cleanup (clean, clean_with_fallback or incomplete_or_unknown, with fallback signals, "
+                "ended, timeout, interrupted, unsupported, not_awaited or not_applicable, with its time and bound), "
+                "tree_changed_after_active_time (a completed arm's tree hashed at the end of its active time and again "
+                "after the teardown: true, false, null when either hash failed, absent when not checked; true and null "
+                "also stand in end_story), cleanup (clean, clean_with_fallback or incomplete_or_unknown, with fallback signals, "
                 "processes still running and unresolved ones), restoration, and late_append_bytes: transcript bytes "
                 "written after the attempt's prefix was taken, never read (null when no prefix was recorded); completion "
                 "outcomes include unreadable (the transcript could not be read) and carry the bound used",
@@ -339,7 +341,8 @@ def teardown_of(run):
         except OSError: late = None
     cleanup = run.get("cleanup") or {}
     return {"completion": run.get("completion"), "cleanup": cleanup.get("outcome"), "cleanup_reasons": cleanup.get("reasons"),
-            "fallback_signals": len(cleanup.get("fallback") or []), "restoration": run.get("restoration"), "late_append_bytes": late}
+            "fallback_signals": len(cleanup.get("fallback") or []), "restoration": run.get("restoration"), "late_append_bytes": late,
+            "tree_changed_after_active_time": run.get("tree_changed_after_active_time")}
 
 
 def capability_of(events, t0):
@@ -351,7 +354,10 @@ def capability_of(events, t0):
 
 
 def validity_of(run):
-    why = teardown_failure(run) or treatment_failure(str(run.get("kind") or ""), run) or isolation_failure(run)
+    # A record from before 0.12.3 has no cleanup verdict: unknown, unless the record shows a definite failure.
+    teardown = teardown_failure(run)
+    why = (None if teardown and teardown.startswith("cleanup not recorded") else teardown) or treatment_failure(str(run.get("kind") or ""), run) or isolation_failure(run)
+    if not why and teardown: why = teardown
     if why and why.startswith(("hook isolation unknown", "cleanup not recorded")): return {"valid": None, "why": why}
     return {"valid": not why, "why": why}
 

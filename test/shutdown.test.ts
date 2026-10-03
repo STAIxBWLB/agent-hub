@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync, spawn } from "node:child_process";
@@ -160,6 +160,35 @@ test("a process left in the leader's group that nothing recorded is never signal
   leader.once("exit", () => (exited = true));
   const table = () => [me, ...(exited ? [{ pid: 99_999_999, ppid: 1, pgid: leader.pid!, started: me.started, command: "orphan" }] : [])];
   await expect(stopOwnedProcess(leader, { termMs: 200, killMs: 300, group: true, table })).rejects.toThrow("1 not proven its own and left alone");
+});
+
+test("a descendant that leads a group of its own gets its own SIGTERM and the grace period", async () => {
+  // A tool command in a group of its own needs 300 ms to finish cleanly (git removing its index lock); the leader dies
+  // at SIGTERM.
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-grace-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const marker = join(dir, "clean"), tool = join(dir, "tool.js");
+  writeFileSync(tool, `process.on("SIGTERM", () => setTimeout(() => { require("node:fs").writeFileSync(${JSON.stringify(marker)}, "clean"); process.exit(0); }, 300)); console.log(process.pid); setTimeout(() => {}, 30000);`);
+  const { proc, child } = await launch(`${process.execPath} -e 'require("node:child_process").spawn(process.execPath, [${JSON.stringify(tool)}], { detached: true, stdio: ["ignore", "inherit", "ignore"] }); setTimeout(() => {}, 30000)' & wait`, true);
+  expect(Number(execFileSync("ps", ["-o", "pgid=", "-p", String(child)], { encoding: "utf8" }).trim())).toBe(child);
+  await stopOwnedProcess(proc, { termMs: 1000, group: true });
+  expect(existsSync(marker)).toBe(true); // it ended on its own, not by SIGKILL
+  expect(alive(child)).toBe(false);
+});
+
+test("a recorded process whose pid shows a different start time later is someone else's: never signalled", async () => {
+  // The first read shows pid R below the leader; later reads show R with another start time: the pid was reused.
+  const leader = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+  const reused = spawn("sleep", ["30"], { stdio: "ignore" });
+  cleanup.push(() => { try { process.kill(reused.pid!, "SIGKILL"); } catch { /* gone */ } });
+  let reads = 0;
+  const table = () => {
+    const real = processTable()!;
+    const row = real.find((r) => r.pid === reused.pid)!;
+    return reads++ === 0 ? [...real.filter((r) => r.pid !== reused.pid), { ...row, ppid: leader.pid!, started: "Thu Jan  1 00:00:00 2026" }] : real;
+  };
+  await stopOwnedProcess(leader, { termMs: 300, killMs: 500, group: true, table });
+  expect(alive(reused.pid!)).toBe(true);
 });
 
 test("a leader that exited before the stop leaves its group unsignalled, and members still in it fail the stop", async () => {

@@ -219,7 +219,8 @@ export async function teardown(actors: Actor[], dir: string, shutdown: () => Pro
     if (last && !cwds) reasons.push('working directories could not be read: whether anything else runs in the fixture is unknown');
     const named = new Set(last ? namingFixture(last, dir).map((r) => r.pid) : []);
     const unresolved = (last ?? []).filter((r) => (named.has(r.pid) || inside(cwds?.get(r.pid), dir)) && !owned.has(key(r)) && !mine.has(r.pid))
-        .map((r) => ({ pid: r.pid, started: r.started, command: r.command.slice(0, 200), ...(inside(cwds?.get(r.pid), dir) ? { cwd: cwds!.get(r.pid)! } : {}) }));
+        // Not the arm's: its argv is someone else's, kept short and with credential-like values redacted.
+        .map((r) => ({ pid: r.pid, started: r.started, command: r.command.replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 200), ...(inside(cwds?.get(r.pid), dir) ? { cwd: cwds!.get(r.pid)! } : {}) }));
     if (unresolved.length) reasons.push(`running with the fixture in its argv or as its working directory, not proved to be this arm's (left alone): ${unresolved.map((u) => u.pid).join(', ')}`);
     return {
         outcome: reasons.length ? 'incomplete_or_unknown' : fallback.length ? 'clean_with_fallback' : 'clean',
@@ -266,10 +267,11 @@ export async function awaitTurnEnd(path: string, sessionId: string, boundMs: num
 
 /** Puts each path's mode back, parents first; returns the paths it could not restore. A link is never followed. */
 export function restoreModes(modes: Iterable<[string, number]>): string[] {
-    const failed: string[] = [];
+    const failed: string[] = [], refused: string[] = [];
     for (const [path, mode] of [...modes].sort((a, b) => a[0].length - b[0].length)) {
         try {
-            if (lstatSync(path).isSymbolicLink()) { failed.push(path); continue; } // replaced since it was locked: refuse
+            // Replaced by a link since it was locked: refused, and so is everything below it, which chmod would reach through it.
+            if (refused.some((p) => path.startsWith(`${p}/`)) || lstatSync(path).isSymbolicLink()) { failed.push(path); refused.push(path); continue; }
             chmodSync(path, mode);
             if ((statSync(path).mode & 0o777) !== mode) failed.push(path);
         } catch {

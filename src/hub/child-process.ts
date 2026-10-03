@@ -32,13 +32,15 @@ export function parseProcessTable(text: string): ProcRow[] {
 }
 
 const PS = ["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart=,command="];
-const PS_OPTIONS = { env: { ...process.env, LC_ALL: "C" }, detached: true } as const;
+// `lstart` is local time: one zone for every reader, or a reader in another zone sees every identity as changed.
+const PS_OPTIONS = { env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, detached: true } as const;
 /** The rows of one read, or undefined when they do not show the reader: a parse that found nothing is not a table. */
 const own = (text: string) => { const rows = parseProcessTable(text); return rows.some((row) => row.pid === process.pid) ? rows : undefined; };
 
 /**
  * The process table, or undefined when it cannot be read or does not show this process: a parse that found nothing
- * (a localized `lstart`, a changed `ps`) is not an empty table. Read with LC_ALL=C for that reason, by a `ps` in a
+ * (a localized `lstart`, a changed `ps`) is not an empty table. Read with LC_ALL=C for that reason (and TZ=UTC, so
+ * start times compare across readers), by a `ps` in a
  * process group of its own (a Ctrl-C to the caller's group would kill it), bounded, and tried twice.
  */
 export function processTable(): ProcRow[] | undefined {
@@ -200,14 +202,22 @@ async function stopGroup(proc: ChildProcess, pid: number, termMs: number, killMs
   // Errors are not results here: the table read back decides.
   const signal = (target: number, sig: NodeJS.Signals) => { try { process.kill(target, sig); } catch { /* gone */ } };
   const each = (rows: ProcRow[], sig: NodeJS.Signals) => { for (const r of rows) signal(r.pgid === r.pid ? -r.pid : r.pid, sig); };
+  // What leads a group of its own (an MCP server, a tool command) gets a SIGTERM of its own and the same grace period:
+  // a git process stopped by SIGKILL leaves its index lock behind.
+  const termed = new Set<string>();
+  const term = (rows: ProcRow[] | undefined) => {
+    for (const r of rows ? left(rows) : []) if (r.pgid === r.pid && !termed.has(key(r))) { termed.add(key(r)); signal(-r.pid, "SIGTERM"); }
+  };
   try {
-    await look();
+    const first = await look();
     signal(-pid, "SIGTERM");
+    term(first);
     // The grace period, for the leader and for what it started: what they start meanwhile is recorded while its parent
     // still runs.
     for (const end = Date.now() + termMs; Date.now() < end; ) {
       await Bun.sleep(100);
       const rows = await look();
+      term(rows);
       if (exited() && rows && !left(rows).length) break;
     }
     // Freeze, enumerate, kill: a stopped process starts nothing, so a read after the freeze sees all of it.
