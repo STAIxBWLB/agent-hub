@@ -28,7 +28,7 @@ export interface CodexOptions {
    * `item/started` about when a command has finished, so only completions are reported. Untyped JSON (hence `any`):
    * the receiver checks every field it reads.
    */
-  onItem?: (item: any) => void;
+  onItem?: (item: any, nativeTurn?: string) => void;
   /** How often to ask app-server for the rate limits while a TUI is attached. */
   usagePollMs?: number;
   /** How long a fact's steer waits for app-server's answer (tests shorten it). */
@@ -460,7 +460,7 @@ export class CodexPeer extends BasePeer {
       this.deltas.set(params.itemId, buf);
     } else if (method === "item/completed" && ["fileChange", "commandExecution", "mcpToolCall", "userMessage"].includes(params.item?.type)) {
       try {
-        this.opts.onItem?.(params.item);
+        this.opts.onItem?.(params.item, typeof params.turnId === "string" && this.activeTurns.has(params.turnId) ? params.turnId : undefined);
       } catch (error) {
         this.opts.log?.(`[${this.id}] item handler failed: ${(error as Error).message}`); // the proxy keeps going
       }

@@ -1593,8 +1593,9 @@ export async function startDaemon(opts: DaemonOptions) {
         },
         // Turn-free facts (issue #108): its items are the boundaries; a fact goes into the running turn by steer, and
         // the steered input coming back as a user message item is its readback.
-        onItem: (item) => {
-          observeProgress("codex", normalizeCodexObservation(item));
+        onItem: (item, nativeTurn) => {
+          const observation = normalizeCodexObservation(item);
+          if (nativeTurn && observation) observeProgress("codex", { ...observation, turn: nativeTurn });
           if (!factsOn()) return;
           factSession("codex", codex.thread);
           if (item.type === "userMessage") {
@@ -1676,10 +1677,10 @@ export async function startDaemon(opts: DaemonOptions) {
         executeTool: async (name, raw, callId, sessionId, signal) => {
           if (signal?.aborted) return "error: turn cancelled before tool effects";
           if (stopping || (recoveryActive() && recoveryPhase !== "preparing")) return "error: recovery is holding tool effects";
-          const output = await piReceipts!.execute(sessionId ?? "", callId, name, raw, async () => {
+          return piReceipts!.execute(sessionId ?? "", callId, name, raw, async () => {
             if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "error: invalid tool arguments";
-            if (TASK_TOOLS.some((t) => t.name === name)) return taskOp("pi", name, raw as Record<string, unknown>, true);
-            return runTool(name, JSON.stringify(raw), { ...ctx, signal, permit: async title => {
+            const nativeTurn = pi.observationTurn;
+            const output = TASK_TOOLS.some((t) => t.name === name) ? await taskOp("pi", name, raw as Record<string, unknown>, true) : await runTool(name, JSON.stringify(raw), { ...ctx, signal, permit: async title => {
               if (!signal) return ctx.permit(title);
               if (signal.aborted) return false;
               return new Promise<boolean>((resolve, reject) => {
@@ -1688,10 +1689,12 @@ export async function startDaemon(opts: DaemonOptions) {
                 Promise.resolve(ctx.permit(title)).then(finish, error => { signal.removeEventListener("abort", aborted); reject(error); });
               });
             } });
+            if (!signal?.aborted && bus.peers.get("pi") === pi) {
+              const taskId = pi.budgetEnvelopes.find(env => env.refs?.task)?.refs?.task;
+              observeProgress("pi", { name, ...(typeof (raw as any)?.command === "string" ? { command: (raw as any).command } : {}), resultText: output, isError: toolResultFailed(name, output), source: "pi", ...(nativeTurn ? { turn: nativeTurn } : {}) }, taskId);
+            }
+            return output;
           });
-          const taskId = pi.budgetEnvelopes.find(env => env.refs?.task)?.refs?.task;
-          observeProgress("pi", { name, ...(typeof (raw as any)?.command === "string" ? { command: (raw as any).command } : {}), resultText: output, isError: toolResultFailed(name, output), source: "pi" }, taskId);
-          return output;
         },
         selectModel: async (envs) => {
           piReply = replyParent(envs);
