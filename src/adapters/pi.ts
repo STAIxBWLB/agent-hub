@@ -37,6 +37,7 @@ const modelFor = (backend: PiOptions["backend"], models: PiModelDescriptor[]): s
   const find = (needle: string) => ids.find((id) => id === needle) ?? needle;
   if (backend === "mlx") return find("mlx/fast");
   if (backend === "dgx") return find("dgx/coding");
+  if (ids.includes("hub/auto")) return "hub/auto";
   return find(ids.find((id) => id === "dgx/coding") ? "dgx/coding" : ids.find((id) => id === "mlx/fast") ?? "dgx/coding");
 };
 

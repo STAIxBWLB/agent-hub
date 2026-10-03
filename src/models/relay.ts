@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import type { OmniRoute, ChatMessage } from "../omniroute/client.ts";
 import { ensureMlx, type MlxHandle, type MlxOptions, type MlxStatus } from "./mlx.ts";
+import { AutoRouteSelector } from "./route/relay-selector.ts";
 
 export type ModelBackend = { kind: "mlx"; alias?: string } | { kind: "dgx"; alias: string };
 
@@ -39,6 +40,11 @@ export interface ModelRelayOptions {
   token?: string;
   defaultBackend?: ModelBackend;
   selectBackend?: (request: RelayRequest) => ModelBackend | Promise<ModelBackend>;
+  /** Expose the virtual, stage-routed model alias to Pi. */
+  enableHubAuto?: boolean;
+  /** Trusted host callback. Requests without a stable session key get stateless stage selection. */
+  routeSessionKey?: (request: RelayRequest) => string | undefined;
+  onRoute?: (event: { route: "hub/auto"; tier: string; source: "override" | "dimensions" | "hold" | "classifier" | "default"; score: number; ms: number }) => void;
   allowedDGXmodels: Record<string, string>;
   dgxMaxInputTokens?: number;
   mlx?: MlxOptions;
@@ -156,7 +162,8 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
   const mlxAlias = options.mlxAlias ?? "mlx/fast";
   const dgxMaxInputTokens = options.dgxMaxInputTokens ?? 262_144;
   const defaultBackend = options.defaultBackend ?? (options.mlx ? { kind: "mlx", alias: mlxAlias } : { kind: "dgx", alias: "dgx/coding" });
-  const models = [...new Set([...(options.mlx ? [mlxAlias] : []), ...Object.keys(options.allowedDGXmodels)])];
+  const models = [...new Set([...(options.enableHubAuto ? ["hub/auto"] : []), ...(options.mlx ? [mlxAlias] : []), ...Object.keys(options.allowedDGXmodels)])];
+  const autoRoute = options.enableHubAuto ? new AutoRouteSelector(options, defaultBackend, mlxAlias, estimateInputTokens) : undefined;
   let mlx: MlxHandle | undefined;
   let mlxStarting: Promise<MlxHandle> | undefined;
   const states = new Map<string, RelayBackendStatus>();
@@ -174,9 +181,11 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
 
   const resolve = async (body: RelayRequest): Promise<ModelBackend> => {
     const requested = typeof body.model === "string" ? body.model : undefined;
+    const automatic = options.enableHubAuto === true && requested === "hub/auto";
     if (requested && !models.includes(requested)) throw new Error("model alias is not allowed");
     if (requested === mlxAlias && options.mlx) return { kind: "mlx", alias: mlxAlias };
     if (requested && requested in options.allowedDGXmodels) return { kind: "dgx", alias: requested };
+    if (automatic) return autoRoute!.select(body);
     const selected = options.selectBackend ? await options.selectBackend(body) : defaultBackend;
     if (selected.kind === "mlx" && !options.mlx) throw new Error("MLX backend is not configured");
     if (selected.kind === "dgx" && !(selected.alias in options.allowedDGXmodels)) throw new Error("DGX model alias is not allowed");
