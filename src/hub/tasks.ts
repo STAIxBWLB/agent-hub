@@ -143,8 +143,9 @@ export class Tasks {
     // What the on-prem worker says about a PII task is private on the bus (console tail and log show a stub), so the
     // board keeps the text: `ahub task show <id>` is where the console user reads it, a refusal included.
     d.bus.tap((e) => {
-      // A turn that ends takes its hand-overs with it: busy later is another turn (#115).
-      if (e.t === "state" && e.state !== "busy") for (const [k, p] of this.sent) if (p === e.peer) this.sent.delete(k);
+      // A turn that ends takes its hand-overs with it: busy later is another turn (#115). The adapter's own state, since a
+      // pause shows as `paused` while the turn goes on.
+      if (e.t === "state" && d.bus.peers.get(e.peer)?.state !== "busy") for (const [k, p] of this.sent) if (p === e.peer) this.sent.delete(k);
       if (e.t !== "envelope" || !e.env.private || e.env.from === HUB || !e.env.refs?.task) return;
       try {
         d.board.update(Number(e.env.refs.task), e.env.from, "answer", {}, e.env.body.slice(0, 4000));

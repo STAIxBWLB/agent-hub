@@ -1925,7 +1925,7 @@ test("a split prediction counts busy as taking a task only in the turn that task
   }
   const rig = async (durable = false) => {
     const dir = mkdtempSync(join(tmpdir(), "agenthub-tasks-"));
-    // The daemon's bus has a journal, which drains after the publish instead of during it.
+    // The daemon's bus has a journal, which drains at the end of the publish, after persisting.
     const bus = new Bus({ batchMs: 0, ...(durable ? { journal: new DeliveryJournal({ file: join(dir, "journal.db"), projectRoot: dir, projectId: "p", instanceId: "i" }) } : {}) });
     const peers = Object.fromEntries(["claude", "codex", "kimi"].map((id) => [id, new Taking(id)]));
     for (const p of Object.values(peers)) { bus.add(p); await p.start(); }
@@ -1974,7 +1974,11 @@ test("a split prediction counts busy as taking a task only in the turn that task
   await behind.tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/c.ts"] } });
   behind.bus.publish(newEnvelope("claude", "a status line", { to: ["kimi"] }));
   expect(behind.bus.queued("kimi")).toBe(1);
+  // Paused and resumed within that turn: still the same turn.
+  behind.bus.pause("kimi");
+  behind.bus.resume("kimi");
   await behind.tasks.propose(USER, { title: "routed part", class: "implement", refs: { paths: ["src/c.ts"] } });
+  expect(behind.routingTrace()).toContain("unknown");
   expect(behind.routingTrace()).not.toContain("not available");
   // Its delivery held (a recovery), the task starts no turn; busy later is a turn of the peer's own.
   const held = await rig();
@@ -1989,6 +1993,7 @@ test("a split prediction counts busy as taking a task only in the turn that task
   await durable.tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/c.ts"] } });
   expect([durable.bus.stateOf("kimi"), durable.bus.queued("kimi")]).toEqual(["busy", 0]);
   await durable.tasks.propose(USER, { title: "routed part", class: "implement", refs: { paths: ["src/c.ts"] } });
+  expect(durable.routingTrace()).toContain("unknown");
   expect(durable.routingTrace()).not.toContain("not available");
   // A claim in the turn the claimant is in, with a message queued behind that turn: it is taking what it claimed.
   const claimed = await rig();
