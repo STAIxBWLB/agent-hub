@@ -248,7 +248,7 @@ test("a prompt the agent rejects is retried, then reported undeliverable instead
 test("the adapter stops a launcher that ignores SIGTERM together with the agent it waits for", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-acp-launcher-"));
   const pidFile = join(dir, "agent.pid"), launcherFile = join(dir, "launcher.pid"), bin = join(dir, "kimi");
-  writeFileSync(bin, `#!/bin/sh\necho $$ > ${launcherFile}\ntrap "" TERM\n${FAKE.join(" ")} 0<&0 &\necho $! > ${pidFile}\nwhile :; do sleep 1; done\n`, { mode: 0o755 });
+  writeFileSync(bin, `#!/bin/sh\necho $$ > ${launcherFile}\ntrap "" TERM\nexec 3<&0\n${FAKE.join(" ")} <&3 &\necho $! > ${pidFile}\nwhile :; do sleep 1; done\n`, { mode: 0o755 });
   const launched = new AcpPeer("kimi", { cmd: [bin], cwd: dir });
   try {
     await launched.start();
