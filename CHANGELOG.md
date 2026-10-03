@@ -2,8 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
-## Unreleased
+## 0.12.7
 
+- CooperBench runner and recovery (#120): from the moment the runner may change anything, before it locks its first input, `restoration.json` says `restored: false` and names the runner, until the runner writes its outcome. A runner killed after that point sends the recovery in, and the recovery waits while the runner it names still runs. A run directory whose earlier run is not restored is refused before any mode is read, so locked modes are never recorded as the originals; a directory whose earlier invocation ended restored, with no records, can still be used. `restore.ts` trusts `restored: true` only when the restoration ledger agrees, so a stale file over a re-run that died no longer reports a run restored while its inputs stay locked. With no ledger, nothing was locked and nothing is restored.
+- CooperBench manifests v2 and the #106 ablation pin hub 0.12.7.
 - Bun 1.4.2 in CI, the release workflow and the plugin bundle build. Bun 1.4.2 still throws for a real path with a backslash, so `realPath` stays, and still runs the next test inside an outer spawnSync's event loop after a timeout, so `check.sh` keeps its test timeout and watchdog. On 1.4.2, a model relay that is closed while it streams a response gets an error printed by Bun when it aborts that stream ("model relay closed"): log noise, not a failure (#121).
 
 ## 0.12.6

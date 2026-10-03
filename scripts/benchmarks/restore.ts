@@ -1,28 +1,37 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { descendantsOf, processTable, type ProcRow } from '../../src/hub/child-process.ts';
-import { inside, namingFixture, processCwds, restoreModes, restoreTrust, same, restoreTemp, trustTemp, writeAtomic } from './teardown.ts';
+import { inside, namingFixture, processCwds, restoreModes, restoreTrust, same, restoreTemp, trustTemp, unrestored, writeAtomic } from './teardown.ts';
 
 /**
  * Recovery after a run that left inputs unreadable (issue #113): an arm's cleanup was incomplete or unknown, or the
  * runner itself did not finish. Nothing is restored while the runner runs, while any process an arm was recorded to
  * have started runs, or while anything has a fixture in its argv or as its working directory. Then the read modes come
  * back from the run's ledger, and the records kept in `recovery/` move to `runs/`, where grading and the ledger read
- * them; the Claude trust entry the runner set is taken back unless the user changed it meanwhile. Usage:
+ * them; the Claude trust entry the runner set is taken back unless the user changed it meanwhile. `restored: true` is
+ * trusted only when the ledger agrees (#120), and a runner named by either file holds the recovery while it runs. Usage:
  * bun scripts/benchmarks/restore.ts --run RUN_DIR [--runner-exited] (for a ledger written before runner identities:
  * the operator states the runner is gone).
  */
 export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<number, string> | undefined, self = process.pid, runnerExited = false): { restored: boolean; blockers: string[]; failed: string[] } {
     let status: any; // a file cut by a runner that died mid-write says nothing: recover
     try { status = JSON.parse(readFileSync(join(run, 'restoration.json'), 'utf8')); } catch { status = undefined; }
-    if (status?.restored === true) return { restored: true, blockers: [], failed: [] };
+    // No ledger: the runner persists it before it locks anything, so there is nothing to restore (#120).
+    const ledgerFile = join(run, 'restoration-ledger.json'), hasLedger = existsSync(ledgerFile);
+    let ledger: any = {};
+    if (hasLedger) {
+        try { ledger = JSON.parse(readFileSync(ledgerFile, 'utf8')); }
+        catch { return { restored: false, blockers: ['the restoration ledger cannot be read'], failed: [] }; }
+    }
+    // A re-run that died after an earlier run's `restored: true` leaves locks that file does not know about (#120).
+    if (status?.restored === true && !unrestored(ledger).length) return { restored: true, blockers: [], failed: [] };
     if (!table) return { restored: false, blockers: ['the process table cannot be read'], failed: [] };
     if (!cwds) return { restored: false, blockers: ['working directories cannot be read'], failed: [] };
-    const ledgerFile = join(run, 'restoration-ledger.json');
-    const ledger = JSON.parse(readFileSync(ledgerFile, 'utf8'));
     const blockers: string[] = [];
-    if (!ledger.runner && !runnerExited) blockers.push('the ledger does not name the runner: it may still be running (pass --runner-exited once it is gone)');
-    else if (ledger.runner && same(table, ledger.runner)) blockers.push(`the runner ${ledger.runner.pid} is still running`);
+    // The ledger's runner, and the one restoration.json names while a runner works or after it died (#120).
+    const runners = [ledger.runner, status?.runner].filter((r) => r?.pid);
+    if (!runners.length && !runnerExited) blockers.push('the ledger does not name the runner: it may still be running (pass --runner-exited once it is gone)');
+    for (const r of runners) if (same(table, r)) blockers.push(`the runner ${r.pid} is still running`);
     const mine = new Set([self, ...descendantsOf(table, self).map((r) => r.pid)]);
     const records = existsSync(join(run, 'recovery', 'runs')) ? readdirSync(join(run, 'recovery', 'runs')).filter((f) => f.endsWith('.json')) : [];
     const recorded = records.map((f) => ({ file: f, record: JSON.parse(readFileSync(join(run, 'recovery', 'runs', f), 'utf8')) }));
@@ -47,7 +56,7 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
         sibling.restored = !lost.length;
         failed.push(...lost);
     }
-    if (!ledger.protected?.restored) {
+    if (ledger.protected && !ledger.protected.restored) {
         const lost = restoreModes(Object.entries<number>(ledger.protected?.paths ?? {}));
         ledger.protected.restored = !lost.length;
         failed.push(...lost);
@@ -71,7 +80,7 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
         else if (outcome === 'failed') failed.push(trust.file);
         else Object.assign(trust, { restored: true, stage: outcome });
     }
-    writeAtomic(ledgerFile, JSON.stringify(ledger, null, 2)); // a crash mid-write must not leave a ledger the next recovery cannot read
+    if (hasLedger) writeAtomic(ledgerFile, JSON.stringify(ledger, null, 2)); // a crash mid-write must not leave a ledger the next recovery cannot read
     if (failed.length) return { restored: false, blockers: [], failed };
     // The kept records join the run's own, so grading and the ledger see these attempts (as unavailable).
     mkdirSync(join(run, 'runs'), { recursive: true, mode: 0o700 });

@@ -353,6 +353,62 @@ test("the recovery's own restore names its temp file by the runner's pid, where 
   } finally { rmSync(restoreTemp(trustFile, process.pid), { recursive: true, force: true }); }
 });
 
+// issue #120: the state on disk says "not restored" while anything is locked, and a stale `restored: true` is not trusted.
+test("what a ledger holds unrestored, and whether a run directory may be used again", async () => {
+  const { reuseProblem, unrestored } = await import("../../scripts/benchmarks/teardown.ts");
+  const done = { protected: { paths: { "/x": 420 }, restored: true }, siblings: { a: { modes: {}, restored: true } }, trust: { stage: "restored", restored: true } };
+  expect(unrestored(undefined)).toEqual([]);
+  expect(unrestored({})).toEqual([]);
+  expect(unrestored(done)).toEqual([]);
+  expect(unrestored({ ...done, protected: { paths: { "/x": 420 }, restored: false } })).toEqual(["protected inputs"]);
+  expect(unrestored({ ...done, protected: { paths: {}, restored: false } })).toEqual([]); // nothing was locked
+  expect(unrestored({ ...done, siblings: { a: { restored: true }, b: { restored: false } } })).toEqual(["sibling read locks of 1 arm(s)"]);
+  expect(unrestored({ ...done, trust: { stage: "pending", restored: false } })).toEqual(["the Claude trust entry"]);
+  expect(unrestored({ ...done, trust: { stage: "changed_concurrently", restored: false } })).toEqual([]); // the user's
+  const text = (o: unknown) => JSON.stringify(o);
+  expect(reuseProblem(undefined, undefined)).toBeUndefined(); // a fresh directory
+  expect(reuseProblem(text({ restored: true }), text(done))).toBeUndefined(); // an earlier invocation ended restored
+  expect(reuseProblem(text({ restored: true }), undefined)).toBeUndefined();
+  expect(reuseProblem(text({ restored: false, runner: { pid: 1 } }), text(done))).toContain("not restored");
+  expect(reuseProblem("{cut", undefined)).toContain("not restored");
+  expect(reuseProblem(text({ restored: true }), "{cut")).toContain("cannot be read");
+  expect(reuseProblem(text({ restored: true }), text({ ...done, protected: { paths: { "/x": 420 }, restored: false } }))).toContain("protected inputs unrestored");
+  expect(reuseProblem(undefined, text({ ...done, siblings: { b: { restored: false } } }))).toContain("sibling read locks");
+});
+
+test("a stale restored: true over a ledger that still holds locks is not trusted: the recovery restores them", async () => {
+  const { recover } = await import("../../scripts/benchmarks/restore.ts");
+  const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(run);
+  const input = join(run, "input.txt");
+  writeFileSync(input, "x");
+  chmodSync(input, 0); // a re-run locked it and was killed before its outcome
+  const runner = { pid: 99_999_993, started: "Thu Jan  1 00:00:00 1970" };
+  writeFileSync(join(run, "restoration.json"), JSON.stringify({ restored: true, paths: 1 })); // the earlier invocation's
+  writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner, protected: { paths: { [input]: 0o644 }, restored: false }, siblings: {}, actors: {}, trust: undefined }));
+  expect(recover(run, processTable()!, new Map(), process.pid)).toEqual({ restored: true, blockers: [], failed: [] });
+  expect(statSync(input).mode & 0o777).toBe(0o644);
+  expect(JSON.parse(readFileSync(join(run, "restoration.json"), "utf8"))).toMatchObject({ restored: true, recovered: true });
+});
+
+test("the runner restoration.json names holds the recovery while it runs; dead, with no ledger, there is nothing to restore", async () => {
+  const { recover } = await import("../../scripts/benchmarks/restore.ts");
+  const me = processTable()!.find((r) => r.pid === process.pid)!;
+  const marker = (runner: { pid: number; started: string }) => JSON.stringify({ restored: false, reason: "the runner is running, or died before writing its outcome", runner });
+  const live = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(live);
+  writeFileSync(join(live, "restoration.json"), marker({ pid: me.pid, started: me.started }));
+  const held = recover(live, processTable()!, new Map(), -1);
+  expect(held.restored).toBe(false);
+  expect(held.blockers).toContain(`the runner ${me.pid} is still running`);
+  const dead = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(dead);
+  writeFileSync(join(dead, "restoration.json"), marker({ pid: 99_999_992, started: "Thu Jan  1 00:00:00 1970" }));
+  expect(recover(dead, processTable()!, new Map(), -1)).toEqual({ restored: true, blockers: [], failed: [] });
+  expect(existsSync(join(dead, "restoration-ledger.json"))).toBe(false); // no ledger made up
+  expect(JSON.parse(readFileSync(join(dead, "restoration.json"), "utf8")).restored).toBe(true);
+});
+
 test("an entry the user changed meanwhile (changed_concurrently) is theirs: the recovery leaves it", async () => {
   const { recover } = await import("../../scripts/benchmarks/restore.ts");
   const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));

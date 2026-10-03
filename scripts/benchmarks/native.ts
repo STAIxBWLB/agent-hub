@@ -7,7 +7,7 @@ import { realPath } from '../../src/hub/project.ts';
 import { sessionSettings, statusLineSettings } from '../../src/cli/launch.ts';
 import { readEvents } from '../../src/hub/events.ts';
 import { processTable } from '../../src/hub/child-process.ts';
-import { awaitTurnEnd, captureActors, cwdOf, endReasonOf, restoreModes, trustTemp, writeAtomic, restoreTrust, settleTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
+import { awaitTurnEnd, captureActors, cwdOf, endReasonOf, restoreModes, trustTemp, writeAtomic, restoreTrust, reuseProblem, settleTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
 process.umask(0o077);
 const argv = process.argv.slice(2), runArg = argv[argv.indexOf('--run') + 1], inputArg = argv[argv.indexOf('--private-inputs') + 1], upstreamArg = argv[argv.indexOf('--upstream-root') + 1], probeArg = argv[argv.indexOf('--probe-target') + 1];
 if (!runArg || !inputArg || !upstreamArg || !probeArg)
@@ -779,6 +779,11 @@ const selectedFixturePaths = selected.flatMap((i: number) => m.arms.map((kind: s
 const orcaPreflight = await preflightOrcaWorktrees(selectedFixturePaths, orca);
 if ((existsSync(join(runs, 'runs')) && readdirSync(join(runs, 'runs')).length) || existsSync(join(runs, 'recovery')))
     throw new Error('run directory already contains attempts; use a new attempt directory');
+// An earlier run here that is not restored refuses the directory (#120): its locked modes would be recorded as the originals.
+const readIfThere = (file: string) => existsSync(file) ? readFileSync(file, 'utf8') : undefined;
+const reuse = reuseProblem(readIfThere(join(runs, 'restoration.json')), readIfThere(join(runs, 'restoration-ledger.json')));
+if (reuse)
+    throw new Error(`${reuse}: run bun scripts/benchmarks/restore.ts --run ${runs} first`);
 mkdirSync(join(runs, 'private'), { recursive: true, mode: 0o700 });
 // Strict MCP isolation for Codex in every arm (issue #110): the user's plugins, apps, sub-agents and turn-end notifier
 // are off, and each MCP server the user's config defines is disabled by name; the hub adds only its own. Nothing in the
@@ -790,6 +795,9 @@ const codexIsolation = ['--disable', 'plugins', '--disable', 'apps', '--disable'
 mkdirSync(join(runs, 'runs'), { recursive: true, mode: 0o700 });
 mkdirSync(join(runs, 'patches'), { recursive: true, mode: 0o700 });
 writeFileSync(join(runs, 'cohort.json'), JSON.stringify({ schema: m.schema, manifest_sha256: sourceHash(join(runs, 'manifest.json')), cases: selected, calibration: setupOnly, repeat, private_case_sha256: Object.fromEntries(selected.map(i => [i, privateCaseHashes[i]])), arms: m.arms, runner_sha256: prepared.runner_sha256, native_runner_sha256: prepared.native_runner_sha256, teardown_sha256: prepared.teardown_sha256 }), { mode: 0o600 });
+// From here the runner may change things (#120): until its outcome is written, restoration.json says "not restored", so a
+// runner that dies sends the recovery in, and the recovery waits while this one runs.
+writeAtomic(join(runs, 'restoration.json'), JSON.stringify({ restored: false, reason: 'the runner is running, or died before writing its outcome', runner: { pid: runnerIdentity.pid, started: runnerIdentity.started }, recover: `bun scripts/benchmarks/restore.ts --run ${runs}` }));
 try {
     await protectInputs();
     for (const i of selected) {
