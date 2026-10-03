@@ -98,9 +98,11 @@ export function descendantsOf(rows: ProcRow[], pid: number): ProcRow[] {
 export async function stopOwnedProcess(proc: ChildProcess, { termMs = 1_000, killMs = 2_000, group = false, table = readProcessTable }: { termMs?: number; killMs?: number; group?: boolean; table?: () => ProcRow[] | undefined | Promise<ProcRow[] | undefined> } = {}): Promise<void> {
   if (proc.exitCode !== null || proc.signalCode !== null || proc.pid === undefined) {
     // ponytail: a leader that exited before the stop (its launcher killed from outside) is not swept, as its pid may be
-    // reused once its group empties; its pipes are dropped so a survivor cannot keep the hub alive. Record the leader's
-    // start time at spawn to sweep its group safely.
-    if (group) dropPipes(proc);
+    // reused once its group empties; its pipes are dropped so a survivor cannot keep the hub alive, and a group that
+    // still has members fails the stop instead of reading as done. Record the leader's start time at spawn to sweep it.
+    if (!group || proc.pid === undefined) return;
+    dropPipes(proc);
+    if (!groupGone(proc.pid)) throw new Error(`owned child ${proc.pid} exited before the stop and its process group still has members: not signalled`);
     return;
   }
   if (group) return stopGroup(proc, proc.pid, termMs, killMs, table);
@@ -144,6 +146,14 @@ const dropPipes = (proc: ChildProcess) => {
   proc.stdout?.destroy();
   proc.stderr?.destroy();
 };
+
+/** Whether no process is left in group `pgid` (macOS answers EPERM for a group of zombies). */
+function groupGone(pgid: number): boolean {
+  try { process.kill(-pgid, 0); return false; } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ESRCH" || (code === "EPERM" && process.platform === "darwin");
+  }
+}
 
 /**
  * Stops a child that leads its own process group, with everything it started (issue #113). A launcher that forwards
@@ -190,12 +200,6 @@ async function stopGroup(proc: ChildProcess, pid: number, termMs: number, killMs
   // Errors are not results here: the table read back decides.
   const signal = (target: number, sig: NodeJS.Signals) => { try { process.kill(target, sig); } catch { /* gone */ } };
   const each = (rows: ProcRow[], sig: NodeJS.Signals) => { for (const r of rows) signal(r.pgid === r.pid ? -r.pid : r.pid, sig); };
-  const groupGone = () => {
-    try { process.kill(-pid, 0); return false; } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      return code === "ESRCH" || (code === "EPERM" && process.platform === "darwin");
-    }
-  };
   try {
     await look();
     signal(-pid, "SIGTERM");
@@ -211,7 +215,7 @@ async function stopGroup(proc: ChildProcess, pid: number, termMs: number, killMs
       const rows = await look();
       const rest = rows ? left(rows) : undefined;
       const strangers = rows ? unproven(rows) : [];
-      if (exited() && !strangers.length && (rest ? !rest.length : !found.size && groupGone())) return;
+      if (exited() && !strangers.length && (rest ? !rest.length : !found.size && groupGone(pid))) return;
       if (Date.now() >= end) {
         throw new Error(`owned child ${pid}: ${rest ? `${rest.length + strangers.length} process(es) of its group or below it still running${strangers.length ? `, ${strangers.length} not proven its own and left alone` : ""}` : "the process table cannot be read to confirm what it started is gone"}`);
       }
@@ -227,8 +231,7 @@ async function stopGroup(proc: ChildProcess, pid: number, termMs: number, killMs
       for (const r of rest ?? []) if (!kill.some((k) => k.pid === r.pid && k.started === r.started)) signal(r.pgid === r.pid ? -r.pid : r.pid, "SIGCONT");
       await Bun.sleep(50);
     }
-  } catch (error) {
-    dropPipes(proc); // something may still hold them: it must not keep the hub alive
-    throw error;
+  } finally {
+    dropPipes(proc); // a process that left the tree between two reads may still hold them: it must not keep the hub alive
   }
 }

@@ -131,6 +131,8 @@ export class Facts {
   private expandedCut = new Set<string>();
   /** Files a peer saw that fell out of its covered set (over the cap) in this session: each goes to `unfollowed` once. */
   private readonly seenDropped = new Map<PeerId, Set<string>>();
+  /** Git blob ids of large files, by path, with the stat they were taken at. */
+  private readonly largeBlobs = new Map<string, { stamp: string; blob: string }>();
   /** Directories each peer acknowledged being told were cut: once per session, not at every boundary. */
   private readonly cutTold = new Map<PeerId, Set<string>>();
   /**
@@ -235,6 +237,7 @@ export class Facts {
     this.firstSeen.clear();
     this.cutTold.clear();
     this.seenDropped.clear();
+    this.unfollowed.clear(); // what was seen is forgotten: a notice about it would be stale
     this.writes.clear();
     this.epoch = Date.now();
   }
@@ -302,16 +305,27 @@ export class Facts {
       fd = openSync(join(this.root, file), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const st = fstatSync(fd);
       if (!st.isFile() || st.size > 64 * 1024 * 1024) return undefined;
+      // A file that stays stat-dirty but equal to HEAD is looked at again at every boundary: hashed once per version.
+      const stamp = `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`, known = this.largeBlobs.get(file);
+      if (known?.stamp === stamp) return known.blob;
       const h = createHash("sha1").update(`blob ${st.size}\0`);
       const buf = Buffer.alloc(1024 * 1024);
       let got = 0;
       for (let n = 0; got < st.size && (n = readSync(fd, buf, 0, buf.length, got)) > 0; got += n) h.update(buf.subarray(0, n));
-      return got === st.size ? h.digest("hex") : undefined; // changed while read: no claim
+      if (got !== st.size) return undefined; // changed while read: no claim
+      const blob = h.digest("hex");
+      this.largeBlobs.set(file, { stamp, blob });
+      return blob;
     } catch {
       return undefined;
     } finally {
       if (fd !== undefined) closeSync(fd);
     }
+  }
+
+  /** `file` is covered again: an offer still unread that named it as dropped must not spend the notice of a later drop. */
+  private coveredAgain(peer: PeerId, notice: "untracked" | "unfollowed", file: string): void {
+    for (const o of this.offers.get(peer) ?? []) if (o[notice]?.includes(file)) o[notice] = o[notice]!.filter((f) => f !== file);
   }
 
   /** A new boundary: directories are expanded afresh. */
@@ -325,6 +339,7 @@ export class Facts {
     const list = (this.touched.get(peer) ?? []).filter((f) => f !== file);
     list.push(file);
     this.untracked.get(peer)?.delete(file); // tracked again: no notice says otherwise
+    this.coveredAgain(peer, "untracked", file);
     if (list.length > TOUCHED_KEPT) {
       const gone = list.shift()!;
       this.untracked.set(peer, (this.untracked.get(peer) ?? new Set()).add(gone));
@@ -356,6 +371,7 @@ export class Facts {
     for (const [f] of under.slice(0, EXPANDED_KEPT)) {
       if (!dropped.delete(f)) continue; // followed again: no notice says otherwise, and a later drop is told anew
       this.unfollowed.get(peer)?.delete(f);
+      this.coveredAgain(peer, "unfollowed", f);
     }
     this.seenDropped.set(peer, dropped);
     return [...new Set([...this.expand(paths), ...(this.touched.get(peer) ?? []), ...under.slice(0, EXPANDED_KEPT).map(([f]) => f)])];

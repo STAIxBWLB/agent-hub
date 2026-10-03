@@ -326,6 +326,10 @@ test("a late transcript append keeps the frozen prefix, is reported, and leaves 
     // An attempt whose cleanup was not complete is unavailable to the ledger as to grading, whatever its end reason.
     run("00-solo-claude", { ...JSON.parse(readFileSync(join(root, "runs", "00-solo-claude.json"), "utf8")), cleanup_complete: false, cleanup: { outcome: "incomplete_or_unknown", reasons: ["still running: below 107"] } });
     expect(ledger().rows[0].validity).toEqual({ valid: false, why: "cleanup incomplete or unknown: still running: below 107" });
+    // A record from before 0.12.3 says nothing about its cleanup: unknown, never re-graded as invalid.
+    const { cleanup_complete: _, ...older } = JSON.parse(readFileSync(join(root, "runs", "00-solo-claude.json"), "utf8"));
+    run("00-solo-claude", older);
+    expect(ledger().rows[0].validity).toEqual({ valid: null, why: "cleanup not recorded (a record from before 0.12.3)" });
     // A flag beside the end reason is part of how the attempt ended: reported, not a bare "completed".
     run("00-solo-claude", { ...JSON.parse(readFileSync(join(root, "runs", "00-solo-claude.json"), "utf8")), cleanup_complete: true, end_reason: "infrastructure-error", end_reason_detail: "completed", end_flags: ["tree-changed-after-active-time"] });
     const flagged = ledger();

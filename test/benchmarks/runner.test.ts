@@ -76,6 +76,19 @@ describe("benchmark runner contracts", () => {
       expect(prepared.fixtures).toHaveLength(3);
       expect(prepared.fixtures[0].baseline_paths).toBe(2);
       expect(prepared.fixtures[0].qualified_feature_ids).toEqual(["sample_repo:7:1","sample_repo:7:2"]);
+      // The teardown and the process table it reads are pinned (#113): grading refuses once either changed, or a cohort ran other sources.
+      const sha=(f:string)=>createHash("sha256").update(readFileSync(join(import.meta.dir,f))).digest("hex");
+      expect(prepared.teardown_sha256).toBe(sha("../../scripts/benchmarks/teardown.ts"));
+      expect(prepared.process_table_sha256).toBe(sha("../../src/hub/child-process.ts"));
+      const out=join(root,"output"),grade=()=>spawnSync("python3",[script,"grade","--run",out,"--private-inputs",root,"--upstream-root",root],{encoding:"utf8"});
+      const cohort=(extra:object)=>writeFileSync(join(out,"cohort.json"),JSON.stringify({manifest_sha256:prepared.manifest_sha256,runner_sha256:prepared.runner_sha256,native_runner_sha256:prepared.native_runner_sha256,teardown_sha256:prepared.teardown_sha256,...extra}));
+      cohort({teardown_sha256:"0".repeat(64)});
+      expect(grade().stderr).toContain("run source pins differ");
+      for(const key of ["teardown_sha256","process_table_sha256"]){
+        writeFileSync(join(out,"prepared.json"),JSON.stringify({...prepared,[key]:"0".repeat(64)}));
+        cohort({[key]:"0".repeat(64)});
+        expect(grade().stderr).toContain("changed after fixture preparation");
+      }
     } finally { rmSync(root,{recursive:true,force:true}); }
   });
 

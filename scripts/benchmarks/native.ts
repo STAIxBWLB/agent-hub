@@ -7,7 +7,7 @@ import { realPath } from '../../src/hub/project.ts';
 import { sessionSettings, statusLineSettings } from '../../src/cli/launch.ts';
 import { readEvents } from '../../src/hub/events.ts';
 import { descendantsOf, processTable } from '../../src/hub/child-process.ts';
-import { actorOf, awaitTurnEnd, cwdOf, daemonRoot, extend, inside, restoreModes, restoreTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
+import { awaitTurnEnd, captureActors, cwdOf, restoreModes, restoreTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
 process.umask(0o077);
 const argv = process.argv.slice(2), runArg = argv[argv.indexOf('--run') + 1], inputArg = argv[argv.indexOf('--private-inputs') + 1], upstreamArg = argv[argv.indexOf('--upstream-root') + 1], probeArg = argv[argv.indexOf('--probe-target') + 1];
 if (!runArg || !inputArg || !upstreamArg || !probeArg)
@@ -388,7 +388,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const metadataBaseline = fixtureMetadataHash(dir);
     const setup = Date.now();
     let client: ControlClient | undefined, ws: WebSocket | undefined, claudeTerminal: string | undefined, orcaProject: any, projectId: any, started = 0, endReason = 'completed', error: string | undefined, armModes = new Map<string, number>();
-    let claudeId = randomUUID(), thread: any, trustLease: any, codexMessages: any[] = [], taskStates: any[] = [], ids: number[] = [], pending = new Map<number, any>(), rpcId = 1, codexTaskStart = 0;
+    let claudeId = randomUUID(), thread: any, trustLease: any, codexMessages: any[] = [], taskStates: any[] = [], ids: number[] = [], pending = new Map<number, any>(), unkept = new Set<number>(), rpcId = 1, codexTaskStart = 0;
     const actors = kind === 'solo-codex' ? ['codex'] : kind === 'solo-claude' ? ['claude'] : ['codex', 'claude'], readiness: any = {};
     // The processes this arm started (issue #113), each with what proves it: the daemon by the pid in its state dir and
     // an argv that serves this fixture, Claude's launch chain by this arm's own session id, the Codex app-server as the
@@ -397,25 +397,9 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const capture = () => {
         const table = processTable();
         if (!table) return;
-        const mine = new Set([process.pid, ...descendantsOf(table, process.pid).map(r => r.pid)]);
-        const add = (a: Actor | undefined) => { if (a && !mine.has(a.pid)) owners.set(`${a.pid}@${a.started}`, a); };
         let hubPid = NaN;
         try { hubPid = Number(readFileSync(join(state, 'hub.pid'), 'utf8').trim()); } catch { }
-        // Once the arm's daemon is recorded, another in the state dir is a replacement, never adopted.
-        if (![...owners.values()].some(a => a.role === 'daemon') && table.some(r => r.pid === hubPid && daemonRoot(r.command) === dir)) add(actorOf(table, hubPid, 'daemon', 'the pid in its state dir; its argv serves this fixture'));
-        const launchedAs = new RegExp(`--session-id'?\\s+'?${claudeId}(?=['\\s]|$)`); // the launcher's argv, or the terminal shell's quoted one
-        for (const r of table) if (launchedAs.test(r.command)) add(actorOf(table, r.pid, 'claude', `this arm's session id as its --session-id`));
-        // The Orca terminal's shell that runs that launcher: its parent, working in this fixture, outlives the close briefly.
-        for (const r of table.filter(x => launchedAs.test(x.command))) {
-            const parent = table.find(x => x.pid === r.ppid);
-            if (parent && parent.pid > 1 && !launchedAs.test(parent.command) && ![...owners.values()].some(a => a.pid === parent.pid && a.started === parent.started) && inside(cwdOf(parent.pid), dir))
-                add(actorOf(table, parent.pid, 'claude', `the terminal shell running this arm's Claude launcher, in this fixture`));
-        }
-        for (const d of [...owners.values()].filter(a => a.role === 'daemon' && table.some(r => r.pid === a.pid && r.started === a.started)))
-            for (const r of table) if (r.ppid === d.pid && / app-server /.test(r.command)) add(actorOf(table, r.pid, 'codex-app-server', `child of the arm's daemon ${d.pid}`));
-        // What runs below them now, a tool command's background job included, before its parent can exit.
-        extend(owners, table);
-        for (const pid of mine) for (const [k, a] of owners) if (a.pid === pid) owners.delete(k);
+        captureActors(owners, table, { dir, hubPid, claudeId, self: process.pid, cwdOf });
         actorLedger.set(dir, [...owners.values()]);
         persistLedger();
     };
@@ -491,8 +475,8 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             captured('codex-app-server');
             ws = new WebSocket(r.proxyUrl);
             const w = ws;
-            const rpc = (method: string, params: any = {}) => new Promise<any>((res, rej) => { const id = rpcId++; const timer = setTimeout(() => { pending.delete(id); rej(new Error(method + ' timeout')); }, 60000); pending.set(id, { res, rej, timer }); w.send(JSON.stringify({ id, method, params })); });
-            w.onmessage = (e) => { const x = JSON.parse(String(e.data)); codexMessages.push(x); if (x.id !== undefined && x.method) {
+            const rpc = (method: string, params: any = {}, kept = true) => new Promise<any>((res, rej) => { const id = rpcId++; if (!kept) unkept.add(id); const timer = setTimeout(() => { pending.delete(id); rej(new Error(method + ' timeout')); }, 60000); pending.set(id, { res, rej, timer }); w.send(JSON.stringify({ id, method, params })); });
+            w.onmessage = (e) => { const x = JSON.parse(String(e.data)); if (!(x.method === undefined && unkept.has(x.id))) codexMessages.push(x); if (x.id !== undefined && x.method) {
                 let decision = x.method.includes('requestApproval') ? 'decline' : 'decline';
                 w.send(JSON.stringify({ id: x.id, result: { decision } }));
                 return;
@@ -510,7 +494,8 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             if (thread.model !== manifest.models.codex)
                 throw new Error('Codex model mismatch');
             // The user's Codex skills stay on (issue #113): what app-server reports for this cwd, counted by scope, names hashed.
-            conditions.codex.skills = skillsCondition(await rpc('skills/list', { cwds: [dir] }).catch((e: unknown) => ({ error: String(e).slice(0, 200) })));
+            // The answer itself (names, descriptions, absolute paths) never enters the record: its id is not kept.
+            conditions.codex.skills = skillsCondition(await rpc('skills/list', { cwds: [dir] }, false).catch((e: unknown) => ({ error: String(e).slice(0, 200) })));
             await wait(async () => codexMessages.some(x => x.method === 'mcpServer/startupStatus/updated' && x.params?.name === 'agent-hub' && x.params?.status === 'ready'), 'Codex MCP');
             readiness.codex = { threadId: thread.thread?.id, model: thread.model, effort: manifest.effort.codex, cwd: realPath(thread.thread.cwd), mcpReady: true };
             if (!protectedModes.has(probeTarget))

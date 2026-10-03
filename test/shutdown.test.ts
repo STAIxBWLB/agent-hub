@@ -126,14 +126,14 @@ test("a descendant that leads a group of its own is found before the stop and st
 
 test("what the tree starts during the grace period is recorded while its parent runs, and stopped", async () => {
   // The stop begins at once; 300 ms later, inside the grace period, a process that ignores SIGTERM starts a sleep in a
-  // group of its own, and exits at 600 ms: by the end of the grace period nothing links the sleep to the tree any more.
+  // group of its own, and exits at 1000 ms: by the end of the grace period nothing links the sleep to the tree any more.
   const dir = mkdtempSync(join(tmpdir(), "agenthub-grace-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const pidFile = join(dir, "late.pid");
   // Its pid is printed once its handler is installed, and the 300 ms count from then.
-  const late = `${process.execPath} -e 'process.on("SIGTERM", () => {}); console.log(process.pid); setTimeout(() => { const c = require("node:child_process").spawn("sleep", ["30"], { detached: true, stdio: "ignore" }); require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); }, 300); setTimeout(() => process.exit(0), 600)'`;
+  const late = `${process.execPath} -e 'process.on("SIGTERM", () => {}); console.log(process.pid); setTimeout(() => { const c = require("node:child_process").spawn("sleep", ["30"], { detached: true, stdio: "ignore" }); require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); }, 300); setTimeout(() => process.exit(0), 1000)'`;
   const { proc } = await launch(`trap "" TERM; ${late} & wait`, true);
-  await stopOwnedProcess(proc, { termMs: 1000, group: true });
+  await stopOwnedProcess(proc, { termMs: 1500, group: true });
   const child = Number(readFileSync(pidFile, "utf8"));
   cleanup.push(() => { try { process.kill(child, "SIGKILL"); } catch { /* gone */ } });
   expect(alive(child)).toBe(false);
@@ -160,6 +160,18 @@ test("a process left in the leader's group that nothing recorded is never signal
   leader.once("exit", () => (exited = true));
   const table = () => [me, ...(exited ? [{ pid: 99_999_999, ppid: 1, pgid: leader.pid!, started: me.started, command: "orphan" }] : [])];
   await expect(stopOwnedProcess(leader, { termMs: 200, killMs: 300, group: true, table })).rejects.toThrow("1 not proven its own and left alone");
+});
+
+test("a leader that exited before the stop leaves its group unsignalled, and members still in it fail the stop", async () => {
+  // The launcher was killed from outside; the native it started is still in its group.
+  const { proc, child } = await launch('(exec sleep 30) & echo $!; wait', true);
+  process.kill(proc.pid!, "SIGKILL");
+  await new Promise((resolve) => proc.once("exit", resolve));
+  await expect(stopOwnedProcess(proc, { group: true })).rejects.toThrow("its process group still has members");
+  expect(alive(child)).toBe(true);
+  process.kill(child, "SIGKILL");
+  expect(await gone(child)).toBe(true);
+  await stopOwnedProcess(proc, { group: true }); // an empty group: done
 });
 
 test("what the leader started gets the grace period to shut down after the leader is gone", async () => {

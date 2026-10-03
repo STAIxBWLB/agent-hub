@@ -352,7 +352,7 @@ def capability_of(events, t0):
 
 def validity_of(run):
     why = teardown_failure(run) or treatment_failure(str(run.get("kind") or ""), run) or isolation_failure(run)
-    if why and why.startswith("hook isolation unknown"): return {"valid": None, "why": why}
+    if why and why.startswith(("hook isolation unknown", "cleanup not recorded")): return {"valid": None, "why": why}
     return {"valid": not why, "why": why}
 
 

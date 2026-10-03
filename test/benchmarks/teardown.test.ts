@@ -5,14 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProcRow } from "../../src/hub/child-process.ts";
 import { processTable } from "../../src/hub/child-process.ts";
-import { actorOf, awaitTurnEnd, daemonRoot, restoreModes, restoreTrust, teardown, turnEnded, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
+import { actorOf, awaitTurnEnd, captureActors, daemonRoot, restoreModes, same, restoreTrust, teardown, turnEnded, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
 
 // issue #113: an arm's teardown proves what it stops by identity (pid and start time), never by a name in argv.
 const dirs: string[] = [];
-const kills: number[] = [];
+const kills: { pid: number; started: string }[] = [];
+const keep = (pid: number) => { const r = processTable()?.find((x) => x.pid === pid); if (r) kills.push(r); };
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
-  for (const pid of kills.splice(0)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+  const live = kills.length ? processTable() ?? [] : [];
+  for (const k of kills.splice(0)) if (same(live, k)) { try { process.kill(k.pid, "SIGKILL"); } catch { /* gone */ } } // by identity: a reused pid is someone else
 });
 
 const DIR = "/private/tmp/ahub-run/fixtures/00-hub-codex-claude";
@@ -47,6 +49,33 @@ function world(start: ProcRow[], opts: { stubborn?: number[]; shutdown?: (w: { r
   return { w, deps, shutdown };
 }
 const everything = [runner, daemon, launcher, native, tool, claude];
+
+test("capture records the arm's own processes by what proves them, and nothing else", () => {
+  const cwds = new Map([[130, DIR], [140, "/Users/someone"]]);
+  const arm = { dir: DIR, hubPid: 100, claudeId: "s-1", self: 50, cwdOf: (pid: number) => cwds.get(pid) };
+  const shell = row(130, 1, 130, "/bin/zsh -l");
+  const launched = row(131, 130, 131, `/bin/zsh -c claude --session-id 's-1' --mcp-config ${DIR}/.claude/candidate-mcp.json`);
+  const elsewhere = row(140, 1, 140, "/bin/zsh -l"); // a terminal elsewhere that runs a launcher with this session id
+  const launched2 = row(141, 140, 141, "claude --session-id s-1");
+  const prefix = row(150, 1, 150, "claude --session-id s-10"); // another arm's session id that starts with this one's
+  const mcp = row(108, 106, 105, "node /opt/mcp/server.js");
+  const ahub = row(51, 50, 51, `bun /r/src/cli/main.ts --project ${DIR} kill`); // the runner's own command naming the fixture
+  const owners = new Map<string, Actor>();
+  captureActors(owners, [...everything, shell, launched, elsewhere, launched2, prefix, mcp, ahub], arm);
+  const roles = Object.fromEntries([...owners.values()].map((a) => [a.pid, a.role]));
+  expect(roles).toEqual({ 100: "daemon", 105: "codex-app-server", 106: "below", 107: "below", 108: "below", 120: "claude", 130: "claude", 131: "claude", 141: "claude" });
+  // A replacement daemon on the same fixture is never adopted once the arm's is recorded, nor a daemon for another fixture.
+  const replacement = row(200, 1, 200, `/opt/bun /r/src/cli/main.ts --project ${DIR} daemon`);
+  captureActors(owners, [runner, replacement], { ...arm, hubPid: 200 });
+  expect([...owners.values()].some((a) => a.pid === 200)).toBe(false);
+  const other = new Map<string, Actor>();
+  captureActors(other, [runner, row(100, 1, 100, "/opt/bun /r/src/cli/main.ts --project /private/tmp/other daemon"), launcher], arm);
+  expect(other.size).toBe(0);
+  // What the runner itself runs is never the arm's, even under a recorded process.
+  const mine = new Map<string, Actor>();
+  captureActors(mine, [runner, row(100, 50, 100, daemon.command)], arm);
+  expect(mine.size).toBe(0);
+});
 
 test("a normal shutdown that stops every actor and what runs below them is clean, with nothing signalled", async () => {
   const { w, deps, shutdown } = world(everything, { shutdown: (x) => { x.rows = [runner]; return []; } });
@@ -104,9 +133,9 @@ test("a reused pid, a replacement hub on the same fixture and a foreign process 
 test("against the real process table: a stray group below an actor is stopped by the fallback", async () => {
   // An actor whose child leads a group of its own and outlives a shutdown that did nothing.
   const proc = spawn("sh", ["-c", `trap "" TERM; ${process.execPath} -e 'require("node:child_process").spawn("sleep", ["30"], { detached: true, stdio: "ignore" })' & sleep 0.5; pgrep -P $! sleep; wait`], { stdio: ["ignore", "pipe", "ignore"], detached: true });
-  kills.push(proc.pid!);
+  keep(proc.pid!);
   const child = Number(await new Promise<string>((resolve) => proc.stdout!.once("data", (d) => resolve(String(d)))));
-  kills.push(child);
+  keep(child);
   const a = actorOf(processTable()!, proc.pid!, "codex-app-server", "spawned by the test")!;
   const c = await teardown([a], "/nonexistent-fixture", async () => [], undefined, { settleMs: 300, fallbackMs: 2000 });
   expect({ outcome: c.outcome, reasons: c.reasons }).toEqual({ outcome: "clean_with_fallback", reasons: [] });

@@ -153,7 +153,8 @@ export class CodexPeer extends BasePeer {
     const proc = this.proc;
     if (proc) {
       // Wait for the port to be released: `ahub codex` may restart the adapter right away. A launcher that already
-      // exited still has its pipes dropped there, so nothing it left can keep the hub alive.
+      // exited still has its pipes dropped there, so nothing it left can keep the hub alive, and a group it left members
+      // in fails the stop rather than freeing the port for a restart.
       await stopOwnedProcess(proc, { group: true });
       if (this.proc === proc) this.proc = undefined;
     }

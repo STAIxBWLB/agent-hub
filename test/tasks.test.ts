@@ -1826,6 +1826,31 @@ test("a split observation counts what happened from a hand-over to the next one:
   expect(tasks.splitObservations("implement", "codex")).toEqual([{ outcome: "failed" }]); // the decline is the decliner's
 });
 
+test("an escalation away is the previous owner's failure; work that waited for another task is routed when ready, and recorded", async () => {
+  const recorded: { task: number; where: string }[] = [];
+  const { tasks, board } = await turnFreeRig({ recordSplit: (task, _p, where) => recorded.push({ task, where }), splitProfile: (p) => `hub 0.12.5; ${p} 1.0.0; turn-free` });
+  const t = await tasks.propose("claude", { title: "escalated", class: "implement", owner: "codex" });
+  tasks.accept("codex", t.id);
+  await tasks.escalate("user", t.id);
+  const next = board.get(t.id)!.owner!;
+  expect(next).not.toBe("codex");
+  tasks.accept(next, t.id);
+  await tasks.done(next, t.id, "done");
+  await tasks.review(board.get(t.id)!.reviewer!, t.id, "approved");
+  expect(tasks.splitObservations("implement", "codex")).toEqual([{ outcome: "failed" }]); // the escalation is codex's
+  expect(tasks.splitObservations("implement", next).map((o) => o.outcome)).toEqual(["approved"]);
+  // A task that waited for another is assigned by routing once that is approved: a routing record, as for fresh work.
+  const first = await tasks.propose("claude", { title: "first", class: "implement", owner: "kimi" });
+  await tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/d.ts"] } });
+  const waiting = await tasks.propose("claude", { title: "after first", class: "implement", after: [first.id], refs: { paths: ["src/d.ts"] } });
+  expect(board.get(waiting.id)!.owner).toBeFalsy();
+  recorded.length = 0;
+  await tasks.done("kimi", first.id, "done");
+  await tasks.review(board.get(first.id)!.reviewer!, first.id, "approved");
+  expect(board.get(waiting.id)!.owner).toBeTruthy();
+  expect(recorded).toContainEqual({ task: waiting.id, where: "routing" });
+});
+
 test("the shadow prediction never changes assignment: routed and named work go where routing sends them; explain and the record show it", async () => {
   const recorded: { task: number; verdict: string; where: string }[] = [];
   const { tasks } = await turnFreeRig({ recordSplit: (task, p, where) => recorded.push({ task, verdict: p.verdict, where }), splitProfile: (p) => `hub 0.12.5; ${p} 1.0.0; turn-free` });

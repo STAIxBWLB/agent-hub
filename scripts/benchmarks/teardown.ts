@@ -109,6 +109,32 @@ export function namingFixture(rows: ProcRow[], dir: string): ProcRow[] {
     return rows.filter((r) => re.test(r.command));
 }
 
+/**
+ * Records in `owners` the processes an arm started (issue #113), each with what proves it: the daemon by the pid in its
+ * state dir and an argv that serves this fixture (once one is recorded, another is a replacement, never adopted),
+ * Claude's launch chain by this arm's own session id and the terminal shell that runs it in this fixture, the Codex
+ * app-server as the recorded daemon's child, and what runs below or in the group of any of them. The runner and what
+ * it runs itself are never recorded.
+ */
+export function captureActors(owners: Map<string, Actor>, rows: ProcRow[], arm: { dir: string; hubPid: number; claudeId: string; self: number; cwdOf: (pid: number) => string | undefined }): void {
+    const mine = new Set([arm.self, ...descendantsOf(rows, arm.self).map((r) => r.pid)]);
+    const add = (a: Actor | undefined) => { if (a && !mine.has(a.pid)) owners.set(key(a), a); };
+    if (![...owners.values()].some((a) => a.role === 'daemon') && rows.some((r) => r.pid === arm.hubPid && daemonRoot(r.command) === arm.dir)) add(actorOf(rows, arm.hubPid, 'daemon', 'the pid in its state dir; its argv serves this fixture'));
+    const launchedAs = new RegExp(`--session-id'?\\s+'?${arm.claudeId}(?=['\\s]|$)`); // the launcher's argv, or the terminal shell's quoted one
+    for (const r of rows.filter((x) => launchedAs.test(x.command))) {
+        add(actorOf(rows, r.pid, 'claude', `this arm's session id as its --session-id`));
+        // The Orca terminal's shell that runs that launcher: its parent, working in this fixture, outlives the close briefly.
+        const parent = rows.find((x) => x.pid === r.ppid);
+        if (parent && parent.pid > 1 && !launchedAs.test(parent.command) && !owners.has(key(parent)) && inside(arm.cwdOf(parent.pid), arm.dir))
+            add(actorOf(rows, parent.pid, 'claude', `the terminal shell running this arm's Claude launcher, in this fixture`));
+    }
+    for (const d of [...owners.values()].filter((a) => a.role === 'daemon' && same(rows, a)))
+        for (const r of rows) if (r.ppid === d.pid && / app-server /.test(r.command)) add(actorOf(rows, r.pid, 'codex-app-server', `child of the arm's daemon ${d.pid}`));
+    // What runs below them now, a tool command's background job included, before its parent can exit.
+    extend(owners, rows);
+    for (const [k, a] of owners) if (mine.has(a.pid)) owners.delete(k);
+}
+
 export async function teardown(actors: Actor[], dir: string, shutdown: () => Promise<string[]>, deps: Deps = realDeps, bounds = { settleMs: 10_000, fallbackMs: 4_000 }): Promise<Cleanup> {
     const t0 = deps.now();
     const reasons: string[] = [];

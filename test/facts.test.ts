@@ -335,6 +335,24 @@ test("history beyond the cap is attribution unknown, and a file that falls out o
   expect(fresh.text).not.toMatch(/no longer tracked[^\n]*f\d+\.txt/);
 });
 
+// issue #112: an offer read back late spends only what it told; a file tracked again and dropped again is told anew.
+test("an offer read back after its file was touched again and dropped again does not spend the second notice", async () => {
+  const { root, facts, write, look } = rig({}, (f) => f === "f0.txt");
+  look("claude");
+  const read = (file: string, id: string) => {
+    write(file, "x\n");
+    facts.preTool("claude", id, "Read", { file_path: join(root, file) });
+    facts.postTool("claude", id, "Read", { file_path: join(root, file) });
+  };
+  for (let i = 0; i < 65; i++) read(`f${i}.txt`, `r${i}`);
+  const early = facts.due("claude")!;
+  expect(early.text).toContain("no longer tracked (more than 64 files touched): f0.txt");
+  read("f0.txt", "again"); // tracked again before that offer is read back,
+  for (let i = 0; i < 64; i++) read(`g${i}.txt`, `g${i}`); // and dropped again
+  facts.ack("claude", early.id);
+  expect(facts.due("claude")!.text).toContain("files touched): f0.txt");
+});
+
 test("a default Claude Read moves the view only when Read returns the whole file", async () => {
   const { root, facts, write, look } = rig();
   look("claude");
@@ -588,7 +606,9 @@ test("a rewrite with HEAD's bytes under a named directory is not named and keeps
   utimesSync(join(root, "src", "big.txt"), later, later);
   expect(git("diff-index", "--name-only", "HEAD").stdout.toString()).toContain("src/big.txt");
   expect(facts.due("claude")?.text ?? "").not.toContain("src/big.txt");
-  writeFileSync(join(root, "src", "big.txt"), big + "z\n");
+  expect(facts.due("claude")?.text ?? "").not.toContain("src/big.txt"); // hashed once per version, answered again
+  writeFileSync(join(root, "src", "big.txt"), "z".repeat(300 * 1024) + "\n"); // same size, same mtime: another version
+  utimesSync(join(root, "src", "big.txt"), later, later);
   expect(facts.due("claude")!.text).toContain("src/big.txt");
 });
 
