@@ -28,6 +28,8 @@ export interface ChatMessage {
   is_error?: boolean;
 }
 export interface ChatResult {
+  /** Internal routing telemetry id, never part of a provider payload. */
+  routeDecision?: string;
   message: ChatMessage;
   /** Usage counters returned by the provider, when valid. No missing counter is inferred as zero. */
   usage?: NormalizedUsage;
