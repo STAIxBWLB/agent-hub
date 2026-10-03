@@ -435,9 +435,9 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const captured = (role: Actor['role']) => { capture(); if (![...owners.values()].some(a => a.role === role)) throw new Error(`could not prove which ${role} process is this arm's`); };
     try {
         await lockSiblingArtifacts(dir, armModes);
-        hubMayRun = true;
         if (stopRequested)
             throw new Error('interrupted'); // before a hub is started for nothing
+        hubMayRun = true;
         await cmd(['bun', cliPath, '--project', dir, 'up'], dir);
         client = await wait(async () => { try {
             return await ControlClient.connect(state, { role: 'console' });
@@ -712,12 +712,17 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             if (sibling) { sibling.restored = !failed.length; if (sibling.restored) sibling.modes = {}; } // nothing left to restore: not rewritten with every later write
             if (failed.length) note('sibling artifact read locks could not be restored');
         }
-        let trustRestored = true;
+        let trustRestored = true, tempLeft = false;
         // A trust write that may not have landed leaves its temp file (a copy of the user's ~/.claude.json): never kept.
-        if (trustLease && trustLedger?.stage === 'pending') { try { rmSync(trustTemp(trustLease.file, process.pid), { force: true }); } catch (e) { note(`the trust write's temp file could not be removed: ${String(e).slice(0, 200)}`); } }
+        if (trustLease && trustLedger?.stage === 'pending') { try { rmSync(trustTemp(trustLease.file, process.pid), { force: true }); } catch (e) { tempLeft = true; note(`the trust write's temp file could not be removed: ${String(e).slice(0, 200)}`); } }
         if (trustLease && !contained) {
             // Claude may still run and rewrite its project entry: the recovery takes it back once nothing does.
             restoration.trust = 'kept: the cleanup is incomplete or unknown';
+            trustRestored = false;
+        }
+        else if (trustLease && tempLeft) {
+            // The copy is still there: the entry stays pending, and the recovery removes the copy and settles it.
+            restoration.trust = 'kept: the trust write\'s temp file could not be removed';
             trustRestored = false;
         }
         else if (trustLease) {

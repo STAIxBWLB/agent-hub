@@ -283,6 +283,7 @@ test("several run directories pool their repeats; a planned attempt without a re
     expect(locked.stderr).toContain("locked until");
     const unread = JSON.parse(readFileSync(join(a.root, "ledger.json"), "utf8"));
     expect(unread.unreadable).toEqual([{ case: 0, arm: "solo-codex", repeat: 2 }]); // b's solo-codex record is in runs/
+    expect(unread.summary["solo-codex"].unreadable).toEqual(["case 0 repeat 2"]);
     expect(unread.missing).not.toContainEqual({ case: 0, arm: "solo-codex", repeat: 2 });
     expect(unread.rows.filter((x: { withheld?: boolean }) => x.withheld)).toHaveLength(1);
   } finally {

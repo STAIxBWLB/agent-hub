@@ -659,7 +659,7 @@ export class Tasks {
       } catch { /* shadow only: never between the board write and the delivery */ }
     }
     // A claim is its own hand-over: the claimant took the task in the turn it is in, so it is taking it, not busy elsewhere.
-    if (opts.claim && a.owner === by && this.d.bus.stateOf(by) === "busy") this.sent.set(handOver(next, by), by);
+    if (opts.claim && a.owner === by && this.d.bus.peers.get(by)?.state === "busy") this.sent.set(handOver(next, by), by);
     const hits = this.overlapHits(next);
     this.formCohort(next, hits);
     if (hits.length) {

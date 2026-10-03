@@ -575,7 +575,7 @@ def ledger_of(run):
     return row
 
 
-def summarize(rows, missing=()):
+def summarize(rows, missing=(), unreadable=()):
     by = {}
     for r in rows: by.setdefault(r["arm"], []).append(r)
     ok = lambda r: r.get("completed") and (r.get("validity") or {}).get("valid") is True
@@ -610,6 +610,7 @@ def summarize(rows, missing=()):
             "not_completed": sorted(r["end_story"] for r in rs if not r.get("completed")),
             "excluded": sorted(str((r.get("validity") or {}).get("why")) for r in rs if r.get("completed") and not ok(r)),
             "missing": sorted(f"case {c} repeat {rep}" for c, a, rep in missing if a == arm),
+            "unreadable": sorted(f"case {c} repeat {rep}" for c, a, rep in unreadable if a == arm),
             "both_done_s_median": median([r["both_done_s"] for r in done]),
             "both_done_s_median_common": median([r["both_done_s"] for r in shared]),
             "settlement_s_median": median([r["settlement_s"] for r in done if r.get("settlement_s") is not None]),
@@ -686,9 +687,10 @@ def main():
         if key in seen: raise SystemExit(f"ledger: case {key[0]} {key[1]} repeat {key[2]} is in both {seen[key]} and {r['run']}")
         seen[key] = r["run"]
     missing = sorted(plan - set(seen) - unreadable, key=str)
+    hidden = sorted(unreadable - set(seen), key=str)
     out = {"units": UNITS, "rows": rows, "missing": [{"case": c, "arm": arm, "repeat": rep} for c, arm, rep in missing],
-           "unreadable": [{"case": c, "arm": arm, "repeat": rep} for c, arm, rep in sorted(unreadable - set(seen), key=str)], "locked": locked,
-           "summary": summarize(rows, missing)}
+           "unreadable": [{"case": c, "arm": arm, "repeat": rep} for c, arm, rep in hidden], "locked": locked,
+           "summary": summarize(rows, missing, hidden)}
     if locked: print(f"ledger: locked until scripts/benchmarks/restore.ts restores it (a cleanup is incomplete): {', '.join(locked)}", file=sys.stderr)
     (a.run[0] / "ledger.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if a.json: print(json.dumps(out, indent=2, sort_keys=True))
