@@ -1912,3 +1912,39 @@ test("the routing record counts the overlapped task's owner as available while i
   expect(routing).toBeDefined();
   expect(routing!.trace.join("\n")).not.toContain("not available");
 });
+
+// issue #115: busy is taking the task in question only once it was sent and nothing waits in the queue.
+test("a split prediction counts busy as taking a task only once it was sent and nothing waits in the queue", async () => {
+  class Taking extends BasePeer {
+    async deliver() { this.setState("busy"); }
+    async start() { this.setState("idle"); }
+    async stop() {}
+  }
+  const rig = async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agenthub-tasks-"));
+    const bus = new Bus({ batchMs: 0 });
+    for (const id of ["claude", "codex", "kimi"]) { const p = new Taking(id); bus.add(p); await p.start(); }
+    const recorded: { where: string; trace: string }[] = [];
+    const tasks = new Tasks({ board: new Board(join(dir, "hub.db")), bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: () => {}, tell: () => {}, turnFree: () => true,
+      splitProfile: (p) => `hub 0.12.6; ${p} 1.0.0; turn-free`, recordSplit: (_task, p, where) => recorded.push({ where, trace: p.trace.join("\n") }) });
+    const busy = async (peer: string) => { bus.publish(newEnvelope("claude", "a question first", { to: [peer] })); await Bun.sleep(20); };
+    const routingTrace = () => recorded.find((r) => r.where === "routing")?.trace ?? "";
+    return { bus, tasks, busy, routingTrace };
+  };
+  // The overlapped task's owner is busy with a question while that task waits in its queue: not taking it.
+  const queued = await rig();
+  await queued.busy("kimi");
+  await queued.tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/c.ts"] } });
+  expect(queued.bus.queued("kimi")).toBe(1);
+  const routed = await queued.tasks.propose(USER, { title: "routed part", class: "implement", refs: { paths: ["src/c.ts"] } });
+  expect(routed.owner).toBe("codex");
+  expect(queued.routingTrace()).toContain("kimi is not available");
+  // The routed peer is busy with a question when the record is taken (the task is sent after it): not available.
+  const candidate = await rig();
+  await candidate.busy("codex");
+  await candidate.tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/c.ts"] } });
+  expect(candidate.bus.queued("kimi")).toBe(0); // kimi is busy taking its part: that one is available
+  const other = await candidate.tasks.propose(USER, { title: "routed part", class: "implement", refs: { paths: ["src/c.ts"] } });
+  expect(other.owner).toBe("codex");
+  expect(candidate.routingTrace()).toContain("codex is not available");
+});

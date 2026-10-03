@@ -36,8 +36,13 @@ trap 'exit 143' TERM
 
 bun test &
 test_pid=$!
+# A run that hangs with its event loop blocked (no test timeout ends that) is sampled and stopped long before the CI
+# job limit; a normal run takes about two minutes (#115).
+scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-600}" &
+watch_pid=$!
 wait "$test_pid" || tests=$?
 test_pid=""
+wait "$watch_pid" 2>/dev/null || true
 
 # The Bun preload records each current-run Bun process's PID, start time, and process
 # group at startup. The final scan uses those identities to include children that outlive

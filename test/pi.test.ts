@@ -69,7 +69,9 @@ test("Pi watchdog remains offline and accepted failure is escalated without rede
     await fetch(`${url}/event`, { method: "POST", headers, body: JSON.stringify({ type: "agent_end", failed: true, error: "tool mutation uncertain" }) });
     await fetch(`${url}/event`, { method: "POST", headers, body: JSON.stringify({ type: "agent_settled" }) });
     expect(failures).toEqual(["tool mutation uncertain"]);
-    await peer.deliver([newEnvelope("user", "watchdog", { to: ["pi"] })]); await Bun.sleep(80); expect(peer.state).toBe("offline");
+    await peer.deliver([newEnvelope("user", "watchdog", { to: ["pi"] })]);
+    for (let i = 0; i < 100 && peer.state !== "offline"; i++) await Bun.sleep(20); // the stop reads the process table: not instant
+    expect(peer.state).toBe("offline");
   } finally { await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
 });
 

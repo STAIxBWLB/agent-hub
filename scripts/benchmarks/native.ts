@@ -1,4 +1,4 @@
-import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, chmodSync, statSync, lstatSync, readdirSync, readlinkSync, openSync, fstatSync, closeSync, constants as fsConstants } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, chmodSync, statSync, lstatSync, readdirSync, readlinkSync, openSync, fstatSync, closeSync, rmSync, constants as fsConstants } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
@@ -7,11 +7,15 @@ import { realPath } from '../../src/hub/project.ts';
 import { sessionSettings, statusLineSettings } from '../../src/cli/launch.ts';
 import { readEvents } from '../../src/hub/events.ts';
 import { processTable } from '../../src/hub/child-process.ts';
-import { awaitTurnEnd, captureActors, cwdOf, restoreModes, restoreTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
+import { awaitTurnEnd, captureActors, cwdOf, endReasonOf, restoreModes, writeAtomic, restoreTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
 process.umask(0o077);
 const argv = process.argv.slice(2), runArg = argv[argv.indexOf('--run') + 1], inputArg = argv[argv.indexOf('--private-inputs') + 1], upstreamArg = argv[argv.indexOf('--upstream-root') + 1], probeArg = argv[argv.indexOf('--probe-target') + 1];
 if (!runArg || !inputArg || !upstreamArg || !probeArg)
     throw new Error('usage: bun scripts/benchmarks/native.ts --run RUN_DIR --private-inputs PRIVATE_DIR --upstream-root COOPERBENCH_ROOT --probe-target HIDDEN_FILE');
+// macOS only (#115): the arms run in Orca terminals, and on Linux a clock step moves the start times the teardown proves
+// processes by, so an owned survivor could read as gone.
+if (process.platform !== 'darwin')
+    throw new Error(`the native benchmark runner runs on macOS only, not ${process.platform}`);
 const repo = resolve(import.meta.dir, '../..');
 const out = realPath(runArg), privateInputs = realPath(inputArg), upstreamRoot = realPath(upstreamArg), runs = out;
 if (out === repo || out.startsWith(repo + '/') || repo.startsWith(out + '/'))
@@ -280,7 +284,6 @@ function fixtureMetadataHash(root: string) { const names = ['AGENTS.md', '.gitig
     values[name] = bytes === 'missing' ? null : typeof bytes === 'string' ? bytes : hash(bytes);
 } return hash(JSON.stringify(values)); }
 /** Written whole or not at all: a recovery reads it after a runner that may have died mid-write. */
-function writeAtomic(file: string, text: string) { writeFileSync(`${file}.tmp`, text, { mode: 0o600 }); renameSync(`${file}.tmp`, file); }
 function claudeEvidence(transcriptPath: string | undefined) { if (!transcriptPath || !existsSync(transcriptPath))
     return { models: [], usage: undefined }; const latest = new Map<string, any>(), models = new Set<string>(); for (const line of readFileSync(transcriptPath, 'utf8').split('\n')) {
     if (!line)
@@ -396,6 +399,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const settings = { permissions, ...(turnFree ? { disableAllHooks: false, hooks: session.hooks } : { disableAllHooks: true }), sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: denied } } };
     writeFileSync(join(dir, '.claude/settings.json'), JSON.stringify(settings));
     // The conditions each attempt ran with (issue #110): bound to its record, next to the capability readbacks in its events.
+    // codex.skills is a placeholder string until skillsCondition() replaces it with its object once Codex is up (`as any`).
     const conditions = { claude: { settingSources: 'project', strictMcpConfig: true, disableAllHooks: !turnFree, statusLine: false, hookEvents: turnFree ? Object.keys(session.hooks ?? {}).sort() : [], settingsSha256: hash(JSON.stringify(settings)), skills: 'off: the Skill tool is denied', instructions: 'fixture AGENTS.md via --append-system-prompt-file' }, codex: { hooksFeature: false, memories: false, externalAgentMemoryImport: false, plugins: false, apps: false, multiAgent: false, notify: false, disabledMcpServers: codexUserServers, skills: (kind === 'solo-claude' ? 'not applicable: no Codex in this arm' : 'not checked: setup did not reach Codex') as any, instructions: 'fixture AGENTS.md as project doc; the user\'s global AGENTS.md too' }, coordination: turnFree ? 'turn-free' : kind.startsWith('hub-') ? 'advisory' : 'solo', ...(staleOff ? { experiments: { stale_notices: 'deliver' } } : {}) };
     const candidateMcp = join(dir, '.claude/candidate-mcp.json');
     writeFileSync(candidateMcp, JSON.stringify({ mcpServers: { 'agent-hub': { command: 'bun', args: [join(repo, 'plugins/agent-hub/server.js')], env: { AGENTHUB_STATE_DIR: state, AGENTHUB_PROJECT_DIR: dir, AGENTHUB_PEER_ID: 'claude' } } } }), { mode: 0o600 });
@@ -711,8 +715,11 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             trustRestored = false;
         }
         else if (trustLease) {
-            restoration.trust = restoreTrust(trustLease, dir);
-            trustRestored = restoration.trust === 'restored';
+            // A write that never landed leaves nothing to take back, and maybe its temp file to remove.
+            const pending = trustLedger.stage === 'pending';
+            if (pending) rmSync(`${trustLease.file}.ahub-benchmark-${process.pid}`, { force: true });
+            restoration.trust = restoreTrust(trustLease, dir, pending);
+            trustRestored = restoration.trust === 'restored' || restoration.trust === 'not_written';
             trustLedger.restored = trustRestored;
             trustLedger.stage = restoration.trust;
             if (!trustRestored) note(restoration.trust === 'changed_concurrently' ? 'Claude trust entry changed concurrently; preserved current state' : 'Claude trust restore failed');
@@ -726,7 +733,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         writeFileSync(patchFile, patch, { mode: 0o600 });
         let events: any[] = [];
         try { events = readEvents(join(state, 'events.jsonl')); } catch { note('hub events could not be read'); }
-        const result = { protocol: 'native-cc-v1', index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: sealedBase.trim(), models: manifest.models, requestedModels: actors.reduce((o: any, a: string) => (o[a] = manifest.models[a], o), {}), readiness, patchFile, model: actors.length === 1 ? manifest.models[actors[0]!] : undefined, setupMs: (started || activeEnd) - setup, elapsedMs, stoppedMs: stoppedAt ? stoppedAt - activeEnd : undefined, teardownMs: Date.now() - activeEnd, stages: { completionMs: completion.ms, shutdownMs: cleanup.normal.ms, settleMs: cleanup.ms.settle, fallbackMs: cleanup.ms.fallback, captureMs, restorationMs }, end_reason: endReason === 'infrastructure-error' ? 'infrastructure-error' : endReason === 'provider-quota' ? 'provider-quota' : endReason === 'budget-paused' ? 'budget-paused' : endFlags.length && endReason !== 'interrupted' ? 'infrastructure-error' : endReason === 'completed' ? 'completed' : endReason === 'delivery-unsettled' ? 'delivery-unsettled' : endReason === 'wall-timeout' ? 'timeout' : 'interrupted', end_reason_detail: endReason, end_flags: endFlags.length ? endFlags : undefined, error: error ? String(error).replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 300) : undefined, taskStates, effort: manifest.effort, events, codexMessages, codexTaskStart, startedAt: started || undefined, repeat, conditions, codexUsage: codexUsage(codexMessages, thread?.thread?.id), nativeVersions: { codex: codexVersion, claude: claudeVersion }, codexBinarySha256: sourceHash(codexBin), claudeSessionId: actors.includes('claude') ? claudeId : undefined, codexThreadId: thread?.thread?.id, completion, tree_changed_after_active_time: treeAfterActive, cleanup, restoration, trust_restored: trustRestored, cleanup_complete: contained, teardown_errors: teardownErrors.length ? teardownErrors : undefined, metadata_clean: metadataClean, metadata_sha256: metadataBaseline, delivery_status: finalStatus?.peers };
+        const result = { protocol: 'native-cc-v1', platform: process.platform, index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: sealedBase.trim(), models: manifest.models, requestedModels: actors.reduce((o: any, a: string) => (o[a] = manifest.models[a], o), {}), readiness, patchFile, model: actors.length === 1 ? manifest.models[actors[0]!] : undefined, setupMs: (started || activeEnd) - setup, elapsedMs, stoppedMs: stoppedAt ? stoppedAt - activeEnd : undefined, teardownMs: Date.now() - activeEnd, stages: { completionMs: completion.ms, shutdownMs: cleanup.normal.ms, settleMs: cleanup.ms.settle, fallbackMs: cleanup.ms.fallback, captureMs, restorationMs }, end_reason: endReasonOf(endReason, endFlags), end_reason_detail: endReason, end_flags: endFlags.length ? endFlags : undefined, error: error ? String(error).replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 300) : undefined, taskStates, effort: manifest.effort, events, codexMessages, codexTaskStart, startedAt: started || undefined, repeat, conditions, codexUsage: codexUsage(codexMessages, thread?.thread?.id), nativeVersions: { codex: codexVersion, claude: claudeVersion }, codexBinarySha256: sourceHash(codexBin), claudeSessionId: actors.includes('claude') ? claudeId : undefined, codexThreadId: thread?.thread?.id, completion, tree_changed_after_active_time: treeAfterActive, cleanup, restoration, trust_restored: trustRestored, cleanup_complete: contained, teardown_errors: teardownErrors.length ? teardownErrors : undefined, metadata_clean: metadataClean, metadata_sha256: metadataBaseline, delivery_status: finalStatus?.peers };
         writeFileSync(join(recordRoot, 'runs', name + '.json'), JSON.stringify(result, null, 2), { mode: 0o600 });
         log('arm-end', { index, kind, elapsedMs, endReason, cleanup: cleanup.outcome, completion: completion.outcome, patchLines: patch.split('\n').length });
         if (!contained)

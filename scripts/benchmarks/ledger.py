@@ -95,7 +95,11 @@ UNITS = {
                 "also stand in end_story), cleanup (clean, clean_with_fallback or incomplete_or_unknown, with fallback signals, "
                 "processes still running and unresolved ones), restoration, and late_append_bytes: transcript bytes "
                 "written after the attempt's prefix was taken, never read (null when no prefix was recorded); completion "
-                "outcomes include unreadable (the transcript could not be read) and carry the bound used",
+                "outcomes include unreadable (the transcript could not be read) and carry the bound used; normal_errors "
+                "are the normal shutdown's errors (a registration left behind, a terminal not closed), which the process "
+                "readback, not they, decides on; verified is false for a record from before 0.12.5. A row with "
+                "withheld true is a record kept in recovery/ because its cleanup was incomplete: an attempt, unavailable, "
+                "until scripts/benchmarks/restore.ts moves it into runs/",
     "split_predictions": "the hub's shadow split predictions (#109) with their traces; they never changed an assignment",
     "hooks": "hooks each agent ran as its own records show: Claude transcript hook rows by hook and command label (the "
              "hub's facts hook, or other: the program's name; never paths or arguments), with the durationMs they "
@@ -345,6 +349,7 @@ def teardown_of(run):
     cleanup = run.get("cleanup") or {}
     return {"completion": run.get("completion"), "cleanup": cleanup.get("outcome"), "cleanup_reasons": cleanup.get("reasons"),
             "fallback_signals": len(cleanup.get("fallback") or []), "restoration": run.get("restoration"), "late_append_bytes": late,
+            "normal_errors": (cleanup.get("normal") or {}).get("errors"),  # e.g. a registration `projects remove` left behind
             "tree_changed_after_active_time": run.get("tree_changed_after_active_time"),
             "verified": isinstance(cleanup.get("outcome"), str)}  # false before 0.12.5: no process readback was recorded
 
@@ -658,6 +663,8 @@ def main():
     rows, plan = [], set()
     for run_dir in a.run:
         for f in sorted((run_dir / "runs").glob("*.json")): rows.append({**ledger_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name})
+        # Kept back while a cleanup was incomplete (#113): attempts, unavailable, not missing, until restore.ts moves them.
+        for f in sorted((run_dir / "recovery" / "runs").glob("*.json")): rows.append({**ledger_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name, "withheld": True})
         plan |= expected(run_dir)
     if a.plan: plan |= planned(a.run[0], a.plan)
     seen = {}

@@ -94,6 +94,34 @@ export function extend(owned: Map<string, Actor>, rows: ProcRow[]): void {
     }
 }
 
+/** Written whole or not at all: a recovery reads it after a runner that may have died mid-write. */
+export function writeAtomic(file: string, text: string): void { writeFileSync(`${file}.tmp`, text, { mode: 0o600 }); renameSync(`${file}.tmp`, file); }
+
+/**
+ * How a record states an attempt's end. A quota error or a budget pause is the provider's or the hub's doing and stays
+ * itself; a flag beside any other end but an interruption (an unverified model, modified metadata, a tree changed after
+ * the active time) makes it an infrastructure error, the original kept as end_reason_detail.
+ */
+export function endReasonOf(detail: string, flags: string[]): string {
+    if (['infrastructure-error', 'provider-quota', 'budget-paused'].includes(detail)) return detail;
+    if (flags.length && detail !== 'interrupted') return 'infrastructure-error';
+    if (detail === 'completed' || detail === 'delivery-unsettled') return detail;
+    return detail === 'wall-timeout' ? 'timeout' : 'interrupted';
+}
+
+/**
+ * The program an argv runs, by name only: the basename of the longest leading part of it that names an existing file (a
+ * path with spaces is one part, never a fragment of a folder name), else of its first word (issue #115).
+ */
+export function programOf(command: string, isFile = (path: string) => { try { return statSync(path).isFile(); } catch { return false; } }): string {
+    const words = command.split(' ');
+    for (let n = words.length; n > 1; n--) {
+        const path = words.slice(0, n).join(' ');
+        if (path.startsWith('/') && isFile(path)) return path.split('/').pop()!;
+    }
+    return words[0]!.split('/').pop()!;
+}
+
 /** The live process `pid` as an actor of `role`, with how it was found. */
 export function actorOf(rows: ProcRow[], pid: number, role: Role, via: string): Actor | undefined {
     const row = rows.find((r) => r.pid === pid);
@@ -234,7 +262,7 @@ export async function teardown(actors: Actor[], dir: string, shutdown: () => Pro
     const named = new Set(last ? namingFixture(last, dir).map((r) => r.pid) : []);
     const unresolved = (last ?? []).filter((r) => (named.has(r.pid) || inside(cwds?.get(r.pid), dir)) && !owned.has(key(r)) && !mine.has(r.pid))
         // Not the arm's: its arguments are someone else's, so only the program is kept.
-        .map((r) => ({ pid: r.pid, started: r.started, program: r.command.split(/\s+/)[0]!.split('/').pop()!, ...(inside(cwds?.get(r.pid), dir) ? { cwd: cwds!.get(r.pid)! } : {}) }));
+        .map((r) => ({ pid: r.pid, started: r.started, program: programOf(r.command), ...(inside(cwds?.get(r.pid), dir) ? { cwd: cwds!.get(r.pid)! } : {}) }));
     if (unresolved.length) reasons.push(`running with the fixture in its argv or as its working directory, not proved to be this arm's (left alone): ${unresolved.map((u) => u.pid).join(', ')}`);
     return {
         outcome: reasons.length ? 'incomplete_or_unknown' : fallback.length ? 'clean_with_fallback' : 'clean',
@@ -244,6 +272,7 @@ export async function teardown(actors: Actor[], dir: string, shutdown: () => Pro
 }
 
 /** The transcript's whole rows, or undefined when it cannot be read. */
+/** Rows are Claude Code's own JSON, read only for the fields used here: typed `any` on purpose. */
 export function transcriptRows(path: string): any[] | undefined {
     let text: string;
     try { text = readFileSync(path, 'utf8'); } catch { return undefined; }
@@ -295,16 +324,21 @@ export function restoreModes(modes: Iterable<[string, number]>): string[] {
     return failed;
 }
 
+/** `previous` is the user's own project entry in `~/.claude.json`, kept as it was: its shape is Claude Code's. */
 export interface TrustLease { file: string; previous: any; hadProjects: boolean; mode: number }
 
 /**
  * Takes back the trust flag the benchmark set for `dir` in Claude's user state, unless someone changed it meanwhile:
  * then the current state is kept and that is reported.
  */
-export function restoreTrust(lease: TrustLease, dir: string): 'restored' | 'changed_concurrently' | 'failed' {
+/**
+ * Takes back the trust entry the runner set. `pending`: the runner's own write may not have landed (it stopped between
+ * recording the lease and the rename), so an entry that is not set means it was never written, not that someone changed it.
+ */
+export function restoreTrust(lease: TrustLease, dir: string, pending = false): 'restored' | 'changed_concurrently' | 'not_written' | 'failed' {
     try {
         const fresh = JSON.parse(readFileSync(lease.file, 'utf8'));
-        if (fresh.projects?.[dir]?.hasTrustDialogAccepted !== true) return 'changed_concurrently';
+        if (fresh.projects?.[dir]?.hasTrustDialogAccepted !== true) return pending ? 'not_written' : 'changed_concurrently';
         if (lease.previous === undefined) delete fresh.projects[dir];
         else {
             const current = { ...fresh.projects[dir] };

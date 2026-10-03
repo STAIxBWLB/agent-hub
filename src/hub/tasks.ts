@@ -314,9 +314,11 @@ export class Tasks {
       units: [unit, unit],
       profiles: Object.fromEntries(peers.map((p) => [p, this.d.splitProfile?.(p)])),
       backlog: Object.fromEntries(peers.map((p) => [p, open.filter((t) => t.owner === p).length])),
-      // The routed peer may be busy taking this very task, and the other owner taking the overlapped task while it is not
-      // started yet (an owner goes busy as its task is delivered); busy otherwise, it is at work on something already.
-      available: Object.fromEntries(peers.map((p) => [p, !failing[p] && (states[p] === "idle" || (states[p] === "busy" && (p === candidate || other.state === "proposed")))])),
+      // Busy is taking the task in question only once that task was sent to it and nothing waits in its queue (an owner
+      // goes busy as its task is delivered): the routed peer this very task, the other owner the overlapped one while it
+      // is not started. Busy otherwise, it is at work on something else (#109; a routing or cohort record is taken before
+      // the task is sent, so a busy candidate is not available then).
+      available: Object.fromEntries(peers.map((p) => [p, !failing[p] && (states[p] === "idle" || (states[p] === "busy" && this.d.bus.queued(p) === 0 && (p === candidate ? this.sent.has(`${task.id}@${p}`) : other.state === "proposed" && this.sent.has(`${other.id}@${p}`))))])),
     });
   }
 
@@ -685,6 +687,7 @@ export class Tasks {
       `Take it with hub_task_accept {id: ${task.id}, plan: {paths, symbols, signatures, insertion_points}} (what you will change, before you start${pii ? "" : "; owners of overlapping tasks see it"}) or pass with hub_task_decline. When finished: hub_task_done {id: ${task.id}, summary: what changed, why, and the check you ran with its result, refs}.`,
     ].filter(Boolean).join("\n\n");
     this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner!], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id) }, ...(pii ? { private: true } : {}) }));
+    this.sent.add(`${task.id}@${task.owner}`);
   }
 
   /** Nobody, the console user included, works on a task before what it waits for is approved. */
@@ -702,6 +705,7 @@ export class Tasks {
   }
 
   private readonly offered = new Set<number>(); // ready tasks offered in this hub run
+  private readonly sent = new Set<string>(); // `<task>@<owner>`: a task's envelope went to that owner in this hub run
 
   /**
    * A stop between an approval and the assignment of its dependents (both are saved on their own) leaves them ownerless

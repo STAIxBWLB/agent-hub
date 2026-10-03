@@ -206,7 +206,11 @@ test("a leader that exited before the stop leaves its group unsignalled, and mem
   const reused = () => [me, { pid: proc.pid!, ppid: 1, pgid: proc.pid!, started: me.started, command: "someone's shell" }, { pid: 99_999_999, ppid: proc.pid!, pgid: proc.pid!, started: me.started, command: "its job" }];
   await stopOwnedProcess(proc, { group: true, table: reused });
   const orphans = () => [me, { pid: 99_999_999, ppid: 1, pgid: proc.pid!, started: me.started, command: "left by the leader" }];
-  await expect(stopOwnedProcess(proc, { group: true, table: orphans })).rejects.toThrow("its process group still has members");
+  await expect(stopOwnedProcess(proc, { group: true, killMs: 300, table: orphans })).rejects.toThrow("its process group still has members");
+  // A member finishing its own exit within the bound is waited for (#115): the stop is done once it is gone.
+  let reads = 0;
+  await stopOwnedProcess(proc, { group: true, killMs: 2_000, table: () => (reads++ < 3 ? orphans() : [me]) });
+  expect(reads).toBe(4);
   // Followed after its exit: once its group was seen gone, a later group with that id (leader gone too) is not its.
   const tracked = spawn("sh", ["-c", "exit 0"], { detached: true, stdio: "ignore" });
   trackGroup(tracked);
@@ -214,6 +218,14 @@ test("a leader that exited before the stop leaves its group unsignalled, and mem
   await Bun.sleep(50);
   const later = () => [me, { pid: 99_999_999, ppid: 1, pgid: tracked.pid!, started: me.started, command: "someone's job" }];
   await stopOwnedProcess(tracked, { group: true, table: later });
+});
+
+test("a stop without a group drops the child's pipes: a process it left holding them cannot keep the hub alive", async () => {
+  // The child leaves a sleep that inherits its stdout and stderr, then is stopped alone.
+  const { proc, child } = await launch('sleep 30 & echo $!; wait', false);
+  await stopOwnedProcess(proc, { termMs: 200 });
+  expect(alive(child)).toBe(true); // a stop without a group does not reach it
+  expect(proc.stdout?.destroyed).toBe(true); // (launch ignores stderr)
 });
 
 test("what the leader started gets the grace period to shut down after the leader is gone", async () => {

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProcRow } from "../../src/hub/child-process.ts";
 import { processTable } from "../../src/hub/child-process.ts";
-import { actorOf, awaitTurnEnd, captureActors, daemonRoot, extend, restoreModes, same, restoreTrust, teardown, turnEnded, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
+import { actorOf, awaitTurnEnd, captureActors, daemonRoot, endReasonOf, extend, programOf, restoreModes, same, restoreTrust, teardown, turnEnded, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
 
 // issue #113: an arm's teardown proves what it stops by identity (pid and start time), never by a name in argv.
 const dirs: string[] = [];
@@ -205,6 +205,9 @@ test("restoration: modes come back parents first and failures are named; a trust
   expect(restoreTrust({ file, previous: undefined, hadProjects: false, mode: 0o600 }, fixture)).toBe("changed_concurrently");
   expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ projects: { [fixture]: { hasTrustDialogAccepted: false } } });
   expect(restoreTrust({ file: join(dir, "missing.json"), previous: undefined, hadProjects: false, mode: 0o600 }, fixture)).toBe("failed");
+  // The runner's own write never landed (it stopped between the lease and the rename): nothing to take back (#115).
+  writeFileSync(file, JSON.stringify({ projects: {} }));
+  expect(restoreTrust({ file, previous: undefined, hadProjects: true, mode: 0o600 }, fixture, true)).toBe("not_written");
 });
 
 test("recovery puts the withheld read modes back only when the runner, every recorded process and anything in the fixture are gone", async () => {
@@ -352,4 +355,20 @@ test("a process that leads a group of its own after it was recorded has that gro
   const owned = new Map<string, Actor>([["107@" + T, { role: "below", pid: 107, started: T, pgid: 105, via: "below codex-app-server 105" }]]);
   extend(owned, [runner, row(107, 105, 107, "node tool.js"), row(108, 1, 107, "sleep 600")]);
   expect([...owned.values()].map((a) => [a.pid, a.pgid])).toEqual([[107, 107], [108, 107]]);
+});
+
+test("an unresolved process is recorded by its program's name: a path with spaces is one name, never a folder's fragment", () => {
+  const files = new Set(["/Users/Jane Doe/bin/agent", "/usr/bin/python3"]);
+  const isFile = (p: string) => files.has(p);
+  expect(programOf("/Users/Jane Doe/bin/agent --serve /tmp/x", isFile)).toBe("agent");
+  expect(programOf("/usr/bin/python3 /Users/Jane Doe/script.py", isFile)).toBe("python3");
+  expect(programOf("sleep 600", isFile)).toBe("sleep");
+  expect(programOf("-zsh", isFile)).toBe("-zsh");
+});
+
+test("a record's end reason: quota and budget ends stay themselves; a flag makes any other end but an interruption an infrastructure error", () => {
+  expect(["completed", "delivery-unsettled", "wall-timeout", "interrupted", "needs-review", "provider-quota", "budget-paused", "infrastructure-error"].map((d) => endReasonOf(d, [])))
+    .toEqual(["completed", "delivery-unsettled", "timeout", "interrupted", "interrupted", "provider-quota", "budget-paused", "infrastructure-error"]);
+  expect(["completed", "wall-timeout", "needs-review", "interrupted", "provider-quota"].map((d) => endReasonOf(d, ["tree-changed-after-active-time"])))
+    .toEqual(["infrastructure-error", "infrastructure-error", "infrastructure-error", "interrupted", "provider-quota"]);
 });

@@ -1023,6 +1023,7 @@ export async function startDaemon(opts: DaemonOptions) {
    * opened without blocking and only as a regular file, and the last version found is kept for a tail of big rows.
    */
   const claudeVersions = new Map<string, string>();
+  const claudeStamps = new Map<string, string>(); // the transcript's size and mtime when its version was read (#115)
   const claudeVersion = (): string | undefined => {
     const path = claudeSession().transcriptPath;
     if (!path) return undefined;
@@ -1031,6 +1032,10 @@ export async function startDaemon(opts: DaemonOptions) {
       fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
       const st = fstatSync(fd);
       if (!st.isFile()) return claudeVersions.get(path);
+      // Asked several times per assignment: the last MiB is read again only once the transcript changed.
+      const stamp = `${st.size}:${st.mtimeMs}`;
+      if (claudeStamps.get(path) === stamp && claudeVersions.has(path)) return claudeVersions.get(path);
+      claudeStamps.set(path, stamp);
       const buf = Buffer.alloc(Math.min(st.size, 1024 * 1024));
       readSync(fd, buf, 0, buf.length, st.size - buf.length);
       for (const line of buf.toString("utf8").split("\n").reverse()) {

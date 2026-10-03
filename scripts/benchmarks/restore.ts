@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { descendantsOf, processTable, type ProcRow } from '../../src/hub/child-process.ts';
-import { namingFixture, processCwds, restoreModes, restoreTrust, same } from './teardown.ts';
+import { inside, namingFixture, processCwds, restoreModes, restoreTrust, same, writeAtomic } from './teardown.ts';
 
 /**
  * Recovery after a run that left inputs unreadable (issue #113): an arm's cleanup was incomplete or unknown, or the
@@ -36,7 +36,7 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
         for (const r of namingFixture(table, dir)) if (!mine.has(r.pid)) blockers.push(`${r.pid} names ${dir}`);
         for (const r of table) {
             const cwd = cwds.get(r.pid);
-            if (!mine.has(r.pid) && cwd !== undefined && (cwd === dir || cwd.startsWith(`${dir}/`))) blockers.push(`${r.pid} works in ${dir}`);
+            if (!mine.has(r.pid) && inside(cwd, dir)) blockers.push(`${r.pid} works in ${dir}`);
         }
     }
     if (blockers.length) return { restored: false, blockers: [...new Set(blockers)], failed: [] };
@@ -54,7 +54,7 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
     }
     const trust = ledger.trust;
     if (trust && !trust.restored) {
-        const outcome = restoreTrust({ file: trust.file, previous: trust.previous, hadProjects: trust.hadProjects, mode: trust.mode }, trust.project);
+        const outcome = restoreTrust({ file: trust.file, previous: trust.previous, hadProjects: trust.hadProjects, mode: trust.mode }, trust.project, trust.stage === 'pending');
         if (outcome === 'failed') failed.push(trust.file);
         else Object.assign(trust, { restored: true, stage: outcome });
     }
@@ -72,8 +72,6 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
     writeAtomic(join(run, 'restoration.json'), JSON.stringify({ restored: true, recovered: true, at: new Date().toISOString() }));
     return { restored: true, blockers: [], failed: [] };
 }
-
-function writeAtomic(file: string, text: string) { writeFileSync(`${file}.tmp`, text, { mode: 0o600 }); renameSync(`${file}.tmp`, file); }
 
 if (import.meta.main) {
     const argv = process.argv.slice(2), at = argv.indexOf('--run'), run = at >= 0 ? argv[at + 1] : undefined;

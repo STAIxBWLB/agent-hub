@@ -259,6 +259,14 @@ test("several run directories pool their repeats; a planned attempt without a re
     expect(out.summary["hub-turnfree-codex-claude"]).toMatchObject({
       attempts: 1, completed: 1, valid_completed: 0, excluded: ["turn-free context path not verified before the tasks: claude, codex"], missing: ["case 0 repeat 0", "case 0 repeat 2"], both_done_s_median: null,
     });
+    // #115: a record kept in recovery/ (its cleanup incomplete) is a withheld attempt, unavailable, never missing.
+    mkdirSync(join(b.root, "recovery", "runs"), { recursive: true });
+    writeFileSync(join(b.root, "recovery", "runs", "00-hub-turnfree-codex-claude.json"), JSON.stringify({ ...record(b, "hub-turnfree-codex-claude", 2), cleanup_complete: false, cleanup: { outcome: "incomplete_or_unknown", reasons: ["still running: below 107"] } }));
+    expect(spawnSync("python3", [script, "--run", a.root, "--run", b.root, "--plan", "pilot"], { encoding: "utf8" }).status).toBe(0);
+    const held = JSON.parse(readFileSync(join(a.root, "ledger.json"), "utf8"));
+    expect(held.missing).not.toContainEqual({ case: 0, arm: "hub-turnfree-codex-claude", repeat: 2 });
+    const withheld = held.rows.find((x: { withheld?: boolean }) => x.withheld);
+    expect([withheld.repeat, withheld.validity]).toEqual([2, { valid: false, why: "cleanup incomplete or unknown: still running: below 107" }]);
   } finally {
     for (const f of [a, b]) rmSync(f.root, { recursive: true, force: true });
   }
@@ -316,12 +324,12 @@ test("a late transcript append keeps the frozen prefix, is reported, and leaves 
       readiness: { claude: { transcriptPath: transcript, transcriptBytes: Buffer.byteLength(rows), transcriptSha256: createHash("sha256").update(rows).digest("hex") } },
       taskStates: [{ id: 1, owner: "claude", state: "approved", history: [{ event: "proposed", at: ms(0) }, { event: "done", at: ms(9) }] }],
       completion: { outcome: "timeout", ms: 30_000, boundMs: 30_000 }, tree_changed_after_active_time: false,
-      cleanup: { outcome: "clean", reasons: [], fallback: [] }, restoration: { siblings: "restored", trust: "restored" },
+      cleanup: { outcome: "clean", reasons: [], fallback: [], normal: { errors: ["registration not removed: test"], ms: 10 } }, restoration: { siblings: "restored", trust: "restored" },
     });
     writeFileSync(transcript, rows + late); // Claude Code wrote its answer after the prefix was taken
     const row = ledger().rows[0];
     expect(row.settlement.claude).toBeNull(); // the turn is open in the prefix: unknown, not counted from the late rows
-    expect(row.teardown).toEqual({ completion: { outcome: "timeout", ms: 30_000, boundMs: 30_000 }, cleanup: "clean", cleanup_reasons: [], fallback_signals: 0, restoration: { siblings: "restored", trust: "restored" }, late_append_bytes: Buffer.byteLength(late), tree_changed_after_active_time: false, verified: true });
+    expect(row.teardown).toEqual({ completion: { outcome: "timeout", ms: 30_000, boundMs: 30_000 }, cleanup: "clean", cleanup_reasons: [], fallback_signals: 0, restoration: { siblings: "restored", trust: "restored" }, late_append_bytes: Buffer.byteLength(late), normal_errors: ["registration not removed: test"], tree_changed_after_active_time: false, verified: true });
     expect(row.validity.valid).not.toBe(false); // the prefix still matches its hash: readable
     // An attempt whose cleanup was not complete is unavailable to the ledger as to grading, whatever its end reason.
     run("00-solo-claude", { ...JSON.parse(readFileSync(join(root, "runs", "00-solo-claude.json"), "utf8")), cleanup_complete: false, cleanup: { outcome: "incomplete_or_unknown", reasons: ["still running: below 107"] } });

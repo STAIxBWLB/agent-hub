@@ -139,12 +139,15 @@ export class CodexPeer extends BasePeer {
       });
     } catch (error) {
       const proc = this.proc;
-      if (proc) {
-        await stopOwnedProcess(proc, { group: true });
-        if (this.proc === proc) this.proc = undefined;
-      }
+      // The start's own error is the one reported: a stop that fails too is logged beside it.
+      if (proc && (await this.stopQuietly(proc)) && this.proc === proc) this.proc = undefined;
       throw error;
     }
+  }
+
+  /** Stops `proc` as a group; a failure is logged and reported as false, for paths that throw an error of their own. */
+  private stopQuietly(proc: ChildProcess): Promise<boolean> {
+    return stopOwnedProcess(proc, { group: true }).then(() => true, (error: Error) => { this.opts.log?.(`[${this.id}] ${error.message}`); return false; });
   }
 
   async stop(): Promise<void> {
@@ -318,8 +321,7 @@ export class CodexPeer extends BasePeer {
     }
     if (gone) throw new Error(gone);
     const proc = this.proc;
-    await stopOwnedProcess(proc, { group: true });
-    if (this.proc === proc) this.proc = undefined;
+    if (proc && (await this.stopQuietly(proc)) && this.proc === proc) this.proc = undefined;
     throw new Error("codex app-server did not become healthy within 10 s");
   }
 
