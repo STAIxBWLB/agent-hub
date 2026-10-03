@@ -26,8 +26,12 @@ const m = JSON.parse(readFileSync(join(out, 'manifest.json'), 'utf8')), prepared
 if ((statSync(out).mode & 0o777) !== 0o700)
     throw new Error('run directory must have mode 0700');
 const sourceHash = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
+const orcaWorkspaceSourceSha256 = '8be5d4e55e0a3990d19ec92cda2e2f0e5d78e3a05d93b3f39caae63e18debb31'; // pinned by native_runner_sha256 in prepared.json
+if (sourceHash(join(import.meta.dir, 'orca-workspace.ts')) !== orcaWorkspaceSourceSha256)
+    throw new Error('Orca workspace lookup helper changed after benchmark preparation');
 if (prepared.runner_sha256 !== sourceHash(join(import.meta.dir, 'runner.py')) || prepared.native_runner_sha256 !== sourceHash(join(import.meta.dir, 'native.ts')) || prepared.teardown_sha256 !== sourceHash(join(import.meta.dir, 'teardown.ts')) || prepared.process_table_sha256 !== sourceHash(join(import.meta.dir, '../../src/hub/child-process.ts')) || prepared.evaluator_sha256 !== sourceHash(join(import.meta.dir, 'evaluate.py')) || resolve(prepared.upstream_root ?? '') !== upstreamRoot)
     throw new Error('benchmark runner changed after preparation');
+const { lookupOrcaWorktree, preflightOrcaWorktrees } = await import('./orca-workspace.ts');
 class NativeCommandError extends Error { constructor(message: string, readonly code?: string) { super(message); } }
 const log = (event: string, data: any = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), event, ...data }));
 let stopRequested = false;
@@ -58,11 +62,7 @@ function screenText(value: any): string {
 }
 
 function shellQuote(s: string) { return `'${s.replaceAll("'", "'\\''")}'`; }
-// Lookup only (#117): the runner never adds a fixture to Orca. A fixture the operator has not registered explicitly stops
-// the arm before any agent starts.
-async function ensureOrcaWorktree(dir: string) { const listing = await orca(['repo', 'list']); const record = findRecord(listing, (x: any) => typeof x.path === 'string' && resolve(x.path) === resolve(dir) && typeof x.id === 'string'); if (!record)
-    throw new Error(`fixture ${dir} is not registered in Orca: register it explicitly before the run; the runner never adds one`); const repoId = record.repoId ?? record.id; const worktrees = await orca(['worktree', 'list', '--repo', `id:${repoId}`]); const wt = findRecord(worktrees, (x: any) => typeof x.path === 'string' && resolve(x.path) === resolve(dir) && typeof x.id === 'string'); if (!wt)
-    throw new Error('Orca has no worktree at the exact fixture path'); return { repoId, worktreeId: wt.id }; }
+async function ensureOrcaWorktree(dir: string) { return lookupOrcaWorktree(dir, orca); }
 async function createOrcaTerminal(worktreeId: string, title: string, command: string) { const before = await orca(['terminal', 'list', '--worktree', `id:${worktreeId}`]); const prior = new Set<any[]>(); const collect = (v: any) => { if (v && typeof v === 'object') {
     if (typeof v.handle === 'string' && v.worktreeId === worktreeId)
         prior.add([v.handle]);
@@ -343,14 +343,17 @@ async function sendTerminalText(handle: string, text: string) { const receipt = 
     throw new Error('Orca rejected native sandbox probe input'); }
 async function arm(cas: any, index: number, kind: string, manifest: any) {
     const name = `${index.toString().padStart(2, '0')}-${kind}`, dir = join(runs, 'fixtures', name);
+    const expectedOrca = orcaPreflight.get(resolve(dir));
+    if (!expectedOrca)
+        throw new Error('fixture was not included in the Orca registration preflight: ' + dir);
+    const orcaProject = await ensureOrcaWorktree(dir);
+    if (orcaProject.repoId !== expectedOrca.repoId || orcaProject.worktreeId !== expectedOrca.worktreeId)
+        throw new Error('Orca identity changed after fixture preflight: ' + dir);
     if (!existsSync(dir))
         throw new Error('prepared fixture missing: ' + dir);
     const preparedFixture = prepared.fixtures.find((x: any) => x.case === index && x.arm === kind);
     if (!preparedFixture || resolve(preparedFixture.cwd) !== resolve(dir) || (await cmd(['git', 'rev-parse', 'HEAD'], dir)).trim() !== preparedFixture.base_commit)
         throw new Error('fixture baseline identity mismatch');
-    // Looked up before the fixture is touched (#117): a registration gone since the preflight stops the run with the
-    // fixture still at its base, so it can be registered and run again.
-    const orcaProject = await ensureOrcaWorktree(dir);
     const fs = await import('node:fs/promises');
     const original: any = {};
     async function collect(path: string, rel: string) { for (const entry of await fs.readdir(path, { withFileTypes: true })) {
@@ -463,10 +466,10 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             persistLedger();
             const claudeArgs = ['--restricted', '--strict-mcp-config', '--mcp-config', candidateMcp, '--model', manifest.models.claude, '--effort', manifest.effort.claude, '--session-id', claudeId, '--permission-mode', 'acceptEdits', '--settings', join(dir, '.claude/settings.json'), '--setting-sources', 'project', '--append-system-prompt-file', join(dir, 'AGENTS.md'), '--tools', 'Read,Edit,Write,Glob,Grep,Bash', '--allowedTools', ...permissions.allow];
             const command = `bun ${shellQuote(cliPath)} --project ${shellQuote(dir)} claude ${claudeArgs.map(shellQuote).join(' ')}`;
-            const claudeHandle = await createOrcaTerminal(orcaProject!.worktreeId, `bench-claude-${name}`, command);
+            const claudeHandle = await createOrcaTerminal(orcaProject.worktreeId, `bench-claude-${name}`, command);
             claudeTerminal = claudeHandle;
             const channelPrompt = await waitClaudeTui(claudeHandle);
-            const terminalList = await orca(['terminal', 'list', '--worktree', `id:${orcaProject!.worktreeId}`]);
+            const terminalList = await orca(['terminal', 'list', '--worktree', `id:${orcaProject.worktreeId}`]);
             const terminalIdentity = findRecord(terminalList, (x: any) => x.handle === claudeHandle);
             if (!terminalIdentity || resolve(terminalIdentity.worktreePath) !== resolve(dir))
                 throw new Error('Claude Orca terminal cwd identity mismatch');
@@ -777,17 +780,12 @@ const selectedArg = selectedIndex >= 0 ? argv[selectedIndex + 1] : undefined;
 const selected: number[] = selectedArg ? selectedArg.split(',').map(Number) : m.cases.map((_: any, i: number) => i);
 if (!selected.length || new Set(selected).size !== selected.length || selected.some((i: number) => !Number.isInteger(i) || i < 0 || i >= m.cases.length))
     throw new Error('invalid case selection');
+const selectedFixturePaths = selected.flatMap((i: number) => m.arms.map((kind: string) =>
+    join(runs, 'fixtures', `${i.toString().padStart(2, '0')}-${kind}`),
+));
+const orcaPreflight = await preflightOrcaWorktrees(selectedFixturePaths, orca);
 if ((existsSync(join(runs, 'runs')) && readdirSync(join(runs, 'runs')).length) || existsSync(join(runs, 'recovery')))
     throw new Error('run directory already contains attempts; use a new attempt directory');
-// The operator registers every fixture of the selection in Orca before a run (#117): the runner never adds one. An
-// unregistered fixture refuses the whole run here, before anything is locked or recorded, rather than fail arm by arm.
-const unregistered: string[] = [];
-for (const i of selected) for (const kind of m.arms) {
-    const dir = join(runs, 'fixtures', `${i.toString().padStart(2, '0')}-${kind}`);
-    await ensureOrcaWorktree(dir).catch((e) => unregistered.push(`${dir} (${e instanceof Error ? e.message : String(e)})`));
-}
-if (unregistered.length)
-    throw new Error(`fixtures not found in Orca (register them explicitly before the run; the runner never adds one): ${unregistered.join(', ')}`);
 mkdirSync(join(runs, 'private'), { recursive: true, mode: 0o700 });
 // Strict MCP isolation for Codex in every arm (issue #110): the user's plugins, apps, sub-agents and turn-end notifier
 // are off, and each MCP server the user's config defines is disabled by name; the hub adds only its own. Nothing in the

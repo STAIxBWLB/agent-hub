@@ -111,6 +111,9 @@ UNITS = {
                      "introduced that the final tree lacks and that agent did not remove itself (a fragment counts as "
                      "present anywhere in the file; a moved file's contributions follow it to its new path); a "
                      "heuristic, with what it could not see listed in coverage",
+    "unreadable": "planned attempts of a run directory whose runs/ is locked (an arm's cleanup is incomplete and its "
+                  "recovery pending; listed under locked): whether they wrote a record cannot be read, so they are "
+                  "neither rows nor missing until restore.ts restores the directory",
     "summary": "per arm, over every run directory given (one repeat per directory; a repeat given twice is refused): "
                "attempts, completions with the reasons for the rest, attempts left out as invalid or unknown "
                "(excluded), and planned attempts that wrote no record (missing: from each directory's cohort.json, or "
@@ -660,16 +663,20 @@ def main():
     p.add_argument("--plan", help="the manifest plan these directories carry out (pilot, study): its whole repeats are expected")
     p.add_argument("--json", action="store_true")
     a = p.parse_args()
-    rows, plan = [], set()
+    rows, plan, unreadable, locked = [], set(), set(), []
     for run_dir in a.run:
-        # An incomplete cleanup leaves runs/ locked with the arm's siblings: a glob there sees nothing, not "no records".
-        for d in (run_dir / "runs", run_dir / "recovery" / "runs"):
-            if d.exists() and not os.access(d, os.R_OK | os.X_OK): raise SystemExit(f"ledger: {d} is locked (a cleanup is incomplete): run scripts/benchmarks/restore.ts --run {run_dir} first")
+        # An incomplete cleanup leaves runs/ locked with the arm's siblings until restore.ts: a glob there sees nothing, so
+        # the run's planned attempts without a record are unreadable, not missing.
+        shut = [d for d in (run_dir / "runs", run_dir / "recovery" / "runs") if d.exists() and not os.access(d, os.R_OK | os.X_OK)]
+        if shut:
+            locked += [str(d) for d in shut]
+            unreadable |= expected(run_dir)
         # Kept back while a cleanup or a sibling-lock restoration was incomplete (#113): attempts, unavailable, not missing, until restore.ts moves them.
         # It writes each one to runs/ before removing it here, so a copy in both is still withheld.
         held = sorted((run_dir / "recovery" / "runs").glob("*.json"))
+        moving = {h.name for h in held}
         for f in sorted((run_dir / "runs").glob("*.json")):
-            if f.name not in {h.name for h in held}: rows.append({**ledger_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name})
+            if f.name not in moving: rows.append({**ledger_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name})
         for f in held: rows.append({**ledger_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name, "withheld": True})
         plan |= expected(run_dir)
     if a.plan: plan |= planned(a.run[0], a.plan)
@@ -678,8 +685,11 @@ def main():
         key = (r["case"], r["arm"], r.get("repeat"))
         if key in seen: raise SystemExit(f"ledger: case {key[0]} {key[1]} repeat {key[2]} is in both {seen[key]} and {r['run']}")
         seen[key] = r["run"]
-    missing = sorted(plan - set(seen), key=str)
-    out = {"units": UNITS, "rows": rows, "missing": [{"case": c, "arm": arm, "repeat": rep} for c, arm, rep in missing], "summary": summarize(rows, missing)}
+    missing = sorted(plan - set(seen) - unreadable, key=str)
+    out = {"units": UNITS, "rows": rows, "missing": [{"case": c, "arm": arm, "repeat": rep} for c, arm, rep in missing],
+           "unreadable": [{"case": c, "arm": arm, "repeat": rep} for c, arm, rep in sorted(unreadable - set(seen), key=str)], "locked": locked,
+           "summary": summarize(rows, missing)}
+    if locked: print(f"ledger: locked until scripts/benchmarks/restore.ts restores it (a cleanup is incomplete): {', '.join(locked)}", file=sys.stderr)
     (a.run[0] / "ledger.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if a.json: print(json.dumps(out, indent=2, sort_keys=True))
     else:

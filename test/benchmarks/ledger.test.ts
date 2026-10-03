@@ -273,13 +273,18 @@ test("several run directories pool their repeats; a planned attempt without a re
     const both = spawnSync("python3", [script, "--run", a.root, "--run", b.root, "--plan", "pilot"], { encoding: "utf8" });
     if (both.status !== 0) throw new Error(both.stderr);
     const moving = JSON.parse(readFileSync(join(a.root, "ledger.json"), "utf8")).rows.filter((x: { repeat: number; arm: string }) => x.repeat === 2 && x.arm === "hub-turnfree-codex-claude");
-    expect(moving.map((x: { withheld?: boolean }) => x.withheld)).toEqual([true]);
+    expect(moving.map((x: { withheld?: boolean; validity: { valid: boolean } }) => [x.withheld, x.validity.valid])).toEqual([[true, false]]); // the recovery copy
     // runs/ locked with the arm's siblings (its cleanup incomplete): its records cannot be read, which is not "missing".
+    rmSync(join(b.root, "runs", "00-hub-turnfree-codex-claude.json"));
     chmodSync(join(b.root, "runs"), 0o000);
     const locked = spawnSync("python3", [script, "--run", a.root, "--run", b.root, "--plan", "pilot"], { encoding: "utf8" });
     chmodSync(join(b.root, "runs"), 0o700);
-    expect(locked.status).not.toBe(0);
-    expect(locked.stderr).toContain("is locked");
+    if (locked.status !== 0) throw new Error(locked.stderr);
+    expect(locked.stderr).toContain("locked until");
+    const unread = JSON.parse(readFileSync(join(a.root, "ledger.json"), "utf8"));
+    expect(unread.unreadable).toEqual([{ case: 0, arm: "solo-codex", repeat: 2 }]); // b's solo-codex record is in runs/
+    expect(unread.missing).not.toContainEqual({ case: 0, arm: "solo-codex", repeat: 2 });
+    expect(unread.rows.filter((x: { withheld?: boolean }) => x.withheld)).toHaveLength(1);
   } finally {
     for (const f of [a, b]) { try { chmodSync(join(f.root, "runs"), 0o700); } catch {} rmSync(f.root, { recursive: true, force: true }); }
   }

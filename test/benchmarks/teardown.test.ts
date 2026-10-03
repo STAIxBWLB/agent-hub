@@ -269,6 +269,26 @@ test("recovery after a runner that died mid trust write removes its temp files a
   expect(JSON.parse(readFileSync(join(run, "restoration-ledger.json"), "utf8")).trust).toMatchObject({ restored: true, stage: "not_written" });
 });
 
+test("a temp file the recovery cannot remove keeps the trust entry open until a later recovery removes it", async () => {
+  const { recover } = await import("../../scripts/benchmarks/restore.ts");
+  const { restoreTemp } = await import("../../scripts/benchmarks/teardown.ts");
+  const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(run);
+  const fixture = join(run, "fixtures", "00-x");
+  mkdirSync(fixture, { recursive: true });
+  const trustFile = join(run, "claude.json");
+  writeFileSync(trustFile, JSON.stringify({ projects: { [fixture]: { hasTrustDialogAccepted: true } } }));
+  const runner = { pid: 99_999_998, started: "Thu Jan  1 00:00:00 1970" };
+  const stuck = restoreTemp(trustFile, runner.pid);
+  mkdirSync(join(stuck, "x"), { recursive: true }); // a removal that fails: a non-empty directory
+  writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner, protected: { paths: {}, restored: true }, siblings: {}, actors: {}, trust: { file: trustFile, project: fixture, previous: undefined, hadProjects: true, mode: 0o600, stage: "written", restored: false } }));
+  expect(recover(run, processTable()!, new Map(), -1)).toEqual({ restored: false, blockers: [], failed: [stuck] });
+  expect(JSON.parse(readFileSync(join(run, "restoration-ledger.json"), "utf8")).trust.restored).toBe(false);
+  rmSync(stuck, { recursive: true });
+  expect(recover(run, processTable()!, new Map(), -1)).toEqual({ restored: true, blockers: [], failed: [] });
+  expect(JSON.parse(readFileSync(trustFile, "utf8"))).toEqual({ projects: {} });
+});
+
 test("a first read that fails keeps every recorded actor: the fallback still acts on them, and the cleanup is unknown", async () => {
   // A Ctrl-C can kill the first `ps`: what ran below the actors then is unknown, the actors themselves are not.
   let reads = 0;

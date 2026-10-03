@@ -55,11 +55,14 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
     const trust = ledger.trust;
     if (trust && !trust.restored) {
         // A runner that died between the lease and the rename, or in its own restore, may have left a temp file: a copy of
-        // ~/.claude.json. One that cannot be removed keeps the recovery open, named.
-        const temps = ledger.runner?.pid ? [...(trust.stage === 'pending' ? [trustTemp(trust.file, ledger.runner.pid)] : []), restoreTemp(trust.file, ledger.runner.pid)] : [];
-        for (const temp of temps) try { rmSync(temp, { force: true }); } catch { failed.push(temp); }
-        const outcome = restoreTrust({ file: trust.file, previous: trust.previous, hadProjects: trust.hadProjects, mode: trust.mode }, trust.project, trust.stage === 'pending');
-        if (outcome === 'failed') failed.push(trust.file);
+        // ~/.claude.json. One that cannot be removed keeps the trust entry unrestored, so the next recovery tries again.
+        const pid = ledger.runner?.pid;
+        const temps = pid ? [restoreTemp(trust.file, pid)] : [];
+        if (pid && trust.stage === 'pending') temps.push(trustTemp(trust.file, pid));
+        const stuck = temps.filter((temp) => { try { rmSync(temp, { force: true }); return false; } catch { return true; } });
+        const outcome = stuck.length ? 'failed' : restoreTrust({ file: trust.file, previous: trust.previous, hadProjects: trust.hadProjects, mode: trust.mode }, trust.project, trust.stage === 'pending');
+        if (stuck.length) failed.push(...stuck);
+        else if (outcome === 'failed') failed.push(trust.file);
         else Object.assign(trust, { restored: true, stage: outcome });
     }
     writeAtomic(ledgerFile, JSON.stringify(ledger, null, 2)); // a crash mid-write must not leave a ledger the next recovery cannot read
