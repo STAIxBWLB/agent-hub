@@ -378,6 +378,50 @@ export function restoreTrust(lease: TrustLease, dir: string, pending = false, te
 }
 
 /**
+ * What a restoration ledger still holds unrestored (#120): empty when everything it locked is back and its trust entry is
+ * settled: restored, the user's (`changed_concurrently`), or never written with its temp file gone (`not_written`, restored);
+ * a `not_written` whose temp file is left still holds a copy of ~/.claude.json. A run directory whose ledger is missing holds
+ * nothing: the runner persists the ledger before it locks anything. `ledger` is the parsed restoration-ledger.json (`any`:
+ * its shape is native.ts's persistLedger, read back from disk).
+ */
+export function unrestored(ledger: any): string[] {
+    const left: string[] = [];
+    if (ledger?.protected && !ledger.protected.restored && Object.keys(ledger.protected.paths ?? {}).length) left.push('protected inputs');
+    const siblings = Object.values<any>(ledger?.siblings ?? {}).filter((s) => !s?.restored).length;
+    if (siblings) left.push(`sibling read locks of ${siblings} arm(s)`);
+    const trust = ledger?.trust;
+    if (trust && !trust.restored && trust.stage !== 'changed_concurrently') left.push(trust.stage === 'not_written' ? "the trust write's temp file (a copy of ~/.claude.json)" : 'the Claude trust entry');
+    return left;
+}
+
+/**
+ * The part of a ledger still owed (#120). A ledger without a runner identity was written before 0.12.5, and those versions
+ * left a concurrently changed trust entry at `written`, unrecorded. Under their `restored: true`, or under a later runner's
+ * marker (that runner passed the reuse check, so the old run was restored, and it died before it wrote a ledger of its
+ * own), that trust entry is left as it was then: taking it back could remove the user's. Its locks are owed as any other.
+ * `status` is the parsed restoration.json.
+ */
+export function owed(ledger: any, status: any): any {
+    const accepted = status?.restored === true || !!status?.runner?.pid;
+    return accepted && ledger && !ledger.runner ? { ...ledger, trust: undefined } : ledger;
+}
+
+/**
+ * Why a run directory may not be used again (#120), or undefined when it may: an earlier run there that is not restored
+ * (its `restoration.json` missing a `restored: true`, or its ledger holding something unrestored) would have its locked
+ * modes recorded as the originals. `status` and `ledger` are the files' text, undefined when a file is absent.
+ */
+export function reuseProblem(status: string | undefined, ledger: string | undefined): string | undefined {
+    const parse = (text: string) => { try { return JSON.parse(text); } catch { return undefined; } };
+    if (status !== undefined && parse(status)?.restored !== true) return 'an earlier run here is not restored (restoration.json)';
+    if (ledger === undefined) return undefined;
+    const parsed = parse(ledger);
+    if (parsed === undefined) return 'the restoration ledger cannot be read';
+    const left = unrestored(owed(parsed, status === undefined ? undefined : parse(status)));
+    return left.length ? `an earlier run here left unrestored: ${left.join(', ')}` : undefined;
+}
+
+/**
  * How the runner settles an arm's trust lease at the arm's end (#115; the rule is in AGENTS.md): the outcome its record
  * says, and the restoration ledger's stage and `restored`. `pending` in the runner's own process: the write or its rename
  * threw, before Claude was started, so nothing landed and no entry is touched, now or by the recovery; its temp file is

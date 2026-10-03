@@ -4,9 +4,9 @@
     "repository": "https://github.com/CooperBench/CooperBench",
     "commit": "63b9d44d9f39a02fccf5bf0052db48a917a011fd"
   },
-  "hub_version": "0.12.6",
+  "hub_version": "0.12.7",
   "versions": {
-    "hub": "0.12.6",
+    "hub": "0.12.7",
     "codex": "0.160.0",
     "claude": "2.1.288"
   },
