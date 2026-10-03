@@ -1702,7 +1702,8 @@ export async function startDaemon(opts: DaemonOptions) {
       recoveryTaskPreface("pi");
       await ensurePreface("pi");
       bus.add(pi);
-      try { await pi.start(); } catch (error) { await pi.stop(); throw error; }
+      // The start's own error is the one reported; a stop that fails too is logged beside it (#115).
+      try { await pi.start(); } catch (error) { await pi.stop().catch((stop: Error) => log(`pi stop after a failed start: ${stop.message}`)); throw error; }
       return { ok: true, ...(mode === "tui" ? { launch: pi.tuiLaunch } : {}) };
     }
     if (peer === "local") {

@@ -313,8 +313,10 @@ export class PiPeer extends BasePeer {
       this.resolveTuiExit?.(); this.resolveTuiExit = undefined;
     }
     const proc = this.proc;
-    if (proc) await stopOwnedProcess(proc, { group: true }); // also when it exited: what it left in its group fails the stop
-    this.proc = undefined;
+    // Also when it exited: what it left in its group fails the stop. The rest of the teardown runs either way; a process
+    // that could not be stopped stays recorded, so a later stop tries it again.
+    let failed: unknown;
+    if (proc) await stopOwnedProcess(proc, { group: true }).then(() => { if (this.proc === proc) this.proc = undefined; }, (error: unknown) => { failed = error; });
     for (const waiter of this.tuiWaiters) { clearTimeout(waiter.timer); waiter.resolve(undefined); }
     this.tuiWaiters = [];
     for (const pending of this.tuiCommands.values()) pending.reject(new Error("Pi owner stopped"));
@@ -322,6 +324,7 @@ export class PiPeer extends BasePeer {
     for (const pending of this.pending.values()) pending.reject(new Error("Pi owner stopped"));
     this.pending.clear();
     this.server?.stop(true); this.server = undefined; this.setState("offline");
+    if (failed) throw failed;
   }
 
   /**

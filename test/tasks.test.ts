@@ -1919,17 +1919,19 @@ test("a split prediction counts busy as taking a task only once it was sent and 
     async deliver() { this.setState("busy"); }
     async start() { this.setState("idle"); }
     async stop() {}
+    finish() { this.setState("idle"); }
   }
   const rig = async () => {
     const dir = mkdtempSync(join(tmpdir(), "agenthub-tasks-"));
     const bus = new Bus({ batchMs: 0 });
-    for (const id of ["claude", "codex", "kimi"]) { const p = new Taking(id); bus.add(p); await p.start(); }
+    const peers = Object.fromEntries(["claude", "codex", "kimi"].map((id) => [id, new Taking(id)]));
+    for (const p of Object.values(peers)) { bus.add(p); await p.start(); }
     const recorded: { where: string; trace: string }[] = [];
     const tasks = new Tasks({ board: new Board(join(dir, "hub.db")), bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: () => {}, tell: () => {}, turnFree: () => true,
       splitProfile: (p) => `hub 0.12.6; ${p} 1.0.0; turn-free`, recordSplit: (_task, p, where) => recorded.push({ where, trace: p.trace.join("\n") }) });
     const busy = async (peer: string) => { bus.publish(newEnvelope("claude", "a question first", { to: [peer] })); await Bun.sleep(20); };
     const routingTrace = () => recorded.find((r) => r.where === "routing")?.trace ?? "";
-    return { bus, tasks, busy, routingTrace };
+    return { bus, tasks, busy, routingTrace, peers, recorded };
   };
   // The overlapped task's owner is busy with a question while that task waits in its queue: not taking it.
   const queued = await rig();
@@ -1947,4 +1949,14 @@ test("a split prediction counts busy as taking a task only once it was sent and 
   const other = await candidate.tasks.propose(USER, { title: "routed part", class: "implement", refs: { paths: ["src/c.ts"] } });
   expect(other.owner).toBe("codex");
   expect(candidate.routingTrace()).toContain("codex is not available");
+  // A task handed back to a peer that had it before is a new hand-over: until it is sent again, a busy peer is not taking it.
+  const back = await rig();
+  const part = await back.tasks.propose("claude", { title: "codex's part", class: "implement", owner: "codex", refs: { paths: ["src/c.ts"] } });
+  await back.tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/c.ts"] } });
+  await back.tasks.assignTo(part.id, "claude");
+  back.peers.codex!.finish();
+  await back.busy("codex"); // busy with a question, nothing queued
+  back.recorded.length = 0;
+  await back.tasks.assignTo(part.id, "codex");
+  expect(back.recorded.find((r) => r.where === "cohort")?.trace).toContain("codex is not available");
 });

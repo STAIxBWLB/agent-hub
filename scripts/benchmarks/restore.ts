@@ -54,6 +54,8 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
     }
     const trust = ledger.trust;
     if (trust && !trust.restored) {
+        // A runner that died between the lease and the rename may have left its temp file, a copy of ~/.claude.json.
+        if (trust.stage === 'pending' && ledger.runner?.pid) rmSync(`${trust.file}.ahub-benchmark-${ledger.runner.pid}`, { force: true });
         const outcome = restoreTrust({ file: trust.file, previous: trust.previous, hadProjects: trust.hadProjects, mode: trust.mode }, trust.project, trust.stage === 'pending');
         if (outcome === 'failed') failed.push(trust.file);
         else Object.assign(trust, { restored: true, stage: outcome });

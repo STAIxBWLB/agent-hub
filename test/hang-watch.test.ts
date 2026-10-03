@@ -19,8 +19,15 @@ test("the watchdog says where a run that outlives its bound is and stops it; a r
   expect(hung.signalCode).toBe("SIGTERM");
   expect(watched.stderr).toContain(`pid ${hung.pid} still running after 1s`);
 
+  // A run that ignores SIGTERM is killed.
+  const stubborn = spawn("sh", ["-c", 'trap "" TERM; while :; do sleep 1; done'], { stdio: "ignore" });
+  await Bun.sleep(200); // the trap is set
+  const forced = await run(stubborn.pid!, 1);
+  await exited(stubborn);
+  expect([stubborn.signalCode, forced.stderr.includes("still running after 1s")]).toEqual(["SIGKILL", true]);
+
   const quick = spawn("sleep", ["0.2"], { stdio: "ignore" });
   const calm = await run(quick.pid!, 30);
   await exited(quick);
   expect([quick.exitCode, calm.status, calm.stderr]).toEqual([0, 0, ""]);
-}, 30_000);
+}, 60_000);

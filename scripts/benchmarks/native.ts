@@ -197,7 +197,7 @@ const runnerIdentity = processTable()?.find(r => r.pid === process.pid);
 if (!runnerIdentity)
     throw new Error('the process table cannot be read: the runner cannot record what it starts');
 // Temp file and rename: a crash mid-write must not leave a ledger the recovery cannot read.
-function persistLedger() { const file = join(runs, 'restoration-ledger.json'); writeFileSync(`${file}.tmp`, JSON.stringify({ runner: runnerIdentity && { pid: runnerIdentity.pid, started: runnerIdentity.started }, protected: { paths: Object.fromEntries(protectedModes), restored: protectedRestored }, siblings: Object.fromEntries(siblingLedgers), actors: Object.fromEntries(actorLedger), trust: trustLedger }, null, 2), { mode: 0o600 }); renameSync(`${file}.tmp`, file); }
+function persistLedger() { writeAtomic(join(runs, 'restoration-ledger.json'), JSON.stringify({ runner: runnerIdentity && { pid: runnerIdentity.pid, started: runnerIdentity.started }, protected: { paths: Object.fromEntries(protectedModes), restored: protectedRestored }, siblings: Object.fromEntries(siblingLedgers), actors: Object.fromEntries(actorLedger), trust: trustLedger }, null, 2)); }
 async function protectInputs() { const fs = await import('node:fs/promises'); for (const root of protectedRoots) {
     if (!existsSync(root))
         throw new Error('protected source missing');
@@ -283,7 +283,6 @@ function fixtureMetadataHash(root: string) { const names = ['AGENTS.md', '.gitig
     const bytes = regularBytes(join(root, name), 16 * 1024 * 1024);
     values[name] = bytes === 'missing' ? null : typeof bytes === 'string' ? bytes : hash(bytes);
 } return hash(JSON.stringify(values)); }
-/** Written whole or not at all: a recovery reads it after a runner that may have died mid-write. */
 function claudeEvidence(transcriptPath: string | undefined) { if (!transcriptPath || !existsSync(transcriptPath))
     return { models: [], usage: undefined }; const latest = new Map<string, any>(), models = new Set<string>(); for (const line of readFileSync(transcriptPath, 'utf8').split('\n')) {
     if (!line)
@@ -709,15 +708,16 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             if (failed.length) note('sibling artifact read locks could not be restored');
         }
         let trustRestored = true;
+        // A trust write that may not have landed leaves its temp file (a copy of the user's ~/.claude.json): never kept.
+        if (trustLease && trustLedger?.stage === 'pending') { try { rmSync(`${trustLease.file}.ahub-benchmark-${process.pid}`, { force: true }); } catch { /* reported by the recovery's own check */ } }
         if (trustLease && !contained) {
             // Claude may still run and rewrite its project entry: the recovery takes it back once nothing does.
             restoration.trust = 'kept: the cleanup is incomplete or unknown';
             trustRestored = false;
         }
         else if (trustLease) {
-            // A write that never landed leaves nothing to take back, and maybe its temp file to remove.
+            // A write that never landed leaves nothing to take back.
             const pending = trustLedger.stage === 'pending';
-            if (pending) rmSync(`${trustLease.file}.ahub-benchmark-${process.pid}`, { force: true });
             restoration.trust = restoreTrust(trustLease, dir, pending);
             trustRestored = restoration.trust === 'restored' || restoration.trust === 'not_written';
             trustLedger.restored = trustRestored;
@@ -734,7 +734,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         let events: any[] = [];
         try { events = readEvents(join(state, 'events.jsonl')); } catch { note('hub events could not be read'); }
         const result = { protocol: 'native-cc-v1', platform: process.platform, index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: sealedBase.trim(), models: manifest.models, requestedModels: actors.reduce((o: any, a: string) => (o[a] = manifest.models[a], o), {}), readiness, patchFile, model: actors.length === 1 ? manifest.models[actors[0]!] : undefined, setupMs: (started || activeEnd) - setup, elapsedMs, stoppedMs: stoppedAt ? stoppedAt - activeEnd : undefined, teardownMs: Date.now() - activeEnd, stages: { completionMs: completion.ms, shutdownMs: cleanup.normal.ms, settleMs: cleanup.ms.settle, fallbackMs: cleanup.ms.fallback, captureMs, restorationMs }, end_reason: endReasonOf(endReason, endFlags), end_reason_detail: endReason, end_flags: endFlags.length ? endFlags : undefined, error: error ? String(error).replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 300) : undefined, taskStates, effort: manifest.effort, events, codexMessages, codexTaskStart, startedAt: started || undefined, repeat, conditions, codexUsage: codexUsage(codexMessages, thread?.thread?.id), nativeVersions: { codex: codexVersion, claude: claudeVersion }, codexBinarySha256: sourceHash(codexBin), claudeSessionId: actors.includes('claude') ? claudeId : undefined, codexThreadId: thread?.thread?.id, completion, tree_changed_after_active_time: treeAfterActive, cleanup, restoration, trust_restored: trustRestored, cleanup_complete: contained, teardown_errors: teardownErrors.length ? teardownErrors : undefined, metadata_clean: metadataClean, metadata_sha256: metadataBaseline, delivery_status: finalStatus?.peers };
-        writeFileSync(join(recordRoot, 'runs', name + '.json'), JSON.stringify(result, null, 2), { mode: 0o600 });
+        writeAtomic(join(recordRoot, 'runs', name + '.json'), JSON.stringify(result, null, 2)); // the ledger reads recovery/ too: never a cut record
         log('arm-end', { index, kind, elapsedMs, endReason, cleanup: cleanup.outcome, completion: completion.outcome, patchLines: patch.split('\n').length });
         if (!contained)
             throw new Error(`cleanup ${cleanup.outcome}: ${cleanup.reasons.join('; ')}; inputs stay locked, record in ${join(recordRoot, 'runs', name + '.json')}`);

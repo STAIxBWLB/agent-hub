@@ -44,6 +44,7 @@ scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-600}" &
 watch_pid=$!
 wait "$test_pid" || tests=$?
 test_pid=""
+kill "$watch_pid" 2>/dev/null || true # its work is done: never let it watch a pid that may be reused
 wait "$watch_pid" 2>/dev/null || true
 
 # The Bun preload records each current-run Bun process's PID, start time, and process

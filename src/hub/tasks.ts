@@ -97,6 +97,8 @@ const OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassi
 const WITH_DONE = "with its done";
 /** How many times a task changed hands: a cohort member's generation (issue #107). */
 const ownerGen = (t: Task) => t.history.filter((h) => OWNERSHIP_EVENTS.has(h.event)).length;
+/** One hand-over of a task to an owner: a task handed back to a peer that had it before is a new one (#115). */
+const handOver = (t: Task, owner: PeerId) => `${t.id}@${owner}#${ownerGen(t)}`;
 /** When the task was handed to its current owner (its creation, if it never changed hands). */
 const handedAt = (t: Task) => [...t.history].reverse().find((h) => OWNERSHIP_EVENTS.has(h.event) && h.event !== "unassigned")?.at ?? t.history[0]?.at ?? Date.now();
 
@@ -308,6 +310,7 @@ export class Tasks {
     const open = this.d.board.list().filter((t) => OPEN.includes(t.state) && t.id !== task.id && (t.id !== other.id || t.state !== "proposed"));
     // One task of a class is one unit: the only normalization the board supports, so another class is unknown.
     const unit = task.class === other.class ? 1 : undefined;
+    const taking = (p: PeerId) => states[p] === "busy" && this.d.bus.queued(p) === 0 && (p === candidate ? this.sent.has(handOver(task, p)) : other.state === "proposed" && this.sent.has(handOver(other, p)));
     return predictSplit({
       peers,
       observations: Object.fromEntries(peers.map((p) => [p, this.splitObservations(task.class, p, task.id)])),
@@ -318,7 +321,7 @@ export class Tasks {
       // goes busy as its task is delivered): the routed peer this very task, the other owner the overlapped one while it
       // is not started. Busy otherwise, it is at work on something else (#109; a routing or cohort record is taken before
       // the task is sent, so a busy candidate is not available then).
-      available: Object.fromEntries(peers.map((p) => [p, !failing[p] && (states[p] === "idle" || (states[p] === "busy" && this.d.bus.queued(p) === 0 && (p === candidate ? this.sent.has(`${task.id}@${p}`) : other.state === "proposed" && this.sent.has(`${other.id}@${p}`))))])),
+      available: Object.fromEntries(peers.map((p) => [p, !failing[p] && (states[p] === "idle" || taking(p))])),
     });
   }
 
@@ -687,7 +690,7 @@ export class Tasks {
       `Take it with hub_task_accept {id: ${task.id}, plan: {paths, symbols, signatures, insertion_points}} (what you will change, before you start${pii ? "" : "; owners of overlapping tasks see it"}) or pass with hub_task_decline. When finished: hub_task_done {id: ${task.id}, summary: what changed, why, and the check you ran with its result, refs}.`,
     ].filter(Boolean).join("\n\n");
     this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner!], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id) }, ...(pii ? { private: true } : {}) }));
-    this.sent.add(`${task.id}@${task.owner}`);
+    this.sent.add(handOver(task, task.owner!));
   }
 
   /** Nobody, the console user included, works on a task before what it waits for is approved. */
@@ -705,7 +708,7 @@ export class Tasks {
   }
 
   private readonly offered = new Set<number>(); // ready tasks offered in this hub run
-  private readonly sent = new Set<string>(); // `<task>@<owner>`: a task's envelope went to that owner in this hub run
+  private readonly sent = new Set<string>(); // hand-overs (`handOver`) whose task envelope went out in this hub run
 
   /**
    * A stop between an approval and the assignment of its dependents (both are saved on their own) leaves them ownerless

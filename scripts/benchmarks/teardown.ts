@@ -114,7 +114,7 @@ export function endReasonOf(detail: string, flags: string[]): string {
  * path with spaces is one part, never a fragment of a folder name), else of its first word (issue #115).
  */
 export function programOf(command: string, isFile = (path: string) => { try { return statSync(path).isFile(); } catch { return false; } }): string {
-    const words = command.split(' ');
+    const words = command.split(' ').slice(0, 16); // a bounded number of stats: a teardown must not wait on a long argv
     for (let n = words.length; n > 1; n--) {
         const path = words.slice(0, n).join(' ');
         if (path.startsWith('/') && isFile(path)) return path.split('/').pop()!;
@@ -271,8 +271,10 @@ export async function teardown(actors: Actor[], dir: string, shutdown: () => Pro
     };
 }
 
-/** The transcript's whole rows, or undefined when it cannot be read. */
-/** Rows are Claude Code's own JSON, read only for the fields used here: typed `any` on purpose. */
+/**
+ * The transcript's whole rows, or undefined when it cannot be read. Rows are Claude Code's own JSON, read only for the
+ * fields used here: typed `any` on purpose.
+ */
 export function transcriptRows(path: string): any[] | undefined {
     let text: string;
     try { text = readFileSync(path, 'utf8'); } catch { return undefined; }
@@ -329,11 +331,8 @@ export interface TrustLease { file: string; previous: any; hadProjects: boolean;
 
 /**
  * Takes back the trust flag the benchmark set for `dir` in Claude's user state, unless someone changed it meanwhile:
- * then the current state is kept and that is reported.
- */
-/**
- * Takes back the trust entry the runner set. `pending`: the runner's own write may not have landed (it stopped between
- * recording the lease and the rename), so an entry that is not set means it was never written, not that someone changed it.
+ * then the current state is kept and that is reported. `pending`: the runner's own write may not have landed (it stopped
+ * between recording the lease and the rename), so an entry that is not set means it was never written, not changed.
  */
 export function restoreTrust(lease: TrustLease, dir: string, pending = false): 'restored' | 'changed_concurrently' | 'not_written' | 'failed' {
     try {
