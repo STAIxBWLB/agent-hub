@@ -70,6 +70,9 @@ test("every measure of a turn-free attempt, with its unit, from the records nati
         { type: "capability", peer: "codex", state: "verified", via: "steer", at: iso(-2) },
         { type: "envelope", id: "e0", from: "codex", priority: "fyi", kind: "chat", dropped: "fyi", at: iso(-1) }, // the setup probe's answer
         { type: "cohort", id: 1, event: "formed", silent: true, tasks: [1, 2], owners: ["claude", "codex"], at: iso(0.5) },
+        { type: "progress", peer: "codex", task: 1, severity: 0, spinning: 0, exploring: 1, production: 0, at: iso(10) },
+        { type: "progress", peer: "claude", task: 2, severity: 0.7, spinning: 0, exploring: 0, production: 1, at: iso(20) },
+        { type: "stuck", peer: "claude", task: 2, category: "repetition", streak: 2, latched: true, at: iso(20) },
         { type: "hook_stats", peer: "claude", n: 4, startupMs: 200, hubMs: 12, maxStartupMs: 80, at: iso(85) },
         { type: "envelope", id: "e1", from: "claude", to: ["codex"], priority: "status", kind: "chat", at: iso(30) },
         { type: "quiet", id: "e1", from: "claude", peers: ["codex"], at: iso(30) },
@@ -130,6 +133,20 @@ test("every measure of a turn-free attempt, with its unit, from the records nati
     // the held one never reached it.
     expect(row.late_replies).toEqual([30, 0]);
     expect(row.capability).toEqual({ claude: [{ state: "verified", via: "hook", at_s: -4 }, { state: "lost", via: null, at_s: 103 }], codex: [{ state: "verified", via: "steer", at_s: -2 }] });
+    expect(row.progress).toEqual({
+      series: [
+        { peer: "codex", task: 1, severity: 0, spinning: 0, exploring: 1, production: 0, at_s: 10 },
+        { peer: "claude", task: 2, severity: 0.7, spinning: 0, exploring: 0, production: 1, at_s: 20 },
+      ],
+      stuck: [{ peer: "claude", task: 2, category: "repetition", streak: 2, latched: true, at_s: 20 }],
+      coverage: {
+        observed_peers: ["claude", "codex"], samples_by_peer: { codex: 1, claude: 1 },
+        notes: [
+          "Codex commandExecution/fileChange, local/Pi tool callbacks, and Claude turn-free hooks have different observation coverage.",
+          "Only emitted samples are measured; a missing peer or interval is unknown, not zero progress or no difficulty.",
+        ],
+      },
+    });
     expect(row.validity).toEqual({ valid: true, why: null }); // the teardown's lost path and lift come after the work
     expect(row.treatment).toEqual({ silent_cohort: true });
     expect(row).toMatchObject({ quiet: 1, fyi: 1, stale: 1 }); // the setup probe's [FYI] is not in the task window
@@ -158,6 +175,7 @@ test("every measure of a turn-free attempt, with its unit, from the records nati
     expect(out.summary["hub-turnfree-codex-claude"]).toMatchObject({
       attempts: 1, completed: 1, valid_completed: 1, excluded: [], missing: [], both_done_s_median: 80, both_done_s_median_common: 80, settlement_s_median: 100, quiet_total: 1, quiet_unknown: 0,
       fact_offers_total: 4, fact_bytes_offered_total: 980, fact_bytes_acknowledged_total: 300, integration_requests_total: 1, lost_identifiers_total: 3, lost_identifiers_unknown: 0,
+      progress_samples_total: 2, stuck_verdicts_total: 1,
       codex_attempt_tokens_median: 4000, claude_attempt_tokens_median: 115, treatment_received: 1, both_done_s_median_treated: 80,
     });
   } finally {

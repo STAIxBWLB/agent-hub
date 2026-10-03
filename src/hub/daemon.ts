@@ -1,3 +1,5 @@
+import { ProgressObserver, normalizeCodexObservation, normalizeClaudeObservation } from "./progress.ts";
+import type { ToolObservation } from "../models/route/signals.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, fstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -18,7 +20,7 @@ import type { MlxOptions } from "../models/mlx.ts";
 import { PiToolReceipts } from "../pi/tool-receipts.ts";
 import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
-import { runTool, TOOL_SCHEMAS, type ToolContext } from "../local/tools.ts";
+import { runTool, toolResultFailed, TOOL_SCHEMAS, type ToolContext } from "../local/tools.ts";
 import { LocalPeer } from "../adapters/local-worker.ts";
 import { Capture, skipTools } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
@@ -559,6 +561,21 @@ export async function startDaemon(opts: DaemonOptions) {
   // the board once per change of it: every boundary asks for them.
   let scopes = new Map<PeerId, FactScope | undefined>();
   const facts: Facts = new Facts({ root: opts.cwd, tmp: join(opts.stateDir, "facts"), instance: instanceId.slice(0, 8), scope: (peer) => (scopes.has(peer) ? scopes.get(peer) : scopes.set(peer, tasks.factScope(peer)).get(peer)), peers: () => [...bus.peers.keys()], nameable: tasks.nameable, deny: config.local.deny });
+  const progress = new ProgressObserver({
+    tasks: () => board.list(),
+    isPrivate: () => board.list().some(task => task.state !== "approved" && tasks.isPii(task)),
+    inference: { escalate: (conversation, turn) => inference?.escalate(conversation, turn) ?? Promise.resolve(undefined) },
+    emit: event,
+    notify,
+  });
+  const observeProgress = (peer: PeerId, observation: ToolObservation | undefined, taskId?: string): void => {
+    if (!observation) return;
+    try {
+      const candidates = board.list().filter(task => task.owner === peer && ["in_progress", "changes_requested"].includes(task.state));
+      const task = taskId ? candidates.find(task => task.id === Number(taskId)) : candidates.length === 1 ? candidates[0] : undefined;
+      if (task) progress.observe(peer, task.id, observation);
+    } catch { /* optional observation never fails a tool or native turn */ }
+  };
   /** Whether facts are tracked now. When tracking resumes (a PII task closed), everything observed before is dropped. */
   let factsWereOn = false;
   const factsOn = (): boolean => {
@@ -691,6 +708,7 @@ export async function startDaemon(opts: DaemonOptions) {
   board.onChange = (t, h) => {
     turnFreeNow = undefined;
     scopes = new Map();
+    progress.prune();
     factsOn(); // a PII task opening or closing switches tracking at once, not at the next boundary (issue #108)
     if ((h.event === "integration requested" || h.event === "integration unresolved") && /has not stopped/.test(h.note ?? "")) {
       for (const m of tasks.cohorts.of(t.id)?.members.values() ?? []) if (m.task !== t.id) log(`turn-free: task #${t.id} waits on ${stopEvidence(m.owner)}`);
@@ -1575,7 +1593,9 @@ export async function startDaemon(opts: DaemonOptions) {
         },
         // Turn-free facts (issue #108): its items are the boundaries; a fact goes into the running turn by steer, and
         // the steered input coming back as a user message item is its readback.
-        onItem: (item) => {
+        onItem: (item, nativeTurn) => {
+          const observation = normalizeCodexObservation(item);
+          if (nativeTurn && observation) observeProgress("codex", { ...observation, turn: nativeTurn });
           if (!factsOn()) return;
           factSession("codex", codex.thread);
           if (item.type === "userMessage") {
@@ -1659,8 +1679,8 @@ export async function startDaemon(opts: DaemonOptions) {
           if (stopping || (recoveryActive() && recoveryPhase !== "preparing")) return "error: recovery is holding tool effects";
           return piReceipts!.execute(sessionId ?? "", callId, name, raw, async () => {
             if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "error: invalid tool arguments";
-            if (TASK_TOOLS.some((t) => t.name === name)) return taskOp("pi", name, raw as Record<string, unknown>, true);
-            return runTool(name, JSON.stringify(raw), { ...ctx, signal, permit: async title => {
+            const nativeTurn = pi.observationTurn;
+            const output = TASK_TOOLS.some((t) => t.name === name) ? await taskOp("pi", name, raw as Record<string, unknown>, true) : await runTool(name, JSON.stringify(raw), { ...ctx, signal, permit: async title => {
               if (!signal) return ctx.permit(title);
               if (signal.aborted) return false;
               return new Promise<boolean>((resolve, reject) => {
@@ -1669,6 +1689,11 @@ export async function startDaemon(opts: DaemonOptions) {
                 Promise.resolve(ctx.permit(title)).then(finish, error => { signal.removeEventListener("abort", aborted); reject(error); });
               });
             } });
+            if (!signal?.aborted && bus.peers.get("pi") === pi) {
+              const taskId = pi.budgetEnvelopes.find(env => env.refs?.task)?.refs?.task;
+              observeProgress("pi", { name, ...(typeof (raw as any)?.command === "string" ? { command: (raw as any).command } : {}), resultText: output, isError: toolResultFailed(name, output), source: "pi", ...(nativeTurn ? { turn: nativeTurn } : {}) }, taskId);
+            }
+            return output;
           });
         },
         selectModel: async (envs) => {
@@ -1757,6 +1782,7 @@ export async function startDaemon(opts: DaemonOptions) {
         onAdvisor: record => event({ type: "advisor", peer: "local", ...record }),
         onRouteOutcome: record => event({ type: "route_outcome", peer: "local", ...record }),
         turnId: () => turns.get("local")?.id,
+        onTool: (observation, task) => observeProgress("local", observation, task),
         fixedModel: args.model ?? routing.local.fixed_model,
         tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, permit },
         ...(capture ? { capture } : {}),
@@ -2181,6 +2207,7 @@ export async function startDaemon(opts: DaemonOptions) {
             queueMicrotask(() => tally(peer)); // after this call's own work below
           }
           if (!factsOn()) return void reply({ t: "facts", ok: true });
+          if (peer === "claude" && phase === "pre") observeProgress(peer, normalizeClaudeObservation(tool, input));
           factSession(peer, sessionId);
           const transcript = claudeTranscript(sessionId, msg.transcriptPath);
           if (phase === "stop") {

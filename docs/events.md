@@ -21,6 +21,8 @@ marked `private: true`, and PII tasks `pii: true`.
 | `route` | `peer`, `route`, `tier`, `source` (`override`, `dimensions`, `hold`, `classifier`, `default`), `score`, `ms`. Local decisions also carry `decision`, `turn`, optional numeric `task`, `pii`, and decision-time `severity`, `spinning`, `exploring`, `production`; no prompt text |
 | `route_outcome` | `peer`, `decision`, `turnId`, `turn` (`completed` or `failed`), optional `task`, `pii`, `latched`, optional `next` (`severity`, `tests`: `pass`/`fail`/`none`, `repeat`) and `advisor` (`approve`/`redo`/`failed`). Exactly once per local decision at turn settlement, including failure/cancellation |
 | `advisor` | `peer`, `route`, `trigger`, `verdict` (`approve`, `redo`, `failed`), `discardedChars`: an advisor check result; no transcript or feedback text |
+| `progress` | `peer`, `task` (task id), `severity`, `spinning`, `exploring`, `production`: normalized tool activity dimensions for an open task; coverage differs by peer and no commands or task text are recorded |
+| `stuck` | `peer`, `task` (task id), `category` (`repetition`, `false_progress`, `drift`, `desperation`, `capability_gap`), `streak`, `latched`: an escalation verdict; it recommends considering reassignment and never reassigns automatically |
 | `capability` | `peer`, `state` (`verified` or `lost`), `via`: a peer's context path for facts |
 | `native_turn_end` | `peer`: Claude's Stop hook, the end of its turn (Codex's is its `turn_end`); quiescence evidence for an integration |
 | `hook_stats` | `peer`, `n` (facts hook calls in the turn, its Stop included), `startupMs` and `maxStartupMs` (the hook processes' start-up and connect time, summed and the largest), `hubMs` (the hub's own time for them): at Claude's Stop (issue #108) |
@@ -71,3 +73,9 @@ output, task text, advisor feedback, or raw failure fingerprints. A failed telem
 sink does not affect model selection, budget admission or delivery. Pi outcome labels
 are deferred: its existing route events retain their original shape. No control WebSocket
 message changed, so the protocol number is unchanged.
+
+Progress coverage is asymmetric: Codex contributes completed command and file-change items, local and Pi contribute
+per-model-step tool observations, and Claude contributes tool inputs from turn-free pre-hooks without tool results or
+a native turn id. Missing peers or intervals therefore mean unobserved, not zero activity. Escalation uses only known
+native turn ids; observations without one still contribute progress dimensions but cannot establish separate attempts
+or the eight-turn spinning threshold.

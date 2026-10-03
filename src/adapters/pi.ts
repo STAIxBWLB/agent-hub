@@ -60,6 +60,8 @@ export class PiPeer extends BasePeer {
   private readonly budgetStops = new Map<number, string>();
   private readonly idleBashReservations = new Map<string, { generation: number; expiresAt: number; deadlineAt?: number }>();
   private budgetGeneration = 0;
+  private modelStep = 0;
+  private readonly observationScope = randomUUID();
   private emptyResumeVerified = false;
   private verifiedEmptyResume?: VerifiedEmptyResume;
   private activityObserved = false;
@@ -142,6 +144,9 @@ export class PiPeer extends BasePeer {
   }
 
   /** Envelopes belonging to the currently executing Pi turn, for relay-side model-call admission. */
+  /** One id per admitted provider request; parallel tools share its assistant step. */
+  get observationTurn(): string | undefined { return this.agentRunning && this.modelStep ? `${this.observationScope}.${this.budgetGeneration}.${this.modelStep}` : undefined; }
+
   get budgetEnvelopes(): Envelope[] { return this.agentRunning && this.state === "busy" ? this.activeEnvs.slice() : []; }
 
   /** Mark an authoritative relay admission stop against the current Pi turn, never a later turn. */
@@ -219,6 +224,7 @@ export class PiPeer extends BasePeer {
             void this.sendTui({ type: "abort_budget", generation }).catch((error) => this.opts.log?.(`[${this.id}] elapsed budget stop could not reach Pi: ${(error as Error).message}`));
           }, Math.max(0, remaining));
         }
+    if (!denied && body.unit === "model_calls") this.modelStep++;
     return Response.json({ decisions, ...(reservation ? { reservation } : {}) });
   }
 
@@ -419,6 +425,7 @@ export class PiPeer extends BasePeer {
     if (event.type === "agent_start") {
       const generation = Number.isSafeInteger(event.generation) ? event.generation : this.budgetGeneration + 1;
       if (generation <= this.budgetGeneration) return;
+      this.modelStep = 0;
       this.usageSeen.clear(); this.idleBashReservations.clear(); this.executionAbort = new AbortController(); this.budgetGeneration = generation; this.noteActivity(); this.agentRunning = true; this.setState("busy");
     }
     if (event.type === "activity" && this.state === "busy") this.touch();
