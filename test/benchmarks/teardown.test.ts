@@ -269,6 +269,25 @@ test("recovery after a runner that died mid trust write removes its temp files a
   expect(JSON.parse(readFileSync(join(run, "restoration-ledger.json"), "utf8")).trust).toMatchObject({ restored: true, stage: "not_written" });
 });
 
+test("a write the runner knew never landed, its temp file left: the recovery removes the copy and touches no entry", async () => {
+  const { recover } = await import("../../scripts/benchmarks/restore.ts");
+  const { trustTemp } = await import("../../scripts/benchmarks/teardown.ts");
+  const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(run);
+  const fixture = join(run, "fixtures", "00-x");
+  mkdirSync(fixture, { recursive: true });
+  const trustFile = join(run, "claude.json");
+  const theirs = { projects: { [fixture]: { hasTrustDialogAccepted: true, theirs: 1 } } }; // set by someone else meanwhile
+  writeFileSync(trustFile, JSON.stringify(theirs));
+  const runner = { pid: 99_999_997, started: "Thu Jan  1 00:00:00 1970" };
+  writeFileSync(trustTemp(trustFile, runner.pid), "{}");
+  writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner, protected: { paths: {}, restored: true }, siblings: {}, actors: {}, trust: { file: trustFile, project: fixture, previous: undefined, hadProjects: true, mode: 0o600, stage: "not_written", restored: false } }));
+  expect(recover(run, processTable()!, new Map(), -1)).toEqual({ restored: true, blockers: [], failed: [] });
+  expect(existsSync(trustTemp(trustFile, runner.pid))).toBe(false);
+  expect(JSON.parse(readFileSync(trustFile, "utf8"))).toEqual(theirs);
+  expect(JSON.parse(readFileSync(join(run, "restoration-ledger.json"), "utf8")).trust).toMatchObject({ restored: true, stage: "not_written" });
+});
+
 test("a temp file the recovery cannot remove keeps the trust entry open until a later recovery removes it", async () => {
   const { recover } = await import("../../scripts/benchmarks/restore.ts");
   const { restoreTemp } = await import("../../scripts/benchmarks/teardown.ts");

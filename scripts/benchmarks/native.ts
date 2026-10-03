@@ -713,7 +713,8 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             if (failed.length) note('sibling artifact read locks could not be restored');
         }
         let trustRestored = true, tempLeft = false;
-        // A trust write that may not have landed leaves its temp file (a copy of the user's ~/.claude.json): never kept.
+        // A trust write that may not have landed leaves its temp file (a copy of the user's ~/.claude.json): removed here, or by
+        // the recovery when it cannot be.
         if (trustLease && trustLedger?.stage === 'pending') { try { rmSync(trustTemp(trustLease.file, process.pid), { force: true }); } catch (e) { tempLeft = true; note(`the trust write's temp file could not be removed: ${String(e).slice(0, 200)}`); } }
         if (trustLease && !contained) {
             // Claude may still run and rewrite its project entry: the recovery takes it back once nothing does.
@@ -721,9 +722,11 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             trustRestored = false;
         }
         else if (trustLease && tempLeft) {
-            // The copy is still there: the entry stays pending, and the recovery removes the copy and settles it.
+            // The write never landed (still pending here), but its copy is still there: the recovery removes the copy, and,
+            // since nothing was written, touches no entry (one someone else set meanwhile is theirs).
             restoration.trust = 'kept: the trust write\'s temp file could not be removed';
             trustRestored = false;
+            trustLedger.stage = 'not_written';
         }
         else if (trustLease) {
             // Still pending here means the write or its rename threw in this process: nothing landed, so nothing is touched

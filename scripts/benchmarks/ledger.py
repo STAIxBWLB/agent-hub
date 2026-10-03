@@ -640,6 +640,10 @@ def summarize(rows, missing=(), unreadable=()):
             **total(rs, "lost_fragments", lambda r: lost(r, "fragments")),
             "contribution_coverage_notes": sum(len((r.get("contributions") or {}).get("coverage") or []) for r in worked(rs)),
         }
+    # An arm with no record at all still owes its planned attempts: only its counts can be given.
+    for arm in sorted({a for _, a, _ in [*missing, *unreadable]} - set(out)):
+        out[arm] = {"attempts": 0, "missing": sorted(f"case {c} repeat {rep}" for c, a, rep in missing if a == arm),
+                    "unreadable": sorted(f"case {c} repeat {rep}" for c, a, rep in unreadable if a == arm)}
     return out
 
 
