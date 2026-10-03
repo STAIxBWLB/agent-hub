@@ -6,7 +6,7 @@ import { renderDigest, replyAudience, replyParent, STANDING_INSTRUCTION, USER, t
 import { TASK_TOOL_NAMES, TASK_TOOLS } from "../hub/hub-tools.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
-import { runTool, TOOL_SCHEMAS, touchedPaths, type ToolContext } from "../local/tools.ts";
+import { runTool, toolResultFailed, TOOL_SCHEMAS, touchedPaths, type ToolContext } from "../local/tools.ts";
 import type { Capture } from "../memory/capture.ts";
 import type { ChatMessage, ChatResult, OmniRoute } from "../omniroute/client.ts";
 import { safeModelLabel } from "../omniroute/usage.ts";
@@ -247,9 +247,9 @@ export class LocalPeer extends BasePeer {
         this.touch();
         usedTools = true;
         if (SIDE_EFFECTS.has(call.function.name) && !output.startsWith("error:")) progress.sideEffects++;
-        msgs.push({ role: "tool", tool_call_id: call.id, content: output });
+        msgs.push({ role: "tool", tool_call_id: call.id, content: output, is_error: toolResultFailed(name, output) });
         if (!policy?.pii) {
-          try { this.opts.onTool?.({ name, ...(typeof safeParse(call.function.arguments).command === "string" ? { command: safeParse(call.function.arguments).command as string } : {}), resultText: output, isError: output.startsWith("error:"), source: "local" }, policy?.task); } catch { /* optional research observations */ }
+          try { this.opts.onTool?.({ name, ...(typeof safeParse(call.function.arguments).command === "string" ? { command: safeParse(call.function.arguments).command as string } : {}), resultText: output, isError: toolResultFailed(name, output), source: "local" }, policy?.task); } catch { /* optional research observations */ }
         }
         capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
       }

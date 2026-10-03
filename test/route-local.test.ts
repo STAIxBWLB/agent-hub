@@ -91,3 +91,16 @@ test("hub route parser is closed and sidecar serialization excludes its tables",
   expect(routing.hub_routes?.["hub/stage"]?.type).toBe("stage");
   expect(switchyardToml(routing, { baseUrl: "http://localhost/v1", extraHeaders: {} })).not.toContain("hub_routes");
 });
+
+test("local failed edits and exit-only shell failures carry route metadata but never unsupported wire fields", async () => {
+  for (const name of ["edit", "bash"]) {
+    const f = await fixture({ type: "stage" }, body => {
+      const n = body.messages.filter(m => m.role === "tool").length;
+      return n < 2 ? { tool_calls: [toolCall(name, name === "edit" ? { path: "a.txt", old: "no such fragment", new: "replacement" } : { command: "exit 1" })] } : { content: "reported the failure" };
+    });
+    await f.run();
+    expect(f.routes.at(-1)).toBe("coding");
+    expect(f.answers).toEqual(["reported the failure"]);
+    for (const request of f.model.requests) for (const message of request.body.messages) expect(message).not.toHaveProperty("is_error");
+  }
+});
