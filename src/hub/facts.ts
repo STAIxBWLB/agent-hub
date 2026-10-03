@@ -19,7 +19,7 @@ import { realPath } from "./project.ts";
 
 /** Larger files are not read: they are compared by size and modification time, and named without a diff. */
 const MAX_BYTES = 256 * 1024;
-/** Larger files that are not read are hashed for the HEAD comparison up to this size; beyond it, no claim is made. */
+/** Larger files that are not read are hashed for the HEAD comparison while all of them in one comparison total this much or less; beyond it, none is compared. */
 const HASHED_BYTES = 64 * 1024 * 1024;
 /** Changed lines shown in one fact, all files together; the rest is counted and the files named. */
 export const MAX_LINES = 60;
