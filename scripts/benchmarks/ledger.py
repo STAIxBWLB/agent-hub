@@ -67,6 +67,7 @@ UNITS = {
              "readback or done confirmed), build time, the hook process's start-up time, steer round trip, refused "
              "and unanswered steers; ack_ms_median is offer-to-acknowledgement",
     "capability": "per peer, the hub's capability events (verified or lost) with their time, setup included",
+    "progress": "the bounded task progress series and stuck verdicts recorded by the hub; tool text is never included. Coverage is observation-driven and asymmetric: Codex completed command/file items, local/Pi tool callbacks, and Claude turn-free hooks are different capture surfaces. An absent peer or interval means unobserved, not zero activity or no difficulty",
     "validity": "whether the attempt is a valid run of its arm, by the grader's own gates: its teardown complete (no "
                 "process of it known to be left, its evidence taken, the trust entry taken back; #113; a record from "
                 "before 0.12.5 is judged by its own cleanup_complete and trust_restored, as then, and its teardown is "
@@ -366,6 +367,24 @@ def capability_of(events, t0):
     return out
 
 
+def progress_of(events, t0):
+    """Preserve the bounded signal time series and make the observation coverage explicit."""
+    series, stuck, counts = [], [], {}
+    for e in events:
+        peer = e.get("peer")
+        if e.get("type") == "progress":
+            counts[peer] = counts.get(peer, 0) + 1
+            series.append({k: e[k] for k in ("peer", "task", "severity", "spinning", "exploring", "production") if k in e} | {"at_s": secs(t0, at_ms(e["at"]))})
+        elif e.get("type") == "stuck":
+            stuck.append({k: e[k] for k in ("peer", "task", "category", "streak", "latched") if k in e} | {"at_s": secs(t0, at_ms(e["at"]))})
+    return {"series": series, "stuck": stuck, "coverage": {
+        "observed_peers": sorted(p for p, n in counts.items() if p),
+        "samples_by_peer": counts,
+        "notes": ["Codex commandExecution/fileChange, local/Pi tool callbacks, and Claude turn-free hooks have different observation coverage.",
+                  "Only emitted samples are measured; a missing peer or interval is unknown, not zero progress or no difficulty."],
+    }}
+
+
 def validity_of(run):
     why = teardown_failure(run) or treatment_failure(str(run.get("kind") or ""), run) or isolation_failure(run)
     if why and why.startswith("hook isolation unknown"): return {"valid": None, "why": why}
@@ -561,6 +580,7 @@ def ledger_of(run):
         "late_replies": late_replies(run, codex_done),
         "facts": facts_of(window),
         "capability": capability_of(events, t0),
+        "progress": progress_of(window, t0),
         "validity": validity_of(run),
         "treatment": treatment_of(run, window),
         "stopped_s": round(run["stoppedMs"] / 1000, 1) if isinstance(run.get("stoppedMs"), (int, float)) else None,
@@ -602,6 +622,11 @@ def summarize(rows, missing=(), unreadable=()):
     def size(v):
         return None if v is None else len(v)
 
+    def progress_known(r):
+        p = r.get("progress") or {}
+        coverage = p.get("coverage") or {}
+        return bool(coverage.get("observed_peers") or p.get("stuck"))
+
     out = {}
     for arm, rs in by.items():
         done = [r for r in rs if ok(r)]
@@ -633,6 +658,8 @@ def summarize(rows, missing=(), unreadable=()):
             **total(rs, "late_replies", lambda r: size(r.get("late_replies")), joint),
             **total(rs, "quiet", lambda r: r.get("quiet")),
             **total(rs, "stale", lambda r: r.get("stale")),
+            **total(rs, "progress_samples", lambda r: size((r.get("progress") or {}).get("series")) if progress_known(r) else None),
+            **total(rs, "stuck_verdicts", lambda r: size((r.get("progress") or {}).get("stuck")) if progress_known(r) else None),
             **total(rs, "fact_offers", lambda r: sum(r["facts"][v]["offers"] for v in ("hook", "steer", "done")) if r.get("facts") else None),
             **total(rs, "fact_bytes_offered", lambda r: sum(r["facts"][v]["bytes_offered"] for v in ("hook", "steer", "done")) if r.get("facts") else None),
             **total(rs, "fact_bytes_acknowledged", lambda r: sum(r["facts"][v]["bytes_acknowledged"] for v in ("hook", "steer", "done")) if r.get("facts") else None),

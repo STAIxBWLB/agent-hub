@@ -16,6 +16,8 @@ export type HubEvent =
   | { type: "fact_ack"; peer: string; id: string; via: string; ms: number }
   | { type: "route"; peer: string; route: string; tier: string; source: "override" | "dimensions" | "hold" | "classifier" | "default"; score: number; ms: number }
   | { type: "advisor"; peer: string; route: string; trigger: string; verdict: "approve" | "redo" | "failed"; discardedChars: number }
+  | { type: "progress"; peer: string; task: number; severity: number; spinning: number; exploring: number; production: number }
+  | { type: "stuck"; peer: string; task: number; category: "repetition" | "false_progress" | "drift" | "desperation" | "capability_gap"; streak: number; latched: boolean }
   | { type: "capability"; peer: string; state: "verified" | "lost"; via?: string }
   | { type: "split"; task: number; where?: "routing" | "cohort"; verdict: "split" | "single" | "unknown"; single?: string; splitS?: number; singleS?: number; reason?: string; trace?: string[] }
   | { type: "state"; peer: string; state: string }

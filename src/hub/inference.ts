@@ -2,6 +2,8 @@ import type { OmniRoute } from "../omniroute/client.ts";
 import type { Sidecar } from "../switchyard/sidecar.ts";
 import { CLASSES, type TaskClass } from "./board.ts";
 import { DIGEST, newEnvelope, type Envelope } from "./envelope.ts";
+import { buildEscalationJudgeRequest, parseEscalationVerdict, type EscalationVerdict } from "../models/route/escalation.ts";
+import type { Conversation } from "../models/route/normalize.ts";
 
 export interface InferenceConfig {
   enabled: boolean;
@@ -126,5 +128,14 @@ export class Inference {
     );
     const word = answer?.toLowerCase().match(/[a-z_]+/)?.[0];
     return CLASSES.find((c) => c === word);
+  }
+
+  /** A closed escalation verdict, or no verdict when inference is unavailable or malformed. */
+  async escalate(conversation: Conversation, turn: number): Promise<EscalationVerdict | undefined> {
+    const request = buildEscalationJudgeRequest(conversation, turn);
+    const user = request.messages[0]?.content;
+    if (!user) return undefined;
+    const answer = await this.complete(request.systemPrompt, user, request.maxOutputTokens);
+    return answer ? parseEscalationVerdict(answer) : undefined;
   }
 }
