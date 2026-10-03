@@ -628,3 +628,23 @@ test("a PII-named file that falls out of the touched list is counted in the noti
   facts.ack("claude", told.id);
   expect(facts.due("claude")?.text ?? "").not.toContain("no longer tracked");
 });
+
+// issue #112: whether large files are compared with HEAD depends on their stat data only, never on what an earlier call
+// hashed, so an integration target does not move without a byte changing.
+test("over 64 MiB of large HEAD-equal files are not compared at all, and the integration target stays put", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-facts-")));
+  dirs.push(root);
+  mkdirSync(join(root, "src"));
+  const big = Buffer.alloc(33 * 1024 * 1024, 7);
+  for (const f of ["a.bin", "b.bin"]) writeFileSync(join(root, "src", f), big);
+  const git = (...a: string[]) => spawnSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...a]);
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const later = new Date(Date.now() + 60_000);
+  for (const f of ["a.bin", "b.bin"]) { writeFileSync(join(root, "src", f), big); utimesSync(join(root, "src", f), later, later); }
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: ["src"], plans: [] }), peers: () => ["claude"], nameable: () => true });
+  const first = facts.tree(["src"]);
+  expect(facts.tree(["src"])).toBe(first);
+  expect(facts.tree(["src"])).toBe(first);
+}, 30_000); // 66 MiB through git: slow on a CI disk

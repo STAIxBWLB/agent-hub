@@ -1884,4 +1884,8 @@ test("the shadow prediction never changes assignment: routed and named work go w
   await tasks.decline(fresh.owner!, fresh.id, "not mine");
   await tasks.propose("codex", { title: "codex claims c", class: "implement", owner: "codex", refs: { paths: ["src/c.ts"] } });
   expect(recorded.filter((r) => r.where === "routing")).toEqual([]);
+  // Work routing gives back to its proposer is no hand-over the observations count, so no calibration record either.
+  const own = await tasks.propose("codex", { title: "codex's own on c", class: "implement", refs: { paths: ["src/c.ts"] } });
+  expect(own.owner).toBe("codex"); // the configured order; claude's task on src/c.ts has not started
+  expect(recorded.filter((r) => r.where === "routing")).toEqual([]);
 });

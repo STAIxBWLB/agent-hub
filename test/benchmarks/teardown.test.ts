@@ -336,3 +336,13 @@ test("when the read after the freeze fails, only what the STOP reached is killed
   expect(w.signals).not.toContainEqual([-107, "SIGKILL"]);
   expect(c.outcome).toBe("incomplete_or_unknown");
 });
+
+test("a process frozen in a later round is killed by the last read that showed it when the next read fails, never continued", async () => {
+  const { w, deps, shutdown } = world(everything, {
+    stubborn: [107],
+    unreadable: () => w.signals.some(([pid, sig]) => pid === -108 && sig === "SIGSTOP"),
+    onSignal: (pid, sig, w) => { if (pid === -107 && sig === "SIGSTOP" && !w.rows.some((r) => r.pid === 108)) w.rows.push(row(108, 107, 108, "git commit")); return false; },
+  });
+  await teardown(actors(everything), DIR, shutdown, deps, { settleMs: 500, fallbackMs: 1000 });
+  expect(w.signals.filter(([pid]) => pid === -108).map(([, sig]) => sig)).toEqual(["SIGSTOP", "SIGKILL"]);
+});

@@ -642,8 +642,8 @@ export class Tasks {
     const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}) }, opts.note ?? `to ${a.owner}`, profile ? { profile } : {});
     // What calibration reads (issue #109): routing chose the first owner (no single named candidate, no claim; not an
     // escalation, relay or reassignment of work already begun), and the work overlaps another owner's task not started
-    // yet. For the record only.
-    if ((opts.event ?? "assigned") === "assigned" && !opts.claim && opts.candidates?.length !== 1) {
+    // yet. For the record only. Work routed back to its proposer is left out, as its observations are (by === owner).
+    if ((opts.event ?? "assigned") === "assigned" && !opts.claim && opts.candidates?.length !== 1 && a.owner !== by) {
       const shadow = this.splitShadow(next, a.owner, true);
       if (shadow) this.d.recordSplit?.(next.id, shadow, "routing");
     }

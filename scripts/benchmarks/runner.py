@@ -134,7 +134,8 @@ def teardown_failure(run):
     """Issue #113: an attempt whose processes are not known to be gone, whose evidence could not be taken, or whose
     trust entry was not taken back is unavailable, for grading and the ledger alike. The end reason stays as it was."""
     if run.get("teardown_errors"): return ("teardown evidence incomplete: "+"; ".join(map(str,run["teardown_errors"])))[:300]
-    if "cleanup_complete" not in run: return "cleanup not recorded (a record from before 0.12.3)"
+    # Before 0.12.5 cleanup_complete meant the shutdown commands exited 0, not that the processes were seen gone (#113).
+    if not isinstance(run.get("cleanup"), dict): return "cleanup not verified (a record from before 0.12.5)"
     if run.get("cleanup_complete") is not True: return ("cleanup incomplete or unknown: "+"; ".join(map(str,(run.get("cleanup") or {}).get("reasons") or [])))[:300]
     if "claude" in str(run.get("kind") or "") and run.get("trust_restored") is not True: return "the Claude trust entry was not taken back"
     return None

@@ -57,7 +57,7 @@ test("every measure of a turn-free attempt, with its unit, from the records nati
     const item = (item: Record<string, unknown>, s: number) => ({ method: "item/completed", params: { item }, emittedAtMs: ms(s) });
     const usage = (s: number, total: number) => ({ method: "thread/tokenUsage/updated", params: { tokenUsage: { total: { totalTokens: total }, last: { totalTokens: 1 } } }, emittedAtMs: ms(s) });
     run("00-hub-turnfree-codex-claude", {
-      index: 0, cleanup_complete: true, trust_restored: true, kind: "hub-turnfree-codex-claude", repeat: 1, end_reason: "completed", end_reason_detail: "completed", setupMs: 20_000, elapsedMs: 100_000, stoppedMs: 4000, teardownMs: 9000, cwd, sealedCommit, startedAt: ms(0),
+      index: 0, cleanup_complete: true, cleanup: { outcome: "clean", reasons: [] }, trust_restored: true, kind: "hub-turnfree-codex-claude", repeat: 1, end_reason: "completed", end_reason_detail: "completed", setupMs: 20_000, elapsedMs: 100_000, stoppedMs: 4000, teardownMs: 9000, cwd, sealedCommit, startedAt: ms(0),
       readiness: { claude: { transcriptPath: transcript } },
       conditions: { claude: { hookEvents: ["PostToolUse", "PreToolUse", "Stop"] }, codex: { hooksFeature: false } },
       codexTaskStart: 2,
@@ -184,7 +184,7 @@ test("overwrites and own rewrites, partial-line edits, a Write that carries a pe
     ].join("\n"));
     const codexItem = (s: number, changes: unknown[]) => ({ method: "item/completed", params: { item: { type: "fileChange", status: "completed", changes } }, emittedAtMs: t0 + s * 1000 });
     run("00-hub-turnfree-codex-claude", {
-      index: 0, cleanup_complete: true, trust_restored: true, kind: "hub-turnfree-codex-claude", repeat: 0, end_reason: "timeout", end_reason_detail: "wall-timeout", cwd, sealedCommit, readiness: { claude: { transcriptPath: transcript } },
+      index: 0, cleanup_complete: true, cleanup: { outcome: "clean", reasons: [] }, trust_restored: true, kind: "hub-turnfree-codex-claude", repeat: 0, end_reason: "timeout", end_reason_detail: "wall-timeout", cwd, sealedCommit, readiness: { claude: { transcriptPath: transcript } },
       taskStates: [
         { id: 1, owner: "codex", state: "approved", history: [{ event: "proposed", at: t0 }, { event: "done", at: t0 + 50_000 }] },
         { id: 2, owner: "claude", state: "in_progress", history: [{ event: "proposed", at: t0 }] },
@@ -196,7 +196,7 @@ test("overwrites and own rewrites, partial-line edits, a Write that carries a pe
         codexItem(4, [{ path: join(cwd, "old.py"), kind: { type: "update", move_path: join(cwd, "moved.py") }, diff: "@@ -1 +1 @@\n-def old_helper():\n+def moved_helper():" }]),
       ],
     });
-    run("00-solo-codex", { index: 0, cleanup_complete: true, trust_restored: true, kind: "solo-codex", repeat: 0, end_reason: "interrupted", end_reason_detail: "setup-calibration", cwd, sealedCommit, taskStates: [], events: [], codexMessages: [] });
+    run("00-solo-codex", { index: 0, cleanup_complete: true, cleanup: { outcome: "clean", reasons: [] }, trust_restored: true, kind: "solo-codex", repeat: 0, end_reason: "interrupted", end_reason_detail: "setup-calibration", cwd, sealedCommit, taskStates: [], events: [], codexMessages: [] });
     const out = ledger();
     const tf = out.rows.find((r: { arm: string }) => r.arm === "hub-turnfree-codex-claude");
     expect(tf).toMatchObject({ completed: false, both_done_s: null, end_reason_detail: "wall-timeout" });
@@ -217,7 +217,7 @@ test("a missing fixture or an unreadable transcript gives nulls with a reason, n
   const { root, cwd, sealedCommit, run, ledger, t0 } = fixture();
   try {
     run("00-hub-codex-claude", {
-      index: 0, cleanup_complete: true, trust_restored: true, kind: "hub-codex-claude", end_reason: "completed", cwd: join(root, "gone"), sealedCommit, readiness: { claude: { transcriptPath: join(root, "nope.jsonl") } },
+      index: 0, cleanup_complete: true, cleanup: { outcome: "clean", reasons: [] }, trust_restored: true, kind: "hub-codex-claude", end_reason: "completed", cwd: join(root, "gone"), sealedCommit, readiness: { claude: { transcriptPath: join(root, "nope.jsonl") } },
       taskStates: [{ id: 1, owner: "codex", state: "approved", history: [{ event: "proposed", at: t0 }, { event: "done", at: t0 + 1000 }] }], events: [], codexMessages: [],
     });
     const row = ledger().rows[0];
@@ -237,7 +237,7 @@ test("several run directories pool their repeats; a planned attempt without a re
   const b = fixture();
   try {
     const record = (f: ReturnType<typeof fixture>, kind: string, repeat: number, events: unknown[] = []) => ({
-      index: 0, cleanup_complete: true, trust_restored: true, kind, repeat, end_reason: "completed", cwd: f.cwd, sealedCommit: f.sealedCommit, codexMessages: [], events,
+      index: 0, cleanup_complete: true, cleanup: { outcome: "clean", reasons: [] }, trust_restored: true, kind, repeat, end_reason: "completed", cwd: f.cwd, sealedCommit: f.sealedCommit, codexMessages: [], events,
       readiness: kind.includes("claude") ? { claude: { transcriptPath: join(f.root, "none.jsonl") } } : {},
       taskStates: [{ id: 1, owner: "codex", state: "approved", history: [{ event: "proposed", at: f.t0 }, { event: "done", at: f.t0 + repeat * 10_000 }] }],
     });
@@ -274,9 +274,9 @@ test("a measure that does not apply is not unknown, an unknown settlement or a p
       JSON.stringify({ type: "assistant", timestamp: iso(11), message: { id: "m2", model: "<synthetic>", stop_reason: "stop_sequence", content: [{ type: "text", text: "API Error" }] } }),
     ].join("\n"));
     const task = (owner: string, done: number) => ({ id: 1, owner, state: "approved", history: [{ event: "proposed", at: t0 }, { event: "done", at: t0 + done * 1000 }] });
-    run("00-solo-claude", { index: 0, cleanup_complete: true, trust_restored: true, kind: "solo-claude", repeat: 0, end_reason: "completed", cwd, sealedCommit, readiness: { claude: { transcriptPath: transcript } }, taskStates: [task("claude", 10)], events: [], codexMessages: [] });
+    run("00-solo-claude", { index: 0, cleanup_complete: true, cleanup: { outcome: "clean", reasons: [] }, trust_restored: true, kind: "solo-claude", repeat: 0, end_reason: "completed", cwd, sealedCommit, readiness: { claude: { transcriptPath: transcript } }, taskStates: [task("claude", 10)], events: [], codexMessages: [] });
     run("00-hub-codex-claude", {
-      index: 0, cleanup_complete: true, trust_restored: true, kind: "hub-codex-claude", repeat: 0, end_reason: "completed", cwd, sealedCommit, readiness: { claude: { transcriptPath: join(root, "gone.jsonl") } }, taskStates: [task("codex", 10)], events: [],
+      index: 0, cleanup_complete: true, cleanup: { outcome: "clean", reasons: [] }, trust_restored: true, kind: "hub-codex-claude", repeat: 0, end_reason: "completed", cwd, sealedCommit, readiness: { claude: { transcriptPath: join(root, "gone.jsonl") } }, taskStates: [task("codex", 10)], events: [],
       codexMessages: [{ method: "turn/started", params: {}, emittedAtMs: t0 + 5000 }], // still in its turn when its record ended
     });
     const out = ledger();
@@ -326,14 +326,15 @@ test("a late transcript append keeps the frozen prefix, is reported, and leaves 
     // An attempt whose cleanup was not complete is unavailable to the ledger as to grading, whatever its end reason.
     run("00-solo-claude", { ...JSON.parse(readFileSync(join(root, "runs", "00-solo-claude.json"), "utf8")), cleanup_complete: false, cleanup: { outcome: "incomplete_or_unknown", reasons: ["still running: below 107"] } });
     expect(ledger().rows[0].validity).toEqual({ valid: false, why: "cleanup incomplete or unknown: still running: below 107" });
-    // A record from before 0.12.3 says nothing about its cleanup: unknown, never re-graded as invalid.
-    const { cleanup_complete: _, ...older } = JSON.parse(readFileSync(join(root, "runs", "00-solo-claude.json"), "utf8"));
-    run("00-solo-claude", older);
-    expect(ledger().rows[0].validity).toEqual({ valid: null, why: "cleanup not recorded (a record from before 0.12.3)" });
+    // A record from before 0.12.5 has no verified cleanup (0.12.3 and 0.12.4 set cleanup_complete when the shutdown
+    // commands exited 0): unknown, never re-graded as invalid.
+    const { cleanup: _, ...older } = JSON.parse(readFileSync(join(root, "runs", "00-solo-claude.json"), "utf8"));
+    run("00-solo-claude", { ...older, cleanup_complete: true });
+    expect(ledger().rows[0].validity).toEqual({ valid: null, why: "cleanup not verified (a record from before 0.12.5)" });
     run("00-solo-claude", { ...older, kind: "solo-codex", codexMessages: [{ method: "hook/started" }] }); // a definite failure still shows
     expect(ledger().rows[0].validity).toEqual({ valid: false, why: "hook isolation failed: Codex ran hooks" });
     // A flag beside the end reason is part of how the attempt ended: reported, not a bare "completed".
-    run("00-solo-claude", { ...JSON.parse(readFileSync(join(root, "runs", "00-solo-claude.json"), "utf8")), kind: "solo-claude", codexMessages: [], cleanup_complete: true, end_reason: "infrastructure-error", end_reason_detail: "completed", end_flags: ["tree-changed-after-active-time"] });
+    run("00-solo-claude", { ...JSON.parse(readFileSync(join(root, "runs", "00-solo-claude.json"), "utf8")), kind: "solo-claude", codexMessages: [], cleanup_complete: true, cleanup: { outcome: "clean", reasons: [] }, end_reason: "infrastructure-error", end_reason_detail: "completed", end_flags: ["tree-changed-after-active-time"] });
     const flagged = ledger();
     expect(flagged.rows[0].end_story).toBe("completed, then tree-changed-after-active-time");
     expect(flagged.summary["solo-claude"].not_completed).toEqual(["completed, then tree-changed-after-active-time"]);

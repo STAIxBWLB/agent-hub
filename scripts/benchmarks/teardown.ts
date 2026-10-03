@@ -201,17 +201,19 @@ export async function teardown(actors: Actor[], dir: string, shutdown: () => Pro
             // What a read after the freeze shows for the first time (started between the read and the STOPs) is frozen
             // too, and read again, before anything is killed.
             const stopped = send(before, 'SIGSTOP');
-            let after = deps.table();
+            let after = deps.table(), seen = after ?? before;
             for (let round = 0; after && round < 4; round++) {
                 grow(after);
                 const fresh = alive(after).filter((a) => !stopped.some((s) => key(s) === key(a)));
                 if (!fresh.length) break;
                 stopped.push(...send(after, 'SIGSTOP', fresh));
                 after = deps.table();
+                if (after) seen = after;
             }
             if (after) grow(after);
-            // Without a read after the freeze, only what the STOP reached is killed: a stopped process keeps its pid.
-            const killed = after ? send(after, 'SIGKILL') : send(before, 'SIGKILL', stopped);
+            // Without a read after the last freeze, only what a STOP reached is killed, by the last read that showed
+            // it: a stopped process keeps its pid.
+            const killed = after ? send(after, 'SIGKILL') : send(seen, 'SIGKILL', stopped);
             const rest = stopped.filter((a) => !killed.some((k) => key(k) === key(a)));
             if (rest.length) { const r = deps.table(); if (r) send(r, 'SIGCONT', rest); }
             await settleFor(bounds.fallbackMs / 2);
