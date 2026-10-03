@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { ControlClient } from "../src/hub/control-client.ts";
+import { PiPeer } from "../src/adapters/pi.ts";
+import { newEnvelope } from "../src/hub/envelope.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 
 const cleanup: (() => Promise<void> | void)[] = [];
@@ -279,4 +281,22 @@ test("a Pi hub_send the limits refuse returns not sent with the reason", async (
   })).json() as Promise<{ text: string }>;
   expect((await call("hub_send", { text: "build is green" }, "send1")).text).toBe("sent");
   expect((await call("hub_send", { text: "build is green" }, "send2")).text).toMatch(/^not sent: the same message went to everyone \d+ s ago$/);
+});
+
+
+test("the actual daemon model selector preserves DGX fast for bulk/test class policies", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-pi-class-model-"));
+  const config = { ...DEFAULT_CONFIG, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { daemon, console_ } = await hub(config);
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless", backend: "auto" } })).ok).toBe(true);
+  const peer = daemon.bus.peers.get("pi") as PiPeer;
+  for (const [cls, expected] of [["bulk_edit", "dgx/fast"], ["test", "dgx/fast"], ["implement", "dgx/coding"], ["summarize", "mlx/fast"]]) {
+    const proposed = await console_.request({ t: "task", op: "hub_task_propose", args: { title: `Model policy ${cls}`, class: cls, owner: "pi" } });
+    expect(proposed.ok).toBe(true);
+    const id = String(proposed.text).match(/task #(\d+)/)?.[1];
+    expect(id).toBeDefined();
+    const model = await peer["opts"].selectModel!([newEnvelope("hub", "Task model selection", { kind: "task", refs: { task: id! } })]);
+    expect(model).toBe(expected!);
+  }
+  expect(await peer["opts"].selectModel!([newEnvelope("user", "No class pin")])).toBe("hub/auto");
 });
