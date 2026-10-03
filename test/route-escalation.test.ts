@@ -35,6 +35,24 @@ describe("escalation route", () => {
     expect(summary).toContain("[user (task)] task");
     expect(summary).toContain("19 xxx");
   });
+  test("long task anchors are middle-truncated without dropping the latest trajectory at the default cap", () => {
+    const conversation = normalizeConversation([
+      ...Array.from({ length: 5 }, (_, i) => ({ role: "user", content: `task-anchor-${i} ${"x".repeat(3_900)}` })),
+      { role: "assistant", content: "LATEST_ASSISTANT_SENTINEL" },
+    ]);
+    const summary = summarizeForEscalation(conversation, 6);
+    expect(Array.from(summary).length).toBeLessThanOrEqual(18_000);
+    expect(summary).toContain("LATEST_ASSISTANT_SENTINEL");
+  });
+  test("long task anchors reserve the latest trajectory under a smaller request cap", () => {
+    const conversation = normalizeConversation([
+      ...Array.from({ length: 5 }, (_, i) => ({ role: "user", content: `task-anchor-${i} ${"x".repeat(3_900)}` })),
+      { role: "assistant", content: "LATEST_ASSISTANT_SENTINEL" },
+    ]);
+    const summary = summarizeForEscalation(conversation, 6, { maxRequestChars: 1_000 });
+    expect(Array.from(summary).length).toBeLessThanOrEqual(1_000);
+    expect(summary).toContain("LATEST_ASSISTANT_SENTINEL");
+  });
   test("same fresh category confirms; changed, stale, or declined verdict resets", () => {
     const state = new EscalationState();
     const verdict = { escalate: true, category: "repetition" as const, newEvidence: true, reason: "stuck" };

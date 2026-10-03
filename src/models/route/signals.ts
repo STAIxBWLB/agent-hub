@@ -24,6 +24,8 @@ export interface ToolObservation {
   resultText?: string;
   isError?: boolean;
   source?: string;
+  /** Actual native assistant/model turn identity, absent when the surface cannot prove it. */
+  turn?: string;
 }
 
 export interface ToolSignals {
@@ -99,7 +101,8 @@ function shellClassification(command: string): Semantic {
   for (const segment of segments) {
     const words = shellWords(segment); const p = baseProgram(words[0] ?? '');
     if (['cp', 'mkdir', 'touch', 'install'].includes(p)) return 'write';
-    if (words.some((w) => w === '>' || w === '>>') && (['echo', 'printf', 'git'].includes(p) || BASH_READ_COMMANDS.has(p))) return 'write';
+    const redirectsOutput = words.some((word) => word === '>' || word === '>>' || /^\d*>{1,2}(?!&)\S*$/u.test(word));
+    if (redirectsOutput && (['echo', 'printf', 'git'].includes(p) || BASH_READ_COMMANDS.has(p))) return 'write';
   }
   if (['sed -i', 'sed --in-place', 'awk -i inplace', "awk 'inplace=1'", 'patch ', 'patch -p', 'perl -i', 'perl -p -i', 'perl -pi'].some((p) => lower.includes(p))) return 'edit';
   for (const segment of segments) {
@@ -182,7 +185,7 @@ export function fingerprint(text: string, isError: boolean): string | undefined 
   const detected = failureSeverity(text, isError); if (detected.severity < HARD && !isError) return undefined;
   const lines = lower(text).split('\n');
   const diagnostic = lines.find((line) => /error|exception|panic|failed|timed out|timeout|connection refused|cannot allocate memory|out of memory|not found/u.test(line.trim())) ?? lines.find((line) => line.trim()) ?? '';
-  const normalized = diagnostic.split(/\s+/u).map((word) => word.startsWith('/') || word.includes('/src/') || word.includes('/tmp/') ? '<path>' : word.replace(/\d+/gu, '#')).join(' ').slice(0, 240);
+  const normalized = [...diagnostic.split(/\s+/u).map((word) => word.startsWith('/') || word.includes('/src/') || word.includes('/tmp/') ? '<path>' : word.replace(/\d+/gu, '#')).join(' ')].slice(0, 240).join('');
   return `${detected.names.join(',')}|${normalized}`;
 }
 function nonzeroFailureCount(text: string): boolean {
@@ -218,7 +221,7 @@ export function extractToolSignals(conversation: Conversation, recentWindow = DE
   const calls: Array<{name:string;command?:string}> = []; const results: Result[]=[]; const ids=new Map<string,boolean>(); let assistants=0; let compacted=false;
   for(const message of conversation.messages){if(message.role==='assistant')assistants++;
     if(message.content.toLowerCase().includes('session is being continued'))compacted=true;
-    for(const call of message.toolCalls){const command=argumentCommand(call.arguments);calls.push({name:call.name,...(command!==undefined?{command}:{})}); ids.set(call.id, READ.has(call.name.toLowerCase())||(EDITOR.has(call.name.toLowerCase())&&command==='view'));}
+    for(const call of message.toolCalls){const command=argumentCommand(call.arguments);calls.push({name:call.name,...(command!==undefined?{command}:{})}); ids.set(call.id,semantic(call.name,command)==='read');}
     for(const result of message.toolResults){const retrieval=ids.get(result.toolCallId)===true&&!result.isError;results.push({text:retrieval?'':result.content,isError:result.isError===true});}
   }
   return buildSignals(calls,results,conversation.messages.length,assistants,compacted,recentWindow);
@@ -226,6 +229,6 @@ export function extractToolSignals(conversation: Conversation, recentWindow = DE
 
 export function extractToolSignalsFromObservations(observations: readonly ToolObservation[], turnDepth = observations.length, recentWindow = DEFAULT_RECENT_WINDOW): ToolSignals {
   const calls=observations.map((o)=>({name:o.name, ...(o.command!==undefined?{command:o.command}:{}), ...(o.source!==undefined?{source:o.source}:{})}));
-  const results=observations.filter((o)=>o.resultText!==undefined||o.isError===true).map((o)=>({text:!o.isError && (READ.has(o.name.toLowerCase()) || (EDITOR.has(o.name.toLowerCase()) && o.command==='view')) ? '' : o.resultText??'',isError:o.isError===true}));
+  const results=observations.filter((o)=>o.resultText!==undefined||o.isError===true).map((o)=>({text:!o.isError && semantic(o.name,o.command,o.source)==='read' ? '' : o.resultText??'',isError:o.isError===true}));
   return buildSignals(calls,results,turnDepth,turnDepth,false,recentWindow);
 }

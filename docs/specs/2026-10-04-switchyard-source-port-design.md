@@ -137,6 +137,7 @@ related: 261004-review-agent-hub-switchyard-comparison.md, 261004-plan-agent-hub
     - Escalation 판정기 실패를 fail-open으로.
     - REDO 피드백을 local worker 이력에 남김.
     - Responses·Codex 원시 블록 제외.
+    - Escalation의 여러 작업 앵커가 전체 입력 상한을 넘을 때 최신 실행 창을 보존하도록 앵커를 함께 축약. 상류의 최신 활동 누락 버그를 의도적으로 수정.
   - 문자 수는 Rust의 Unicode scalar 기준이므로 JS에서는 code point 단위(`[...s]`)로 셈. 정규식은 `u` 플래그.
 - **E4 입력 정규화**
   - OpenAI chat 메시지를 Switchyard 내부 형태로 맞추는 어댑터.

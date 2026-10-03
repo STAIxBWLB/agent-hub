@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { normalizeConversation } from "../src/models/route/normalize.ts";
-import { extractToolSignals, extractToolSignalsFromObservations } from "../src/models/route/signals.ts";
+import { extractToolSignals, extractToolSignalsFromObservations, fingerprint } from "../src/models/route/signals.ts";
 
 function signalFor(name: string, args: unknown = {}) {
   return extractToolSignals(normalizeConversation({ messages: [{ role: "assistant", tool_calls: [{ id: "c1", type: "function", function: { name, arguments: JSON.stringify(args) } }] }] }));
@@ -111,4 +111,37 @@ test("source failure separator and indentation spellings retain their severity",
   expect(extractToolSignalsFromObservations([{ name: "bash", resultText: "  error: patch failed: src/x:1" }]).severity).toBe(0.7);
   expect(extractToolSignalsFromObservations([{ name: "read", resultText: "AssertionError in source fixture" }, { name: "read", resultText: "AssertionError in source fixture" }]).severity).toBe(0);
   expect(extractToolSignalsFromObservations([{ name: "read", resultText: "AssertionError", isError: true }]).severity).toBe(0.7);
+});
+
+test("successful shell reads are retrieval results in Chat IR and peer observations", () => {
+  for (const command of ["cat failing.ts", "rg AssertionError src"]) {
+    const conversation = normalizeConversation({ messages: [
+      { role: "assistant", tool_calls: [{ id: command, function: { name: "exec_command", arguments: JSON.stringify({ cmd: command }) } }] },
+      { role: "tool", tool_call_id: command, content: "AssertionError: text found in source" },
+    ] });
+    expect(extractToolSignals(conversation).severity).toBe(0);
+    expect(extractToolSignalsFromObservations([{ name: "exec_command", command, resultText: "AssertionError: text found in source" }]).severity).toBe(0);
+  }
+
+  const failedRead = normalizeConversation({ messages: [
+    { role: "assistant", tool_calls: [{ id: "read", function: { name: "exec_command", arguments: JSON.stringify({ cmd: "cat missing.ts" }) } }] },
+    { role: "tool", tool_call_id: "read", content: "AssertionError: command failed", is_error: true },
+  ] });
+  expect(extractToolSignals(failedRead).severity).toBe(0.7);
+  expect(extractToolSignalsFromObservations([{ name: "exec_command", command: "cat missing.ts", resultText: "AssertionError: command failed", isError: true }]).severity).toBe(0.7);
+});
+
+test("attached shell redirection destinations classify as writes", () => {
+  for (const command of ["printf result >result.txt", "printf result >>result.txt", "cat source.txt >result.txt", "cat source.txt >>result.txt"]) {
+    const signal = signalFor("exec_command", { cmd: command });
+    expect(signal.writeCount).toBe(1);
+    expect(signal.readCount).toBe(0);
+  }
+});
+
+test("failure fingerprints cap at 240 Unicode scalar values", () => {
+  const diagnostic = `AssertionError: ${"😀".repeat(300)}`;
+  const value = fingerprint(diagnostic, false);
+  expect(value).toBeDefined();
+  expect(value!.split("|").at(-1)).toBe([...diagnostic.toLowerCase()].slice(0, 240).join(""));
 });
