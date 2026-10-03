@@ -99,6 +99,15 @@ export function touchedPaths(name: string, args: Record<string, unknown>): strin
   return [];
 }
 
+/** Failure metadata for hub-owned loops; retrieved read text is line-numbered, process status is appended by us. */
+export function toolResultFailed(name: string, output: string): boolean {
+  if (name === "bash" || name === "git") {
+    const exit = output.match(/(?:^|\n)\(exit ([^\n)]+)\)$/u);
+    if (exit) return Number(exit[1]) !== 0;
+  }
+  return output.startsWith("error:");
+}
+
 /** Executes one tool call. Never throws: every failure comes back as text for the model to read. */
 export async function runTool(name: string, rawArgs: string, ctx: ToolContext): Promise<string> {
   let a: Record<string, any>;

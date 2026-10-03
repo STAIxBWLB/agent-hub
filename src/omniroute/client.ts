@@ -24,6 +24,8 @@ export interface ChatMessage {
   content: string | null;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+  /** Internal local-tool outcome, consumed by route normalization and omitted from provider transport. */
+  is_error?: boolean;
 }
 export interface ChatResult {
   message: ChatMessage;
@@ -171,7 +173,7 @@ export class OmniRoute {
       res = await fetch(`${base}/chat/completions`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ ...body, stream: false }),
+        body: JSON.stringify({ ...body, messages: body.messages.map(({ is_error: _internalError, ...message }) => message), stream: false }),
         ...(opts.signal ? { signal: opts.signal } : {}),
       });
     } catch (e) {
