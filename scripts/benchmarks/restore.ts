@@ -23,6 +23,8 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
         try { ledger = JSON.parse(readFileSync(ledgerFile, 'utf8')); }
         catch { return { restored: false, blockers: ['the restoration ledger cannot be read'], failed: [] }; }
     }
+    // Neither file: no runner got as far as its marker here, so it locked nothing and there is nothing to recover (#120).
+    if (!hasLedger && !existsSync(join(run, 'restoration.json'))) return { restored: true, blockers: [], failed: [] };
     // A re-run that died after an earlier run's `restored: true` leaves locks that file does not know about (#120).
     if (status?.restored === true && !unrestored(ledger).length) return { restored: true, blockers: [], failed: [] };
     if (!table) return { restored: false, blockers: ['the process table cannot be read'], failed: [] };

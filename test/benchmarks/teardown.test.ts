@@ -407,6 +407,11 @@ test("the runner restoration.json names holds the recovery while it runs; dead, 
   expect(recover(dead, processTable()!, new Map(), -1)).toEqual({ restored: true, blockers: [], failed: [] });
   expect(existsSync(join(dead, "restoration-ledger.json"))).toBe(false); // no ledger made up
   expect(JSON.parse(readFileSync(join(dead, "restoration.json"), "utf8")).restored).toBe(true);
+  // Neither file: no runner got as far as its marker, so there is nothing to recover, and nothing is written.
+  const untouched = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(untouched);
+  expect(recover(untouched, processTable()!, new Map(), -1)).toEqual({ restored: true, blockers: [], failed: [] });
+  expect(existsSync(join(untouched, "restoration.json"))).toBe(false);
 });
 
 test("an entry the user changed meanwhile (changed_concurrently) is theirs: the recovery leaves it", async () => {
