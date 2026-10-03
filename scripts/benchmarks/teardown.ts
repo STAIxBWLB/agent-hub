@@ -84,9 +84,11 @@ export const key = (a: { pid: number; started: string }) => `${a.pid}@${a.starte
  */
 export function extend(owned: Map<string, Actor>, rows: ProcRow[]): void {
     for (const a of [...owned.values()]) {
-        const alive = !!same(rows, a);
+        const row = same(rows, a), alive = !!row;
+        // The group it is in now, by the current row: a process may lead a group of its own after it was recorded.
+        if (row && row.pgid !== a.pgid) owned.set(key(a), { ...a, pgid: row.pgid });
         if (alive) for (const r of descendantsOf(rows, a.pid)) if (!owned.has(key(r))) owned.set(key(r), { role: 'below', pid: r.pid, started: r.started, pgid: r.pgid, via: `below ${a.role} ${a.pid}` });
-        if (a.pgid !== a.pid) continue;
+        if ((row ?? a).pgid !== a.pid) continue;
         const known = alive || rows.some((r) => r.pgid === a.pid && r.pid !== a.pid && owned.has(key(r)));
         if (known) for (const r of rows) if (r.pgid === a.pid && !owned.has(key(r))) owned.set(key(r), { role: 'below', pid: r.pid, started: r.started, pgid: r.pgid, via: `group of ${a.role} ${a.pid}` });
     }
@@ -215,7 +217,7 @@ export async function teardown(actors: Actor[], dir: string, shutdown: () => Pro
             // it: a stopped process keeps its pid.
             const killed = after ? send(after, 'SIGKILL') : send(seen, 'SIGKILL', stopped);
             const rest = stopped.filter((a) => !killed.some((k) => key(k) === key(a)));
-            if (rest.length) { const r = deps.table(); if (r) send(r, 'SIGCONT', rest); }
+            if (rest.length) send(deps.table() ?? seen, 'SIGCONT', rest); // a stopped process keeps its pid: never left frozen
             await settleFor(bounds.fallbackMs / 2);
         }
     }

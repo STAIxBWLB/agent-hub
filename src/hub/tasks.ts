@@ -645,8 +645,10 @@ export class Tasks {
     // escalation, relay or reassignment of work already begun), and the work overlaps another owner's task not started
     // yet. For the record only. Work routed back to its proposer is left out, as its observations are (by === owner).
     if ((opts.event ?? "assigned") === "assigned" && !opts.claim && opts.candidates?.length !== 1 && a.owner !== by) {
-      const shadow = this.splitShadow(next, a.owner, true);
-      if (shadow) this.d.recordSplit?.(next.id, shadow, "routing");
+      try {
+        const shadow = this.splitShadow(next, a.owner, true);
+        if (shadow) this.d.recordSplit?.(next.id, shadow, "routing");
+      } catch { /* shadow only: never between the board write and the delivery */ }
     }
     const hits = this.overlapHits(next);
     this.formCohort(next, hits);

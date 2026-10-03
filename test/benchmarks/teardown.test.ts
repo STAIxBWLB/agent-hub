@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProcRow } from "../../src/hub/child-process.ts";
 import { processTable } from "../../src/hub/child-process.ts";
-import { actorOf, awaitTurnEnd, captureActors, daemonRoot, restoreModes, same, restoreTrust, teardown, turnEnded, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
+import { actorOf, awaitTurnEnd, captureActors, daemonRoot, extend, restoreModes, same, restoreTrust, teardown, turnEnded, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
 
 // issue #113: an arm's teardown proves what it stops by identity (pid and start time), never by a name in argv.
 const dirs: string[] = [];
@@ -345,4 +345,11 @@ test("a process frozen in a later round is killed by the last read that showed i
   });
   await teardown(actors(everything), DIR, shutdown, deps, { settleMs: 500, fallbackMs: 1000 });
   expect(w.signals.filter(([pid]) => pid === -108).map(([, sig]) => sig)).toEqual(["SIGSTOP", "SIGKILL"]);
+});
+
+test("a process that leads a group of its own after it was recorded has that group followed, by the table as it is now", () => {
+  // 107 was recorded in its launcher's group 105, then led group 107; 108 joined it with no parent link to 107.
+  const owned = new Map<string, Actor>([["107@" + T, { role: "below", pid: 107, started: T, pgid: 105, via: "below codex-app-server 105" }]]);
+  extend(owned, [runner, row(107, 105, 107, "node tool.js"), row(108, 1, 107, "sleep 600")]);
+  expect([...owned.values()].map((a) => [a.pid, a.pgid])).toEqual([[107, 107], [108, 107]]);
 });

@@ -109,7 +109,7 @@ export async function stopOwnedProcess(proc: ChildProcess, { termMs = 1_000, kil
     // emptied and the id is someone else's now. Members without it are what the leader left (zombies are not listed).
     const rows = await table();
     const members = rows ? (rows.some((r) => r.pid === proc.pid) ? [] : rows.filter((r) => r.pgid === proc.pid)) : undefined;
-    if (members ? members.length : !groupGone(proc.pid)) throw new Error(`owned child ${proc.pid} exited before the stop and its process group still has members: not signalled`);
+    if (members ? members.length : !groupGone(proc.pid)) throw new Error(`owned child ${proc.pid} exited before the stop and its process group still has members${members ? ` (${members.map((r) => r.pid).join(", ")})` : ""}: not signalled; stop them to restart it`);
     return;
   }
   if (group) return stopGroup(proc, proc.pid, termMs, killMs, table);
