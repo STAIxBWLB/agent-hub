@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Bun 1.4.2 in CI, the release workflow and the plugin bundle build. Bun 1.4.2 still throws for a real path with a backslash, so `realPath` stays; whether it still has 1.3.14's spawnSync re-entrancy hang is not known, so `check.sh` keeps its test timeout and watchdog (#121).
+- Bun 1.4.2 in CI, the release workflow and the plugin bundle build. Bun 1.4.2 still throws for a real path with a backslash, so `realPath` stays, and still runs the next test inside an outer spawnSync's event loop after a timeout, so `check.sh` keeps its test timeout and watchdog. On 1.4.2, a model relay that is closed while it streams a response gets an error printed by Bun when it aborts that stream ("model relay closed"): log noise, not a failure (#121).
 
 ## 0.12.6
 
