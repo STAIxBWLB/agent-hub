@@ -175,3 +175,16 @@ test("hub/auto admits MLX only within its bounded input and output budget and fa
   expect(mlxRequests).toBe(2);
   expect(dgxRequests).toBe(3);
 });
+
+test("hub auto excludes MLX at its input cap even when the full context would fit", async () => {
+  let calls = 0;
+  const base = gateway(body => { calls++; expect(body.model).toBe("fast"); });
+  const relay = await startModelRelay({ omni: omni(base), token: "input-cap", enableHubAuto: true,
+    allowedDGXmodels: { "dgx/fast": "fast", "dgx/coding": "coding" },
+    mlx: { provider: "ollama", maxInputTokens: 6000, contextWindow: 8192, maxTokens: 2048 },
+  });
+  cleanup.push(relay.close);
+  await route(relay, { model: "hub/auto", max_tokens: 512, messages: [{ role: "user", content: "x".repeat(24400) }] });
+  expect(calls).toBe(1);
+  expect(relay.status().backends.map(row => row.alias)).toEqual(["dgx/fast"]);
+});
