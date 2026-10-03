@@ -15432,7 +15432,9 @@ var package_default = {
     "docs",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "THIRD_PARTY_NOTICES.md",
+    "LICENSES"
   ],
   repository: {
     type: "git",

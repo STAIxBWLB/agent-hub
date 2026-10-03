@@ -22,8 +22,8 @@ function tree(directory) {
 
 // Compare runtime assets and the public operating guides against npm's own pack list.
 const expected = new Set([
-  'package.json', 'README.md', 'LICENSE', 'CHANGELOG.md',
-  ...['src', 'templates', 'plugins', '.claude-plugin', 'docs'].flatMap(tree),
+  'package.json', 'README.md', 'LICENSE', 'CHANGELOG.md', 'THIRD_PARTY_NOTICES.md',
+  ...['src', 'templates', 'plugins', '.claude-plugin', 'docs', 'LICENSES'].flatMap(tree),
 ]);
 const [pack] = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json'], {
   cwd: root,
