@@ -195,3 +195,16 @@ test("in the bus: the peer gets the condensed delivery, and a failed delivery pu
   await Bun.sleep(20);
   expect(reader.got.map((batch) => batch.map((e) => e.from === DIGEST))).toEqual([[false, false, false, false]]);
 });
+
+test("progress judgement uses a peer reassignment contract rather than a model-tier prompt", async () => {
+  const { inference, model } = setup(body => {
+    expect(body.messages[0]?.content).toContain("peer reassignment suggestion");
+    expect(body.messages[0]?.content).toContain("tool-only coverage");
+    expect(body.messages[0]?.content).not.toContain("expensive STRONG");
+    expect(body.messages[1]?.content).toContain("task framing");
+    return { content: JSON.stringify({ escalate: true, category: "drift", new_evidence: true, reason: "different work" }) };
+  });
+  const verdict = await inference.escalate({ instructions: [], instructionRoles: [], messages: [{ role: "user", content: "task framing: fix parser", toolCalls: [], toolResults: [] }] }, 1);
+  expect(verdict?.category).toBe("drift");
+  expect(model.requests).toHaveLength(1);
+});

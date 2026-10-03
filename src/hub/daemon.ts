@@ -20,7 +20,7 @@ import type { MlxOptions } from "../models/mlx.ts";
 import { PiToolReceipts } from "../pi/tool-receipts.ts";
 import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
-import { runTool, TOOL_SCHEMAS, type ToolContext } from "../local/tools.ts";
+import { runTool, toolResultFailed, TOOL_SCHEMAS, type ToolContext } from "../local/tools.ts";
 import { LocalPeer } from "../adapters/local-worker.ts";
 import { Capture, skipTools } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
@@ -1690,7 +1690,7 @@ export async function startDaemon(opts: DaemonOptions) {
             } });
           });
           const taskId = pi.budgetEnvelopes.find(env => env.refs?.task)?.refs?.task;
-          observeProgress("pi", { name, ...(typeof (raw as any)?.command === "string" ? { command: (raw as any).command } : {}), resultText: output, isError: output.startsWith("error:"), source: "pi" }, taskId);
+          observeProgress("pi", { name, ...(typeof (raw as any)?.command === "string" ? { command: (raw as any).command } : {}), resultText: output, isError: toolResultFailed(name, output), source: "pi" }, taskId);
           return output;
         },
         selectModel: async (envs) => {
