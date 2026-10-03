@@ -421,6 +421,10 @@ test("a ledger from before 0.12.5 (no runner identity) under restored: true keep
   expect(recover(run, processTable()!, new Map(), -1, true)).toEqual({ restored: true, blockers: [], failed: [] });
   expect(statSync(input).mode & 0o777).toBe(0o644);
   expect(JSON.parse(readFileSync(trustFile, "utf8"))).toEqual(theirs);
+  // A 0.12.7 runner accepted the directory, wrote its marker and died before a ledger of its own: still the old ledger.
+  writeFileSync(join(run, "restoration.json"), JSON.stringify({ restored: false, runner: { pid: 99_999_990, started: "Thu Jan  1 00:00:00 1970" } }));
+  expect(recover(run, processTable()!, new Map(), -1)).toEqual({ restored: true, blockers: [], failed: [] });
+  expect(JSON.parse(readFileSync(trustFile, "utf8"))).toEqual(theirs);
 });
 
 test("a runner the process table missed, read before the files, is checked again right before anything is restored", async () => {

@@ -395,12 +395,15 @@ export function unrestored(ledger: any): string[] {
 }
 
 /**
- * The part of a ledger still owed under `restored: true` (#120): a ledger without a runner identity was written before
- * 0.12.5, and those versions left a concurrently changed trust entry at `written`, unrecorded. Its trust entry is left as
- * it was then (taking it back could remove the user's); its locks are owed as any other.
+ * The part of a ledger still owed (#120). A ledger without a runner identity was written before 0.12.5, and those versions
+ * left a concurrently changed trust entry at `written`, unrecorded. Under their `restored: true`, or under a later runner's
+ * marker (that runner passed the reuse check, so the old run was restored, and it died before it wrote a ledger of its
+ * own), that trust entry is left as it was then: taking it back could remove the user's. Its locks are owed as any other.
+ * `status` is the parsed restoration.json.
  */
-export function owed(ledger: any, statusRestored: boolean): any {
-    return statusRestored && ledger && !ledger.runner ? { ...ledger, trust: undefined } : ledger;
+export function owed(ledger: any, status: any): any {
+    const accepted = status?.restored === true || !!status?.runner?.pid;
+    return accepted && ledger && !ledger.runner ? { ...ledger, trust: undefined } : ledger;
 }
 
 /**
@@ -414,7 +417,7 @@ export function reuseProblem(status: string | undefined, ledger: string | undefi
     if (ledger === undefined) return undefined;
     const parsed = parse(ledger);
     if (parsed === undefined) return 'the restoration ledger cannot be read';
-    const left = unrestored(owed(parsed, status !== undefined));
+    const left = unrestored(owed(parsed, status === undefined ? undefined : parse(status)));
     return left.length ? `an earlier run here left unrestored: ${left.join(', ')}` : undefined;
 }
 

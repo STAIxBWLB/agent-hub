@@ -803,12 +803,12 @@ refuseReuse();
 // From here the runner may change things (#120): until its outcome is written, restoration.json says "not restored", so a
 // runner that dies sends the recovery in, and the recovery waits while this one runs.
 writeAtomic(join(runs, 'restoration.json'), JSON.stringify({ restored: false, reason: 'the runner is running, or died before writing its outcome', runner: { pid: runnerIdentity.pid, started: runnerIdentity.started }, recover: `bun scripts/benchmarks/restore.ts --run ${runs}` }));
-// Nothing is written before the marker: a run that died between the two checks keeps its cohort record.
-mkdirSync(join(runs, 'private'), { recursive: true, mode: 0o700 });
-mkdirSync(join(runs, 'runs'), { recursive: true, mode: 0o700 });
-mkdirSync(join(runs, 'patches'), { recursive: true, mode: 0o700 });
-writeFileSync(join(runs, 'cohort.json'), JSON.stringify({ schema: m.schema, manifest_sha256: sourceHash(join(runs, 'manifest.json')), cases: selected, calibration: setupOnly, repeat, private_case_sha256: Object.fromEntries(selected.map(i => [i, privateCaseHashes[i]])), arms: m.arms, runner_sha256: prepared.runner_sha256, native_runner_sha256: prepared.native_runner_sha256, teardown_sha256: prepared.teardown_sha256 }), { mode: 0o600 });
 try {
+    // Nothing is written before the marker, and from here on a failure still ends in the `finally`, which writes the outcome.
+    mkdirSync(join(runs, 'private'), { recursive: true, mode: 0o700 });
+    mkdirSync(join(runs, 'runs'), { recursive: true, mode: 0o700 });
+    mkdirSync(join(runs, 'patches'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(runs, 'cohort.json'), JSON.stringify({ schema: m.schema, manifest_sha256: sourceHash(join(runs, 'manifest.json')), cases: selected, calibration: setupOnly, repeat, private_case_sha256: Object.fromEntries(selected.map(i => [i, privateCaseHashes[i]])), arms: m.arms, runner_sha256: prepared.runner_sha256, native_runner_sha256: prepared.native_runner_sha256, teardown_sha256: prepared.teardown_sha256 }), { mode: 0o600 });
     await protectInputs();
     for (const i of selected) {
         if (stopRequested)
