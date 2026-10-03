@@ -192,7 +192,8 @@ const actorLedger = new Map<string, Actor[]>();
 const runnerIdentity = processTable()?.find(r => r.pid === process.pid);
 if (!runnerIdentity)
     throw new Error('the process table cannot be read: the runner cannot record what it starts');
-function persistLedger() { writeFileSync(join(runs, 'restoration-ledger.json'), JSON.stringify({ runner: runnerIdentity && { pid: runnerIdentity.pid, started: runnerIdentity.started }, protected: { paths: Object.fromEntries(protectedModes), restored: protectedRestored }, siblings: Object.fromEntries(siblingLedgers), actors: Object.fromEntries(actorLedger), trust: trustLedger }, null, 2), { mode: 0o600 }); }
+// Temp file and rename: a crash mid-write must not leave a ledger the recovery cannot read.
+function persistLedger() { const file = join(runs, 'restoration-ledger.json'); writeFileSync(`${file}.tmp`, JSON.stringify({ runner: runnerIdentity && { pid: runnerIdentity.pid, started: runnerIdentity.started }, protected: { paths: Object.fromEntries(protectedModes), restored: protectedRestored }, siblings: Object.fromEntries(siblingLedgers), actors: Object.fromEntries(actorLedger), trust: trustLedger }, null, 2), { mode: 0o600 }); renameSync(`${file}.tmp`, file); }
 async function protectInputs() { const fs = await import('node:fs/promises'); for (const root of protectedRoots) {
     if (!existsSync(root))
         throw new Error('protected source missing');
@@ -600,27 +601,30 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         if (client)
             for (const actor of actors)
                 await client.request({ t: 'pause', peer: actor }).catch(() => { });
-        // A completed arm lets Claude end the turn it is in, within 30 s, by the turn-end marker proved on its probe turn;
-        // the tree is hashed before and after, so a write in the wait shows. A stopped or timed-out arm does not wait.
+        // Deliveries still owed at the end of the active time, read before the wait: a message sent during it is not one.
+        const finalStatus = client ? ((await client.request({ t: 'status' }).catch(() => ({ status: undefined }))).status) : undefined;
+        const unsettled = actors.some(a => (finalStatus?.peers?.[a]?.liveAccepted?.length ?? 0) > 0 || finalStatus?.peers?.[a]?.needsReview || finalStatus?.peers?.[a]?.queued);
+        if (unsettled && endReason === 'completed')
+            endReason = 'delivery-unsettled';
+        // A completed arm lets Claude end the turn it is in, within 30 s and never past the 300 s limit, by the turn-end
+        // marker proved on its probe turn. The tree is hashed before and after: a write in the wait makes the attempt
+        // invalid (its end reason kept beside the flag), as the patch would then hold work done after the active time.
         let completion: any = { outcome: 'not_applicable' };
         if (readiness.claude?.transcriptPath) {
             if (endReason !== 'completed') completion = { outcome: 'not_awaited', why: endReason };
             else if (!readiness.claude.completionMarker) completion = { outcome: 'unsupported', why: 'no turn-end marker was proved on this session' };
             else {
                 const before = await treeHash(dir, sealedBase).catch(() => undefined);
-                const waited = await awaitTurnEnd(readiness.claude.transcriptPath, claudeId, 30000, () => stopRequested);
+                const waited = await awaitTurnEnd(readiness.claude.transcriptPath, claudeId, Math.max(0, Math.min(30000, 300000 - elapsedMs)), () => stopRequested);
                 const after = await treeHash(dir, sealedBase).catch(() => undefined);
                 completion = { ...waited, treeChanged: before === undefined || after === undefined ? null : before !== after };
+                if (completion.treeChanged !== false) endFlags.push('tree-changed-in-completion-wait');
             }
         }
-        const finalStatus = client ? ((await client.request({ t: 'status' }).catch(() => ({ status: undefined }))).status) : undefined;
-        const unsettled = actors.some(a => (finalStatus?.peers?.[a]?.liveAccepted?.length ?? 0) > 0 || finalStatus?.peers?.[a]?.needsReview || finalStatus?.peers?.[a]?.queued);
-        if (unsettled && endReason === 'completed')
-            endReason = 'delivery-unsettled';
         ws?.close();
         client?.close();
         // The arm's processes (issue #113): the normal shutdown, the table read back, signals only to proven identities.
-        capture();
+        try { capture(); } catch (e) { note(`the last capture failed: ${String(e).slice(0, 200)}`); } // never skips the teardown
         const cleanup = await teardown([...owners.values()], dir, async () => {
             const errors: string[] = [];
             if (claudeTerminal) await orcaClose(claudeTerminal).catch(() => { errors.push('Claude Orca terminal close failed'); }); // bounded by cmd
@@ -682,7 +686,12 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             if (failed.length) note('sibling artifact read locks could not be restored');
         }
         let trustRestored = true;
-        if (trustLease) {
+        if (trustLease && !contained) {
+            // Claude may still run and rewrite its project entry: the recovery takes it back once nothing does.
+            restoration.trust = 'kept: the cleanup is incomplete or unknown';
+            trustRestored = false;
+        }
+        else if (trustLease) {
             restoration.trust = restoreTrust(trustLease, dir);
             trustRestored = restoration.trust === 'restored';
             trustLedger.restored = trustRestored;
@@ -779,7 +788,9 @@ finally {
         await restoreInputs();
         // Protected inputs are back; an arm whose own sibling locks failed to come off keeps the run unrestored.
         const locked = [...siblingLedgers.entries()].filter(([, l]) => !l.restored).map(([d]) => d);
-        writeFileSync(join(runs, 'restoration.json'), JSON.stringify({ restored: !locked.length, paths: protectedModes.size, ...(locked.length ? { reason: `sibling read locks of ${locked.length} arm(s) are still in place`, recover: `bun scripts/benchmarks/restore.ts --run ${runs}` } : {}), interrupted: stopRequested }), { mode: 0o600 });
+        const trustLeft = !!trustLedger && !trustLedger.restored && trustLedger.stage !== 'changed_concurrently';
+        const reasons = [...(locked.length ? [`sibling read locks of ${locked.length} arm(s) are still in place`] : []), ...(trustLeft ? ['the Claude trust entry was not taken back'] : [])];
+        writeFileSync(join(runs, 'restoration.json'), JSON.stringify({ restored: !reasons.length, paths: protectedModes.size, ...(reasons.length ? { reason: reasons.join('; '), recover: `bun scripts/benchmarks/restore.ts --run ${runs}` } : {}), interrupted: stopRequested }), { mode: 0o600 });
     }
 }
 log('run-complete');

@@ -305,6 +305,7 @@ export class Facts {
   private touch(peer: PeerId, file: string, seen?: Version): void {
     const list = (this.touched.get(peer) ?? []).filter((f) => f !== file);
     list.push(file);
+    this.untracked.get(peer)?.delete(file); // tracked again: no notice says otherwise
     if (list.length > TOUCHED_KEPT) {
       const gone = list.shift()!;
       this.untracked.set(peer, (this.untracked.get(peer) ?? new Set()).add(gone));
@@ -332,6 +333,10 @@ export class Facts {
       if (dropped.has(f)) continue;
       dropped.add(f);
       this.unfollowed.set(peer, (this.unfollowed.get(peer) ?? new Set()).add(f));
+    }
+    for (const [f] of under.slice(0, EXPANDED_KEPT)) {
+      if (!dropped.delete(f)) continue; // followed again: no notice says otherwise, and a later drop is told anew
+      this.unfollowed.get(peer)?.delete(f);
     }
     this.seenDropped.set(peer, dropped);
     return [...new Set([...this.expand(paths), ...(this.touched.get(peer) ?? []), ...under.slice(0, EXPANDED_KEPT).map(([f]) => f)])];
@@ -614,17 +619,16 @@ export class Facts {
     }
     // Files that fell out of what is tracked are named until an offer naming them is read back, never dropped silently:
     // a refused steer or a lost hook answer does not spend the notice (#112).
+    // A name that matches a PII pattern is counted, never named.
     const untracked = [...(this.untracked.get(peer) ?? [])];
-    const gone = untracked.filter(this.o.nameable);
-    if (gone.length) {
-      parts.push(`no longer tracked (more than ${TOUCHED_KEPT} files touched): ${names(gone, gone.length)}; read them again before relying on what you saw of them`);
+    if (untracked.length) {
+      parts.push(`no longer tracked (more than ${TOUCHED_KEPT} files touched): ${names(untracked.filter(this.o.nameable), untracked.length)}; read them again before relying on what you saw of them`);
       coverage = true;
     }
     const unfollowed = [...(this.unfollowed.get(peer) ?? [])];
-    const lost = unfollowed.filter(this.o.nameable);
-    if (lost.length) {
-      const dirs = this.scopePaths(scope).filter((p) => this.o.nameable(p) && lost.some((f) => f.startsWith(`${p}/`)));
-      parts.push(`more than ${EXPANDED_KEPT} files you saw under ${dirs.join(", ") || "a directory your task names"} are not followed: ${names(lost, lost.length)}; read them again before relying on them`);
+    if (unfollowed.length) {
+      const dirs = this.scopePaths(scope).filter((p) => this.o.nameable(p) && unfollowed.some((f) => f.startsWith(`${p}/`)));
+      parts.push(`more than ${EXPANDED_KEPT} files you saw under ${dirs.join(", ") || "a directory your task names"} are not followed: ${names(unfollowed.filter(this.o.nameable), unfollowed.length)}; read them again before relying on them`);
       coverage = true;
     }
     if (!parts.length) {

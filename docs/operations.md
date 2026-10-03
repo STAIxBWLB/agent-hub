@@ -408,12 +408,12 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   touched, with the other members' new plans; the last member still at work
   keeps the others' files after they finish. A directory a task names stands for
   git's changed (staged or not) files against HEAD, new and deleted files under
-  it (200 at most; the fact says when more were cut, until it is read back and
-  again in a new session). A file the peer has seen there stays covered after git
+  it (200 at most; the fact says when more were cut, until it is read back, and a
+  new session hears it again). A file the peer has seen there stays covered after git
   stops listing it (put back to HEAD's bytes, or the directory moved away), so
   the way back is shown (200 at most, the newest versions first; the rest are
-  named as no longer followed, until the peer reads that back and again in a new
-  session). A file there that the peer has neither seen nor touched appears once
+  named as no longer followed, until the peer reads that back; a new session
+  hears only the drops of its own). A file there that the peer has neither seen nor touched appears once
   someone changed it so that its bytes differ from HEAD's, or created it: it is
   named without a diff (what happened before is never shown) until the peer reads
   the fact back, and until then it counts as a change the peer has not been

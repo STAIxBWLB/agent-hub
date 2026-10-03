@@ -591,3 +591,20 @@ test("a rewrite with HEAD's bytes under a named directory is not named and keeps
   writeFileSync(join(root, "src", "big.txt"), big + "z\n");
   expect(facts.due("claude")!.text).toContain("src/big.txt");
 });
+
+// issue #112: a file whose name matches a PII pattern is counted in a notice, never named, and never silently dropped.
+test("a PII-named file that falls out of the touched list is counted in the notice, not named", async () => {
+  const { root, facts, write } = rig({}, (t) => !/secret/.test(t));
+  const read = (file: string, id: string) => {
+    write(file, "x\n");
+    facts.preTool("claude", id, "Read", { file_path: join(root, file) });
+    facts.postTool("claude", id, "Read", { file_path: join(root, file) });
+  };
+  read("secret-notes.txt", "s");
+  for (let i = 0; i < 64; i++) read(`h${i}.txt`, `h${i}`);
+  const told = facts.due("claude")!;
+  expect(told.text).toContain("no longer tracked (more than 64 files touched): 1 more; read them again");
+  expect(told.text).not.toContain("secret");
+  facts.ack("claude", told.id);
+  expect(facts.due("claude")?.text ?? "").not.toContain("no longer tracked");
+});

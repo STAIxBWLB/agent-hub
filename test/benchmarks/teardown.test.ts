@@ -29,13 +29,14 @@ const runner = row(50, 49, 50, "bun scripts/benchmarks/native.ts");
 const actors = (rows: ProcRow[]): Actor[] => [actorOf(rows, 100, "daemon", "hub.pid")!, actorOf(rows, 105, "codex-app-server", "child of the daemon")!, actorOf(rows, 120, "claude", "launch record")!];
 
 /** A process table in memory: signals remove what they reach unless `stubborn`; the clock moves with sleep. */
-function world(start: ProcRow[], opts: { stubborn?: number[]; shutdown?: (w: { rows: ProcRow[] }) => string[]; unreadable?: () => boolean; cwds?: Map<number, string> | null } = {}) {
+function world(start: ProcRow[], opts: { stubborn?: number[]; shutdown?: (w: { rows: ProcRow[] }) => string[]; unreadable?: () => boolean; cwds?: Map<number, string> | null; onSignal?: (pid: number, sig: string, w: { rows: ProcRow[] }) => boolean; onRead?: (w: { rows: ProcRow[] }) => void } = {}) {
   const w = { rows: [...start], signals: [] as [number, string][], clock: 0 };
   const deps: Deps = {
-    table: () => (opts.unreadable?.() ? undefined : [...w.rows]),
+    table: () => { if (opts.unreadable?.()) return undefined; const rows = [...w.rows]; opts.onRead?.(w); return rows; },
     cwds: () => (opts.cwds === null ? undefined : opts.cwds ?? new Map()),
     signal: (pid, sig) => {
       w.signals.push([pid, sig]);
+      if (opts.onSignal?.(pid, sig, w) || sig === "SIGSTOP") return; // a stopped process is still in the table
       w.rows = w.rows.filter((r) => opts.stubborn?.includes(r.pid) || !(pid < 0 ? r.pgid === -pid : r.pid === pid));
     },
     sleep: async (ms) => void (w.clock += ms),
@@ -246,4 +247,23 @@ test("working directories that cannot be read leave the cleanup unknown", async 
   const { deps, shutdown } = world(everything, { cwds: null, shutdown: (x) => { x.rows = [runner]; return []; } });
   const c = await teardown(actors(everything), DIR, shutdown, deps);
   expect(c.reasons).toEqual(["working directories could not be read: whether anything else runs in the fixture is unknown"]);
+});
+
+test("what an actor starts while the fallback waits is recorded before its parent exits, then frozen and killed", async () => {
+  // At SIGTERM Codex's native starts a helper in a session of its own, outside the fixture, and exits after the next
+  // read: by the SIGKILL round nothing links the helper to the arm, unless the wait recorded it.
+  let exiting = false;
+  const onSignal = (pid: number, sig: string, x: { rows: ProcRow[] }) => {
+    if (pid !== -105 || sig !== "SIGTERM") return false;
+    x.rows = x.rows.filter((r) => r.pid !== 105).concat(row(130, 106, 130, "helper --serve"));
+    exiting = true;
+    return true;
+  };
+  const onRead = (x: { rows: ProcRow[] }) => { if (exiting) { x.rows = x.rows.filter((r) => r.pid !== 106).map((r) => (r.pid === 130 ? { ...r, ppid: 1 } : r)); exiting = false; } };
+  const { w, deps, shutdown } = world([runner, launcher, native], { onSignal, onRead, shutdown: () => ["ahub kill: hub did not acknowledge shutdown"] });
+  const c = await teardown([actorOf([launcher], 105, "codex-app-server", "child of the daemon")!], DIR, shutdown, deps);
+  expect(c.owned.find((a) => a.pid === 130)?.via).toBe("below below 106");
+  expect(w.rows).toEqual([runner]);
+  expect(c.fallback.map((f) => [f.pid, f.signal])).toEqual([[105, "SIGTERM"], [130, "SIGSTOP"], [130, "SIGKILL"]]);
+  expect(c.outcome).toBe("clean_with_fallback");
 });

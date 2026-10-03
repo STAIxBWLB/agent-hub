@@ -141,6 +141,29 @@ test("without any process table the group's own answer decides; a member the tab
   const held = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
   const started = processTable()!.find((r) => r.pid === held.pid)!.started;
   // A table that keeps showing the leader's child running: the stop gives up at its deadline, it does not claim done.
-  const fake = () => [{ pid: held.pid!, ppid: 1, pgid: held.pid!, started, command: "sleep 30" }, { pid: 999_999, ppid: held.pid!, pgid: 999_999, started, command: "stuck" }];
+  // (99_999_999 is above every platform's pid range: the signals sent to it reach nobody.)
+  const fake = () => [{ pid: held.pid!, ppid: 1, pgid: held.pid!, started, command: "sleep 30" }, { pid: process.pid, ppid: 1, pgid: process.pid, started: processTable()!.find((r) => r.pid === process.pid)!.started, command: "bun test" }, { pid: 99_999_999, ppid: held.pid!, pgid: 99_999_999, started, command: "stuck" }];
   await expect(stopOwnedProcess(held, { termMs: 200, killMs: 300, group: true, table: fake })).rejects.toThrow("1 process(es) of its group or below it still running");
+});
+
+test("a process left in the leader's group that nothing recorded is never signalled, and the stop is not called done", async () => {
+  // The leader exits at SIGTERM; the table then shows a member of its group nobody recorded: after an empty moment a
+  // group id can be someone else's, so it is left alone, and the stop gives up instead of claiming done.
+  const leader = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+  const me = processTable()!.find((r) => r.pid === process.pid)!;
+  let exited = false;
+  leader.once("exit", () => (exited = true));
+  const table = () => [me, ...(exited ? [{ pid: 99_999_999, ppid: 1, pgid: leader.pid!, started: me.started, command: "orphan" }] : [])];
+  await expect(stopOwnedProcess(leader, { termMs: 200, killMs: 300, group: true, table })).rejects.toThrow("1 not proven its own and left alone");
+});
+
+test("what the leader started gets the grace period to shut down after the leader is gone", async () => {
+  // The leader dies at SIGTERM; its child needs 500 ms to finish cleanly.
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-grace-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const marker = join(dir, "clean");
+  const child = `${process.execPath} -e 'process.on("SIGTERM", () => setTimeout(() => { require("node:fs").writeFileSync(${JSON.stringify(marker)}, "clean"); process.exit(0); }, 500)); setTimeout(() => {}, 30000)'`;
+  const { proc } = await launch(`${child} & echo $!; wait`, true);
+  await stopOwnedProcess(proc, { termMs: 1000, group: true });
+  expect(existsSync(marker)).toBe(true); // it ended on its own, not by SIGKILL
 });

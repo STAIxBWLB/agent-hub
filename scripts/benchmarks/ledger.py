@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from runner import TURN_FREE, active_window, hook_rows, isolation_failure, transcript, treatment_failure  # noqa: E402  the grader's gates: one definition
+from runner import TURN_FREE, active_window, hook_rows, isolation_failure, teardown_failure, transcript, treatment_failure  # noqa: E402  the grader's gates: one definition
 
 UNITS = {
     "end_reason": "the runner's class (completed, timeout, interrupted, infrastructure-error, ...); end_reason_detail "
@@ -347,7 +347,7 @@ def capability_of(events, t0):
 
 
 def validity_of(run):
-    why = treatment_failure(str(run.get("kind") or ""), run) or isolation_failure(run)
+    why = teardown_failure(run) or treatment_failure(str(run.get("kind") or ""), run) or isolation_failure(run)
     if why and why.startswith("hook isolation unknown"): return {"valid": None, "why": why}
     return {"valid": not why, "why": why}
 

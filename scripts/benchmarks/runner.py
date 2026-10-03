@@ -130,6 +130,14 @@ def isolation_failure(run):
 
 GRADED_ENDS=("completed","timeout")
 
+def teardown_failure(run):
+    """Issue #113: an attempt whose processes are not known to be gone, whose evidence could not be taken, or whose
+    trust entry was not taken back is unavailable, for grading and the ledger alike. The end reason stays as it was."""
+    if run.get("teardown_errors"): return ("teardown evidence incomplete: "+"; ".join(map(str,run["teardown_errors"])))[:300]
+    if run.get("cleanup_complete") is not True: return ("cleanup incomplete or unknown: "+"; ".join(map(str,(run.get("cleanup") or {}).get("reasons") or [])))[:300]
+    if "claude" in str(run.get("kind") or "") and run.get("trust_restored") is not True: return "the Claude trust entry was not taken back"
+    return None
+
 def unavailable_reason(arm, run):
     """Why an attempt with a run record is not graded, or None. Completed and timed-out attempts are graded."""
     if run.get("end_reason") not in GRADED_ENDS: return run.get("end_reason_detail") or run.get("end_reason") or "no end reason"
@@ -301,8 +309,9 @@ def grade(args):
         run_path=root/"runs"/f"{case:02d}-{arm}.json"
         if not run_path.is_file(): rows.append({"case":case,"arm":arm,"status":"missing","pass":None}); continue
         run=load(run_path); actors=required_actors(arm)
-        if run.get("teardown_errors"):  # #113: a patch or transcript prefix that could not be taken is no evidence
-            rows.append({"case":case,"arm":arm,"status":"unavailable","reason":("teardown evidence incomplete: "+"; ".join(map(str,run["teardown_errors"])))[:300],"pass":None}); continue
+        teardown=teardown_failure(run)
+        if teardown:
+            rows.append({"case":case,"arm":arm,"status":"unavailable","reason":teardown,"pass":None}); continue
         ready=run.get("readiness") if isinstance(run.get("readiness"),dict) else {}
         identities=all(isinstance(ready.get(actor),dict) and ready[actor].get("cwd")==str(cwd) and ready[actor].get("requestedModel",ready[actor].get("model"))==m.get("models",{}).get(actor) and (ready[actor].get("sessionId") if actor=="claude" else ready[actor].get("threadId")) and isinstance(ready[actor].get("sandboxProbe"),dict) and ready[actor]["sandboxProbe"].get("checked") is True and ready[actor]["sandboxProbe"].get("result")=="denied" for actor in actors)
         claude_ready=ready.get("claude",{}) if "claude" in actors else {}

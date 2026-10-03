@@ -151,8 +151,9 @@ export class CodexPeer extends BasePeer {
     this.server?.stop(true);
     this.claimedTui?.tui.close(1001, "hub shutting down");
     const proc = this.proc;
-    if (proc && proc.exitCode === null) {
-      // Wait for the port to be released: `ahub codex` may restart the adapter right away.
+    if (proc) {
+      // Wait for the port to be released: `ahub codex` may restart the adapter right away. A launcher that already
+      // exited still has its pipes dropped there, so nothing it left can keep the hub alive.
       await stopOwnedProcess(proc, { group: true });
       if (this.proc === proc) this.proc = undefined;
     }

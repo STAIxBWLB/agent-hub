@@ -39,9 +39,26 @@ export function parseProcessTable(text: string): ProcRow[] {
 export function processTable(): ProcRow[] | undefined {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const r = Bun.spawnSync(["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart=,command="], { stdout: "pipe", stderr: "pipe", env: { ...process.env, LC_ALL: "C" }, detached: true });
+      const r = Bun.spawnSync(["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart=,command="], { stdout: "pipe", stderr: "pipe", env: { ...process.env, LC_ALL: "C" }, detached: true, timeout: 10_000 });
       if (r.exitCode !== 0) continue;
       const rows = parseProcessTable(r.stdout.toString());
+      if (rows.some((row) => row.pid === process.pid)) return rows;
+    } catch {
+      // tried again below
+    }
+  }
+  return undefined;
+}
+
+/** `processTable`, without blocking the event loop: a hub stop reads the table many times while it keeps serving. */
+export async function readProcessTable(): Promise<ProcRow[] | undefined> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const p = Bun.spawn(["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart=,command="], { stdout: "pipe", stderr: "ignore", env: { ...process.env, LC_ALL: "C" }, detached: true });
+      const timer = setTimeout(() => p.kill("SIGKILL"), 10_000);
+      const [text, code] = await Promise.all([new Response(p.stdout).text(), p.exited]).finally(() => clearTimeout(timer));
+      if (code !== 0) continue;
+      const rows = parseProcessTable(text);
       if (rows.some((row) => row.pid === process.pid)) return rows;
     } catch {
       // tried again below
@@ -75,7 +92,7 @@ export function descendantsOf(rows: ProcRow[], pid: number): ProcRow[] {
  * `group`: the child was spawned `detached` and leads its own process group; see `stopGroup`. `table` replaces the
  * process table read (tests).
  */
-export async function stopOwnedProcess(proc: ChildProcess, { termMs = 1_000, killMs = 2_000, group = false, table = processTable }: { termMs?: number; killMs?: number; group?: boolean; table?: () => ProcRow[] | undefined } = {}): Promise<void> {
+export async function stopOwnedProcess(proc: ChildProcess, { termMs = 1_000, killMs = 2_000, group = false, table = readProcessTable }: { termMs?: number; killMs?: number; group?: boolean; table?: () => ProcRow[] | undefined | Promise<ProcRow[] | undefined> } = {}): Promise<void> {
   if (proc.exitCode !== null || proc.signalCode !== null || proc.pid === undefined) {
     // ponytail: a leader that exited before the stop (its launcher killed from outside) is not swept, as its pid may be
     // reused once its group empties; its pipes are dropped so a survivor cannot keep the hub alive. Record the leader's
@@ -137,26 +154,35 @@ const dropPipes = (proc: ChildProcess) => {
  * next (three review rounds found such a gap). Done means the table shows none of it; without any table, the group's
  * own answer (ESRCH, or EPERM on macOS for a group of zombies) is used, which cannot see groups below it.
  */
-async function stopGroup(proc: ChildProcess, pid: number, termMs: number, killMs: number, table: () => ProcRow[] | undefined): Promise<void> {
+async function stopGroup(proc: ChildProcess, pid: number, termMs: number, killMs: number, table: () => ProcRow[] | undefined | Promise<ProcRow[] | undefined>): Promise<void> {
   const key = (r: { pid: number; started: string }) => `${r.pid}@${r.started}`;
   const found = new Map<string, ProcRow>();
   const exited = () => proc.exitCode !== null || proc.signalCode !== null;
   let leader: ProcRow | undefined;
+  const live = (rows: ProcRow[], f: ProcRow) => rows.some((r) => r.pid === f.pid && r.started === f.started);
   /** Reads the table and records what runs below the leader or anything recorded that still runs. */
-  const look = (): ProcRow[] | undefined => {
-    const rows = table();
+  const look = async (): Promise<ProcRow[] | undefined> => {
+    const rows = await table();
     if (!rows) return undefined;
-    leader ??= rows.find((r) => r.pid === pid);
-    const live = (f: ProcRow) => rows.some((r) => r.pid === f.pid && r.started === f.started);
-    const roots = [...(leader && live(leader) ? [leader] : []), ...[...found.values()].filter(live)];
+    if (!leader && !exited()) leader = rows.find((r) => r.pid === pid); // never a pid taken over after the leader exited
+    const roots = [...(leader && live(rows, leader) ? [leader] : []), ...[...found.values()].filter((f) => live(rows, f))];
     for (const root of roots) for (const r of descendantsOf(rows, root.pid)) found.set(key(r), r);
-    // The leader's group, while it is known to be that group: its leader or a recorded member still in it.
-    if ((leader && live(leader)) || [...found.values()].some((f) => f.pgid === pid && live(f))) {
-      for (const r of rows) if (r.pgid === pid && r.pid !== pid) found.set(key(r), r);
+    // A group is followed while it is known to be the same one: its leader or a recorded member still in it.
+    for (const id of [pid, ...[...found.values()].filter((f) => f.pgid === f.pid).map((f) => f.pid)]) {
+      const known = (id === pid && leader && live(rows, leader)) || [...found.values()].some((f) => f.pgid === id && f.pid !== id && live(rows, f)) || [...found.values()].some((f) => f.pid === id && live(rows, f));
+      if (known) for (const r of rows) if (r.pgid === id && r.pid !== pid) found.set(key(r), r);
     }
     return rows;
   };
-  const left = (rows: ProcRow[]) => [...found.values()].filter((f) => rows.some((r) => r.pid === f.pid && r.started === f.started));
+  const left = (rows: ProcRow[]) => [...found.values()].filter((f) => live(rows, f));
+  /**
+   * Running in the leader's group, or the group of a recorded process, without being recorded: after an empty moment the
+   * group id can be someone else's, so it is never signalled, but the stop is not done while it runs.
+   */
+  const unproven = (rows: ProcRow[]) => {
+    const ids = new Set([pid, ...[...found.values()].filter((f) => f.pgid === f.pid).map((f) => f.pid)]);
+    return rows.filter((r) => ids.has(r.pgid) && r.pid !== process.pid && !found.has(key(r)) && !(leader && r.pid === leader.pid && r.started === leader.started));
+  };
   // Errors are not results here: the table read back decides.
   const signal = (target: number, sig: NodeJS.Signals) => { try { process.kill(target, sig); } catch { /* gone */ } };
   const each = (rows: ProcRow[], sig: NodeJS.Signals) => { for (const r of rows) signal(r.pgid === r.pid ? -r.pid : r.pid, sig); };
@@ -167,25 +193,33 @@ async function stopGroup(proc: ChildProcess, pid: number, termMs: number, killMs
     }
   };
   try {
-    look();
+    await look();
     signal(-pid, "SIGTERM");
-    for (const end = Date.now() + termMs; !exited() && Date.now() < end; ) {
+    // The grace period, for the leader and for what it started: what they start meanwhile is recorded while its parent
+    // still runs.
+    for (const end = Date.now() + termMs; Date.now() < end; ) {
       await Bun.sleep(100);
-      look();
+      const rows = await look();
+      if (exited() && rows && !left(rows).length) break;
     }
+    // Freeze, enumerate, kill: a stopped process starts nothing, so a read after the freeze sees all of it.
     for (const end = Date.now() + killMs; ; ) {
-      const rows = look();
+      const rows = await look();
       const rest = rows ? left(rows) : undefined;
-      if (exited() && (rest ? !rest.length : !found.size && groupGone())) return;
-      if (Date.now() >= end) throw new Error(`owned child ${pid}: ${rest ? `${rest.length} process(es) of its group or below it still running` : "the process table cannot be read to confirm what it started is gone"}`);
+      const strangers = rows ? unproven(rows) : [];
+      if (exited() && !strangers.length && (rest ? !rest.length : !found.size && groupGone())) return;
+      if (Date.now() >= end) {
+        throw new Error(`owned child ${pid}: ${rest ? `${rest.length + strangers.length} process(es) of its group or below it still running${strangers.length ? `, ${strangers.length} not proven its own and left alone` : ""}` : "the process table cannot be read to confirm what it started is gone"}`);
+      }
       if (!exited()) signal(-pid, "SIGSTOP");
       each(rest ?? [], "SIGSTOP");
-      const frozen = look();
+      const frozen = await look();
       each(frozen ? left(frozen) : rest ?? [], "SIGKILL");
       if (!exited()) signal(-pid, "SIGKILL");
       await Bun.sleep(50);
     }
-  } finally {
-    dropPipes(proc); // nothing of it may keep the hub alive, whatever the outcome
+  } catch (error) {
+    dropPipes(proc); // something may still hold them: it must not keep the hub alive
+    throw error;
   }
 }

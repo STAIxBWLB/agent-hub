@@ -1,4 +1,4 @@
-import { chmodSync, readdirSync, readFileSync, readlinkSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { descendantsOf, processTable, type ProcRow } from '../../src/hub/child-process.ts';
 
 /**
@@ -19,7 +19,7 @@ export interface Cleanup {
     normal: { errors: string[]; ms: number };
     /** Every recorded actor (some may have exited before teardown) and what was found below them: what has to be gone. */
     owned: Actor[];
-    fallback: { pid: number; role: Role; signal: 'SIGTERM' | 'SIGKILL'; group: boolean; result: 'sent' | 'failed' }[];
+    fallback: { pid: number; role: Role; signal: 'SIGTERM' | 'SIGSTOP' | 'SIGKILL'; group: boolean; result: 'sent' | 'failed' }[];
     remaining: Actor[];
     /** Running with the fixture in its argv or as its working directory, not proved to be the arm's: left alone, and the cleanup is not complete. */
     unresolved: { pid: number; started: string; command: string; cwd?: string }[];
@@ -29,7 +29,7 @@ export interface Deps {
     table: () => ProcRow[] | undefined;
     /** Each process's working directory, or undefined when they cannot be read. */
     cwds: () => Map<number, string> | undefined;
-    signal: (pid: number, signal: 'SIGTERM' | 'SIGKILL') => void;
+    signal: (pid: number, signal: 'SIGTERM' | 'SIGSTOP' | 'SIGKILL') => void;
     sleep: (ms: number) => Promise<void>;
     now: () => number;
     /** The runner itself: it and its children (a `bun ... kill` naming the fixture) are not the arm's. */
@@ -52,7 +52,8 @@ export function processCwds(): Map<number, string> | undefined {
         } catch { return undefined; }
     }
     try {
-        const r = Bun.spawnSync(['lsof', '-a', '-d', 'cwd', '-F', 'pn'], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, LC_ALL: 'C' }, detached: true });
+        const r = Bun.spawnSync(['lsof', '-a', '-d', 'cwd', '-F', 'pn'], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, LC_ALL: 'C' }, detached: true, timeout: 20_000 });
+        if (r.exitCode === null) return undefined; // timed out (a stale mount): unknown, never empty
         let pid = 0;
         for (const line of r.stdout.toString().split('\n')) {
             if (line.startsWith('p')) pid = Number(line.slice(1));
@@ -66,7 +67,7 @@ export function processCwds(): Map<number, string> | undefined {
 export function cwdOf(pid: number): string | undefined {
     if (process.platform === 'linux') { try { return readlinkSync(`/proc/${pid}/cwd`); } catch { return undefined; } }
     try {
-        const r = Bun.spawnSync(['lsof', '-a', '-d', 'cwd', '-p', String(pid), '-F', 'n'], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, LC_ALL: 'C' }, detached: true });
+        const r = Bun.spawnSync(['lsof', '-a', '-d', 'cwd', '-p', String(pid), '-F', 'n'], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, LC_ALL: 'C' }, detached: true, timeout: 10_000 });
         return r.stdout.toString().split('\n').find((l) => l.startsWith('n'))?.slice(1);
     } catch { return undefined; }
 }
@@ -136,21 +137,42 @@ export async function teardown(actors: Actor[], dir: string, shutdown: () => Pro
     const settle = deps.now() - s0;
     const fallback: Cleanup['fallback'] = [];
     const f0 = deps.now();
-    if (rows && alive(rows).length) {
-        for (const signal of ['SIGTERM', 'SIGKILL'] as const) {
-            const now = deps.table(); // identity read again right before any signal
-            if (!now) break;
-            grow(now);
-            const left = alive(now);
-            if (!left.length) break;
-            for (const a of left) {
-                const group = a.pgid === a.pid;
-                if (!group && left.some((l) => l.pid === a.pgid && l.pgid === l.pid)) continue; // its leader's signal reaches it
-                try { deps.signal(group ? -a.pid : a.pid, signal); fallback.push({ pid: a.pid, role: a.role, signal, group, result: 'sent' }); }
-                catch { fallback.push({ pid: a.pid, role: a.role, signal, group, result: 'failed' }); }
+    // Signals go only to identities read again just before; a group leader is signalled with its group, and a member
+    // whose leader is signalled with it is skipped.
+    const send = (left: Actor[], signal: 'SIGTERM' | 'SIGSTOP' | 'SIGKILL') => {
+        for (const a of left) {
+            const group = a.pgid === a.pid;
+            if (!group && left.some((l) => l.pid === a.pgid && l.pgid === l.pid)) continue;
+            try { deps.signal(group ? -a.pid : a.pid, signal); fallback.push({ pid: a.pid, role: a.role, signal, group, result: 'sent' }); }
+            catch { fallback.push({ pid: a.pid, role: a.role, signal, group, result: 'failed' }); }
+        }
+    };
+    // Waits, recording what the processes start meanwhile while their parents still run.
+    const settleFor = async (ms: number) => {
+        for (const end = deps.now() + ms; deps.now() < end; ) {
+            const r = deps.table();
+            if (r) {
+                grow(r);
+                if (!alive(r).length) return;
             }
-            const end = deps.now() + bounds.fallbackMs / 2;
-            for (let r = deps.table(); deps.now() < end && !(r && !alive(r).length); r = deps.table()) await deps.sleep(250);
+            await deps.sleep(250);
+        }
+    };
+    if (rows && alive(rows).length) {
+        const now = deps.table();
+        if (now) {
+            grow(now);
+            send(alive(now), 'SIGTERM');
+            await settleFor(bounds.fallbackMs / 2);
+        }
+        // Freeze, enumerate, kill: a stopped process starts nothing, so the read after the freeze sees all of it.
+        const before = deps.table();
+        if (before && (grow(before), alive(before).length)) {
+            send(alive(before), 'SIGSTOP');
+            const frozen = deps.table() ?? before;
+            grow(frozen);
+            send(alive(frozen), 'SIGKILL');
+            await settleFor(bounds.fallbackMs / 2);
         }
     }
     const last = deps.table();
@@ -183,8 +205,8 @@ export function transcriptRows(path: string): any[] | undefined {
 
 /**
  * Whether `sessionId`'s last turn has ended: Claude Code writes a `system` `turn_duration` row of the session after the
- * last row of every turn (126 of 126 turns in the 0.12.4 runs), so a turn has ended once one follows the session's last
- * assistant or user row. A final answer alone does not end it: the row comes after.
+ * last row of a turn (in the 0.12.4 runs, after all 126 turns that ended with an answer), so a turn has ended once one
+ * follows the session's last assistant or user row. A final answer alone does not end it: the row comes after.
  */
 export function turnEnded(rows: any[], sessionId: string): boolean {
     let activity = -1, end = -1;
@@ -210,11 +232,12 @@ export async function awaitTurnEnd(path: string, sessionId: string, boundMs: num
     }
 }
 
-/** Puts each path's mode back, parents first; returns the paths it could not restore. */
+/** Puts each path's mode back, parents first; returns the paths it could not restore. A link is never followed. */
 export function restoreModes(modes: Iterable<[string, number]>): string[] {
     const failed: string[] = [];
     for (const [path, mode] of [...modes].sort((a, b) => a[0].length - b[0].length)) {
         try {
+            if (lstatSync(path).isSymbolicLink()) { failed.push(path); continue; } // replaced since it was locked: refuse
             chmodSync(path, mode);
             if ((statSync(path).mode & 0o777) !== mode) failed.push(path);
         } catch {
