@@ -64,7 +64,7 @@ test("worktrees and nested repositories do not inherit parent project config", (
   expect(projectRoot(child)).toBe(realpathSync(child));
 });
 
-// issue #26: Bun 1.3.14's realpathSync throws ENOENT for an existing path with a backslash in it.
+// issue #26: Bun's realpathSync (1.3.14, and 1.4.2 still: #121) throws ENOENT for an existing path with a backslash in it.
 test("realPath resolves paths with a backslash like realpathSync would, and still refuses missing ones", () => {
   const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-realpath-")));
   const root = join(base, "back\\slash");

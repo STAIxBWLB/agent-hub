@@ -36,7 +36,8 @@ trap 'exit 143' TERM
 
 # 20 s per test, not Bun's 5 s: in Bun 1.3.14 a test timeout that fires while Bun.spawnSync runs can start the next
 # test inside spawnSync's own event loop, where a spawnSync then spins at full CPU for good (#115: the stacks of two
-# local hangs under load; the macOS CI hang of 0.12.5 matches them). A run that hangs anyway is sampled and stopped long before the CI job limit; a normal run takes about
+# local hangs under load; the macOS CI hang of 0.12.5 matches them). The hang never reproduced on demand, so whether
+# Bun 1.4.2 (#121) still has it is not known: the timeout and the watchdog stay. A run that hangs anyway is sampled and stopped long before the CI job limit; a normal run takes about
 # two minutes.
 bun test --timeout 20000 &
 test_pid=$!

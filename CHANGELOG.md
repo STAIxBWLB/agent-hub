@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- Bun 1.4.2 in CI, the release workflow and the plugin bundle build. Bun 1.4.2 still throws for a real path with a backslash, so `realPath` stays; whether it still has 1.3.14's spawnSync re-entrancy hang is not known, so `check.sh` keeps its test timeout and watchdog (#121).
+
 ## 0.12.6
 
 - Agents the hub spawns through ACP (Kimi) and Pi run in their own process group and are stopped as one, as the Codex app-server is since 0.12.5. A stop with or without a group drops the child's pipes, so a process it left cannot keep the hub alive. Once a launcher has exited, its group is followed until it is gone, and members still finishing their exit get a bound before the stop fails. A Codex start that fails reports its own error. The group stop finishes as soon as the leader has exited and a read shows nothing left. As for Codex since 0.12.5, a Kimi or Pi that crashed and left processes in its group (an MCP server, a tool command) is not restarted until they are gone: the error names their pids (#115).
