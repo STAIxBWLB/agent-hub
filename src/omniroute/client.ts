@@ -24,8 +24,12 @@ export interface ChatMessage {
   content: string | null;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+  /** Internal local-tool outcome, consumed by route normalization and omitted from provider transport. */
+  is_error?: boolean;
 }
 export interface ChatResult {
+  /** Internal routing telemetry id, never part of a provider payload. */
+  routeDecision?: string;
   message: ChatMessage;
   /** Usage counters returned by the provider, when valid. No missing counter is inferred as zero. */
   usage?: NormalizedUsage;
@@ -37,6 +41,8 @@ export interface ChatResult {
   selectedModel?: string;
 }
 export interface ChatOptions {
+  /** Refuse a changed/off-campus gateway immediately before transport. */
+  onCampusOnly?: boolean;
   signal?: AbortSignal;
   /** Switchyard base (`http://127.0.0.1:<port>/v1`). The sidecar holds the key, so none is sent. */
   via?: string;
@@ -155,6 +161,7 @@ export class OmniRoute {
   async chat(body: { model: string; messages: ChatMessage[]; tools?: unknown[]; max_tokens?: number }, opts: ChatOptions = {}): Promise<ChatResult> {
     const base = opts.via ?? (await this.base());
     if (!base) throw new Error("no model gateway is configured or reachable (omniroute.urls in .agenthub/config.json; see ahub doctor)");
+    if (opts.onCampusOnly && (opts.via || this.isAccessHost(base))) throw new Error("PII model calls require the confirmed campus gateway");
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (opts.via) {
       if (opts.sessionId) headers["x-switchyard-session-id"] = opts.sessionId;
@@ -168,7 +175,7 @@ export class OmniRoute {
       res = await fetch(`${base}/chat/completions`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ ...body, stream: false }),
+        body: JSON.stringify({ ...body, messages: body.messages.map(({ is_error: _internalError, ...message }) => message), stream: false }),
         ...(opts.signal ? { signal: opts.signal } : {}),
       });
     } catch (e) {

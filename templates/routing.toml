@@ -93,3 +93,31 @@ peers = ["pi", "local", "kimi"]
 route = "sy/fast"
 pi_backend = "mlx"
 escalate_to = ["codex", "kimi"]
+
+# In-process L2 routes are opt-in: set local.route or a class route to hub/<id>.
+# They never enter the optional Switchyard sidecar TOML. Defaults are efficient fast, capable coding.
+[hub_routes."hub/stage"]
+type = "stage"
+efficient = "fast"
+capable = "coding"
+confidence_threshold = 0.5
+hold_turns = 2
+
+[hub_routes."hub/plan"]
+type = "plan_execute"
+efficient = "fast"
+capable = "coding"
+
+[hub_routes."hub/advisor"]
+type = "advisor"
+efficient = "fast"
+capable = "coding"
+max_reviews = 1
+trigger = "no_tool_call"
+gate_min_tool_results = 1
+
+[hub_routes."hub/escalation"]
+type = "escalation"
+efficient = "fast"
+capable = "coding"
+confirmations = 2

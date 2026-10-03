@@ -1,7 +1,7 @@
 // Fake OpenAI-compatible gateway (OmniRoute-like): /health, bearer check, x-omniroute-provider, scripted replies.
 import type { ChatMessage } from "../../src/omniroute/client.ts";
 
-export type Script = (body: { model: string; messages: ChatMessage[] }, call: number) => Partial<ChatMessage> | Promise<Partial<ChatMessage>>;
+export type Script = (body: { model: string; messages: ChatMessage[]; tools?: unknown[]; max_tokens?: number }, call: number) => Partial<ChatMessage> | Promise<Partial<ChatMessage>>;
 
 export const toolCall = (name: string, args: unknown, id = `call_${name}_${Math.random().toString(36).slice(2, 8)}`) => ({
   id,
