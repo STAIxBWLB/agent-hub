@@ -18,10 +18,11 @@ export function canonicalPath(path: string): string {
 }
 
 /**
- * realpathSync, except that Bun 1.3.14 throws ENOENT for an existing path containing a backslash (issue #26). Such a
- * path goes to the system realpath, which handles it and returns every component as stored on disk: guardPath checks
- * names, and on a case-insensitive disk `.GIT/config` or `id_rſa` would otherwise pass for another file. A missing
- * path or a dangling symlink still throws, which guardPath relies on. Other paths take realpathSync's answer unchanged.
+ * realpathSync, except that Bun (1.3.14, and 1.4.2 still: #121) throws ENOENT for an existing path containing a
+ * backslash (issue #26). Such a path goes to the system realpath, which handles it and returns every component as
+ * stored on disk: guardPath checks names, and on a case-insensitive disk `.GIT/config` or `id_rſa` would otherwise
+ * pass for another file. A missing path or a dangling symlink still throws, which guardPath relies on. Other paths take
+ * realpathSync's answer unchanged.
  */
 export function realPath(path: string): string {
   try {
