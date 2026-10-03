@@ -1754,6 +1754,8 @@ export async function startDaemon(opts: DaemonOptions) {
         hubRoutes: () => currentRouting(opts.cwd, log).hub_routes ?? {},
         onRoute: record => event({ type: "route", peer: "local", ...record }),
         onAdvisor: record => event({ type: "advisor", peer: "local", ...record }),
+        onRouteOutcome: record => event({ type: "route_outcome", peer: "local", ...record }),
+        turnId: () => turns.get("local")?.id,
         fixedModel: args.model ?? routing.local.fixed_model,
         tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, permit },
         ...(capture ? { capture } : {}),
