@@ -333,7 +333,7 @@ test("a dead runner's pending write: only the exact entry it would have written 
   expect(setup({ hasTrustDialogAccepted: true }, true)).toEqual({ entry: { hasTrustDialogAccepted: true }, stage: "not_written" });
 });
 
-test("the recovery's own restore names its temp file by the runner's pid, which a later recovery removes", async () => {
+test("the recovery's own restore names its temp file by the runner's pid, where a later recovery looks", async () => {
   const { recover } = await import("../../scripts/benchmarks/restore.ts");
   const { restoreTemp } = await import("../../scripts/benchmarks/teardown.ts");
   const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
@@ -347,7 +347,8 @@ test("the recovery's own restore names its temp file by the runner's pid, which 
   mkdirSync(join(restoreTemp(trustFile, process.pid), "x"), { recursive: true });
   try {
     writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner, protected: { paths: {}, restored: true }, siblings: {}, actors: {}, trust: { file: trustFile, project: fixture, previous: undefined, written: { hasTrustDialogAccepted: true }, hadProjects: true, mode: 0o600, stage: "written", restored: false } }));
-    expect(recover(run, processTable()!, new Map(), -1)).toEqual({ restored: true, blockers: [], failed: [] });
+    // As in production, the recovery is this process: neither its pid nor `self` may name the temp file.
+    expect(recover(run, processTable()!, new Map(), process.pid)).toEqual({ restored: true, blockers: [], failed: [] });
     expect(JSON.parse(readFileSync(trustFile, "utf8"))).toEqual({ projects: {} });
   } finally { rmSync(restoreTemp(trustFile, process.pid), { recursive: true, force: true }); }
 });
