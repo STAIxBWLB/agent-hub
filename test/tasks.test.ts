@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
@@ -1934,7 +1934,7 @@ test("a split prediction counts busy as taking a task only in the turn that task
       splitProfile: (p) => `hub 0.12.6; ${p} 1.0.0; turn-free`, recordSplit: (_task, p, where) => recorded.push({ where, trace: p.trace.join("\n") }) });
     const busy = async (peer: string) => { bus.publish(newEnvelope("claude", "a question first", { to: [peer] })); await Bun.sleep(20); };
     const routingTrace = () => recorded.find((r) => r.where === "routing")?.trace ?? "";
-    return { bus, tasks, busy, routingTrace, peers, recorded };
+    return { bus, tasks, busy, routingTrace, peers, recorded, dir };
   };
   // The overlapped task's owner is busy with a question while that task waits in its queue: not taking it.
   const queued = await rig();
@@ -2005,6 +2005,19 @@ test("a split prediction counts busy as taking a task only in the turn that task
   const cohort = claimed.recorded.find((r) => r.where === "cohort")?.trace;
   expect(cohort).toBeDefined();
   expect(cohort).not.toContain("not available");
+  // Claimed while paused in its turn (paused peers routed too) and resumed: `route explain` still reads it as taken.
+  const paused = await rig();
+  mkdirSync(join(paused.dir, ".agenthub"), { recursive: true });
+  writeFileSync(join(paused.dir, ".agenthub", "routing.toml"), readFileSync(join(import.meta.dir, "..", "templates", "routing.toml"), "utf8").replace('budget_paused = "skip_peer"', 'budget_paused = "off"'));
+  await paused.tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/c.ts"] } });
+  await paused.busy("codex");
+  paused.bus.pause("codex");
+  const mine = await paused.tasks.propose("codex", { title: "codex's part", class: "implement", owner: "codex", refs: { paths: ["src/c.ts"] } });
+  paused.bus.resume("codex");
+  expect(mine.owner).toBe("codex");
+  const explained = paused.tasks.explain(mine.id).join("\n");
+  expect(explained).toContain("unknown");
+  expect(explained).not.toContain("not available");
   // A peer that steers (Codex, Pi): its task is steered into the turn it is in, nothing is queued, and it is still not
   // taking it: that turn is about something else.
   class Steering extends Taking { async steer() {} }

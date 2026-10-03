@@ -45,6 +45,7 @@ Run this before reporting any task complete, and paste the output. A failing tes
 ## Things the agent gets wrong
 
 - Never auto-register Orca benchmark fixtures, including ad-hoc or copied runners; require an explicit pre-existing repo and exact worktree registration, and preserve fixture directories, Git state and benchmark evidence during cleanup.
+- The benchmark runner's Claude trust entry: a write still `pending` in the runner's own process never landed, so it is `not_written` on every path (contained or not, its temp file removed or left), and neither the runner nor the recovery touches an entry then. Only a dead runner's `pending` leaves that question to the recovery. `changed_concurrently` is the user's entry and is never taken back. Four review rounds of #115 found a path that broke this.
 - Codex: the adapter never sends its own `initialize`. It is a proxy; hub requests use negative ids and their responses must not reach the TUI.
 - Codex 0.154.0 `agentMessage` items carry `text` and `phase` (not `content[]`); only the last non-`commentary` message of a turn is shared.
 - Tests that are not about batching build the bus with `batchMs: 0`; with the default 15 s window a lone status envelope looks like a lost message.

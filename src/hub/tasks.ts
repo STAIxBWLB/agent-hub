@@ -659,7 +659,7 @@ export class Tasks {
       } catch { /* shadow only: never between the board write and the delivery */ }
     }
     // A claim is its own hand-over: the claimant took the task in the turn it is in, so it is taking it, not busy elsewhere.
-    // Only the cohort record formed just below reads it (the task is in progress from then on).
+    // The cohort record formed just below reads it, and so does `route explain` while that turn lasts.
     if (opts.claim && a.owner === by && this.d.bus.peers.get(by)?.state === "busy") this.sent.set(handOver(next, by), by);
     const hits = this.overlapHits(next);
     this.formCohort(next, hits);

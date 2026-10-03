@@ -712,27 +712,26 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             if (sibling) { sibling.restored = !failed.length; if (sibling.restored) sibling.modes = {}; } // nothing left to restore: not rewritten with every later write
             if (failed.length) note('sibling artifact read locks could not be restored');
         }
-        let trustRestored = true, tempLeft = false;
-        // A trust write that may not have landed leaves its temp file (a copy of the user's ~/.claude.json): removed here, or by
-        // the recovery when it cannot be.
-        if (trustLease && trustLedger?.stage === 'pending') { try { rmSync(trustTemp(trustLease.file, process.pid), { force: true }); } catch (e) { tempLeft = true; note(`the trust write's temp file could not be removed: ${String(e).slice(0, 200)}`); } }
-        if (trustLease && !contained) {
+        let trustRestored = true;
+        if (trustLease && trustLedger.stage === 'pending') {
+            // Still pending in this process: the write or its rename threw, before Claude was started, so nothing landed and no
+            // entry is touched, now or by the recovery (one someone else set meanwhile is theirs). Only a dead runner's
+            // `pending` leaves that question to the recovery. The temp file, a copy of ~/.claude.json, is removed here, or by
+            // the recovery when it cannot be.
+            let tempLeft = false;
+            try { rmSync(trustTemp(trustLease.file, process.pid), { force: true }); } catch (e) { tempLeft = true; note(`the trust write's temp file could not be removed: ${String(e).slice(0, 200)}`); }
+            restoration.trust = tempLeft ? 'kept: the trust write\'s temp file could not be removed' : 'not_written';
+            trustRestored = !tempLeft;
+            Object.assign(trustLedger, { stage: 'not_written', restored: trustRestored });
+        }
+        else if (trustLease && !contained) {
             // Claude may still run and rewrite its project entry: the recovery takes it back once nothing does.
             restoration.trust = 'kept: the cleanup is incomplete or unknown';
             trustRestored = false;
         }
-        else if (trustLease && tempLeft) {
-            // The write never landed (still pending here), but its copy is still there: the recovery removes the copy, and,
-            // since nothing was written, touches no entry (one someone else set meanwhile is theirs).
-            restoration.trust = 'kept: the trust write\'s temp file could not be removed';
-            trustRestored = false;
-            trustLedger.stage = 'not_written';
-        }
         else if (trustLease) {
-            // Still pending here means the write or its rename threw in this process: nothing landed, so nothing is touched
-            // (an entry someone else set meanwhile is theirs). Only a recovery after a dead runner cannot know.
-            restoration.trust = trustLedger.stage === 'pending' ? 'not_written' : restoreTrust(trustLease, dir);
-            trustRestored = restoration.trust === 'restored' || restoration.trust === 'not_written';
+            restoration.trust = restoreTrust(trustLease, dir);
+            trustRestored = restoration.trust === 'restored';
             trustLedger.restored = trustRestored;
             trustLedger.stage = restoration.trust;
             if (!trustRestored) note(restoration.trust === 'changed_concurrently' ? 'Claude trust entry changed concurrently; preserved current state' : 'Claude trust restore failed');
@@ -833,7 +832,8 @@ finally {
         // Protected inputs are back; an arm whose own sibling locks failed to come off keeps the run unrestored.
         const locked = [...siblingLedgers.entries()].filter(([, l]) => !l.restored).map(([d]) => d);
         const trustLeft = !!trustLedger && !trustLedger.restored && trustLedger.stage !== 'changed_concurrently';
-        const reasons = [...(locked.length ? [`sibling read locks of ${locked.length} arm(s) are still in place`] : []), ...(trustLeft ? ['the Claude trust entry was not taken back'] : [])];
+        const trustReason = trustLedger?.stage === 'not_written' ? 'the trust write\'s temp file (a copy of ~/.claude.json) was not removed' : 'the Claude trust entry was not taken back';
+        const reasons = [...(locked.length ? [`sibling read locks of ${locked.length} arm(s) are still in place`] : []), ...(trustLeft ? [trustReason] : [])];
         writeAtomic(join(runs, 'restoration.json'), JSON.stringify({ restored: !reasons.length, paths: protectedModes.size, ...(reasons.length ? { reason: reasons.join('; '), recover: `bun scripts/benchmarks/restore.ts --run ${runs}` } : {}), interrupted: stopRequested }));
     }
 }

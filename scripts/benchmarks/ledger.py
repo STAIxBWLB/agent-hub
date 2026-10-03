@@ -116,7 +116,8 @@ UNITS = {
                   "neither rows nor missing until restore.ts restores the directory",
     "summary": "per arm, over every run directory given (one repeat per directory; a repeat given twice is refused): "
                "attempts, completions with the reasons for the rest, attempts left out as invalid or unknown "
-               "(excluded), and planned attempts that wrote no record (missing: from each directory's cohort.json, or "
+               "(excluded), planned attempts a locked runs/ hides (unreadable), and planned attempts that wrote no "
+               "record (missing: from each directory's cohort.json, or "
                "with --plan from the manifest's plan, whole repeats included); medians over valid completed attempts, "
                "over the (case, repeat) pairs every arm completed validly (common) and, for turn-free, over treated "
                "attempts; totals over the attempts whose tasks were handed out and to which the measure applies, each "
@@ -578,6 +579,7 @@ def ledger_of(run):
 def summarize(rows, missing=(), unreadable=()):
     by = {}
     for r in rows: by.setdefault(r["arm"], []).append(r)
+    for _, arm, _ in [*missing, *unreadable]: by.setdefault(arm, [])  # an arm with no record still owes its attempts
     ok = lambda r: r.get("completed") and (r.get("validity") or {}).get("valid") is True
     arms = set(by)
     pairs = {(r["case"], r.get("repeat")) for r in rows}
@@ -640,10 +642,6 @@ def summarize(rows, missing=(), unreadable=()):
             **total(rs, "lost_fragments", lambda r: lost(r, "fragments")),
             "contribution_coverage_notes": sum(len((r.get("contributions") or {}).get("coverage") or []) for r in worked(rs)),
         }
-    # An arm with no record at all still owes its planned attempts: only its counts can be given.
-    for arm in sorted({a for _, a, _ in [*missing, *unreadable]} - set(out)):
-        out[arm] = {"attempts": 0, "missing": sorted(f"case {c} repeat {rep}" for c, a, rep in missing if a == arm),
-                    "unreadable": sorted(f"case {c} repeat {rep}" for c, a, rep in unreadable if a == arm)}
     return out
 
 

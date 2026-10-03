@@ -53,7 +53,8 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
         failed.push(...lost);
     }
     const trust = ledger.trust;
-    if (trust && !trust.restored) {
+    // `changed_concurrently`: the user changed the entry meanwhile, and it is theirs; the runner settled it.
+    if (trust && !trust.restored && trust.stage !== 'changed_concurrently') {
         // A runner that died between the lease and the rename or in its own restore, or that could not remove its temp file,
         // may have left one: a copy of ~/.claude.json. One that cannot be removed keeps the trust entry unrestored, so the
         // next recovery tries again. `not_written`: the runner knew its write never landed, so no entry is touched.
