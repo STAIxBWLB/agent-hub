@@ -281,18 +281,37 @@ export class Facts {
   /**
    * Of these files, the ones whose bytes are HEAD's: no change, whatever git's stat data lists (#112). `version` is the
    * version the caller observed, so the answer is about the bytes it goes on to offer or compare. A file too large to
-   * read is hashed by git itself, which streams it; only such regular files are (a link or a missing file never is).
+   * read whole is hashed here, streamed, opened as `load` opens a file (no link followed, never blocking, a regular file
+   * only); one larger than 64 MiB is not compared.
    */
   private atHead(files: string[], version: (f: string) => Omit<Version, "seq"> | undefined = (f) => this.load(f)): Set<string> {
     const head = this.headBlobs(files);
-    const seen = new Map(files.filter((f) => head.has(f)).map((f) => [f, version(f)]));
-    const blobs = new Map([...seen].map(([f, v]) => [f, v?.blob]));
-    const large = [...seen].filter(([, v]) => v?.hash.startsWith("large:")).map(([f]) => f).filter((f) => !f.includes("\n"));
-    if (large.length) {
-      const r = Bun.spawnSync(["git", "hash-object", "--no-filters", "--stdin-paths"], { cwd: this.root, stdin: new TextEncoder().encode(large.join("\n") + "\n"), stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
-      if (r.exitCode === 0) r.stdout.toString().split("\n").forEach((oid, i) => { if (oid && large[i]) blobs.set(large[i]!, oid); });
+    return new Set(files.filter((f) => {
+      if (!head.has(f)) return false;
+      const v = version(f);
+      const blob = v?.blob ?? (v?.hash.startsWith("large:") ? this.largeBlob(f) : undefined);
+      return blob !== undefined && blob === head.get(f);
+    }));
+  }
+
+  /** Git's blob id of a file too large to load, streamed; undefined for anything that is not a small enough regular file. */
+  private largeBlob(file: string): string | undefined {
+    if (this.rel(join(this.root, file)) !== file) return undefined;
+    let fd: number | undefined;
+    try {
+      fd = openSync(join(this.root, file), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const st = fstatSync(fd);
+      if (!st.isFile() || st.size > 64 * 1024 * 1024) return undefined;
+      const h = createHash("sha1").update(`blob ${st.size}\0`);
+      const buf = Buffer.alloc(1024 * 1024);
+      let got = 0;
+      for (let n = 0; got < st.size && (n = readSync(fd, buf, 0, buf.length, got)) > 0; got += n) h.update(buf.subarray(0, n));
+      return got === st.size ? h.digest("hex") : undefined; // changed while read: no claim
+    } catch {
+      return undefined;
+    } finally {
+      if (fd !== undefined) closeSync(fd);
     }
-    return new Set([...seen.keys()].filter((f) => blobs.get(f) !== undefined && blobs.get(f) === head.get(f)));
   }
 
   /** A new boundary: directories are expanded afresh. */

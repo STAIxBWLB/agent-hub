@@ -31,18 +31,22 @@ export function parseProcessTable(text: string): ProcRow[] {
   });
 }
 
+const PS = ["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart=,command="];
+const PS_OPTIONS = { env: { ...process.env, LC_ALL: "C" }, detached: true } as const;
+/** The rows of one read, or undefined when they do not show the reader: a parse that found nothing is not a table. */
+const own = (text: string) => { const rows = parseProcessTable(text); return rows.some((row) => row.pid === process.pid) ? rows : undefined; };
+
 /**
  * The process table, or undefined when it cannot be read or does not show this process: a parse that found nothing
  * (a localized `lstart`, a changed `ps`) is not an empty table. Read with LC_ALL=C for that reason, by a `ps` in a
- * process group of its own (a Ctrl-C to the caller's group would kill it), and tried twice.
+ * process group of its own (a Ctrl-C to the caller's group would kill it), bounded, and tried twice.
  */
 export function processTable(): ProcRow[] | undefined {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const r = Bun.spawnSync(["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart=,command="], { stdout: "pipe", stderr: "pipe", env: { ...process.env, LC_ALL: "C" }, detached: true, timeout: 10_000 });
-      if (r.exitCode !== 0) continue;
-      const rows = parseProcessTable(r.stdout.toString());
-      if (rows.some((row) => row.pid === process.pid)) return rows;
+      const r = Bun.spawnSync(PS, { ...PS_OPTIONS, stdout: "pipe", stderr: "pipe", timeout: 10_000 });
+      const rows = r.exitCode === 0 ? own(r.stdout.toString()) : undefined;
+      if (rows) return rows;
     } catch {
       // tried again below
     }
@@ -54,12 +58,11 @@ export function processTable(): ProcRow[] | undefined {
 export async function readProcessTable(): Promise<ProcRow[] | undefined> {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const p = Bun.spawn(["ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart=,command="], { stdout: "pipe", stderr: "ignore", env: { ...process.env, LC_ALL: "C" }, detached: true });
+      const p = Bun.spawn(PS, { ...PS_OPTIONS, stdout: "pipe", stderr: "ignore" });
       const timer = setTimeout(() => p.kill("SIGKILL"), 10_000);
       const [text, code] = await Promise.all([new Response(p.stdout).text(), p.exited]).finally(() => clearTimeout(timer));
-      if (code !== 0) continue;
-      const rows = parseProcessTable(text);
-      if (rows.some((row) => row.pid === process.pid)) return rows;
+      const rows = code === 0 ? own(text) : undefined;
+      if (rows) return rows;
     } catch {
       // tried again below
     }
@@ -169,7 +172,8 @@ async function stopGroup(proc: ChildProcess, pid: number, termMs: number, killMs
     for (const root of roots) for (const r of descendantsOf(rows, root.pid)) found.set(key(r), r);
     // A group is followed while it is known to be the same one: its leader or a recorded member still in it.
     for (const id of [pid, ...[...found.values()].filter((f) => f.pgid === f.pid).map((f) => f.pid)]) {
-      const known = (id === pid && leader && live(rows, leader)) || [...found.values()].some((f) => f.pgid === id && f.pid !== id && live(rows, f)) || [...found.values()].some((f) => f.pid === id && live(rows, f));
+      // Current rows, never a recorded pgid: a member may have left the group since it was recorded.
+      const known = (id === pid && leader && live(rows, leader)) || rows.some((r) => r.pgid === id && r.pid !== id && found.has(key(r))) || rows.some((r) => r.pid === id && r.pgid === id && found.has(key(r)));
       if (known) for (const r of rows) if (r.pgid === id && r.pid !== pid) found.set(key(r), r);
     }
     return rows;
@@ -211,11 +215,16 @@ async function stopGroup(proc: ChildProcess, pid: number, termMs: number, killMs
       if (Date.now() >= end) {
         throw new Error(`owned child ${pid}: ${rest ? `${rest.length + strangers.length} process(es) of its group or below it still running${strangers.length ? `, ${strangers.length} not proven its own and left alone` : ""}` : "the process table cannot be read to confirm what it started is gone"}`);
       }
-      if (!exited()) signal(-pid, "SIGSTOP");
+      // What is stopped is killed or continued, never left frozen: the group by whether its STOP was sent (its id stays
+      // reserved while a member lives), each process by whether the read after the freeze still shows it.
+      const groupStopped = !exited();
+      if (groupStopped) signal(-pid, "SIGSTOP");
       each(rest ?? [], "SIGSTOP");
       const frozen = await look();
-      each(frozen ? left(frozen) : rest ?? [], "SIGKILL");
-      if (!exited()) signal(-pid, "SIGKILL");
+      const kill = frozen ? left(frozen) : rest ?? [];
+      each(kill, "SIGKILL");
+      if (groupStopped) signal(-pid, "SIGKILL");
+      for (const r of rest ?? []) if (!kill.some((k) => k.pid === r.pid && k.started === r.started)) signal(r.pgid === r.pid ? -r.pid : r.pid, "SIGCONT");
       await Bun.sleep(50);
     }
   } catch (error) {

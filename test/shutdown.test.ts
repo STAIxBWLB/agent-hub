@@ -81,7 +81,11 @@ test("the watchdog stops a daemon whose project root vanished", async () => {
 // exit, the launcher alone was SIGKILLed, and the app-server was re-parented to init, still running. The app-server in
 // turn runs its MCP servers and tool commands in process groups of their own, and keeps starting them while it works.
 // Alive means in the process table, which leaves zombies out (`kill(pid, 0)` succeeds on one).
-const alive = (pid: number) => !!processTable()?.some((r) => r.pid === pid);
+const alive = (pid: number) => {
+  const table = processTable();
+  if (!table) throw new Error("the process table cannot be read: nothing can be said about pid " + pid);
+  return table.some((r) => r.pid === pid);
+};
 const gone = async (pid: number) => { for (let i = 0; i < 40 && alive(pid); i++) await Bun.sleep(50); return !alive(pid); };
 const launch = async (script: string, detached: boolean) => {
   const proc = spawn("sh", ["-c", script], { stdio: ["ignore", "pipe", "ignore"], detached });
@@ -126,8 +130,9 @@ test("what the tree starts during the grace period is recorded while its parent 
   const dir = mkdtempSync(join(tmpdir(), "agenthub-grace-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const pidFile = join(dir, "late.pid");
-  const late = `${process.execPath} -e 'process.on("SIGTERM", () => {}); setTimeout(() => { const c = require("node:child_process").spawn("sleep", ["30"], { detached: true, stdio: "ignore" }); require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); }, 300); setTimeout(() => process.exit(0), 600)'`;
-  const { proc } = await launch(`trap "" TERM; ${late} & echo $!; wait`, true);
+  // Its pid is printed once its handler is installed, and the 300 ms count from then.
+  const late = `${process.execPath} -e 'process.on("SIGTERM", () => {}); console.log(process.pid); setTimeout(() => { const c = require("node:child_process").spawn("sleep", ["30"], { detached: true, stdio: "ignore" }); require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); }, 300); setTimeout(() => process.exit(0), 600)'`;
+  const { proc } = await launch(`trap "" TERM; ${late} & wait`, true);
   await stopOwnedProcess(proc, { termMs: 1000, group: true });
   const child = Number(readFileSync(pidFile, "utf8"));
   cleanup.push(() => { try { process.kill(child, "SIGKILL"); } catch { /* gone */ } });
@@ -162,8 +167,9 @@ test("what the leader started gets the grace period to shut down after the leade
   const dir = mkdtempSync(join(tmpdir(), "agenthub-grace-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const marker = join(dir, "clean");
-  const child = `${process.execPath} -e 'process.on("SIGTERM", () => setTimeout(() => { require("node:fs").writeFileSync(${JSON.stringify(marker)}, "clean"); process.exit(0); }, 500)); setTimeout(() => {}, 30000)'`;
-  const { proc } = await launch(`${child} & echo $!; wait`, true);
+  // It prints its pid only once its handler is installed: a SIGTERM before that would kill it at once.
+  const child = `${process.execPath} -e 'process.on("SIGTERM", () => setTimeout(() => { require("node:fs").writeFileSync(${JSON.stringify(marker)}, "clean"); process.exit(0); }, 500)); console.log(process.pid); setTimeout(() => {}, 30000)'`;
+  const { proc } = await launch(`${child} & wait`, true);
   await stopOwnedProcess(proc, { termMs: 1000, group: true });
   expect(existsSync(marker)).toBe(true); // it ended on its own, not by SIGKILL
 });

@@ -17,11 +17,13 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from runner import TURN_FREE, active_window, hook_rows, isolation_failure, teardown_failure, transcript, treatment_failure  # noqa: E402  the grader's gates: one definition
+from runner import TURN_FREE, active_window, end_story, hook_rows, isolation_failure, teardown_failure, transcript, treatment_failure  # noqa: E402  the grader's gates: one definition
 
 UNITS = {
     "end_reason": "the runner's class (completed, timeout, interrupted, infrastructure-error, ...); end_reason_detail "
-                  "says which (wall-timeout, needs-review, claude-exited, ...). Completed and timed-out attempts are graded",
+                  "says which (wall-timeout, needs-review, claude-exited, ...), and end_story adds the end_flags that "
+                  "made it an infrastructure error (#113). Completed and timed-out attempts are graded unless the "
+                  "teardown gate (see validity) says otherwise",
     "completed": "the runner completed the attempt and every task has a done",
     "setup_s": "seconds of setup before the first task (native launches, readiness and sandbox probes)",
     "elapsed_s": "the runner's active-work seconds for the attempt (teardown is not recorded)",
@@ -65,7 +67,8 @@ UNITS = {
              "readback or done confirmed), build time, the hook process's start-up time, steer round trip, refused "
              "and unanswered steers; ack_ms_median is offer-to-acknowledgement",
     "capability": "per peer, the hub's capability events (verified or lost) with their time, setup included",
-    "validity": "whether the attempt is a valid run of its arm, by the grader's own gates: a turn-free attempt needs both "
+    "validity": "whether the attempt is a valid run of its arm, by the grader's own gates: its teardown complete (no "
+                "process of it known to be left, its evidence taken, the trust entry taken back; #113); a turn-free attempt needs both "
                 "context paths verified before its tasks and none lost, no cohort lifted and none formed open while the "
                 "agents worked (teardown is after that); every arm needs isolation (no Codex hook, no Codex MCP server "
                 "but the hub's, only the hub's facts hook in Claude's transcript). null with a reason when Claude's "
@@ -86,7 +89,8 @@ UNITS = {
                 "ended, timeout, interrupted, unsupported, not_awaited or not_applicable, with whether the tree changed "
                 "in the wait), cleanup (clean, clean_with_fallback or incomplete_or_unknown, with fallback signals, "
                 "processes still running and unresolved ones), restoration, and late_append_bytes: transcript bytes "
-                "written after the attempt's prefix was taken, never read (null when no prefix was recorded)",
+                "written after the attempt's prefix was taken, never read (null when no prefix was recorded); completion "
+                "outcomes include unreadable (the transcript could not be read) and carry the bound used",
     "split_predictions": "the hub's shadow split predictions (#109) with their traces; they never changed an assignment",
     "hooks": "hooks each agent ran as its own records show: Claude transcript hook rows by hook and command label (the "
              "hub's facts hook, or other: the program's name; never paths or arguments), with the durationMs they "
@@ -504,7 +508,7 @@ def contributions(run, rows, rows_why):
 def ledger_of(run):
     t0, tasks = task_times(run)
     events = run.get("events") or []
-    row = {"case": run.get("index"), "arm": run.get("kind"), "repeat": run.get("repeat"), "end_reason": run.get("end_reason"), "end_reason_detail": run.get("end_reason_detail"),
+    row = {"case": run.get("index"), "arm": run.get("kind"), "repeat": run.get("repeat"), "end_reason": run.get("end_reason"), "end_reason_detail": run.get("end_reason_detail"), "end_story": end_story(run),
            "setup_s": round(run["setupMs"] / 1000, 1) if isinstance(run.get("setupMs"), (int, float)) else None,
            "elapsed_s": round(run["elapsedMs"] / 1000, 1) if isinstance(run.get("elapsedMs"), (int, float)) else None}
     if t0 is None:
@@ -588,7 +592,7 @@ def summarize(rows, missing=()):
         treated = [r for r in done if (r.get("treatment") or {}).get("silent_cohort")]
         out[arm] = {
             "attempts": len(rs), "completed": sum(1 for r in rs if r.get("completed")), "valid_completed": len(done),
-            "not_completed": sorted(str(r.get("end_reason_detail") or r.get("end_reason")) for r in rs if not r.get("completed")),
+            "not_completed": sorted(r["end_story"] for r in rs if not r.get("completed")),
             "excluded": sorted(str((r.get("validity") or {}).get("why")) for r in rs if r.get("completed") and not ok(r)),
             "missing": sorted(f"case {c} repeat {rep}" for c, a, rep in missing if a == arm),
             "both_done_s_median": median([r["both_done_s"] for r in done]),

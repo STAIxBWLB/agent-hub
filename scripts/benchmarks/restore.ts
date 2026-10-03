@@ -57,7 +57,8 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
         if (outcome === 'failed') failed.push(trust.file);
         else Object.assign(trust, { restored: true, stage: outcome });
     }
-    writeFileSync(ledgerFile, JSON.stringify(ledger, null, 2), { mode: 0o600 });
+    writeFileSync(`${ledgerFile}.tmp`, JSON.stringify(ledger, null, 2), { mode: 0o600 });
+    renameSync(`${ledgerFile}.tmp`, ledgerFile); // a crash mid-write must not leave a ledger the next recovery cannot read
     if (failed.length) return { restored: false, blockers: [], failed };
     // The kept records join the run's own, so grading and the ledger see these attempts (as unavailable).
     mkdirSync(join(run, 'runs'), { recursive: true, mode: 0o700 });

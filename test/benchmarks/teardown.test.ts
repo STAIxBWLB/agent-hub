@@ -267,3 +267,13 @@ test("what an actor starts while the fallback waits is recorded before its paren
   expect(c.fallback.map((f) => [f.pid, f.signal])).toEqual([[105, "SIGTERM"], [130, "SIGSTOP"], [130, "SIGKILL"]]);
   expect(c.outcome).toBe("clean_with_fallback");
 });
+
+test("a process recorded in its parent's group that has since left it is signalled by the group it is in now", async () => {
+  // Recorded between its fork and its setsid: its row now leads a group of its own, which the launcher's signal misses.
+  const moved = row(107, 106, 107, "tool --serve");
+  const recorded = [actorOf([launcher], 105, "codex-app-server", "child of the daemon")!, { role: "below" as const, pid: 107, started: T, pgid: 105, via: "below codex-app-server 105" }];
+  const { w, deps, shutdown } = world([runner, launcher, native, moved], { shutdown: () => ["ahub kill: hub did not acknowledge shutdown"] });
+  const c = await teardown(recorded, DIR, shutdown, deps);
+  expect(w.signals).toEqual([[-105, "SIGTERM"], [-107, "SIGTERM"]]);
+  expect(c.outcome).toBe("clean_with_fallback");
+});

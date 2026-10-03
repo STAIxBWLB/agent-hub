@@ -1055,7 +1055,7 @@ export async function startDaemon(opts: DaemonOptions) {
   function splitProfile(peer: PeerId): string | undefined {
     try {
       const version = peer === "codex" ? (bus.peers.get("codex") as { version?: string } | undefined)?.version : peer === "claude" ? claudeVersion() : undefined;
-      return version ? `hub ${VERSION}; ${peer} ${version}; ${coordination}` : undefined;
+      return version ? `hub ${VERSION}; ${peer} ${version}; ${turnFree() ? "turn-free" : "advisory"}` : undefined; // the regime in force: a PII task suspends turn-free
     } catch { return undefined; } // asked before the daemon finished starting
   }
   /** Claude persists projects/<slug>/<sessionId>.jsonl only with the first turn. Prefer the

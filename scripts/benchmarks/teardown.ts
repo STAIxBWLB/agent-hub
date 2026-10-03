@@ -19,7 +19,7 @@ export interface Cleanup {
     normal: { errors: string[]; ms: number };
     /** Every recorded actor (some may have exited before teardown) and what was found below them: what has to be gone. */
     owned: Actor[];
-    fallback: { pid: number; role: Role; signal: 'SIGTERM' | 'SIGSTOP' | 'SIGKILL'; group: boolean; result: 'sent' | 'failed' }[];
+    fallback: { pid: number; role: Role; signal: 'SIGTERM' | 'SIGSTOP' | 'SIGKILL' | 'SIGCONT'; group: boolean; result: 'sent' | 'failed' }[];
     remaining: Actor[];
     /** Running with the fixture in its argv or as its working directory, not proved to be the arm's: left alone, and the cleanup is not complete. */
     unresolved: { pid: number; started: string; command: string; cwd?: string }[];
@@ -29,7 +29,7 @@ export interface Deps {
     table: () => ProcRow[] | undefined;
     /** Each process's working directory, or undefined when they cannot be read. */
     cwds: () => Map<number, string> | undefined;
-    signal: (pid: number, signal: 'SIGTERM' | 'SIGSTOP' | 'SIGKILL') => void;
+    signal: (pid: number, signal: 'SIGTERM' | 'SIGSTOP' | 'SIGKILL' | 'SIGCONT') => void;
     sleep: (ms: number) => Promise<void>;
     now: () => number;
     /** The runner itself: it and its children (a `bun ... kill` naming the fixture) are not the arm's. */
@@ -137,15 +137,18 @@ export async function teardown(actors: Actor[], dir: string, shutdown: () => Pro
     const settle = deps.now() - s0;
     const fallback: Cleanup['fallback'] = [];
     const f0 = deps.now();
-    // Signals go only to identities read again just before; a group leader is signalled with its group, and a member
-    // whose leader is signalled with it is skipped.
-    const send = (left: Actor[], signal: 'SIGTERM' | 'SIGSTOP' | 'SIGKILL') => {
-        for (const a of left) {
-            const group = a.pgid === a.pid;
-            if (!group && left.some((l) => l.pid === a.pgid && l.pgid === l.pid)) continue;
-            try { deps.signal(group ? -a.pid : a.pid, signal); fallback.push({ pid: a.pid, role: a.role, signal, group, result: 'sent' }); }
+    // Signals go only to identities read again just before, by their group as the table shows it now: a group leader is
+    // signalled with its group, and a member whose leader is signalled with it is skipped.
+    const send = (rows: ProcRow[], signal: 'SIGTERM' | 'SIGSTOP' | 'SIGKILL' | 'SIGCONT', only?: Actor[]) => {
+        const left = (only ?? alive(rows)).flatMap((a) => { const row = same(rows, a); return row ? [{ a, row }] : []; });
+        const sent: Actor[] = [];
+        for (const { a, row } of left) {
+            const group = row.pgid === row.pid;
+            if (!group && left.some((l) => l.row.pid === row.pgid && l.row.pgid === l.row.pid)) continue;
+            try { deps.signal(group ? -row.pid : row.pid, signal); fallback.push({ pid: a.pid, role: a.role, signal, group, result: 'sent' }); sent.push(a); }
             catch { fallback.push({ pid: a.pid, role: a.role, signal, group, result: 'failed' }); }
         }
+        return sent;
     };
     // Waits, recording what the processes start meanwhile while their parents still run.
     const settleFor = async (ms: number) => {
@@ -162,16 +165,19 @@ export async function teardown(actors: Actor[], dir: string, shutdown: () => Pro
         const now = deps.table();
         if (now) {
             grow(now);
-            send(alive(now), 'SIGTERM');
+            send(now, 'SIGTERM');
             await settleFor(bounds.fallbackMs / 2);
         }
-        // Freeze, enumerate, kill: a stopped process starts nothing, so the read after the freeze sees all of it.
+        // Freeze, enumerate, kill: a stopped process starts nothing, so the read after the freeze sees all of it. What
+        // was stopped and is not killed is continued, never left frozen.
         const before = deps.table();
         if (before && (grow(before), alive(before).length)) {
-            send(alive(before), 'SIGSTOP');
+            const stopped = send(before, 'SIGSTOP');
             const frozen = deps.table() ?? before;
             grow(frozen);
-            send(alive(frozen), 'SIGKILL');
+            const killed = send(frozen, 'SIGKILL');
+            const rest = stopped.filter((a) => !killed.includes(a));
+            if (rest.length) { const r = deps.table(); if (r) send(r, 'SIGCONT', rest); }
             await settleFor(bounds.fallbackMs / 2);
         }
     }

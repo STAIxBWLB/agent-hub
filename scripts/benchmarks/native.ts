@@ -423,6 +423,8 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     try {
         await lockSiblingArtifacts(dir, armModes);
         orcaProject = await ensureOrcaWorktree(dir);
+        if (stopRequested)
+            throw new Error('interrupted'); // before a hub is started for nothing
         await cmd(['bun', cliPath, '--project', dir, 'up'], dir);
         client = await wait(async () => { try {
             return await ControlClient.connect(state, { role: 'console' });
@@ -606,19 +608,20 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         const unsettled = actors.some(a => (finalStatus?.peers?.[a]?.liveAccepted?.length ?? 0) > 0 || finalStatus?.peers?.[a]?.needsReview || finalStatus?.peers?.[a]?.queued);
         if (unsettled && endReason === 'completed')
             endReason = 'delivery-unsettled';
+        // A completed arm's tree is hashed at the end of its active time and again once teardown verified its processes
+        // gone: a write in between (in the completion wait, or before the kill) would put work done after the active
+        // time into the graded patch, so it flags the attempt invalid, its end reason kept beside the flag.
+        const checkTree = endReason === 'completed'; // a timeout's tree is its submission as the agents were stopped
+        const treeAtEnd = checkTree ? await treeHash(dir, sealedBase).catch(() => undefined) : undefined;
         // A completed arm lets Claude end the turn it is in, within 30 s and never past the 300 s limit, by the turn-end
-        // marker proved on its probe turn. The tree is hashed before and after: a write in the wait makes the attempt
-        // invalid (its end reason kept beside the flag), as the patch would then hold work done after the active time.
+        // marker proved on its probe turn.
         let completion: any = { outcome: 'not_applicable' };
         if (readiness.claude?.transcriptPath) {
             if (endReason !== 'completed') completion = { outcome: 'not_awaited', why: endReason };
             else if (!readiness.claude.completionMarker) completion = { outcome: 'unsupported', why: 'no turn-end marker was proved on this session' };
             else {
-                const before = await treeHash(dir, sealedBase).catch(() => undefined);
-                const waited = await awaitTurnEnd(readiness.claude.transcriptPath, claudeId, Math.max(0, Math.min(30000, 300000 - elapsedMs)), () => stopRequested);
-                const after = await treeHash(dir, sealedBase).catch(() => undefined);
-                completion = { ...waited, treeChanged: before === undefined || after === undefined ? null : before !== after };
-                if (completion.treeChanged !== false) endFlags.push('tree-changed-in-completion-wait');
+                const boundMs = Math.max(0, Math.min(30000, 300000 - elapsedMs));
+                completion = { ...(await awaitTurnEnd(readiness.claude.transcriptPath, claudeId, boundMs, () => stopRequested)), boundMs };
             }
         }
         ws?.close();
@@ -664,6 +667,12 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             }
             catch { note('Claude transcript prefix could not be read'); }
         }
+        let treeAfterActive: boolean | null | undefined;
+        if (checkTree) {
+            const after = await treeHash(dir, sealedBase).catch(() => undefined);
+            treeAfterActive = treeAtEnd === undefined || after === undefined ? null : treeAtEnd !== after;
+            if (treeAfterActive !== false) endFlags.push(treeAfterActive ? 'tree-changed-after-active-time' : 'tree-unverified-after-active-time');
+        }
         const metadataClean = fixtureMetadataHash(dir) === metadataBaseline;
         if (!metadataClean)
             endFlags.push('metadata-modified');
@@ -707,7 +716,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         writeFileSync(patchFile, patch, { mode: 0o600 });
         let events: any[] = [];
         try { events = readEvents(join(state, 'events.jsonl')); } catch { note('hub events could not be read'); }
-        const result = { protocol: 'native-cc-v1', index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: sealedBase.trim(), models: manifest.models, requestedModels: actors.reduce((o: any, a: string) => (o[a] = manifest.models[a], o), {}), readiness, patchFile, model: actors.length === 1 ? manifest.models[actors[0]!] : undefined, setupMs: started ? started - setup : Date.now() - setup, elapsedMs, stoppedMs: stoppedAt ? stoppedAt - activeEnd : undefined, teardownMs: Date.now() - activeEnd, stages: { completionMs: completion.ms, shutdownMs: cleanup.normal.ms, settleMs: cleanup.ms.settle, fallbackMs: cleanup.ms.fallback, captureMs, restorationMs }, end_reason: endReason === 'infrastructure-error' ? 'infrastructure-error' : endReason === 'provider-quota' ? 'provider-quota' : endReason === 'budget-paused' ? 'budget-paused' : endFlags.length && endReason !== 'interrupted' ? 'infrastructure-error' : endReason === 'completed' ? 'completed' : endReason === 'delivery-unsettled' ? 'delivery-unsettled' : endReason === 'wall-timeout' ? 'timeout' : 'interrupted', end_reason_detail: endReason, end_flags: endFlags.length ? endFlags : undefined, error: error ? String(error).replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 300) : undefined, taskStates, effort: manifest.effort, events, codexMessages, codexTaskStart, startedAt: started || undefined, repeat, conditions, codexUsage: codexUsage(codexMessages, thread?.thread?.id), nativeVersions: { codex: codexVersion, claude: claudeVersion }, codexBinarySha256: sourceHash(codexBin), claudeSessionId: actors.includes('claude') ? claudeId : undefined, codexThreadId: thread?.thread?.id, completion, cleanup, restoration, trust_restored: trustRestored, cleanup_complete: contained, teardown_errors: teardownErrors.length ? teardownErrors : undefined, metadata_clean: metadataClean, metadata_sha256: metadataBaseline, delivery_status: finalStatus?.peers };
+        const result = { protocol: 'native-cc-v1', index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: sealedBase.trim(), models: manifest.models, requestedModels: actors.reduce((o: any, a: string) => (o[a] = manifest.models[a], o), {}), readiness, patchFile, model: actors.length === 1 ? manifest.models[actors[0]!] : undefined, setupMs: started ? started - setup : Date.now() - setup, elapsedMs, stoppedMs: stoppedAt ? stoppedAt - activeEnd : undefined, teardownMs: Date.now() - activeEnd, stages: { completionMs: completion.ms, shutdownMs: cleanup.normal.ms, settleMs: cleanup.ms.settle, fallbackMs: cleanup.ms.fallback, captureMs, restorationMs }, end_reason: endReason === 'infrastructure-error' ? 'infrastructure-error' : endReason === 'provider-quota' ? 'provider-quota' : endReason === 'budget-paused' ? 'budget-paused' : endFlags.length && endReason !== 'interrupted' ? 'infrastructure-error' : endReason === 'completed' ? 'completed' : endReason === 'delivery-unsettled' ? 'delivery-unsettled' : endReason === 'wall-timeout' ? 'timeout' : 'interrupted', end_reason_detail: endReason, end_flags: endFlags.length ? endFlags : undefined, error: error ? String(error).replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 300) : undefined, taskStates, effort: manifest.effort, events, codexMessages, codexTaskStart, startedAt: started || undefined, repeat, conditions, codexUsage: codexUsage(codexMessages, thread?.thread?.id), nativeVersions: { codex: codexVersion, claude: claudeVersion }, codexBinarySha256: sourceHash(codexBin), claudeSessionId: actors.includes('claude') ? claudeId : undefined, codexThreadId: thread?.thread?.id, completion, tree_changed_after_active_time: treeAfterActive, cleanup, restoration, trust_restored: trustRestored, cleanup_complete: contained, teardown_errors: teardownErrors.length ? teardownErrors : undefined, metadata_clean: metadataClean, metadata_sha256: metadataBaseline, delivery_status: finalStatus?.peers };
         writeFileSync(join(recordRoot, 'runs', name + '.json'), JSON.stringify(result, null, 2), { mode: 0o600 });
         log('arm-end', { index, kind, elapsedMs, endReason, cleanup: cleanup.outcome, completion: completion.outcome, patchLines: patch.split('\n').length });
         if (!contained)

@@ -138,9 +138,14 @@ def teardown_failure(run):
     if "claude" in str(run.get("kind") or "") and run.get("trust_restored") is not True: return "the Claude trust entry was not taken back"
     return None
 
+def end_story(run):
+    """How an attempt ended, with what flagged it beside (#113): `completed, then tree-changed-after-active-time`."""
+    story=str(run.get("end_reason_detail") or run.get("end_reason") or "no end reason")
+    return story+(", then "+", ".join(map(str,run["end_flags"])) if run.get("end_flags") else "")
+
 def unavailable_reason(arm, run):
     """Why an attempt with a run record is not graded, or None. Completed and timed-out attempts are graded."""
-    if run.get("end_reason") not in GRADED_ENDS: return run.get("end_reason_detail") or run.get("end_reason") or "no end reason"
+    if run.get("end_reason") not in GRADED_ENDS: return end_story(run)
     return treatment_failure(arm,run) or isolation_failure(run)
 
 def validate_manifest(m):
