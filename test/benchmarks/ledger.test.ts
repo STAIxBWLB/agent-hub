@@ -321,17 +321,19 @@ test("a late transcript append keeps the frozen prefix, is reported, and leaves 
     writeFileSync(transcript, rows + late); // Claude Code wrote its answer after the prefix was taken
     const row = ledger().rows[0];
     expect(row.settlement.claude).toBeNull(); // the turn is open in the prefix: unknown, not counted from the late rows
-    expect(row.teardown).toEqual({ completion: { outcome: "timeout", ms: 30_000, boundMs: 30_000 }, cleanup: "clean", cleanup_reasons: [], fallback_signals: 0, restoration: { siblings: "restored", trust: "restored" }, late_append_bytes: Buffer.byteLength(late), tree_changed_after_active_time: false });
+    expect(row.teardown).toEqual({ completion: { outcome: "timeout", ms: 30_000, boundMs: 30_000 }, cleanup: "clean", cleanup_reasons: [], fallback_signals: 0, restoration: { siblings: "restored", trust: "restored" }, late_append_bytes: Buffer.byteLength(late), tree_changed_after_active_time: false, verified: true });
     expect(row.validity.valid).not.toBe(false); // the prefix still matches its hash: readable
     // An attempt whose cleanup was not complete is unavailable to the ledger as to grading, whatever its end reason.
     run("00-solo-claude", { ...JSON.parse(readFileSync(join(root, "runs", "00-solo-claude.json"), "utf8")), cleanup_complete: false, cleanup: { outcome: "incomplete_or_unknown", reasons: ["still running: below 107"] } });
     expect(ledger().rows[0].validity).toEqual({ valid: false, why: "cleanup incomplete or unknown: still running: below 107" });
-    // A record from before 0.12.5 has no verified cleanup (0.12.3 and 0.12.4 set cleanup_complete when the shutdown
-    // commands exited 0): unknown, never re-graded as invalid.
+    // A record from before 0.12.5 is judged as it was then, by its own flags (0.12.3 and 0.12.4 set cleanup_complete when
+    // the shutdown commands exited 0), and its teardown is shown as not verified.
     const { cleanup: _, ...older } = JSON.parse(readFileSync(join(root, "runs", "00-solo-claude.json"), "utf8"));
     run("00-solo-claude", { ...older, cleanup_complete: true });
-    expect(ledger().rows[0].validity).toEqual({ valid: null, why: "cleanup not verified (a record from before 0.12.5)" });
-    run("00-solo-claude", { ...older, kind: "solo-codex", codexMessages: [{ method: "hook/started" }] }); // a definite failure still shows
+    expect([ledger().rows[0].validity.valid, ledger().rows[0].teardown.verified]).toEqual([true, false]);
+    run("00-solo-claude", { ...older, cleanup_complete: false });
+    expect(ledger().rows[0].validity).toEqual({ valid: false, why: "cleanup incomplete, as recorded before 0.12.5" });
+    run("00-solo-claude", { ...older, cleanup_complete: true, kind: "solo-codex", codexMessages: [{ method: "hook/started" }] }); // a definite failure still shows
     expect(ledger().rows[0].validity).toEqual({ valid: false, why: "hook isolation failed: Codex ran hooks" });
     // A flag beside the end reason is part of how the attempt ended: reported, not a bare "completed".
     run("00-solo-claude", { ...JSON.parse(readFileSync(join(root, "runs", "00-solo-claude.json"), "utf8")), kind: "solo-claude", codexMessages: [], cleanup_complete: true, cleanup: { outcome: "clean", reasons: [] }, end_reason: "infrastructure-error", end_reason_detail: "completed", end_flags: ["tree-changed-after-active-time"] });

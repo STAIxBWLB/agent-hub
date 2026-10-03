@@ -605,6 +605,10 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         // What makes an attempt invalid besides how it ended (issue #113): kept beside the end reason, never over it.
         const endFlags: string[] = [];
         const note = (error: string) => { teardownErrors.push(error); log('cleanup-error', { index, kind, error }); };
+        // A completed arm's tree is hashed at the end of its active time, first, and again once teardown verified its
+        // processes gone: a write in between (in the completion wait, or before the kill) would put work done after the
+        // active time into the graded patch, so it flags the attempt invalid, its end reason kept beside the flag.
+        const treeAtEnd = endReason === 'completed' ? await treeHash(dir, sealedBase).catch(() => undefined) : undefined;
         // Nothing new reaches an agent from here on (issue #113): its in-flight turn is all that can still write.
         if (client)
             for (const actor of actors)
@@ -614,11 +618,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         const unsettled = actors.some(a => (finalStatus?.peers?.[a]?.liveAccepted?.length ?? 0) > 0 || finalStatus?.peers?.[a]?.needsReview || finalStatus?.peers?.[a]?.queued);
         if (unsettled && endReason === 'completed')
             endReason = 'delivery-unsettled';
-        // A completed arm's tree is hashed at the end of its active time and again once teardown verified its processes
-        // gone: a write in between (in the completion wait, or before the kill) would put work done after the active
-        // time into the graded patch, so it flags the attempt invalid, its end reason kept beside the flag.
         const checkTree = endReason === 'completed'; // a timeout's tree is its submission as the agents were stopped
-        const treeAtEnd = checkTree ? await treeHash(dir, sealedBase).catch(() => undefined) : undefined;
         // A completed arm lets Claude end the turn it is in, within 30 s and never past the 300 s limit, by the turn-end
         // marker proved on its probe turn.
         let completion: any = { outcome: 'not_applicable' };
@@ -627,7 +627,10 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             else if (!readiness.claude.completionMarker) completion = { outcome: 'unsupported', why: 'no turn-end marker was proved on this session' };
             else {
                 const boundMs = Math.max(0, Math.min(30000, 300000 - (Date.now() - started))); // from now: the pause and the tree hash took time
-                completion = { ...(await awaitTurnEnd(readiness.claude.transcriptPath, claudeId, boundMs, () => stopRequested)), boundMs };
+                // Claude may still start processes while it ends its turn: they are followed every 5 s here too.
+                let waitCaptureAt = Date.now();
+                const stopped = () => { if (Date.now() - waitCaptureAt >= 5000) { try { capture(); } catch { /* the teardown captures again */ } waitCaptureAt = Date.now(); } return stopRequested; };
+                completion = { ...(await awaitTurnEnd(readiness.claude.transcriptPath, claudeId, boundMs, stopped)), boundMs };
             }
         }
         ws?.close();

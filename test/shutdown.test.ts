@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync, spawn } from "node:child_process";
-import { processTable, stopOwnedProcess } from "../src/hub/child-process.ts";
+import { processTable, stopOwnedProcess, trackGroup } from "../src/hub/child-process.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
@@ -207,6 +207,13 @@ test("a leader that exited before the stop leaves its group unsignalled, and mem
   await stopOwnedProcess(proc, { group: true, table: reused });
   const orphans = () => [me, { pid: 99_999_999, ppid: 1, pgid: proc.pid!, started: me.started, command: "left by the leader" }];
   await expect(stopOwnedProcess(proc, { group: true, table: orphans })).rejects.toThrow("its process group still has members");
+  // Followed after its exit: once its group was seen gone, a later group with that id (leader gone too) is not its.
+  const tracked = spawn("sh", ["-c", "exit 0"], { detached: true, stdio: "ignore" });
+  trackGroup(tracked);
+  await new Promise((resolve) => tracked.once("exit", resolve));
+  await Bun.sleep(50);
+  const later = () => [me, { pid: 99_999_999, ppid: 1, pgid: tracked.pid!, started: me.started, command: "someone's job" }];
+  await stopOwnedProcess(tracked, { group: true, table: later });
 });
 
 test("what the leader started gets the grace period to shut down after the leader is gone", async () => {

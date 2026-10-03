@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { Server, ServerWebSocket } from "bun";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
-import { childEnv, stopOwnedProcess } from "../hub/child-process.ts";
+import { childEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 
 export interface CodexOptions {
   /** Port the TUI attaches to: `codex --enable tui_app_server --remote ws://127.0.0.1:<proxyPort>`. */
@@ -304,6 +304,7 @@ export class CodexPeer extends BasePeer {
       stdio: ["ignore", "ignore", "pipe"],
       detached: true, // its own process group, stopped as a whole (#113): `codex` is a launcher with a native child
     });
+    trackGroup(this.proc);
     this.proc.stderr?.on("data", (d) => this.opts.log?.(`[${this.id}] ${String(d).trimEnd()}`));
     this.proc.on("error", (e) => (gone = `cannot run ${this.opts.bin ?? "codex"}: ${e.message}`));
     this.proc.on("exit", (code) => {

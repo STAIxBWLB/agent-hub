@@ -1889,3 +1889,26 @@ test("the shadow prediction never changes assignment: routed and named work go w
   expect(own.owner).toBe("codex"); // the configured order; claude's task on src/c.ts has not started
   expect(recorded.filter((r) => r.where === "routing")).toEqual([]);
 });
+
+// issue #109: an owner goes busy as its task is delivered, so at routing time the overlapped task's owner is busy taking
+// it; the routing record must not read that as "not available", or no calibration record could ever be known.
+test("the routing record counts the overlapped task's owner as available while it is busy taking that task", async () => {
+  class Taking extends BasePeer {
+    async deliver() { this.setState("busy"); }
+    async start() { this.setState("idle"); }
+    async stop() {}
+  }
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-tasks-"));
+  const bus = new Bus({ batchMs: 0 });
+  for (const id of ["claude", "codex", "kimi"]) { const p = new Taking(id); bus.add(p); await p.start(); }
+  const recorded: { where: string; trace: string[] }[] = [];
+  const tasks = new Tasks({ board: new Board(join(dir, "hub.db")), bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: () => {}, tell: () => {}, turnFree: () => true,
+    splitProfile: (p) => `hub 0.12.5; ${p} 1.0.0; turn-free`, recordSplit: (_task, p, where) => recorded.push({ where, trace: p.trace }) });
+  const a = await tasks.propose("claude", { title: "part a", class: "implement", refs: { paths: ["src/a.ts"] } });
+  await Bun.sleep(20);
+  expect(bus.stateOf(a.owner!)).toBe("busy"); // taking part a
+  await tasks.propose("claude", { title: "part b", class: "implement", refs: { paths: ["src/a.ts"] } });
+  const routing = recorded.find((r) => r.where === "routing");
+  expect(routing).toBeDefined();
+  expect(routing!.trace.join("\n")).not.toContain("not available");
+});

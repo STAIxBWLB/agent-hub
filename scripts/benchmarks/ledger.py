@@ -69,7 +69,8 @@ UNITS = {
     "capability": "per peer, the hub's capability events (verified or lost) with their time, setup included",
     "validity": "whether the attempt is a valid run of its arm, by the grader's own gates: its teardown complete (no "
                 "process of it known to be left, its evidence taken, the trust entry taken back; #113; a record from "
-                "before 0.12.5 has no verified teardown, so it is null unless it shows a definite failure); a turn-free attempt needs both "
+                "before 0.12.5 is judged by its own cleanup_complete and trust_restored, as then, and its teardown is "
+                "shown with verified false: those flags did not mean the processes were seen gone); a turn-free attempt needs both "
                 "context paths verified before its tasks and none lost, no cohort lifted and none formed open while the "
                 "agents worked (teardown is after that); every arm needs isolation (no Codex hook, no Codex MCP server "
                 "but the hub's, only the hub's facts hook in Claude's transcript). null with a reason when Claude's "
@@ -344,7 +345,8 @@ def teardown_of(run):
     cleanup = run.get("cleanup") or {}
     return {"completion": run.get("completion"), "cleanup": cleanup.get("outcome"), "cleanup_reasons": cleanup.get("reasons"),
             "fallback_signals": len(cleanup.get("fallback") or []), "restoration": run.get("restoration"), "late_append_bytes": late,
-            "tree_changed_after_active_time": run.get("tree_changed_after_active_time")}
+            "tree_changed_after_active_time": run.get("tree_changed_after_active_time"),
+            "verified": isinstance(cleanup.get("outcome"), str)}  # false before 0.12.5: no process readback was recorded
 
 
 def capability_of(events, t0):
@@ -356,11 +358,8 @@ def capability_of(events, t0):
 
 
 def validity_of(run):
-    # A record from before 0.12.5 has no verified cleanup: unknown, unless the record shows a definite failure.
-    teardown = teardown_failure(run)
-    why = (None if teardown and teardown.startswith("cleanup not verified") else teardown) or treatment_failure(str(run.get("kind") or ""), run) or isolation_failure(run)
-    if not why and teardown: why = teardown
-    if why and why.startswith(("hook isolation unknown", "cleanup not verified")): return {"valid": None, "why": why}
+    why = teardown_failure(run) or treatment_failure(str(run.get("kind") or ""), run) or isolation_failure(run)
+    if why and why.startswith("hook isolation unknown"): return {"valid": None, "why": why}
     return {"valid": not why, "why": why}
 
 

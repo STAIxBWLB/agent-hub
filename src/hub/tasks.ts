@@ -314,8 +314,9 @@ export class Tasks {
       units: [unit, unit],
       profiles: Object.fromEntries(peers.map((p) => [p, this.d.splitProfile?.(p)])),
       backlog: Object.fromEntries(peers.map((p) => [p, open.filter((t) => t.owner === p).length])),
-      // The routed peer may be busy taking this very task; the other owner, busy, is at work on something already.
-      available: Object.fromEntries(peers.map((p) => [p, !failing[p] && (states[p] === "idle" || (states[p] === "busy" && p === candidate))])),
+      // The routed peer may be busy taking this very task, and the other owner taking the overlapped task while it is not
+      // started yet (an owner goes busy as its task is delivered); busy otherwise, it is at work on something already.
+      available: Object.fromEntries(peers.map((p) => [p, !failing[p] && (states[p] === "idle" || (states[p] === "busy" && (p === candidate || other.state === "proposed")))])),
     });
   }
 

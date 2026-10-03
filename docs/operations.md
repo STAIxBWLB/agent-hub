@@ -502,8 +502,9 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   the peer that failed, never the next owner), and a peer whose version is
   unknown has no profile. The user's and
   plugins' hooks are not part of it. It is unknown unless the units are equal
-  and known, both peers are available (the other owner idle; the task's own peer
-  idle or busy taking it) with no other open work (an overlapping task its owner
+  and known, both peers are available (the other owner idle, or busy taking the
+  overlapping task while it is not started; the task's own peer idle or busy
+  taking it) with no other open work (an overlapping task its owner
   has started counts), and each has five measured tasks with no more than 30%
   failures and comparable work times. The work stage of a task ends at its first
   `hub_task_done`, and the task itself is never one of its own observations.
