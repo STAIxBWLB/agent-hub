@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { LocalPeer, type LocalOptions } from "../src/adapters/local-worker.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import { OmniRoute } from "../src/omniroute/client.ts";
+import type { RouteEvent } from "../src/models/route/runtime.ts";
+import type { RouteLabelEvent } from "../src/models/route/labels.ts";
 import type { HubRoute } from "../src/models/route/config.ts";
 import { parseHubRoutes } from "../src/models/route/config.ts";
 import { loadRouting } from "../src/hub/routing.ts";
@@ -21,7 +23,8 @@ async function fixture(route: HubRoute, script: Script, extra: Partial<LocalOpti
   process.env.OMNIROUTE_API_KEY = "fake-route-key";
   const omni = new OmniRoute({ urls: [model.url], access_hosts: [] });
   const routes: string[] = [], answers: string[] = [];
-  const peer = new LocalPeer("local", { cwd, omni, fixedModel: "fixed", route: "hub/test", hubRoutes: () => ({ "hub/test": route }), tools: { deny: [], permit: async () => true }, onRoute: e => routes.push(e.tier), maxSteps: 8, ...extra });
+  const routeEvents: RouteEvent[] = [], outcomes: RouteLabelEvent[] = [];
+  const peer = new LocalPeer("local", { cwd, omni, fixedModel: "fixed", route: "hub/test", hubRoutes: () => ({ "hub/test": route }), tools: { deny: [], permit: async () => true }, maxSteps: 8, ...extra, onRoute: e => { routes.push(e.tier); routeEvents.push(e); extra.onRoute?.(e); }, onRouteOutcome: e => { outcomes.push(e); extra.onRouteOutcome?.(e); } });
   peer.onMessage = text => { answers.push(text); };
   await peer.start(); cleanup.push(model.stop, () => peer.stop());
   const run = async () => {
@@ -29,7 +32,7 @@ async function fixture(route: HubRoute, script: Script, extra: Partial<LocalOpti
     for (let i = 0; i < 400 && peer.state === "busy"; i++) await Bun.sleep(10);
     expect(peer.state).toBe("idle");
   };
-  return { peer, model, routes, answers, run };
+  return { peer, model, routes, routeEvents, outcomes, answers, run };
 }
 
 test("local stage routes repeated failures to capable and preserves whole completed tool batches", async () => {
@@ -117,4 +120,99 @@ test("a route configuration callback failure falls back without failing the comp
   const f = await fixture({ type: "stage" }, () => ({ content: "fixed answer" }), { hubRoutes: () => { throw new Error("policy unavailable"); } });
   await f.run(); expect(f.answers).toEqual(["fixed answer"]);
   expect(f.model.requests.map(request => request.body.model)).toEqual(["fixed"]);
+});
+
+
+function expectJoinedLabels(f: Awaited<ReturnType<typeof fixture>>, status: "completed" | "failed") {
+  expect(f.routeEvents.length).toBeGreaterThan(0);
+  expect(f.outcomes).toHaveLength(f.routeEvents.length);
+  expect(new Set(f.outcomes.map(e => e.decision)).size).toBe(f.routeEvents.length);
+  for (const route of f.routeEvents) {
+    expect(typeof route.decision).toBe("string"); expect(typeof route.turn).toBe("string");
+    const outcome = f.outcomes.find(e => e.decision === route.decision)!;
+    expect(outcome).toMatchObject({ turnId: route.turn, turn: status, pii: route.pii });
+    for (const field of ["severity", "spinning", "exploring", "production"] as const) expect(Number.isFinite(route[field])).toBe(true);
+  }
+}
+
+test("scripted efficient failure and capable test pass produce one outcome each joined to their decision and daemon turn", async () => {
+  let toolResult = 0;
+  const f = await fixture({ type: "stage" }, body => {
+    const n = body.messages.filter(m => m.role === "tool").length;
+    if (n === 0) return { tool_calls: [toolCall("hub_task_list", {})] };
+    if (n === 1) return { tool_calls: [toolCall("hub_task_list", {})] };
+    return { content: "finished" };
+  }, { turnId: () => "local#label-test.1", turnPolicy: () => ({ pii: false, task: "17" }), taskTool: async () => ++toolResult === 1 ? "MemoryError: 1 tests failed" : "1 passed, 0 failed" });
+  await f.run(); expectJoinedLabels(f, "completed");
+  expect(f.routeEvents[0]).toMatchObject({ tier: "fast", task: 17, turn: "local#label-test.1", pii: false });
+  expect(f.routeEvents[1]?.tier).toBe("coding");
+  expect(f.outcomes[0]?.next).toMatchObject({ tests: "fail", severity: 1 });
+  expect(f.outcomes[1]?.next).toEqual({ tests: "pass", severity: 0, repeat: false });
+  expect(f.outcomes.at(-1)).not.toHaveProperty("next");
+  expect(JSON.stringify(f.outcomes)).not.toContain("MemoryError");
+});
+
+test("scripted advisor REDO is attached only to the reviewed decision", async () => {
+  const f = await fixture({ type: "advisor" }, body => ({ content: body.model === "coding" ? "REDO: verify hidden detail" : "answer" }));
+  await f.run(); expectJoinedLabels(f, "completed");
+  expect(f.outcomes[0]?.advisor).toBe("redo");
+  expect(f.outcomes[1]).not.toHaveProperty("advisor");
+  expect(JSON.stringify(f.outcomes)).not.toContain("hidden detail");
+});
+
+test("failed scripted turn settles all route decisions without waiting for a next turn", async () => {
+  const f = await fixture({ type: "stage" }, () => { throw new Error("executor unavailable"); });
+  await f.run(); expectJoinedLabels(f, "failed"); expect(f.answers).toEqual([]);
+  expect(f.outcomes[0]).not.toHaveProperty("next");
+});
+
+test("PII and throwing sinks retain label shape and never change the answer", async () => {
+  const f = await fixture({ type: "stage" }, () => ({ content: "private answer" }), {
+    turnPolicy: () => ({ pii: true, task: "22" }),
+    onRoute: () => { throw new Error("route sink down"); }, onRouteOutcome: () => { throw new Error("outcome sink down"); },
+  });
+  await f.run(); expectJoinedLabels(f, "completed");
+  expect(f.answers).toEqual(["private answer"]);
+  expect(f.routeEvents[0]).toMatchObject({ pii: true, task: 22 });
+  expect(f.outcomes[0]).toMatchObject({ pii: true, task: 22 });
+  expect(JSON.stringify(f.outcomes)).not.toContain("private answer");
+});
+
+test("stop closes an in-flight decision exactly once and its late response cannot relabel the next turn", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const f = await fixture({ type: "stage" }, async () => { await gate; return { content: "late answer" }; });
+  await f.peer.deliver([newEnvelope("user", "wait", { to: ["local"] })]);
+  for (let i = 0; i < 100 && !f.routeEvents.length; i++) await Bun.sleep(1);
+  await f.peer.stop(); expectJoinedLabels(f, "failed");
+  release(); await Bun.sleep(20);
+  expect(f.outcomes).toHaveLength(1); expect(f.answers).toHaveLength(0);
+});
+
+test("escalation labels all earlier choices with a later latch in the same turn", async () => {
+  const f = await fixture({ type: "escalation", confirmations: 1 }, body => ({ content: body.model === "coding" && !body.tools ? JSON.stringify({ escalate: true, category: "repetition", new_evidence: true, reason: "fresh evidence" }) : "done" }));
+  await f.run(); expectJoinedLabels(f, "completed");
+  expect(f.routeEvents.map(e => e.tier)).toEqual(["fast", "coding"]);
+  expect(f.outcomes.every(e => e.latched)).toBe(true);
+});
+
+test("watchdog cancellation settles in-flight labels once before a late response returns", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const f = await fixture({ type: "stage" }, async () => { await gate; return { content: "late watchdog answer" }; }, { watchdogMs: 60 });
+  await f.run(); expectJoinedLabels(f, "failed");
+  release(); await Bun.sleep(20);
+  expect(f.outcomes).toHaveLength(1);
+  expect(f.answers).not.toContain("late watchdog answer");
+});
+
+test("a marked private envelope keeps PII labels and suppresses progress even without a task policy", async () => {
+  let observations = 0;
+  const f = await fixture({ type: "stage" }, () => ({ content: "private result" }), { onTool: () => { observations++; } });
+  await f.peer.deliver([newEnvelope("user", "private request", { to: ["local"], private: true })]);
+  for (let i = 0; i < 100 && f.peer.state === "busy"; i++) await Bun.sleep(10);
+  expectJoinedLabels(f, "completed");
+  expect(f.routeEvents[0]?.pii).toBe(true);
+  expect(f.outcomes[0]?.pii).toBe(true);
+  expect(observations).toBe(0);
 });

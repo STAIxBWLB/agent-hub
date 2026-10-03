@@ -1671,7 +1671,7 @@ export async function startDaemon(opts: DaemonOptions) {
         model: args.model,
         sessionId: args.sessionId, sessionFile: args.sessionFile,
         admitBudget: async (envs, unit) => unit === "model_calls" ? [] : tasks.admitExecutionEnvelopes(envs, "pi", unit),
-        relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? Math.min(routing.pi.mlx_max_context_tokens, config.mlx.provider === "ollama" ? (config.mlx.contextWindow ?? 8192) : routing.pi.mlx_max_context_tokens) : routing.pi.dgx_max_context_tokens, maxTokens: id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
+        relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? Math.min(routing.pi.mlx_max_context_tokens, config.mlx.provider === "ollama" ? (config.mlx.contextWindow ?? 8192) : routing.pi.mlx_max_context_tokens) : routing.pi.dgx_max_context_tokens, maxTokens: id === "hub/auto" ? Math.min(config.mlx.maxTokens ?? 2048, 8192) : id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
         tools: [...TOOL_SCHEMAS.map((t) => t.function), ...TASK_TOOLS.map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
         executeTool: async (name, raw, callId, sessionId, signal) => {
           if (signal?.aborted) return "error: turn cancelled before tool effects";
@@ -1776,6 +1776,8 @@ export async function startDaemon(opts: DaemonOptions) {
         hubRoutes: () => currentRouting(opts.cwd, log).hub_routes ?? {},
         onRoute: record => event({ type: "route", peer: "local", ...record }),
         onAdvisor: record => event({ type: "advisor", peer: "local", ...record }),
+        onRouteOutcome: record => event({ type: "route_outcome", peer: "local", ...record }),
+        turnId: () => turns.get("local")?.id,
         onTool: (observation, task) => observeProgress("local", observation, task),
         fixedModel: args.model ?? routing.local.fixed_model,
         tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, permit },

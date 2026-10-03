@@ -137,6 +137,7 @@ related: 261004-review-agent-hub-switchyard-comparison.md, 261004-plan-agent-hub
     - Escalation 판정기 실패를 fail-open으로.
     - REDO 피드백을 local worker 이력에 남김.
     - Responses·Codex 원시 블록 제외.
+    - Escalation의 여러 작업 앵커가 전체 입력 상한을 넘을 때 최신 실행 창을 보존하도록 앵커를 함께 축약. 상류의 최신 활동 누락 버그를 의도적으로 수정.
   - 문자 수는 Rust의 Unicode scalar 기준이므로 JS에서는 code point 단위(`[...s]`)로 셈. 정규식은 `u` 플래그.
 - **E4 입력 정규화**
   - OpenAI chat 메시지를 Switchyard 내부 형태로 맞추는 어댑터.
@@ -154,12 +155,21 @@ related: 261004-review-agent-hub-switchyard-comparison.md, 261004-plan-agent-hub
 - **E7 PII**
   - PII turn의 판정기·advisor 호출은 on-prem 경로가 확인될 때만(`onCampus()`). 아니면 검토 없이 진행.
   - peer 진행 판정은 PII 작업을 제외. 이벤트에 작업 텍스트를 넣지 않음(`publicView` 규칙).
-- **E8 이벤트**
-  - `route`: peer, route, tier, source(override, dimensions, hold, classifier, default), score, ms.
-  - `advisor`: trigger, verdict, 버린 토큰.
-  - `progress`: peer, task, severity, spinning, exploring, production.
-  - `stuck`: peer, task, category, streak, latched.
-  - `docs/events.md` 갱신. control WS 메시지 모양이 바뀌면 `PROTOCOL`을 올림.
+- **E8 이벤트와 결정 라벨** (이슈 #126, 2026-10-04 추가 요구사항 반영)
+  - 기본 `route`: peer, route, tier, source(override, dimensions, hold, classifier, default), score, ms.
+  - local worker의 모든 `route`에 추가: 고유 `decision` id, `turn_start` / `turn_end`와 같은 `turn` id, 작업이 있는 경우 숫자 `task`, boolean `pii`, 결정 시점의 `severity`, `spinning`, `exploring`, `production`.
+  - `route_outcome`: `decision`으로 연결하고 각 결정당 정확히 1회 기록. 해당 turn이 완료되거나 실패할 때까지 보류해 이후 escalation latch도 반영.
+    - `next`: 그 호출 응답에 대한 도구 결과의 severity(0, 0.3, 0.7, 1.0), tests(pass, fail, none), repeat(이전 오류 지문과 반복 여부). 최종 응답처럼 다음 도구 결과가 없으면 생략.
+    - `advisor`: 해당 호출의 최종 응답을 검토했을 때 approve, redo, failed 중 하나.
+    - `turn`: completed 또는 failed. 원래 turn id는 `route.turn`을 통해 연결하며 outcome의 `turnId`도 같은 id를 기록.
+    - `latched`: 같은 turn에서 이후 capable escalation이 latch됐는지 여부.
+  - 성공, 모델 실패, 예산 중단, watchdog 취소, stop을 포함한 모든 local turn 종료에서 미정 outcome을 정리. 종료한 turn의 늦은 완료가 새 turn의 라벨을 오염시키거나 중복 outcome을 만들지 않도록 세대 확인.
+  - 숫자, id, boolean, 닫힌 목록만 기록. 메시지·도구 출력·작업 텍스트·오류 지문 원문은 라벨에 넣지 않음. PII도 같은 형태에 `pii: true`로 기록해 export에서 제외 가능.
+  - 선택적 telemetry. sink 예외가 turn, 모델 선택, 결과 전달에 영향을 주지 않음.
+  - `advisor`: trigger, verdict, 버린 문자 수. `progress`: peer, task, severity, spinning, exploring, production. `stuck`: peer, task, category, streak, latched.
+  - task review 결과는 offline join: `route.task`와 기존 `task` 이벤트의 approved / changes_requested를 연결. `docs/events.md`에 절차 기록. 새 명령은 추가하지 않음.
+  - Pi relay 라벨은 #126 범위 밖. 기존 Pi `route` 형태와 고정 backend 동작을 보존하며, 다음 요청의 도구 결과를 쓰는 확장은 후속 작업.
+  - `events.jsonl`의 추가 필드·새 이벤트만 변경. control WS 모양은 유지하므로 `PROTOCOL`은 올리지 않음.
 - **E9 라이선스**
   - 이식한 파일마다 머리말을 둠: 원 SPDX 두 줄을 남기고, "Ported to TypeScript from NVIDIA NeMo Switchyard `<path>` at `c8848511`, modified"를 적음.
   - 저장소 루트에 `THIRD_PARTY_NOTICES.md`(Switchyard NOTICE 귀속 문구)와 `LICENSES/Apache-2.0.txt`.

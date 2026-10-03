@@ -14,7 +14,8 @@ export type HubEvent =
   | { type: "quiet"; id: string; from: string; peers: string[] }
   | { type: "fact"; peer: string; id: string; files: number; plans: number; unknown: number; named: number; bytes: number; via: "hook" | "steer" | "done"; ms?: number; hookMs?: number; rttMs?: number; accepted?: boolean; unanswered?: boolean; probe?: boolean; coverage?: boolean }
   | { type: "fact_ack"; peer: string; id: string; via: string; ms: number }
-  | { type: "route"; peer: string; route: string; tier: string; source: "override" | "dimensions" | "hold" | "classifier" | "default"; score: number; ms: number }
+  | { type: "route"; peer: string; route: string; tier: string; source: "override" | "dimensions" | "hold" | "classifier" | "default"; score: number; ms: number; decision?: string; turn?: string; task?: number; pii?: boolean; severity?: number; spinning?: number; exploring?: number; production?: number }
+  | { type: "route_outcome"; peer: string; decision: string; turnId: string; turn: "completed" | "failed"; task?: number; pii: boolean; latched: boolean; next?: { severity: number; tests: "pass" | "fail" | "none"; repeat: boolean }; advisor?: "approve" | "redo" | "failed" }
   | { type: "advisor"; peer: string; route: string; trigger: string; verdict: "approve" | "redo" | "failed"; discardedChars: number }
   | { type: "progress"; peer: string; task: number; severity: number; spinning: number; exploring: number; production: number }
   | { type: "stuck"; peer: string; task: number; category: "repetition" | "false_progress" | "drift" | "desperation" | "capability_gap"; streak: number; latched: boolean }

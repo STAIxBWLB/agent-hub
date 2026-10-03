@@ -48,12 +48,30 @@ export function summarizeForEscalation(conversation: Conversation, turn: number,
   }
   if (window.length > windowSize) window.splice(0, window.length - windowSize);
   const phase = options.phase === "efficient" ? "Routing phase: EFFICIENT_EVALUATION" : options.phase === "strong" ? "Routing phase: STRONG_EVALUATION" : undefined;
-  const assemble = (instructions: string, lines: string[]) => [phase, `Conversation turn ${turn}; showing the last ${lines.length} of ${conversation.messages.length} messages after the task framing.`, instructions, ...anchors, ...lines].filter(Boolean).join("\n");
-  const reserve = Array.from(assemble("", window.slice(-1))).length;
-  const instructionBudget = Math.max(0, requestCap - reserve - 1);
-  const instructionText = truncateCodepoints(instructionLines.join("\n"), instructionBudget);
-  let summary = assemble(Array.from(instructionText).slice(0, instructionBudget).join(""), window);
-  while (Array.from(summary).length > requestCap && window.length) { window.shift(); summary = assemble(Array.from(instructionText).slice(0, instructionBudget).join(""), window); }
+  const anchorLines = [...instructionLines, ...anchors];
+  const assemble = (anchorText: string, lines: string[]) => [phase, `Conversation turn ${turn}; showing the last ${lines.length} of ${conversation.messages.length} messages after the task framing.`, anchorText, ...lines].filter(Boolean).join("\n");
+
+  // Preserve the recent window first. If it alone exceeds the cap, discard only
+  // its oldest entries; the newest entry remains as the trajectory's evidence.
+  let base = assemble("", window);
+  while (Array.from(base).length > requestCap && window.length > 1) {
+    window.shift();
+    base = assemble("", window);
+  }
+  if (Array.from(base).length > requestCap && window.length === 1) {
+    const available = Math.max(0, requestCap - Array.from(assemble("", [])).length - 1);
+    window[0] = truncateCodepoints(window[0]!, available);
+    window[0] = Array.from(window[0]!).slice(0, available).join("");
+    base = assemble("", window);
+  }
+
+  // Task and instruction anchors can outgrow the full request budget together.
+  // Middle-truncate their combined text into the space left after reserving the
+  // header and newest available trajectory, keeping short source summaries exact.
+  const anchorBudget = Math.max(0, requestCap - Array.from(base).length - (anchorLines.length ? 1 : 0));
+  const anchorsText = anchorLines.join("\n");
+  const boundedAnchors = Array.from(truncateCodepoints(anchorsText, anchorBudget)).slice(0, anchorBudget).join("");
+  let summary = assemble(boundedAnchors, window);
   if (Array.from(summary).length > requestCap) summary = Array.from(summary).slice(0, Math.max(0, requestCap - Array.from(truncationSuffix).length - 1)).join("") + truncationSuffix;
   return summary;
 }

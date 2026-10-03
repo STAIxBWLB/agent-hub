@@ -18,7 +18,8 @@ marked `private: true`, and PII tasks `pii: true`.
 | `quiet` | `id`, `from`, `peers`: an agent message held back from these members of a silent turn-free cohort; its other recipients got it (issue #107) |
 | `fact` | `peer`, `id` (the offer), `files` (files whose diff it carried), `plans`, `unknown` (files whose change it showed with attribution unknown), `named` (files under a named directory it named without a diff, those counted as "N more" or held back by the PII filter included), `bytes` (the injected text), `via` (`hook` for Claude, `steer` for Codex, `done` with an integration request), `ms` (the hub's time to build it), `hookMs` (the hook process's own start-up and connect time), `accepted` (whether app-server took the steer), `unanswered` (app-server did not answer it within 10 s: it may have gone in), `rttMs` (an accepted steer: from sending it to app-server's answer), `probe` (a context check), `coverage` (it named files earlier changes are not covered for): one fact offer (issue #108) |
 | `fact_ack` | `peer`, `id`, `via` (`hook` and `steer`: a readback found the offer in the native session; `done`: the next `hub_task_done`), `ms` (from the offer): an acknowledged offer, the only thing that moves a peer's view |
-| `route` | `peer`, `route`, `tier`, `source` (`override`, `dimensions`, `hold`, `classifier`, `default`), `score`, `ms`: the in-process model route decision; no prompt text |
+| `route` | `peer`, `route`, `tier`, `source` (`override`, `dimensions`, `hold`, `classifier`, `default`), `score`, `ms`. Local decisions also carry `decision`, `turn`, optional numeric `task`, `pii`, and decision-time `severity`, `spinning`, `exploring`, `production`; no prompt text |
+| `route_outcome` | `peer`, `decision`, `turnId`, `turn` (`completed` or `failed`), optional `task`, `pii`, `latched`, optional `next` (`severity`, `tests`: `pass`/`fail`/`none`, `repeat`) and `advisor` (`approve`/`redo`/`failed`). Exactly once per local decision at turn settlement, including failure/cancellation |
 | `advisor` | `peer`, `route`, `trigger`, `verdict` (`approve`, `redo`, `failed`), `discardedChars`: an advisor check result; no transcript or feedback text |
 | `progress` | `peer`, `task` (task id), `severity`, `spinning`, `exploring`, `production`: normalized tool activity dimensions for an open task; coverage differs by peer and no commands or task text are recorded |
 | `stuck` | `peer`, `task` (task id), `category` (`repetition`, `false_progress`, `drift`, `desperation`, `capability_gap`), `streak`, `latched`: an escalation verdict; it recommends considering reassignment and never reassigns automatically |
@@ -51,3 +52,30 @@ Token usage by adapter:
 
 The file is local and never uploaded. It grows without rotation; delete it to start
 over (the hub recreates it).
+
+## Offline route outcome joins
+
+For local-worker decisions, join `route_outcome.decision` to `route.decision` (one-to-one).
+The route row records the chosen tier and decision-time dimensions; `next` describes only
+the tool results answering that response, not an aggregate over later unrelated calls.
+A final no-tool response has no `next`. Advisor checks add their closed verdict.
+`latched` includes escalation that occurred later in the same turn.
+
+Join `route.turn` or `route_outcome.turnId` to `turn_start.turn` / `turn_end.turn`.
+The outcome's `turn` field is the completion status, not the turn id. To add offline
+review supervision, join `route.task` to `task.id` and inspect subsequent task events
+whose `state` is `approved` or `changes_requested`. Keep their timestamps so a review
+from a different task revision is not treated as immediate per-call evidence.
+
+Exclude both decisions and outcomes with `pii: true` before exporting a training set.
+Labels contain ids, numbers, booleans and closed values only; they never retain tool
+output, task text, advisor feedback, or raw failure fingerprints. A failed telemetry
+sink does not affect model selection, budget admission or delivery. Pi outcome labels
+are deferred: its existing route events retain their original shape. No control WebSocket
+message changed, so the protocol number is unchanged.
+
+Progress coverage is asymmetric: Codex contributes completed command and file-change items, local and Pi contribute
+per-model-step tool observations, and Claude contributes tool inputs from turn-free pre-hooks without tool results or
+a native turn id. Missing peers or intervals therefore mean unobserved, not zero activity. Escalation uses only known
+native turn ids; observations without one still contribute progress dimensions but cannot establish separate attempts
+or the eight-turn spinning threshold.
