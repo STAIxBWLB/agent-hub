@@ -26,7 +26,8 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
     // Neither file: no runner got as far as its marker here, so it locked nothing and there is nothing to recover (#120).
     if (!hasLedger && !existsSync(join(run, 'restoration.json'))) return { restored: true, blockers: [], failed: [] };
     // A re-run that died after an earlier run's `restored: true` leaves locks that file does not know about (#120). A ledger
-    // from before 0.12.5 owes its locks, not its trust entry (`owed`).
+    // from before 0.12.5 owes its locks; its trust entry only when restoration.json neither says `restored: true` nor names a
+    // runner (`owed`).
     const due = owed(ledger, status);
     if (status?.restored === true && !unrestored(due).length) return { restored: true, blockers: [], failed: [] };
     if (!table) return { restored: false, blockers: ['the process table cannot be read'], failed: [] };
