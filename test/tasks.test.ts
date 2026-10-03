@@ -1813,7 +1813,7 @@ test("split observations: tasks handed out with the peer's current profile, clai
   expect(tasks.splitObservations("implement", "kimi")).toEqual([]);
 });
 
-test("a split observation counts what happened after the hand-over: the decline that caused it was the last owner's", async () => {
+test("a split observation counts what happened from a hand-over to the next one: a decline is the decliner's, never the next owner's", async () => {
   const { tasks, board } = await turnFreeRig({ splitProfile: (p) => `hub 0.12.5; ${p} 1.0.0; turn-free` });
   const t = await tasks.propose("claude", { title: "declined first", class: "implement", owner: "codex" });
   await tasks.decline("codex", t.id, "not mine");
@@ -1823,6 +1823,7 @@ test("a split observation counts what happened after the hand-over: the decline 
   await tasks.done("kimi", t.id, "done");
   await tasks.review(board.get(t.id)!.reviewer!, t.id, "approved");
   expect(tasks.splitObservations("implement", "kimi").map((o) => o.outcome)).toEqual(["approved"]);
+  expect(tasks.splitObservations("implement", "codex")).toEqual([{ outcome: "failed" }]); // the decline is the decliner's
 });
 
 test("the shadow prediction never changes assignment: routed and named work go where routing sends them; explain and the record show it", async () => {

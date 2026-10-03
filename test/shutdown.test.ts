@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync, spawn } from "node:child_process";
-import { stopOwnedProcess } from "../src/hub/child-process.ts";
+import { processTable, stopOwnedProcess } from "../src/hub/child-process.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
@@ -79,15 +79,18 @@ test("the watchdog stops a daemon whose project root vanished", async () => {
 
 // issue #113: Codex's `codex.js` forwards SIGTERM to its native app-server and waits; mid-turn the app-server does not
 // exit, the launcher alone was SIGKILLed, and the app-server was re-parented to init, still running. The app-server in
-// turn runs its MCP servers and tool commands in process groups of their own.
-const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+// turn runs its MCP servers and tool commands in process groups of their own, and keeps starting them while it works.
+// Alive means in the process table, which leaves zombies out (`kill(pid, 0)` succeeds on one).
+const alive = (pid: number) => !!processTable()?.some((r) => r.pid === pid);
 const gone = async (pid: number) => { for (let i = 0; i < 40 && alive(pid); i++) await Bun.sleep(50); return !alive(pid); };
 const launch = async (script: string, detached: boolean) => {
   const proc = spawn("sh", ["-c", script], { stdio: ["ignore", "pipe", "ignore"], detached });
   const child = Number(await new Promise<string>((resolve) => proc.stdout!.once("data", (d) => resolve(String(d)))));
-  cleanup.push(() => { try { process.kill(child, "SIGKILL"); } catch { /* gone */ } });
+  cleanup.push(() => { try { process.kill(child, "SIGKILL"); } catch { /* gone */ } try { process.kill(-proc.pid!, "SIGKILL"); } catch { /* gone */ } });
   return { proc, child };
 };
+// A child in a group of its own, as Codex runs a tool command: the pid is printed once pgrep sees it.
+const ownGroup = (delay = 0) => `${process.execPath} -e 'setTimeout(() => require("node:child_process").spawn("sleep", ["30"], { detached: true, stdio: "ignore" }), ${delay}); setTimeout(() => {}, 30000)' & b=$!; for i in $(seq 1 100); do c=$(pgrep -P $b sleep) && break; sleep 0.05; done; echo $c`;
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const fn of cleanup.splice(0)) fn(); });
 
@@ -110,10 +113,34 @@ test("a group member that outlives its leader is stopped too, and done means the
 });
 
 test("a descendant that leads a group of its own is found before the stop and stopped after it", async () => {
-  // A child in its own group, as Codex runs a tool command; the launcher ignores SIGTERM.
-  const own = `require("node:child_process").spawn("sleep", ["30"], { detached: true, stdio: "ignore" }); `;
-  const { proc, child } = await launch(`trap "" TERM; ${process.execPath} -e '${own}' & sleep 0.5; pgrep -P $! sleep; wait`, true);
+  // The launcher ignores SIGTERM.
+  const { proc, child } = await launch(`trap "" TERM; ${ownGroup()}; wait`, true);
   expect(Number(execFileSync("ps", ["-o", "pgid=", "-p", String(child)], { encoding: "utf8" }).trim())).toBe(child);
   await stopOwnedProcess(proc, { termMs: 200, group: true });
   expect(alive(child)).toBe(false);
+});
+
+test("what the tree starts during the grace period is recorded while its parent runs, and stopped", async () => {
+  // The stop begins at once; 300 ms later, inside the grace period, a process that ignores SIGTERM starts a sleep in a
+  // group of its own, and exits at 600 ms: by the end of the grace period nothing links the sleep to the tree any more.
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-grace-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const pidFile = join(dir, "late.pid");
+  const late = `${process.execPath} -e 'process.on("SIGTERM", () => {}); setTimeout(() => { const c = require("node:child_process").spawn("sleep", ["30"], { detached: true, stdio: "ignore" }); require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(c.pid)); }, 300); setTimeout(() => process.exit(0), 600)'`;
+  const { proc } = await launch(`trap "" TERM; ${late} & echo $!; wait`, true);
+  await stopOwnedProcess(proc, { termMs: 1000, group: true });
+  const child = Number(readFileSync(pidFile, "utf8"));
+  cleanup.push(() => { try { process.kill(child, "SIGKILL"); } catch { /* gone */ } });
+  expect(alive(child)).toBe(false);
+});
+
+test("without any process table the group's own answer decides; a member the table keeps showing is never called gone", async () => {
+  const quick = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+  await stopOwnedProcess(quick, { termMs: 200, group: true, table: () => undefined });
+  expect(quick.signalCode).toBe("SIGTERM");
+  const held = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+  const started = processTable()!.find((r) => r.pid === held.pid)!.started;
+  // A table that keeps showing the leader's child running: the stop gives up at its deadline, it does not claim done.
+  const fake = () => [{ pid: held.pid!, ppid: 1, pgid: held.pid!, started, command: "sleep 30" }, { pid: 999_999, ppid: held.pid!, pgid: 999_999, started, command: "stuck" }];
+  await expect(stopOwnedProcess(held, { termMs: 200, killMs: 300, group: true, table: fake })).rejects.toThrow("1 process(es) of its group or below it still running");
 });

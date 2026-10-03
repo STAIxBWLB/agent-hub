@@ -418,7 +418,8 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   named without a diff (what happened before is never shown) until the peer reads
   the fact back, and until then it counts as a change the peer has not been
   shown. A rewrite with HEAD's bytes, which git lists until it refreshes its
-  index, is no change. `.git` directories
+  index, is no change (a file too large to read is compared by git's own hash).
+  `.git` directories
   at any depth and what the denylist keeps from every agent
   (`src/local/deny.ts` and `local.deny`) are never read or shown. A file a peer touched before it had a view of it (a
   partial read, say) is compared with what it was then, so a change landing in
@@ -497,7 +498,9 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   owner's profile: the hub's version, the agent's (Codex's from app-server,
   Claude Code's from its transcript; other agents report none yet) and the
   coordination mode, which decides the hub's own hooks; records accumulate across
-  hub runs, and a peer whose version is unknown has no profile. The user's and
+  hub runs, one per hand-over (a decline or an escalation away counts against
+  the peer that failed, never the next owner), and a peer whose version is
+  unknown has no profile. The user's and
   plugins' hooks are not part of it. It is unknown unless the units are equal
   and known, both peers are available (the other owner idle; the task's own peer
   idle or busy taking it) with no other open work (an overlapping task its owner

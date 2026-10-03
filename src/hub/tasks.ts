@@ -259,8 +259,8 @@ export class Tasks {
   }
 
   /**
-   * A peer's tasks of a class, across hub runs, as split observations (issue #109): handed to it by someone else
-   * (claims left out) while it had the profile it has now, typed by outcome. Stages are the board's own proxies and
+   * A peer's tasks of a class, across hub runs, as split observations (issue #109): each hand-over to it by someone
+   * else (claims left out) while it had the profile it has now, typed by outcome. Stages are the board's own proxies and
    * stay unknown when the accept came with the done.
    * ponytail: the profile is taken at the hand-over; a hub restarted with another version before the done mixes two in
    * one record. Tag the done as well if that ever shows up in the data.
@@ -268,19 +268,24 @@ export class Tasks {
   splitObservations(cls: TaskClass, peer: PeerId, exclude?: number): SplitObservation[] {
     const profile = this.d.splitProfile?.(peer);
     if (!profile) return [];
+    const failed = ["check failed", "changes_requested", "escalated", "released", "declined", "integration unresolved"];
     return this.d.board.list().flatMap((t): SplitObservation[] => {
-      if (t.class !== cls || t.owner !== peer || t.id === exclude) return [];
-      const given = [...t.history].reverse().find((h) => OWNERSHIP_EVENTS.has(h.event) && h.event !== "unassigned" && (h.owner === undefined || h.owner === peer));
-      if (!given || given.profile !== profile || given.by === peer) return [];
-      // What happened after the hand-over, in board order: the escalation or decline that caused it was the last owner's.
-      const after = t.history.slice(t.history.indexOf(given) + 1);
-      if (after.some((h) => ["check failed", "changes_requested", "escalated", "released", "declined", "integration unresolved"].includes(h.event))) return [{ outcome: "failed" }];
-      if (t.state !== "approved") return [];
-      const accepted = after.find((h) => h.event === "accepted" && h.by === peer);
-      // The work stage ends at its first done call: checks and an integration step are not the work itself.
-      const intent = accepted && after.find((h) => h.at >= accepted.at && ["done", "done (checking)", "integration requested"].includes(h.event));
-      if (!accepted || !intent || accepted.note === WITH_DONE) return [{ outcome: "approved" }];
-      return [{ outcome: "approved", orient: accepted.at - given.at, work: intent.at - accepted.at }];
+      if (t.class !== cls || t.id === exclude) return [];
+      // One observation per time the task was handed to `peer` by someone else: what happened from that hand-over up to
+      // and with the next one is that peer's, so an escalation away or a decline counts against the peer that failed,
+      // never against the next owner, and work that ended elsewhere is still counted (no survivors only).
+      return t.history.flatMap((given, i): SplitObservation[] => {
+        if (!OWNERSHIP_EVENTS.has(given.event) || given.event === "unassigned" || given.owner !== peer || given.profile !== profile || given.by === peer) return [];
+        const next = t.history.findIndex((h, j) => j > i && OWNERSHIP_EVENTS.has(h.event));
+        const span = t.history.slice(i + 1, next < 0 ? undefined : next + 1);
+        if (span.some((h) => failed.includes(h.event))) return [{ outcome: "failed" }];
+        if (next >= 0 || t.state !== "approved") return []; // handed on without a failure (a relay), or still open
+        const accepted = span.find((h) => h.event === "accepted" && h.by === peer);
+        // The work stage ends at its first done call: checks and an integration step are not the work itself.
+        const intent = accepted && span.find((h) => h.at >= accepted.at && ["done", "done (checking)", "integration requested"].includes(h.event));
+        if (!accepted || !intent || accepted.note === WITH_DONE) return [{ outcome: "approved" }];
+        return [{ outcome: "approved", orient: accepted.at - given.at, work: intent.at - accepted.at }];
+      });
     });
   }
 

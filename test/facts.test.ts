@@ -579,4 +579,15 @@ test("a rewrite with HEAD's bytes under a named directory is not named and keeps
   const o = facts.due("claude")!;
   expect(o.text).toContain("not shown as a diff (read before relying on it): src/x.ts");
   expect([o.files, o.named]).toEqual([0, 1]); // a names-only offer counts its names
+  // A file too large to read: git hashes it, and HEAD's bytes are no change for it either.
+  const big = "y".repeat(300 * 1024) + "\n";
+  writeFileSync(join(root, "src", "big.txt"), big);
+  git("add", "-A");
+  git("commit", "-qm", "big");
+  writeFileSync(join(root, "src", "big.txt"), big);
+  utimesSync(join(root, "src", "big.txt"), later, later);
+  expect(git("diff-index", "--name-only", "HEAD").stdout.toString()).toContain("src/big.txt");
+  expect(facts.due("claude")?.text ?? "").not.toContain("src/big.txt");
+  writeFileSync(join(root, "src", "big.txt"), big + "z\n");
+  expect(facts.due("claude")!.text).toContain("src/big.txt");
 });

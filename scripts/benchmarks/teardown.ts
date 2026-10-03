@@ -17,7 +17,7 @@ export interface Cleanup {
     reasons: string[];
     /** The normal shutdown's own failures (a lost acknowledgement, a failed close), kept whatever the outcome. */
     normal: { errors: string[]; ms: number };
-    /** Alive when teardown began, with what was found below them: what has to be gone. */
+    /** Every recorded actor (some may have exited before teardown) and what was found below them: what has to be gone. */
     owned: Actor[];
     fallback: { pid: number; role: Role; signal: 'SIGTERM' | 'SIGKILL'; group: boolean; result: 'sent' | 'failed' }[];
     remaining: Actor[];

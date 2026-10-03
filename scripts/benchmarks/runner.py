@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse, hashlib, json, os, re, shutil, subprocess, sys, tarfile
 from pathlib import Path, PurePosixPath
 
+PROCESS_TABLE=Path(__file__).resolve().parents[2]/"src"/"hub"/"child-process.ts"  # the teardown decides on its process table
 SCHEMA = "agent-hub.cooperbench-run/v1"
 ARMS_V1 = ("solo-codex", "solo-claude", "hub-codex-claude")
 # Issue #110: manifest v2 adds the turn-free collaboration arm; a v1 manifest keeps its three arms for earlier cohorts;
@@ -222,7 +223,7 @@ def prepare(args):
             baseline=tree_digest(dest)
             prepared.append({"case":i,"qualified_feature_ids":[f"{c['repo']}:{c['task']}:{f}" for f in c["features"]],"arm":arm,"cwd":str(dest),"base_commit":git(dest,"rev-parse","HEAD"),"baseline_sha256":sha(json.dumps(baseline,sort_keys=True,separators=(",", ":")).encode()),"baseline_paths":len(baseline)})
     native_runner=Path(__file__).with_name("native.ts")
-    provenance={"schema":SCHEMA,"manifest_sha256":file_sha(root/"manifest.json"),"runner_sha256":file_sha(Path(__file__)),"native_runner_sha256":file_sha(native_runner),"teardown_sha256":file_sha(native_runner.with_name("teardown.ts")),"fixtures":prepared}
+    provenance={"schema":SCHEMA,"manifest_sha256":file_sha(root/"manifest.json"),"runner_sha256":file_sha(Path(__file__)),"native_runner_sha256":file_sha(native_runner),"teardown_sha256":file_sha(native_runner.with_name("teardown.ts")),"process_table_sha256":file_sha(PROCESS_TABLE),"fixtures":prepared}
     if args.upstream_root:
         upstream=args.upstream_root.resolve()
         if git(upstream,"rev-parse","HEAD")!=m["upstream"]["commit"]: raise BenchError("CooperBench source commit differs from manifest")
@@ -248,7 +249,7 @@ def validate_private_case(path:Path, expected:dict, pinned_hash:str|None):
 def grade(args):
     root=args.run.resolve(); prep=load(root/"prepared.json"); m=load(root/"manifest.json"); cohort=load(root/"cohort.json")
     if prep["manifest_sha256"]!=file_sha(root/"manifest.json") or cohort.get("manifest_sha256")!=prep["manifest_sha256"]: raise BenchError("prepared manifest changed")
-    if prep.get("runner_sha256")!=file_sha(Path(__file__)) or prep.get("native_runner_sha256")!=file_sha(Path(__file__).with_name("native.ts")) or prep.get("teardown_sha256")!=file_sha(Path(__file__).with_name("teardown.ts")) or prep.get("evaluator_sha256")!=file_sha(args.evaluator): raise BenchError("benchmark runner/evaluator changed after fixture preparation")
+    if prep.get("runner_sha256")!=file_sha(Path(__file__)) or prep.get("native_runner_sha256")!=file_sha(Path(__file__).with_name("native.ts")) or prep.get("teardown_sha256")!=file_sha(Path(__file__).with_name("teardown.ts")) or prep.get("process_table_sha256")!=file_sha(PROCESS_TABLE) or prep.get("evaluator_sha256")!=file_sha(args.evaluator): raise BenchError("benchmark runner/evaluator changed after fixture preparation")
     if cohort.get("runner_sha256")!=prep.get("runner_sha256") or cohort.get("native_runner_sha256")!=prep.get("native_runner_sha256") or cohort.get("teardown_sha256")!=prep.get("teardown_sha256"): raise BenchError("run source pins differ from prepared fixture")
     if cohort.get("calibration"): raise BenchError("setup calibration is never graded")
     arms=arms_of(m)
@@ -331,13 +332,13 @@ def grade(args):
     expected_rows=[(case,arm) for case in selected for arm in arms]
     actual_rows=[(row["case"],row["arm"]) for row in rows]
     if actual_rows!=expected_rows or len(set(actual_rows))!=len(actual_rows): raise BenchError("grade rows do not exactly cover the fixed cohort")
-    dump(root/"grade.json",{"schema":SCHEMA,"manifest_sha256":prep["manifest_sha256"],"runner_sha256":prep["runner_sha256"],"native_runner_sha256":prep["native_runner_sha256"],"evaluator_sha256":eval_hash,"cohort":selected,"controls":controls,"rows":rows})
+    dump(root/"grade.json",{"schema":SCHEMA,"manifest_sha256":prep["manifest_sha256"],"runner_sha256":prep["runner_sha256"],"native_runner_sha256":prep["native_runner_sha256"],"teardown_sha256":prep.get("teardown_sha256"),"evaluator_sha256":eval_hash,"cohort":selected,"controls":controls,"rows":rows})
     print(f"graded {sum(r['status']=='scored' for r in rows)}/{len(rows)} cohort fixtures; unavailable remain unscored")
 
 def report(args):
     root=args.run.resolve(); m=load(root/"manifest.json"); grade=load(root/"grade.json");cohort=load(root/"cohort.json")
     if grade.get("manifest_sha256")!=file_sha(root/"manifest.json") or cohort.get("manifest_sha256")!=grade.get("manifest_sha256"): raise BenchError("stale grade: manifest hash differs")
-    if grade.get("runner_sha256")!=cohort.get("runner_sha256") or grade.get("native_runner_sha256")!=cohort.get("native_runner_sha256"): raise BenchError("stale grade: runner source hashes differ")
+    if grade.get("runner_sha256")!=cohort.get("runner_sha256") or grade.get("native_runner_sha256")!=cohort.get("native_runner_sha256") or grade.get("teardown_sha256")!=cohort.get("teardown_sha256"): raise BenchError("stale grade: runner source hashes differ")
     arms=arms_of(m)
     expected_rows=[(case,arm) for case in cohort["cases"] for arm in arms]
     actual_rows=[(row.get("case"),row.get("arm")) for row in grade.get("rows",[])]
@@ -363,35 +364,10 @@ def report(args):
     dump(root/"report.json",out);print(json.dumps(out,indent=2))
 
 def restore(args):
-    root=args.run.resolve();ledger_path=root/"restoration-ledger.json";ledger=load(ledger_path);restored=[]
-    sets=[ledger.get("protected",{}).get("paths",{})]
-    sets.extend(x.get("modes",{}) for x in ledger.get("siblings",{}).values())
-    for mode_map in sets:
-        for raw_path,mode in sorted(mode_map.items(),key=lambda item:len(item[0])):
-            path=Path(raw_path)
-            if path.is_symlink() or not path.exists(): raise BenchError(f"refusing to restore replaced or missing path: {path}")
-            path.chmod(int(mode))
-            if path.stat().st_mode & 0o777 != int(mode): raise BenchError(f"permission restore readback failed: {path}")
-            restored.append(str(path))
-    trust=ledger.get("trust")
-    if trust and not trust.get("restored"):
-        path=Path(trust["file"]);state=load(path);current=state.get("projects",{}).get(trust["project"])
-        if isinstance(current,dict) and current.get("hasTrustDialogAccepted") is True:
-            if trust.get("previous") is None: del state["projects"][trust["project"]]
-            else:
-                previous=trust["previous"]
-                if "hasTrustDialogAccepted" in previous: current["hasTrustDialogAccepted"]=previous["hasTrustDialogAccepted"]
-                else: current.pop("hasTrustDialogAccepted",None)
-                state["projects"][trust["project"]]=current
-            if not trust.get("hadProjects") and not state.get("projects"): state.pop("projects",None)
-            tmp=path.with_name(path.name+f".restore-{os.getpid()}");tmp.write_text(json.dumps(state,indent=2)+"\n",encoding="utf-8");os.chmod(tmp,int(trust.get("mode",0o600)));os.replace(tmp,path)
-        elif current!=trust.get("previous"):
-            raise BenchError("Claude trust entry changed since the benchmark; refusing to overwrite it")
-        trust["restored"]=True
-    ledger["protected"]["restored"]=True
-    for item in ledger.get("siblings",{}).values(): item["restored"]=True
-    dump(ledger_path,ledger);dump(root/"restoration.json",{"restored":True,"recovered":True,"paths":len(restored)})
-    print(f"restored {len(restored)} protected paths")
+    """One recovery path (#113): restore.ts restores only once the runner, every recorded process and anything in a
+    fixture are gone, and returns the records it kept to runs/."""
+    cmd=["bun",str(Path(__file__).with_name("restore.ts")),"--run",str(args.run.resolve())]+(["--runner-exited"] if args.runner_exited else [])
+    sys.exit(subprocess.run(cmd).returncode)
 
 def main():
     ap=argparse.ArgumentParser(); sub=ap.add_subparsers(dest="cmd",required=True)
@@ -399,7 +375,7 @@ def main():
     sub.choices["prepare"].add_argument("--upstream-root",type=Path)
     p=sub.add_parser("grade");p.add_argument("--run",type=Path,required=True);p.add_argument("--private-inputs",type=Path,required=True);p.add_argument("--upstream-root",type=Path,required=True);p.add_argument("--evaluator",type=Path,default=Path(__file__).with_name("evaluate.py"));p.add_argument("--python",type=Path,default=Path(sys.executable));p.set_defaults(fn=grade)
     p=sub.add_parser("report");p.add_argument("--run",type=Path,required=True);p.set_defaults(fn=report)
-    p=sub.add_parser("restore");p.add_argument("--run",type=Path,required=True);p.set_defaults(fn=restore)
+    p=sub.add_parser("restore");p.add_argument("--run",type=Path,required=True);p.add_argument("--runner-exited",action="store_true",help="the ledger predates runner identities: the operator states the runner is gone");p.set_defaults(fn=restore)
     args=ap.parse_args()
     try: args.fn(args)
     except (BenchError,OSError,KeyError,ValueError,json.JSONDecodeError) as e: print(f"benchmark: {e}",file=sys.stderr);return 2

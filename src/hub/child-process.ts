@@ -72,54 +72,18 @@ export function descendantsOf(rows: ProcRow[], pid: number): ProcRow[] {
  * incomplete shutdown, even after SIGKILL, because callers must not reuse a
  * port or claim ownership while the old process may still be alive.
  *
- * `group`: the child was spawned `detached` and leads its own process group, and the whole group is signalled. A
- * launcher that forwards signals to a native child (Codex's `codex.js`) otherwise dies alone at SIGKILL while its
- * child, still finishing a turn, is re-parented to init with the launcher's pipes and keeps the hub process alive
- * (issue #113). The group's members can start processes that lead groups of their own (Codex runs its MCP servers and
- * tool commands so): those are found by parent links before anything is signalled and stopped by identity after the
- * group. Done means the group and every one of them is gone.
+ * `group`: the child was spawned `detached` and leads its own process group; see `stopGroup`. `table` replaces the
+ * process table read (tests).
  */
-// ponytail: a leader that exited before the stop (its launcher killed from outside) returns at once and its group is
-// not swept: its pid may be reused once the group empties. Record the leader's start time at spawn to sweep it safely.
-export async function stopOwnedProcess(proc: ChildProcess, { termMs = 1_000, killMs = 2_000, group = false } = {}): Promise<void> {
-  if (proc.exitCode !== null || proc.signalCode !== null || proc.pid === undefined) return;
-  const pid = proc.pid;
-  const below = group ? descendantsOf(processTable() ?? [], pid) : [];
-  // ESRCH from a group means every member is gone; the leader's exit event may still be on its way. macOS answers
-  // EPERM for a group whose members are all zombies (exited, not yet reaped): the table read back decides either way.
-  const signal = (sig: NodeJS.Signals) => {
-    if (!group) return void proc.kill(sig);
-    try { process.kill(-pid, sig); } catch (error) { if (!["ESRCH", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error; }
-  };
-  /**
-   * What is left of the group and of the processes found below it, the same processes (pid and start time). Without a
-   * table, and with nothing found below, the group's own answer is the proof: ESRCH (or EPERM, all zombies) is gone.
-   */
-  const left = (): ProcRow[] | undefined => {
-    const table = processTable();
-    if (table) return table.filter((row) => row.pgid === pid || below.some((b) => b.pid === row.pid && b.started === row.started));
-    if (below.length) return undefined;
-    try { process.kill(-pid, 0); return undefined; } catch (error) { return ["ESRCH", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "") ? [] : undefined; }
-  };
-  // The leader is gone: whatever is left goes too, a group leader with its group, and the readback must show nothing.
-  const sweep = async (): Promise<void> => {
-    if (!group) return;
-    const deadline = Date.now() + killMs;
-    for (;;) {
-      const rest = left();
-      if (rest && !rest.length) break;
-      if (Date.now() >= deadline) throw new Error(`owned child ${pid}: ${rest ? `${rest.length} process(es) of its group or below it still running` : "the process table cannot be read to confirm its group is gone"}`);
-      for (const row of rest ?? []) {
-        try { process.kill(row.pgid === row.pid ? -row.pid : row.pid, "SIGKILL"); } catch { /* gone meanwhile */ }
-      }
-      // The group itself only while it still has members: an emptied group's id is free for reuse.
-      if (!rest || rest.some((row) => row.pgid === pid)) signal("SIGKILL");
-      await Bun.sleep(50);
-    }
-    // Nothing of it can write any more: drop the pipes, so a holder that escaped the table cannot keep the hub alive.
-    proc.stdout?.destroy();
-    proc.stderr?.destroy();
-  };
+export async function stopOwnedProcess(proc: ChildProcess, { termMs = 1_000, killMs = 2_000, group = false, table = processTable }: { termMs?: number; killMs?: number; group?: boolean; table?: () => ProcRow[] | undefined } = {}): Promise<void> {
+  if (proc.exitCode !== null || proc.signalCode !== null || proc.pid === undefined) {
+    // ponytail: a leader that exited before the stop (its launcher killed from outside) is not swept, as its pid may be
+    // reused once its group empties; its pipes are dropped so a survivor cannot keep the hub alive. Record the leader's
+    // start time at spawn to sweep its group safely.
+    if (group) dropPipes(proc);
+    return;
+  }
+  if (group) return stopGroup(proc, proc.pid, termMs, killMs, table);
 
   const waitForExit = (timeoutMs: number): Promise<boolean> =>
     new Promise((resolve) => {
@@ -139,19 +103,89 @@ export async function stopOwnedProcess(proc: ChildProcess, { termMs = 1_000, kil
     });
 
   try {
-    signal("SIGTERM");
+    proc.kill("SIGTERM");
   } catch {
-    if (proc.exitCode !== null || proc.signalCode !== null) return sweep();
-    throw new Error(`owned child ${pid} could not be terminated`);
+    if (proc.exitCode !== null || proc.signalCode !== null) return;
+    throw new Error(`owned child ${proc.pid} could not be terminated`);
   }
-  if (proc.exitCode !== null || proc.signalCode !== null || (await waitForExit(termMs))) return sweep();
+  if (proc.exitCode !== null || proc.signalCode !== null || (await waitForExit(termMs))) return;
 
   try {
-    signal("SIGKILL");
+    proc.kill("SIGKILL");
   } catch {
-    if (proc.exitCode !== null || proc.signalCode !== null) return sweep();
-    throw new Error(`owned child ${pid} could not be killed`);
+    if (proc.exitCode !== null || proc.signalCode !== null) return;
+    throw new Error(`owned child ${proc.pid} could not be killed`);
   }
-  if (proc.exitCode !== null || proc.signalCode !== null || (await waitForExit(killMs))) return sweep();
-  throw new Error(`owned child ${pid} shutdown incomplete after SIGKILL`);
+  if (proc.exitCode !== null || proc.signalCode !== null || (await waitForExit(killMs))) return;
+  throw new Error(`owned child ${proc.pid} shutdown incomplete after SIGKILL`);
+}
+
+const dropPipes = (proc: ChildProcess) => {
+  proc.stdout?.destroy();
+  proc.stderr?.destroy();
+};
+
+/**
+ * Stops a child that leads its own process group, with everything it started (issue #113). A launcher that forwards
+ * signals to a native child (Codex's `codex.js`) otherwise dies alone at SIGKILL while its child, still at work, is
+ * re-parented to init with the launcher's pipes and keeps the hub alive; and the native child starts processes that
+ * lead groups of their own (Codex's MCP servers and tool commands), which no group signal reaches.
+ *
+ * SIGTERM to the group, a grace period in which what the tree starts is recorded while its parent still runs, then
+ * freeze, enumerate, kill: what is left is stopped (SIGSTOP) before the table is read again, because a stopped process
+ * starts nothing, so that read sees all of it; then SIGKILL. A snapshot taken while the tree runs misses what it starts
+ * next (three review rounds found such a gap). Done means the table shows none of it; without any table, the group's
+ * own answer (ESRCH, or EPERM on macOS for a group of zombies) is used, which cannot see groups below it.
+ */
+async function stopGroup(proc: ChildProcess, pid: number, termMs: number, killMs: number, table: () => ProcRow[] | undefined): Promise<void> {
+  const key = (r: { pid: number; started: string }) => `${r.pid}@${r.started}`;
+  const found = new Map<string, ProcRow>();
+  const exited = () => proc.exitCode !== null || proc.signalCode !== null;
+  let leader: ProcRow | undefined;
+  /** Reads the table and records what runs below the leader or anything recorded that still runs. */
+  const look = (): ProcRow[] | undefined => {
+    const rows = table();
+    if (!rows) return undefined;
+    leader ??= rows.find((r) => r.pid === pid);
+    const live = (f: ProcRow) => rows.some((r) => r.pid === f.pid && r.started === f.started);
+    const roots = [...(leader && live(leader) ? [leader] : []), ...[...found.values()].filter(live)];
+    for (const root of roots) for (const r of descendantsOf(rows, root.pid)) found.set(key(r), r);
+    // The leader's group, while it is known to be that group: its leader or a recorded member still in it.
+    if ((leader && live(leader)) || [...found.values()].some((f) => f.pgid === pid && live(f))) {
+      for (const r of rows) if (r.pgid === pid && r.pid !== pid) found.set(key(r), r);
+    }
+    return rows;
+  };
+  const left = (rows: ProcRow[]) => [...found.values()].filter((f) => rows.some((r) => r.pid === f.pid && r.started === f.started));
+  // Errors are not results here: the table read back decides.
+  const signal = (target: number, sig: NodeJS.Signals) => { try { process.kill(target, sig); } catch { /* gone */ } };
+  const each = (rows: ProcRow[], sig: NodeJS.Signals) => { for (const r of rows) signal(r.pgid === r.pid ? -r.pid : r.pid, sig); };
+  const groupGone = () => {
+    try { process.kill(-pid, 0); return false; } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      return code === "ESRCH" || (code === "EPERM" && process.platform === "darwin");
+    }
+  };
+  try {
+    look();
+    signal(-pid, "SIGTERM");
+    for (const end = Date.now() + termMs; !exited() && Date.now() < end; ) {
+      await Bun.sleep(100);
+      look();
+    }
+    for (const end = Date.now() + killMs; ; ) {
+      const rows = look();
+      const rest = rows ? left(rows) : undefined;
+      if (exited() && (rest ? !rest.length : !found.size && groupGone())) return;
+      if (Date.now() >= end) throw new Error(`owned child ${pid}: ${rest ? `${rest.length} process(es) of its group or below it still running` : "the process table cannot be read to confirm what it started is gone"}`);
+      if (!exited()) signal(-pid, "SIGSTOP");
+      each(rest ?? [], "SIGSTOP");
+      const frozen = look();
+      each(frozen ? left(frozen) : rest ?? [], "SIGKILL");
+      if (!exited()) signal(-pid, "SIGKILL");
+      await Bun.sleep(50);
+    }
+  } finally {
+    dropPipes(proc); // nothing of it may keep the hub alive, whatever the outcome
+  }
 }

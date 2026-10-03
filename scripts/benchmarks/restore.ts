@@ -1,16 +1,18 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { descendantsOf, processTable, type ProcRow } from '../../src/hub/child-process.ts';
-import { namingFixture, processCwds, restoreModes, same } from './teardown.ts';
+import { namingFixture, processCwds, restoreModes, restoreTrust, same } from './teardown.ts';
 
 /**
  * Recovery after a run that left inputs unreadable (issue #113): an arm's cleanup was incomplete or unknown, or the
  * runner itself did not finish. Nothing is restored while the runner runs, while any process an arm was recorded to
  * have started runs, or while anything has a fixture in its argv or as its working directory. Then the read modes come
  * back from the run's ledger, and the records kept in `recovery/` move to `runs/`, where grading and the ledger read
- * them. Usage: bun scripts/benchmarks/restore.ts --run RUN_DIR
+ * them; the Claude trust entry the runner set is taken back unless the user changed it meanwhile. Usage:
+ * bun scripts/benchmarks/restore.ts --run RUN_DIR [--runner-exited] (for a ledger written before runner identities:
+ * the operator states the runner is gone).
  */
-export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<number, string> | undefined, self = process.pid): { restored: boolean; blockers: string[]; failed: string[] } {
+export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<number, string> | undefined, self = process.pid, runnerExited = false): { restored: boolean; blockers: string[]; failed: string[] } {
     const status = existsSync(join(run, 'restoration.json')) ? JSON.parse(readFileSync(join(run, 'restoration.json'), 'utf8')) : undefined;
     if (status?.restored === true) return { restored: true, blockers: [], failed: [] };
     if (!table) return { restored: false, blockers: ['the process table cannot be read'], failed: [] };
@@ -18,8 +20,8 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
     const ledgerFile = join(run, 'restoration-ledger.json');
     const ledger = JSON.parse(readFileSync(ledgerFile, 'utf8'));
     const blockers: string[] = [];
-    if (!ledger.runner) blockers.push('the ledger does not name the runner: it may still be running');
-    else if (same(table, ledger.runner)) blockers.push(`the runner ${ledger.runner.pid} is still running`);
+    if (!ledger.runner && !runnerExited) blockers.push('the ledger does not name the runner: it may still be running (pass --runner-exited once it is gone)');
+    else if (ledger.runner && same(table, ledger.runner)) blockers.push(`the runner ${ledger.runner.pid} is still running`);
     const mine = new Set([self, ...descendantsOf(table, self).map((r) => r.pid)]);
     const records = existsSync(join(run, 'recovery', 'runs')) ? readdirSync(join(run, 'recovery', 'runs')).filter((f) => f.endsWith('.json')) : [];
     const recorded = records.map((f) => ({ file: f, record: JSON.parse(readFileSync(join(run, 'recovery', 'runs', f), 'utf8')) }));
@@ -49,6 +51,12 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
         ledger.protected.restored = !lost.length;
         failed.push(...lost);
     }
+    const trust = ledger.trust;
+    if (trust && !trust.restored) {
+        const outcome = restoreTrust({ file: trust.file, previous: trust.previous, hadProjects: trust.hadProjects, mode: trust.mode }, trust.project);
+        if (outcome === 'failed') failed.push(trust.file);
+        else Object.assign(trust, { restored: true, stage: outcome });
+    }
     writeFileSync(ledgerFile, JSON.stringify(ledger, null, 2), { mode: 0o600 });
     if (failed.length) return { restored: false, blockers: [], failed };
     // The kept records join the run's own, so grading and the ledger see these attempts (as unavailable).
@@ -66,8 +74,8 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
 
 if (import.meta.main) {
     const argv = process.argv.slice(2), at = argv.indexOf('--run'), run = at >= 0 ? argv[at + 1] : undefined;
-    if (!run) throw new Error('usage: bun scripts/benchmarks/restore.ts --run RUN_DIR');
-    const result = recover(run, processTable(), processCwds());
+    if (!run) throw new Error('usage: bun scripts/benchmarks/restore.ts --run RUN_DIR [--runner-exited]');
+    const result = recover(run, processTable(), processCwds(), process.pid, argv.includes('--runner-exited'));
     console.log(JSON.stringify(result, null, 2));
     if (!result.restored) process.exit(1);
 }

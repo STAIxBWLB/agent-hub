@@ -279,12 +279,20 @@ export class Facts {
   }
 
   /**
-   * Of these files, the ones whose bytes are HEAD's: no change, whatever git's stat data lists (#112). `blob` is the
-   * version the caller observed, so the answer is about the bytes it goes on to offer or compare.
+   * Of these files, the ones whose bytes are HEAD's: no change, whatever git's stat data lists (#112). `version` is the
+   * version the caller observed, so the answer is about the bytes it goes on to offer or compare. A file too large to
+   * read is hashed by git itself, which streams it; only such regular files are (a link or a missing file never is).
    */
-  private atHead(files: string[], blob: (f: string) => string | undefined = (f) => this.load(f).blob): Set<string> {
+  private atHead(files: string[], version: (f: string) => Omit<Version, "seq"> | undefined = (f) => this.load(f)): Set<string> {
     const head = this.headBlobs(files);
-    return new Set(files.filter((f) => head.has(f) && blob(f) === head.get(f)));
+    const seen = new Map(files.filter((f) => head.has(f)).map((f) => [f, version(f)]));
+    const blobs = new Map([...seen].map(([f, v]) => [f, v?.blob]));
+    const large = [...seen].filter(([, v]) => v?.hash.startsWith("large:")).map(([f]) => f).filter((f) => !f.includes("\n"));
+    if (large.length) {
+      const r = Bun.spawnSync(["git", "hash-object", "--no-filters", "--stdin-paths"], { cwd: this.root, stdin: new TextEncoder().encode(large.join("\n") + "\n"), stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+      if (r.exitCode === 0) r.stdout.toString().split("\n").forEach((oid, i) => { if (oid && large[i]) blobs.set(large[i]!, oid); });
+    }
+    return new Set([...seen.keys()].filter((f) => blobs.get(f) !== undefined && blobs.get(f) === head.get(f)));
   }
 
   /** A new boundary: directories are expanded afresh. */
@@ -580,7 +588,7 @@ export class Facts {
     // Bytes equal to HEAD's are no change (a rewrite with the same bytes, listed until git refreshes its index): such a
     // file is neither named nor offered, so it is named once its bytes do differ (#112).
     const dirFirst = firstLooks.filter((f) => this.dirLook(peer, scope, f));
-    const same = this.atHead(dirFirst, (f) => offered.get(f)?.blob);
+    const same = this.atHead(dirFirst, (f) => offered.get(f));
     for (const f of same) offered.delete(f);
     const dirLooks = dirFirst.filter((f) => !same.has(f));
     if (dirLooks.length) parts.push(`changed or new under a directory your task names, not shown as a diff (read before relying on it): ${names(dirLooks.filter(this.o.nameable), dirLooks.length)}`);
@@ -659,7 +667,7 @@ export class Facts {
     const scope = this.o.scope(peer);
     const files = this.files(peer, scope);
     const seen = (f: string) => view?.get(f) ?? this.firstSeen.get(peer)?.get(f);
-    const same = this.atHead(files.filter((f) => !seen(f) && this.dirLook(peer, scope, f)), (f) => this.observe(f).blob);
+    const same = this.atHead(files.filter((f) => !seen(f) && this.dirLook(peer, scope, f)), (f) => this.observe(f));
     return files.every((f) => {
       const v = seen(f);
       // A named file's first look needs nothing; a directory file needs naming, unless its bytes are HEAD's (#112).

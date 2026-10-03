@@ -85,7 +85,8 @@ describe("benchmark runner contracts", () => {
       const protectedRoot=join(root,"hidden");mkdirSync(protectedRoot);const protectedFile=join(protectedRoot,"source.json");
       writeFileSync(protectedFile,"private");chmodSync(protectedFile,0);chmodSync(protectedRoot,0);
       writeFileSync(join(root,"restoration-ledger.json"),JSON.stringify({protected:{paths:{[protectedRoot]:0o700,[protectedFile]:0o600},restored:false},siblings:{},trust:null}));
-      const recovered=spawnSync("python3",[script,"restore","--run",root],{encoding:"utf8"});
+      expect(spawnSync("python3",[script,"restore","--run",root],{encoding:"utf8"}).status).not.toBe(0); // no runner identity (#113)
+      const recovered=spawnSync("python3",[script,"restore","--run",root,"--runner-exited"],{encoding:"utf8"});
       expect(recovered.status).toBe(0);
       expect(statSync(protectedRoot).mode&0o777).toBe(0o700);
       expect(statSync(protectedFile).mode&0o777).toBe(0o600);
@@ -122,7 +123,9 @@ test("crash trust restoration preserves native updates to unrelated project fiel
     const trust=join(root,"trust.json"),project=join(root,"project");mkdirSync(project);
     writeFileSync(trust,JSON.stringify({projects:{[project]:{hasTrustDialogAccepted:true,lastCost:2},other:{untouched:true}}}));
     writeFileSync(join(root,"restoration-ledger.json"),JSON.stringify({protected:{paths:{},restored:false},siblings:{},trust:{file:trust,project,previous:{hasTrustDialogAccepted:false,lastCost:1},written:{hasTrustDialogAccepted:true,lastCost:1},restored:false,hadProjects:true,mode:384}}));
-    const r=spawnSync("python3",["-B",script,"restore","--run",root],{encoding:"utf8"});expect(r.status).toBe(0);
+    // A ledger from before runner identities (#113): recovery is refused until the operator states the runner is gone.
+    expect(spawnSync("python3",["-B",script,"restore","--run",root],{encoding:"utf8"}).status).not.toBe(0);
+    const r=spawnSync("python3",["-B",script,"restore","--run",root,"--runner-exited"],{encoding:"utf8"});expect(r.status).toBe(0);
     const value=JSON.parse(readFileSync(trust,"utf8"));expect(value.projects[project]).toEqual({hasTrustDialogAccepted:false,lastCost:2});expect(value.projects.other).toEqual({untouched:true});
   } finally {rmSync(root,{recursive:true,force:true});}
 });

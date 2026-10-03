@@ -1,4 +1,4 @@
-import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, chmodSync, statSync, lstatSync, readdirSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, chmodSync, statSync, lstatSync, readdirSync, readlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
@@ -22,16 +22,18 @@ const m = JSON.parse(readFileSync(join(out, 'manifest.json'), 'utf8')), prepared
 if ((statSync(out).mode & 0o777) !== 0o700)
     throw new Error('run directory must have mode 0700');
 const sourceHash = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
-if (prepared.runner_sha256 !== sourceHash(join(import.meta.dir, 'runner.py')) || prepared.native_runner_sha256 !== sourceHash(join(import.meta.dir, 'native.ts')) || prepared.teardown_sha256 !== sourceHash(join(import.meta.dir, 'teardown.ts')) || prepared.evaluator_sha256 !== sourceHash(join(import.meta.dir, 'evaluate.py')) || resolve(prepared.upstream_root ?? '') !== upstreamRoot)
+if (prepared.runner_sha256 !== sourceHash(join(import.meta.dir, 'runner.py')) || prepared.native_runner_sha256 !== sourceHash(join(import.meta.dir, 'native.ts')) || prepared.teardown_sha256 !== sourceHash(join(import.meta.dir, 'teardown.ts')) || prepared.process_table_sha256 !== sourceHash(join(import.meta.dir, '../../src/hub/child-process.ts')) || prepared.evaluator_sha256 !== sourceHash(join(import.meta.dir, 'evaluate.py')) || resolve(prepared.upstream_root ?? '') !== upstreamRoot)
     throw new Error('benchmark runner changed after preparation');
 class NativeCommandError extends Error { constructor(message: string, readonly code?: string) { super(message); } }
 const log = (event: string, data: any = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), event, ...data }));
 let stopRequested = false;
 process.on('SIGINT', () => { stopRequested = true; });
 process.on('SIGTERM', () => { stopRequested = true; });
+process.on('SIGHUP', () => { stopRequested = true; }); // a closed terminal is a stop too: tear down, do not die mid-arm
 // Each command in a process group of its own (issue #113): a Ctrl-C reaches the runner, which stops in order, and not
 // the command it is running, whose failure would cut the teardown short.
-async function cmd(args: string[], cwd?: string, env?: Record<string, string>) { const p = Bun.spawn(args, { cwd, stdout: 'pipe', stderr: 'pipe', detached: true, ...(env ? { env: { ...process.env, ...env } } : {}) }); const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]); if (code) {
+// Bounded too: out of reach of a Ctrl-C, a hung command would otherwise hang the runner, teardown included.
+async function cmd(args: string[], cwd?: string, env?: Record<string, string>, timeoutMs = 180_000) { const p = Bun.spawn(args, { cwd, stdout: 'pipe', stderr: 'pipe', detached: true, ...(env ? { env: { ...process.env, ...env } } : {}) }); const timer = setTimeout(() => { try { process.kill(-p.pid, 'SIGKILL'); } catch { } }, timeoutMs); const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]).finally(() => clearTimeout(timer)); if (code) {
     let detail = stderr.trim(); let errorCode: string | undefined;
     if (!detail) { try { const parsed = JSON.parse(stdout); errorCode = parsed.error?.code; detail = typeof parsed.error === 'string' ? parsed.error : [parsed.error?.code, parsed.error?.message].filter(Boolean).join(': '); } catch { detail = `exit ${code}`; } }
     throw new NativeCommandError(args[0] + ': ' + detail.slice(0, 350), errorCode);
@@ -188,6 +190,8 @@ let protectedRestored = false;
 // runner's own identity, so a recovery can tell a running runner or arm from one that is gone.
 const actorLedger = new Map<string, Actor[]>();
 const runnerIdentity = processTable()?.find(r => r.pid === process.pid);
+if (!runnerIdentity)
+    throw new Error('the process table cannot be read: the runner cannot record what it starts');
 function persistLedger() { writeFileSync(join(runs, 'restoration-ledger.json'), JSON.stringify({ runner: runnerIdentity && { pid: runnerIdentity.pid, started: runnerIdentity.started }, protected: { paths: Object.fromEntries(protectedModes), restored: protectedRestored }, siblings: Object.fromEntries(siblingLedgers), actors: Object.fromEntries(actorLedger), trust: trustLedger }, null, 2), { mode: 0o600 }); }
 async function protectInputs() { const fs = await import('node:fs/promises'); for (const root of protectedRoots) {
     if (!existsSync(root))
@@ -494,7 +498,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
                 pending.delete(x.id);
                 x.error ? p.rej(new Error(JSON.stringify(x.error))) : p.res(x.result);
             } };
-            await new Promise<void>((res, rej) => { w.onopen = () => res(); w.onerror = () => rej(new Error('Codex proxy failed')); });
+            await new Promise<void>((res, rej) => { const timer = setTimeout(() => rej(new Error('Codex proxy did not open within 30 s')), 30000); w.onopen = () => { clearTimeout(timer); res(); }; w.onerror = () => { clearTimeout(timer); rej(new Error('Codex proxy failed')); }; });
             await rpc('initialize', { clientInfo: { name: 'ahub-native-benchmark', version: '1' }, capabilities: { experimentalApi: true } });
             w.send(JSON.stringify({ method: 'initialized' }));
             // No user or plugin hooks in any arm (issue #110): they cost Codex a median 5.7 s per session on 0.12.2.
@@ -585,6 +589,9 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     finally {
         const activeEnd = Date.now();
         const elapsedMs = started ? activeEnd - started : 0;
+        // Uncertain until the teardown below proves otherwise: an exception before it must not let inputs be restored.
+        const uncertainBefore = containmentUncertain;
+        containmentUncertain = true;
         const teardownErrors: string[] = []; // restoration and evidence; the process cleanup keeps its own record
         // What makes an attempt invalid besides how it ended (issue #113): kept beside the end reason, never over it.
         const endFlags: string[] = [];
@@ -616,19 +623,20 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         capture();
         const cleanup = await teardown([...owners.values()], dir, async () => {
             const errors: string[] = [];
-            if (claudeTerminal) await orcaClose(claudeTerminal).catch(() => { errors.push('Claude Orca terminal close failed'); });
+            if (claudeTerminal) await orcaClose(claudeTerminal).catch(() => { errors.push('Claude Orca terminal close failed'); }); // bounded by cmd
             if (orcaProject) {
-                await cmd(['bun', cliPath, '--project', dir, 'kill'], dir).catch((e) => { errors.push(`ahub kill: ${String(e).slice(0, 200)}`); });
-                if (projectId) await cmd(['bun', cliPath, 'projects', 'remove', String(projectId)], dir).catch((e) => { errors.push(`projects remove: ${String(e).slice(0, 200)}`); });
+                // What `ahub kill` says is kept unless it is the plain answer: "hub is not running" with a live daemon was #113.
+                await cmd(['bun', cliPath, '--project', dir, 'kill'], dir, undefined, 60000).then((out) => { if (out.trim() !== 'hub stopped') errors.push(`ahub kill said: ${out.trim().slice(0, 200)}`); }, (e) => { errors.push(`ahub kill: ${String(e).slice(0, 200)}`); });
+                // An interrupt before the hub answered leaves its id unknown: the registration is found by its root.
+                projectId ??= await cmd(['bun', cliPath, 'projects', '--json'], dir, undefined, 30000).then((out) => (JSON.parse(out) as { id: string; root: string }[]).find(p => p.root === dir)?.id, () => undefined);
+                if (projectId) await cmd(['bun', cliPath, 'projects', 'remove', String(projectId)], dir, undefined, 30000).catch((e) => { errors.push(`projects remove: ${String(e).slice(0, 200)}`); });
             }
             return errors;
         });
         const contained = cleanup.outcome !== 'incomplete_or_unknown';
         const stoppedAt = contained ? Date.now() : 0; // writes could land until then
-        if (!contained) {
-            containmentUncertain = true;
-            log('cleanup-incomplete', { index, kind, reasons: cleanup.reasons });
-        }
+        if (contained) containmentUncertain = uncertainBefore;
+        else log('cleanup-incomplete', { index, kind, reasons: cleanup.reasons });
         // Evidence, taken once nothing of the arm runs: the transcript's prefix with its session and time, the patch.
         const capture0 = Date.now();
         if (actors.includes('claude') && readiness.claude) {
@@ -707,7 +715,17 @@ async function treeHash(dir: string, sealed: string) {
     const env = { GIT_OPTIONAL_LOCKS: '0' };
     const tracked = await cmd(['git', 'diff', sealed.trim(), '--', '.'], dir, env);
     const untracked = (await cmd(['git', 'ls-files', '-z', '-o', '--exclude-standard', '--', '.'], dir, env)).split('\0').filter(Boolean).sort();
-    return hash(JSON.stringify([tracked, untracked.map(f => { try { return [f, hash(readFileSync(join(dir, f)))]; } catch { return [f, null]; } })]));
+    // Never through a link, never a fifo or a device, never more than 16 MiB read: what git itself would see, or size and time.
+    const entry = (f: string) => {
+        try {
+            const st = lstatSync(join(dir, f));
+            if (st.isSymbolicLink()) return [f, 'link', readlinkSync(join(dir, f))];
+            if (!st.isFile()) return [f, 'special', st.mode];
+            return st.size > 16 * 1024 * 1024 ? [f, 'large', st.size, st.mtimeMs] : [f, hash(readFileSync(join(dir, f)))];
+        }
+        catch { return [f, null]; }
+    };
+    return hash(JSON.stringify([tracked, untracked.map(entry)]));
 }
 let containmentUncertain = false;
 const setupOnly = argv.includes('--setup-only');

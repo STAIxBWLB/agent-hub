@@ -184,7 +184,10 @@ test("recovery puts the withheld read modes back only when the runner, every rec
   const table = processTable()!;
   const me = table.find((r) => r.pid === process.pid)!;
   const gone = { pid: me.pid, started: "Thu Jan  1 00:00:00 1970" }; // the same pid, started another time: not this process
-  const ledger = (runner: object, actors: object[]) => writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner, protected: { paths: { [input]: 0o600 }, restored: false }, siblings: { [fixture]: { modes: { [sibling]: 0o600 }, restored: false } }, actors: { [fixture]: actors } }));
+  const trustFile = join(run, "claude.json");
+  writeFileSync(trustFile, JSON.stringify({ projects: { [fixture]: { hasTrustDialogAccepted: true, lastCost: 2 } } }));
+  const trust = { file: trustFile, project: fixture, previous: undefined, hadProjects: false, mode: 0o600, stage: "written", restored: false };
+  const ledger = (runner: object, actors: object[]) => writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner, protected: { paths: { [input]: 0o600 }, restored: false }, siblings: { [fixture]: { modes: { [sibling]: 0o600 }, restored: false } }, actors: { [fixture]: actors }, trust }));
   mkdirSync(join(run, "recovery", "runs"), { recursive: true });
   mkdirSync(join(run, "recovery", "patches"), { recursive: true });
   writeFileSync(join(run, "recovery", "patches", "00-x.patch"), "diff");
@@ -204,6 +207,7 @@ test("recovery puts the withheld read modes back only when the runner, every rec
   expect(JSON.parse(readFileSync(join(run, "runs", "00-x.json"), "utf8"))).toMatchObject({ recovered: true, patchFile: join(run, "patches", "00-x.patch") });
   expect(readFileSync(join(run, "patches", "00-x.patch"), "utf8")).toBe("diff");
   expect(JSON.parse(readFileSync(join(run, "restoration.json"), "utf8"))).toMatchObject({ restored: true, recovered: true });
+  expect(JSON.parse(readFileSync(trustFile, "utf8"))).toEqual({}); // the runner's trust entry taken back too
   expect(recover(run, undefined, undefined, -1).restored).toBe(true); // done once: nothing left to do
 });
 
