@@ -185,7 +185,6 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
     if (requested && !models.includes(requested)) throw new Error("model alias is not allowed");
     if (requested === mlxAlias && options.mlx) return { kind: "mlx", alias: mlxAlias };
     if (requested && requested in options.allowedDGXmodels) return { kind: "dgx", alias: requested };
-    if (requested === "hub/auto" && !automatic) throw new Error("model alias is not allowed");
     if (automatic) return autoRoute!.select(body);
     const selected = options.selectBackend ? await options.selectBackend(body) : defaultBackend;
     if (selected.kind === "mlx" && !options.mlx) throw new Error("MLX backend is not configured");
