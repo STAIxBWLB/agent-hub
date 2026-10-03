@@ -26,7 +26,7 @@ UNITS = {
                   "teardown gate (see validity) says otherwise",
     "completed": "the runner completed the attempt and every task has a done",
     "setup_s": "seconds of setup before the first task (native launches, readiness and sandbox probes)",
-    "elapsed_s": "the runner's active-work seconds for the attempt (teardown is not recorded)",
+    "elapsed_s": "the runner's active-work seconds for the attempt (teardown is apart: stopped_s, teardown_s, teardown)",
     "done_s": "per task: seconds to its last done",
     "both_done_s": "seconds to the last task's done; null unless every task has one",
     "intents_s": "per task: seconds to its first hub_task_done (done, done (checking) or integration requested)",
@@ -82,9 +82,10 @@ UNITS = {
     "fyi": "agent messages sent as [FYI] in the task window (recorded, nobody's turn), the final [FYI] the instructions "
            "ask for included",
     "stale": "notices dropped as stale at delivery (#106), in the task window",
-    "stopped_s": "seconds from the end of the active time until every process the attempt started was verified gone "
-                 "(a completed arm's wait for Claude's turn end included): what the agents could still write before the "
-                 "tree was collected; null when the cleanup is incomplete or unknown; teardown_s is to the record",
+    "stopped_s": "seconds from the end of the active time until the final process-table read and working-directory "
+                 "scan showed every process the attempt started gone (a completed arm's wait for Claude's turn end "
+                 "included; the scan itself can take seconds): an upper bound on what the agents could still write before "
+                 "the tree was collected; null when the cleanup is incomplete or unknown; teardown_s is to the record",
     "teardown": "the runner's own teardown record (#113): completion (Claude's turn end awaited by its transcript marker: "
                 "ended, timeout, interrupted, unsupported, not_awaited or not_applicable, with its time and bound), "
                 "tree_changed_after_active_time (a completed arm's tree hashed at the end of its active time and again "

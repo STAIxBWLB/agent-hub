@@ -1,4 +1,4 @@
-import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, chmodSync, statSync, lstatSync, readdirSync, readlinkSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, chmodSync, statSync, lstatSync, readdirSync, readlinkSync, openSync, fstatSync, closeSync, constants as fsConstants } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
@@ -260,11 +260,27 @@ function codexUsage(messages: any[], threadId: string | undefined) { let total: 
         total = t;
 } if (!total)
     return undefined; return { input_tokens: numeric(total.inputTokens ?? total.input_tokens) ?? null, output_tokens: numeric(total.outputTokens ?? total.output_tokens) ?? null, cache_read_tokens: numeric(total.cachedInputTokens ?? total.cacheReadInputTokens ?? total.cache_read_input_tokens) ?? null, reasoning_output_tokens: numeric(total.reasoningOutputTokens ?? total.reasoning_output_tokens) ?? null, total_tokens: numeric(total.totalTokens ?? total.total_tokens) ?? null, source: 'Codex thread/tokenUsage/updated cumulative total', scope: 'whole native session including the unscored sandbox probe' }; }
+/**
+ * A regular file's bytes, opened without following a link and without blocking (a fifo swapped in after a check must not
+ * stop the runner), or a string saying why there are none.
+ */
+function regularBytes(path: string, max: number): Buffer | string {
+    let fd: number | undefined;
+    try {
+        fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+        const st = fstatSync(fd);
+        if (!st.isFile()) return `not a regular file: ${st.mode & 0o170000}`;
+        return st.size > max ? `large: ${st.size} ${st.mtimeMs}` : readFileSync(fd);
+    }
+    catch (e: any) { return e?.code === 'ENOENT' ? 'missing' : `unreadable: ${e?.code ?? 'error'}`; }
+    finally { if (fd !== undefined) closeSync(fd); }
+}
 function fixtureMetadataHash(root: string) { const names = ['AGENTS.md', '.gitignore', '.claude/settings.json', '.agenthub/config.json', '.agenthub/routing.toml'], values: any = {}; for (const name of names) {
-    const path = join(root, name);
-    let st; try { st = lstatSync(path); } catch { st = undefined; }
-    values[name] = !st ? null : st.isFile() ? hash(readFileSync(path)) : `not a regular file: ${st.mode & 0o170000}`; // a fifo would block the read
+    const bytes = regularBytes(join(root, name), 16 * 1024 * 1024);
+    values[name] = bytes === 'missing' ? null : typeof bytes === 'string' ? bytes : hash(bytes);
 } return hash(JSON.stringify(values)); }
+/** Written whole or not at all: a recovery reads it after a runner that may have died mid-write. */
+function writeAtomic(file: string, text: string) { writeFileSync(`${file}.tmp`, text, { mode: 0o600 }); renameSync(`${file}.tmp`, file); }
 function claudeEvidence(transcriptPath: string | undefined) { if (!transcriptPath || !existsSync(transcriptPath))
     return { models: [], usage: undefined }; const latest = new Map<string, any>(), models = new Set<string>(); for (const line of readFileSync(transcriptPath, 'utf8').split('\n')) {
     if (!line)
@@ -500,7 +516,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
                 throw new Error('Codex model mismatch');
             // The user's Codex skills stay on (issue #113): what app-server reports for this cwd, counted by scope, names hashed.
             // The answer itself (names, descriptions, absolute paths) never enters the record: its id is not kept.
-            conditions.codex.skills = skillsCondition(await rpc('skills/list', { cwds: [dir] }, false).catch((e: unknown) => ({ error: String(e).slice(0, 200) })));
+            conditions.codex.skills = skillsCondition(await rpc('skills/list', { cwds: [dir] }, false).catch((e: unknown) => ({ error: /timeout$/.test(String(e)) ? 'timeout' : 'failed' }))); // its message may name a skill's path
             await wait(async () => codexMessages.some(x => x.method === 'mcpServer/startupStatus/updated' && x.params?.name === 'agent-hub' && x.params?.status === 'ready'), 'Codex MCP');
             readiness.codex = { threadId: thread.thread?.id, model: thread.model, effort: manifest.effort.codex, cwd: realPath(thread.thread.cwd), mcpReady: true };
             if (!protectedModes.has(probeTarget))
@@ -610,7 +626,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             if (endReason !== 'completed') completion = { outcome: 'not_awaited', why: endReason };
             else if (!readiness.claude.completionMarker) completion = { outcome: 'unsupported', why: 'no turn-end marker was proved on this session' };
             else {
-                const boundMs = Math.max(0, Math.min(30000, 300000 - elapsedMs));
+                const boundMs = Math.max(0, Math.min(30000, 300000 - (Date.now() - started))); // from now: the pause and the tree hash took time
                 completion = { ...(await awaitTurnEnd(readiness.claude.transcriptPath, claudeId, boundMs, () => stopRequested)), boundMs };
             }
         }
@@ -730,7 +746,8 @@ async function treeHash(dir: string, sealed: string) {
             const st = lstatSync(join(dir, f));
             if (st.isSymbolicLink()) return [f, 'link', readlinkSync(join(dir, f))];
             if (!st.isFile()) return [f, 'special', st.mode];
-            return st.size > 16 * 1024 * 1024 ? [f, 'large', st.size, st.mtimeMs] : [f, hash(readFileSync(join(dir, f)))];
+            const bytes = regularBytes(join(dir, f), 16 * 1024 * 1024);
+            return typeof bytes === 'string' ? [f, bytes] : [f, hash(bytes)];
         }
         catch { return [f, null]; }
     };
@@ -781,7 +798,7 @@ try {
 finally {
     // Protected inputs become readable again only when every arm's processes are known to be gone (issue #113).
     if (containmentUncertain) {
-        writeFileSync(join(runs, 'restoration.json'), JSON.stringify({ restored: false, reason: 'an arm\'s cleanup is incomplete or unknown: protected inputs and its sibling artifacts stay unreadable', ledger: 'restoration-ledger.json', records: 'recovery/runs', recover: `bun scripts/benchmarks/restore.ts --run ${runs}`, interrupted: stopRequested }), { mode: 0o600 });
+        writeAtomic(join(runs, 'restoration.json'), JSON.stringify({ restored: false, reason: 'an arm\'s cleanup is incomplete or unknown: protected inputs and its sibling artifacts stay unreadable', ledger: 'restoration-ledger.json', records: 'recovery/runs', recover: `bun scripts/benchmarks/restore.ts --run ${runs}`, interrupted: stopRequested }));
         log('restoration-withheld', { recover: `bun scripts/benchmarks/restore.ts --run ${runs}` });
     }
     else {
@@ -790,7 +807,7 @@ finally {
         const locked = [...siblingLedgers.entries()].filter(([, l]) => !l.restored).map(([d]) => d);
         const trustLeft = !!trustLedger && !trustLedger.restored && trustLedger.stage !== 'changed_concurrently';
         const reasons = [...(locked.length ? [`sibling read locks of ${locked.length} arm(s) are still in place`] : []), ...(trustLeft ? ['the Claude trust entry was not taken back'] : [])];
-        writeFileSync(join(runs, 'restoration.json'), JSON.stringify({ restored: !reasons.length, paths: protectedModes.size, ...(reasons.length ? { reason: reasons.join('; '), recover: `bun scripts/benchmarks/restore.ts --run ${runs}` } : {}), interrupted: stopRequested }), { mode: 0o600 });
+        writeAtomic(join(runs, 'restoration.json'), JSON.stringify({ restored: !reasons.length, paths: protectedModes.size, ...(reasons.length ? { reason: reasons.join('; '), recover: `bun scripts/benchmarks/restore.ts --run ${runs}` } : {}), interrupted: stopRequested }));
     }
 }
 log('run-complete');

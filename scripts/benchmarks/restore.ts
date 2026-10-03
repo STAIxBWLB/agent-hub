@@ -13,7 +13,8 @@ import { namingFixture, processCwds, restoreModes, restoreTrust, same } from './
  * the operator states the runner is gone).
  */
 export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<number, string> | undefined, self = process.pid, runnerExited = false): { restored: boolean; blockers: string[]; failed: string[] } {
-    const status = existsSync(join(run, 'restoration.json')) ? JSON.parse(readFileSync(join(run, 'restoration.json'), 'utf8')) : undefined;
+    let status: any; // a file cut by a runner that died mid-write says nothing: recover
+    try { status = JSON.parse(readFileSync(join(run, 'restoration.json'), 'utf8')); } catch { status = undefined; }
     if (status?.restored === true) return { restored: true, blockers: [], failed: [] };
     if (!table) return { restored: false, blockers: ['the process table cannot be read'], failed: [] };
     if (!cwds) return { restored: false, blockers: ['working directories cannot be read'], failed: [] };
@@ -57,8 +58,7 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
         if (outcome === 'failed') failed.push(trust.file);
         else Object.assign(trust, { restored: true, stage: outcome });
     }
-    writeFileSync(`${ledgerFile}.tmp`, JSON.stringify(ledger, null, 2), { mode: 0o600 });
-    renameSync(`${ledgerFile}.tmp`, ledgerFile); // a crash mid-write must not leave a ledger the next recovery cannot read
+    writeAtomic(ledgerFile, JSON.stringify(ledger, null, 2)); // a crash mid-write must not leave a ledger the next recovery cannot read
     if (failed.length) return { restored: false, blockers: [], failed };
     // The kept records join the run's own, so grading and the ledger see these attempts (as unavailable).
     mkdirSync(join(run, 'runs'), { recursive: true, mode: 0o700 });
@@ -66,12 +66,14 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
     for (const { file, record } of recorded) {
         const patch = join(run, 'patches', file.replace(/\.json$/, '.patch'));
         if (typeof record.patchFile === 'string' && existsSync(record.patchFile)) renameSync(record.patchFile, patch);
-        writeFileSync(join(run, 'runs', file), JSON.stringify({ ...record, patchFile: patch, recovered: true }, null, 2), { mode: 0o600 });
+        writeAtomic(join(run, 'runs', file), JSON.stringify({ ...record, patchFile: patch, recovered: true }, null, 2));
         rmSync(join(run, 'recovery', 'runs', file));
     }
-    writeFileSync(join(run, 'restoration.json'), JSON.stringify({ restored: true, recovered: true, at: new Date().toISOString() }), { mode: 0o600 });
+    writeAtomic(join(run, 'restoration.json'), JSON.stringify({ restored: true, recovered: true, at: new Date().toISOString() }));
     return { restored: true, blockers: [], failed: [] };
 }
+
+function writeAtomic(file: string, text: string) { writeFileSync(`${file}.tmp`, text, { mode: 0o600 }); renameSync(`${file}.tmp`, file); }
 
 if (import.meta.main) {
     const argv = process.argv.slice(2), at = argv.indexOf('--run'), run = at >= 0 ? argv[at + 1] : undefined;

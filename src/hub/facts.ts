@@ -288,20 +288,22 @@ export class Facts {
    * Of these files, the ones whose bytes are HEAD's: no change, whatever git's stat data lists (#112). `version` is the
    * version the caller observed, so the answer is about the bytes it goes on to offer or compare. A file too large to
    * read whole is hashed here, streamed, opened as `load` opens a file (no link followed, never blocking, a regular file
-   * only); one larger than 64 MiB is not compared.
+   * only); one larger than 64 MiB is not compared, nor, in one call, files beyond 64 MiB of new hashing (the hub's own
+   * loop waits on it): they count as changed until a later call hashes them.
    */
   private atHead(files: string[], version: (f: string) => Omit<Version, "seq"> | undefined = (f) => this.load(f)): Set<string> {
     const head = this.headBlobs(files);
+    const budget = { left: HASHED_BYTES };
     return new Set(files.filter((f) => {
       if (!head.has(f)) return false;
       const v = version(f);
-      const blob = v?.blob ?? (v?.hash.startsWith("large:") ? this.largeBlob(f) : undefined);
+      const blob = v?.blob ?? (v?.hash.startsWith("large:") ? this.largeBlob(f, budget) : undefined);
       return blob !== undefined && blob === head.get(f);
     }));
   }
 
   /** Git's blob id of a file too large to load, streamed; undefined for anything that is not a small enough regular file. */
-  private largeBlob(file: string): string | undefined {
+  private largeBlob(file: string, budget: { left: number }): string | undefined {
     if (this.rel(join(this.root, file)) !== file) return undefined;
     let fd: number | undefined;
     try {
@@ -311,6 +313,8 @@ export class Facts {
       // A file that stays stat-dirty but equal to HEAD is looked at again at every boundary: hashed once per version.
       const stamp = `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`, known = this.largeBlobs.get(file);
       if (known?.stamp === stamp) return known.blob;
+      if (st.size > budget.left) return undefined;
+      budget.left -= st.size;
       const h = createHash("sha1").update(`blob ${st.size}\0`);
       const buf = Buffer.alloc(1024 * 1024);
       let got = 0;

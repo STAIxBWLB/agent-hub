@@ -274,7 +274,7 @@ test("a background job in a recorded group is the arm's while that group is know
   const c = await teardown(recorded, DIR, shutdown, deps);
   expect(c.owned.find((a) => a.pid === 108)?.via).toBe("group of below 107");
   expect(w.signals).toEqual([[109, "SIGTERM"], [108, "SIGTERM"]]); // by pid: their leader is gone
-  expect(c.unresolved).toEqual([{ pid: 110, started: T, command: "python worker.py", cwd: DIR }, { pid: 400, started: T, command: "-zsh", cwd: `${DIR}/src` }]);
+  expect(c.unresolved).toEqual([{ pid: 110, started: T, program: "python", cwd: DIR }, { pid: 400, started: T, program: "-zsh", cwd: `${DIR}/src` }]);
   expect(w.rows.map((r) => r.pid)).toEqual([50, 110, 400]);
   expect(c.outcome).toBe("incomplete_or_unknown");
 });
@@ -312,4 +312,27 @@ test("a process recorded in its parent's group that has since left it is signall
   const c = await teardown(recorded, DIR, shutdown, deps);
   expect(w.signals).toEqual([[-105, "SIGTERM"], [-107, "SIGTERM"]]);
   expect(c.outcome).toBe("clean_with_fallback");
+});
+
+test("what the fallback's first read after the freeze shows for the first time is frozen before anything is killed", async () => {
+  // The tool command survives SIGTERM, and starts a process in a group of its own just as the STOPs go out.
+  const { w, deps, shutdown } = world(everything, {
+    stubborn: [107],
+    onSignal: (pid, sig, w) => { if (pid === -107 && sig === "SIGSTOP" && !w.rows.some((r) => r.pid === 108)) w.rows.push(row(108, 107, 108, "git commit")); return false; },
+  });
+  await teardown(actors(everything), DIR, shutdown, deps, { settleMs: 500, fallbackMs: 1000 });
+  const late = w.signals.filter(([pid]) => pid === -108).map(([, sig]) => sig);
+  expect(late.slice(0, 2)).toEqual(["SIGSTOP", "SIGKILL"]);
+});
+
+test("when the read after the freeze fails, only what the STOP reached is killed: a process the STOP missed may be gone, its pid reused", async () => {
+  const { w, deps, shutdown } = world(everything, {
+    stubborn: [107, 120],
+    unreadable: () => w.signals.some(([, sig]) => sig === "SIGSTOP"),
+    onSignal: (pid, sig) => { if (pid === -107 && sig === "SIGSTOP") throw new Error("ESRCH"); return false; },
+  });
+  const c = await teardown(actors(everything), DIR, shutdown, deps, { settleMs: 500, fallbackMs: 1000 });
+  expect(w.signals).toContainEqual([-120, "SIGKILL"]);
+  expect(w.signals).not.toContainEqual([-107, "SIGKILL"]);
+  expect(c.outcome).toBe("incomplete_or_unknown");
 });

@@ -104,7 +104,11 @@ export async function stopOwnedProcess(proc: ChildProcess, { termMs = 1_000, kil
     // still has members fails the stop instead of reading as done. Record the leader's start time at spawn to sweep it.
     if (!group || proc.pid === undefined) return;
     dropPipes(proc);
-    if (!groupGone(proc.pid)) throw new Error(`owned child ${proc.pid} exited before the stop and its process group still has members: not signalled`);
+    // A pid is not given out while a group with that id exists: a live process with the leader's pid means the group was
+    // emptied and the id is someone else's now. Members without it are what the leader left (zombies are not listed).
+    const rows = await table();
+    const members = rows ? (rows.some((r) => r.pid === proc.pid) ? [] : rows.filter((r) => r.pgid === proc.pid)) : undefined;
+    if (members ? members.length : !groupGone(proc.pid)) throw new Error(`owned child ${proc.pid} exited before the stop and its process group still has members: not signalled`);
     return;
   }
   if (group) return stopGroup(proc, proc.pid, termMs, killMs, table);
@@ -199,9 +203,11 @@ async function stopGroup(proc: ChildProcess, pid: number, termMs: number, killMs
     const ids = new Set([pid, ...[...found.values()].filter((f) => f.pgid === f.pid).map((f) => f.pid)]);
     return rows.filter((r) => ids.has(r.pgid) && r.pid !== process.pid && !found.has(key(r)) && !(leader && r.pid === leader.pid && r.started === leader.started));
   };
-  // Errors are not results here: the table read back decides.
-  const signal = (target: number, sig: NodeJS.Signals) => { try { process.kill(target, sig); } catch { /* gone */ } };
-  const each = (rows: ProcRow[], sig: NodeJS.Signals) => { for (const r of rows) signal(r.pgid === r.pid ? -r.pid : r.pid, sig); };
+  // Errors are not results here: the table read back decides. A sent signal says the target existed at that moment.
+  const signal = (target: number, sig: NodeJS.Signals) => { try { process.kill(target, sig); return true; } catch { return false; } };
+  const each = (rows: ProcRow[], sig: NodeJS.Signals) => rows.filter((r) => signal(r.pgid === r.pid ? -r.pid : r.pid, sig));
+  /** A read that takes longer than `ms` is given up: a frozen tree must not wait on a slow `ps` for its SIGKILL. */
+  const within = (ms: number) => Promise.race([look(), Bun.sleep(ms).then(() => undefined)]);
   // What leads a group of its own (an MCP server, a tool command) gets a SIGTERM of its own and the same grace period:
   // a git process stopped by SIGKILL leaves its index lock behind.
   const termed = new Set<string>();
@@ -230,15 +236,23 @@ async function stopGroup(proc: ChildProcess, pid: number, termMs: number, killMs
         throw new Error(`owned child ${pid}: ${rest ? `${rest.length + strangers.length} process(es) of its group or below it still running${strangers.length ? `, ${strangers.length} not proven its own and left alone` : ""}` : "the process table cannot be read to confirm what it started is gone"}`);
       }
       // What is stopped is killed or continued, never left frozen: the group by whether its STOP was sent (its id stays
-      // reserved while a member lives), each process by whether the read after the freeze still shows it.
-      const groupStopped = !exited();
-      if (groupStopped) signal(-pid, "SIGSTOP");
-      each(rest ?? [], "SIGSTOP");
-      const frozen = await look();
-      const kill = frozen ? left(frozen) : rest ?? [];
+      // reserved while a member lives), each process by whether the read after the freeze still shows it. What a read
+      // after the freeze shows for the first time (started between the read and the STOPs, in a group of its own) is
+      // frozen too, and read again, before anything is killed.
+      const groupStopped = !exited() && signal(-pid, "SIGSTOP");
+      const stopped = new Map<string, ProcRow>();
+      let frozen: ProcRow[] | undefined;
+      for (let todo = rest ?? [], round = 0; ; round++) {
+        for (const r of each(todo, "SIGSTOP")) stopped.set(key(r), r);
+        frozen = await within(1_000);
+        todo = frozen ? left(frozen).filter((r) => !stopped.has(key(r))) : [];
+        if (!todo.length || round >= 4) break;
+      }
+      // Without a read after the freeze, only what the STOP reached is killed: a stopped process keeps its pid.
+      const kill = frozen ? left(frozen) : [...stopped.values()];
       each(kill, "SIGKILL");
       if (groupStopped) signal(-pid, "SIGKILL");
-      for (const r of rest ?? []) if (!kill.some((k) => k.pid === r.pid && k.started === r.started)) signal(r.pgid === r.pid ? -r.pid : r.pid, "SIGCONT");
+      for (const r of stopped.values()) if (!kill.some((k) => k.pid === r.pid && k.started === r.started)) signal(r.pgid === r.pid ? -r.pid : r.pid, "SIGCONT");
       await Bun.sleep(50);
     }
   } finally {

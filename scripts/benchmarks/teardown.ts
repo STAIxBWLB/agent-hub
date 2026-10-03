@@ -22,7 +22,7 @@ export interface Cleanup {
     fallback: { pid: number; role: Role; signal: 'SIGTERM' | 'SIGSTOP' | 'SIGKILL' | 'SIGCONT'; group: boolean; result: 'sent' | 'failed' }[];
     remaining: Actor[];
     /** Running with the fixture in its argv or as its working directory, not proved to be the arm's: left alone, and the cleanup is not complete. */
-    unresolved: { pid: number; started: string; command: string; cwd?: string }[];
+    unresolved: { pid: number; started: string; program: string; cwd?: string }[];
     ms: { settle: number; fallback: number; total: number };
 }
 export interface Deps {
@@ -198,11 +198,21 @@ export async function teardown(actors: Actor[], dir: string, shutdown: () => Pro
         // was stopped and is not killed is continued, never left frozen.
         const before = deps.table();
         if (before && (grow(before), alive(before).length)) {
+            // What a read after the freeze shows for the first time (started between the read and the STOPs) is frozen
+            // too, and read again, before anything is killed.
             const stopped = send(before, 'SIGSTOP');
-            const frozen = deps.table() ?? before;
-            grow(frozen);
-            const killed = send(frozen, 'SIGKILL');
-            const rest = stopped.filter((a) => !killed.includes(a));
+            let after = deps.table();
+            for (let round = 0; after && round < 4; round++) {
+                grow(after);
+                const fresh = alive(after).filter((a) => !stopped.some((s) => key(s) === key(a)));
+                if (!fresh.length) break;
+                stopped.push(...send(after, 'SIGSTOP', fresh));
+                after = deps.table();
+            }
+            if (after) grow(after);
+            // Without a read after the freeze, only what the STOP reached is killed: a stopped process keeps its pid.
+            const killed = after ? send(after, 'SIGKILL') : send(before, 'SIGKILL', stopped);
+            const rest = stopped.filter((a) => !killed.some((k) => key(k) === key(a)));
             if (rest.length) { const r = deps.table(); if (r) send(r, 'SIGCONT', rest); }
             await settleFor(bounds.fallbackMs / 2);
         }
@@ -219,8 +229,8 @@ export async function teardown(actors: Actor[], dir: string, shutdown: () => Pro
     if (last && !cwds) reasons.push('working directories could not be read: whether anything else runs in the fixture is unknown');
     const named = new Set(last ? namingFixture(last, dir).map((r) => r.pid) : []);
     const unresolved = (last ?? []).filter((r) => (named.has(r.pid) || inside(cwds?.get(r.pid), dir)) && !owned.has(key(r)) && !mine.has(r.pid))
-        // Not the arm's: its argv is someone else's, kept short and with credential-like values redacted.
-        .map((r) => ({ pid: r.pid, started: r.started, command: r.command.replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 200), ...(inside(cwds?.get(r.pid), dir) ? { cwd: cwds!.get(r.pid)! } : {}) }));
+        // Not the arm's: its arguments are someone else's, so only the program is kept.
+        .map((r) => ({ pid: r.pid, started: r.started, program: r.command.split(/\s+/)[0]!.split('/').pop()!, ...(inside(cwds?.get(r.pid), dir) ? { cwd: cwds!.get(r.pid)! } : {}) }));
     if (unresolved.length) reasons.push(`running with the fixture in its argv or as its working directory, not proved to be this arm's (left alone): ${unresolved.map((u) => u.pid).join(', ')}`);
     return {
         outcome: reasons.length ? 'incomplete_or_unknown' : fallback.length ? 'clean_with_fallback' : 'clean',

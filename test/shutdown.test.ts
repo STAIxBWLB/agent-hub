@@ -201,6 +201,12 @@ test("a leader that exited before the stop leaves its group unsignalled, and mem
   process.kill(child, "SIGKILL");
   expect(await gone(child)).toBe(true);
   await stopOwnedProcess(proc, { group: true }); // an empty group: done
+  // Later its pid leads someone else's group: a pid is not given out while its old group exists, so that group is new.
+  const me = processTable()!.find((r) => r.pid === process.pid)!;
+  const reused = () => [me, { pid: proc.pid!, ppid: 1, pgid: proc.pid!, started: me.started, command: "someone's shell" }, { pid: 99_999_999, ppid: proc.pid!, pgid: proc.pid!, started: me.started, command: "its job" }];
+  await stopOwnedProcess(proc, { group: true, table: reused });
+  const orphans = () => [me, { pid: 99_999_999, ppid: 1, pgid: proc.pid!, started: me.started, command: "left by the leader" }];
+  await expect(stopOwnedProcess(proc, { group: true, table: orphans })).rejects.toThrow("its process group still has members");
 });
 
 test("what the leader started gets the grace period to shut down after the leader is gone", async () => {
