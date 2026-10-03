@@ -385,6 +385,20 @@ def progress_of(events, t0):
     }}
 
 
+def progress_known(row):
+    progress = row.get("progress") or {}
+    coverage = progress.get("coverage") or {}
+    return bool(coverage.get("observed_peers") or progress.get("stuck"))
+
+
+def progress_sample_count(row):
+    return len((row.get("progress") or {}).get("series", [])) if progress_known(row) else None
+
+
+def stuck_verdict_count(row):
+    return len((row.get("progress") or {}).get("stuck", [])) if progress_known(row) else None
+
+
 def validity_of(run):
     why = teardown_failure(run) or treatment_failure(str(run.get("kind") or ""), run) or isolation_failure(run)
     if why and why.startswith("hook isolation unknown"): return {"valid": None, "why": why}
@@ -622,11 +636,6 @@ def summarize(rows, missing=(), unreadable=()):
     def size(v):
         return None if v is None else len(v)
 
-    def progress_known(r):
-        p = r.get("progress") or {}
-        coverage = p.get("coverage") or {}
-        return bool(coverage.get("observed_peers") or p.get("stuck"))
-
     out = {}
     for arm, rs in by.items():
         done = [r for r in rs if ok(r)]
@@ -658,8 +667,8 @@ def summarize(rows, missing=(), unreadable=()):
             **total(rs, "late_replies", lambda r: size(r.get("late_replies")), joint),
             **total(rs, "quiet", lambda r: r.get("quiet")),
             **total(rs, "stale", lambda r: r.get("stale")),
-            **total(rs, "progress_samples", lambda r: size((r.get("progress") or {}).get("series")) if progress_known(r) else None),
-            **total(rs, "stuck_verdicts", lambda r: size((r.get("progress") or {}).get("stuck")) if progress_known(r) else None),
+            **total(rs, "progress_samples", progress_sample_count),
+            **total(rs, "stuck_verdicts", stuck_verdict_count),
             **total(rs, "fact_offers", lambda r: sum(r["facts"][v]["offers"] for v in ("hook", "steer", "done")) if r.get("facts") else None),
             **total(rs, "fact_bytes_offered", lambda r: sum(r["facts"][v]["bytes_offered"] for v in ("hook", "steer", "done")) if r.get("facts") else None),
             **total(rs, "fact_bytes_acknowledged", lambda r: sum(r["facts"][v]["bytes_acknowledged"] for v in ("hook", "steer", "done")) if r.get("facts") else None),
