@@ -691,8 +691,11 @@ export class Tasks {
       context && !pii ? `Handoff from the previous owner:\n${this.screen(task, context, "handoff", a.owner).slice(0, 3000)}` : "",
       `Take it with hub_task_accept {id: ${task.id}, plan: {paths, symbols, signatures, insertion_points}} (what you will change, before you start${pii ? "" : "; owners of overlapping tasks see it"}) or pass with hub_task_decline. When finished: hub_task_done {id: ${task.id}, summary: what changed, why, and the check you ran with its result, refs}.`,
     ].filter(Boolean).join("\n\n");
+    // A hand-over the owner takes in a turn of its own (#109, #115): idle with nothing queued, this envelope starts its next
+    // turn. Busy, it is queued, or steered into a turn about something else (Codex, Pi): that is not taking it.
+    const startsTurn = this.d.bus.stateOf(task.owner!) === "idle" && this.d.bus.queued(task.owner!) === 0;
     this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner!], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id) }, ...(pii ? { private: true } : {}) }));
-    this.sent.add(handOver(task, task.owner!));
+    if (startsTurn) this.sent.add(handOver(task, task.owner!));
   }
 
   /** Nobody, the console user included, works on a task before what it waits for is approved. */
@@ -710,7 +713,7 @@ export class Tasks {
   }
 
   private readonly offered = new Set<number>(); // ready tasks offered in this hub run
-  private readonly sent = new Set<string>(); // hand-overs (`handOver`) whose task envelope went out in this hub run
+  private readonly sent = new Set<string>(); // hand-overs (`handOver`) whose task envelope started the owner's turn in this hub run
 
   /**
    * A stop between an approval and the assignment of its dependents (both are saved on their own) leaves them ownerless

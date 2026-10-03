@@ -503,7 +503,9 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   unknown has no profile. The user's and
   plugins' hooks are not part of it. It is unknown unless the units are equal
   and known, both peers are available (idle, or busy taking the task in
-  question: that task was sent to it and nothing waits in its queue; for the
+  question: that task started its turn, the peer idle with nothing queued when
+  the task was sent in this hub run (one queued, or steered into a turn about
+  something else, is not taken); for the
   other owner, while the overlapping task is not started; the routing record,
   and a cohort record formed as a task is assigned, are taken before the task is
   sent, so a busy routed peer is not available then) with no other open work (an overlapping task its owner

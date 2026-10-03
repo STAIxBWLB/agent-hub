@@ -22,7 +22,7 @@ export interface Cleanup {
     fallback: { pid: number; role: Role; signal: 'SIGTERM' | 'SIGSTOP' | 'SIGKILL' | 'SIGCONT'; group: boolean; result: 'sent' | 'failed' }[];
     remaining: Actor[];
     /** Running with the fixture in its argv or as its working directory, not proved to be the arm's: left alone, and the cleanup is not complete. */
-    unresolved: { pid: number; started: string; program: string; cwd?: string }[];
+    unresolved: { pid: number; started: string; program?: string; cwd?: string }[];
     ms: { settle: number; fallback: number; total: number };
 }
 export interface Deps {
@@ -34,16 +34,22 @@ export interface Deps {
     now: () => number;
     /** The runner itself: it and its children (a `bun ... kill` naming the fixture) are not the arm's. */
     self: number;
-    /** A process's executable as `ps` names it (`comm`), or undefined: the program an unresolved process is recorded by. */
-    comm?: (pid: number) => string | undefined;
+    /** The name of the executable process `pid` started at `started` runs, or undefined: what an unresolved process is recorded by. */
+    comm?: (pid: number, started: string) => string | undefined;
 }
 export const realDeps: Deps = { table: processTable, cwds: processCwds, signal: (pid, signal) => process.kill(pid, signal), sleep: (ms) => Bun.sleep(ms), now: () => Date.now(), self: process.pid, comm: commOf };
 
-/** `ps`'s name for a process's executable (the full path on macOS), bounded like every `ps` the runner runs. */
-export function commOf(pid: number): string | undefined {
+/**
+ * The name of the executable a process runs, as the kernel recorded it at exec (`ps -o ucomm=`, at most 16 characters),
+ * for the process `pid` started at `started` only (a reused pid is someone else). Never `comm`: on macOS that is the
+ * process's current argv[0], which a process that sets its own title (Node's `process.title`, perl's `$0`) fills with
+ * its arguments. The runner runs on macOS only, where nothing but an exec sets `ucomm`. Bounded like every `ps` it runs.
+ */
+export function commOf(pid: number, started: string): string | undefined {
     try {
-        const r = Bun.spawnSync(['ps', '-o', 'comm=', '-p', String(pid)], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, LC_ALL: 'C' }, detached: true, timeout: 5_000 });
-        return r.exitCode === 0 ? r.stdout.toString().trim() || undefined : undefined;
+        const r = Bun.spawnSync(['ps', '-o', 'lstart=,ucomm=', '-p', String(pid)], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' }, detached: true, timeout: 5_000 });
+        const m = r.exitCode === 0 ? /^\s*(\w{3} \w{3} [ \d]\d \d\d:\d\d:\d\d \d{4})\s+(.+?)\s*$/.exec(r.stdout.toString()) : null;
+        return m && m[1] === started ? m[2] : undefined;
     } catch { return undefined; }
 }
 
@@ -120,14 +126,6 @@ export function endReasonOf(detail: string, flags: string[]): string {
     if (flags.length && detail !== 'interrupted') return 'infrastructure-error';
     if (detail === 'completed' || detail === 'delivery-unsettled') return detail;
     return detail === 'wall-timeout' ? 'timeout' : 'interrupted';
-}
-
-/**
- * The program a process runs, by name only (issue #115): the basename of the executable `ps` names (`comm`; a path with
- * spaces stays one name), else of its argv's first word. No file is looked at: a stat can hang on a dead network mount.
- */
-export function programOf(command: string, comm?: string): string {
-    return (comm || command.split(' ')[0]!).split('/').pop()!;
 }
 
 /** The live process `pid` as an actor of `role`, with how it was found. */
@@ -270,7 +268,10 @@ export async function teardown(actors: Actor[], dir: string, shutdown: () => Pro
     const named = new Set(last ? namingFixture(last, dir).map((r) => r.pid) : []);
     const unresolved = (last ?? []).filter((r) => (named.has(r.pid) || inside(cwds?.get(r.pid), dir)) && !owned.has(key(r)) && !mine.has(r.pid))
         // Not the arm's: its arguments are someone else's, so only the program is kept.
-        .map((r) => ({ pid: r.pid, started: r.started, program: programOf(r.command, deps.comm?.(r.pid)), ...(inside(cwds?.get(r.pid), dir) ? { cwd: cwds!.get(r.pid)! } : {}) }));
+        .map((r) => {
+            const program = deps.comm?.(r.pid, r.started); // the executable's name, or nothing: never a guess from the argv
+            return { pid: r.pid, started: r.started, ...(program ? { program } : {}), ...(inside(cwds?.get(r.pid), dir) ? { cwd: cwds!.get(r.pid)! } : {}) };
+        });
     if (unresolved.length) reasons.push(`running with the fixture in its argv or as its working directory, not proved to be this arm's (left alone): ${unresolved.map((u) => u.pid).join(', ')}`);
     return {
         outcome: reasons.length ? 'incomplete_or_unknown' : fallback.length ? 'clean_with_fallback' : 'clean',
@@ -359,7 +360,7 @@ export function restoreTrust(lease: TrustLease, dir: string, pending = false): '
             writeFileSync(temp, JSON.stringify(fresh, null, 2), { mode: lease.mode });
             chmodSync(temp, lease.mode);
             renameSync(temp, lease.file);
-        } catch (error) { rmSync(temp, { force: true }); throw error; } // a copy of the user's state is never left behind
+        } catch (error) { rmSync(temp, { force: true }); throw error; } // a copy of the user's state is not left behind by a failed write
         return 'restored';
     } catch {
         return 'failed';

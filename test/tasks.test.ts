@@ -1959,4 +1959,19 @@ test("a split prediction counts busy as taking a task only once it was sent and 
   back.recorded.length = 0;
   await back.tasks.assignTo(part.id, "codex");
   expect(back.recorded.find((r) => r.where === "cohort")?.trace).toContain("codex is not available");
+  // A peer that steers (Codex, Pi): its task is steered into the turn it is in, nothing is queued, and it is still not
+  // taking it: that turn is about something else.
+  class Steering extends Taking { async steer() {} }
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-tasks-"));
+  const bus = new Bus({ batchMs: 0 });
+  for (const p of [new Taking("claude"), new Taking("codex"), new Steering("kimi")]) { bus.add(p); await p.start(); }
+  const recorded: { where: string; trace: string }[] = [];
+  const tasks = new Tasks({ board: new Board(join(dir, "hub.db")), bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: () => {}, tell: () => {}, turnFree: () => true,
+    splitProfile: (p) => `hub 0.12.6; ${p} 1.0.0; turn-free`, recordSplit: (_task, p, where) => recorded.push({ where, trace: p.trace.join("\n") }) });
+  bus.publish(newEnvelope("claude", "a question first", { to: ["kimi"] }));
+  await Bun.sleep(20);
+  await tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/c.ts"] } });
+  expect([bus.stateOf("kimi"), bus.queued("kimi")]).toEqual(["busy", 0]); // steered, not queued
+  await tasks.propose(USER, { title: "routed part", class: "implement", refs: { paths: ["src/c.ts"] } });
+  expect(recorded.find((r) => r.where === "routing")?.trace).toContain("kimi is not available");
 });

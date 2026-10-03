@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProcRow } from "../../src/hub/child-process.ts";
 import { processTable } from "../../src/hub/child-process.ts";
-import { actorOf, awaitTurnEnd, captureActors, daemonRoot, endReasonOf, extend, programOf, restoreModes, same, restoreTrust, teardown, turnEnded, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
+import { actorOf, awaitTurnEnd, captureActors, commOf, daemonRoot, endReasonOf, extend, restoreModes, same, restoreTrust, teardown, turnEnded, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
 
 // issue #113: an arm's teardown proves what it stops by identity (pid and start time), never by a name in argv.
 const dirs: string[] = [];
@@ -291,10 +291,11 @@ test("a background job in a recorded group is the arm's while that group is know
   const below = (r: ProcRow) => ({ role: "below" as const, pid: r.pid, started: r.started, pgid: r.pgid, via: "below codex-app-server 105" });
   const recorded = [...actors(everything), below(row(107, 106, 107, "sh -c tool")), below(keeper)];
   const { w, deps, shutdown } = world([runner, daemon, launcher, native, claude, keeper, job, escaped, visitor], { cwds: new Map([[108, DIR], [110, DIR], [400, `${DIR}/src`]]), shutdown: (x) => { x.rows = x.rows.filter((r) => ![100, 105, 106, 120].includes(r.pid)); return []; } });
-  const c = await teardown(recorded, DIR, shutdown, deps);
+  // The executable's name for 110 (as `ps -o ucomm` gives it); 400's could not be read: then none is recorded, never a guess.
+  const c = await teardown(recorded, DIR, shutdown, { ...deps, comm: (pid, started) => (pid === 110 && started === T ? "python3" : undefined) });
   expect(c.owned.find((a) => a.pid === 108)?.via).toBe("group of below 107");
   expect(w.signals).toEqual([[109, "SIGTERM"], [108, "SIGTERM"]]); // by pid: their leader is gone
-  expect(c.unresolved).toEqual([{ pid: 110, started: T, program: "python", cwd: DIR }, { pid: 400, started: T, program: "-zsh", cwd: `${DIR}/src` }]);
+  expect(c.unresolved).toEqual([{ pid: 110, started: T, program: "python3", cwd: DIR }, { pid: 400, started: T, cwd: `${DIR}/src` }]);
   expect(w.rows.map((r) => r.pid)).toEqual([50, 110, 400]);
   expect(c.outcome).toBe("incomplete_or_unknown");
 });
@@ -374,11 +375,17 @@ test("a process that leads a group of its own after it was recorded has that gro
   expect([...owned.values()].map((a) => [a.pid, a.pgid])).toEqual([[107, 107], [108, 107]]);
 });
 
-test("an unresolved process is recorded by its program's name: ps's own name for it, a path with spaces kept whole", () => {
-  expect(programOf("/Users/Jane Doe/bin/agent --serve /tmp/x", "/Users/Jane Doe/bin/agent")).toBe("agent");
-  expect(programOf("/usr/bin/python3 /Users/Jane Doe/script.py", "/usr/bin/python3")).toBe("python3");
-  expect(programOf("sleep 600", undefined)).toBe("sleep"); // gone before it was asked: its argv's first word
-  expect(programOf("-zsh", "")).toBe("-zsh");
+test("an unresolved process is recorded by the name of its executable, never by a title it set itself, and only while it is the same process", async () => {
+  // A process that puts arguments into its own title, as Node's process.title or perl's $0 do.
+  const titled = spawn("perl", ["-e", '$0 = "node /Users/Jane Doe/secret/server.js --token abc"; print "ready\\n"; $| = 1; sleep 30'], { stdio: ["ignore", "pipe", "ignore"] });
+  try {
+    await new Promise((resolve) => titled.stdout!.once("data", resolve));
+    const row = processTable()!.find((r) => r.pid === titled.pid)!;
+    if (process.platform === "darwin") expect(commOf(titled.pid!, row.started)).toBe("perl"); // the runner's platform; Linux lets perl set its name
+    expect(commOf(titled.pid!, "Thu Jan  1 00:00:00 1970")).toBeUndefined(); // the pid, started another time: someone else
+  } finally {
+    titled.kill("SIGKILL");
+  }
 });
 
 test("a record's end reason: quota and budget ends stay themselves; a flag makes any other end but an interruption an infrastructure error", () => {

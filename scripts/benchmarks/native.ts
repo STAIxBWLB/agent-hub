@@ -715,12 +715,12 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             trustRestored = false;
         }
         else if (trustLease) {
-            // A write that never landed leaves nothing to take back.
-            const pending = trustLedger.stage === 'pending';
-            restoration.trust = restoreTrust(trustLease, dir, pending);
+            // Still pending here means the write or its rename threw in this process: nothing landed, so nothing is touched
+            // (an entry someone else set meanwhile is theirs). Only a recovery after a dead runner cannot know.
+            restoration.trust = trustLedger.stage === 'pending' ? 'not_written' : restoreTrust(trustLease, dir);
             trustRestored = restoration.trust === 'restored' || restoration.trust === 'not_written';
             trustLedger.restored = trustRestored;
-            trustLedger.stage = pending && restoration.trust === 'failed' ? 'pending' : restoration.trust; // a recovery must still know the write may not have landed
+            trustLedger.stage = restoration.trust;
             if (!trustRestored) note(restoration.trust === 'changed_concurrently' ? 'Claude trust entry changed concurrently; preserved current state' : 'Claude trust restore failed');
         }
         persistLedger();
@@ -776,6 +776,15 @@ if (!selected.length || new Set(selected).size !== selected.length || selected.s
     throw new Error('invalid case selection');
 if ((existsSync(join(runs, 'runs')) && readdirSync(join(runs, 'runs')).length) || existsSync(join(runs, 'recovery')))
     throw new Error('run directory already contains attempts; use a new attempt directory');
+// The operator registers every fixture of the selection in Orca before a run (#117): the runner never adds one. An
+// unregistered fixture refuses the whole run here, before anything is locked or recorded, rather than fail arm by arm.
+const unregistered: string[] = [];
+for (const i of selected) for (const kind of m.arms) {
+    const dir = join(runs, 'fixtures', `${i.toString().padStart(2, '0')}-${kind}`);
+    await ensureOrcaWorktree(dir).catch(() => unregistered.push(dir));
+}
+if (unregistered.length)
+    throw new Error(`fixtures not registered in Orca (register them explicitly before the run; the runner never adds one): ${unregistered.join(', ')}`);
 mkdirSync(join(runs, 'private'), { recursive: true, mode: 0o700 });
 // Strict MCP isolation for Codex in every arm (issue #110): the user's plugins, apps, sub-agents and turn-end notifier
 // are off, and each MCP server the user's config defines is disabled by name; the hub adds only its own. Nothing in the
