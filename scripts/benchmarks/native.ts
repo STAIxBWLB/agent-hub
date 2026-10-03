@@ -7,7 +7,7 @@ import { realPath } from '../../src/hub/project.ts';
 import { sessionSettings, statusLineSettings } from '../../src/cli/launch.ts';
 import { readEvents } from '../../src/hub/events.ts';
 import { processTable } from '../../src/hub/child-process.ts';
-import { awaitTurnEnd, captureActors, cwdOf, endReasonOf, restoreModes, trustTemp, writeAtomic, restoreTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
+import { awaitTurnEnd, captureActors, cwdOf, endReasonOf, restoreModes, trustTemp, writeAtomic, restoreTrust, settleTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
 process.umask(0o077);
 const argv = process.argv.slice(2), runArg = argv[argv.indexOf('--run') + 1], inputArg = argv[argv.indexOf('--private-inputs') + 1], upstreamArg = argv[argv.indexOf('--upstream-root') + 1], probeArg = argv[argv.indexOf('--probe-target') + 1];
 if (!runArg || !inputArg || !upstreamArg || !probeArg)
@@ -713,28 +713,14 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             if (failed.length) note('sibling artifact read locks could not be restored');
         }
         let trustRestored = true;
-        if (trustLease && trustLedger.stage === 'pending') {
-            // Still pending in this process: the write or its rename threw, before Claude was started, so nothing landed and no
-            // entry is touched, now or by the recovery (one someone else set meanwhile is theirs). Only a dead runner's
-            // `pending` leaves that question to the recovery. The temp file, a copy of ~/.claude.json, is removed here, or by
-            // the recovery when it cannot be.
-            let tempLeft = false;
-            try { rmSync(trustTemp(trustLease.file, process.pid), { force: true }); } catch (e) { tempLeft = true; note(`the trust write's temp file could not be removed: ${String(e).slice(0, 200)}`); }
-            restoration.trust = tempLeft ? 'kept: the trust write\'s temp file could not be removed' : 'not_written';
-            trustRestored = !tempLeft;
-            Object.assign(trustLedger, { stage: 'not_written', restored: trustRestored });
-        }
-        else if (trustLease && !contained) {
-            // Claude may still run and rewrite its project entry: the recovery takes it back once nothing does.
-            restoration.trust = 'kept: the cleanup is incomplete or unknown';
-            trustRestored = false;
-        }
-        else if (trustLease) {
-            restoration.trust = restoreTrust(trustLease, dir);
-            trustRestored = restoration.trust === 'restored';
-            trustLedger.restored = trustRestored;
-            trustLedger.stage = restoration.trust;
-            if (!trustRestored) note(restoration.trust === 'changed_concurrently' ? 'Claude trust entry changed concurrently; preserved current state' : 'Claude trust restore failed');
+        if (trustLease) {
+            const removeTemp = () => { try { rmSync(trustTemp(trustLease.file, process.pid), { force: true }); return true; } catch (e) { note(`the trust write's temp file could not be removed: ${String(e).slice(0, 200)}`); return false; } };
+            const settled = settleTrust(trustLedger.stage, contained, removeTemp, () => restoreTrust(trustLease, dir));
+            restoration.trust = settled.outcome;
+            trustRestored = settled.restored;
+            Object.assign(trustLedger, { stage: settled.stage, restored: settled.restored });
+            if (settled.stage === 'changed_concurrently') note('Claude trust entry changed concurrently; preserved current state');
+            else if (settled.stage === 'failed') note('Claude trust restore failed');
         }
         persistLedger();
         const restorationMs = Date.now() - restoration0;

@@ -288,6 +288,51 @@ test("a write the runner knew never landed, its temp file left: the recovery rem
   expect(JSON.parse(readFileSync(join(run, "restoration-ledger.json"), "utf8")).trust).toMatchObject({ restored: true, stage: "not_written" });
 });
 
+test("the runner settles its trust lease by one table: a pending write touches no entry, contained or not", async () => {
+  const { settleTrust } = await import("../../scripts/benchmarks/teardown.ts");
+  const calls: string[] = [];
+  const settle = (stage: string, contained: boolean, removed = true, restored = "restored") =>
+    settleTrust(stage, contained, () => { calls.push("rm"); return removed; }, () => { calls.push("restore"); return restored; });
+  const table = [
+    [settle("pending", true), { outcome: "not_written", stage: "not_written", restored: true }],
+    [settle("pending", false), { outcome: "not_written", stage: "not_written", restored: true }],
+    [settle("pending", true, false), { outcome: "kept: the trust write's temp file could not be removed", stage: "not_written", restored: false }],
+    [settle("pending", false, false), { outcome: "kept: the trust write's temp file could not be removed", stage: "not_written", restored: false }],
+    [settle("written", false), { outcome: "kept: the cleanup is incomplete or unknown", stage: "written", restored: false }],
+    [settle("written", true), { outcome: "restored", stage: "restored", restored: true }],
+    [settle("written", true, true, "changed_concurrently"), { outcome: "changed_concurrently", stage: "changed_concurrently", restored: false }],
+    [settle("written", true, true, "failed"), { outcome: "failed", stage: "failed", restored: false }],
+  ] as const;
+  for (const [got, want] of table) expect(got).toEqual(want);
+  // A pending write never reaches the restore; only written leases do, and only contained ones.
+  expect(calls).toEqual(["rm", "rm", "rm", "rm", "restore", "restore", "restore"]);
+});
+
+test("a dead runner's pending write: only the exact entry it would have written is taken back", async () => {
+  const { recover } = await import("../../scripts/benchmarks/restore.ts");
+  const { trustTemp } = await import("../../scripts/benchmarks/teardown.ts");
+  const setup = (entry: object | undefined, temp: boolean) => {
+    const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+    dirs.push(run);
+    const fixture = join(run, "fixtures", "00-x");
+    mkdirSync(fixture, { recursive: true });
+    const trustFile = join(run, "claude.json");
+    writeFileSync(trustFile, JSON.stringify({ projects: entry ? { [fixture]: entry } : {} }));
+    const runner = { pid: 99_999_995, started: "Thu Jan  1 00:00:00 1970" };
+    if (temp) writeFileSync(trustTemp(trustFile, runner.pid), "{}");
+    const written = { hasTrustDialogAccepted: true };
+    writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner, protected: { paths: {}, restored: true }, siblings: {}, actors: {}, trust: { file: trustFile, project: fixture, previous: undefined, written, hadProjects: true, mode: 0o600, stage: "pending", restored: false } }));
+    expect(recover(run, processTable()!, new Map(), -1).restored).toBe(true);
+    return { entry: JSON.parse(readFileSync(trustFile, "utf8")).projects[fixture], stage: JSON.parse(readFileSync(join(run, "restoration-ledger.json"), "utf8")).trust.stage };
+  };
+  // It died after the rename: the entry is exactly its write, and goes.
+  expect(setup({ hasTrustDialogAccepted: true }, false)).toEqual({ entry: undefined, stage: "restored" });
+  // The user trusted the fixture meanwhile (more than the runner writes): theirs.
+  expect(setup({ hasTrustDialogAccepted: true, theirs: 1 }, false)).toEqual({ entry: { hasTrustDialogAccepted: true, theirs: 1 }, stage: "not_written" });
+  // Its temp file still there: the rename never happened, so even an identical entry is someone else's.
+  expect(setup({ hasTrustDialogAccepted: true }, true)).toEqual({ entry: { hasTrustDialogAccepted: true }, stage: "not_written" });
+});
+
 test("an entry the user changed meanwhile (changed_concurrently) is theirs: the recovery leaves it", async () => {
   const { recover } = await import("../../scripts/benchmarks/restore.ts");
   const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));

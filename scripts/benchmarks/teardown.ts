@@ -1,4 +1,5 @@
 import { chmodSync, lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import { descendantsOf, processTable, type ProcRow } from '../../src/hub/child-process.ts';
 
 /**
@@ -337,18 +338,24 @@ export function restoreModes(modes: Iterable<[string, number]>): string[] {
     return failed;
 }
 
-/** `previous` is the user's own project entry in `~/.claude.json`, kept as it was: its shape is Claude Code's. */
-export interface TrustLease { file: string; previous: any; hadProjects: boolean; mode: number }
+/**
+ * `previous` is the user's own project entry in `~/.claude.json`, kept as it was: its shape is Claude Code's. `written` is
+ * the entry the runner's write puts there (ledgers from before 0.12.6 lack it).
+ */
+export interface TrustLease { file: string; previous: any; written?: any; hadProjects: boolean; mode: number }
 
 /**
  * Takes back the trust flag the benchmark set for `dir` in Claude's user state, unless someone changed it meanwhile:
- * then the current state is kept and that is reported. `pending`: the runner's own write may not have landed (it stopped
- * between recording the lease and the rename), so an entry that is not set means it was never written, not changed.
+ * then the current state is kept and that is reported. `pending`: a dead runner's write may not have landed (it stopped
+ * between recording the lease and the rename, before Claude was started), so only an entry that is exactly what it would
+ * have written is taken back; anything else means it was never written, and the entry is someone else's. The temp file is
+ * named by `tempPid`, which a recovery sets to the runner's so that a later recovery finds and removes what it left.
  */
-export function restoreTrust(lease: TrustLease, dir: string, pending = false): 'restored' | 'changed_concurrently' | 'not_written' | 'failed' {
+export function restoreTrust(lease: TrustLease, dir: string, pending = false, tempPid = process.pid): 'restored' | 'changed_concurrently' | 'not_written' | 'failed' {
     try {
         const fresh = JSON.parse(readFileSync(lease.file, 'utf8'));
         if (fresh.projects?.[dir]?.hasTrustDialogAccepted !== true) return pending ? 'not_written' : 'changed_concurrently';
+        if (pending && lease.written !== undefined && !isDeepStrictEqual(fresh.projects[dir], lease.written)) return 'not_written';
         if (lease.previous === undefined) delete fresh.projects[dir];
         else {
             const current = { ...fresh.projects[dir] };
@@ -357,7 +364,7 @@ export function restoreTrust(lease: TrustLease, dir: string, pending = false): '
             fresh.projects[dir] = current;
         }
         if (!lease.hadProjects && !Object.keys(fresh.projects).length) delete fresh.projects;
-        const temp = restoreTemp(lease.file, process.pid);
+        const temp = restoreTemp(lease.file, tempPid);
         try {
             writeFileSync(temp, JSON.stringify(fresh, null, 2), { mode: lease.mode });
             chmodSync(temp, lease.mode);
@@ -367,4 +374,21 @@ export function restoreTrust(lease: TrustLease, dir: string, pending = false): '
     } catch {
         return 'failed';
     }
+}
+
+/**
+ * How the runner settles an arm's trust lease at the arm's end (#115; the rule is in AGENTS.md): the outcome its record
+ * says, and the restoration ledger's stage and `restored`. `pending` in the runner's own process: the write or its rename
+ * threw, before Claude was started, so nothing landed and no entry is touched, now or by the recovery; its temp file is
+ * removed here (`removeTemp` says whether it was), or by the recovery when it cannot be. Not contained: Claude may still
+ * run and rewrite its entry, so the recovery takes it back once nothing does.
+ */
+export function settleTrust(stage: string, contained: boolean, removeTemp: () => boolean, restore: () => string): { outcome: string; stage: string; restored: boolean } {
+    if (stage === 'pending') {
+        const removed = removeTemp();
+        return { outcome: removed ? 'not_written' : 'kept: the trust write\'s temp file could not be removed', stage: 'not_written', restored: removed };
+    }
+    if (!contained) return { outcome: 'kept: the cleanup is incomplete or unknown', stage, restored: false };
+    const outcome = restore();
+    return { outcome, stage: outcome, restored: outcome === 'restored' };
 }

@@ -288,6 +288,11 @@ test("several run directories pool their repeats; a planned attempt without a re
     const lone = spawnSync("python3", ["-c", `import json, sys; sys.path.insert(0, ${JSON.stringify(join(script, ".."))}); from ledger import summarize; print(json.dumps(summarize([], [(0, "solo-claude", 1)], [(0, "solo-claude", 2)])))`], { encoding: "utf8" });
     if (lone.status !== 0) throw new Error(lone.stderr);
     expect(JSON.parse(lone.stdout)["solo-claude"]).toMatchObject({ attempts: 0, valid_completed: 0, both_done_s_median: null, missing: ["case 0 repeat 1"], unreadable: ["case 0 repeat 2"] });
+    // Common medians are over pairs every arm completed validly: an arm with no record completed none.
+    const row = { arm: "solo-codex", case: 0, repeat: 1, completed: true, validity: { valid: true }, both_done_s: 10 };
+    const pair = spawnSync("python3", ["-c", `import json, sys; sys.path.insert(0, ${JSON.stringify(join(script, ".."))}); from ledger import summarize; print(json.dumps(summarize([${JSON.stringify(row).replace(/true/g, "True")}], [(0, "solo-claude", 1)])))`], { encoding: "utf8" });
+    if (pair.status !== 0) throw new Error(pair.stderr);
+    expect(JSON.parse(pair.stdout)["solo-codex"]).toMatchObject({ both_done_s_median: 10, both_done_s_median_common: null });
     expect(unread.missing).not.toContainEqual({ case: 0, arm: "solo-codex", repeat: 2 });
     expect(unread.rows.filter((x: { withheld?: boolean }) => x.withheld)).toHaveLength(1);
   } finally {

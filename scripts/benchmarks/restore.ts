@@ -59,10 +59,13 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
         // may have left one: a copy of ~/.claude.json. One that cannot be removed keeps the trust entry unrestored, so the
         // next recovery tries again. `not_written`: the runner knew its write never landed, so no entry is touched.
         const pid = ledger.runner?.pid;
+        // A dead runner's `pending` with its temp file still there: the rename never happened, so nothing landed.
+        const unrenamed = !!pid && trust.stage === 'pending' && existsSync(trustTemp(trust.file, pid));
         const temps = pid ? [restoreTemp(trust.file, pid)] : [];
         if (pid && (trust.stage === 'pending' || trust.stage === 'not_written')) temps.push(trustTemp(trust.file, pid));
         const stuck = temps.filter((temp) => { try { rmSync(temp, { force: true }); return false; } catch { return true; } });
-        const settle = () => trust.stage === 'not_written' ? 'not_written' : restoreTrust({ file: trust.file, previous: trust.previous, hadProjects: trust.hadProjects, mode: trust.mode }, trust.project, trust.stage === 'pending');
+        const lease = { file: trust.file, previous: trust.previous, written: trust.written, hadProjects: trust.hadProjects, mode: trust.mode };
+        const settle = () => trust.stage === 'not_written' || unrenamed ? 'not_written' : restoreTrust(lease, trust.project, trust.stage === 'pending', pid ?? process.pid);
         const outcome = stuck.length ? 'failed' : settle();
         if (stuck.length) failed.push(...stuck);
         else if (outcome === 'failed') failed.push(trust.file);
