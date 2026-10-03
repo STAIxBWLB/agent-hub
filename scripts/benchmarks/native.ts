@@ -789,7 +789,6 @@ const selectedFixturePaths = selected.flatMap((i: number) => m.arms.map((kind: s
 const orcaPreflight = await preflightOrcaWorktrees(selectedFixturePaths, orca);
 if ((existsSync(join(runs, 'runs')) && readdirSync(join(runs, 'runs')).length) || existsSync(join(runs, 'recovery')))
     throw new Error('run directory already contains attempts; use a new attempt directory');
-mkdirSync(join(runs, 'private'), { recursive: true, mode: 0o700 });
 // Strict MCP isolation for Codex in every arm (issue #110): the user's plugins, apps, sub-agents and turn-end notifier
 // are off, and each MCP server the user's config defines is disabled by name; the hub adds only its own. Nothing in the
 // user's config is changed: the hub runs Codex through this wrapper.
@@ -797,9 +796,6 @@ const codexUserServers = (JSON.parse(await cmd([codexBin, '--disable', 'plugins'
 if (codexUserServers.some(n => !/^[A-Za-z0-9_-]+$/.test(n)))
     throw new Error('a Codex MCP server name cannot be disabled by a -c override; isolate it by hand before a run');
 const codexIsolation = ['--disable', 'plugins', '--disable', 'apps', '--disable', 'multi_agent', '-c', 'notify=[]', ...codexUserServers.flatMap(n => ['-c', `mcp_servers.${n}.enabled=false`])];
-mkdirSync(join(runs, 'runs'), { recursive: true, mode: 0o700 });
-mkdirSync(join(runs, 'patches'), { recursive: true, mode: 0o700 });
-writeFileSync(join(runs, 'cohort.json'), JSON.stringify({ schema: m.schema, manifest_sha256: sourceHash(join(runs, 'manifest.json')), cases: selected, calibration: setupOnly, repeat, private_case_sha256: Object.fromEntries(selected.map(i => [i, privateCaseHashes[i]])), arms: m.arms, runner_sha256: prepared.runner_sha256, native_runner_sha256: prepared.native_runner_sha256, teardown_sha256: prepared.teardown_sha256 }), { mode: 0o600 });
 // Checked again right before the marker (#120): a run that died here since the first check is not taken over.
 // ponytail: two runners started on one directory at the same moment can both pass this; an exclusive claim file
 // (`openSync(..., 'wx')`, released at the end) would close it if parallel runs on one directory ever become a workflow.
@@ -807,6 +803,11 @@ refuseReuse();
 // From here the runner may change things (#120): until its outcome is written, restoration.json says "not restored", so a
 // runner that dies sends the recovery in, and the recovery waits while this one runs.
 writeAtomic(join(runs, 'restoration.json'), JSON.stringify({ restored: false, reason: 'the runner is running, or died before writing its outcome', runner: { pid: runnerIdentity.pid, started: runnerIdentity.started }, recover: `bun scripts/benchmarks/restore.ts --run ${runs}` }));
+// Nothing is written before the marker: a run that died between the two checks keeps its cohort record.
+mkdirSync(join(runs, 'private'), { recursive: true, mode: 0o700 });
+mkdirSync(join(runs, 'runs'), { recursive: true, mode: 0o700 });
+mkdirSync(join(runs, 'patches'), { recursive: true, mode: 0o700 });
+writeFileSync(join(runs, 'cohort.json'), JSON.stringify({ schema: m.schema, manifest_sha256: sourceHash(join(runs, 'manifest.json')), cases: selected, calibration: setupOnly, repeat, private_case_sha256: Object.fromEntries(selected.map(i => [i, privateCaseHashes[i]])), arms: m.arms, runner_sha256: prepared.runner_sha256, native_runner_sha256: prepared.native_runner_sha256, teardown_sha256: prepared.teardown_sha256 }), { mode: 0o600 });
 try {
     await protectInputs();
     for (const i of selected) {
@@ -835,7 +836,7 @@ finally {
         // Protected inputs are back; an arm whose own sibling locks failed to come off keeps the run unrestored.
         // The same test the recovery's agreement check uses (#120): this outcome and that check cannot disagree.
         const left = unrestored({ siblings: Object.fromEntries(siblingLedgers), trust: trustLedger });
-        writeAtomic(join(runs, 'restoration.json'), JSON.stringify({ restored: !left.length, paths: protectedModes.size, ...(left.length ? { reason: `${left.join('; ')} unrestored`, recover: `bun scripts/benchmarks/restore.ts --run ${runs}` } : {}), interrupted: stopRequested }));
+        writeAtomic(join(runs, 'restoration.json'), JSON.stringify({ restored: !left.length, paths: protectedModes.size, ...(left.length ? { reason: `still unrestored: ${left.join('; ')}`, recover: `bun scripts/benchmarks/restore.ts --run ${runs}` } : {}), interrupted: stopRequested }));
     }
 }
 log('run-complete');

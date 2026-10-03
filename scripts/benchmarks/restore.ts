@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { descendantsOf, processTable, type ProcRow } from '../../src/hub/child-process.ts';
-import { inside, namingFixture, processCwds, restoreModes, restoreTrust, same, restoreTemp, trustTemp, unrestored, writeAtomic } from './teardown.ts';
+import { inside, namingFixture, owed, processCwds, restoreModes, restoreTrust, same, restoreTemp, trustTemp, unrestored, writeAtomic } from './teardown.ts';
 
 /**
  * Recovery after a run that left inputs unreadable (issue #113): an arm's cleanup was incomplete or unknown, or the
@@ -13,7 +13,7 @@ import { inside, namingFixture, processCwds, restoreModes, restoreTrust, same, r
  * bun scripts/benchmarks/restore.ts --run RUN_DIR [--runner-exited] (for a ledger written before runner identities:
  * the operator states the runner is gone).
  */
-export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<number, string> | undefined, self = process.pid, runnerExited = false, readTable: () => ProcRow[] | undefined = processTable): { restored: boolean; blockers: string[]; failed: string[] } {
+export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<number, string> | undefined, self = process.pid, runnerExited = false): { restored: boolean; blockers: string[]; failed: string[] } {
     let status: any; // a file cut by a runner that died mid-write says nothing: recover
     try { status = JSON.parse(readFileSync(join(run, 'restoration.json'), 'utf8')); } catch { status = undefined; }
     // No ledger: the runner persists it before it locks anything, so there is nothing to restore (#120).
@@ -26,8 +26,9 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
     // Neither file: no runner got as far as its marker here, so it locked nothing and there is nothing to recover (#120).
     if (!hasLedger && !existsSync(join(run, 'restoration.json'))) return { restored: true, blockers: [], failed: [] };
     // A re-run that died after an earlier run's `restored: true` leaves locks that file does not know about (#120). A ledger
-    // without a runner identity predates 0.12.5, the marker and its trust stages: its `restored: true` is trusted as then.
-    if (status?.restored === true && (!ledger.runner || !unrestored(ledger).length)) return { restored: true, blockers: [], failed: [] };
+    // from before 0.12.5 owes its locks, not its trust entry (`owed`).
+    const legacyTrust = status?.restored === true && !ledger.runner;
+    if (status?.restored === true && !unrestored(owed(ledger, true)).length) return { restored: true, blockers: [], failed: [] };
     if (!table) return { restored: false, blockers: ['the process table cannot be read'], failed: [] };
     if (!cwds) return { restored: false, blockers: ['working directories cannot be read'], failed: [] };
     const blockers: string[] = [];
@@ -54,7 +55,7 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
     if (blockers.length) return { restored: false, blockers: [...new Set(blockers)], failed: [] };
     // The table was read before the files (#120): a runner that started in between, and that the files name, is checked
     // again now, right before anything is restored.
-    const again = readTable();
+    const again = processTable();
     if (!again) return { restored: false, blockers: ['the process table cannot be read'], failed: [] };
     const alive = runners.filter((r) => same(again, r));
     if (alive.length) return { restored: false, blockers: [...new Set(alive.map((r) => `the runner ${r.pid} is still running`))], failed: [] };
@@ -72,7 +73,7 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
     }
     const trust = ledger.trust;
     // `changed_concurrently`: the user changed the entry meanwhile, and it is theirs; the runner settled it.
-    if (trust && !trust.restored && trust.stage !== 'changed_concurrently') {
+    if (trust && !trust.restored && trust.stage !== 'changed_concurrently' && !legacyTrust) {
         // A runner that died between the lease and the rename or in its own restore, or that could not remove its temp file,
         // may have left one: a copy of ~/.claude.json. One that cannot be removed keeps the trust entry unrestored, so the
         // next recovery tries again. `not_written`: the runner knew its write never landed, so no entry is touched.

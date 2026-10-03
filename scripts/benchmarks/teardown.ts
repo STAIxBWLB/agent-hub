@@ -395,6 +395,15 @@ export function unrestored(ledger: any): string[] {
 }
 
 /**
+ * The part of a ledger still owed under `restored: true` (#120): a ledger without a runner identity was written before
+ * 0.12.5, and those versions left a concurrently changed trust entry at `written`, unrecorded. Its trust entry is left as
+ * it was then (taking it back could remove the user's); its locks are owed as any other.
+ */
+export function owed(ledger: any, statusRestored: boolean): any {
+    return statusRestored && ledger && !ledger.runner ? { ...ledger, trust: undefined } : ledger;
+}
+
+/**
  * Why a run directory may not be used again (#120), or undefined when it may: an earlier run there that is not restored
  * (its `restoration.json` missing a `restored: true`, or its ledger holding something unrestored) would have its locked
  * modes recorded as the originals. `status` and `ledger` are the files' text, undefined when a file is absent.
@@ -405,8 +414,8 @@ export function reuseProblem(status: string | undefined, ledger: string | undefi
     if (ledger === undefined) return undefined;
     const parsed = parse(ledger);
     if (parsed === undefined) return 'the restoration ledger cannot be read';
-    const left = unrestored(parsed);
-    return left.length ? `an earlier run here left ${left.join(', ')} unrestored` : undefined;
+    const left = unrestored(owed(parsed, status !== undefined));
+    return left.length ? `an earlier run here left unrestored: ${left.join(', ')}` : undefined;
 }
 
 /**

@@ -374,7 +374,12 @@ test("what a ledger holds unrestored, and whether a run directory may be used ag
   expect(reuseProblem(text({ restored: false, runner: { pid: 1 } }), text(done))).toContain("not restored");
   expect(reuseProblem("{cut", undefined)).toContain("not restored");
   expect(reuseProblem(text({ restored: true }), "{cut")).toContain("cannot be read");
-  expect(reuseProblem(text({ restored: true }), text({ ...done, protected: { paths: { "/x": 420 }, restored: false } }))).toContain("protected inputs unrestored");
+  expect(reuseProblem(text({ restored: true }), text({ ...done, protected: { paths: { "/x": 420 }, restored: false } }))).toContain("unrestored: protected inputs");
+  // A ledger from before 0.12.5 (no runner) under restored: true owes its locks, not its trust entry, as the recovery says.
+  const legacy = { protected: { paths: { "/x": 420 }, restored: true }, siblings: {}, trust: { stage: "written", restored: false } };
+  expect(reuseProblem(text({ restored: true }), text(legacy))).toBeUndefined();
+  expect(reuseProblem(text({ restored: true }), text({ ...legacy, protected: { paths: { "/x": 420 }, restored: false } }))).toContain("unrestored: protected inputs");
+  expect(reuseProblem(undefined, text(legacy))).toContain("the Claude trust entry"); // no restored: true to trust
   expect(reuseProblem(undefined, text({ ...done, siblings: { b: { restored: false } } }))).toContain("sibling read locks");
 });
 
@@ -393,7 +398,7 @@ test("a stale restored: true over a ledger that still holds locks is not trusted
   expect(JSON.parse(readFileSync(join(run, "restoration.json"), "utf8"))).toMatchObject({ restored: true, recovered: true });
 });
 
-test("a ledger from before 0.12.5 (no runner identity) under restored: true is trusted as it was then: the user's entry stays", async () => {
+test("a ledger from before 0.12.5 (no runner identity) under restored: true keeps its trust entry as then, and still owes its locks", async () => {
   const { recover } = await import("../../scripts/benchmarks/restore.ts");
   const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
   dirs.push(run);
@@ -406,6 +411,15 @@ test("a ledger from before 0.12.5 (no runner identity) under restored: true is t
   writeFileSync(join(run, "restoration.json"), JSON.stringify({ restored: true, paths: 1 }));
   writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ protected: { paths: {}, restored: true }, siblings: {}, actors: {}, trust: { file: trustFile, project: fixture, previous: undefined, written: { hasTrustDialogAccepted: true }, hadProjects: true, mode: 0o600, stage: "written", restored: false } }));
   expect(recover(run, processTable()!, new Map(), -1, true)).toEqual({ restored: true, blockers: [], failed: [] });
+  expect(JSON.parse(readFileSync(trustFile, "utf8"))).toEqual(theirs);
+  // Its locks are still owed: a re-run that died there left the inputs at 000, and the recovery restores them, trust aside.
+  const input = join(run, "input.txt");
+  writeFileSync(input, "x");
+  chmodSync(input, 0);
+  const ledger = JSON.parse(readFileSync(join(run, "restoration-ledger.json"), "utf8"));
+  writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ ...ledger, protected: { paths: { [input]: 0o644 }, restored: false } }));
+  expect(recover(run, processTable()!, new Map(), -1, true)).toEqual({ restored: true, blockers: [], failed: [] });
+  expect(statSync(input).mode & 0o777).toBe(0o644);
   expect(JSON.parse(readFileSync(trustFile, "utf8"))).toEqual(theirs);
 });
 
