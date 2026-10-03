@@ -2,6 +2,15 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## 0.12.8
+
+- Port Switchyard's Stage signals/scoring, Plan/Execute, advisor gate and escalation policies in-process with source-based golden tests and Apache-2.0 attribution (#124, #125).
+- Add opt-in `hub/` local-worker routes with fixed-model fallback, bounded fail-open judges, completed-turn REDO history and campus-only PII transport. Each local routing decision has an id and exactly one joined outcome label, including failure, cancellation and later escalation; labels contain identifiers and closed values, never text (#126).
+- Add Pi's `hub/auto` alias with session-scoped Stage hold, MLX input/output admission and DGX fallback. Preserve explicit backend pins and the class-specific DGX fast/coding defaults (#127).
+- Record aggregate peer progress and suggest reassignment only from repeated failures across known native turns or spinning. Exclude PII, group native attempts, ignore replayed Pi receipts and stop judging after latch; retain observation series and coverage limits in benchmark ledgers (#128).
+- Preserve retrieval semantics for shell reads, attached output redirections and Unicode fingerprints. Budget escalation anchors to retain the newest trajectory; this intentional upstream correction is documented in the source-port spec.
+- The control protocol remains unchanged. Optional typed judges, Pi advisor stream replay, Rust differential verification and sidecar retirement are deferred.
+
 ## 0.12.7
 
 - CooperBench runner and recovery (#120): from the moment the runner may change anything, before it locks its first input, `restoration.json` says `restored: false` and names the runner, until the runner writes its outcome. A runner killed after that point sends the recovery in, and the recovery waits while the runner it names still runs. A run directory whose earlier run is not restored is refused first, before the runner reads its inputs or any mode (the refusal names `restore.ts`), and checked again right before the runner locks anything, so a runner does not record locked modes as the originals; two runners started on one directory at the same moment are not guarded against. A directory whose earlier invocation ended restored, with no records, can still be used. `restore.ts` trusts `restored: true` only when the restoration ledger agrees (a ledger from before 0.12.5, with no runner identity, still has its locks restored; when `restoration.json` says `restored: true` or names a runner, its trust entry is kept as it was then), so a stale file over a re-run that died no longer reports a run restored while its inputs stay locked; it checks the runners again right before it restores anything. With no ledger, nothing was locked and nothing is restored.

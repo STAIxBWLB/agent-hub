@@ -654,8 +654,8 @@ source and carries every recovery fix released up to it. Protocol 8 and older
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.7 ahub upgrade --to 0.12.7 --dry-run
-bunx --package @staix/agent-hub@0.12.7 ahub upgrade --to 0.12.7 --yes
+bunx --package @staix/agent-hub@0.12.8 ahub upgrade --to 0.12.8 --dry-run
+bunx --package @staix/agent-hub@0.12.8 ahub upgrade --to 0.12.8 --yes
 ```
 
 | Running now | Coordinator to use |
