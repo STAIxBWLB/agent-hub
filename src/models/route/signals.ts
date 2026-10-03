@@ -178,7 +178,7 @@ function failureSeverity(text: string, isError: boolean): { severity: number; na
   if (/^(?:error: patch failed:|patch failed:|invalid context)|: patch does not apply/mu.test(l.split('\n').map(line => line.trimStart()).join('\n'))) { severity = Math.max(severity, HARD); names.push('patch_failure'); }
   return { severity: isError ? Math.max(severity, HARD) : severity, names };
 }
-function fingerprint(text: string, isError: boolean): string | undefined {
+export function fingerprint(text: string, isError: boolean): string | undefined {
   const detected = failureSeverity(text, isError); if (detected.severity < HARD && !isError) return undefined;
   const lines = lower(text).split('\n');
   const diagnostic = lines.find((line) => /error|exception|panic|failed|timed out|timeout|connection refused|cannot allocate memory|out of memory|not found/u.test(line.trim())) ?? lines.find((line) => line.trim()) ?? '';
