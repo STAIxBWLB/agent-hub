@@ -85,3 +85,17 @@ export async function lookupOrcaWorktree(dir: string, readOrca: OrcaRead): Promi
     }
     return { repoId, worktreeId: String(worktree.id) };
 }
+
+/** Validate every selected fixture before the native runner creates attempt or protection state. */
+export async function preflightOrcaWorktrees(
+    fixturePaths: string[],
+    readOrca: OrcaRead,
+): Promise<Map<string, OrcaWorkspaceIdentity>> {
+    const identities = new Map<string, OrcaWorkspaceIdentity>();
+    for (const path of fixturePaths) {
+        const canonicalPath = resolve(path);
+        if (identities.has(canonicalPath)) continue;
+        identities.set(canonicalPath, await lookupOrcaWorktree(canonicalPath, readOrca));
+    }
+    return identities;
+}

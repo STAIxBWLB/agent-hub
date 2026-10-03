@@ -22,12 +22,12 @@ const m = JSON.parse(readFileSync(join(out, 'manifest.json'), 'utf8')), prepared
 if ((statSync(out).mode & 0o777) !== 0o700)
     throw new Error('run directory must have mode 0700');
 const sourceHash = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
-const orcaWorkspaceSourceSha256 = 'd836b89265269acb71ff37b770b10352387e4c668d5156fe9f17d136ae180321'; // pinned by native_runner_sha256 in prepared.json
+const orcaWorkspaceSourceSha256 = '8be5d4e55e0a3990d19ec92cda2e2f0e5d78e3a05d93b3f39caae63e18debb31'; // pinned by native_runner_sha256 in prepared.json
 if (sourceHash(join(import.meta.dir, 'orca-workspace.ts')) !== orcaWorkspaceSourceSha256)
     throw new Error('Orca workspace lookup helper changed after benchmark preparation');
 if (prepared.runner_sha256 !== sourceHash(join(import.meta.dir, 'runner.py')) || prepared.native_runner_sha256 !== sourceHash(join(import.meta.dir, 'native.ts')) || prepared.teardown_sha256 !== sourceHash(join(import.meta.dir, 'teardown.ts')) || prepared.process_table_sha256 !== sourceHash(join(import.meta.dir, '../../src/hub/child-process.ts')) || prepared.evaluator_sha256 !== sourceHash(join(import.meta.dir, 'evaluate.py')) || resolve(prepared.upstream_root ?? '') !== upstreamRoot)
     throw new Error('benchmark runner changed after preparation');
-const { lookupOrcaWorktree } = await import('./orca-workspace.ts');
+const { lookupOrcaWorktree, preflightOrcaWorktrees } = await import('./orca-workspace.ts');
 class NativeCommandError extends Error { constructor(message: string, readonly code?: string) { super(message); } }
 const log = (event: string, data: any = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), event, ...data }));
 let stopRequested = false;
@@ -341,6 +341,12 @@ async function sendTerminalText(handle: string, text: string) { const receipt = 
     throw new Error('Orca rejected native sandbox probe input'); }
 async function arm(cas: any, index: number, kind: string, manifest: any) {
     const name = `${index.toString().padStart(2, '0')}-${kind}`, dir = join(runs, 'fixtures', name);
+    const expectedOrca = orcaPreflight.get(resolve(dir));
+    if (!expectedOrca)
+        throw new Error('fixture was not included in the Orca registration preflight: ' + dir);
+    const orcaProject = await ensureOrcaWorktree(dir);
+    if (orcaProject.repoId !== expectedOrca.repoId || orcaProject.worktreeId !== expectedOrca.worktreeId)
+        throw new Error('Orca identity changed after fixture preflight: ' + dir);
     if (!existsSync(dir))
         throw new Error('prepared fixture missing: ' + dir);
     const preparedFixture = prepared.fixtures.find((x: any) => x.case === index && x.arm === kind);
@@ -403,7 +409,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const sealedBase = await cmd(['git', 'rev-parse', 'HEAD'], dir);
     const metadataBaseline = fixtureMetadataHash(dir);
     const setup = Date.now();
-    let client: ControlClient | undefined, ws: WebSocket | undefined, claudeTerminal: string | undefined, orcaProject: any, projectId: any, started = 0, endReason = 'completed', error: string | undefined, armModes = new Map<string, number>();
+    let client: ControlClient | undefined, ws: WebSocket | undefined, claudeTerminal: string | undefined, projectId: any, started = 0, endReason = 'completed', error: string | undefined, armModes = new Map<string, number>();
     let claudeId = randomUUID(), thread: any, trustLease: any, codexMessages: any[] = [], taskStates: any[] = [], ids: number[] = [], pending = new Map<number, any>(), unkept = new Set<number>(), rpcId = 1, codexTaskStart = 0;
     const actors = kind === 'solo-codex' ? ['codex'] : kind === 'solo-claude' ? ['claude'] : ['codex', 'claude'], readiness: any = {};
     // The processes this arm started (issue #113), each with what proves it: the daemon by the pid in its state dir and
@@ -426,7 +432,6 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const captured = (role: Actor['role']) => { capture(); if (![...owners.values()].some(a => a.role === role)) throw new Error(`could not prove which ${role} process is this arm's`); };
     try {
         await lockSiblingArtifacts(dir, armModes);
-        orcaProject = await ensureOrcaWorktree(dir);
         if (stopRequested)
             throw new Error('interrupted'); // before a hub is started for nothing
         await cmd(['bun', cliPath, '--project', dir, 'up'], dir);
@@ -767,6 +772,10 @@ const selectedArg = selectedIndex >= 0 ? argv[selectedIndex + 1] : undefined;
 const selected: number[] = selectedArg ? selectedArg.split(',').map(Number) : m.cases.map((_: any, i: number) => i);
 if (!selected.length || new Set(selected).size !== selected.length || selected.some((i: number) => !Number.isInteger(i) || i < 0 || i >= m.cases.length))
     throw new Error('invalid case selection');
+const selectedFixturePaths = selected.flatMap((i: number) => m.arms.map((kind: string) =>
+    join(runs, 'fixtures', `${i.toString().padStart(2, '0')}-${kind}`),
+));
+const orcaPreflight = await preflightOrcaWorktrees(selectedFixturePaths, orca);
 if ((existsSync(join(runs, 'runs')) && readdirSync(join(runs, 'runs')).length) || existsSync(join(runs, 'recovery')))
     throw new Error('run directory already contains attempts; use a new attempt directory');
 mkdirSync(join(runs, 'private'), { recursive: true, mode: 0o700 });
