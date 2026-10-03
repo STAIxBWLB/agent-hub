@@ -1,4 +1,5 @@
-import { chmodSync, lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import { descendantsOf, processTable, type ProcRow } from '../../src/hub/child-process.ts';
 
 /**
@@ -22,7 +23,7 @@ export interface Cleanup {
     fallback: { pid: number; role: Role; signal: 'SIGTERM' | 'SIGSTOP' | 'SIGKILL' | 'SIGCONT'; group: boolean; result: 'sent' | 'failed' }[];
     remaining: Actor[];
     /** Running with the fixture in its argv or as its working directory, not proved to be the arm's: left alone, and the cleanup is not complete. */
-    unresolved: { pid: number; started: string; program: string; cwd?: string }[];
+    unresolved: { pid: number; started: string; program?: string; cwd?: string }[];
     ms: { settle: number; fallback: number; total: number };
 }
 export interface Deps {
@@ -34,8 +35,29 @@ export interface Deps {
     now: () => number;
     /** The runner itself: it and its children (a `bun ... kill` naming the fixture) are not the arm's. */
     self: number;
+    /** The name of the executable process `pid` started at `started` runs, or undefined: what an unresolved process is recorded by. */
+    comm?: (pid: number, started: string) => string | undefined;
 }
-export const realDeps: Deps = { table: processTable, cwds: processCwds, signal: (pid, signal) => process.kill(pid, signal), sleep: (ms) => Bun.sleep(ms), now: () => Date.now(), self: process.pid };
+export const realDeps: Deps = { table: processTable, cwds: processCwds, signal: (pid, signal) => process.kill(pid, signal), sleep: (ms) => Bun.sleep(ms), now: () => Date.now(), self: process.pid, comm: commOf };
+
+/**
+ * The name of the executable a process runs, as the kernel recorded it at exec (`ps -o ucomm=`, at most 16 characters),
+ * for the process `pid` started at `started` only (a reused pid is someone else). Never `comm`: on macOS that is the
+ * process's current argv[0], which a process that sets its own title (Node's `process.title`, perl's `$0`) fills with
+ * its arguments. The runner runs on macOS only, where nothing but an exec sets `ucomm`. Bounded like every `ps` it runs.
+ */
+export function commOf(pid: number, started: string): string | undefined {
+    try {
+        const r = Bun.spawnSync(['ps', '-o', 'lstart=,ucomm=', '-p', String(pid)], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' }, detached: true, timeout: 5_000 });
+        const m = r.exitCode === 0 ? /^\s*(\w{3} \w{3} [ \d]\d \d\d:\d\d:\d\d \d{4})\s+(.+?)\s*$/.exec(r.stdout.toString()) : null;
+        return m && m[1] === started ? m[2] : undefined;
+    } catch { return undefined; }
+}
+
+/** The temp file a trust write goes through (`~/.claude.json.ahub-benchmark-<pid>`): a full copy of the user's state. */
+export const trustTemp = (file: string, pid: number) => `${file}.ahub-benchmark-${pid}`;
+/** The temp file a trust restore goes through, the same copy. */
+export const restoreTemp = (file: string, pid: number) => `${file}.ahub-benchmark-restore-${pid}`;
 
 export const same = (rows: ProcRow[], a: { pid: number; started: string }) => rows.find((r) => r.pid === a.pid && r.started === a.started);
 
@@ -92,6 +114,21 @@ export function extend(owned: Map<string, Actor>, rows: ProcRow[]): void {
         const known = alive || rows.some((r) => r.pgid === a.pid && r.pid !== a.pid && owned.has(key(r)));
         if (known) for (const r of rows) if (r.pgid === a.pid && !owned.has(key(r))) owned.set(key(r), { role: 'below', pid: r.pid, started: r.started, pgid: r.pgid, via: `group of ${a.role} ${a.pid}` });
     }
+}
+
+/** Written whole or not at all: a recovery reads it after a runner that may have died mid-write. */
+export function writeAtomic(file: string, text: string): void { writeFileSync(`${file}.tmp`, text, { mode: 0o600 }); renameSync(`${file}.tmp`, file); }
+
+/**
+ * How a record states an attempt's end. A quota error or a budget pause is the provider's or the hub's doing and stays
+ * itself; a flag beside any other end but an interruption (an unverified model, modified metadata, a tree changed after
+ * the active time) makes it an infrastructure error, the original kept as end_reason_detail.
+ */
+export function endReasonOf(detail: string, flags: string[]): string {
+    if (['infrastructure-error', 'provider-quota', 'budget-paused'].includes(detail)) return detail;
+    if (flags.length && detail !== 'interrupted') return 'infrastructure-error';
+    if (detail === 'completed' || detail === 'delivery-unsettled') return detail;
+    return detail === 'wall-timeout' ? 'timeout' : 'interrupted';
 }
 
 /** The live process `pid` as an actor of `role`, with how it was found. */
@@ -234,7 +271,10 @@ export async function teardown(actors: Actor[], dir: string, shutdown: () => Pro
     const named = new Set(last ? namingFixture(last, dir).map((r) => r.pid) : []);
     const unresolved = (last ?? []).filter((r) => (named.has(r.pid) || inside(cwds?.get(r.pid), dir)) && !owned.has(key(r)) && !mine.has(r.pid))
         // Not the arm's: its arguments are someone else's, so only the program is kept.
-        .map((r) => ({ pid: r.pid, started: r.started, program: r.command.split(/\s+/)[0]!.split('/').pop()!, ...(inside(cwds?.get(r.pid), dir) ? { cwd: cwds!.get(r.pid)! } : {}) }));
+        .map((r) => {
+            const program = deps.comm?.(r.pid, r.started); // the executable's name, or nothing: never a guess from the argv
+            return { pid: r.pid, started: r.started, ...(program ? { program } : {}), ...(inside(cwds?.get(r.pid), dir) ? { cwd: cwds!.get(r.pid)! } : {}) };
+        });
     if (unresolved.length) reasons.push(`running with the fixture in its argv or as its working directory, not proved to be this arm's (left alone): ${unresolved.map((u) => u.pid).join(', ')}`);
     return {
         outcome: reasons.length ? 'incomplete_or_unknown' : fallback.length ? 'clean_with_fallback' : 'clean',
@@ -243,7 +283,10 @@ export async function teardown(actors: Actor[], dir: string, shutdown: () => Pro
     };
 }
 
-/** The transcript's whole rows, or undefined when it cannot be read. */
+/**
+ * The transcript's whole rows, or undefined when it cannot be read. Rows are Claude Code's own JSON, read only for the
+ * fields used here: typed `any` on purpose.
+ */
 export function transcriptRows(path: string): any[] | undefined {
     let text: string;
     try { text = readFileSync(path, 'utf8'); } catch { return undefined; }
@@ -295,16 +338,25 @@ export function restoreModes(modes: Iterable<[string, number]>): string[] {
     return failed;
 }
 
-export interface TrustLease { file: string; previous: any; hadProjects: boolean; mode: number }
+/**
+ * `previous` is the user's own project entry in `~/.claude.json`, kept as it was: its shape is Claude Code's. `written` is
+ * the entry the runner's write puts there: every restoration ledger since 0.12.3 records it, though the recovery passed it
+ * on only from 0.12.6.
+ */
+export interface TrustLease { file: string; previous: any; written?: any; hadProjects: boolean; mode: number }
 
 /**
  * Takes back the trust flag the benchmark set for `dir` in Claude's user state, unless someone changed it meanwhile:
- * then the current state is kept and that is reported.
+ * then the current state is kept and that is reported. `pending`: a dead runner's write may not have landed (it stopped
+ * between recording the lease and the rename, before Claude was started), so only an entry that is exactly what it would
+ * have written is taken back; anything else means it was never written, and the entry is someone else's. The temp file is
+ * named by `tempPid`, which a recovery sets to the runner's so that a later recovery finds and removes what it left.
  */
-export function restoreTrust(lease: TrustLease, dir: string): 'restored' | 'changed_concurrently' | 'failed' {
+export function restoreTrust(lease: TrustLease, dir: string, pending = false, tempPid = process.pid): 'restored' | 'changed_concurrently' | 'not_written' | 'failed' {
     try {
         const fresh = JSON.parse(readFileSync(lease.file, 'utf8'));
-        if (fresh.projects?.[dir]?.hasTrustDialogAccepted !== true) return 'changed_concurrently';
+        if (fresh.projects?.[dir]?.hasTrustDialogAccepted !== true) return pending ? 'not_written' : 'changed_concurrently';
+        if (pending && lease.written !== undefined && !isDeepStrictEqual(fresh.projects[dir], lease.written)) return 'not_written';
         if (lease.previous === undefined) delete fresh.projects[dir];
         else {
             const current = { ...fresh.projects[dir] };
@@ -313,12 +365,31 @@ export function restoreTrust(lease: TrustLease, dir: string): 'restored' | 'chan
             fresh.projects[dir] = current;
         }
         if (!lease.hadProjects && !Object.keys(fresh.projects).length) delete fresh.projects;
-        const temp = `${lease.file}.ahub-benchmark-restore-${process.pid}`;
-        writeFileSync(temp, JSON.stringify(fresh, null, 2), { mode: lease.mode });
-        chmodSync(temp, lease.mode);
-        renameSync(temp, lease.file);
+        const temp = restoreTemp(lease.file, tempPid);
+        try {
+            writeFileSync(temp, JSON.stringify(fresh, null, 2), { mode: lease.mode });
+            chmodSync(temp, lease.mode);
+            renameSync(temp, lease.file);
+        } catch (error) { rmSync(temp, { force: true }); throw error; } // a copy of the user's state is not left behind by a failed write
         return 'restored';
     } catch {
         return 'failed';
     }
+}
+
+/**
+ * How the runner settles an arm's trust lease at the arm's end (#115; the rule is in AGENTS.md): the outcome its record
+ * says, and the restoration ledger's stage and `restored`. `pending` in the runner's own process: the write or its rename
+ * threw, before Claude was started, so nothing landed and no entry is touched, now or by the recovery; its temp file is
+ * removed here (`removeTemp` says whether it was), or by the recovery when it cannot be. Not contained: Claude may still
+ * run and rewrite its entry, so the recovery takes it back once nothing does.
+ */
+export function settleTrust(stage: string, contained: boolean, removeTemp: () => boolean, restore: () => string): { outcome: string; stage: string; restored: boolean } {
+    if (stage === 'pending') {
+        const removed = removeTemp();
+        return { outcome: removed ? 'not_written' : 'kept: the trust write\'s temp file could not be removed', stage: 'not_written', restored: removed };
+    }
+    if (!contained) return { outcome: 'kept: the cleanup is incomplete or unknown', stage, restored: false };
+    const outcome = restore();
+    return { outcome, stage: outcome, restored: outcome === 'restored' };
 }

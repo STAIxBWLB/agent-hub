@@ -3,7 +3,7 @@
 
 Usage: python3 scripts/benchmarks/ledger.py --run RUN_DIR [--run RUN_DIR ...] [--plan NAME] [--json]
 
-Reads runs/<NN>-<arm>.json written by native.ts, the Claude transcript each names, and the fixture's git history.
+Reads runs/<NN>-<arm>.json written by native.ts (and recovery/runs/, records withheld until restore.ts moves them), the Claude transcript each names, and the fixture's git history.
 Writes ledger.json into the first run directory (with one, next to its records). ledger.json holds code fragments
 from the agents' writes and local paths: it is private run data, never committed; the summary on stdout is not. Every measure names its unit and coverage in UNITS below; a measure the records
 cannot support is null with a reason, never zero. Times are seconds from the first task proposal of the attempt.
@@ -95,7 +95,11 @@ UNITS = {
                 "also stand in end_story), cleanup (clean, clean_with_fallback or incomplete_or_unknown, with fallback signals, "
                 "processes still running and unresolved ones), restoration, and late_append_bytes: transcript bytes "
                 "written after the attempt's prefix was taken, never read (null when no prefix was recorded); completion "
-                "outcomes include unreadable (the transcript could not be read) and carry the bound used",
+                "outcomes include unreadable (the transcript could not be read) and carry the bound used; normal_errors "
+                "are the normal shutdown's errors (a hub project registration left behind, a terminal not closed), which the process "
+                "readback, not they, decides on; verified is false for a record from before 0.12.5. A row with "
+                "withheld true is a record kept in recovery/ because its cleanup was incomplete or its sibling read locks "
+                "could not be put back: an attempt, unavailable, until scripts/benchmarks/restore.ts moves it into runs/",
     "split_predictions": "the hub's shadow split predictions (#109) with their traces; they never changed an assignment",
     "hooks": "hooks each agent ran as its own records show: Claude transcript hook rows by hook and command label (the "
              "hub's facts hook, or other: the program's name; never paths or arguments), with the durationMs they "
@@ -107,9 +111,13 @@ UNITS = {
                      "introduced that the final tree lacks and that agent did not remove itself (a fragment counts as "
                      "present anywhere in the file; a moved file's contributions follow it to its new path); a "
                      "heuristic, with what it could not see listed in coverage",
+    "unreadable": "planned attempts of a run directory whose runs/ is locked (an arm's cleanup is incomplete and its "
+                  "recovery pending; listed under locked): whether they wrote a record cannot be read, so they are "
+                  "neither rows nor missing until restore.ts restores the directory",
     "summary": "per arm, over every run directory given (one repeat per directory; a repeat given twice is refused): "
                "attempts, completions with the reasons for the rest, attempts left out as invalid or unknown "
-               "(excluded), and planned attempts that wrote no record (missing: from each directory's cohort.json, or "
+               "(excluded), planned attempts a locked runs/ hides (unreadable), and planned attempts that wrote no "
+               "record (missing: from each directory's cohort.json, or "
                "with --plan from the manifest's plan, whole repeats included); medians over valid completed attempts, "
                "over the (case, repeat) pairs every arm completed validly (common) and, for turn-free, over treated "
                "attempts; totals over the attempts whose tasks were handed out and to which the measure applies, each "
@@ -345,6 +353,7 @@ def teardown_of(run):
     cleanup = run.get("cleanup") or {}
     return {"completion": run.get("completion"), "cleanup": cleanup.get("outcome"), "cleanup_reasons": cleanup.get("reasons"),
             "fallback_signals": len(cleanup.get("fallback") or []), "restoration": run.get("restoration"), "late_append_bytes": late,
+            "normal_errors": (cleanup.get("normal") or {}).get("errors"),  # e.g. a hub project registration `projects remove` left behind
             "tree_changed_after_active_time": run.get("tree_changed_after_active_time"),
             "verified": isinstance(cleanup.get("outcome"), str)}  # false before 0.12.5: no process readback was recorded
 
@@ -567,9 +576,10 @@ def ledger_of(run):
     return row
 
 
-def summarize(rows, missing=()):
+def summarize(rows, missing=(), unreadable=()):
     by = {}
     for r in rows: by.setdefault(r["arm"], []).append(r)
+    for _, arm, _ in [*missing, *unreadable]: by.setdefault(arm, [])  # an arm with no record still owes its attempts
     ok = lambda r: r.get("completed") and (r.get("validity") or {}).get("valid") is True
     arms = set(by)
     pairs = {(r["case"], r.get("repeat")) for r in rows}
@@ -602,6 +612,7 @@ def summarize(rows, missing=()):
             "not_completed": sorted(r["end_story"] for r in rs if not r.get("completed")),
             "excluded": sorted(str((r.get("validity") or {}).get("why")) for r in rs if r.get("completed") and not ok(r)),
             "missing": sorted(f"case {c} repeat {rep}" for c, a, rep in missing if a == arm),
+            "unreadable": sorted(f"case {c} repeat {rep}" for c, a, rep in unreadable if a == arm),
             "both_done_s_median": median([r["both_done_s"] for r in done]),
             "both_done_s_median_common": median([r["both_done_s"] for r in shared]),
             "settlement_s_median": median([r["settlement_s"] for r in done if r.get("settlement_s") is not None]),
@@ -655,9 +666,21 @@ def main():
     p.add_argument("--plan", help="the manifest plan these directories carry out (pilot, study): its whole repeats are expected")
     p.add_argument("--json", action="store_true")
     a = p.parse_args()
-    rows, plan = [], set()
+    rows, plan, unreadable, locked = [], set(), set(), []
     for run_dir in a.run:
-        for f in sorted((run_dir / "runs").glob("*.json")): rows.append({**ledger_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name})
+        # An incomplete cleanup leaves runs/ locked with the arm's siblings until restore.ts: a glob there sees nothing, so
+        # the run's planned attempts without a record are unreadable, not missing.
+        shut = [d for d in (run_dir / "runs", run_dir / "recovery" / "runs") if d.exists() and not os.access(d, os.R_OK | os.X_OK)]
+        if shut:
+            locked += [str(d) for d in shut]
+            unreadable |= expected(run_dir)
+        # Kept back while a cleanup or a sibling-lock restoration was incomplete (#113): attempts, unavailable, not missing, until restore.ts moves them.
+        # It writes each one to runs/ before removing it here, so a copy in both is still withheld.
+        held = sorted((run_dir / "recovery" / "runs").glob("*.json"))
+        moving = {h.name for h in held}
+        for f in sorted((run_dir / "runs").glob("*.json")):
+            if f.name not in moving: rows.append({**ledger_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name})
+        for f in held: rows.append({**ledger_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name, "withheld": True})
         plan |= expected(run_dir)
     if a.plan: plan |= planned(a.run[0], a.plan)
     seen = {}
@@ -665,8 +688,12 @@ def main():
         key = (r["case"], r["arm"], r.get("repeat"))
         if key in seen: raise SystemExit(f"ledger: case {key[0]} {key[1]} repeat {key[2]} is in both {seen[key]} and {r['run']}")
         seen[key] = r["run"]
-    missing = sorted(plan - set(seen), key=str)
-    out = {"units": UNITS, "rows": rows, "missing": [{"case": c, "arm": arm, "repeat": rep} for c, arm, rep in missing], "summary": summarize(rows, missing)}
+    missing = sorted(plan - set(seen) - unreadable, key=str)
+    hidden = sorted(unreadable - set(seen), key=str)
+    out = {"units": UNITS, "rows": rows, "missing": [{"case": c, "arm": arm, "repeat": rep} for c, arm, rep in missing],
+           "unreadable": [{"case": c, "arm": arm, "repeat": rep} for c, arm, rep in hidden], "locked": locked,
+           "summary": summarize(rows, missing, hidden)}
+    if locked: print(f"ledger: locked until scripts/benchmarks/restore.ts restores it (a cleanup is incomplete): {', '.join(locked)}", file=sys.stderr)
     (a.run[0] / "ledger.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if a.json: print(json.dumps(out, indent=2, sort_keys=True))
     else:

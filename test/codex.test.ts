@@ -369,3 +369,19 @@ test("the adapter stops a launcher that ignores SIGTERM together with the native
   const table = processTable()!;
   expect(table.some((r) => r.pid === native)).toBe(false);
 }, 20_000);
+
+// issue #115: a start that fails after the app-server is up stops it and reports its own error, not the stop's.
+test("a start that fails after the app-server is up reports its own error and leaves nothing running", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-codex-start-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const pidFile = join(dir, "native.pid"), bin = join(dir, "codex");
+  writeFileSync(bin, `#!/bin/sh\nbun ${join(import.meta.dir, "fakes/codex-bin.ts")} "$@" &\necho $! > ${pidFile}\nwait\n`, { mode: 0o755 });
+  const taken = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+  cleanup.push(() => taken.stop(true));
+  const freePort = () => { const s = Bun.serve({ port: 0, fetch: () => new Response() }); const p = s.port as number; s.stop(true); return p; };
+  const peer = new CodexPeer("codex", { proxyPort: taken.port as number, appPort: freePort(), bin, cwd: dir });
+  cleanup.push(() => peer.stop());
+  await expect(peer.start()).rejects.toThrow(String(taken.port));
+  const native = Number(readFileSync(pidFile, "utf8"));
+  expect(processTable()!.some((r) => r.pid === native)).toBe(false);
+}, 20_000);

@@ -1,4 +1,4 @@
-import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, chmodSync, statSync, lstatSync, readdirSync, readlinkSync, openSync, fstatSync, closeSync, constants as fsConstants } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, chmodSync, statSync, lstatSync, readdirSync, readlinkSync, openSync, fstatSync, closeSync, rmSync, constants as fsConstants } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
@@ -7,11 +7,15 @@ import { realPath } from '../../src/hub/project.ts';
 import { sessionSettings, statusLineSettings } from '../../src/cli/launch.ts';
 import { readEvents } from '../../src/hub/events.ts';
 import { processTable } from '../../src/hub/child-process.ts';
-import { awaitTurnEnd, captureActors, cwdOf, restoreModes, restoreTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
+import { awaitTurnEnd, captureActors, cwdOf, endReasonOf, restoreModes, trustTemp, writeAtomic, restoreTrust, settleTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
 process.umask(0o077);
 const argv = process.argv.slice(2), runArg = argv[argv.indexOf('--run') + 1], inputArg = argv[argv.indexOf('--private-inputs') + 1], upstreamArg = argv[argv.indexOf('--upstream-root') + 1], probeArg = argv[argv.indexOf('--probe-target') + 1];
 if (!runArg || !inputArg || !upstreamArg || !probeArg)
     throw new Error('usage: bun scripts/benchmarks/native.ts --run RUN_DIR --private-inputs PRIVATE_DIR --upstream-root COOPERBENCH_ROOT --probe-target HIDDEN_FILE');
+// macOS only (#115): the arms run in Orca terminals, and on Linux a clock step moves the start times the teardown proves
+// processes by, so an owned survivor could read as gone.
+if (process.platform !== 'darwin')
+    throw new Error(`the native benchmark runner runs on macOS only, not ${process.platform}`);
 const repo = resolve(import.meta.dir, '../..');
 const out = realPath(runArg), privateInputs = realPath(inputArg), upstreamRoot = realPath(upstreamArg), runs = out;
 if (out === repo || out.startsWith(repo + '/') || repo.startsWith(out + '/'))
@@ -192,7 +196,7 @@ const runnerIdentity = processTable()?.find(r => r.pid === process.pid);
 if (!runnerIdentity)
     throw new Error('the process table cannot be read: the runner cannot record what it starts');
 // Temp file and rename: a crash mid-write must not leave a ledger the recovery cannot read.
-function persistLedger() { const file = join(runs, 'restoration-ledger.json'); writeFileSync(`${file}.tmp`, JSON.stringify({ runner: runnerIdentity && { pid: runnerIdentity.pid, started: runnerIdentity.started }, protected: { paths: Object.fromEntries(protectedModes), restored: protectedRestored }, siblings: Object.fromEntries(siblingLedgers), actors: Object.fromEntries(actorLedger), trust: trustLedger }, null, 2), { mode: 0o600 }); renameSync(`${file}.tmp`, file); }
+function persistLedger() { writeAtomic(join(runs, 'restoration-ledger.json'), JSON.stringify({ runner: runnerIdentity && { pid: runnerIdentity.pid, started: runnerIdentity.started }, protected: { paths: Object.fromEntries(protectedModes), restored: protectedRestored }, siblings: Object.fromEntries(siblingLedgers), actors: Object.fromEntries(actorLedger), trust: trustLedger }, null, 2)); }
 async function protectInputs() { const fs = await import('node:fs/promises'); for (const root of protectedRoots) {
     if (!existsSync(root))
         throw new Error('protected source missing');
@@ -278,8 +282,6 @@ function fixtureMetadataHash(root: string) { const names = ['AGENTS.md', '.gitig
     const bytes = regularBytes(join(root, name), 16 * 1024 * 1024);
     values[name] = bytes === 'missing' ? null : typeof bytes === 'string' ? bytes : hash(bytes);
 } return hash(JSON.stringify(values)); }
-/** Written whole or not at all: a recovery reads it after a runner that may have died mid-write. */
-function writeAtomic(file: string, text: string) { writeFileSync(`${file}.tmp`, text, { mode: 0o600 }); renameSync(`${file}.tmp`, file); }
 function claudeEvidence(transcriptPath: string | undefined) { if (!transcriptPath || !existsSync(transcriptPath))
     return { models: [], usage: undefined }; const latest = new Map<string, any>(), models = new Set<string>(); for (const line of readFileSync(transcriptPath, 'utf8').split('\n')) {
     if (!line)
@@ -401,6 +403,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const settings = { permissions, ...(turnFree ? { disableAllHooks: false, hooks: session.hooks } : { disableAllHooks: true }), sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: denied } } };
     writeFileSync(join(dir, '.claude/settings.json'), JSON.stringify(settings));
     // The conditions each attempt ran with (issue #110): bound to its record, next to the capability readbacks in its events.
+    // codex.skills is a placeholder string until skillsCondition() replaces it with its object once Codex is up (`as any`).
     const conditions = { claude: { settingSources: 'project', strictMcpConfig: true, disableAllHooks: !turnFree, statusLine: false, hookEvents: turnFree ? Object.keys(session.hooks ?? {}).sort() : [], settingsSha256: hash(JSON.stringify(settings)), skills: 'off: the Skill tool is denied', instructions: 'fixture AGENTS.md via --append-system-prompt-file' }, codex: { hooksFeature: false, memories: false, externalAgentMemoryImport: false, plugins: false, apps: false, multiAgent: false, notify: false, disabledMcpServers: codexUserServers, skills: (kind === 'solo-claude' ? 'not applicable: no Codex in this arm' : 'not checked: setup did not reach Codex') as any, instructions: 'fixture AGENTS.md as project doc; the user\'s global AGENTS.md too' }, coordination: turnFree ? 'turn-free' : kind.startsWith('hub-') ? 'advisory' : 'solo', ...(staleOff ? { experiments: { stale_notices: 'deliver' } } : {}) };
     const candidateMcp = join(dir, '.claude/candidate-mcp.json');
     writeFileSync(candidateMcp, JSON.stringify({ mcpServers: { 'agent-hub': { command: 'bun', args: [join(repo, 'plugins/agent-hub/server.js')], env: { AGENTHUB_STATE_DIR: state, AGENTHUB_PROJECT_DIR: dir, AGENTHUB_PEER_ID: 'claude' } } } }), { mode: 0o600 });
@@ -409,7 +412,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const sealedBase = await cmd(['git', 'rev-parse', 'HEAD'], dir);
     const metadataBaseline = fixtureMetadataHash(dir);
     const setup = Date.now();
-    let client: ControlClient | undefined, ws: WebSocket | undefined, claudeTerminal: string | undefined, projectId: any, started = 0, endReason = 'completed', error: string | undefined, armModes = new Map<string, number>();
+    let client: ControlClient | undefined, ws: WebSocket | undefined, claudeTerminal: string | undefined, hubMayRun = false, projectId: any, started = 0, endReason = 'completed', error: string | undefined, armModes = new Map<string, number>();
     let claudeId = randomUUID(), thread: any, trustLease: any, codexMessages: any[] = [], taskStates: any[] = [], ids: number[] = [], pending = new Map<number, any>(), unkept = new Set<number>(), rpcId = 1, codexTaskStart = 0;
     const actors = kind === 'solo-codex' ? ['codex'] : kind === 'solo-claude' ? ['claude'] : ['codex', 'claude'], readiness: any = {};
     // The processes this arm started (issue #113), each with what proves it: the daemon by the pid in its state dir and
@@ -434,6 +437,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         await lockSiblingArtifacts(dir, armModes);
         if (stopRequested)
             throw new Error('interrupted'); // before a hub is started for nothing
+        hubMayRun = true;
         await cmd(['bun', cliPath, '--project', dir, 'up'], dir);
         client = await wait(async () => { try {
             return await ControlClient.connect(state, { role: 'console' });
@@ -455,17 +459,17 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             trustState.projects[dir] = trustLease.written;
             trustLedger = { file: trustFile, project: dir, previous: trustLease.previous, written: trustLease.written, hadProjects: trustLease.hadProjects, mode: trustLease.mode, stage: 'pending', restored: false };
             persistLedger();
-            const trustTemp = trustFile + '.ahub-benchmark-' + process.pid;
-            writeFileSync(trustTemp, JSON.stringify(trustState, null, 2), { mode: 0o600 });
-            renameSync(trustTemp, trustFile);
+            const trustTempFile = trustTemp(trustFile, process.pid);
+            writeFileSync(trustTempFile, JSON.stringify(trustState, null, 2), { mode: 0o600 });
+            renameSync(trustTempFile, trustFile);
             trustLedger.stage = 'written';
             persistLedger();
             const claudeArgs = ['--restricted', '--strict-mcp-config', '--mcp-config', candidateMcp, '--model', manifest.models.claude, '--effort', manifest.effort.claude, '--session-id', claudeId, '--permission-mode', 'acceptEdits', '--settings', join(dir, '.claude/settings.json'), '--setting-sources', 'project', '--append-system-prompt-file', join(dir, 'AGENTS.md'), '--tools', 'Read,Edit,Write,Glob,Grep,Bash', '--allowedTools', ...permissions.allow];
             const command = `bun ${shellQuote(cliPath)} --project ${shellQuote(dir)} claude ${claudeArgs.map(shellQuote).join(' ')}`;
-            const claudeHandle = await createOrcaTerminal(orcaProject!.worktreeId, `bench-claude-${name}`, command);
+            const claudeHandle = await createOrcaTerminal(orcaProject.worktreeId, `bench-claude-${name}`, command);
             claudeTerminal = claudeHandle;
             const channelPrompt = await waitClaudeTui(claudeHandle);
-            const terminalList = await orca(['terminal', 'list', '--worktree', `id:${orcaProject!.worktreeId}`]);
+            const terminalList = await orca(['terminal', 'list', '--worktree', `id:${orcaProject.worktreeId}`]);
             const terminalIdentity = findRecord(terminalList, (x: any) => x.handle === claudeHandle);
             if (!terminalIdentity || resolve(terminalIdentity.worktreePath) !== resolve(dir))
                 throw new Error('Claude Orca terminal cwd identity mismatch');
@@ -644,7 +648,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         const cleanup = await teardown([...owners.values()], dir, async () => {
             const errors: string[] = [];
             if (claudeTerminal) await orcaClose(claudeTerminal).catch(() => { errors.push('Claude Orca terminal close failed'); }); // bounded by cmd
-            if (orcaProject) {
+            if (hubMayRun) {
                 // What `ahub kill` says is kept unless it is the plain answer: "hub is not running" with a live daemon was #113.
                 await cmd(['bun', cliPath, '--project', dir, 'kill'], dir, undefined, 60000).then((out) => { if (out.trim() !== 'hub stopped') errors.push(`ahub kill said: ${out.trim().slice(0, 200)}`); }, (e) => { errors.push(`ahub kill: ${String(e).slice(0, 200)}`); });
                 // An interrupt before the hub answered leaves its id unknown: the registration is found by its root.
@@ -709,17 +713,14 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             if (failed.length) note('sibling artifact read locks could not be restored');
         }
         let trustRestored = true;
-        if (trustLease && !contained) {
-            // Claude may still run and rewrite its project entry: the recovery takes it back once nothing does.
-            restoration.trust = 'kept: the cleanup is incomplete or unknown';
-            trustRestored = false;
-        }
-        else if (trustLease) {
-            restoration.trust = restoreTrust(trustLease, dir);
-            trustRestored = restoration.trust === 'restored';
-            trustLedger.restored = trustRestored;
-            trustLedger.stage = restoration.trust;
-            if (!trustRestored) note(restoration.trust === 'changed_concurrently' ? 'Claude trust entry changed concurrently; preserved current state' : 'Claude trust restore failed');
+        if (trustLease) {
+            const removeTemp = () => { try { rmSync(trustTemp(trustLease.file, process.pid), { force: true }); return true; } catch (e) { note(`the trust write's temp file could not be removed: ${String(e).slice(0, 200)}`); return false; } };
+            const settled = settleTrust(trustLedger.stage, contained, removeTemp, () => restoreTrust(trustLease, dir));
+            restoration.trust = settled.outcome;
+            trustRestored = settled.restored;
+            Object.assign(trustLedger, { stage: settled.stage, restored: settled.restored });
+            if (settled.stage === 'changed_concurrently') note('Claude trust entry changed concurrently; preserved current state');
+            else if (settled.stage === 'failed') note('Claude trust restore failed');
         }
         persistLedger();
         const restorationMs = Date.now() - restoration0;
@@ -730,8 +731,8 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         writeFileSync(patchFile, patch, { mode: 0o600 });
         let events: any[] = [];
         try { events = readEvents(join(state, 'events.jsonl')); } catch { note('hub events could not be read'); }
-        const result = { protocol: 'native-cc-v1', index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: sealedBase.trim(), models: manifest.models, requestedModels: actors.reduce((o: any, a: string) => (o[a] = manifest.models[a], o), {}), readiness, patchFile, model: actors.length === 1 ? manifest.models[actors[0]!] : undefined, setupMs: (started || activeEnd) - setup, elapsedMs, stoppedMs: stoppedAt ? stoppedAt - activeEnd : undefined, teardownMs: Date.now() - activeEnd, stages: { completionMs: completion.ms, shutdownMs: cleanup.normal.ms, settleMs: cleanup.ms.settle, fallbackMs: cleanup.ms.fallback, captureMs, restorationMs }, end_reason: endReason === 'infrastructure-error' ? 'infrastructure-error' : endReason === 'provider-quota' ? 'provider-quota' : endReason === 'budget-paused' ? 'budget-paused' : endFlags.length && endReason !== 'interrupted' ? 'infrastructure-error' : endReason === 'completed' ? 'completed' : endReason === 'delivery-unsettled' ? 'delivery-unsettled' : endReason === 'wall-timeout' ? 'timeout' : 'interrupted', end_reason_detail: endReason, end_flags: endFlags.length ? endFlags : undefined, error: error ? String(error).replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 300) : undefined, taskStates, effort: manifest.effort, events, codexMessages, codexTaskStart, startedAt: started || undefined, repeat, conditions, codexUsage: codexUsage(codexMessages, thread?.thread?.id), nativeVersions: { codex: codexVersion, claude: claudeVersion }, codexBinarySha256: sourceHash(codexBin), claudeSessionId: actors.includes('claude') ? claudeId : undefined, codexThreadId: thread?.thread?.id, completion, tree_changed_after_active_time: treeAfterActive, cleanup, restoration, trust_restored: trustRestored, cleanup_complete: contained, teardown_errors: teardownErrors.length ? teardownErrors : undefined, metadata_clean: metadataClean, metadata_sha256: metadataBaseline, delivery_status: finalStatus?.peers };
-        writeFileSync(join(recordRoot, 'runs', name + '.json'), JSON.stringify(result, null, 2), { mode: 0o600 });
+        const result = { protocol: 'native-cc-v1', platform: process.platform, index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: sealedBase.trim(), models: manifest.models, requestedModels: actors.reduce((o: any, a: string) => (o[a] = manifest.models[a], o), {}), readiness, patchFile, model: actors.length === 1 ? manifest.models[actors[0]!] : undefined, setupMs: (started || activeEnd) - setup, elapsedMs, stoppedMs: stoppedAt ? stoppedAt - activeEnd : undefined, teardownMs: Date.now() - activeEnd, stages: { completionMs: completion.ms, shutdownMs: cleanup.normal.ms, settleMs: cleanup.ms.settle, fallbackMs: cleanup.ms.fallback, captureMs, restorationMs }, end_reason: endReasonOf(endReason, endFlags), end_reason_detail: endReason, end_flags: endFlags.length ? endFlags : undefined, error: error ? String(error).replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 300) : undefined, taskStates, effort: manifest.effort, events, codexMessages, codexTaskStart, startedAt: started || undefined, repeat, conditions, codexUsage: codexUsage(codexMessages, thread?.thread?.id), nativeVersions: { codex: codexVersion, claude: claudeVersion }, codexBinarySha256: sourceHash(codexBin), claudeSessionId: actors.includes('claude') ? claudeId : undefined, codexThreadId: thread?.thread?.id, completion, tree_changed_after_active_time: treeAfterActive, cleanup, restoration, trust_restored: trustRestored, cleanup_complete: contained, teardown_errors: teardownErrors.length ? teardownErrors : undefined, metadata_clean: metadataClean, metadata_sha256: metadataBaseline, delivery_status: finalStatus?.peers };
+        writeAtomic(join(recordRoot, 'runs', name + '.json'), JSON.stringify(result, null, 2)); // the ledger reads recovery/ too: never a cut record
         log('arm-end', { index, kind, elapsedMs, endReason, cleanup: cleanup.outcome, completion: completion.outcome, patchLines: patch.split('\n').length });
         if (!contained)
             throw new Error(`cleanup ${cleanup.outcome}: ${cleanup.reasons.join('; ')}; inputs stay locked, record in ${join(recordRoot, 'runs', name + '.json')}`);
@@ -817,7 +818,8 @@ finally {
         // Protected inputs are back; an arm whose own sibling locks failed to come off keeps the run unrestored.
         const locked = [...siblingLedgers.entries()].filter(([, l]) => !l.restored).map(([d]) => d);
         const trustLeft = !!trustLedger && !trustLedger.restored && trustLedger.stage !== 'changed_concurrently';
-        const reasons = [...(locked.length ? [`sibling read locks of ${locked.length} arm(s) are still in place`] : []), ...(trustLeft ? ['the Claude trust entry was not taken back'] : [])];
+        const trustReason = trustLedger?.stage === 'not_written' ? 'the trust write\'s temp file (a copy of ~/.claude.json) was not removed' : 'the Claude trust entry was not taken back';
+        const reasons = [...(locked.length ? [`sibling read locks of ${locked.length} arm(s) are still in place`] : []), ...(trustLeft ? [trustReason] : [])];
         writeAtomic(join(runs, 'restoration.json'), JSON.stringify({ restored: !reasons.length, paths: protectedModes.size, ...(reasons.length ? { reason: reasons.join('; '), recover: `bun scripts/benchmarks/restore.ts --run ${runs}` } : {}), interrupted: stopRequested }));
     }
 }

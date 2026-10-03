@@ -97,6 +97,8 @@ const OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassi
 const WITH_DONE = "with its done";
 /** How many times a task changed hands: a cohort member's generation (issue #107). */
 const ownerGen = (t: Task) => t.history.filter((h) => OWNERSHIP_EVENTS.has(h.event)).length;
+/** One hand-over of a task to an owner: a task handed back to a peer that had it before is a new one (#115). */
+const handOver = (t: Task, owner: PeerId) => `${t.id}@${owner}#${ownerGen(t)}`;
 /** When the task was handed to its current owner (its creation, if it never changed hands). */
 const handedAt = (t: Task) => [...t.history].reverse().find((h) => OWNERSHIP_EVENTS.has(h.event) && h.event !== "unassigned")?.at ?? t.history[0]?.at ?? Date.now();
 
@@ -141,6 +143,9 @@ export class Tasks {
     // What the on-prem worker says about a PII task is private on the bus (console tail and log show a stub), so the
     // board keeps the text: `ahub task show <id>` is where the console user reads it, a refusal included.
     d.bus.tap((e) => {
+      // A turn that ends takes its hand-overs with it: busy later is another turn (#115). The adapter's own state, since a
+      // pause shows as `paused` while the turn goes on.
+      if (e.t === "state" && d.bus.peers.get(e.peer)?.state !== "busy") for (const [k, p] of this.sent) if (p === e.peer) this.sent.delete(k);
       if (e.t !== "envelope" || !e.env.private || e.env.from === HUB || !e.env.refs?.task) return;
       try {
         d.board.update(Number(e.env.refs.task), e.env.from, "answer", {}, e.env.body.slice(0, 4000));
@@ -308,15 +313,18 @@ export class Tasks {
     const open = this.d.board.list().filter((t) => OPEN.includes(t.state) && t.id !== task.id && (t.id !== other.id || t.state !== "proposed"));
     // One task of a class is one unit: the only normalization the board supports, so another class is unknown.
     const unit = task.class === other.class ? 1 : undefined;
+    const taking = (p: PeerId) => states[p] === "busy" && (p === candidate ? this.sent.has(handOver(task, p)) : other.state === "proposed" && this.sent.has(handOver(other, p)));
     return predictSplit({
       peers,
       observations: Object.fromEntries(peers.map((p) => [p, this.splitObservations(task.class, p, task.id)])),
       units: [unit, unit],
       profiles: Object.fromEntries(peers.map((p) => [p, this.d.splitProfile?.(p)])),
       backlog: Object.fromEntries(peers.map((p) => [p, open.filter((t) => t.owner === p).length])),
-      // The routed peer may be busy taking this very task, and the other owner taking the overlapped task while it is not
-      // started yet (an owner goes busy as its task is delivered); busy otherwise, it is at work on something already.
-      available: Object.fromEntries(peers.map((p) => [p, !failing[p] && (states[p] === "idle" || (states[p] === "busy" && (p === candidate || other.state === "proposed")))])),
+      // Busy is taking the task in question only in the turn that task started (an owner goes busy as its task is
+      // delivered) or in which it claimed it: the routed peer this very task, the other owner the overlapped one while it
+      // is not started. Busy otherwise, it is at work on something else (#109, #115; a routing or cohort record is taken
+      // before the task is sent, so a busy candidate is not available then).
+      available: Object.fromEntries(peers.map((p) => [p, !failing[p] && (states[p] === "idle" || taking(p))])),
     });
   }
 
@@ -650,6 +658,9 @@ export class Tasks {
         if (shadow) this.d.recordSplit?.(next.id, shadow, "routing");
       } catch { /* shadow only: never between the board write and the delivery */ }
     }
+    // A claim is its own hand-over: the claimant took the task in the turn it is in, so it is taking it, not busy elsewhere.
+    // The cohort record formed just below reads it, and so does `route explain` while that turn lasts.
+    if (opts.claim && a.owner === by && this.d.bus.peers.get(by)?.state === "busy") this.sent.set(handOver(next, by), by);
     const hits = this.overlapHits(next);
     this.formCohort(next, hits);
     if (hits.length) {
@@ -684,7 +695,14 @@ export class Tasks {
       context && !pii ? `Handoff from the previous owner:\n${this.screen(task, context, "handoff", a.owner).slice(0, 3000)}` : "",
       `Take it with hub_task_accept {id: ${task.id}, plan: {paths, symbols, signatures, insertion_points}} (what you will change, before you start${pii ? "" : "; owners of overlapping tasks see it"}) or pass with hub_task_decline. When finished: hub_task_done {id: ${task.id}, summary: what changed, why, and the check you ran with its result, refs}.`,
     ].filter(Boolean).join("\n\n");
-    this.d.bus.publish(newEnvelope(HUB, body, { to: [task.owner!], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id) }, ...(pii ? { private: true } : {}) }));
+    // A hand-over the owner takes in a turn of its own (#109, #115): idle before, busy after and not queued, this envelope
+    // was in the delivery that started its turn. Busy before, it is queued, or steered into a turn about something else
+    // (Codex, Pi); held, it starts no turn yet: neither is taking it.
+    const owner = task.owner!;
+    const idle = this.d.bus.stateOf(owner) === "idle";
+    const env = newEnvelope(HUB, body, { to: [owner], kind: "task", priority: "important", refs: { ...task.refs, task: String(task.id) }, ...(pii ? { private: true } : {}) });
+    this.d.bus.publish(env);
+    if (idle && this.d.bus.stateOf(owner) === "busy" && !this.d.bus.queueIds(owner).includes(env.id)) this.sent.set(handOver(task, owner), owner);
   }
 
   /** Nobody, the console user included, works on a task before what it waits for is approved. */
@@ -702,6 +720,7 @@ export class Tasks {
   }
 
   private readonly offered = new Set<number>(); // ready tasks offered in this hub run
+  private readonly sent = new Map<string, PeerId>(); // hand-over (`handOver`) -> owner, for the owner's current turn: its task envelope started it, or it claimed the task in it
 
   /**
    * A stop between an approval and the assignment of its dependents (both are saved on their own) leaves them ownerless

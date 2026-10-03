@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
@@ -250,7 +250,8 @@ test("a peer cannot claim the console user's id or a hub-managed adapter's id", 
 });
 
 test("a tail opened after a permission request still sees it", async () => {
-  const { stateDir, console_, events } = await hub();
+  // The rig's 200 ms permission timeout is shorter than a loaded runner takes to connect and replay (#115).
+  const { stateDir, console_, events } = await hub({ permissionTimeoutMs: 30_000 });
   await console_.request({ t: "start", peer: "kimi" });
   await console_.request({ t: "send", body: "PERMISSION", to: ["kimi"] });
   await Bun.sleep(60);
@@ -1432,7 +1433,9 @@ test("hub_task_propose: an owner that is not a peer id is refused and creates no
 });
 
 test("a peer can never answer a permission request: not over the control link, not by message", async () => {
-  const { stateDir, console_, pushes, events } = await hub();
+  // The console answers after a peer connects and two tool calls run: a loaded runner takes longer than the rig's 200 ms
+  // permission timeout for that (macOS CI once cancelled the request), so this test gets a window of its own (#115).
+  const { stateDir, console_, pushes, events } = await hub({ permissionTimeoutMs: 30_000 });
   await console_.request({ t: "start", peer: "kimi" });
   const { client } = await fakeClaude(stateDir);
   const replies = () => events.filter((e) => e.t === "envelope" && e.env.from === "kimi").map((e) => e.env.body);
@@ -1704,6 +1707,8 @@ test("a hand-over to Claude is tagged with the hub's version, Claude Code's from
   const { instanceId } = (await console_.request({ t: "status" })).status;
   const transcript = join(stateDir, "s1.jsonl");
   writeFileSync(transcript, [JSON.stringify({ type: "user", version: "2.1.286" }), JSON.stringify({ type: "assistant", version: "2.1.287" }), '{"type":"attach'].join("\n"));
+  const at = new Date(Date.now() - 60_000);
+  utimesSync(transcript, at, at); // whole milliseconds, so it can be set back exactly below
   writeFileSync(join(stateDir, "claude-session.json"), JSON.stringify({ instanceId, sessionId: "s1", transcriptPath: transcript }));
   await fakeClaude(stateDir);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
@@ -1712,5 +1717,20 @@ test("a hand-over to Claude is tagged with the hub's version, Claude Code's from
   const db = new Database(join(stateDir, "hub.db"), { readonly: true });
   const history = JSON.parse((db.query("SELECT history FROM tasks WHERE id = 1").get() as { history: string }).history);
   db.close();
-  expect(history.find((h: any) => h.event === "assigned")?.profile).toBe(`hub ${JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version}; claude 2.1.287; turn-free`);
+  const hubVersion = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")).version;
+  expect(history.find((h: any) => h.event === "assigned")?.profile).toBe(`hub ${hubVersion}; claude 2.1.287; turn-free`);
+  // #115: the transcript is read again only once it changed (size or mtime): same size and mtime, no new read.
+  const profile = async (title: string) => {
+    const t = await console_.request({ t: "task", op: "hub_task_propose", args: { title, class: "review", owner: "claude" } });
+    const id = Number(/#(\d+)/.exec(t.text)![1]);
+    const ro = new Database(join(stateDir, "hub.db"), { readonly: true });
+    const h = JSON.parse((ro.query("SELECT history FROM tasks WHERE id = ?").get(id) as { history: string }).history);
+    ro.close();
+    return h.find((e: any) => e.event === "assigned")?.profile;
+  };
+  writeFileSync(transcript, readFileSync(transcript, "utf8").replace("2.1.287", "2.1.299"));
+  utimesSync(transcript, at, at);
+  expect(await profile("same stat")).toBe(`hub ${hubVersion}; claude 2.1.287; turn-free`);
+  appendFileSync(transcript, "\n" + JSON.stringify({ type: "assistant", version: "2.1.300" }));
+  expect(await profile("changed")).toBe(`hub ${hubVersion}; claude 2.1.300; turn-free`);
 });

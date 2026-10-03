@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -259,8 +259,44 @@ test("several run directories pool their repeats; a planned attempt without a re
     expect(out.summary["hub-turnfree-codex-claude"]).toMatchObject({
       attempts: 1, completed: 1, valid_completed: 0, excluded: ["turn-free context path not verified before the tasks: claude, codex"], missing: ["case 0 repeat 0", "case 0 repeat 2"], both_done_s_median: null,
     });
+    // #115: a record kept in recovery/ (its cleanup incomplete) is a withheld attempt, unavailable, never missing.
+    mkdirSync(join(b.root, "recovery", "runs"), { recursive: true });
+    writeFileSync(join(b.root, "recovery", "runs", "00-hub-turnfree-codex-claude.json"), JSON.stringify({ ...record(b, "hub-turnfree-codex-claude", 2), cleanup_complete: false, cleanup: { outcome: "incomplete_or_unknown", reasons: ["still running: below 107"] } }));
+    expect(spawnSync("python3", [script, "--run", a.root, "--run", b.root, "--plan", "pilot"], { encoding: "utf8" }).status).toBe(0);
+    const held = JSON.parse(readFileSync(join(a.root, "ledger.json"), "utf8"));
+    expect(held.missing).not.toContainEqual({ case: 0, arm: "hub-turnfree-codex-claude", repeat: 2 });
+    const withheld = held.rows.find((x: { withheld?: boolean }) => x.withheld);
+    expect([withheld.repeat, withheld.validity]).toEqual([2, { valid: false, why: "cleanup incomplete or unknown: still running: below 107" }]);
+    // restore.ts writes a record to runs/ before it removes it from recovery/: stopped in between, the record is in both
+    // and still withheld.
+    b.run("00-hub-turnfree-codex-claude", record(b, "hub-turnfree-codex-claude", 2));
+    const both = spawnSync("python3", [script, "--run", a.root, "--run", b.root, "--plan", "pilot"], { encoding: "utf8" });
+    if (both.status !== 0) throw new Error(both.stderr);
+    const moving = JSON.parse(readFileSync(join(a.root, "ledger.json"), "utf8")).rows.filter((x: { repeat: number; arm: string }) => x.repeat === 2 && x.arm === "hub-turnfree-codex-claude");
+    expect(moving.map((x: { withheld?: boolean; validity: { valid: boolean } }) => [x.withheld, x.validity.valid])).toEqual([[true, false]]); // the recovery copy
+    // runs/ locked with the arm's siblings (its cleanup incomplete): its records cannot be read, which is not "missing".
+    rmSync(join(b.root, "runs", "00-hub-turnfree-codex-claude.json"));
+    chmodSync(join(b.root, "runs"), 0o000);
+    const locked = spawnSync("python3", [script, "--run", a.root, "--run", b.root, "--plan", "pilot"], { encoding: "utf8" });
+    chmodSync(join(b.root, "runs"), 0o700);
+    if (locked.status !== 0) throw new Error(locked.stderr);
+    expect(locked.stderr).toContain("locked until");
+    const unread = JSON.parse(readFileSync(join(a.root, "ledger.json"), "utf8"));
+    expect(unread.unreadable).toEqual([{ case: 0, arm: "solo-codex", repeat: 2 }]); // b's solo-codex record is in runs/
+    expect(unread.summary["solo-codex"].unreadable).toEqual(["case 0 repeat 2"]);
+    // An arm with no record at all still shows what it owes.
+    const lone = spawnSync("python3", ["-c", `import json, sys; sys.path.insert(0, ${JSON.stringify(join(script, ".."))}); from ledger import summarize; print(json.dumps(summarize([], [(0, "solo-claude", 1)], [(0, "solo-claude", 2)])))`], { encoding: "utf8" });
+    if (lone.status !== 0) throw new Error(lone.stderr);
+    expect(JSON.parse(lone.stdout)["solo-claude"]).toMatchObject({ attempts: 0, valid_completed: 0, both_done_s_median: null, missing: ["case 0 repeat 1"], unreadable: ["case 0 repeat 2"] });
+    // Common medians are over pairs every arm completed validly: an arm with no record completed none.
+    const row = { arm: "solo-codex", case: 0, repeat: 1, completed: true, validity: { valid: true }, both_done_s: 10 };
+    const pair = spawnSync("python3", ["-c", `import json, sys; sys.path.insert(0, ${JSON.stringify(join(script, ".."))}); from ledger import summarize; print(json.dumps(summarize([${JSON.stringify(row).replace(/true/g, "True")}], [(0, "solo-claude", 1)])))`], { encoding: "utf8" });
+    if (pair.status !== 0) throw new Error(pair.stderr);
+    expect(JSON.parse(pair.stdout)["solo-codex"]).toMatchObject({ both_done_s_median: 10, both_done_s_median_common: null });
+    expect(unread.missing).not.toContainEqual({ case: 0, arm: "solo-codex", repeat: 2 });
+    expect(unread.rows.filter((x: { withheld?: boolean }) => x.withheld)).toHaveLength(1);
   } finally {
-    for (const f of [a, b]) rmSync(f.root, { recursive: true, force: true });
+    for (const f of [a, b]) { try { chmodSync(join(f.root, "runs"), 0o700); } catch {} rmSync(f.root, { recursive: true, force: true }); }
   }
 });
 
@@ -316,12 +352,12 @@ test("a late transcript append keeps the frozen prefix, is reported, and leaves 
       readiness: { claude: { transcriptPath: transcript, transcriptBytes: Buffer.byteLength(rows), transcriptSha256: createHash("sha256").update(rows).digest("hex") } },
       taskStates: [{ id: 1, owner: "claude", state: "approved", history: [{ event: "proposed", at: ms(0) }, { event: "done", at: ms(9) }] }],
       completion: { outcome: "timeout", ms: 30_000, boundMs: 30_000 }, tree_changed_after_active_time: false,
-      cleanup: { outcome: "clean", reasons: [], fallback: [] }, restoration: { siblings: "restored", trust: "restored" },
+      cleanup: { outcome: "clean", reasons: [], fallback: [], normal: { errors: ["registration not removed: test"], ms: 10 } }, restoration: { siblings: "restored", trust: "restored" },
     });
     writeFileSync(transcript, rows + late); // Claude Code wrote its answer after the prefix was taken
     const row = ledger().rows[0];
     expect(row.settlement.claude).toBeNull(); // the turn is open in the prefix: unknown, not counted from the late rows
-    expect(row.teardown).toEqual({ completion: { outcome: "timeout", ms: 30_000, boundMs: 30_000 }, cleanup: "clean", cleanup_reasons: [], fallback_signals: 0, restoration: { siblings: "restored", trust: "restored" }, late_append_bytes: Buffer.byteLength(late), tree_changed_after_active_time: false, verified: true });
+    expect(row.teardown).toEqual({ completion: { outcome: "timeout", ms: 30_000, boundMs: 30_000 }, cleanup: "clean", cleanup_reasons: [], fallback_signals: 0, restoration: { siblings: "restored", trust: "restored" }, late_append_bytes: Buffer.byteLength(late), normal_errors: ["registration not removed: test"], tree_changed_after_active_time: false, verified: true });
     expect(row.validity.valid).not.toBe(false); // the prefix still matches its hash: readable
     // An attempt whose cleanup was not complete is unavailable to the ledger as to grading, whatever its end reason.
     run("00-solo-claude", { ...JSON.parse(readFileSync(join(root, "runs", "00-solo-claude.json"), "utf8")), cleanup_complete: false, cleanup: { outcome: "incomplete_or_unknown", reasons: ["still running: below 107"] } });

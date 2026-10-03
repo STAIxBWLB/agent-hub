@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { descendantsOf, processTable, type ProcRow } from '../../src/hub/child-process.ts';
-import { namingFixture, processCwds, restoreModes, restoreTrust, same } from './teardown.ts';
+import { inside, namingFixture, processCwds, restoreModes, restoreTrust, same, restoreTemp, trustTemp, writeAtomic } from './teardown.ts';
 
 /**
  * Recovery after a run that left inputs unreadable (issue #113): an arm's cleanup was incomplete or unknown, or the
@@ -36,7 +36,7 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
         for (const r of namingFixture(table, dir)) if (!mine.has(r.pid)) blockers.push(`${r.pid} names ${dir}`);
         for (const r of table) {
             const cwd = cwds.get(r.pid);
-            if (!mine.has(r.pid) && cwd !== undefined && (cwd === dir || cwd.startsWith(`${dir}/`))) blockers.push(`${r.pid} works in ${dir}`);
+            if (!mine.has(r.pid) && inside(cwd, dir)) blockers.push(`${r.pid} works in ${dir}`);
         }
     }
     if (blockers.length) return { restored: false, blockers: [...new Set(blockers)], failed: [] };
@@ -53,9 +53,22 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
         failed.push(...lost);
     }
     const trust = ledger.trust;
-    if (trust && !trust.restored) {
-        const outcome = restoreTrust({ file: trust.file, previous: trust.previous, hadProjects: trust.hadProjects, mode: trust.mode }, trust.project);
-        if (outcome === 'failed') failed.push(trust.file);
+    // `changed_concurrently`: the user changed the entry meanwhile, and it is theirs; the runner settled it.
+    if (trust && !trust.restored && trust.stage !== 'changed_concurrently') {
+        // A runner that died between the lease and the rename or in its own restore, or that could not remove its temp file,
+        // may have left one: a copy of ~/.claude.json. One that cannot be removed keeps the trust entry unrestored, so the
+        // next recovery tries again. `not_written`: the runner knew its write never landed, so no entry is touched.
+        const pid = ledger.runner?.pid;
+        // A dead runner's `pending` with its temp file still there: the rename never happened, so nothing landed.
+        const unrenamed = !!pid && trust.stage === 'pending' && existsSync(trustTemp(trust.file, pid));
+        const temps = pid ? [restoreTemp(trust.file, pid)] : [];
+        if (pid && (trust.stage === 'pending' || trust.stage === 'not_written')) temps.push(trustTemp(trust.file, pid));
+        const stuck = temps.filter((temp) => { try { rmSync(temp, { force: true }); return false; } catch { return true; } });
+        const lease = { file: trust.file, previous: trust.previous, written: trust.written, hadProjects: trust.hadProjects, mode: trust.mode };
+        const settle = () => trust.stage === 'not_written' || unrenamed ? 'not_written' : restoreTrust(lease, trust.project, trust.stage === 'pending', pid ?? process.pid);
+        const outcome = stuck.length ? 'failed' : settle();
+        if (stuck.length) failed.push(...stuck);
+        else if (outcome === 'failed') failed.push(trust.file);
         else Object.assign(trust, { restored: true, stage: outcome });
     }
     writeAtomic(ledgerFile, JSON.stringify(ledger, null, 2)); // a crash mid-write must not leave a ledger the next recovery cannot read
@@ -72,8 +85,6 @@ export function recover(run: string, table: ProcRow[] | undefined, cwds: Map<num
     writeAtomic(join(run, 'restoration.json'), JSON.stringify({ restored: true, recovered: true, at: new Date().toISOString() }));
     return { restored: true, blockers: [], failed: [] };
 }
-
-function writeAtomic(file: string, text: string) { writeFileSync(`${file}.tmp`, text, { mode: 0o600 }); renameSync(`${file}.tmp`, file); }
 
 if (import.meta.main) {
     const argv = process.argv.slice(2), at = argv.indexOf('--run'), run = at >= 0 ? argv[at + 1] : undefined;

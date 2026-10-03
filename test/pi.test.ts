@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { processTable } from "../src/hub/child-process.ts";
 import { join } from "node:path";
 import { PiPeer } from "../src/adapters/pi.ts";
 import { newEnvelope, type EnvelopeOpts } from "../src/hub/envelope.ts";
@@ -69,9 +70,11 @@ test("Pi watchdog remains offline and accepted failure is escalated without rede
     await fetch(`${url}/event`, { method: "POST", headers, body: JSON.stringify({ type: "agent_end", failed: true, error: "tool mutation uncertain" }) });
     await fetch(`${url}/event`, { method: "POST", headers, body: JSON.stringify({ type: "agent_settled" }) });
     expect(failures).toEqual(["tool mutation uncertain"]);
-    await peer.deliver([newEnvelope("user", "watchdog", { to: ["pi"] })]); await Bun.sleep(80); expect(peer.state).toBe("offline");
+    await peer.deliver([newEnvelope("user", "watchdog", { to: ["pi"] })]);
+    for (let i = 0; i < 100 && peer.state !== "offline"; i++) await Bun.sleep(20); // the stop reads the process table: not instant
+    expect(peer.state).toBe("offline");
   } finally { await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
-});
+}, 30_000); // its stop reads the process table: slow on a loaded machine
 
 test("Pi resume refuses a session outside its managed directory or from another project", async () => {
   const stateDir = mkdtempSync(join(process.cwd(), ".pi-resume-test-"));
@@ -340,3 +343,24 @@ test("Pi stop tears down a TUI owner whose shutdown acknowledgement was lost, by
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+// issue #115: Pi runs in a process group of its own and is stopped as one, as Codex and ACP agents are; without the group,
+// a launcher ignoring SIGTERM is never signalled.
+test("Pi stops a launcher that ignores SIGTERM together with the Pi it waits for", async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-launcher-test-"));
+  const pidFile = join(stateDir, "pi.pid"), launcherFile = join(stateDir, "launcher.pid"), bin = join(stateDir, "pi");
+  writeFileSync(bin, `#!/bin/sh\necho $$ > ${launcherFile}\ntrap "" TERM\nexec 3<&0\nbun ${join(import.meta.dir, "fakes/pi-rpc.ts")} "$@" <&3 &\necho $! > ${pidFile}\nwhile :; do sleep 1; done\n`, { mode: 0o755 });
+  const peer = new PiPeer("pi", { cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx", cmd: [bin], relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [{ id: "dgx/coding" }] }, tools: [], executeTool: async () => "ok" });
+  try {
+    await peer.start();
+    const pi = Number(readFileSync(pidFile, "utf8")), launcher = Number(readFileSync(launcherFile, "utf8"));
+    await peer.stop();
+    expect(processTable()!.some((r) => r.pid === pi || r.pid === launcher)).toBe(false);
+  } finally {
+    for (const f of [pidFile, launcherFile]) {
+      const pid = existsSync(f) ? Number(readFileSync(f, "utf8")) : 0;
+      if (pid && processTable()?.some((r) => r.pid === pid && /pi-rpc|\.pi-launcher-test-/.test(r.command))) process.kill(pid, "SIGKILL");
+    }
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+}, 30_000);

@@ -1,10 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AcpPeer, type AcpOptions } from "../src/adapters/acp.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
+import { processTable } from "../src/hub/child-process.ts";
 
 const FAKE = ["bun", join(import.meta.dir, "fakes/acp-server.ts")];
 let peer: AcpPeer | undefined;
@@ -241,3 +242,24 @@ test("a prompt the agent rejects is retried, then reported undeliverable instead
   await until(() => events.includes("msg:kimi:echo: fine"));
   expect(events.filter((e) => e === "undeliverable")).toHaveLength(1);
 });
+
+// issue #115: an ACP agent CLI may be a launcher with a native child, as Codex's is (#113): the adapter spawns it in a
+// process group of its own and stops that group as one; without the group, a launcher ignoring SIGTERM is never signalled.
+test("the adapter stops a launcher that ignores SIGTERM together with the agent it waits for", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-acp-launcher-"));
+  const pidFile = join(dir, "agent.pid"), launcherFile = join(dir, "launcher.pid"), bin = join(dir, "kimi");
+  writeFileSync(bin, `#!/bin/sh\necho $$ > ${launcherFile}\ntrap "" TERM\nexec 3<&0\n${FAKE.join(" ")} <&3 &\necho $! > ${pidFile}\nwhile :; do sleep 1; done\n`, { mode: 0o755 });
+  const launched = new AcpPeer("kimi", { cmd: [bin], cwd: dir });
+  try {
+    await launched.start();
+    const agent = Number(readFileSync(pidFile, "utf8")), launcher = Number(readFileSync(launcherFile, "utf8"));
+    await launched.stop();
+    expect(processTable()!.some((r) => r.pid === agent || r.pid === launcher)).toBe(false);
+  } finally {
+    for (const f of [pidFile, launcherFile]) {
+      const pid = existsSync(f) ? Number(readFileSync(f, "utf8")) : 0;
+      if (pid && processTable()?.some((r) => r.pid === pid && /kimi|acp-server/.test(r.command))) process.kill(pid, "SIGKILL");
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 20_000);

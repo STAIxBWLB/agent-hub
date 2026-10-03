@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
-import { childEnv, stopOwnedProcess } from "../hub/child-process.ts";
+import { childEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 
 export interface PermissionOption {
   optionId: string;
@@ -85,8 +85,10 @@ export class AcpPeer extends BasePeer {
 
   async start(): Promise<void> {
     const [bin, ...args] = this.opts.cmd;
-    const proc = spawn(bin!, args, { cwd: this.opts.cwd, env: childEnv({ ...process.env, ...(this.opts.env ?? {}) }), stdio: ["pipe", "pipe", "pipe"] });
+    // Its own process group, stopped as a whole (#115, as Codex's in #113): an agent CLI may be a launcher with a native child.
+    const proc = spawn(bin!, args, { cwd: this.opts.cwd, env: childEnv({ ...process.env, ...(this.opts.env ?? {}) }), stdio: ["pipe", "pipe", "pipe"], detached: true });
     this.proc = proc;
+    trackGroup(proc);
     proc.on("error", (e) => this.down(`spawn failed: ${e.message}`));
     proc.on("exit", (code) => this.down(`exited with code ${code}`));
     proc.stdin.on("error", () => {}); // EPIPE from a child that died; `exit` / `error` already report it
@@ -112,7 +114,7 @@ export class AcpPeer extends BasePeer {
     try {
       this.sessionId = (await Promise.race([handshake(), timeout])).sessionId;
     } catch (e) {
-      await stopOwnedProcess(proc);
+      await stopOwnedProcess(proc, { group: true }).catch((stop: Error) => this.opts.log?.(`[${this.id}] ${stop.message}`));
       throw e;
     }
     this.setState("idle");
@@ -122,8 +124,8 @@ export class AcpPeer extends BasePeer {
     if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "ACP session stopped before settlement" });
     this.activeDeliveryId = undefined;
     const proc = this.proc;
-    if (!proc || proc.exitCode !== null) return;
-    await stopOwnedProcess(proc);
+    if (!proc) return;
+    await stopOwnedProcess(proc, { group: true }); // also when it exited: what it left in its group fails the stop
     if (this.proc === proc) this.proc = undefined;
   }
 

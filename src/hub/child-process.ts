@@ -102,18 +102,31 @@ export async function stopOwnedProcess(proc: ChildProcess, { termMs = 1_000, kil
     // ponytail: a leader that exited before the stop (its launcher killed from outside) is not swept, as its pid may be
     // reused once its group empties; its pipes are dropped so a survivor cannot keep the hub alive, and a group that
     // still has members fails the stop instead of reading as done. Record the leader's start time at spawn to sweep it.
-    if (!group || proc.pid === undefined) return;
-    dropPipes(proc);
+    if (proc.pid === undefined) return;
+    dropPipes(proc); // whatever it left cannot keep the hub alive through them
+    if (!group) return;
     if (emptied.has(proc)) return; // its group was seen gone since: the id may be someone else's now
     // A pid is not given out while a group with that id exists: a live process with the leader's pid means the group was
     // emptied and the id is someone else's now. Members without it are what the leader left (zombies are not listed).
-    const rows = await table();
-    const members = rows ? (rows.some((r) => r.pid === proc.pid) ? [] : rows.filter((r) => r.pgid === proc.pid)) : undefined;
-    if (members ? members.length : !groupGone(proc.pid)) throw new Error(`owned child ${proc.pid} exited before the stop and its process group still has members${members ? ` (${members.map((r) => r.pid).join(", ")})` : ""}: not signalled; stop them to restart it`);
-    return;
+    // Members still finishing their own exit get up to `killMs` before the stop fails.
+    for (const end = Date.now() + killMs; ; await Bun.sleep(100)) {
+      const rows = await table();
+      const reused = rows?.some((r) => r.pid === proc.pid);
+      const members = reused ? [] : rows?.filter((r) => r.pgid === proc.pid);
+      if (members ? !members.length : groupGone(proc.pid)) return;
+      if (Date.now() >= end) throw new Error(`owned child ${proc.pid} exited before the stop and its process group still has members${members ? ` (${members.map((r) => r.pid).join(", ")})` : ""}: not signalled; stop them to restart it`);
+    }
   }
   if (group) return stopGroup(proc, proc.pid, termMs, killMs, table);
+  try {
+    await stopAlone(proc, termMs, killMs);
+  } finally {
+    dropPipes(proc); // a process it started and left may still hold them: it must not keep the hub alive
+  }
+}
 
+/** SIGTERM, then SIGKILL, to the child alone, each confirmed by its exit. */
+async function stopAlone(proc: ChildProcess, termMs: number, killMs: number): Promise<void> {
   const waitForExit = (timeoutMs: number): Promise<boolean> =>
     new Promise((resolve) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -235,11 +248,16 @@ async function stopGroup(proc: ChildProcess, pid: number, termMs: number, killMs
     term(first);
     // The grace period, for the leader and for what it started: what they start meanwhile is recorded while its parent
     // still runs.
+    const leaderGone = new Promise<void>((resolve) => (exited() ? resolve() : proc.once("exit", () => resolve())));
     for (const end = Date.now() + termMs; Date.now() < end; ) {
-      await Bun.sleep(100);
+      // The leader's exit ends a wait at once (a stop is usually that quick); after it, the table is read every 100 ms.
+      await (exited() ? Bun.sleep(100) : Promise.race([leaderGone, Bun.sleep(100)]));
       const rows = await look();
       term(rows);
-      if (exited() && rows && !left(rows).length) break;
+      if (exited() && rows && !left(rows).length) {
+        if (!unproven(rows).length) return; // done: this read shows none of it
+        break;
+      }
     }
     // Freeze, enumerate, kill: a stopped process starts nothing, so a read after the freeze sees all of it.
     for (const end = Date.now() + killMs; ; ) {

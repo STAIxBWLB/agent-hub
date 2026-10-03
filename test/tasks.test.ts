@@ -1,10 +1,11 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
 import { Bus, type BusEvent } from "../src/hub/bus.ts";
+import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { HUB, newEnvelope, USER, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { assign, currentRouting, detectSignals, loadRouting, SPLIT_MIN } from "../src/hub/routing.ts";
@@ -1911,4 +1912,125 @@ test("the routing record counts the overlapped task's owner as available while i
   const routing = recorded.find((r) => r.where === "routing");
   expect(routing).toBeDefined();
   expect(routing!.trace.join("\n")).not.toContain("not available");
+});
+
+// issue #115: busy is taking the task in question only in the turn that task started, or in which it was claimed.
+test("a split prediction counts busy as taking a task only in the turn that task started or was claimed in", async () => {
+  class Taking extends BasePeer {
+    async deliver() { this.setState("busy"); }
+    async start() { this.setState("idle"); }
+    async stop() {}
+    finish() { this.setState("idle"); }
+    work() { this.setState("busy"); }
+  }
+  const rig = async (durable = false) => {
+    const dir = mkdtempSync(join(tmpdir(), "agenthub-tasks-"));
+    // The daemon's bus has a journal, which drains at the end of the publish, after persisting.
+    const bus = new Bus({ batchMs: 0, ...(durable ? { journal: new DeliveryJournal({ file: join(dir, "journal.db"), projectRoot: dir, projectId: "p", instanceId: "i" }) } : {}) });
+    const peers = Object.fromEntries(["claude", "codex", "kimi"].map((id) => [id, new Taking(id)]));
+    for (const p of Object.values(peers)) { bus.add(p); await p.start(); }
+    const recorded: { where: string; trace: string }[] = [];
+    const tasks = new Tasks({ board: new Board(join(dir, "hub.db")), bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: () => {}, tell: () => {}, turnFree: () => true,
+      splitProfile: (p) => `hub 0.12.6; ${p} 1.0.0; turn-free`, recordSplit: (_task, p, where) => recorded.push({ where, trace: p.trace.join("\n") }) });
+    const busy = async (peer: string) => { bus.publish(newEnvelope("claude", "a question first", { to: [peer] })); await Bun.sleep(20); };
+    const routingTrace = () => recorded.find((r) => r.where === "routing")?.trace ?? "";
+    return { bus, tasks, busy, routingTrace, peers, recorded, dir };
+  };
+  // The overlapped task's owner is busy with a question while that task waits in its queue: not taking it.
+  const queued = await rig();
+  await queued.busy("kimi");
+  await queued.tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/c.ts"] } });
+  expect(queued.bus.queued("kimi")).toBe(1);
+  const routed = await queued.tasks.propose(USER, { title: "routed part", class: "implement", refs: { paths: ["src/c.ts"] } });
+  expect(routed.owner).toBe("codex");
+  expect(queued.routingTrace()).toContain("kimi is not available");
+  // The routed peer is busy with a question when the record is taken (the task is sent after it): not available.
+  const candidate = await rig();
+  await candidate.busy("codex");
+  await candidate.tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/c.ts"] } });
+  expect(candidate.bus.queued("kimi")).toBe(0); // kimi is busy taking its part: that one is available
+  const other = await candidate.tasks.propose(USER, { title: "routed part", class: "implement", refs: { paths: ["src/c.ts"] } });
+  expect(other.owner).toBe("codex");
+  expect(candidate.routingTrace()).toContain("codex is not available");
+  // A task handed back to a peer that had it before is a new hand-over: until it is sent again, a busy peer is not taking it.
+  const back = await rig();
+  const part = await back.tasks.propose("claude", { title: "codex's part", class: "implement", owner: "codex", refs: { paths: ["src/c.ts"] } });
+  await back.tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/c.ts"] } });
+  await back.tasks.assignTo(part.id, "claude");
+  back.peers.codex!.finish();
+  await back.busy("codex"); // busy with a question, nothing queued
+  back.recorded.length = 0;
+  await back.tasks.assignTo(part.id, "codex");
+  expect(back.recorded.find((r) => r.where === "cohort")?.trace).toContain("codex is not available");
+  // The turn the task started has ended (the task is still not started) and the owner is busy again: another turn.
+  const ended = await rig();
+  await ended.tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/c.ts"] } });
+  ended.peers.kimi!.finish();
+  await ended.busy("kimi");
+  await ended.tasks.propose(USER, { title: "routed part", class: "implement", refs: { paths: ["src/c.ts"] } });
+  expect(ended.routingTrace()).toContain("kimi is not available");
+  // Still in the turn its task started, with a message queued behind it: still taking it.
+  const behind = await rig();
+  await behind.tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/c.ts"] } });
+  behind.bus.publish(newEnvelope("claude", "a status line", { to: ["kimi"] }));
+  expect(behind.bus.queued("kimi")).toBe(1);
+  // Paused and resumed within that turn: still the same turn.
+  behind.bus.pause("kimi");
+  behind.bus.resume("kimi");
+  await behind.tasks.propose(USER, { title: "routed part", class: "implement", refs: { paths: ["src/c.ts"] } });
+  expect(behind.routingTrace()).toContain("unknown");
+  expect(behind.routingTrace()).not.toContain("not available");
+  // Its delivery held (a recovery), the task starts no turn; busy later is a turn of the peer's own.
+  const held = await rig();
+  held.bus.setRecoveryHold(true);
+  await held.tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/c.ts"] } });
+  expect([held.bus.stateOf("kimi"), held.bus.queued("kimi")]).toEqual(["idle", 1]);
+  held.peers.kimi!.work();
+  await held.tasks.propose(USER, { title: "routed part", class: "implement", refs: { paths: ["src/c.ts"] } });
+  expect(held.routingTrace()).toContain("kimi is not available");
+  // With the daemon's journal, the task that starts the turn is taken as well.
+  const durable = await rig(true);
+  await durable.tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/c.ts"] } });
+  expect([durable.bus.stateOf("kimi"), durable.bus.queued("kimi")]).toEqual(["busy", 0]);
+  await durable.tasks.propose(USER, { title: "routed part", class: "implement", refs: { paths: ["src/c.ts"] } });
+  expect(durable.routingTrace()).toContain("unknown");
+  expect(durable.routingTrace()).not.toContain("not available");
+  // A claim in the turn the claimant is in, with a message queued behind that turn: it is taking what it claimed.
+  const claimed = await rig();
+  await claimed.tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/c.ts"] } });
+  await claimed.busy("codex");
+  claimed.bus.publish(newEnvelope("claude", "a status line", { to: ["codex"] }));
+  expect(claimed.bus.queued("codex")).toBe(1);
+  await claimed.tasks.propose("codex", { title: "codex's part", class: "implement", owner: "codex", refs: { paths: ["src/c.ts"] } });
+  const cohort = claimed.recorded.find((r) => r.where === "cohort")?.trace;
+  expect(cohort).toBeDefined();
+  expect(cohort).not.toContain("not available");
+  // Claimed while paused in its turn (paused peers routed too) and resumed: `route explain` still reads it as taken.
+  const paused = await rig();
+  mkdirSync(join(paused.dir, ".agenthub"), { recursive: true });
+  writeFileSync(join(paused.dir, ".agenthub", "routing.toml"), readFileSync(join(import.meta.dir, "..", "templates", "routing.toml"), "utf8").replace('budget_paused = "skip_peer"', 'budget_paused = "off"'));
+  await paused.tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/c.ts"] } });
+  await paused.busy("codex");
+  paused.bus.pause("codex");
+  const mine = await paused.tasks.propose("codex", { title: "codex's part", class: "implement", owner: "codex", refs: { paths: ["src/c.ts"] } });
+  paused.bus.resume("codex");
+  expect(mine.owner).toBe("codex");
+  const explained = paused.tasks.explain(mine.id).join("\n");
+  expect(explained).toContain("unknown");
+  expect(explained).not.toContain("not available");
+  // A peer that steers (Codex, Pi): its task is steered into the turn it is in, nothing is queued, and it is still not
+  // taking it: that turn is about something else.
+  class Steering extends Taking { async steer() {} }
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-tasks-"));
+  const bus = new Bus({ batchMs: 0 });
+  for (const p of [new Taking("claude"), new Taking("codex"), new Steering("kimi")]) { bus.add(p); await p.start(); }
+  const recorded: { where: string; trace: string }[] = [];
+  const tasks = new Tasks({ board: new Board(join(dir, "hub.db")), bus, routing: () => loadRouting(dir), cwd: dir, project: "agent-hub", notify: () => {}, tell: () => {}, turnFree: () => true,
+    splitProfile: (p) => `hub 0.12.6; ${p} 1.0.0; turn-free`, recordSplit: (_task, p, where) => recorded.push({ where, trace: p.trace.join("\n") }) });
+  bus.publish(newEnvelope("claude", "a question first", { to: ["kimi"] }));
+  await Bun.sleep(20);
+  await tasks.propose("claude", { title: "kimi's part", class: "implement", owner: "kimi", refs: { paths: ["src/c.ts"] } });
+  expect([bus.stateOf("kimi"), bus.queued("kimi")]).toEqual(["busy", 0]); // steered, not queued
+  await tasks.propose(USER, { title: "routed part", class: "implement", refs: { paths: ["src/c.ts"] } });
+  expect(recorded.find((r) => r.where === "routing")?.trace).toContain("kimi is not available");
 });

@@ -4,7 +4,7 @@ import { join, resolve, relative } from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
-import { stopOwnedProcess } from "../hub/child-process.ts";
+import { stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { realPath } from "../hub/project.ts";
 import type { ExecutionBudgetDecision, ExecutionUnit } from "../hub/execution-budget.ts";
 
@@ -266,7 +266,9 @@ export class PiPeer extends BasePeer {
     const command = this.opts.cmd ?? ["pi"];
     this._tuiLaunch = { cmd: command[0]!, args: [...command.slice(1), ...args], env };
     if (this.opts.mode === "tui") { return; }
-    this.proc = spawn(command[0]!, [...command.slice(1), ...args], { cwd: this.opts.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    // Its own process group, stopped as a whole (#115, as Codex's in #113).
+    this.proc = spawn(command[0]!, [...command.slice(1), ...args], { cwd: this.opts.cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
+    trackGroup(this.proc);
     this.proc.stdout.on("data", (chunk) => this.onOutput(String(chunk)));
     this.proc.stderr.on("data", (chunk) => this.opts.log?.(`[${this.id}] ${String(chunk).trimEnd()}`));
     this.proc.on("error", (error) => this.fail(error));
@@ -311,8 +313,10 @@ export class PiPeer extends BasePeer {
       this.resolveTuiExit?.(); this.resolveTuiExit = undefined;
     }
     const proc = this.proc;
-    if (proc && proc.exitCode === null) await stopOwnedProcess(proc);
-    this.proc = undefined;
+    // Also when it exited: what it left in its group fails the stop. The rest of the teardown runs either way; a process
+    // that could not be stopped stays recorded, so a later stop tries it again.
+    let failed: unknown;
+    if (proc) await stopOwnedProcess(proc, { group: true }).then(() => { if (this.proc === proc) this.proc = undefined; }, (error: unknown) => { failed = error; });
     for (const waiter of this.tuiWaiters) { clearTimeout(waiter.timer); waiter.resolve(undefined); }
     this.tuiWaiters = [];
     for (const pending of this.tuiCommands.values()) pending.reject(new Error("Pi owner stopped"));
@@ -320,6 +324,7 @@ export class PiPeer extends BasePeer {
     for (const pending of this.pending.values()) pending.reject(new Error("Pi owner stopped"));
     this.pending.clear();
     this.server?.stop(true); this.server = undefined; this.setState("offline");
+    if (failed) throw failed;
   }
 
   /**

@@ -205,7 +205,8 @@ test("native runner rejects a changed helper before importing it or invoking nat
         });
 
         expect(result.status).not.toBe(0);
-        expect(result.stderr).toContain("Orca workspace lookup helper changed after benchmark preparation");
+        // Elsewhere than macOS the runner refuses even earlier (#115), with nothing written or run either.
+        expect(result.stderr).toContain(process.platform === "darwin" ? "Orca workspace lookup helper changed after benchmark preparation" : "runs on macOS only");
         expect(existsSync(sentinel)).toBe(false);
         expect(existsSync(commandLog)).toBe(false);
     } finally {
@@ -213,7 +214,8 @@ test("native runner rejects a changed helper before importing it or invoking nat
     }
 });
 
-test("native missing-registration preflight leaves the prepared run and fixture retryable", () => {
+// The runner refuses anything but macOS before its preflight (#115).
+test.skipIf(process.platform !== "darwin")("native missing-registration preflight leaves the prepared run and fixture retryable", () => {
     const root = mkdtempSync(join(tmpdir(), "ahub-orca-preflight-"));
     try {
         const repo = join(root, "repo");

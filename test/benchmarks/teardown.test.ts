@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProcRow } from "../../src/hub/child-process.ts";
 import { processTable } from "../../src/hub/child-process.ts";
-import { actorOf, awaitTurnEnd, captureActors, daemonRoot, extend, restoreModes, same, restoreTrust, teardown, turnEnded, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
+import { actorOf, awaitTurnEnd, captureActors, commOf, daemonRoot, endReasonOf, extend, restoreModes, same, restoreTrust, teardown, turnEnded, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
 
 // issue #113: an arm's teardown proves what it stops by identity (pid and start time), never by a name in argv.
 const dirs: string[] = [];
@@ -205,6 +205,9 @@ test("restoration: modes come back parents first and failures are named; a trust
   expect(restoreTrust({ file, previous: undefined, hadProjects: false, mode: 0o600 }, fixture)).toBe("changed_concurrently");
   expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ projects: { [fixture]: { hasTrustDialogAccepted: false } } });
   expect(restoreTrust({ file: join(dir, "missing.json"), previous: undefined, hadProjects: false, mode: 0o600 }, fixture)).toBe("failed");
+  // The runner's own write never landed (it stopped between the lease and the rename): nothing to take back (#115).
+  writeFileSync(file, JSON.stringify({ projects: {} }));
+  expect(restoreTrust({ file, previous: undefined, hadProjects: true, mode: 0o600 }, fixture, true)).toBe("not_written");
 });
 
 test("recovery puts the withheld read modes back only when the runner, every recorded process and anything in the fixture are gone", async () => {
@@ -248,6 +251,143 @@ test("recovery puts the withheld read modes back only when the runner, every rec
   expect(recover(run, undefined, undefined, -1).restored).toBe(true); // done once: nothing left to do
 });
 
+test("recovery after a runner that died mid trust write removes its temp files and records the write as never landed", async () => {
+  const { recover } = await import("../../scripts/benchmarks/restore.ts");
+  const { restoreTemp, trustTemp } = await import("../../scripts/benchmarks/teardown.ts");
+  const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(run);
+  const fixture = join(run, "fixtures", "00-x");
+  mkdirSync(fixture, { recursive: true });
+  const trustFile = join(run, "claude.json");
+  writeFileSync(trustFile, JSON.stringify({ projects: {} })); // the rename never happened
+  const runner = { pid: 99_999_999, started: "Thu Jan  1 00:00:00 1970" };
+  writeFileSync(trustTemp(trustFile, runner.pid), JSON.stringify({ projects: { [fixture]: { hasTrustDialogAccepted: true } } }));
+  writeFileSync(restoreTemp(trustFile, runner.pid), "{}"); // and one from a restore it died in
+  writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner, protected: { paths: {}, restored: true }, siblings: {}, actors: {}, trust: { file: trustFile, project: fixture, previous: undefined, hadProjects: true, mode: 0o600, stage: "pending", restored: false } }));
+  expect(recover(run, processTable()!, new Map(), -1)).toEqual({ restored: true, blockers: [], failed: [] });
+  expect([existsSync(trustTemp(trustFile, runner.pid)), existsSync(restoreTemp(trustFile, runner.pid))]).toEqual([false, false]);
+  expect(JSON.parse(readFileSync(join(run, "restoration-ledger.json"), "utf8")).trust).toMatchObject({ restored: true, stage: "not_written" });
+});
+
+test("a write the runner knew never landed, its temp file left: the recovery removes the copy and touches no entry", async () => {
+  const { recover } = await import("../../scripts/benchmarks/restore.ts");
+  const { trustTemp } = await import("../../scripts/benchmarks/teardown.ts");
+  const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(run);
+  const fixture = join(run, "fixtures", "00-x");
+  mkdirSync(fixture, { recursive: true });
+  const trustFile = join(run, "claude.json");
+  const theirs = { projects: { [fixture]: { hasTrustDialogAccepted: true, theirs: 1 } } }; // set by someone else meanwhile
+  writeFileSync(trustFile, JSON.stringify(theirs));
+  const runner = { pid: 99_999_997, started: "Thu Jan  1 00:00:00 1970" };
+  writeFileSync(trustTemp(trustFile, runner.pid), "{}");
+  writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner, protected: { paths: {}, restored: true }, siblings: {}, actors: {}, trust: { file: trustFile, project: fixture, previous: undefined, hadProjects: true, mode: 0o600, stage: "not_written", restored: false } }));
+  expect(recover(run, processTable()!, new Map(), -1)).toEqual({ restored: true, blockers: [], failed: [] });
+  expect(existsSync(trustTemp(trustFile, runner.pid))).toBe(false);
+  expect(JSON.parse(readFileSync(trustFile, "utf8"))).toEqual(theirs);
+  expect(JSON.parse(readFileSync(join(run, "restoration-ledger.json"), "utf8")).trust).toMatchObject({ restored: true, stage: "not_written" });
+});
+
+test("the runner settles its trust lease by one table: a pending write touches no entry, contained or not", async () => {
+  const { settleTrust } = await import("../../scripts/benchmarks/teardown.ts");
+  const calls: string[] = [];
+  const settle = (stage: string, contained: boolean, removed = true, restored = "restored") =>
+    settleTrust(stage, contained, () => { calls.push("rm"); return removed; }, () => { calls.push("restore"); return restored; });
+  const table = [
+    [settle("pending", true), { outcome: "not_written", stage: "not_written", restored: true }],
+    [settle("pending", false), { outcome: "not_written", stage: "not_written", restored: true }],
+    [settle("pending", true, false), { outcome: "kept: the trust write's temp file could not be removed", stage: "not_written", restored: false }],
+    [settle("pending", false, false), { outcome: "kept: the trust write's temp file could not be removed", stage: "not_written", restored: false }],
+    [settle("written", false), { outcome: "kept: the cleanup is incomplete or unknown", stage: "written", restored: false }],
+    [settle("written", true), { outcome: "restored", stage: "restored", restored: true }],
+    [settle("written", true, true, "changed_concurrently"), { outcome: "changed_concurrently", stage: "changed_concurrently", restored: false }],
+    [settle("written", true, true, "failed"), { outcome: "failed", stage: "failed", restored: false }],
+  ] as const;
+  for (const [got, want] of table) expect(got).toEqual(want);
+  // A pending write never reaches the restore; only written leases do, and only contained ones.
+  expect(calls).toEqual(["rm", "rm", "rm", "rm", "restore", "restore", "restore"]);
+});
+
+test("a dead runner's pending write: only the exact entry it would have written is taken back", async () => {
+  const { recover } = await import("../../scripts/benchmarks/restore.ts");
+  const { trustTemp } = await import("../../scripts/benchmarks/teardown.ts");
+  const setup = (entry: object | undefined, temp: boolean) => {
+    const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+    dirs.push(run);
+    const fixture = join(run, "fixtures", "00-x");
+    mkdirSync(fixture, { recursive: true });
+    const trustFile = join(run, "claude.json");
+    writeFileSync(trustFile, JSON.stringify({ projects: entry ? { [fixture]: entry } : {} }));
+    const runner = { pid: 99_999_995, started: "Thu Jan  1 00:00:00 1970" };
+    if (temp) writeFileSync(trustTemp(trustFile, runner.pid), "{}");
+    const written = { hasTrustDialogAccepted: true };
+    writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner, protected: { paths: {}, restored: true }, siblings: {}, actors: {}, trust: { file: trustFile, project: fixture, previous: undefined, written, hadProjects: true, mode: 0o600, stage: "pending", restored: false } }));
+    expect(recover(run, processTable()!, new Map(), -1).restored).toBe(true);
+    return { entry: JSON.parse(readFileSync(trustFile, "utf8")).projects[fixture], stage: JSON.parse(readFileSync(join(run, "restoration-ledger.json"), "utf8")).trust.stage };
+  };
+  // It died after the rename: the entry is exactly its write, and goes.
+  expect(setup({ hasTrustDialogAccepted: true }, false)).toEqual({ entry: undefined, stage: "restored" });
+  // The user trusted the fixture meanwhile (more than the runner writes): theirs.
+  expect(setup({ hasTrustDialogAccepted: true, theirs: 1 }, false)).toEqual({ entry: { hasTrustDialogAccepted: true, theirs: 1 }, stage: "not_written" });
+  // Its temp file still there: the rename never happened, so even an identical entry is someone else's.
+  expect(setup({ hasTrustDialogAccepted: true }, true)).toEqual({ entry: { hasTrustDialogAccepted: true }, stage: "not_written" });
+});
+
+test("the recovery's own restore names its temp file by the runner's pid, where a later recovery looks", async () => {
+  const { recover } = await import("../../scripts/benchmarks/restore.ts");
+  const { restoreTemp } = await import("../../scripts/benchmarks/teardown.ts");
+  const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(run);
+  const fixture = join(run, "fixtures", "00-x");
+  mkdirSync(fixture, { recursive: true });
+  const trustFile = join(run, "claude.json");
+  writeFileSync(trustFile, JSON.stringify({ projects: { [fixture]: { hasTrustDialogAccepted: true } } }));
+  const runner = { pid: 99_999_994, started: "Thu Jan  1 00:00:00 1970" };
+  // A name under the recovery's own pid cannot be written: a restore that used it would fail.
+  mkdirSync(join(restoreTemp(trustFile, process.pid), "x"), { recursive: true });
+  try {
+    writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner, protected: { paths: {}, restored: true }, siblings: {}, actors: {}, trust: { file: trustFile, project: fixture, previous: undefined, written: { hasTrustDialogAccepted: true }, hadProjects: true, mode: 0o600, stage: "written", restored: false } }));
+    // As in production, the recovery is this process: neither its pid nor `self` may name the temp file.
+    expect(recover(run, processTable()!, new Map(), process.pid)).toEqual({ restored: true, blockers: [], failed: [] });
+    expect(JSON.parse(readFileSync(trustFile, "utf8"))).toEqual({ projects: {} });
+  } finally { rmSync(restoreTemp(trustFile, process.pid), { recursive: true, force: true }); }
+});
+
+test("an entry the user changed meanwhile (changed_concurrently) is theirs: the recovery leaves it", async () => {
+  const { recover } = await import("../../scripts/benchmarks/restore.ts");
+  const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(run);
+  const fixture = join(run, "fixtures", "00-x");
+  mkdirSync(fixture, { recursive: true });
+  const trustFile = join(run, "claude.json");
+  const theirs = { projects: { [fixture]: { hasTrustDialogAccepted: true, theirs: 1 } } };
+  writeFileSync(trustFile, JSON.stringify(theirs));
+  const runner = { pid: 99_999_996, started: "Thu Jan  1 00:00:00 1970" };
+  writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner, protected: { paths: {}, restored: true }, siblings: {}, actors: {}, trust: { file: trustFile, project: fixture, previous: undefined, hadProjects: true, mode: 0o600, stage: "changed_concurrently", restored: false } }));
+  expect(recover(run, processTable()!, new Map(), -1)).toEqual({ restored: true, blockers: [], failed: [] });
+  expect(JSON.parse(readFileSync(trustFile, "utf8"))).toEqual(theirs);
+});
+
+test("a temp file the recovery cannot remove keeps the trust entry open until a later recovery removes it", async () => {
+  const { recover } = await import("../../scripts/benchmarks/restore.ts");
+  const { restoreTemp } = await import("../../scripts/benchmarks/teardown.ts");
+  const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(run);
+  const fixture = join(run, "fixtures", "00-x");
+  mkdirSync(fixture, { recursive: true });
+  const trustFile = join(run, "claude.json");
+  writeFileSync(trustFile, JSON.stringify({ projects: { [fixture]: { hasTrustDialogAccepted: true } } }));
+  const runner = { pid: 99_999_998, started: "Thu Jan  1 00:00:00 1970" };
+  const stuck = restoreTemp(trustFile, runner.pid);
+  mkdirSync(join(stuck, "x"), { recursive: true }); // a removal that fails: a non-empty directory
+  writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner, protected: { paths: {}, restored: true }, siblings: {}, actors: {}, trust: { file: trustFile, project: fixture, previous: undefined, hadProjects: true, mode: 0o600, stage: "written", restored: false } }));
+  expect(recover(run, processTable()!, new Map(), -1)).toEqual({ restored: false, blockers: [], failed: [stuck] });
+  expect(JSON.parse(readFileSync(join(run, "restoration-ledger.json"), "utf8")).trust.restored).toBe(false);
+  rmSync(stuck, { recursive: true });
+  expect(recover(run, processTable()!, new Map(), -1)).toEqual({ restored: true, blockers: [], failed: [] });
+  expect(JSON.parse(readFileSync(trustFile, "utf8"))).toEqual({ projects: {} });
+});
+
 test("a first read that fails keeps every recorded actor: the fallback still acts on them, and the cleanup is unknown", async () => {
   // A Ctrl-C can kill the first `ps`: what ran below the actors then is unknown, the actors themselves are not.
   let reads = 0;
@@ -271,10 +411,11 @@ test("a background job in a recorded group is the arm's while that group is know
   const below = (r: ProcRow) => ({ role: "below" as const, pid: r.pid, started: r.started, pgid: r.pgid, via: "below codex-app-server 105" });
   const recorded = [...actors(everything), below(row(107, 106, 107, "sh -c tool")), below(keeper)];
   const { w, deps, shutdown } = world([runner, daemon, launcher, native, claude, keeper, job, escaped, visitor], { cwds: new Map([[108, DIR], [110, DIR], [400, `${DIR}/src`]]), shutdown: (x) => { x.rows = x.rows.filter((r) => ![100, 105, 106, 120].includes(r.pid)); return []; } });
-  const c = await teardown(recorded, DIR, shutdown, deps);
+  // The executable's name for 110 (as `ps -o ucomm` gives it); 400's could not be read: then none is recorded, never a guess.
+  const c = await teardown(recorded, DIR, shutdown, { ...deps, comm: (pid, started) => (pid === 110 && started === T ? "python3" : undefined) });
   expect(c.owned.find((a) => a.pid === 108)?.via).toBe("group of below 107");
   expect(w.signals).toEqual([[109, "SIGTERM"], [108, "SIGTERM"]]); // by pid: their leader is gone
-  expect(c.unresolved).toEqual([{ pid: 110, started: T, program: "python", cwd: DIR }, { pid: 400, started: T, program: "-zsh", cwd: `${DIR}/src` }]);
+  expect(c.unresolved).toEqual([{ pid: 110, started: T, program: "python3", cwd: DIR }, { pid: 400, started: T, cwd: `${DIR}/src` }]);
   expect(w.rows.map((r) => r.pid)).toEqual([50, 110, 400]);
   expect(c.outcome).toBe("incomplete_or_unknown");
 });
@@ -352,4 +493,24 @@ test("a process that leads a group of its own after it was recorded has that gro
   const owned = new Map<string, Actor>([["107@" + T, { role: "below", pid: 107, started: T, pgid: 105, via: "below codex-app-server 105" }]]);
   extend(owned, [runner, row(107, 105, 107, "node tool.js"), row(108, 1, 107, "sleep 600")]);
   expect([...owned.values()].map((a) => [a.pid, a.pgid])).toEqual([[107, 107], [108, 107]]);
+});
+
+test("an unresolved process is recorded by the name of its executable, never by a title it set itself, and only while it is the same process", async () => {
+  // A process that puts arguments into its own title, as Node's process.title or perl's $0 do.
+  const titled = spawn("perl", ["-e", '$0 = "node /Users/Jane Doe/secret/server.js --token abc"; print "ready\\n"; $| = 1; sleep 30'], { stdio: ["ignore", "pipe", "ignore"] });
+  try {
+    await new Promise((resolve) => titled.stdout!.once("data", resolve));
+    const row = processTable()!.find((r) => r.pid === titled.pid)!;
+    if (process.platform === "darwin") expect(commOf(titled.pid!, row.started)).toBe("perl"); // the runner's platform; Linux lets perl set its name
+    expect(commOf(titled.pid!, "Thu Jan  1 00:00:00 1970")).toBeUndefined(); // the pid, started another time: someone else
+  } finally {
+    titled.kill("SIGKILL");
+  }
+});
+
+test("a record's end reason: quota and budget ends stay themselves; a flag makes any other end but an interruption an infrastructure error", () => {
+  expect(["completed", "delivery-unsettled", "wall-timeout", "interrupted", "needs-review", "provider-quota", "budget-paused", "infrastructure-error"].map((d) => endReasonOf(d, [])))
+    .toEqual(["completed", "delivery-unsettled", "timeout", "interrupted", "interrupted", "provider-quota", "budget-paused", "infrastructure-error"]);
+  expect(["completed", "wall-timeout", "needs-review", "interrupted", "provider-quota"].map((d) => endReasonOf(d, ["tree-changed-after-active-time"])))
+    .toEqual(["infrastructure-error", "infrastructure-error", "infrastructure-error", "interrupted", "provider-quota"]);
 });
