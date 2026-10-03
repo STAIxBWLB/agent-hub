@@ -7,7 +7,7 @@ import { realPath } from '../../src/hub/project.ts';
 import { sessionSettings, statusLineSettings } from '../../src/cli/launch.ts';
 import { readEvents } from '../../src/hub/events.ts';
 import { processTable } from '../../src/hub/child-process.ts';
-import { awaitTurnEnd, captureActors, cwdOf, endReasonOf, restoreModes, writeAtomic, restoreTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
+import { awaitTurnEnd, captureActors, cwdOf, endReasonOf, restoreModes, trustTemp, writeAtomic, restoreTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
 process.umask(0o077);
 const argv = process.argv.slice(2), runArg = argv[argv.indexOf('--run') + 1], inputArg = argv[argv.indexOf('--private-inputs') + 1], upstreamArg = argv[argv.indexOf('--upstream-root') + 1], probeArg = argv[argv.indexOf('--probe-target') + 1];
 if (!runArg || !inputArg || !upstreamArg || !probeArg)
@@ -58,11 +58,10 @@ function screenText(value: any): string {
 }
 
 function shellQuote(s: string) { return `'${s.replaceAll("'", "'\\''")}'`; }
-async function ensureOrcaWorktree(dir: string) { let listing = await orca(['repo', 'list']); let record = findRecord(listing, (x: any) => typeof x.path === 'string' && resolve(x.path) === resolve(dir) && typeof x.id === 'string'); if (!record) {
-    listing = await orca(['repo', 'add', '--path', dir]);
-    record = findRecord(listing, (x: any) => typeof x.path === 'string' && resolve(x.path) === resolve(dir) && typeof x.id === 'string');
-} if (!record)
-    throw new Error('Orca did not return an exact registered repo identity'); const repoId = record.repoId ?? record.id; const worktrees = await orca(['worktree', 'list', '--repo', `id:${repoId}`]); const wt = findRecord(worktrees, (x: any) => typeof x.path === 'string' && resolve(x.path) === resolve(dir) && typeof x.id === 'string'); if (!wt)
+// Lookup only (#117): the runner never adds a fixture to Orca. A fixture the operator has not registered explicitly stops
+// the arm before any agent starts.
+async function ensureOrcaWorktree(dir: string) { const listing = await orca(['repo', 'list']); const record = findRecord(listing, (x: any) => typeof x.path === 'string' && resolve(x.path) === resolve(dir) && typeof x.id === 'string'); if (!record)
+    throw new Error(`fixture ${dir} is not registered in Orca: register it explicitly before the run; the runner never adds one`); const repoId = record.repoId ?? record.id; const worktrees = await orca(['worktree', 'list', '--repo', `id:${repoId}`]); const wt = findRecord(worktrees, (x: any) => typeof x.path === 'string' && resolve(x.path) === resolve(dir) && typeof x.id === 'string'); if (!wt)
     throw new Error('Orca has no worktree at the exact fixture path'); return { repoId, worktreeId: wt.id }; }
 async function createOrcaTerminal(worktreeId: string, title: string, command: string) { const before = await orca(['terminal', 'list', '--worktree', `id:${worktreeId}`]); const prior = new Set<any[]>(); const collect = (v: any) => { if (v && typeof v === 'object') {
     if (typeof v.handle === 'string' && v.worktreeId === worktreeId)
@@ -454,9 +453,9 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             trustState.projects[dir] = trustLease.written;
             trustLedger = { file: trustFile, project: dir, previous: trustLease.previous, written: trustLease.written, hadProjects: trustLease.hadProjects, mode: trustLease.mode, stage: 'pending', restored: false };
             persistLedger();
-            const trustTemp = trustFile + '.ahub-benchmark-' + process.pid;
-            writeFileSync(trustTemp, JSON.stringify(trustState, null, 2), { mode: 0o600 });
-            renameSync(trustTemp, trustFile);
+            const trustTempFile = trustTemp(trustFile, process.pid);
+            writeFileSync(trustTempFile, JSON.stringify(trustState, null, 2), { mode: 0o600 });
+            renameSync(trustTempFile, trustFile);
             trustLedger.stage = 'written';
             persistLedger();
             const claudeArgs = ['--restricted', '--strict-mcp-config', '--mcp-config', candidateMcp, '--model', manifest.models.claude, '--effort', manifest.effort.claude, '--session-id', claudeId, '--permission-mode', 'acceptEdits', '--settings', join(dir, '.claude/settings.json'), '--setting-sources', 'project', '--append-system-prompt-file', join(dir, 'AGENTS.md'), '--tools', 'Read,Edit,Write,Glob,Grep,Bash', '--allowedTools', ...permissions.allow];
@@ -709,7 +708,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         }
         let trustRestored = true;
         // A trust write that may not have landed leaves its temp file (a copy of the user's ~/.claude.json): never kept.
-        if (trustLease && trustLedger?.stage === 'pending') { try { rmSync(`${trustLease.file}.ahub-benchmark-${process.pid}`, { force: true }); } catch { /* reported by the recovery's own check */ } }
+        if (trustLease && trustLedger?.stage === 'pending') { try { rmSync(trustTemp(trustLease.file, process.pid), { force: true }); } catch (e) { note(`the trust write's temp file could not be removed: ${String(e).slice(0, 200)}`); } }
         if (trustLease && !contained) {
             // Claude may still run and rewrite its project entry: the recovery takes it back once nothing does.
             restoration.trust = 'kept: the cleanup is incomplete or unknown';
@@ -721,7 +720,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             restoration.trust = restoreTrust(trustLease, dir, pending);
             trustRestored = restoration.trust === 'restored' || restoration.trust === 'not_written';
             trustLedger.restored = trustRestored;
-            trustLedger.stage = restoration.trust;
+            trustLedger.stage = pending && restoration.trust === 'failed' ? 'pending' : restoration.trust; // a recovery must still know the write may not have landed
             if (!trustRestored) note(restoration.trust === 'changed_concurrently' ? 'Claude trust entry changed concurrently; preserved current state' : 'Claude trust restore failed');
         }
         persistLedger();

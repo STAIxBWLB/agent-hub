@@ -19,7 +19,10 @@ while running; do
   if [ "$SECONDS" -ge "$end" ]; then
     echo "check: pid $pid still running after ${limit}s; where it is:" >&2
     if command -v sample >/dev/null 2>&1; then
-      sample "$pid" 3 2>/dev/null | sed -n '/Call graph:/,/Total number in stack/p' | head -120 >&2
+      report=$(mktemp) # sample writes a report file of its own otherwise (in /tmp, whatever TMPDIR says)
+      sample "$pid" 3 -file "$report" >/dev/null 2>&1
+      sed -n '/Call graph:/,/Total number in stack/p' "$report" | head -120 >&2
+      rm -f "$report"
     else
       ps -L -o pid,lwp,stat,wchan:32,etime,args -p "$pid" >&2 2>/dev/null || ps -o pid,stat,etime,args -p "$pid" >&2
     fi

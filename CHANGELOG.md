@@ -7,12 +7,13 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Agents the hub spawns through ACP (Kimi) and Pi run in their own process group and are stopped as one, as the Codex app-server is since 0.12.5. A stop with or without a group drops the child's pipes, so a process it left cannot keep the hub alive. Once a launcher has exited, its group is followed until it is gone, and members still finishing their exit get a bound before the stop fails. A Codex start that fails reports its own error. The group stop finishes as soon as the leader has exited and a read shows nothing left (#115).
 - Split predictions (shadow only): a peer busy with something else while the task in question waits in its queue, or a routed peer busy when the record is taken, is not available. Busy counts as taking a task only once that task was sent and nothing waits in the queue (#109, #115).
 - Claude Code's version is read from the transcript again only when the transcript changed (#115).
-- Tests: `scripts/check.sh` runs `bun test` with a 20 s timeout and under `scripts/hang-watch.sh`, which samples and stops a run past its bound. In Bun 1.3.14 a test timeout that fires while `Bun.spawnSync` runs starts the next test inside spawnSync's event loop, where another spawnSync spins for good; that was the macOS CI hang of 0.12.5, now reproduced and identified. The permission test no longer depends on runner speed (#115).
+- Tests: `scripts/check.sh` runs `bun test` with a 20 s timeout and under `scripts/hang-watch.sh`, which samples and stops a run past its bound. In Bun 1.3.14 a test timeout that fires while `Bun.spawnSync` runs can start the next test inside spawnSync's event loop, where another spawnSync then spins for good: the stacks of two local hangs under load show it, and the macOS CI hang of 0.12.5 matches them (minimal reproductions did not hang). The permission test no longer depends on runner speed (#115).
 - CooperBench runner and ledger (#115):
-  - A trust write that never landed is `not_written`, not `changed_concurrently`.
+  - The runner never adds a fixture to Orca: an arm whose fixture the operator has not registered explicitly stops before any agent starts (#117).
+  - A trust write that never landed is `not_written`, not `changed_concurrently`, also after a failed restore and in the recovery; its temp file is removed in the runner and the recovery.
   - The ledger shows normal shutdown errors, and reports records kept in `recovery/` as withheld attempts, not missing.
   - Records carry the platform, and the runner refuses non-macOS.
-  - An unresolved process's program name is taken whole from a path with spaces.
+  - An unresolved process's program name is `ps`'s name for its executable, a path with spaces kept whole; no file is looked at.
   - The end reason is one function, and shared helpers are not duplicated.
 - CooperBench manifests v2 and the #106 ablation pin hub 0.12.6.
 

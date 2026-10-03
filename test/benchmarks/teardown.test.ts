@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProcRow } from "../../src/hub/child-process.ts";
@@ -251,6 +251,23 @@ test("recovery puts the withheld read modes back only when the runner, every rec
   expect(recover(run, undefined, undefined, -1).restored).toBe(true); // done once: nothing left to do
 });
 
+test("recovery after a runner that died mid trust write removes its temp file and records the write as never landed", async () => {
+  const { recover } = await import("../../scripts/benchmarks/restore.ts");
+  const { trustTemp } = await import("../../scripts/benchmarks/teardown.ts");
+  const run = mkdtempSync(join(tmpdir(), "ahub-teardown-"));
+  dirs.push(run);
+  const fixture = join(run, "fixtures", "00-x");
+  mkdirSync(fixture, { recursive: true });
+  const trustFile = join(run, "claude.json");
+  writeFileSync(trustFile, JSON.stringify({ projects: {} })); // the rename never happened
+  const runner = { pid: 99_999_999, started: "Thu Jan  1 00:00:00 1970" };
+  writeFileSync(trustTemp(trustFile, runner.pid), JSON.stringify({ projects: { [fixture]: { hasTrustDialogAccepted: true } } }));
+  writeFileSync(join(run, "restoration-ledger.json"), JSON.stringify({ runner, protected: { paths: {}, restored: true }, siblings: {}, actors: {}, trust: { file: trustFile, project: fixture, previous: undefined, hadProjects: true, mode: 0o600, stage: "pending", restored: false } }));
+  expect(recover(run, processTable()!, new Map(), -1)).toEqual({ restored: true, blockers: [], failed: [] });
+  expect(existsSync(trustTemp(trustFile, runner.pid))).toBe(false);
+  expect(JSON.parse(readFileSync(join(run, "restoration-ledger.json"), "utf8")).trust).toMatchObject({ restored: true, stage: "not_written" });
+});
+
 test("a first read that fails keeps every recorded actor: the fallback still acts on them, and the cleanup is unknown", async () => {
   // A Ctrl-C can kill the first `ps`: what ran below the actors then is unknown, the actors themselves are not.
   let reads = 0;
@@ -357,13 +374,11 @@ test("a process that leads a group of its own after it was recorded has that gro
   expect([...owned.values()].map((a) => [a.pid, a.pgid])).toEqual([[107, 107], [108, 107]]);
 });
 
-test("an unresolved process is recorded by its program's name: a path with spaces is one name, never a folder's fragment", () => {
-  const files = new Set(["/Users/Jane Doe/bin/agent", "/usr/bin/python3"]);
-  const isFile = (p: string) => files.has(p);
-  expect(programOf("/Users/Jane Doe/bin/agent --serve /tmp/x", isFile)).toBe("agent");
-  expect(programOf("/usr/bin/python3 /Users/Jane Doe/script.py", isFile)).toBe("python3");
-  expect(programOf("sleep 600", isFile)).toBe("sleep");
-  expect(programOf("-zsh", isFile)).toBe("-zsh");
+test("an unresolved process is recorded by its program's name: ps's own name for it, a path with spaces kept whole", () => {
+  expect(programOf("/Users/Jane Doe/bin/agent --serve /tmp/x", "/Users/Jane Doe/bin/agent")).toBe("agent");
+  expect(programOf("/usr/bin/python3 /Users/Jane Doe/script.py", "/usr/bin/python3")).toBe("python3");
+  expect(programOf("sleep 600", undefined)).toBe("sleep"); // gone before it was asked: its argv's first word
+  expect(programOf("-zsh", "")).toBe("-zsh");
 });
 
 test("a record's end reason: quota and budget ends stay themselves; a flag makes any other end but an interruption an infrastructure error", () => {

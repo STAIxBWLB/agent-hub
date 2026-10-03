@@ -1034,7 +1034,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!st.isFile()) return claudeVersions.get(path);
       // Asked several times per assignment: the last MiB is read again only once the transcript changed.
       const stamp = `${st.size}:${st.mtimeMs}`;
-      if (claudeStamps.get(path) === stamp && claudeVersions.has(path)) return claudeVersions.get(path);
+      if (claudeStamps.get(path) === stamp) return claudeVersions.get(path); // no version in it is an answer too
       claudeStamps.set(path, stamp);
       const buf = Buffer.alloc(Math.min(st.size, 1024 * 1024));
       readSync(fd, buf, 0, buf.length, st.size - buf.length);

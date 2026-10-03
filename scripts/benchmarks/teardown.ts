@@ -1,4 +1,4 @@
-import { chmodSync, lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { descendantsOf, processTable, type ProcRow } from '../../src/hub/child-process.ts';
 
 /**
@@ -34,8 +34,21 @@ export interface Deps {
     now: () => number;
     /** The runner itself: it and its children (a `bun ... kill` naming the fixture) are not the arm's. */
     self: number;
+    /** A process's executable as `ps` names it (`comm`), or undefined: the program an unresolved process is recorded by. */
+    comm?: (pid: number) => string | undefined;
 }
-export const realDeps: Deps = { table: processTable, cwds: processCwds, signal: (pid, signal) => process.kill(pid, signal), sleep: (ms) => Bun.sleep(ms), now: () => Date.now(), self: process.pid };
+export const realDeps: Deps = { table: processTable, cwds: processCwds, signal: (pid, signal) => process.kill(pid, signal), sleep: (ms) => Bun.sleep(ms), now: () => Date.now(), self: process.pid, comm: commOf };
+
+/** `ps`'s name for a process's executable (the full path on macOS), bounded like every `ps` the runner runs. */
+export function commOf(pid: number): string | undefined {
+    try {
+        const r = Bun.spawnSync(['ps', '-o', 'comm=', '-p', String(pid)], { stdout: 'pipe', stderr: 'pipe', env: { ...process.env, LC_ALL: 'C' }, detached: true, timeout: 5_000 });
+        return r.exitCode === 0 ? r.stdout.toString().trim() || undefined : undefined;
+    } catch { return undefined; }
+}
+
+/** The temp file a trust write goes through (`~/.claude.json.ahub-benchmark-<pid>`): a full copy of the user's state. */
+export const trustTemp = (file: string, pid: number) => `${file}.ahub-benchmark-${pid}`;
 
 export const same = (rows: ProcRow[], a: { pid: number; started: string }) => rows.find((r) => r.pid === a.pid && r.started === a.started);
 
@@ -110,16 +123,11 @@ export function endReasonOf(detail: string, flags: string[]): string {
 }
 
 /**
- * The program an argv runs, by name only: the basename of the longest leading part of it that names an existing file (a
- * path with spaces is one part, never a fragment of a folder name), else of its first word (issue #115).
+ * The program a process runs, by name only (issue #115): the basename of the executable `ps` names (`comm`; a path with
+ * spaces stays one name), else of its argv's first word. No file is looked at: a stat can hang on a dead network mount.
  */
-export function programOf(command: string, isFile = (path: string) => { try { return statSync(path).isFile(); } catch { return false; } }): string {
-    const words = command.split(' ').slice(0, 16); // a bounded number of stats: a teardown must not wait on a long argv
-    for (let n = words.length; n > 1; n--) {
-        const path = words.slice(0, n).join(' ');
-        if (path.startsWith('/') && isFile(path)) return path.split('/').pop()!;
-    }
-    return words[0]!.split('/').pop()!;
+export function programOf(command: string, comm?: string): string {
+    return (comm || command.split(' ')[0]!).split('/').pop()!;
 }
 
 /** The live process `pid` as an actor of `role`, with how it was found. */
@@ -262,7 +270,7 @@ export async function teardown(actors: Actor[], dir: string, shutdown: () => Pro
     const named = new Set(last ? namingFixture(last, dir).map((r) => r.pid) : []);
     const unresolved = (last ?? []).filter((r) => (named.has(r.pid) || inside(cwds?.get(r.pid), dir)) && !owned.has(key(r)) && !mine.has(r.pid))
         // Not the arm's: its arguments are someone else's, so only the program is kept.
-        .map((r) => ({ pid: r.pid, started: r.started, program: programOf(r.command), ...(inside(cwds?.get(r.pid), dir) ? { cwd: cwds!.get(r.pid)! } : {}) }));
+        .map((r) => ({ pid: r.pid, started: r.started, program: programOf(r.command, deps.comm?.(r.pid)), ...(inside(cwds?.get(r.pid), dir) ? { cwd: cwds!.get(r.pid)! } : {}) }));
     if (unresolved.length) reasons.push(`running with the fixture in its argv or as its working directory, not proved to be this arm's (left alone): ${unresolved.map((u) => u.pid).join(', ')}`);
     return {
         outcome: reasons.length ? 'incomplete_or_unknown' : fallback.length ? 'clean_with_fallback' : 'clean',
@@ -347,9 +355,11 @@ export function restoreTrust(lease: TrustLease, dir: string, pending = false): '
         }
         if (!lease.hadProjects && !Object.keys(fresh.projects).length) delete fresh.projects;
         const temp = `${lease.file}.ahub-benchmark-restore-${process.pid}`;
-        writeFileSync(temp, JSON.stringify(fresh, null, 2), { mode: lease.mode });
-        chmodSync(temp, lease.mode);
-        renameSync(temp, lease.file);
+        try {
+            writeFileSync(temp, JSON.stringify(fresh, null, 2), { mode: lease.mode });
+            chmodSync(temp, lease.mode);
+            renameSync(temp, lease.file);
+        } catch (error) { rmSync(temp, { force: true }); throw error; } // a copy of the user's state is never left behind
         return 'restored';
     } catch {
         return 'failed';

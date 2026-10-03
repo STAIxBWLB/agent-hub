@@ -655,6 +655,8 @@ export class Tasks {
         if (shadow) this.d.recordSplit?.(next.id, shadow, "routing");
       } catch { /* shadow only: never between the board write and the delivery */ }
     }
+    // A claim is its own hand-over: the claimant took the task in the turn it is in, so it is taking it, not busy elsewhere.
+    if (opts.claim && a.owner === by) this.sent.add(handOver(next, by));
     const hits = this.overlapHits(next);
     this.formCohort(next, hits);
     if (hits.length) {
