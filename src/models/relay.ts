@@ -282,7 +282,9 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
     const context = Math.min(8192, options.mlx?.contextWindow ?? 8192);
     const maxOutput = options.mlx?.maxTokens ?? 2048;
     const output = body.max_tokens ?? maxOutput;
-    return Number.isInteger(output) && output > 0 && output <= maxOutput && estimateInputTokens(body.messages, body.tools) + output <= context;
+    const input = estimateInputTokens(body.messages, body.tools);
+    const inputLimit = options.mlx?.maxInputTokens ?? (options.mlx?.provider === "ollama" ? 6000 : 16_000);
+    return Number.isInteger(output) && output > 0 && output <= maxOutput && input <= inputLimit && input + output <= context;
   };
 
   const upstream = async (request: RelayRequest, backend: ModelBackend, signal: AbortSignal): Promise<{ response: Response; release: () => void; onModel?: (model: string) => void }> => {
