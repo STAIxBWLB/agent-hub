@@ -104,3 +104,17 @@ test("local failed edits and exit-only shell failures carry route metadata but n
     for (const request of f.model.requests) for (const message of request.body.messages) expect(message).not.toHaveProperty("is_error");
   }
 });
+
+test("REDO feedback remains in completed history even when the current turn has no execution steps left", async () => {
+  const f = await fixture({ type: "advisor" }, body => ({ content: body.model === "coding" ? "REDO: verify before finishing" : "draft" }), { maxSteps: 1 });
+  await f.run(); expect(f.answers[0]).toContain("review requested changes; step limit reached");
+  await f.run();
+  expect(JSON.stringify(f.model.requests.at(-1)!.body.messages)).toContain("verify before finishing");
+  expect(f.model.requests.filter(request => request.body.model === "coding")).toHaveLength(1);
+});
+
+test("a route configuration callback failure falls back without failing the completed answer", async () => {
+  const f = await fixture({ type: "stage" }, () => ({ content: "fixed answer" }), { hubRoutes: () => { throw new Error("policy unavailable"); } });
+  await f.run(); expect(f.answers).toEqual(["fixed answer"]);
+  expect(f.model.requests.map(request => request.body.model)).toEqual(["fixed"]);
+});
