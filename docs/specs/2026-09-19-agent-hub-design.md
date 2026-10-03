@@ -317,6 +317,16 @@ pii = "local_only"                      # hard: on-prem models only
 budget_paused = "skip_peer"
 ```
 
+L2 in-process routing (2026-10-04 source port): `[hub_routes."hub/<id>"]` selects
+stage, plan_execute, advisor or escalation policies inside the hub. The host retains
+transport, budget admission and complete-turn history ownership; algorithms make decisions
+from normalized chat input and bounded session state. See
+[the source-port contract](2026-10-04-switchyard-source-port-design.md) for upstream
+provenance, intentional fail-open escalation and REDO history differences. These tables
+are never copied to sidecar configuration. Existing `sy/` routes and fixed-model fallback
+remain supported. The Pi `hub/auto` alias uses the same stage signals with session-scoped
+hold and context admission; peer progress observations suggest but never execute reassignment.
+
 L2, Switchyard sidecar (amended in M3, verified against `switchyard-server` 0.2.0 built with
 `cargo install --locked switchyard-server`; there is no prebuilt macOS binary).
 `routing.toml` carries `[targets.*]` and `[routes."sy/..."]` in Switchyard's own table

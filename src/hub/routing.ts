@@ -3,6 +3,8 @@ import { join, resolve } from "node:path";
 import type { Task, TaskClass } from "./board.ts";
 import type { PeerId, PeerState } from "./envelope.ts";
 
+import { parseHubRoutes, type HubRoute } from "../models/route/config.ts";
+
 type Table = Record<string, unknown>;
 
 export interface ClassPolicy {
@@ -23,6 +25,7 @@ export interface Routing {
   local: { route?: string; fixed_model: string };
   targets: Record<string, Table & { id: string }>;
   routes: Record<string, Table & { type: string }>;
+  hub_routes?: Record<string, HubRoute>;
   classes: Partial<Record<TaskClass, ClassPolicy>>;
   signals: { pii_patterns: string[]; long_context_tokens: number };
   constraints: { pii: "local_only" | "off"; long_context: "skip_local" | "off"; budget_paused: "skip_peer" | "off" };
@@ -55,6 +58,7 @@ export function loadRouting(cwd: string): Routing {
     local: raw.local,
     targets: raw.targets ?? {},
     routes: raw.routes ?? {},
+    hub_routes: parseHubRoutes(raw.hub_routes),
     classes,
     signals,
     constraints: { pii: "local_only", long_context: "skip_local", budget_paused: "skip_peer", ...raw.constraints },

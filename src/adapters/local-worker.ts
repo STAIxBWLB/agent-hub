@@ -1,3 +1,6 @@
+import { HubRouteRuntime, type RouteEvent, type AdvisorEvent } from "../models/route/runtime.ts";
+import type { HubRoute } from "../models/route/config.ts";
+import type { ToolObservation } from "../models/route/signals.ts";
 import { randomUUID } from "node:crypto";
 import { renderDigest, replyAudience, replyParent, STANDING_INSTRUCTION, USER, type Envelope, type EnvelopeOpts, type PeerId } from "../hub/envelope.ts";
 import { TASK_TOOL_NAMES, TASK_TOOLS } from "../hub/hub-tools.ts";
@@ -19,6 +22,10 @@ export interface LocalOptions {
   route?: string;
   /** Model id sent straight to OmniRoute when the sidecar is absent, unhealthy or fails a call. */
   fixedModel: string;
+  hubRoutes?: () => Record<string, HubRoute>;
+  onRoute?: (event: RouteEvent) => void;
+  onAdvisor?: (event: AdvisorEvent) => void;
+  onTool?: (observation: ToolObservation, task?: string) => void;
   tools: { deny: string[]; permit: ToolContext["permit"]; bashNetwork?: SandboxNetwork; readAllow?: string[] };
   capture?: Capture;
   /** Runs a hub task tool (hub_task_*, hub_review, hub_remember) as this peer. Absent = the tools are not offered. */
@@ -62,6 +69,9 @@ export class LocalPeer extends BasePeer {
   readonly hubNative = true;
   private readonly history: ChatMessage[] = [];
   private readonly sessionId = `agent-hub-local-${randomUUID()}`;
+  private readonly routes: HubRouteRuntime;
+  private routeEnvs: Envelope[] = [];
+  private routePii = false;
   private turn = 0; // generation guard, as in acp.ts: a turn aborted by the watchdog must not touch the next one
   private abort: AbortController | undefined;
   private budgetTimer?: ReturnType<typeof setTimeout>;
@@ -76,6 +86,24 @@ export class LocalPeer extends BasePeer {
     private readonly opts: LocalOptions,
   ) {
     super(id, opts.watchdogMs);
+    this.routes = new HubRouteRuntime({
+      execute: async (model, messages, judge, signal, maxTokens) => {
+        if (signal.aborted) throw new Error("turn cancelled before model request");
+        const envs = this.routeEnvs, pii = this.routePii, generation = this.turn;
+        await this.requireBudget(envs, "model_calls");
+        if (generation !== this.turn) throw new Error("route belongs to an ended turn");
+        if (signal.aborted) throw new Error("turn cancelled before model request");
+        const tools = judge ? undefined : [...TOOL_SCHEMAS, ...(this.opts.taskTool ? TASK_TOOLS.map(asFunction) : [])];
+        const result = await this.opts.omni.chat({ model, messages, ...(tools ? { tools } : {}), ...(judge ? { max_tokens: maxTokens ?? 2048 } : {}) }, { signal, ...(pii ? { onCampusOnly: true } : {}) });
+        this.recordUsage(result, model);
+        if (generation !== this.turn) throw new Error("route belongs to an ended turn");
+        this.lastServedBy = `hub ${model} (provider ${result.provider ?? "?"})`;
+        return result;
+      },
+      onCampus: () => this.opts.omni.onCampus(),
+      onRoute: event => this.opts.onRoute?.(event),
+      onAdvisor: event => this.opts.onAdvisor?.(event),
+    });
     this.sandboxProfile = profile(opts.cwd, opts.tools.bashNetwork ?? false, opts.tools.readAllow, opts.tools.deny);
   }
 
@@ -177,10 +205,14 @@ export class LocalPeer extends BasePeer {
     const capture = policy?.pii ? undefined : this.opts.capture;
     // Positive confirmation, and for the path this turn will really take: a sidecar generated against the off-campus URL
     // keeps sending there even after the client has found the campus gateway again.
-    const viaOffCampus = !!this.opts.sidecar?.upstream && this.opts.omni.isAccessHost(this.opts.sidecar.upstream);
+    const viaOffCampus = !(policy?.route ?? this.opts.route)?.startsWith("hub/") && !!this.opts.sidecar?.upstream && this.opts.omni.isAccessHost(this.opts.sidecar.upstream);
     if (policy?.pii && (viaOffCampus || !(await this.opts.omni.onCampus()))) {
       return "Refused: this is a PII task and the only reachable gateway is off campus (Cloudflare Access). Connect the VPN and assign it again.";
     }
+    this.routeEnvs = envs;
+    this.routePii = !!policy?.pii;
+    const routeId = policy?.route ?? this.opts.route;
+    const scope = policy?.pii ? `${this.sessionId}:pii:${turn}` : this.sessionId;
     const ctx = this.toolContext(envs, turnSignal, !!policy?.pii, reply);
     let usedTools = false;
     for (let step = 0; step < maxSteps; step++) {
@@ -191,6 +223,13 @@ export class LocalPeer extends BasePeer {
       msgs.push(res.message);
       progress.last = res.message.content?.trim() || progress.last;
       if (!res.message.tool_calls?.length) {
+        const routeConfig = routeId?.startsWith("hub/") ? this.opts.hubRoutes?.()[routeId] : undefined;
+        if (routeId && routeConfig) {
+          const feedback = await this.routes.review(routeId, routeConfig, [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...msgs], scope, !!policy?.pii, turnSignal);
+          if (turn !== this.turn) return "";
+          if (feedback && step + 1 < maxSteps) { msgs.push({ role: "user", content: feedback }); continue; }
+          if (feedback) progress.last = `(review requested changes; step limit reached) ${progress.last}`;
+        }
         if (usedTools) capture?.summarize(progress.last);
         return progress.last;
       }
@@ -209,6 +248,9 @@ export class LocalPeer extends BasePeer {
         usedTools = true;
         if (SIDE_EFFECTS.has(call.function.name) && !output.startsWith("error:")) progress.sideEffects++;
         msgs.push({ role: "tool", tool_call_id: call.id, content: output });
+        if (!policy?.pii) {
+          try { this.opts.onTool?.({ name, ...(typeof safeParse(call.function.arguments).command === "string" ? { command: safeParse(call.function.arguments).command as string } : {}), resultText: output, isError: output.startsWith("error:"), source: "local" }, policy?.task); } catch { /* optional research observations */ }
+        }
         capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
       }
     }
@@ -278,15 +320,22 @@ export class LocalPeer extends BasePeer {
   }
 
   /** L2 when the sidecar is up, otherwise (or when a call through it fails) the fixed model on L3. */
-  private async call(turnMsgs: ChatMessage[], policy: { route?: string; fixedModel?: string } | undefined, envs: Envelope[]): Promise<ChatResult> {
+  private async call(turnMsgs: ChatMessage[], policy: { route?: string; fixedModel?: string; pii?: boolean } | undefined, envs: Envelope[]): Promise<ChatResult> {
     const { omni, sidecar } = this.opts;
     // A task turn asks for its class's route; a route needs the sidecar, which exists only when the worker was started with one.
-    const route = sidecar ? (policy?.route ?? this.opts.route) : undefined;
+    const route = policy?.route ?? this.opts.route;
     const fixedModel = policy?.fixedModel ?? this.opts.fixedModel;
     const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? TASK_TOOLS.map(asFunction) : [])];
     const signal = this.abort!.signal;
     const messages: ChatMessage[] = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
-    const via = route ? await sidecar?.endpoint() : undefined;
+    if (route?.startsWith("hub/")) {
+      const config = this.opts.hubRoutes?.()[route];
+      if (config) {
+        try { return await this.routes.call(route, config, messages, policy?.pii ? `${this.sessionId}:pii:${this.turn}` : this.sessionId, !!policy?.pii, signal); }
+        catch (error) { if (signal.aborted || error instanceof ExecutionBudgetStop) throw error; this.opts.log?.(`hub route ${route} unavailable; using fixed model`); }
+      }
+    }
+    const via = route && !route.startsWith("hub/") && !policy?.pii ? await sidecar?.endpoint() : undefined;
     if (via) {
       await this.requireBudget(envs, "model_calls");
       try {
@@ -300,7 +349,7 @@ export class LocalPeer extends BasePeer {
       }
     }
     await this.requireBudget(envs, "model_calls");
-    const res = await omni.chat({ model: fixedModel, messages, tools }, { signal });
+    const res = await omni.chat({ model: fixedModel, messages, tools }, { signal, ...(policy?.pii ? { onCampusOnly: true } : {}) });
     this.lastServedBy = `omniroute ${fixedModel} (provider ${res.provider ?? "?"})`;
     this.recordUsage(res, fixedModel);
     return res;

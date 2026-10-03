@@ -874,3 +874,25 @@ headroom for templates/tool metadata and choose a larger dedicated recipe
 only after measuring memory. This path does not change local-worker PII
 routing or the DGX backend. Rollback requires explicitly restoring the old
 config with `provider: "legacy"`; Ollama errors never launch Python.
+
+### In-process model routes
+
+`routing.toml` supports `[hub_routes."hub/<id>"]`, separate from sidecar `[routes]`.
+Set `[local] route = "hub/stage"` or a task class's `route` to enable a hub route.
+The shipped examples use OmniRoute `fast` and `coding`; `fixed_model` remains the fallback.
+`--model` pins the worker and bypasses both routing engines. Sidecar `sy/` routes remain optional.
+
+Route types: `stage` scores recent tools and holds capable recovery for two calls;
+`plan_execute` plans on capable until the first mutation and then stays efficient;
+`advisor` holds no-tool answers for APPROVE/REDO review; `escalation` starts efficient
+and latches capable after two same-category judgements with new evidence.
+Optional judges have an eight-second deadline and five-minute failure backoff.
+REDO feedback is kept in the completed local turn history and counts toward `max_steps`.
+PII calls require a positively confirmed campus gateway immediately before transport;
+PII turns never enter shared history, memory capture, or progress observation.
+The `route`, `advisor`, `progress` and `stuck` events contain identifiers and aggregates only.
+
+Pi exposes `hub/auto` for stage routing when available. Fixed `dgx/coding`, `dgx/fast`
+and `mlx/fast` aliases still pin the backend. Automatic MLX selection admits the complete
+input, tool schemas and requested output within the configured context window.
+Progress judgements suggest reassignment; they never change task ownership.

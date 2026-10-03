@@ -1710,7 +1710,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const routing = currentRouting(opts.cwd, log);
       // `--model` pins a model on OmniRoute and skips L2; `--route` picks another Switchyard route.
       const route = args.model ? undefined : (args.route ?? routing.local.route);
-      if (route && !routing.routes[route]) return { ok: false, ...(existing && existing.state !== "offline" ? { already: true } : {}), error: `routing.toml has no route "${route}"` };
+      if (route && !(route.startsWith("hub/") ? routing.hub_routes?.[route] : routing.routes[route])) return { ok: false, ...(existing && existing.state !== "offline" ? { already: true } : {}), error: `routing.toml has no route "${route}"` };
       const fixedModel = args.model ?? routing.local.fixed_model;
       // A manually paused recovery roster must be reconstructible while its gateway is unavailable.
       // It stays held; holdPeer validates the restored choice before an operator can resume it.
@@ -1725,7 +1725,7 @@ export async function startDaemon(opts: DaemonOptions) {
         await sidecar.stop();
         sidecar = undefined;
       }
-      if (route && opts.switchyardPort) {
+      if (route && !route.startsWith("hub/") && opts.switchyardPort) {
         sidecarRouting = routingKey;
         sidecar ??= new Sidecar({ routing, omni, stateDir: opts.stateDir, port: opts.switchyardPort, log, ...(opts.switchyardBin ? { bin: opts.switchyardBin } : {}) });
       }
@@ -1746,7 +1746,11 @@ export async function startDaemon(opts: DaemonOptions) {
         omni,
         onUsage: record => event({ type: "usage", peer: "local", source: "omniroute", id: record.id, ...record.usage, requestedModel: record.requestedModel, ...(record.servedModel ? { servedModel: record.servedModel } : {}), ...(record.provider ? { provider: record.provider } : {}), measuredAt: record.at }),
         admitBudget: async (envs, unit) => tasks.admitExecutionEnvelopes(envs, "local", unit),
-        ...(sidecar && route ? { sidecar, route } : {}),
+        ...(route ? { route } : {}),
+        ...(sidecar && route && !route.startsWith("hub/") ? { sidecar } : {}),
+        hubRoutes: () => currentRouting(opts.cwd, log).hub_routes ?? {},
+        onRoute: record => event({ type: "route", peer: "local", ...record }),
+        onAdvisor: record => event({ type: "advisor", peer: "local", ...record }),
         fixedModel: args.model ?? routing.local.fixed_model,
         tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, permit },
         ...(capture ? { capture } : {}),
@@ -1782,7 +1786,7 @@ export async function startDaemon(opts: DaemonOptions) {
 
   async function validateLocalChoice(route: string | undefined, fixedModel: string): Promise<void> {
     const routing = currentRouting(opts.cwd, log);
-    if (route && !routing.routes[route]) throw new Error(`routing.toml has no route "${route}"`);
+    if (route && !(route.startsWith("hub/") ? routing.hub_routes?.[route] : routing.routes[route])) throw new Error(`routing.toml has no route "${route}"`);
     const models = await omni.models();
     const required = new Set([fixedModel]);
     const visit = (value: unknown): void => {
@@ -1790,7 +1794,11 @@ export async function startDaemon(opts: DaemonOptions) {
       else if (Array.isArray(value)) value.forEach(visit);
       else if (value && typeof value === "object") Object.values(value).forEach(visit);
     };
-    if (route) visit(routing.routes[route]);
+    if (route?.startsWith("hub/")) {
+      const policy = routing.hub_routes![route]!;
+      required.add(policy.efficient ?? "fast"); required.add(policy.capable ?? "coding");
+      if (policy.judge) required.add(policy.judge);
+    } else if (route) visit(routing.routes[route]);
     for (const model of required) await omni.checkModel(model, models);
   }
 
