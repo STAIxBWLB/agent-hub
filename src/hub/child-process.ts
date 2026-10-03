@@ -247,11 +247,16 @@ async function stopGroup(proc: ChildProcess, pid: number, termMs: number, killMs
     term(first);
     // The grace period, for the leader and for what it started: what they start meanwhile is recorded while its parent
     // still runs.
+    const leaderGone = new Promise<void>((resolve) => (exited() ? resolve() : proc.once("exit", () => resolve())));
     for (const end = Date.now() + termMs; Date.now() < end; ) {
-      await Bun.sleep(100);
+      // The leader's exit ends a wait at once (a stop is usually that quick); after it, the table is read every 100 ms.
+      await (exited() ? Bun.sleep(100) : Promise.race([leaderGone, Bun.sleep(100)]));
       const rows = await look();
       term(rows);
-      if (exited() && rows && !left(rows).length) break;
+      if (exited() && rows && !left(rows).length) {
+        if (!unproven(rows).length) return; // done: this read shows none of it
+        break;
+      }
     }
     // Freeze, enumerate, kill: a stopped process starts nothing, so a read after the freeze sees all of it.
     for (const end = Date.now() + killMs; ; ) {

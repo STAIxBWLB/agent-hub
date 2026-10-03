@@ -174,7 +174,7 @@ test("a descendant that leads a group of its own gets its own SIGTERM and the gr
   await stopOwnedProcess(proc, { termMs: 1000, group: true });
   expect(existsSync(marker)).toBe(true); // it ended on its own, not by SIGKILL
   expect(alive(child)).toBe(false);
-});
+}, 15_000); // spawns and reads the process table: slow on a loaded machine
 
 test("a recorded process whose pid shows a different start time later is someone else's: never signalled", async () => {
   // The first read shows pid R below the leader; later reads show R with another start time: the pid was reused.
@@ -189,7 +189,7 @@ test("a recorded process whose pid shows a different start time later is someone
   };
   await stopOwnedProcess(leader, { termMs: 300, killMs: 500, group: true, table });
   expect(alive(reused.pid!)).toBe(true);
-});
+}, 15_000); // spawns and reads the process table: slow on a loaded machine
 
 test("a leader that exited before the stop leaves its group unsignalled, and members still in it fail the stop", async () => {
   // The launcher was killed from outside; the native it started is still in its group.
@@ -218,7 +218,7 @@ test("a leader that exited before the stop leaves its group unsignalled, and mem
   await Bun.sleep(50);
   const later = () => [me, { pid: 99_999_999, ppid: 1, pgid: tracked.pid!, started: me.started, command: "someone's job" }];
   await stopOwnedProcess(tracked, { group: true, table: later });
-});
+}, 15_000); // spawns and reads the process table: slow on a loaded machine
 
 test("a stop without a group drops the child's pipes: a process it left holding them cannot keep the hub alive", async () => {
   // The child leaves a sleep that inherits its stdout and stderr, then is stopped alone.

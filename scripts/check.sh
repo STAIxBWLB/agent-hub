@@ -34,10 +34,12 @@ trap cleanup_check EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-bun test &
+# 20 s per test, not Bun's 5 s: in Bun 1.3.14 a test timeout that fires while Bun.spawnSync runs starts the next test
+# inside spawnSync's own event loop, and a spawnSync there spins at full CPU for good (#115, seen under load on macOS
+# CI and locally). A run that hangs anyway is sampled and stopped long before the CI job limit; a normal run takes about
+# two minutes.
+bun test --timeout 20000 &
 test_pid=$!
-# A run that hangs with its event loop blocked (no test timeout ends that) is sampled and stopped long before the CI
-# job limit; a normal run takes about two minutes (#115).
 scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-600}" &
 watch_pid=$!
 wait "$test_pid" || tests=$?

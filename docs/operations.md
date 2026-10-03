@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.5 and control protocol 13. Live verification
+This guide describes ahub 0.12.6 and control protocol 13. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Install and start
@@ -502,9 +502,11 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   the peer that failed, never the next owner), and a peer whose version is
   unknown has no profile. The user's and
   plugins' hooks are not part of it. It is unknown unless the units are equal
-  and known, both peers are available (the other owner idle, or busy taking the
-  overlapping task while it is not started; the task's own peer idle or busy
-  taking it) with no other open work (an overlapping task its owner
+  and known, both peers are available (idle, or busy taking the task in
+  question: that task was sent to it and nothing waits in its queue; for the
+  other owner, while the overlapping task is not started; a routing or cohort
+  record is taken before the task is sent, so a busy routed peer is not available
+  then) with no other open work (an overlapping task its owner
   has started counts), and each has five measured tasks with no more than 30%
   failures and comparable work times. The work stage of a task ends at its first
   `hub_task_done`, and the task itself is never one of its own observations.
@@ -642,21 +644,21 @@ Rows without a live process are stale registrations; forget them with
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3) or 13 (0.12.4) and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3) or 13 (0.12.4 and 0.12.5) and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.5 ahub upgrade --to 0.12.5 --dry-run
-bunx --package @staix/agent-hub@0.12.5 ahub upgrade --to 0.12.5 --yes
+bunx --package @staix/agent-hub@0.12.6 ahub upgrade --to 0.12.6 --dry-run
+bunx --package @staix/agent-hub@0.12.6 ahub upgrade --to 0.12.6 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 (protocol 13) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 and 0.12.5 (protocol 13) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
