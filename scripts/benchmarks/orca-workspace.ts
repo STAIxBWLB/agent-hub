@@ -33,6 +33,12 @@ function findUniqueRecord(
     return matches.values().next().value;
 }
 
+function repoIdentity(record: Record<string, unknown>): string {
+    return typeof record.repoId === "string" && record.repoId.length > 0
+        ? record.repoId
+        : String(record.id);
+}
+
 /** Look up an exact user-registered Orca repository and worktree. This boundary is read-only. */
 export async function lookupOrcaWorktree(dir: string, readOrca: OrcaRead): Promise<OrcaWorkspaceIdentity> {
     const canonicalDir = resolve(dir);
@@ -43,7 +49,7 @@ export async function lookupOrcaWorktree(dir: string, readOrca: OrcaRead): Promi
             && resolve(record.path) === canonicalDir
             && typeof record.id === "string"
             && record.id.length > 0,
-        record => String(record.repoId ?? record.id),
+        repoIdentity,
         "repository",
     );
     if (!repository) {
@@ -55,9 +61,7 @@ export async function lookupOrcaWorktree(dir: string, readOrca: OrcaRead): Promi
         );
     }
 
-    const repoId = typeof repository.repoId === "string" && repository.repoId.length > 0
-        ? repository.repoId
-        : String(repository.id);
+    const repoId = repoIdentity(repository);
     const worktrees = await readOrca(["worktree", "list", "--repo", `id:${repoId}`]);
     const worktree = findUniqueRecord(
         worktrees,

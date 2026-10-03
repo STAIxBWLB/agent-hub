@@ -7,7 +7,6 @@ import { realPath } from '../../src/hub/project.ts';
 import { sessionSettings, statusLineSettings } from '../../src/cli/launch.ts';
 import { readEvents } from '../../src/hub/events.ts';
 import { processTable } from '../../src/hub/child-process.ts';
-import { lookupOrcaWorktree } from './orca-workspace.ts';
 import { awaitTurnEnd, captureActors, cwdOf, restoreModes, restoreTrust, teardown, transcriptRows, turnEnded, type Actor } from './teardown.ts';
 process.umask(0o077);
 const argv = process.argv.slice(2), runArg = argv[argv.indexOf('--run') + 1], inputArg = argv[argv.indexOf('--private-inputs') + 1], upstreamArg = argv[argv.indexOf('--upstream-root') + 1], probeArg = argv[argv.indexOf('--probe-target') + 1];
@@ -23,11 +22,12 @@ const m = JSON.parse(readFileSync(join(out, 'manifest.json'), 'utf8')), prepared
 if ((statSync(out).mode & 0o777) !== 0o700)
     throw new Error('run directory must have mode 0700');
 const sourceHash = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
-const orcaWorkspaceSourceSha256 = 'a1f814bd3b51844d171b3ebc362a9fbc3bf0efba3ba88e31b7303d33a420f985'; // pinned by native_runner_sha256 in prepared.json
+const orcaWorkspaceSourceSha256 = 'd836b89265269acb71ff37b770b10352387e4c668d5156fe9f17d136ae180321'; // pinned by native_runner_sha256 in prepared.json
 if (sourceHash(join(import.meta.dir, 'orca-workspace.ts')) !== orcaWorkspaceSourceSha256)
     throw new Error('Orca workspace lookup helper changed after benchmark preparation');
 if (prepared.runner_sha256 !== sourceHash(join(import.meta.dir, 'runner.py')) || prepared.native_runner_sha256 !== sourceHash(join(import.meta.dir, 'native.ts')) || prepared.teardown_sha256 !== sourceHash(join(import.meta.dir, 'teardown.ts')) || prepared.process_table_sha256 !== sourceHash(join(import.meta.dir, '../../src/hub/child-process.ts')) || prepared.evaluator_sha256 !== sourceHash(join(import.meta.dir, 'evaluate.py')) || resolve(prepared.upstream_root ?? '') !== upstreamRoot)
     throw new Error('benchmark runner changed after preparation');
+const { lookupOrcaWorktree } = await import('./orca-workspace.ts');
 class NativeCommandError extends Error { constructor(message: string, readonly code?: string) { super(message); } }
 const log = (event: string, data: any = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), event, ...data }));
 let stopRequested = false;
