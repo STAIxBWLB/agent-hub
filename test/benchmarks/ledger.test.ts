@@ -447,7 +447,7 @@ test("completed v3 records without taskStates classify by their end reason, with
     expect(joint.done_s).toBeUndefined(); // no board tasks: the task measures are absent, not zero
     expect(joint.native_usage).toMatchObject({ pi: 4200, qwen: 9800, units: V3_UNITS });
     expect(joint.request_linkage).toEqual({ requests: 2, completed: 1, identified: 1, cancelledUnidentified: 1, mismatches: 0, providerMissing: 0 });
-    expect(joint.model_identity).toEqual({ verified: true, failure_reasons: null, requests_journaled: 2 });
+    expect(joint.model_identity).toEqual({ verified: true, why: null, requests_journaled: 2 });
     expect(joint.validity).toEqual({ valid: true, why: null });
     expect(joint.teardown).toMatchObject({ cleanup: "clean", verified: true, tree_changed_after_active_time: false });
     const soloPi = out.rows.find((r: { arm: string }) => r.arm === "solo-pi");
@@ -528,6 +528,57 @@ test("a record of an unknown protocol is refused before any output is written", 
     expect(r.status).not.toBe(0);
     expect(r.stderr).toContain("unsupported record protocol");
     expect(existsSync(join(f.root, "ledger.json"))).toBe(false);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test("a stale cached model verdict and linkage summary are recomputed from the request journal; a missing journal is unknown (review #151)", () => {
+  const f = fixture();
+  try {
+    // The cached summary claims verified with zero requests; the journal shows a cancelled-AFTER-identification
+    // request with a confirmed mismatch — evidence whatever its outcome, so the verdict is failed.
+    f.run("00-joint-pi-qwen", v3record(f, "joint-pi-qwen", {
+      modelIdentity: {
+        requested: "flashnext/qwen3.8-flash-next", expectedServedModel: "qwen3.8-flash-next", expectedProvider: "prov", generationVerified: true,
+        requests: [
+          { id: "r1", outcome: "completed", identified: true, requestedModel: "flashnext/qwen3.8-flash-next", actualModel: "qwen3.8-flash-next", provider: "prov" },
+          { id: "r2", outcome: "cancelled", identified: true, requestedModel: "flashnext/qwen3.8-flash-next", actualModel: "qwen3.8-flash-next", provider: "prov", mismatch: true },
+        ],
+      },
+      requestLinkage: { requests: 0, completed: 0, identified: 0, cancelledUnidentified: 0, mismatches: 0, providerMissing: 0 }, // stale cache: lies
+    }));
+    // A record without its journal: explicit unknown, never the trusted cached flag.
+    f.run("00-solo-pi", v3record(f, "solo-pi", { index: 1, modelIdentity: { requested: "flashnext/qwen3.8-flash-next", generationVerified: true } }));
+    // Setup failures with recorded setup time stay out of the setup median (valid completed attempts only).
+    f.run("00-solo-qwen", v3record(f, "solo-qwen", { index: 2, setupMs: 60_000, elapsedMs: undefined, startedAt: undefined, end_reason: "infrastructure-error", end_reason_detail: "infrastructure-error", usage: { pi: 0, qwen: null, units: V3_UNITS } }));
+    const out = f.ledger();
+    const joint = out.rows.find((r: { arm: string }) => r.arm === "joint-pi-qwen");
+    expect(joint.model_identity).toEqual({ verified: false, why: "generation served model mismatch flagged", requests_journaled: 2 });
+    expect(joint.request_linkage).toEqual({ requests: 2, completed: 1, identified: 1, cancelledUnidentified: 0, mismatches: 1, providerMissing: 0 });
+    expect(out.summary["joint-pi-qwen"]).toMatchObject({ model_identity_verified: 0 });
+    expect(out.summary["joint-pi-qwen"].request_linkage).toMatchObject({ requests: 2, mismatches: 1 });
+    const soloPi = out.rows.find((r: { arm: string }) => r.arm === "solo-pi");
+    expect(soloPi.model_identity).toEqual({ verified: null, why: "the record carries no request journal", requests_journaled: null });
+    expect(soloPi.request_linkage).toBeNull();
+    expect(soloPi.completed).toBe(true); // an unknown model verdict is not the runner's end classification
+    expect(out.summary["solo-pi"]).toMatchObject({ model_identity_verified: 0, valid_completed: 1 });
+    expect(out.summary["solo-pi"].request_linkage).toEqual({ attempts: 0, requests: 0, completed: 0, identified: 0, cancelledUnidentified: 0, mismatches: 0, providerMissing: 0 });
+    // The failed setup recorded 60 s; only the (absent here) valid completed attempts would feed the median.
+    expect(out.summary["solo-qwen"]).toMatchObject({ attempts: 1, valid_completed: 0, setup_s_median: null, not_completed: ["infrastructure-error"] });
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test("the setup median pools only valid completed attempts", () => {
+  const f = fixture();
+  try {
+    f.run("00-solo-pi", v3record(f, "solo-pi", { setupMs: 5000 }));
+    f.run("01-solo-pi", v3record(f, "solo-pi", { index: 1, setupMs: 65_000, end_reason: "timeout", end_reason_detail: "wall-timeout", elapsedMs: 300_000 }));
+    const out = f.ledger();
+    // The timed-out attempt's 65 s setup is not a measurement of a good attempt's setup.
+    expect(out.summary["solo-pi"]).toMatchObject({ attempts: 2, completed: 1, valid_completed: 1, setup_s_median: 5, elapsed_s_median: 120 });
   } finally {
     rmSync(f.root, { recursive: true, force: true });
   }

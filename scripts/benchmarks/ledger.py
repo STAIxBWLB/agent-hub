@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from runner import ARMS_V3, TURN_FREE, active_window, end_story, hook_rows, isolation_failure, required_actors, teardown_failure, transcript, treatment_failure  # noqa: E402  the grader's gates: one definition
+from runner import ARMS_V3, TURN_FREE, active_window, end_story, hook_rows, isolation_failure, required_actors, teardown_failure, transcript, treatment_failure, v3_linkage, v3_request_gate  # noqa: E402  the grader's gates: one definition
 
 V3_PROTOCOL = "native-pq-v3"  # the headless Pi/Qwen driver's records (#140); the Claude/Codex records are native-cc-v1
 
@@ -110,11 +110,15 @@ UNITS = {
                     "counter of the whole attempt (the setup probes included), qwen the session usage_update running "
                     "total; the two are different units and are never added together; null when the record cannot "
                     "say (a failed attempt that wrote none), never zero",
-    "request_linkage": "per v3 attempt, the coverage of the relay's journaled RelayRequestRecords (#139): requests, "
-                       "completed, identified, cancelledUnidentified (a request cancelled before identification "
-                       "certifies nothing), mismatches and providerMissing",
-    "model_identity": "per v3 attempt, whether its generation requests verified the pinned backend, served model and "
-                      "provider, with the failure reasons when not; the grader's model gate stays the official one",
+    "request_linkage": "per v3 attempt, the coverage of the relay's journaled RelayRequestRecords (#139), recomputed "
+                       "from the journal by the grader's own coverage function (never the record's cached summary): "
+                       "requests, completed, identified, cancelledUnidentified (a request cancelled before "
+                       "identification certifies nothing), mismatches and providerMissing; null when the record "
+                       "carries no journal",
+    "model_identity": "per v3 attempt, the grader's own per-request gate (v3_request_gate) applied to the journaled "
+                      "records against the record's pinned expectations, never the cached generationVerified: every "
+                      "identified request is evidence whatever its outcome, and a cancelled-after-identification "
+                      "mismatch fails it; null (unknown) when the record carries no journal",
     "hooks": "hooks each agent ran as its own records show: Claude transcript hook rows by hook and command label (the "
              "hub's facts hook, or other: the program's name; never paths or arguments), with the durationMs they "
              "carry (Claude Code writes rows for hooks that printed something and for Stop hooks), Codex hook/started "
@@ -628,6 +632,21 @@ def ledger_of(run):
 
 # ---- one v3 attempt (headless Pi/Qwen, #140) ----------------------------------------------------------------------
 
+def v3_identity_of(ident):
+    """The attempt's model identity derived from its journaled per-request records by the grader's own gate
+    (v3_request_gate), never the record's cached generationVerified/generationFailureReasons: a stale summary
+    (for example a cancelled-after-identification mismatch while the cached flag stayed true) must not read as
+    verified. The expectations are the record's own pinned copies of the manifest's fixed backend, served model
+    and provider; the ledger reads run records, not the manifest. Every identified request is evidence whatever
+    its outcome; only cancelled-before-identification certifies nothing. A record without its journal is
+    explicitly unknown."""
+    if not isinstance(ident, dict) or not isinstance(ident.get("requests"), list):
+        return {"verified": None, "why": "the record carries no request journal", "requests_journaled": None}
+    gate = v3_request_gate(ident, {"fixed_backend": ident.get("requested"), "expected_served_model": ident.get("expectedServedModel"),
+                                   "expected_provider": ident.get("expectedProvider")})
+    return {"verified": gate is None, "why": gate, "requests_journaled": len(ident["requests"])}
+
+
 def v3_ledger_of(run):
     """One headless Pi/Qwen attempt (manifest v3): bus prompts, no board taskStates. Completion is the runner's own
     end classification, apart from official quality (the grader's, #152); usage units are preserved as recorded and
@@ -645,10 +664,9 @@ def v3_ledger_of(run):
         "elapsed_s": round(run["elapsedMs"] / 1000, 1) if isinstance(run.get("elapsedMs"), (int, float)) else None,
         "native_usage": {"pi": number(usage.get("pi")), "qwen": number(usage.get("qwen")),
                          "units": usage.get("units"), "tool_surfaces": usage.get("toolSurfaces")},
-        "request_linkage": run.get("requestLinkage") if isinstance(run.get("requestLinkage"), dict) else None,
-        "model_identity": {"verified": ident.get("generationVerified") is True,
-                           "failure_reasons": None if ident.get("generationVerified") is True else ident.get("generationFailureReasons"),
-                           "requests_journaled": len(ident["requests"]) if isinstance(ident.get("requests"), list) else None},
+        # Recomputed from the journal by the grader's own coverage function, never the record's cached requestLinkage.
+        "request_linkage": v3_linkage(ident) if isinstance(ident.get("requests"), list) else None,
+        "model_identity": v3_identity_of(ident),
         "answers": {a: len(v) for a, v in sorted(answers.items()) if isinstance(v, list)},
         "peer_messages": sum(1 for e in run.get("events") or [] if isinstance(e, dict) and e.get("event") == "peer_message"),
         "feature_assignments": run.get("featureAssignments"),
@@ -695,7 +713,7 @@ def summarize_v3(arm, rs, done, shared, missing, unreadable):
                            if r.get("completed") and (r.get("validity") or {}).get("valid") is not True),
         "missing": sorted(f"case {c} repeat {rep}" for c, a, rep in missing if a == arm),
         "unreadable": sorted(f"case {c} repeat {rep}" for c, a, rep in unreadable if a == arm),
-        "setup_s_median": median([r["setup_s"] for r in rs if r.get("setup_s") is not None]),
+        "setup_s_median": median([r["setup_s"] for r in done if r.get("setup_s") is not None]),  # valid completed only, like every median: a setup that failed says nothing about a good one
         "elapsed_s_median": median([r["elapsed_s"] for r in done if r.get("elapsed_s") is not None]),
         "elapsed_s_median_common": median([r["elapsed_s"] for r in shared if r.get("elapsed_s") is not None]),
         "model_identity_verified": sum(1 for r in rs if (r.get("model_identity") or {}).get("verified") is True),
