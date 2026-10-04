@@ -31,6 +31,36 @@ export interface ModelRelayStatus {
   backends: RelayBackendStatus[];
 }
 
+/** Sanitized per-request identity and lifecycle evidence. One record per upstream dispatch attempt
+ *  (a fallback dispatch is its own record). Records carry no messages, tools, keys or Access headers.
+ *  `identified: false` with `outcome: "cancelled"` is the cancelled-before-identification state; an
+ *  observed `actualModel` that differs from the upstream-configured `requestedModel` sets `mismatch`.
+ *  `identitySource` says where the served-model label came from: the gateway response header, a
+ *  generation SSE event (#137 classification: heartbeats never identify), or the locally validated
+ *  MLX configuration. HTTP 200, the requested alias and a previous request's label never identify. */
+export interface RelayRequestRecord {
+  id: string;
+  /** Admission timestamp (start of the upstream dispatch attempt), ISO. */
+  at: string;
+  /** Resolved backend alias (the requested route). */
+  alias: string;
+  /** Physical model the relay asked the upstream for. */
+  requestedModel?: string;
+  /** Sanitized `x-omniroute-provider` header; absent stays unknown. */
+  provider?: string;
+  /** Observed served model; never read back from the backend's mutable last label. */
+  actualModel?: string;
+  identitySource: "header" | "stream" | "configured" | "none";
+  // ponytail: the relay cannot see native turn structure, so role stays "unknown"; a native surface
+  // that knows primary vs auxiliary work (benchmark wiring, issue #140) is the upgrade path.
+  role: "primary" | "auxiliary" | "unknown";
+  outcome: "completed" | "cancelled" | "failed";
+  identified: boolean;
+  /** Set only when the observed served model differs from the upstream-configured model. */
+  mismatch?: boolean;
+  durationMs: number;
+}
+
 export interface ModelRelayOptions {
   omni: OmniRoute;
   /** Authoritative admission immediately before each upstream request, including fallbacks. */
@@ -51,6 +81,8 @@ export interface ModelRelayOptions {
   mlxAlias?: string;
   mlxModel?: string;
   fallbackDGXAlias?: string;
+  /** Called exactly once per journaled request, at its terminal close, with a sanitized copy. */
+  onRequest?: (record: RelayRequestRecord) => void;
 }
 
 export interface ModelRelay {
@@ -58,13 +90,22 @@ export interface ModelRelay {
   readonly token: string;
   readonly models: string[];
   readonly status: () => ModelRelayStatus;
+  /** Closed request records, oldest first, bounded to the last 1000. */
+  readonly requests: () => RelayRequestRecord[];
   readonly close: () => Promise<void>;
+}
+
+interface RequestJournalEntry {
+  readonly record: RelayRequestRecord;
+  identify(model: string, source: "header" | "stream" | "configured"): void;
+  close(outcome: RelayRequestRecord["outcome"]): void;
 }
 
 interface ActiveRequest {
   controller: AbortController;
   release?: () => void;
   cancel?: (reason?: unknown) => Promise<void>;
+  closeRecord?: (outcome: RelayRequestRecord["outcome"]) => void;
   cleanup: () => void;
 }
 
@@ -113,9 +154,10 @@ function isGenerationEvent(choices: unknown): boolean {
   });
 }
 
-function sseResponse(response: Response, release: () => void, onModel?: (model: string) => void, registerCancel?: (cancel: (reason?: unknown) => Promise<void>) => void): Response {
+function sseResponse(response: Response, release: () => void, onModel?: (model: string) => void, registerCancel?: (cancel: (reason?: unknown) => Promise<void>) => void, onClose?: (outcome: RelayRequestRecord["outcome"]) => void): Response {
   if (!response.body) {
     release();
+    onClose?.("failed");
     return new Response("upstream returned no stream", { status: 502 });
   }
   const reader = response.body.getReader();
@@ -151,15 +193,18 @@ function sseResponse(response: Response, release: () => void, onModel?: (model: 
         const next = await reader.read();
         if (next.done) {
           release();
+          onClose?.("completed");
           controller.close();
         } else { inspect(next.value); controller.enqueue(next.value); }
       } catch (error) {
         release();
+        onClose?.("failed");
         controller.error(error);
       }
     },
     async cancel(reason) {
       release();
+      onClose?.("cancelled");
       await cancel(reason);
     },
   });
@@ -183,6 +228,39 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
   const states = new Map<string, RelayBackendStatus>();
   const activeRequests = new Set<ActiveRequest>();
   const activeByAlias = new Map<string, number>();
+  const journal: RelayRequestRecord[] = [];
+  const JOURNAL_LIMIT = 1000;
+
+  // The record object is the generation fence: every update goes through this entry's own closure,
+  // so interleaved requests for the same alias never write into each other's evidence.
+  const openRequestRecord = (alias: string): RequestJournalEntry => {
+    const start = Date.now();
+    const record: RelayRequestRecord = {
+      id: randomUUID(), at: new Date(start).toISOString(), alias,
+      identitySource: "none", role: "unknown", outcome: "completed", identified: false, durationMs: 0,
+    };
+    let closed = false;
+    const identify: RequestJournalEntry["identify"] = (model, source) => {
+      if (closed) return;
+      // First observation wins; a stream observation may still replace a configured label (observed
+      // beats configured), and a configured label never replaces an observation.
+      if (record.identified && (record.identitySource !== "configured" || source === "configured")) return;
+      record.actualModel = model;
+      record.identitySource = source;
+      record.identified = true;
+    };
+    const close: RequestJournalEntry["close"] = (outcome) => {
+      if (closed) return;
+      closed = true;
+      record.outcome = outcome;
+      record.durationMs = Date.now() - start;
+      if (record.identified && record.requestedModel !== undefined && record.actualModel !== record.requestedModel) record.mismatch = true;
+      journal.push({ ...record });
+      if (journal.length > JOURNAL_LIMIT) journal.shift();
+      options.onRequest?.({ ...record });
+    };
+    return { record, identify, close };
+  };
 
   const ensureMlxHandle = async (): Promise<MlxHandle> => (mlx ??= await (mlxStarting ??= ensureMlx(options.mlx).finally(() => { mlxStarting = undefined; })));
   const state = (backend: ModelBackend): RelayBackendStatus => states.get(aliasOf(backend, mlxAlias)) ?? {
@@ -206,7 +284,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
     return selected;
   };
 
-  const upstream = async (request: RelayRequest, backend: ModelBackend, signal: AbortSignal): Promise<{ response: Response; release: () => void; onModel?: (model: string) => void }> => {
+  const upstream = async (request: RelayRequest, backend: ModelBackend, signal: AbortSignal, journalEntry: RequestJournalEntry): Promise<{ response: Response; release: () => void; onModel?: (model: string) => void }> => {
     const alias = aliasOf(backend, mlxAlias);
     let base: string;
     let model: string;
@@ -265,13 +343,17 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
     }
     const provider = safeHeader(response.headers.get("x-omniroute-provider"));
     const actualModel = safeHeader(response.headers.get("x-model-router-selected-model"));
+    journalEntry.record.requestedModel = model;
+    if (provider) journalEntry.record.provider = provider;
+    if (actualModel) journalEntry.identify(actualModel, "header");
+    else if (backend.kind === "mlx") journalEntry.identify(model, "configured");
     setState(backend, { state: "ready", requestedModel: request.model, active: activeByAlias.get(alias) ?? 0,
       provider: provider ?? undefined, actualModel: actualModel ?? (backend.kind === "mlx" ? model : undefined) });
     const releaseWithStatus = () => {
       releaseOnce();
       setState(backend, { active: activeByAlias.get(alias) ?? 0 });
     };
-    return { response, release: releaseWithStatus, ...(actualModel ? {} : { onModel: (value: string) => setState(backend, { actualModel: value }) }) };
+    return { response, release: releaseWithStatus, ...(actualModel ? {} : { onModel: (value: string) => { setState(backend, { actualModel: value }); journalEntry.identify(value, "stream"); } }) };
   };
 
   const server = Bun.serve({
@@ -325,8 +407,10 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
         return Response.json({ error: "input exceeds the model context budget" }, { status: 400 });
       }
       const fallback = backend.kind === "mlx" && options.fallbackDGXAlias ? { kind: "dgx", alias: options.fallbackDGXAlias } as ModelBackend : undefined;
-      try {
-        const result = await upstream(body, backend, controller.signal);
+      const dispatch = async (selected: ModelBackend, body: RelayRequest) => {
+        const journalEntry = openRequestRecord(aliasOf(selected, mlxAlias));
+        record.closeRecord = journalEntry.close;
+        const result = await upstream(body, selected, controller.signal, journalEntry);
         let released = false;
         const release = () => {
           if (released) return;
@@ -336,26 +420,23 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
           activeRequests.delete(record);
         };
         record.release = release;
-        return sseResponse(result.response, release, result.onModel, (cancel) => { record.cancel = cancel; });
+        return { result, release, journalEntry };
+      };
+      try {
+        const { result, release, journalEntry } = await dispatch(backend, body);
+        return sseResponse(result.response, release, result.onModel, (cancel) => { record.cancel = cancel; }, journalEntry.close);
       } catch (error) {
+        record.closeRecord?.(controller.signal.aborted ? "cancelled" : "failed");
         if (!fallback || controller.signal.aborted || error instanceof ExecutionAdmissionError) {
           record.cleanup();
           activeRequests.delete(record);
           return Response.json({ error: error instanceof Error ? error.message : "backend unavailable" }, { status: 502 });
         }
         try {
-          const result = await upstream({ ...body, model: fallback.alias }, fallback, controller.signal);
-          let released = false;
-          const release = () => {
-            if (released) return;
-            released = true;
-            result.release();
-            record.cleanup();
-            activeRequests.delete(record);
-          };
-          record.release = release;
-          return sseResponse(result.response, release, result.onModel, (cancel) => { record.cancel = cancel; });
+          const { result, release, journalEntry } = await dispatch(fallback, { ...body, model: fallback.alias });
+          return sseResponse(result.response, release, result.onModel, (cancel) => { record.cancel = cancel; }, journalEntry.close);
         } catch (fallbackError) {
+          record.closeRecord?.(controller.signal.aborted ? "cancelled" : "failed");
           record.cleanup();
           activeRequests.delete(record);
           return Response.json({ error: fallbackError instanceof Error ? fallbackError.message : "fallback unavailable" }, { status: 502 });
@@ -365,10 +446,15 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
   });
   const url = `http://${host}:${server.port}/v1`;
   const status = (): ModelRelayStatus => ({ url, models, backends: [...states.values()].map((value) => ({ ...value })) });
-  return { url, token, models, status, close: async () => {
+  const requests = (): RelayRequestRecord[] => journal.map((record) => ({ ...record }));
+  return { url, token, models, status, requests, close: async () => {
     const closing = [...activeRequests].map(async (request) => {
-      request.controller.abort(new Error("model relay closed"));
+      // The relay-initiated cancellation closes the record first: the abort below settles the stream
+      // as a completed read, and the first terminal transition is the one that counts. Cancelling the
+      // upstream reader before the abort keeps the aborted fetch body from rejecting unobserved.
+      request.closeRecord?.("cancelled");
       await request.cancel?.(new Error("model relay closed"));
+      request.controller.abort(new Error("model relay closed"));
       request.release?.();
       request.cleanup();
     });
