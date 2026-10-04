@@ -1,5 +1,6 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
 import { PiPeer } from '../../src/adapters/pi.ts';
 import { AcpPeer } from '../../src/adapters/acp.ts';
@@ -70,9 +71,10 @@ export interface RequestLinkage {
 
 /**
  * Request-linkage qualification over the relay's journaled records (#139). A request's served model comes only
- * from its own record: a completed request that was never identified (a heartbeat-only stream identifies nothing)
- * fails the attempt, a mismatch flags it, and a request cancelled before identification stays explicitly
- * unidentified — reported in the coverage, never certifying another request.
+ * from its own record. Every identified record is evidence, whatever its outcome: a request cancelled after its
+ * header or a generation event identified the served model still flags a confirmed mismatch. Only
+ * cancelled-before-identification is non-evidence — reported in the coverage, certifying nothing. A completed
+ * request that was never identified (a heartbeat-only stream identifies nothing) fails the attempt.
  */
 export function qualifyRequests(records: RelayRequestRecord[], expected: { backend: string; servedModel: string; provider?: string }): { verified: boolean; reasons: string[]; coverage: RequestLinkage } {
     const completed = records.filter((r) => r.outcome === 'completed');
@@ -87,10 +89,13 @@ export function qualifyRequests(records: RelayRequestRecord[], expected: { backe
     const reasons: string[] = [];
     if (!records.length) reasons.push('no upstream generation request was journaled');
     else if (!completed.length) reasons.push('no completed generation request; cancelled or failed requests identify nothing');
-    for (const r of completed) {
+    for (const r of records) {
+        if (!r.identified) {
+            if (r.outcome === 'completed') reasons.push(`request ${r.id}: completed without served-model identity (a heartbeat-only stream identifies nothing)`);
+            continue;
+        }
         if (r.requestedModel !== expected.backend) reasons.push(`request ${r.id}: asked upstream for ${r.requestedModel ?? 'unknown'}, not the fixed backend`);
-        if (r.mismatch) reasons.push(`request ${r.id}: served model differs from the upstream-configured model`);
-        if (!r.identified) reasons.push(`request ${r.id}: completed without served-model identity (a heartbeat-only stream identifies nothing)`);
+        if (r.mismatch) reasons.push(`request ${r.id}: served model differs from the upstream-configured model${r.outcome === 'cancelled' ? ' (cancelled after identification; the mismatch stands)' : ''}`);
         else if (r.actualModel !== expected.servedModel) reasons.push(`request ${r.id}: served ${r.actualModel ?? 'unknown'}, not ${expected.servedModel}`);
         if (r.provider !== undefined && expected.provider !== undefined && r.provider !== expected.provider) reasons.push(`request ${r.id}: provider differs from the pinned provider`);
     }
@@ -240,7 +245,16 @@ async function main(): Promise<number> {
     }
     if (m.arms.some((a: string) => a !== 'solo-pi')) {
         await cmd(['/usr/bin/sandbox-exec', '-p', '(version 1)(allow default)', '/usr/bin/true']);
-        await effectiveBuild([qwenCommand[0]!, '--version']);
+        // Exercise the Qwen CLI itself (review #146), with an isolated home as the sessions get it: a missing or
+        // wrong-version package fails here, before any fixture or attempt directory is touched. The per-arm check
+        // then re-verifies the same build inside the seatbelt profile (correction 1).
+        const preflightHome = mkdtempSync(join(tmpdir(), 'ahub-v3-qwen-preflight-'));
+        try {
+            const qv = await effectiveBuild([...qwenCommand, '--version'], { cwd: repo, env: { QWEN_HOME: preflightHome, QWEN_RUNTIME_DIR: preflightHome, TMPDIR: preflightHome } });
+            if (parseVersion(qv) !== m.versions.qwen) throw new Error(`effective Qwen build ${parseVersion(qv) ?? qv.slice(0, 80)} differs from the pinned ${m.versions.qwen}`);
+        } finally {
+            rmSync(preflightHome, { recursive: true, force: true });
+        }
     }
     if (m.arms.includes('joint-pi-qwen')) await cmd([python, '-c', 'pass']);
 
@@ -485,12 +499,30 @@ async function main(): Promise<number> {
             });
             for (const peer of peers) {
                 withFixtureRoot(dir, identity, () => {});
-                await peer.start();
-                const pid = procPid(peer);
-                const table = processTable();
-                const row = pid !== undefined ? table?.find((r) => r.pid === pid) : undefined;
+                // Both adapters assign their spawned child synchronously inside start(), before the handshake's
+                // first await. Register it before awaiting startup: a kill while the handshake is in flight must
+                // still find the actor in the ledger, or recovery marks the run restored with the native process
+                // left running (review #146). Signals only ever go to identities read from the table.
+                const startPromise = peer.start();
+                let startSettled = false;
+                void startPromise.then(() => { startSettled = true; }, () => { startSettled = true; });
+                let row;
+                const registerEnd = Date.now() + 10_000;
+                while (!row && !startSettled && Date.now() < registerEnd) {
+                    const pid = procPid(peer);
+                    if (pid !== undefined) {
+                        const table = processTable();
+                        row = table?.find((r) => r.pid === pid);
+                    }
+                    if (!row) await Bun.sleep(25);
+                }
+                if (row) {
+                    owners.set(`${row.pid}@${row.started}`, { role: 'native-peer', pid: row.pid, started: row.started, pgid: row.pgid, via: `the ${peer.id} process this arm launched` });
+                    actorLedger.set(dir, [...owners.values()]);
+                    persistLedger();
+                }
+                await startPromise; // a handshake failure rethrows here, with the child already in the ledger
                 if (!row) throw new Error(`could not prove which process is this arm's ${peer.id}`);
-                owners.set(`${row.pid}@${row.started}`, { role: 'native-peer', pid: row.pid, started: row.started, pgid: row.pgid, via: `the ${peer.id} process this arm launched` });
                 captureNow();
                 if (peer.id === 'qwen') {
                     let buffer = '';

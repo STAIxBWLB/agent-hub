@@ -307,18 +307,22 @@ def v3_outside_changes(cwd: Path, source_dirs: list):
 
 def v3_request_gate(identity, m):
     """Issue #140: per-request served-model qualification over the relay's journaled RelayRequestRecords (#139).
-    A completed request that was never identified (a heartbeat-only stream identifies nothing) fails the attempt; a
-    request cancelled before identification stays explicitly unidentified and never certifies another request."""
+    Every identified record is evidence, whatever its outcome: a request cancelled after identification still
+    flags a confirmed mismatch; only cancelled-before-identification is non-evidence. A completed request that
+    was never identified (a heartbeat-only stream identifies nothing) fails the attempt."""
     if not isinstance(identity,dict): return "generation model identity missing"
     reqs=identity.get("requests")
     if not isinstance(reqs,list) or not reqs or any(not isinstance(r,dict) for r in reqs): return "generation requests unverified"
     completed=[r for r in reqs if r.get("outcome")=="completed"]
     if not completed: return "no completed generation request; cancelled or failed requests identify nothing"
     served,provider,backend=m.get("expected_served_model"),m.get("expected_provider"),m.get("fixed_backend")
-    for r in completed:
+    for r in reqs:
+        if r.get("identified") is not True:
+            if r.get("outcome")=="completed": return "generation model identity unverified"
+            continue
         if r.get("requestedModel")!=backend: return "generation request model mismatch"
         if r.get("mismatch"): return "generation served model mismatch flagged"
-        if r.get("identified") is not True or r.get("actualModel")!=served: return "generation model identity unverified"
+        if r.get("actualModel")!=served: return "generation model identity unverified"
         if r.get("provider") is not None and provider is not None and r.get("provider")!=provider: return "generation provider mismatch"
     return None
 

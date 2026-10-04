@@ -89,6 +89,26 @@ describe("request-linkage qualification over RelayRequestRecord (#139, #140)", (
     expect(beside.coverage.cancelledUnidentified).toBe(1);
   });
 
+  test("a mismatch on a request cancelled after identification still fails the gate (review #146)", () => {
+    // Cancelled after its header/generation event identified the served model: the mismatch is confirmed evidence.
+    const bad = record({ outcome: "cancelled", mismatch: true, actualModel: "qwen3.8-other" });
+    const q = qualifyRequests([record({}), bad], expected);
+    expect(q.verified).toBe(false);
+    expect(q.reasons.some((r) => r.includes("mismatch"))).toBe(true);
+    expect(q.coverage.mismatches).toBe(1);
+    const wrong = record({ outcome: "cancelled", actualModel: "qwen3.8-other" });
+    expect(qualifyRequests([record({}), wrong], expected).verified).toBe(false);
+    const wrongProvider = record({ outcome: "cancelled", provider: "provider-b" });
+    expect(qualifyRequests([record({}), wrongProvider], expected).verified).toBe(false);
+  });
+
+  test("a cleanly identified cancellation certifies nothing and fails nothing", () => {
+    const clean = record({ outcome: "cancelled" }); // identified, with the expected model and provider
+    const q = qualifyRequests([record({}), clean], expected);
+    expect(q.verified).toBe(true);
+    expect(q.coverage.cancelledUnidentified).toBe(0);
+  });
+
   test("a heartbeat-only record (never identified) fails even with HTTP-level completion", () => {
     const q = qualifyRequests([record({ identified: false, identitySource: "none", actualModel: undefined })], expected);
     expect(q.verified).toBe(false);
@@ -124,7 +144,8 @@ describe("effective-build pinning (correction 1)", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  test("a seatbelt profile wraps the version command when one is given", async () => {
+  // macOS-only: /usr/bin/sandbox-exec does not exist on the ubuntu CI leg (review #146).
+  test.skipIf(process.platform !== "darwin")("a seatbelt profile wraps the version command when one is given", async () => {
     const root = fixture();
     try {
       const profile = join(root, "p.sb");
@@ -278,6 +299,14 @@ assert m.v3_request_gate(None,man)=='generation model identity missing'
 can=rec(outcome='cancelled',identified=False,actualModel=None,provider=None)
 assert m.v3_request_gate({'requests':[can]},man).startswith('no completed generation request')
 assert m.v3_request_gate({'requests':[rec(),can]},man) is None  # cancelled-before-identification certifies nothing
+canbad=rec(outcome='cancelled',mismatch=True,actualModel='other')
+assert m.v3_request_gate({'requests':[rec(),canbad]},man)=='generation served model mismatch flagged'  # identified before the cancel: the mismatch stands (#146)
+canwrong=rec(outcome='cancelled',actualModel='other')
+assert m.v3_request_gate({'requests':[rec(),canwrong]},man)=='generation model identity unverified'
+canprov=rec(outcome='cancelled',provider='q')
+assert m.v3_request_gate({'requests':[rec(),canprov]},man)=='generation provider mismatch'
+canok=rec(outcome='cancelled')
+assert m.v3_request_gate({'requests':[rec(),canok]},man) is None  # a cleanly identified cancellation fails nothing
 hb=rec(identified=False,actualModel=None)
 assert m.v3_request_gate({'requests':[hb]},man)=='generation model identity unverified'
 assert m.v3_request_gate({'requests':[rec(mismatch=True)]},man)=='generation served model mismatch flagged'
