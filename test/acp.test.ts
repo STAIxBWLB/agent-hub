@@ -164,6 +164,54 @@ test("the hub's own tools are approved once without asking; a lookalike name sti
   expect(said[1]!.body).toEndWith("permission=no");
 });
 
+// issue #138: Qwen 0.24.7 announces `hub_send (agent-hub MCP Server)` and then titles the permission
+// request with the serialized arguments; identity must come from the announcement, never the payload text.
+test("Qwen: the announced MCP identity, not the argument-JSON title, is what may be auto-approved", async () => {
+  const asked: string[] = [];
+  const logs: string[] = [];
+  const { bus, said } = await setup({
+    autoApprove: (title) => title === "mcp__agent-hub__hub_send",
+    mcpServers: [{ name: "agent-hub", command: "bun", args: ["server.js"], env: [] }],
+    log: (l) => logs.push(l),
+    onPermission: async (req) => {
+      asked.push(req.title);
+      return "no";
+    },
+  });
+  // the announced call resolves to the canonical name and is approved once without asking
+  bus.publish(newEnvelope("user", "PERMISSION QWEN", { to: ["kimi"] }));
+  await until(() => said.length === 1);
+  expect(said[0]!.body).toEndWith("permission=yes"); // the allow_once option, never allow_always
+  expect(asked).toEqual([]);
+  expect(logs).toContain("permission auto-approved for kimi: mcp__agent-hub__hub_send");
+
+  // a server this session was never configured with is not the hub's bus: the call goes to a person,
+  // displayed under its announced title rather than a second copy of the argument JSON
+  bus.publish(newEnvelope("user", "PERMISSION QWEN-FOREIGN", { to: ["kimi"] }));
+  await until(() => said.length === 2);
+  expect(asked).toEqual(['hub_send (other-bus MCP Server): {"text":"QWEN_NATIVE_READY"}']);
+  expect(said[1]!.body).toEndWith("permission=no");
+
+  // a completed call's identity is evicted: the same request shape no longer resolves
+  bus.publish(newEnvelope("user", "PERMISSION QWEN-DONE", { to: ["kimi"] }));
+  await until(() => said.length === 3);
+  expect(asked[1]).toBe("tool call (payload not reported by the agent)");
+  expect(said[2]!.body).toEndWith("permission=no");
+
+  // a reused call id starts clean: the earlier call's identity must not stand in
+  bus.publish(newEnvelope("user", "PERMISSION QWEN-REUSED", { to: ["kimi"] }));
+  await until(() => said.length === 4);
+  expect(asked[2]).toBe("Bash (payload not reported by the agent)");
+  expect(said[3]!.body).toEndWith("permission=no");
+
+  // argument text alone never names a tool
+  bus.publish(newEnvelope("user", "PERMISSION QWEN-QUIET", { to: ["kimi"] }));
+  await until(() => said.length === 5);
+  expect(asked[3]).toBe("tool call (payload not reported by the agent)");
+  expect(said[4]!.body).toEndWith("permission=no");
+  expect(logs.filter((l) => l.includes("auto-approved"))).toHaveLength(1);
+});
+
 // review of #13: an approval longer than the watchdog must not cancel the turn it belongs to.
 test("a pending approval keeps the turn alive past the watchdog", async () => {
   const { bus, said } = await setup({

@@ -1567,9 +1567,10 @@ export async function startDaemon(opts: DaemonOptions) {
         cwd: opts.cwd,
         watchdogMs: config.watchdog_ms,
         onPermission,
-        // The hub's own tools pass without a console prompt, as Codex's do (approval_mode below; issue #72). This
-        // relies on the agent putting the tool name in `title`, as Kimi does; an ACP agent that titles calls with
-        // model-written text must not be configured as kimi_cmd. A stopping hub approves nothing.
+        // The hub's own tools pass without a console prompt, as Codex's do (approval_mode below; issue #72).
+        // Identity is the request title (Kimi names the canonical tool there) or, for an agent like Qwen that
+        // titles the request with the argument JSON, the announced tool_call title resolved against this
+        // session's configured MCP servers (issue #138). Exact names only; a stopping hub approves nothing.
         autoApprove: (title) => !stopping && HUB_TOOL_TITLES.has(title),
         log,
         onTokens: onKimiTokens,
