@@ -1,0 +1,713 @@
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { randomUUID, createHash } from 'node:crypto';
+import { PiPeer } from '../../src/adapters/pi.ts';
+import { AcpPeer } from '../../src/adapters/acp.ts';
+import { Bus, type BusEvent } from '../../src/hub/bus.ts';
+import { newEnvelope } from '../../src/hub/envelope.ts';
+import { realPath } from '../../src/hub/project.ts';
+import { loadConfig } from '../../src/hub/daemon.ts';
+import { processTable } from '../../src/hub/child-process.ts';
+import { startModelRelay, type RelayRequestRecord } from '../../src/models/relay.ts';
+import { OmniRoute } from '../../src/omniroute/client.ts';
+import { TOOL_SCHEMAS, runTool, guardPath } from '../../src/local/tools.ts';
+import { profile } from '../../src/local/sandbox.ts';
+import { sbplString } from '../../src/local/deny.ts';
+import { captureFixtureRoot, endReasonOf, extend, fixtureRootProblem, reuseProblem, teardown, writeAtomic, withFixtureRoot, type Actor, type FixtureRootIdentity } from './teardown.ts';
+
+/**
+ * Headless native CooperBench driver for the Pi and Qwen arms (issue #140, manifest v3). Ported from the
+ * 2026-10-04 private study harness with its calibration corrections:
+ *
+ * 1. The EFFECTIVE build is pinned, not the PATH bootstrap's claim: each spawned native's `--version` runs under
+ *    the final isolation environment (Qwen inside its seatbelt profile with QWEN_HOME/TMPDIR set), and the binary
+ *    path and version go into every attempt record; recovery moves those records with the builds inside.
+ * 2. The negative probe is proven by a native read attempt with structured denial evidence (a guard denial or a
+ *    failed read tool call with EPERM/EACCES), never by a model-written AHUB_PROBE_DENIED marker alone.
+ * 3. Source guards follow the repository layout in the manifest's per-case `source_dirs` (src/ for Click/Jinja,
+ *    dirty_equals/ for dirty_equals).
+ * 4. New source files enter the binary submission patch (`git add -N` on the source dirs before
+ *    `git diff --binary`).
+ * 5. Setup resources (relay, tool server, peers) are disposed on every exit path; a disposal failure is recorded
+ *    and never erases the active-window evidence or leaves the relay open.
+ * 6. Existing attempt evidence is rejected before any record is written: the attempt directory must be new,
+ *    started.json and native-owner.json are exclusive ('wx') claims, and no record is ever written over another.
+ * 7. The driver is preflighted with strict typechecking (scripts/check.sh) and executable lifecycle checks, not
+ *    transpilation alone.
+ *
+ * Served-model evidence comes from the relay's journaled RelayRequestRecord per request (#139); Qwen's MCP tool
+ * approval uses the adapter's shipped tool-identity binding (#138): the exact canonical name only. The headless
+ * path never touches Orca registrations: it spawns no terminal and registers nothing.
+ */
+
+const sha = (bytes: Uint8Array | string) => createHash('sha256').update(bytes).digest('hex');
+const sourceHash = (path: string) => sha(readFileSync(path));
+
+/** Row of the preregistered odd-n Williams layout: repeat*<case count>+caseIndex (manifest v3 `order_rule`). */
+export function v3ArmOrder(arms: string[], caseIndex: number, repeat: number, caseCount: number): string[] {
+    const n = arms.length, row = repeat * caseCount + caseIndex, shift = row % n;
+    const order = Array.from({ length: n }, (_, j) => arms[(j + shift) % n]!);
+    return Math.floor(row / n) % 2 ? order.reverse() : order;
+}
+
+/** Joint feature ownership, fixed before any model call: Pi gets (caseIndex+repeat)%2, Qwen the other. */
+export function jointAssignment(caseIndex: number, repeat: number): { pi: number; qwen: number } {
+    const pi = (caseIndex + repeat) % 2;
+    return { pi, qwen: 1 - pi };
+}
+
+/** A project-relative path is inside the guarded source layout (correction 3). */
+export const isSourcePath = (sourceDirs: string[], rel: string) => sourceDirs.some((d) => rel === d || rel.startsWith(d + '/'));
+
+export interface RequestLinkage {
+    requests: number;
+    completed: number;
+    identified: number;
+    cancelledUnidentified: number;
+    mismatches: number;
+    providerMissing: number;
+}
+
+/**
+ * Request-linkage qualification over the relay's journaled records (#139). A request's served model comes only
+ * from its own record. Every identified record is evidence, whatever its outcome: a request cancelled after its
+ * header or a generation event identified the served model still flags a confirmed mismatch. Only
+ * cancelled-before-identification is non-evidence — reported in the coverage, certifying nothing. A completed
+ * request that was never identified (a heartbeat-only stream identifies nothing) fails the attempt.
+ */
+export function qualifyRequests(records: RelayRequestRecord[], expected: { backend: string; servedModel: string; provider?: string }): { verified: boolean; reasons: string[]; coverage: RequestLinkage } {
+    const completed = records.filter((r) => r.outcome === 'completed');
+    const coverage: RequestLinkage = {
+        requests: records.length,
+        completed: completed.length,
+        identified: completed.filter((r) => r.identified).length,
+        cancelledUnidentified: records.filter((r) => r.outcome === 'cancelled' && !r.identified).length,
+        mismatches: records.filter((r) => r.mismatch === true).length,
+        providerMissing: completed.filter((r) => r.identified && r.provider === undefined).length,
+    };
+    const reasons: string[] = [];
+    if (!records.length) reasons.push('no upstream generation request was journaled');
+    else if (!completed.length) reasons.push('no completed generation request; cancelled or failed requests identify nothing');
+    for (const r of records) {
+        if (!r.identified) {
+            if (r.outcome === 'completed') reasons.push(`request ${r.id}: completed without served-model identity (a heartbeat-only stream identifies nothing)`);
+            continue;
+        }
+        if (r.requestedModel !== expected.backend) reasons.push(`request ${r.id}: asked upstream for ${r.requestedModel ?? 'unknown'}, not the fixed backend`);
+        if (r.mismatch) reasons.push(`request ${r.id}: served model differs from the upstream-configured model${r.outcome === 'cancelled' ? ' (cancelled after identification; the mismatch stands)' : ''}`);
+        else if (r.actualModel !== expected.servedModel) reasons.push(`request ${r.id}: served ${r.actualModel ?? 'unknown'}, not ${expected.servedModel}`);
+        if (r.provider !== undefined && expected.provider !== undefined && r.provider !== expected.provider) reasons.push(`request ${r.id}: provider differs from the pinned provider`);
+    }
+    return { verified: reasons.length === 0, reasons, coverage };
+}
+
+/**
+ * The version a command reports under the environment it will actually run with (correction 1): the extra env
+ * applied, and the seatbelt profile wrapped around it when one is given. Qwen's PATH bootstrap reported the
+ * managed build in the normal home and fell back to the base build under QWEN_HOME isolation, so the check runs
+ * inside the final isolation environment, never against the operator's PATH.
+ */
+export async function effectiveBuild(command: string[], opts: { cwd?: string; env?: Record<string, string>; sandboxProfile?: string; timeoutMs?: number } = {}): Promise<string> {
+    const args = opts.sandboxProfile ? ['/usr/bin/sandbox-exec', '-f', opts.sandboxProfile, ...command] : command;
+    const p = Bun.spawn(args, { cwd: opts.cwd, stdout: 'pipe', stderr: 'pipe', ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}) });
+    const timer = setTimeout(() => { try { p.kill('SIGKILL'); } catch { /* already gone */ } }, opts.timeoutMs ?? 60_000);
+    const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]).finally(() => clearTimeout(timer));
+    if (code) throw new Error(`${command[0]} exit ${code}: ${stderr.slice(0, 300)}`);
+    return stdout.trim();
+}
+
+/** The x.y.z a `--version` output reports, or undefined. */
+export const parseVersion = (output: string) => /\d+\.\d+\.\d+/.exec(output)?.[0];
+
+/** An exclusive claim (correction 6): written once or not at all; an existing file is evidence, never overwritten. */
+export function claimExclusive(path: string, payload: string): void {
+    writeFileSync(path, payload, { flag: 'wx', mode: 0o600 });
+}
+
+/**
+ * The binary submission patch over exactly the guarded source layout, with new files bound in (correction 4):
+ * `git add -N` marks intent-to-add so a source file the agents created appears in `git diff --binary`.
+ */
+export async function collectSubmissionPatch(cwd: string, base: string, sourceDirs: string[]): Promise<string> {
+    await cmd(['git', 'add', '-N', '--', ...sourceDirs], cwd);
+    return cmd(['git', 'diff', '--binary', base, '--', ...sourceDirs], cwd);
+}
+
+/**
+ * Unconditional disposal (correction 5): every closer runs whatever the earlier ones did; the failures are
+ * returned for the record, never thrown over the active-window evidence that was captured before disposal began.
+ */
+export async function disposeAll(closers: Iterable<() => Promise<void> | void>): Promise<string[]> {
+    // Each closer is invoked through an async boundary so a synchronous throw cannot skip the rest.
+    const settled = await Promise.allSettled([...closers].map(async (close) => close()));
+    return settled.flatMap((s) => (s.status === 'rejected' ? [String(s.reason).slice(0, 200)] : []));
+}
+
+/** A run record is written fresh: existing attempt evidence is rejected, never overwritten (correction 6). */
+export function writeRecordFresh(path: string, payload: string): void {
+    if (existsSync(path)) throw new Error(`attempt evidence already exists; preserve it and prepare a new cohort: ${path}`);
+    writeFileSync(path, payload, { mode: 0o600 });
+}
+
+async function cmd(args: string[], cwd?: string, timeoutMs = 180_000): Promise<string> {
+    const p = Bun.spawn(args, { cwd, stdout: 'pipe', stderr: 'pipe', detached: true });
+    const timer = setTimeout(() => { try { process.kill(-p.pid, 'SIGKILL'); } catch { /* already gone */ } }, timeoutMs);
+    const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]).finally(() => clearTimeout(timer));
+    if (code) throw new Error(`${args[0]} exit ${code}: ${stderr.slice(0, 300)}`);
+    return stdout;
+}
+
+/** Every regular file below root, hashed; a symlink or special file is refused. */
+function tree(root: string): Record<string, string> {
+    const out: Record<string, string> = {};
+    const walk = (dir: string) => {
+        for (const ent of readdirSync(dir, { withFileTypes: true })) {
+            if (ent.name === '.git') continue;
+            const p = join(dir, ent.name);
+            if (ent.isDirectory()) walk(p);
+            else if (ent.isFile()) out[relative(root, p)] = sha(readFileSync(p));
+            else throw new Error('unexpected nonregular fixture entry');
+        }
+    };
+    walk(root);
+    return out;
+}
+
+const canonical = (o: Record<string, string>) => JSON.stringify(Object.fromEntries(Object.entries(o).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))));
+
+/** The pid of a peer's spawned process. The adapters keep it private; the driver records it once, with its start time. */
+const procPid = (peer: unknown): number | undefined => (peer as { proc?: { pid?: number } }).proc?.pid;
+
+/** The fixture metadata hash: the same five names runner.py's fixture_metadata_sha256 binds, byte-identical JSON. */
+function fixtureMetadataHash(root: string): string {
+    const names = ['AGENTS.md', '.gitignore', '.claude/settings.json', '.agenthub/config.json', '.agenthub/routing.toml'];
+    const values: Record<string, string | null> = {};
+    for (const name of names) values[name] = existsSync(join(root, name)) ? sourceHash(join(root, name)) : null;
+    return sha(JSON.stringify(values));
+}
+
+async function main(): Promise<number> {
+    process.umask(0o077);
+    const argv = process.argv.slice(2);
+    const arg = (name: string) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
+    const runArg = arg('--run'), inputArg = arg('--private-inputs'), upstreamArg = arg('--upstream-root'), probeArg = arg('--probe-target'), qwenPackageArg = arg('--qwen-package');
+    if (!runArg || !inputArg || !upstreamArg || !probeArg || !qwenPackageArg)
+        throw new Error('usage: bun scripts/benchmarks/native-pi-qwen.ts --run RUN_DIR --private-inputs PRIVATE_DIR --upstream-root COOPERBENCH_ROOT --probe-target HIDDEN_FILE --qwen-package QWEN_PACKAGE_DIR [--cases 0,1] [--repeat n] [--setup-only] [--protect PATH ...]');
+    // macOS only: seatbelt, and start times the teardown proves processes by (#115).
+    if (process.platform !== 'darwin') throw new Error(`the native benchmark runner runs on macOS only, not ${process.platform}`);
+    const repo = resolve(import.meta.dir, '../..');
+    const runs = realPath(runArg);
+    const readIfThere = (file: string) => (existsSync(file) ? readFileSync(file, 'utf8') : undefined);
+    const refuseReuse = () => {
+        const reuse = reuseProblem(readIfThere(join(runs, 'restoration.json')), readIfThere(join(runs, 'restoration-ledger.json')));
+        if (reuse) throw new Error(`${reuse}: run bun scripts/benchmarks/restore.ts --run ${runs} first`);
+    };
+    refuseReuse(); // first, before anything is read: locked modes would become the originals (#120)
+    const privateInputs = realPath(inputArg), upstreamRoot = realPath(upstreamArg), qwenPackage = realPath(qwenPackageArg);
+    if (runs === repo || runs.startsWith(repo + '/') || repo.startsWith(runs + '/')) throw new Error('private run root must be outside the repository');
+    if (!existsSync(join(runs, 'prepared.json'))) throw new Error('prepared run missing');
+    const m = JSON.parse(readFileSync(join(runs, 'manifest.json'), 'utf8')), prepared = JSON.parse(readFileSync(join(runs, 'prepared.json'), 'utf8'));
+    if ((lstatSync(runs).mode & 0o777) !== 0o700) throw new Error('run directory must have mode 0700');
+    const selfPath = join(import.meta.dir, 'native-pi-qwen.ts');
+    const pins: Record<string, string> = prepared.source_pins ?? {};
+    const pinProblem = () => {
+        if (prepared.runner_sha256 !== sourceHash(join(import.meta.dir, 'runner.py')) || prepared.pi_qwen_runner_sha256 !== sourceHash(selfPath) || prepared.peer_bus_sha256 !== sourceHash(join(import.meta.dir, 'peer-bus-mcp.py')) || prepared.teardown_sha256 !== sourceHash(join(import.meta.dir, 'teardown.ts')) || prepared.process_table_sha256 !== sourceHash(join(import.meta.dir, '../../src/hub/child-process.ts')) || prepared.evaluator_sha256 !== sourceHash(join(import.meta.dir, 'evaluate.py'))) return 'benchmark runner changed after preparation';
+        for (const [path, digest] of Object.entries(pins)) if (sourceHash(join(repo, path)) !== digest) return `candidate source pin changed: ${path}`;
+        return undefined;
+    };
+    {
+        const problem = pinProblem();
+        if (problem) throw new Error(problem);
+    }
+    const packageJson = JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8'));
+    if (packageJson.version !== m.hub_version || m.versions?.hub !== packageJson.version) throw new Error('hub version differs from the pinned manifest');
+    const config = loadConfig(repo);
+    const omni = new OmniRoute(config.omniroute);
+    const qwenCommand = [realPath(Bun.which('node') ?? (() => { throw new Error('node is unavailable'); })()), '--expose-gc', join(qwenPackage, 'cli.js')];
+    const piCommand: string[] = config.pi.cmd;
+    const peerBus = realPath(join(import.meta.dir, 'peer-bus-mcp.py'));
+    const python = realPath(Bun.which('python3') ?? (() => { throw new Error('python3 is unavailable'); })());
+    if ((await cmd(['git', '-C', upstreamRoot, 'rev-parse', 'HEAD'])).trim() !== m.upstream.commit) throw new Error('pinned CooperBench checkout differs from the manifest');
+
+    const repeat = arg('--repeat') !== undefined ? Number(arg('--repeat')) : 0;
+    if (!Number.isInteger(repeat) || repeat < 0) throw new Error('--repeat takes a whole number (0 for the first repeat)');
+    const selected = arg('--cases') ? arg('--cases')!.split(',').map(Number) : m.cases.map((_: unknown, i: number) => i);
+    if (!selected.length || new Set(selected).size !== selected.length || selected.some((i: number) => !Number.isInteger(i) || i < 0 || i >= m.cases.length)) throw new Error('invalid case selection');
+    const setupOnly = argv.includes('--setup-only');
+
+    // Executable lifecycle preflight (correction 7): every binary the cohort can spawn answers a trivial command
+    // before any fixture is touched, so a broken toolchain fails the run before setup, not mid-attempt.
+    await cmd(['git', '--version']);
+    if (m.arms.some((a: string) => a !== 'solo-qwen')) {
+        const v = parseVersion(await effectiveBuild([...piCommand, '--version'], { cwd: repo }));
+        if (v !== m.versions.pi) throw new Error(`effective Pi build ${v ?? 'unknown'} differs from the pinned ${m.versions.pi}`);
+    }
+    if (m.arms.some((a: string) => a !== 'solo-pi')) {
+        await cmd(['/usr/bin/sandbox-exec', '-p', '(version 1)(allow default)', '/usr/bin/true']);
+        // Exercise the Qwen CLI itself (review #146), with an isolated home as the sessions get it: a missing or
+        // wrong-version package fails here, before any fixture or attempt directory is touched. The per-arm check
+        // then re-verifies the same build inside the seatbelt profile (correction 1).
+        const preflightHome = mkdtempSync(join(tmpdir(), 'ahub-v3-qwen-preflight-'));
+        try {
+            const qv = await effectiveBuild([...qwenCommand, '--version'], { cwd: repo, env: { QWEN_HOME: preflightHome, QWEN_RUNTIME_DIR: preflightHome, TMPDIR: preflightHome } });
+            if (parseVersion(qv) !== m.versions.qwen) throw new Error(`effective Qwen build ${parseVersion(qv) ?? qv.slice(0, 80)} differs from the pinned ${m.versions.qwen}`);
+        } finally {
+            rmSync(preflightHome, { recursive: true, force: true });
+        }
+    }
+    if (m.arms.includes('joint-pi-qwen')) await cmd([python, '-c', 'pass']);
+
+    const probeTarget = realPath(probeArg);
+    const protectedRoots = [privateInputs, upstreamRoot];
+    for (let i = 0; i < argv.length; i++) if (argv[i] === '--protect' && argv[i + 1]) protectedRoots.push(realPath(argv[i + 1]!));
+    if (!protectedRoots.slice(2).length) throw new Error('pass --protect for every prior artifact/session file');
+    if (!existsSync(probeTarget) || !protectedRoots.some((root) => probeTarget === root || probeTarget.startsWith(root + '/'))) throw new Error('sandbox probe target must be inside an exact protected root');
+    const probeTargetSha = sha(await Bun.file(probeTarget).bytes());
+
+    const cachedInputs = m.cases.map((_: unknown, i: number) => JSON.parse(readFileSync(join(privateInputs, `case-${i.toString().padStart(2, '0')}.json`), 'utf8')));
+    const privateCaseHashes: Record<number, string> = {};
+    for (let i = 0; i < cachedInputs.length; i++) {
+        const input = cachedInputs[i], expected = m.cases[i];
+        for (let k = 0; k < 2; k++) if (sha(input.prompts[k]) !== expected.prompt_sha256[k]) throw new Error('private prompt hash mismatch');
+        if (input.repo !== expected.repo || input.task !== expected.task || JSON.stringify(input.features) !== JSON.stringify(expected.features)) throw new Error('private case identity differs from the selected manifest pair');
+        privateCaseHashes[i] = sourceHash(join(privateInputs, `case-${i.toString().padStart(2, '0')}.json`));
+    }
+
+    // Every selected fixture root proved to be the directory preparation left, before anything is written or
+    // launched (#119); each arm checks its own again right before it touches the fixture.
+    const fixtureDir = (i: number, kind: string) => join(runs, 'fixtures', `${i.toString().padStart(2, '0')}-${kind}`);
+    for (const i of selected) for (const kind of m.arms) {
+        const dir = fixtureDir(i, kind), problem = fixtureRootProblem(dir);
+        if (problem) throw new Error(`prepared fixture root was replaced after preparation (${problem}): ${dir}`);
+        if (realPath(dir) !== dir) throw new Error(`prepared fixture root was replaced after preparation (its real path is not its prepared path): ${dir}`);
+    }
+    if ((existsSync(join(runs, 'runs')) && readdirSync(join(runs, 'runs')).length) || existsSync(join(runs, 'recovery')) || existsSync(join(runs, 'attempts'))) throw new Error('run directory already contains attempts; use a new attempt directory');
+
+    const runnerIdentity = processTable()?.find((r) => r.pid === process.pid);
+    if (!runnerIdentity) throw new Error('the process table cannot be read: the runner cannot record what it starts');
+    const actorLedger = new Map<string, Actor[]>();
+    const persistLedger = () => writeAtomic(join(runs, 'restoration-ledger.json'), JSON.stringify({ runner: { pid: runnerIdentity.pid, started: runnerIdentity.started }, protected: { paths: {}, restored: true }, siblings: {}, actors: Object.fromEntries(actorLedger), trust: undefined }, null, 2));
+    refuseReuse(); // again right before the marker (#120)
+    writeAtomic(join(runs, 'restoration.json'), JSON.stringify({ restored: false, reason: 'the runner is running, or died before writing its outcome', runner: { pid: runnerIdentity.pid, started: runnerIdentity.started }, recover: `bun scripts/benchmarks/restore.ts --run ${runs}` }));
+    let stopRequested = false;
+    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(signal, () => { stopRequested = true; });
+    let containmentUncertain = false;
+    const setupClosers = new Set<() => Promise<void> | void>();
+    const summaries: unknown[] = [];
+    let processed = 0;
+    const plannedCells: { caseIndex: number; arm: string }[] = [];
+    for (const i of selected) for (const kind of v3ArmOrder(m.arms, i, repeat, m.cases.length)) plannedCells.push({ caseIndex: i, arm: kind });
+
+    async function arm(index: number, kind: string): Promise<void> {
+        const problem = pinProblem();
+        if (problem) throw new Error(problem);
+        const cas = m.cases[index], name = `${index.toString().padStart(2, '0')}-${kind}`, dir = fixtureDir(index, kind);
+        const sourceDirs: string[] = cas.source_dirs;
+        const preparedFixture = prepared.fixtures.find((x: { case: number; arm: string }) => x.case === index && x.arm === kind);
+        if (!preparedFixture || resolve(preparedFixture.cwd) !== resolve(dir)) throw new Error('fixture baseline identity mismatch');
+        const identity: FixtureRootIdentity = captureFixtureRoot(dir);
+        if (realPath(dir) !== dir) throw new Error(`prepared fixture root was replaced after preparation (its real path is not its prepared path): ${dir}`);
+        // Correction 6: existing attempt evidence rejects the arm before anything is written.
+        const attemptDir = join(runs, 'attempts', name);
+        if (existsSync(attemptDir)) throw new Error('attempt directory exists; never reuse an attempted fixture');
+        mkdirSync(attemptDir, { recursive: true, mode: 0o700 });
+        claimExclusive(join(attemptDir, 'started.json'), JSON.stringify({ runnerPid: process.pid, at: new Date().toISOString(), sourceSHA256: sourceHash(selfPath), attemptId: name }));
+        const base = (await cmd(['git', 'rev-parse', 'HEAD'], dir)).trim();
+        const initial = tree(dir);
+        if (base !== preparedFixture.base_commit || sha(canonical(initial)) !== preparedFixture.baseline_sha256 || Object.keys(initial).length !== preparedFixture.baseline_paths) throw new Error('fixture baseline changed after preparation');
+        const metadataBaseline = fixtureMetadataHash(dir);
+        const builds: Record<string, { version: string; binary: string }> = {};
+        const events: unknown[] = [];
+        const answers: Record<string, string[]> = { pi: [], qwen: [] };
+        const nativeTools: unknown[] = [];
+        const deniedNative = new Set<string>();
+        const owners = new Map<string, Actor>();
+        const tokens: { pi: number; qwen: number | null } = { pi: 0, qwen: null };
+        let active = false, deadline: number | undefined, relayToken = '';
+        const captureNow = () => {
+            const table = processTable();
+            if (!table) return;
+            extend(owners, table);
+            actorLedger.set(dir, [...owners.values()]);
+            persistLedger();
+        };
+        const log = (event: string, data: Record<string, unknown> = {}) => {
+            const row = { at: new Date().toISOString(), event, ...data };
+            events.push(row);
+            writeAtomic(join(attemptDir, 'events.json'), JSON.stringify(events, null, 2));
+            console.log(JSON.stringify({ attemptId: name, caseIndex: index, repeat, arm: kind, ...row }));
+        };
+        const clean = (text: string) => (relayToken ? text.replaceAll(relayToken, '[redacted]') : text);
+        const peers: (PiPeer | AcpPeer)[] = [];
+        let relay: Awaited<ReturnType<typeof startModelRelay>> | undefined;
+        let endDetail = 'infrastructure-error', error: string | undefined, elapsedMs = 0, started = 0;
+        let activeTree: Record<string, string> | undefined, finalTree: Record<string, string> | undefined;
+        let probeIdentity: { servedModel?: string; provider?: string } = {};
+        const setup = Date.now();
+        try {
+            // The fixed backend's identity, probed fresh each attempt before any generation request.
+            const identityProbe = await omni.chat({ model: m.fixed_backend, messages: [{ role: 'user', content: 'Reply only PIN_OK' }], max_tokens: 20 }, { signal: AbortSignal.timeout(30_000) });
+            if (identityProbe.servedModel !== m.expected_served_model || identityProbe.provider !== m.expected_provider) throw new Error('fixed model/provider identity not verified');
+            probeIdentity = { servedModel: identityProbe.servedModel, provider: identityProbe.provider };
+            log('physical_model_probe', { requested: m.fixed_backend, served: identityProbe.servedModel, provider: identityProbe.provider, replyPresent: !!identityProbe.message.content?.trim() });
+
+            relay = await startModelRelay({
+                omni,
+                allowedDGXmodels: { 'dgx/coding': m.fixed_backend },
+                admitRequest: async () => {
+                    if (stopRequested) return { allowed: false, reason: 'study interrupted' };
+                    const remainingMs = deadline === undefined ? undefined : deadline - Date.now();
+                    if (remainingMs !== undefined && remainingMs <= 0) return { allowed: false, reason: 'active wall limit reached' };
+                    return { allowed: true, ...(remainingMs === undefined ? {} : { remainingMs }) };
+                },
+            });
+            relayToken = relay.token;
+            setupClosers.add(async () => { await relay?.close(); });
+            const bus = new Bus({ batchMs: 0 });
+            const toolToken = randomUUID();
+            const toolServer = Bun.serve({
+                hostname: '127.0.0.1', port: 0,
+                async fetch(req) {
+                    if (req.headers.has('origin') || req.headers.get('authorization') !== 'Bearer ' + toolToken) return new Response('denied', { status: 403 });
+                    const a = (await req.json()) as { text?: unknown };
+                    if (kind !== 'joint-pi-qwen' || !active) return new Response('unavailable', { status: 403 });
+                    bus.publish(newEnvelope('qwen', String(a.text).slice(0, 4000), { to: ['pi'] }));
+                    log('peer_message', { from: 'qwen', to: 'pi', chars: String(a.text).length });
+                    return new Response('ok');
+                },
+            });
+            setupClosers.add(() => { toolServer.stop(true); });
+            const relayPort = new URL(relay.url).port;
+
+            const hasQwen = kind !== 'solo-pi', hasPi = kind !== 'solo-qwen';
+            let sb: string | undefined;
+            if (hasQwen) {
+                const sandbox = profile(dir, false, [], []);
+                const qhome = join(attemptDir, 'qwen-home');
+                mkdirSync(qhome, { mode: 0o700 });
+                const temp = join(attemptDir, 'qwen-temp');
+                mkdirSync(temp, { mode: 0o700 });
+                const qprofile = sandbox + `\n(allow file-read* (subpath ${sbplString(qwenPackage)}))\n(allow file-read* file-write* (subpath ${sbplString(qhome)}) (subpath ${sbplString(temp)}))\n(allow file-read* (literal ${sbplString(peerBus)}))\n(allow network-outbound (remote ip ${sbplString('localhost:' + relayPort)}) (remote ip ${sbplString('localhost:' + String(toolServer.port))}))\n(deny file-write* (subpath ${sbplString(dir)}))\n(allow file-write* ${sourceDirs.map((d) => '(subpath ' + sbplString(join(dir, d)) + ')').join(' ')})\n(deny file-write* (subpath ${sbplString(join(dir, 'tests'))}) (subpath ${sbplString(join(dir, '.git'))}) (literal ${sbplString(join(dir, 'AGENTS.md'))}))`;
+                sb = join(attemptDir, 'qwen.sb');
+                writeFileSync(sb, qprofile, { mode: 0o600 });
+                // Correction 1: the effective build under the final isolation environment (seatbelt profile,
+                // QWEN_HOME and TMPDIR as the session gets them), never the PATH bootstrap's report.
+                const qv = await effectiveBuild([...qwenCommand, '--version'], { cwd: dir, env: { QWEN_HOME: qhome, QWEN_RUNTIME_DIR: qhome, TMPDIR: temp }, sandboxProfile: sb });
+                if (parseVersion(qv) !== m.versions.qwen) throw new Error(`effective Qwen build ${parseVersion(qv) ?? qv.slice(0, 80)} differs from the pinned ${m.versions.qwen}`);
+                builds.qwen = { version: m.versions.qwen, binary: join(qwenPackage, 'cli.js') };
+                log('native_version', { peer: 'qwen', ...builds.qwen });
+                // The kernel denies the protected read under this profile before any agent runs.
+                const check = Bun.spawnSync(['/usr/bin/sandbox-exec', '-f', sb, '/bin/sh', '-c', 'head -c 1 "$1" >/dev/null 2>&1; test "$?" -ne 0', 'probe', probeTarget], { cwd: dir });
+                if (check.exitCode) throw new Error('kernel protected-file denial failed');
+                log('kernel_probe', { denied: true });
+            }
+            if (hasPi) {
+                const pv = parseVersion(await effectiveBuild([...piCommand, '--version'], { cwd: dir }));
+                if (pv !== m.versions.pi) throw new Error(`effective Pi build ${pv ?? 'unknown'} differs from the pinned ${m.versions.pi}`);
+                builds.pi = { version: m.versions.pi, binary: piCommand.join(' ') };
+                log('native_version', { peer: 'pi', ...builds.pi });
+            }
+
+            const excluded = ['exec', 'run_shell_command', 'agent', 'skill', 'save_memory', 'web_fetch', 'web_search', 'image_gen', 'lsp', 'cron_create', 'cron_list', 'cron_delete', 'loop_wakeup', 'create_sub_session', 'list_agents', 'task_stop', 'task_create', 'task_update', 'task_list', 'team_create', 'team_delete', 'team_plan_approval', 'request_shutdown', 'send_message', 'monitor', 'notebook_edit', 'read_mcp_resource', 'enter_worktree', 'exit_worktree', 'workflow', 'artifact', 'record_artifact', 'record_source', 'report_findings', 'get_goal', 'update_goal', 'propose_goal'];
+            if (hasPi) {
+                const sandbox = profile(dir, false, [], []);
+                const pi = new PiPeer('pi', {
+                    cwd: dir, stateDir: join(attemptDir, 'pi-state'), mode: 'headless', backend: 'dgx', model: 'dgx/coding', cmd: piCommand,
+                    relay: { url: relay.url, token: relay.token, models: relay.models.map((id) => ({ id, contextWindow: 262144, maxTokens: 4096 })) },
+                    tools: TOOL_SCHEMAS.filter((t) => ['read', 'write', 'edit', 'git', 'hub_send'].includes(t.function.name)).map((t) => t.function),
+                    maxSteps: 100, watchdogMs: 300_000,
+                    onTokens: (n) => { tokens.pi += n; },
+                    onTurnFailure: async (_e, reason) => log('failure', { peer: 'pi', reason: clean(reason) }),
+                    executeTool: async (name, raw, _id, _sid, signal) => {
+                        const a = raw as Record<string, unknown>;
+                        let target = '';
+                        if (stopRequested || (deadline !== undefined && Date.now() >= deadline)) return 'error: attempt stopped before tool execution';
+                        try {
+                            if (['read', 'write', 'edit'].includes(name)) {
+                                const p = guardPath({ cwd: dir, deny: [] }, String(a.path), name === 'read' ? 'read' : 'write');
+                                target = relative(dir, p);
+                                if (name !== 'read' && !isSourcePath(sourceDirs, target)) return 'error: source edits only under ' + sourceDirs.join(', ') + '/';
+                            }
+                            if (name === 'git' && ((a.args as string[] | undefined)?.[0] !== 'ls-files' || (a.args as string[]).some((v: string) => v.startsWith('-') || v.includes('..') || v.startsWith('/')))) return 'error: git ls-files only';
+                            if (name === 'hub_send') {
+                                if (!active || kind !== 'joint-pi-qwen') return 'error: no other assigned peer';
+                                bus.publish(newEnvelope('pi', String(a.text).slice(0, 4000), { to: ['qwen'] }));
+                                log('peer_message', { from: 'pi', to: 'qwen' });
+                                return 'sent';
+                            }
+                            const result = await runTool(name, JSON.stringify(a), { cwd: dir, deny: [], sandboxProfile: sandbox, signal, permit: async () => true, send: () => '' });
+                            log('pi_tool', { name, path: target, ok: !result.startsWith('error:') });
+                            return result;
+                        } catch {
+                            // Correction 2: a native read attempt on the protected file, denied by the guard, is the
+                            // structured evidence; the model's marker alone never proves the probe.
+                            if (name === 'read' && typeof a.path === 'string' && resolve(dir, a.path) === probeTarget) {
+                                deniedNative.add('pi');
+                                log('native_read_denied', { peer: 'pi', guard: 'guardPath' });
+                            }
+                            return 'error: outside benchmark scope';
+                        }
+                    },
+                });
+                peers.push(pi);
+            }
+            if (hasQwen) {
+                const qhome = join(attemptDir, 'qwen-home'), temp = join(attemptDir, 'qwen-temp');
+                const qwen = new AcpPeer('qwen', {
+                    cwd: dir,
+                    cmd: ['/usr/bin/sandbox-exec', '-f', sb!, ...qwenCommand, '--acp', '--bare', '--advisor', 'off', '--auth-type', 'openai', '--model', 'dgx/coding', '--openai-base-url', relay.url, '--approval-mode', 'auto-edit', '--telemetry=false', '--exclude-tools', ...excluded],
+                    env: { OPENAI_API_KEY: relay.token, OMNIROUTE_API_KEY: relay.token, QWEN_HOME: qhome, QWEN_RUNTIME_DIR: qhome, TMPDIR: temp },
+                    launchModel: 'dgx/coding',
+                    preamble: kind === 'joint-pi-qwen' ? 'For implementation contracts to Pi use the exact MCP tool mcp__pilot-peer-bus__hub_send. The unprefixed hub_send tool is not registered in Qwen.' : undefined,
+                    watchdogMs: 300_000,
+                    mcpServers: kind === 'joint-pi-qwen' ? [{ name: 'pilot-peer-bus', command: python, args: [peerBus], env: [{ name: 'AGENTHUB_PILOT_TOOL_URL', value: `http://127.0.0.1:${toolServer.port}` }, { name: 'AGENTHUB_PILOT_TOOL_TOKEN', value: toolToken }] }] : [],
+                    // #138: the adapter resolves the announced `hub_send (pilot-peer-bus MCP Server)` title to the
+                    // canonical name itself; the whitelist is the exact canonical name and nothing else.
+                    autoApprove: (title) => title === 'mcp__pilot-peer-bus__hub_send',
+                    onTokens: (n) => { tokens.qwen = n; },
+                    log: (s) => log('qwen_log', { text: clean(s).slice(0, 500) }),
+                    onPermission: async (req) => {
+                        const match = /\{.*\}/s.exec(req.title);
+                        let a: Record<string, unknown> | undefined;
+                        try { a = match ? (JSON.parse(match[0]) as Record<string, unknown>) : undefined; } catch { a = undefined; }
+                        let allow = !!(a && typeof a.text === 'string' && Object.keys(a).every((k) => k === 'text') && a.text.length <= 4000 && kind === 'joint-pi-qwen' && active);
+                        try {
+                            if (a && !req.title.includes('[cut,') && !('command' in a) && typeof a.file_path === 'string') {
+                                const p = guardPath({ cwd: dir, deny: [] }, a.file_path, 'write');
+                                allow = isSourcePath(sourceDirs, relative(dir, p)) && ((typeof a.old_string === 'string' && typeof a.new_string === 'string') || typeof a.content === 'string');
+                            }
+                        } catch { allow = false; }
+                        if (!allow && a?.file_path === probeTarget) {
+                            deniedNative.add('qwen');
+                            log('native_read_denied', { peer: 'qwen', guard: 'permission' });
+                        }
+                        const option = allow ? req.options.find((o) => o.kind === 'allow_once')?.optionId : undefined;
+                        log('qwen_permission', { tool: req.tool, title: clean(req.title).slice(0, 900), approved: !!option });
+                        return option;
+                    },
+                });
+                peers.push(qwen);
+            }
+            for (const p of peers) bus.add(p);
+            bus.tap((e: BusEvent) => {
+                if (e.t === 'state') log('state', { peer: e.peer, state: e.state });
+                if (e.t === 'envelope' && ['pi', 'qwen'].includes(e.env.from)) {
+                    answers[e.env.from as 'pi' | 'qwen']!.push(e.env.body);
+                    log('answer', { peer: e.env.from, text: clean(e.env.body), dropped: e.dropped });
+                }
+            });
+            for (const peer of peers) {
+                withFixtureRoot(dir, identity, () => {});
+                // Both adapters assign their spawned child synchronously inside start(), before the handshake's
+                // first await. Register it before awaiting startup: a kill while the handshake is in flight must
+                // still find the actor in the ledger, or recovery marks the run restored with the native process
+                // left running (review #146). Signals only ever go to identities read from the table.
+                const startPromise = peer.start();
+                let startSettled = false;
+                void startPromise.then(() => { startSettled = true; }, () => { startSettled = true; });
+                let row;
+                const registerEnd = Date.now() + 10_000;
+                while (!row && !startSettled && Date.now() < registerEnd) {
+                    const pid = procPid(peer);
+                    if (pid !== undefined) {
+                        const table = processTable();
+                        row = table?.find((r) => r.pid === pid);
+                    }
+                    if (!row) await Bun.sleep(25);
+                }
+                if (row) {
+                    owners.set(`${row.pid}@${row.started}`, { role: 'native-peer', pid: row.pid, started: row.started, pgid: row.pgid, via: `the ${peer.id} process this arm launched` });
+                    actorLedger.set(dir, [...owners.values()]);
+                    persistLedger();
+                }
+                await startPromise; // a handshake failure rethrows here, with the child already in the ledger
+                if (!row) throw new Error(`could not prove which process is this arm's ${peer.id}`);
+                captureNow();
+                if (peer.id === 'qwen') {
+                    let buffer = '';
+                    const proc = (peer as unknown as { proc?: { stdout?: NodeJS.EventEmitter } }).proc;
+                    proc?.stdout?.on('data', (b: unknown) => {
+                        buffer += String(b);
+                        while (buffer.includes('\n')) {
+                            const i = buffer.indexOf('\n'), line = buffer.slice(0, i);
+                            buffer = buffer.slice(i + 1);
+                            try {
+                                const msg = JSON.parse(line), u = msg.params?.update;
+                                if (u?.sessionUpdate?.startsWith('tool_call')) {
+                                    nativeTools.push(u);
+                                    const denied = JSON.stringify(u.content ?? []);
+                                    // Correction 2: a failed native read of the protected file, EPERM/EACCES from
+                                    // the kernel, is the structured denial evidence.
+                                    if (u.status === 'failed' && denied.includes(probeTarget) && /EPERM|EACCES|permission denied/i.test(denied)) deniedNative.add('qwen');
+                                    log('qwen_tool', { kind: u.kind, title: clean(String(u.title ?? '')).slice(0, 350), status: u.status, toolCallId: u.toolCallId });
+                                }
+                            } catch { /* not protocol output */ }
+                        }
+                    });
+                }
+                // Setup-only protected-file probe (correction 2): a native read attempt with structured denial
+                // evidence. A model-written AHUB_PROBE_DENIED without that evidence never passes.
+                const count = answers[peer.id]!.length;
+                bus.publish(newEnvelope('user', `Setup-only protected-file probe: attempt to read ${probeTarget} with your native read tool. The file must be inaccessible. Do not infer or implement anything. Final answer exactly [FYI] AHUB_PROBE_DENIED if denied, else [FYI] AHUB_PROBE_ACCESSIBLE.`, { to: [peer.id] }));
+                const deniedRead = () => {
+                    if (peer.id === 'pi') return deniedNative.has('pi');
+                    const reads = new Set(nativeTools.filter((u) => (u as { kind?: string }).kind === 'read').map((u) => (u as { toolCallId?: string }).toolCallId));
+                    return deniedNative.has('qwen') && nativeTools.some((u) => { const t = u as { toolCallId?: string; status?: string }; return reads.has(t.toolCallId) && t.status === 'failed'; });
+                };
+                const settledProbe = () => peer.state === 'idle' && (answers[peer.id]!.length > count || (peer.id === 'qwen' && deniedRead()));
+                const probeStart = Date.now();
+                while (Date.now() - probeStart < 60_000 && !settledProbe()) {
+                    if (peer.state === 'offline' || peer.state === 'paused') throw new Error('probe peer failed');
+                    await Bun.sleep(100);
+                }
+                const probeAnswers = answers[peer.id]!.slice(count);
+                const proven = peer.id === 'qwen' ? deniedRead() : deniedNative.has('pi') && probeAnswers.some((s) => s.includes('AHUB_PROBE_DENIED'));
+                if (peer.state !== 'idle' || !proven || probeAnswers.some((s) => s.includes('AHUB_PROBE_ACCESSIBLE'))) throw new Error('native probe not verified');
+                log('native_probe', { peer: peer.id, denied: true, evidence: peer.id === 'pi' ? 'guard-denial' : 'tool-failure' });
+            }
+            if (setupOnly) { endDetail = 'setup-calibration'; return; }
+
+            const counts = Object.fromEntries(peers.map((p) => [p.id, answers[p.id]!.length]));
+            const assignment = jointAssignment(index, repeat);
+            active = true;
+            started = Date.now();
+            deadline = started + m.wall_limit_s * 1000;
+            log('active_start', { wallLimitSeconds: m.wall_limit_s, sourceDirs, featureAssignments: assignment });
+            for (const peer of peers) {
+                const featurePrompts = kind === 'joint-pi-qwen' ? [cachedInputs[index].prompts[assignment[peer.id as 'pi' | 'qwen']]] : cachedInputs[index].prompts;
+                const instruction = `Implement the assigned CooperBench feature(s) below in the existing ${cas.repo} source. You have a ${m.wall_limit_s} second active wall limit. Read file tools, source edits under ${sourceDirs.join(', ')}/, no shell/tests/network/history/installs/subagents. Preserve other source and tests. ${kind === 'joint-pi-qwen' ? 'Another peer edits this same checkout. Use hub_send to agree overlapping changes; you own only the feature assigned below.' : 'You own BOTH features below.'} Do not read hidden data. Finish the implementation and reply [FYI] with files changed and verification limits.\n\n`;
+                bus.publish(newEnvelope('user', instruction + featurePrompts.join('\n\n'), { to: [peer.id], priority: 'important' }));
+            }
+            endDetail = 'wall-timeout';
+            let quiet = 0, captureAt = 0;
+            while (Date.now() - started < m.wall_limit_s * 1000) {
+                if (stopRequested) { endDetail = 'interrupted'; break; }
+                if (peers.some((p) => p.state === 'paused' || p.state === 'offline')) { endDetail = 'native-failure'; break; }
+                if (Date.now() - captureAt >= 5000) { captureNow(); captureAt = Date.now(); }
+                const done = peers.every((p) => p.state === 'idle' && answers[p.id]!.length > (counts[p.id] ?? 0) && (bus.snapshot().queues[p.id]?.length ?? 0) === 0);
+                if (done) {
+                    quiet ||= Date.now();
+                    if (Date.now() - quiet >= 1000) { endDetail = 'completed'; break; }
+                } else quiet = 0;
+                await Bun.sleep(100);
+            }
+            elapsedMs = Date.now() - started;
+            active = false;
+            activeTree = tree(dir); // the active-window record, captured before any disposal (correction 5)
+            log('active_end', { reason: endDetail, elapsedMs });
+        } catch (e) {
+            error = clean(String(e));
+            endDetail = stopRequested ? 'interrupted' : 'infrastructure-error';
+            log('infrastructure_failure', { error });
+        } finally {
+            active = false;
+            const teardownErrors: string[] = [];
+            const note = (e: string) => { teardownErrors.push(e); log('cleanup-error', { error: e }); };
+            const uncertainBefore = containmentUncertain;
+            containmentUncertain = true;
+            try { captureNow(); } catch (e) { note(`the last capture failed: ${String(e).slice(0, 200)}`); }
+            const cleanup = await teardown([...owners.values()], dir, async () => {
+                const errors: string[] = [];
+                for (const p of [...peers].reverse()) {
+                    try { await p.stop(); } catch (e) { errors.push(`${p.id} stop: ${String(e).slice(0, 200)}`); }
+                }
+                return errors;
+            });
+            const contained = cleanup.outcome !== 'incomplete_or_unknown';
+            if (contained) containmentUncertain = uncertainBefore;
+            else log('cleanup-incomplete', { reasons: cleanup.reasons });
+            // Per-request served-model evidence, snapshotted from the relay's journal before it closes (#139).
+            const requestRecords = relay?.requests() ?? [];
+            const qualification = qualifyRequests(requestRecords, { backend: m.fixed_backend, servedModel: m.expected_served_model, provider: m.expected_provider });
+            if (!qualification.verified) log('request_linkage_failed', { reasons: qualification.reasons });
+            // Unconditional disposal on every exit path; a closure failure is recorded and never erases the
+            // active-window record captured above, and the relay is never left open (correction 5).
+            for (const e of await disposeAll(setupClosers)) note(`disposal: ${e}`);
+            setupClosers.clear();
+            try { finalTree = tree(dir); } catch (e) { note(`final tree could not be read: ${String(e).slice(0, 200)}`); }
+            const endFlags: string[] = [];
+            const changed = finalTree ? Object.keys({ ...initial, ...finalTree }).filter((p) => initial[p] !== finalTree![p]) : [];
+            const metadataClean = finalTree ? changed.every((p) => isSourcePath(sourceDirs, p)) && fixtureMetadataHash(dir) === metadataBaseline : false;
+            if (!metadataClean) endFlags.push('metadata-modified');
+            const lateWrites = activeTree && finalTree ? canonical(activeTree) !== canonical(finalTree) : null;
+            if (lateWrites !== false && endDetail === 'completed') endFlags.push(lateWrites ? 'tree-changed-after-active-time' : 'tree-unverified-after-active-time');
+            let patch = '';
+            try { patch = await collectSubmissionPatch(dir, base, sourceDirs); } catch (e) { note(`patch could not be collected: ${String(e).slice(0, 200)}`); }
+            actorLedger.set(dir, cleanup.owned);
+            persistLedger();
+            const recordRoot = contained ? runs : join(runs, 'recovery');
+            mkdirSync(join(recordRoot, 'runs'), { recursive: true, mode: 0o700 });
+            mkdirSync(join(recordRoot, 'patches'), { recursive: true, mode: 0o700 });
+            const patchFile = join(recordRoot, 'patches', name + '.patch');
+            writeFileSync(patchFile, patch, { mode: 0o600 });
+            const readiness: Record<string, unknown> = {};
+            for (const p of peers) readiness[p.id] = { cwd: dir, requestedModel: 'dgx/coding', sessionId: (p.recoveryMetadata() as { sessionId?: string }).sessionId, sandboxProbe: { checked: true, result: 'denied', evidence: p.id === 'pi' ? 'guard-denial' : 'tool-failure', target_sha256: probeTargetSha } };
+            const record = {
+                protocol: 'native-pq-v3', platform: process.platform, index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: base,
+                readiness, patchFile, sourceDirs, featureAssignments: jointAssignment(index, repeat),
+                modelIdentity: { requested: m.fixed_backend, expectedServedModel: m.expected_served_model, expectedProvider: m.expected_provider, probe: probeIdentity, generationVerified: qualification.verified, generationFailureReasons: qualification.verified ? undefined : qualification.reasons, requests: requestRecords },
+                requestLinkage: qualification.coverage,
+                nativeVersions: builds, repeat, setupMs: (started || Date.now()) - setup, elapsedMs, startedAt: started || undefined,
+                usage: { pi: tokens.pi, qwen: tokens.qwen, units: { pi: 'incremental onTokens counter, whole attempt including the setup probes', qwen: 'session usage_update running total, whole attempt including the setup probes' }, toolSurfaces: { pi: 'hub-moderated read/write/edit/git ls-files/hub_send tools', qwen: 'own file tools under seatbelt auto-edit, the excluded list, hub_send over MCP in the joint arm' } },
+                end_reason: endReasonOf(endDetail, endFlags), end_reason_detail: endDetail, end_flags: endFlags.length ? endFlags : undefined,
+                error: error ? error.replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/gi, '$1$2[redacted]').slice(0, 300) : undefined,
+                cleanup, cleanup_complete: contained, teardown_errors: teardownErrors.length ? teardownErrors : undefined,
+                metadata_clean: metadataClean, metadata_sha256: metadataBaseline, tree_changed_after_active_time: lateWrites, changedPaths: changed,
+                events, answers, patchSHA256: sha(patch), patchBytes: Buffer.byteLength(patch),
+            };
+            writeRecordFresh(join(recordRoot, 'runs', name + '.json'), JSON.stringify(record, null, 2));
+            log('arm-end', { elapsedMs, endReason: record.end_reason, cleanup: cleanup.outcome, patchBytes: record.patchBytes });
+            summaries.push({ attemptId: name, caseIndex: index, repeat, arm: kind, endReason: record.end_reason, elapsedMs, cleanupComplete: contained, generationVerified: qualification.verified });
+            processed++;
+            writeAtomic(join(runs, 'progress.json'), JSON.stringify({ at: new Date().toISOString(), processed, planned: plannedCells.length, current: name, summaries }, null, 2));
+            if (!contained) throw new Error(`cleanup ${cleanup.outcome}: ${cleanup.reasons.join('; ')}; record in ${join(recordRoot, 'runs', name + '.json')}`);
+            if (teardownErrors.length) throw new Error('teardown incomplete; stopping cohort: ' + teardownErrors.join('; '));
+        }
+    }
+
+    claimExclusive(join(runs, 'native-owner.json'), JSON.stringify({ pid: process.pid, at: new Date().toISOString(), sourceSHA256: sourceHash(selfPath) }));
+    mkdirSync(join(runs, 'runs'), { recursive: true, mode: 0o700 });
+    mkdirSync(join(runs, 'patches'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(runs, 'cohort.json'), JSON.stringify({ schema: m.schema, manifest_sha256: sourceHash(join(runs, 'manifest.json')), cases: selected, calibration: setupOnly, repeat, private_case_sha256: Object.fromEntries(selected.map((i: number) => [i, privateCaseHashes[i]])), arms: m.arms, plan: plannedCells, runner_sha256: prepared.runner_sha256, native_runner_sha256: prepared.native_runner_sha256, pi_qwen_runner_sha256: prepared.pi_qwen_runner_sha256, peer_bus_sha256: prepared.peer_bus_sha256, teardown_sha256: prepared.teardown_sha256 }), { mode: 0o600 });
+    persistLedger();
+    try {
+        for (const cell of plannedCells) {
+            if (stopRequested) break;
+            const name = `${cell.caseIndex.toString().padStart(2, '0')}-${cell.arm}`;
+            try {
+                await arm(cell.caseIndex, cell.arm);
+            } catch (e) {
+                // Disposal before any fallback write (corrections 5 and 6): a failed arm never leaves the relay or
+                // the tool server open, and a fallback record is written only where no record exists yet — existing
+                // attempt evidence is rejected, never overwritten.
+                for (const err of await disposeAll(setupClosers)) console.log(JSON.stringify({ event: 'disposal-error', error: err }));
+                setupClosers.clear();
+                if (!existsSync(join(runs, 'runs', name + '.json')) && !existsSync(join(runs, 'recovery', 'runs', name + '.json'))) {
+                    const record = { protocol: 'native-pq-v3', platform: process.platform, index: cell.caseIndex, kind: cell.arm, repo: m.cases[cell.caseIndex].repo, features: m.cases[cell.caseIndex].features, cwd: fixtureDir(cell.caseIndex, cell.arm), sealedCommit: '', readiness: {}, patchFile: '', modelIdentity: { requested: m.fixed_backend, generationVerified: false, requests: [] }, requestLinkage: { requests: 0, completed: 0, identified: 0, cancelledUnidentified: 0, mismatches: 0, providerMissing: 0 }, nativeVersions: {}, repeat, end_reason: 'infrastructure-error', end_reason_detail: stopRequested ? 'interrupted' : 'infrastructure-error', error: String(e).slice(0, 300), cleanup_complete: false, metadata_clean: false, events: [], answers: {}, patchSHA256: sha(''), patchBytes: 0 };
+                    writeRecordFresh(join(runs, 'runs', name + '.json'), JSON.stringify(record, null, 2));
+                    summaries.push({ attemptId: name, caseIndex: cell.caseIndex, repeat, arm: cell.arm, endReason: 'infrastructure-error', cleanupComplete: false });
+                    processed++;
+                }
+                console.log(JSON.stringify({ event: 'arm-failed', attemptId: name, error: String(e).slice(0, 300) }));
+                stopRequested = true; // an infrastructure failure stops the cohort; every planned cell stays reported
+            }
+        }
+    } finally {
+        if (containmentUncertain) {
+            writeAtomic(join(runs, 'restoration.json'), JSON.stringify({ restored: false, reason: "an arm's cleanup is incomplete or unknown", ledger: 'restoration-ledger.json', records: 'recovery/runs', recover: `bun scripts/benchmarks/restore.ts --run ${runs}`, interrupted: stopRequested }));
+        } else {
+            writeAtomic(join(runs, 'restoration.json'), JSON.stringify({ restored: true, interrupted: stopRequested }));
+        }
+        writeAtomic(join(runs, 'native-outcome.json'), JSON.stringify({ at: new Date().toISOString(), processed, planned: plannedCells.length, complete: processed === plannedCells.length, interrupted: stopRequested }, null, 2));
+    }
+    console.log(JSON.stringify({ event: 'run-complete', processed, planned: plannedCells.length, complete: processed === plannedCells.length }));
+    return processed === plannedCells.length ? 0 : 1;
+}
+
+if (import.meta.main) {
+    main().then(
+        (code) => { process.exitCode = code; },
+        (e) => { console.error(String(e)); process.exitCode = 2; },
+    );
+}

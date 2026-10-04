@@ -1,0 +1,260 @@
+{
+  "schema": "agent-hub.cooperbench-run/v1",
+  "upstream": {
+    "repository": "https://github.com/CooperBench/CooperBench",
+    "commit": "63b9d44d9f39a02fccf5bf0052db48a917a011fd"
+  },
+  "hub_version": "0.12.8",
+  "versions": {
+    "hub": "0.12.8",
+    "pi": "1.0.1",
+    "qwen": "0.24.7"
+  },
+  "models": {
+    "pi": "dgx/coding",
+    "qwen": "dgx/coding"
+  },
+  "fixed_backend": "flashnext/qwen3.8-flash-next",
+  "expected_served_model": "qwen3.8-flash-next",
+  "expected_provider": "openai-compatible-chat-ad53dd63-91e8-408e-8421-6148ed911489",
+  "headless": true,
+  "arms": [
+    "solo-pi",
+    "solo-qwen",
+    "joint-pi-qwen"
+  ],
+  "wall_limit_s": 300,
+  "memory": false,
+  "inference": false,
+  "topology": "Headless native arms (issue #140): solo native Pi; solo native Qwen (ACP, seatbelt-sandboxed, QWEN_HOME-isolated); and Pi plus Qwen on one shared fixture checkout coordinating through one MCP peer tool (hub_send over the pilot peer bus). Both agents are served by one fixed backend behind the hub's model relay; every upstream request is journaled as a RelayRequestRecord (#139) and per-request identity qualifies the attempt. Every final artifact is graded by official tests.",
+  "cases": [
+    {
+      "repo": "pallets_click_task",
+      "task": 2068,
+      "features": [
+        1,
+        6
+      ],
+      "image_digest": "akhatua/cooperbench-pallets-click@sha256:2116cc975812211cdae8b97f63069c666b7fffc490ce0d329f8853e241342386",
+      "base_commit": "d791537317947448a3960662d00acf160eff2602",
+      "archive_sha256": "4296f993ec9f220476637f45b813dbb62bf0a40b10339089918fbc03b29f3b47",
+      "prompt_sha256": [
+        "6fc1156c2df73cb467c5742b2d0f19cc14760e1c686cd616b0ef1653df4ef606",
+        "634e4a083e1f088283f0d91dbf06d4f114228656b30493b87c706dd84cf76372"
+      ],
+      "image": "akhatua/cooperbench-pallets-click:task2068",
+      "source_dirs": [
+        "src"
+      ]
+    },
+    {
+      "repo": "pallets_click_task",
+      "task": 2068,
+      "features": [
+        2,
+        10
+      ],
+      "image_digest": "akhatua/cooperbench-pallets-click@sha256:2116cc975812211cdae8b97f63069c666b7fffc490ce0d329f8853e241342386",
+      "base_commit": "d791537317947448a3960662d00acf160eff2602",
+      "archive_sha256": "4296f993ec9f220476637f45b813dbb62bf0a40b10339089918fbc03b29f3b47",
+      "prompt_sha256": [
+        "90bd71e1d55949828571723fbd91b4ad4f5439663a1444e3fefebc849f0f4764",
+        "dbc931039f8a439a3a14aa1f505909020c907c35e26d39e833a8d025dc1455b9"
+      ],
+      "image": "akhatua/cooperbench-pallets-click:task2068",
+      "source_dirs": [
+        "src"
+      ]
+    },
+    {
+      "repo": "pallets_click_task",
+      "task": 2068,
+      "features": [
+        5,
+        7
+      ],
+      "image_digest": "akhatua/cooperbench-pallets-click@sha256:2116cc975812211cdae8b97f63069c666b7fffc490ce0d329f8853e241342386",
+      "base_commit": "d791537317947448a3960662d00acf160eff2602",
+      "archive_sha256": "4296f993ec9f220476637f45b813dbb62bf0a40b10339089918fbc03b29f3b47",
+      "prompt_sha256": [
+        "85164f29f9885891d2468870a5070b1960f47ac789872e5563de20d479dfb96f",
+        "1b916bfeb8bc3c0b5f4b8db7e3b1149954cc228d5a4c9e6a049fba61a7c9e109"
+      ],
+      "image": "akhatua/cooperbench-pallets-click:task2068",
+      "source_dirs": [
+        "src"
+      ]
+    },
+    {
+      "repo": "pallets_click_task",
+      "task": 2068,
+      "features": [
+        5,
+        11
+      ],
+      "image_digest": "akhatua/cooperbench-pallets-click@sha256:2116cc975812211cdae8b97f63069c666b7fffc490ce0d329f8853e241342386",
+      "base_commit": "d791537317947448a3960662d00acf160eff2602",
+      "archive_sha256": "4296f993ec9f220476637f45b813dbb62bf0a40b10339089918fbc03b29f3b47",
+      "prompt_sha256": [
+        "85164f29f9885891d2468870a5070b1960f47ac789872e5563de20d479dfb96f",
+        "0e46eef13fc12ac0ea871b094f1cc9baa1c9c75c614325306559160d4991d5e0"
+      ],
+      "image": "akhatua/cooperbench-pallets-click:task2068",
+      "source_dirs": [
+        "src"
+      ]
+    },
+    {
+      "repo": "pallets_click_task",
+      "task": 2068,
+      "features": [
+        6,
+        7
+      ],
+      "image_digest": "akhatua/cooperbench-pallets-click@sha256:2116cc975812211cdae8b97f63069c666b7fffc490ce0d329f8853e241342386",
+      "base_commit": "d791537317947448a3960662d00acf160eff2602",
+      "archive_sha256": "4296f993ec9f220476637f45b813dbb62bf0a40b10339089918fbc03b29f3b47",
+      "prompt_sha256": [
+        "634e4a083e1f088283f0d91dbf06d4f114228656b30493b87c706dd84cf76372",
+        "1b916bfeb8bc3c0b5f4b8db7e3b1149954cc228d5a4c9e6a049fba61a7c9e109"
+      ],
+      "image": "akhatua/cooperbench-pallets-click:task2068",
+      "source_dirs": [
+        "src"
+      ]
+    },
+    {
+      "repo": "pallets_click_task",
+      "task": 2068,
+      "features": [
+        7,
+        10
+      ],
+      "image_digest": "akhatua/cooperbench-pallets-click@sha256:2116cc975812211cdae8b97f63069c666b7fffc490ce0d329f8853e241342386",
+      "base_commit": "d791537317947448a3960662d00acf160eff2602",
+      "archive_sha256": "4296f993ec9f220476637f45b813dbb62bf0a40b10339089918fbc03b29f3b47",
+      "prompt_sha256": [
+        "1b916bfeb8bc3c0b5f4b8db7e3b1149954cc228d5a4c9e6a049fba61a7c9e109",
+        "dbc931039f8a439a3a14aa1f505909020c907c35e26d39e833a8d025dc1455b9"
+      ],
+      "image": "akhatua/cooperbench-pallets-click:task2068",
+      "source_dirs": [
+        "src"
+      ]
+    },
+    {
+      "repo": "pallets_jinja_task",
+      "task": 1465,
+      "features": [
+        2,
+        3
+      ],
+      "image_digest": "akhatua/cooperbench-pallets-jinja@sha256:c8c7802ed974eb11dff1692f2de9e58b75f01c7128a54bd258a157beb4714f7b",
+      "base_commit": "20eb7f5e33120f1717b78bdf85540ab75631187a",
+      "archive_sha256": "4954001d59d8e891939f7219d21c18001f61564691fdbfa893a87cfb7a6eb2c1",
+      "prompt_sha256": [
+        "04b563486caae8c7d485dce459df098073c86ab64835628e68ae3ed0f6b31ff1",
+        "a824981ca0072bf3629b7fd69e99c909e3747973dd62426af1a460e2f1d9ae39"
+      ],
+      "image": "akhatua/cooperbench-pallets-jinja:task1465",
+      "source_dirs": [
+        "src"
+      ]
+    },
+    {
+      "repo": "pallets_jinja_task",
+      "task": 1465,
+      "features": [
+        2,
+        6
+      ],
+      "image_digest": "akhatua/cooperbench-pallets-jinja@sha256:c8c7802ed974eb11dff1692f2de9e58b75f01c7128a54bd258a157beb4714f7b",
+      "base_commit": "20eb7f5e33120f1717b78bdf85540ab75631187a",
+      "archive_sha256": "4954001d59d8e891939f7219d21c18001f61564691fdbfa893a87cfb7a6eb2c1",
+      "prompt_sha256": [
+        "04b563486caae8c7d485dce459df098073c86ab64835628e68ae3ed0f6b31ff1",
+        "d569c1b220395dc69e06e6444e2f82a8e5dcdd913b5222fba6654ead5f339f7e"
+      ],
+      "image": "akhatua/cooperbench-pallets-jinja:task1465",
+      "source_dirs": [
+        "src"
+      ]
+    },
+    {
+      "repo": "samuelcolvin_dirty_equals_task",
+      "task": 43,
+      "features": [
+        2,
+        3
+      ],
+      "image_digest": "akhatua/cooperbench-samuelcolvin-dirty-equals@sha256:c0d0ab8de32ec280797c0043d29c2904389b786cb8ad9f44fbf7b79032d68926",
+      "base_commit": "593bcccf738ab8b724d7cb860881d74344171f5f",
+      "archive_sha256": "169001ec5cb6f6917b25db77a5f9c754ed698593c67c64c01ae4a168129b7703",
+      "prompt_sha256": [
+        "aa7bfdbf0590c17798461e5d4f87745e00648eba92b9c7dfba2342c87b5a66d4",
+        "75e3ca2ec8bd9d5b63d4a200c69cd49380b57c2c503f10e629ba8207832d4ae6"
+      ],
+      "image": "akhatua/cooperbench-samuelcolvin-dirty-equals:task43",
+      "source_dirs": [
+        "dirty_equals"
+      ]
+    },
+    {
+      "repo": "samuelcolvin_dirty_equals_task",
+      "task": 43,
+      "features": [
+        3,
+        7
+      ],
+      "image_digest": "akhatua/cooperbench-samuelcolvin-dirty-equals@sha256:c0d0ab8de32ec280797c0043d29c2904389b786cb8ad9f44fbf7b79032d68926",
+      "base_commit": "593bcccf738ab8b724d7cb860881d74344171f5f",
+      "archive_sha256": "169001ec5cb6f6917b25db77a5f9c754ed698593c67c64c01ae4a168129b7703",
+      "prompt_sha256": [
+        "75e3ca2ec8bd9d5b63d4a200c69cd49380b57c2c503f10e629ba8207832d4ae6",
+        "616af688a762e61edd65b82d5a0baea0b4773e8da54177658e6acb8f14d4e8a1"
+      ],
+      "image": "akhatua/cooperbench-samuelcolvin-dirty-equals:task43",
+      "source_dirs": [
+        "dirty_equals"
+      ]
+    }
+  ],
+  "limitations": [
+    "ten-pair convenience sample across three task repositories; not the full 652-pair suite",
+    "shared checkout with custom native Pi/Qwen wiring; not the canonical Claude/Codex four-arm protocol and not isolated official CooperBench coop",
+    "native tool surfaces differ between Pi and Qwen (Pi tools are hub-moderated, Qwen edits through its own auto-edit tools under seatbelt); no pure native-client causal comparison",
+    "case 0 was exposed in a prior feasibility pilot; the selected cases are not all independent features",
+    "no hidden-test feedback reaches the candidate agents during generation; every planned attempt is retained and a failed quality result is never a retry selector",
+    "main-model calls are pinned to one explicit provider/model backend; gateway heartbeat labels are recorded separately and never identify a request",
+    "300 s active wall budget per attempt, not a token- or dollar-matched budget; Pi usage is an incremental onTokens counter and Qwen usage comes from its session usage_update events, so the two units are not added together"
+  ],
+  "sampling": "All official flash pairs from three selected task images, fixed before inference as a local-resource convenience sample; not representative of the full suite.",
+  "actor_assignment": "In the joint arm, Pi receives feature index (caseIndex+repeat)%2 and Qwen the other, fixed before any model call.",
+  "order_rule": "Row repeat*10+caseIndex of the six-row odd-n Williams layout: three [0,1,2] rows shifted by the row index, followed by their reverses (row//3 odd).",
+  "stop_conditions": [
+    "both peers idle with an answer and no queued deliveries",
+    "300 second active-work limit",
+    "a peer paused or offline",
+    "operator interruption (SIGHUP, SIGINT, SIGTERM)"
+  ],
+  "plan": {
+    "study": {
+      "purpose": "versioned Pi/Qwen native study (issue #140); feasibility and calibration evidence, not a leaderboard claim",
+      "cases": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "repeats": 2,
+      "attempts": 60,
+      "active_ceiling_s": 18000
+    }
+  }
+}
