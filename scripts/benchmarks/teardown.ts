@@ -12,7 +12,7 @@ import { realPath } from '../../src/hub/project.ts';
  * `clean_with_fallback` or `incomplete_or_unknown` it got. A process it cannot prove is the arm's is never signalled.
  */
 
-export type Role = 'daemon' | 'codex-app-server' | 'claude' | 'below';
+export type Role = 'daemon' | 'codex-app-server' | 'claude' | 'native-peer' | 'below';
 export interface Actor { role: Role; pid: number; started: string; pgid: number; via: string }
 export interface Cleanup {
     outcome: 'clean' | 'clean_with_fallback' | 'incomplete_or_unknown';

@@ -8,8 +8,12 @@ PROCESS_TABLE=Path(__file__).resolve().parents[2]/"src"/"hub"/"child-process.ts"
 SCHEMA = "agent-hub.cooperbench-run/v1"
 ARMS_V1 = ("solo-codex", "solo-claude", "hub-codex-claude")
 # Issue #110: manifest v2 adds the turn-free collaboration arm; a v1 manifest keeps its three arms for earlier cohorts;
-# the #106 ablation compares the advisory arm with the same arm with stale-notice dropping off.
-PROTOCOL_ARMS = (ARMS_V1, ARMS_V1 + ("hub-turnfree-codex-claude",), ("hub-codex-claude", "hub-staleoff-codex-claude"))
+# the #106 ablation compares the advisory arm with the same arm with stale-notice dropping off. Issue #140: manifest v3
+# is the headless Pi/Qwen protocol (solo-pi, solo-qwen, joint-pi-qwen).
+ARMS_V3 = ("solo-pi", "solo-qwen", "joint-pi-qwen")
+PROTOCOL_ARMS = (ARMS_V1, ARMS_V1 + ("hub-turnfree-codex-claude",), ("hub-codex-claude", "hub-staleoff-codex-claude"), ARMS_V3)
+# The candidate sources a v3 cohort's attempts ran with (#138 tool-identity binding, #139 per-request journal).
+SOURCE_PIN_PATHS = ("src/adapters/pi.ts", "src/adapters/acp.ts", "src/models/relay.ts")
 
 class BenchError(RuntimeError): pass
 
@@ -32,6 +36,8 @@ def arms_of(m):
 
 def required_actors(arm):
     """The native actors an arm's run record must show: both for a joint arm, one for a solo arm."""
+    if arm == "joint-pi-qwen": return ["pi", "qwen"]
+    if arm in ("solo-pi", "solo-qwen"): return [arm.removeprefix("solo-")]
     return ["codex","claude"] if arm.startswith("hub-") else [arm.removeprefix("solo-")]
 
 def check_plan(m):
@@ -171,6 +177,20 @@ def validate_manifest(m):
         if not isinstance(prompts,list) or len(prompts)!=2 or any(not re.fullmatch(r"[0-9a-f]{64}",str(x)) for x in prompts): raise BenchError("missing feature prompt digests")
         if not re.search(r"@sha256:[0-9a-f]{64}$",str(c.get("image_digest",""))): raise BenchError("container image is not digest-pinned")
         if not re.fullmatch(r"[0-9a-f]{40}",str(c.get("base_commit",""))): raise BenchError("base commit is not pinned")
+    if tuple(m.get("arms") or ())==ARMS_V3:
+        # Issue #140: the v3 protocol pins the effective native builds, the fixed backend and its expected served
+        # identity, and each case's guarded source layout (src/ for Click/Jinja, dirty_equals/ for dirty_equals).
+        if m.get("headless") is not True: raise BenchError("a v3 manifest is the headless protocol")
+        versions=m.get("versions") or {}
+        for a in ("pi","qwen"):
+            if not re.fullmatch(r"\d+\.\d+\.\d+",str(versions.get(a,""))): raise BenchError(f"v3 pins no effective {a} build version")
+        models=m.get("models") or {}
+        if any(not isinstance(models.get(a),str) or not models[a] for a in ("pi","qwen")): raise BenchError("v3 pins no pi/qwen model alias")
+        for k in ("fixed_backend","expected_served_model","expected_provider"):
+            if not isinstance(m.get(k),str) or not m[k]: raise BenchError(f"v3 pins no {k}")
+        for c in cases:
+            dirs=c.get("source_dirs")
+            if not isinstance(dirs,list) or not dirs or any(d not in ("src","dirty_equals") for d in dirs): raise BenchError("v3 case has no valid source_dirs")
 
 def safe_extract(archive: Path, dest: Path):
     with tarfile.open(archive,"r:*") as tf:
@@ -236,13 +256,19 @@ def prepare(args):
             if dest.exists(): raise BenchError("fixture already exists")
             dest.mkdir(parents=True,mode=0o700)
             safe_extract(archive,dest)
+            if m.get("headless") is True:
+                # Issue #140: the v3 fixture's standing instruction is part of the sealed baseline; the headless
+                # driver mutates no fixture metadata at run time.
+                allowed=", ".join(c.get("source_dirs") or ["src"])
+                (dest/"AGENTS.md").write_text(f"# CooperBench native study\nImplement only assigned feature descriptions. Source edits only under {allowed}/. Do not edit tests or metadata. No shell, network, installs, history lookup, external apps, subagents, or hidden tests. Inspect existing repository with file tools. For a shared checkout coordinate overlapping changes through hub_send; FYI messages require no reply. Final answer starts [FYI].\n",encoding="utf-8")
             # Git's index captures every path, including untracked files from the source archive.
             git(dest,"init","-q"); git(dest,"add","-A")
             git(dest,"-c","user.name=Benchmark","-c","user.email=benchmark@localhost","commit","-qm","sealed benchmark baseline")
             baseline=tree_digest(dest)
-            prepared.append({"case":i,"qualified_feature_ids":[f"{c['repo']}:{c['task']}:{f}" for f in c["features"]],"arm":arm,"cwd":str(dest),"base_commit":git(dest,"rev-parse","HEAD"),"baseline_sha256":sha(json.dumps(baseline,sort_keys=True,separators=(",", ":")).encode()),"baseline_paths":len(baseline)})
+            prepared.append({"case":i,"qualified_feature_ids":[f"{c['repo']}:{c['task']}:{f}" for f in c["features"]],"arm":arm,"cwd":str(dest),"base_commit":git(dest,"rev-parse","HEAD"),"baseline_sha256":sha(json.dumps(baseline,sort_keys=True,separators=(",", ":")).encode()),"baseline_paths":len(baseline),"source_dirs":c.get("source_dirs")})
     native_runner=Path(__file__).with_name("native.ts")
-    provenance={"schema":SCHEMA,"manifest_sha256":file_sha(root/"manifest.json"),"runner_sha256":file_sha(Path(__file__)),"native_runner_sha256":file_sha(native_runner),"teardown_sha256":file_sha(native_runner.with_name("teardown.ts")),"process_table_sha256":file_sha(PROCESS_TABLE),"fixtures":prepared}
+    repo_root=Path(__file__).resolve().parents[2]
+    provenance={"schema":SCHEMA,"manifest_sha256":file_sha(root/"manifest.json"),"runner_sha256":file_sha(Path(__file__)),"native_runner_sha256":file_sha(native_runner),"teardown_sha256":file_sha(native_runner.with_name("teardown.ts")),"process_table_sha256":file_sha(PROCESS_TABLE),"fixtures":prepared,"pi_qwen_runner_sha256":file_sha(native_runner.with_name("native-pi-qwen.ts")),"peer_bus_sha256":file_sha(native_runner.with_name("peer-bus-mcp.py")),"source_pins":{p:file_sha(repo_root/p) for p in SOURCE_PIN_PATHS}}
     if args.upstream_root:
         upstream=args.upstream_root.resolve()
         if git(upstream,"rev-parse","HEAD")!=m["upstream"]["commit"]: raise BenchError("CooperBench source commit differs from manifest")
@@ -259,6 +285,50 @@ def collect_patch(cwd: Path, base: str = "HEAD"):
     if p.returncode: raise BenchError("cannot collect fixture diff")
     return p.stdout
 
+def collect_patch_v3(cwd: Path, base: str, source_dirs: list):
+    """Issue #140: the submission patch over exactly the guarded source layout, new source files bound in by
+    intent-to-add (calibration correction 4)."""
+    git(cwd,"add","-N","--",*source_dirs)
+    p=subprocess.run(["git","diff","--binary",base,"--",*source_dirs],cwd=cwd,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    if p.returncode: raise BenchError("cannot collect fixture diff")
+    return p.stdout
+
+def v3_outside_changes(cwd: Path, source_dirs: list):
+    """Modified or untracked paths outside the guarded source dirs. The v3 patch binds only source_dirs, so anything
+    the agents changed elsewhere must be absent, not merely excluded from the patch."""
+    p=subprocess.run(["git","status","--porcelain","-uall","--","."],cwd=cwd,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    if p.returncode: raise BenchError("cannot verify fixture tree")
+    bad=[]
+    for line in p.stdout.splitlines():
+        rel=line[3:]
+        if " -> " in rel: rel=rel.split(" -> ",1)[1]
+        if not any(rel==d or rel.startswith(d+"/") for d in source_dirs): bad.append(rel)
+    return bad
+
+def v3_request_gate(identity, m):
+    """Issue #140: per-request served-model qualification over the relay's journaled RelayRequestRecords (#139).
+    A completed request that was never identified (a heartbeat-only stream identifies nothing) fails the attempt; a
+    request cancelled before identification stays explicitly unidentified and never certifies another request."""
+    if not isinstance(identity,dict): return "generation model identity missing"
+    reqs=identity.get("requests")
+    if not isinstance(reqs,list) or not reqs or any(not isinstance(r,dict) for r in reqs): return "generation requests unverified"
+    completed=[r for r in reqs if r.get("outcome")=="completed"]
+    if not completed: return "no completed generation request; cancelled or failed requests identify nothing"
+    served,provider,backend=m.get("expected_served_model"),m.get("expected_provider"),m.get("fixed_backend")
+    for r in completed:
+        if r.get("requestedModel")!=backend: return "generation request model mismatch"
+        if r.get("mismatch"): return "generation served model mismatch flagged"
+        if r.get("identified") is not True or r.get("actualModel")!=served: return "generation model identity unverified"
+        if r.get("provider") is not None and provider is not None and r.get("provider")!=provider: return "generation provider mismatch"
+    return None
+
+def v3_linkage(identity):
+    """Request-linkage coverage of one attempt's journaled records, for rows and summaries."""
+    reqs=(identity or {}).get("requests") if isinstance(identity,dict) else None
+    reqs=[r for r in reqs or [] if isinstance(r,dict)]
+    completed=[r for r in reqs if r.get("outcome")=="completed"]
+    return {"requests":len(reqs),"completed":len(completed),"identified":sum(r.get("identified") is True for r in completed),"cancelledUnidentified":sum(r.get("outcome")=="cancelled" and r.get("identified") is not True for r in reqs),"mismatches":sum(r.get("mismatch") is True for r in reqs),"providerMissing":sum(r.get("identified") is True and r.get("provider") is None for r in completed)}
+
 def validate_private_case(path:Path, expected:dict, pinned_hash:str|None):
     data=load(path)
     if (data.get("repo"),data.get("task"),data.get("features"))!=(expected["repo"],expected["task"],expected["features"]): raise BenchError("private case identity differs from the selected feature pair")
@@ -270,6 +340,14 @@ def grade(args):
     if prep["manifest_sha256"]!=file_sha(root/"manifest.json") or cohort.get("manifest_sha256")!=prep["manifest_sha256"]: raise BenchError("prepared manifest changed")
     if prep.get("runner_sha256")!=file_sha(Path(__file__)) or prep.get("native_runner_sha256")!=file_sha(Path(__file__).with_name("native.ts")) or prep.get("teardown_sha256")!=file_sha(Path(__file__).with_name("teardown.ts")) or prep.get("process_table_sha256")!=file_sha(PROCESS_TABLE) or prep.get("evaluator_sha256")!=file_sha(args.evaluator): raise BenchError("benchmark runner/evaluator changed after fixture preparation")
     if cohort.get("runner_sha256")!=prep.get("runner_sha256") or cohort.get("native_runner_sha256")!=prep.get("native_runner_sha256") or cohort.get("teardown_sha256")!=prep.get("teardown_sha256"): raise BenchError("run source pins differ from prepared fixture")
+    v3=tuple(m.get("arms") or ())==ARMS_V3
+    if v3:
+        # Issue #140: a v3 cohort is graded only with the exact headless driver, peer bus and candidate sources it ran with.
+        if prep.get("pi_qwen_runner_sha256")!=file_sha(Path(__file__).with_name("native-pi-qwen.ts")) or prep.get("peer_bus_sha256")!=file_sha(Path(__file__).with_name("peer-bus-mcp.py")): raise BenchError("benchmark runner changed after fixture preparation")
+        if cohort.get("pi_qwen_runner_sha256")!=prep.get("pi_qwen_runner_sha256") or cohort.get("peer_bus_sha256")!=prep.get("peer_bus_sha256"): raise BenchError("run source pins differ from prepared fixture")
+        pins=prep.get("source_pins") or {}
+        repo_root=Path(__file__).resolve().parents[2]
+        if set(pins)!=set(SOURCE_PIN_PATHS) or any(file_sha(repo_root/p)!=h for p,h in pins.items()): raise BenchError("candidate source pins changed after fixture preparation")
     if cohort.get("calibration"): raise BenchError("setup calibration is never graded")
     arms=arms_of(m)
     if cohort.get("arms")!=list(arms): raise BenchError("run cohort does not contain every predeclared arm")
@@ -321,8 +399,49 @@ def grade(args):
         if not run_path.is_file(): rows.append({"case":case,"arm":arm,"status":"missing","pass":None}); continue
         run=load(run_path); actors=required_actors(arm)
         teardown=teardown_failure(run)
+        mid=run.get("modelIdentity")
+        v3extra={"request_linkage":v3_linkage(mid),"model_identity":{"verified":isinstance(mid,dict) and mid.get("generationVerified") is True}} if v3 else {}
         if teardown:
-            rows.append({"case":case,"arm":arm,"status":"unavailable","reason":teardown,"pass":None}); continue
+            rows.append({"case":case,"arm":arm,"status":"unavailable","reason":teardown,"pass":None,**v3extra}); continue
+        if v3:
+            # Issue #140: identity, effective-build, probe-evidence and request-linkage gates for a headless attempt.
+            ready=run.get("readiness") if isinstance(run.get("readiness"),dict) else {}
+            def actor_ok(a):
+                r=ready.get(a); probe=r.get("sandboxProbe") if isinstance(r,dict) else None
+                # The probe counts only with structured denial evidence (a guard denial or a failed native read),
+                # never with a model-written marker alone (calibration correction 2).
+                return isinstance(r,dict) and r.get("cwd")==str(cwd) and r.get("requestedModel")==m.get("models",{}).get(a) and r.get("sessionId") and isinstance(probe,dict) and probe.get("checked") is True and probe.get("result")=="denied" and probe.get("evidence") in ("guard-denial","tool-failure")
+            builds=run.get("nativeVersions") if isinstance(run.get("nativeVersions"),dict) else {}
+            builds_ok=all(isinstance(builds.get(a),dict) and builds[a].get("version")==m.get("versions",{}).get(a) and builds[a].get("binary") for a in actors)
+            if run.get("cwd")!=str(cwd) or not all(actor_ok(a) for a in actors) or not builds_ok or run.get("cleanup_complete") is not True or run.get("metadata_clean") is not True or run.get("metadata_sha256")!=fixture_metadata_sha256(cwd):
+                rows.append({"case":case,"arm":arm,"status":"unavailable","reason":"native identity/model/readiness/cleanup gate failed","pass":None,**v3extra}); continue
+            failure=unavailable_reason(arm,run)
+            if failure:
+                rows.append({"case":case,"arm":arm,"status":"unavailable","reason":failure,"pass":None,**v3extra}); continue
+            linkage=v3_request_gate(run.get("modelIdentity"),m)
+            if linkage:
+                rows.append({"case":case,"arm":arm,"status":"unavailable","reason":linkage,"pass":None,**v3extra}); continue
+            sealed=run.get("sealedCommit")
+            if not isinstance(sealed,str) or not sealed:
+                rows.append({"case":case,"arm":arm,"status":"unavailable","reason":"sealed baseline identity mismatch","pass":None,**v3extra}); continue
+            try: git(cwd,"merge-base","--is-ancestor",fixture["base_commit"],sealed)
+            except BenchError:
+                rows.append({"case":case,"arm":arm,"status":"unavailable","reason":"sealed baseline is not a descendant of the prepared source baseline","pass":None,**v3extra}); continue
+            source_dirs=fixture.get("source_dirs") or m["cases"][case]["source_dirs"]
+            outside=v3_outside_changes(cwd,source_dirs)
+            if outside:
+                rows.append({"case":case,"arm":arm,"status":"unavailable","reason":"changes outside the guarded source dirs: "+", ".join(outside[:5]),"pass":None,**v3extra}); continue
+            recorded_patch=Path(str(run.get("patchFile",""))).resolve()
+            if not recorded_patch.is_file(): raise BenchError(f"native patch record is missing for case {case} {arm}")
+            patch=collect_patch_v3(cwd,sealed,source_dirs)
+            if patch!=recorded_patch.read_bytes(): raise BenchError(f"fixture changed after native run for case {case} {arm}")
+            patch_path=root/"patches"/f"{case:02d}-{arm}.patch"; patch_path.parent.mkdir(exist_ok=True); patch_path.write_bytes(patch)
+            output,ev=evaluate(case,"scored",patch_path,f"{case:02d}-{arm}")
+            input_hash=sha(patch)
+            if ev.get("input_sha256")!=input_hash: raise BenchError("evaluator output is not bound to the exact submission patch")
+            result=ev.get("both_passed")
+            rows.append({"case":case,"arm":arm,"status":"scored" if isinstance(result,bool) else "unavailable","pass":result if isinstance(result,bool) else None,"input_sha256":input_hash,"patch_path":str(patch_path),"evaluation_path":str(output),"evaluation_sha256":file_sha(output),"evaluator_sha256":eval_hash,"native_usage":run.get("usage"),**v3extra})
+            continue
         ready=run.get("readiness") if isinstance(run.get("readiness"),dict) else {}
         identities=all(isinstance(ready.get(actor),dict) and ready[actor].get("cwd")==str(cwd) and ready[actor].get("requestedModel",ready[actor].get("model"))==m.get("models",{}).get(actor) and (ready[actor].get("sessionId") if actor=="claude" else ready[actor].get("threadId")) and isinstance(ready[actor].get("sandboxProbe"),dict) and ready[actor]["sandboxProbe"].get("checked") is True and ready[actor]["sandboxProbe"].get("result")=="denied" for actor in actors)
         claude_ready=ready.get("claude",{}) if "claude" in actors else {}
@@ -378,6 +497,18 @@ def report(args):
     by_arm={}
     for arm in arms:
         rows=[x for x in grade["rows"] if x["arm"]==arm]; scored=[x for x in rows if x["status"]=="scored"]
+        if tuple(arms)==ARMS_V3:
+            # Issue #140: quality, model-identity and request-linkage coverage are reported separately; unavailable
+            # attempts stay in the planned denominator, and Pi and Qwen usage units are never added together.
+            pi=[r["native_usage"].get("pi") for r in rows if isinstance(r.get("native_usage"),dict) and isinstance(r["native_usage"].get("pi"),(int,float)) and not isinstance(r["native_usage"].get("pi"),bool)]
+            qw=[r["native_usage"].get("qwen") for r in rows if isinstance(r.get("native_usage"),dict) and isinstance(r["native_usage"].get("qwen"),(int,float)) and not isinstance(r["native_usage"].get("qwen"),bool)]
+            links=[r.get("request_linkage") for r in rows if isinstance(r.get("request_linkage"),dict)]
+            agg=lambda k: sum(l.get(k,0) for l in links)
+            by_arm[arm]={"planned":len(cohort["cases"]),"scored":len(scored),"both_passed":sum(x["pass"] is True for x in scored),"unavailable":len(rows)-len(scored),
+                "native_usage":{"pi_tokens_known":len(pi),"pi_tokens":sum(pi) if pi else None,"qwen_session_tokens_known":len(qw),"qwen_session_tokens":sum(qw) if qw else None,"units":"pi: incremental onTokens counter; qwen: session usage_update running total; whole attempt including setup probes; never added together"},
+                "model_identity":{"verified":sum(r.get("model_identity",{}).get("verified") is True for r in rows if isinstance(r.get("model_identity"),dict)),"attempts":len(rows)},
+                "request_linkage":{"attempts":len(links),"requests":agg("requests"),"completed":agg("completed"),"identified":agg("identified"),"cancelledUnidentified":agg("cancelledUnidentified"),"mismatches":agg("mismatches"),"providerMissing":agg("providerMissing")}}
+            continue
         codex_known=[r["native_usage"]["codex"].get("total_tokens") for r in scored if isinstance(r.get("native_usage",{}).get("codex"),dict) and r["native_usage"]["codex"].get("total_tokens") is not None]
         claude_known=[r["native_usage"]["claude"].get("output_tokens") for r in scored if isinstance(r.get("native_usage",{}).get("claude"),dict) and r["native_usage"]["claude"].get("output_tokens") is not None]
         by_arm[arm]={"planned":len(cohort["cases"]),"scored":len(scored),"both_passed":sum(x["pass"] is True for x in scored),"unavailable":len(rows)-len(scored),"native_usage":{"codex_total_tokens_known":len(codex_known),"codex_total_tokens":sum(codex_known) if codex_known else None,"claude_output_tokens_known":len(claude_known),"claude_output_tokens":sum(claude_known) if claude_known else None}}
