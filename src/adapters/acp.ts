@@ -67,6 +67,7 @@ export class AcpPeer extends BasePeer {
   private chunks: string[] = [];
   private readonly toolInputs = new Map<string, unknown>();
   private readonly toolText = new Map<string, string>(); // streamed argument text, per call, until it finishes
+  private readonly toolTitles = new Map<string, string>(); // the title a call was announced with, per call id (#138)
   private primed = false;
   private turn = 0; // generation: a prompt cancelled by the watchdog must not touch the turn that followed it
   private activeDeliveryId: string | undefined;
@@ -210,13 +211,14 @@ export class AcpPeer extends BasePeer {
       // console would be asked to approve a bare tool name. Keep what the call said it would run (issue #31).
       // Kimi 2.1.1 sends no rawInput before the answer either: the argument JSON streams as content text (issue #72).
       else if ((u?.sessionUpdate === "tool_call" || u?.sessionUpdate === "tool_call_update") && typeof u.toolCallId === "string") {
-        // A new call starts clean, so a reused id can never show the arguments of the call before it.
-        if (u.sessionUpdate === "tool_call") (this.toolInputs.delete(u.toolCallId), this.toolText.delete(u.toolCallId));
+        // A new call starts clean, so a reused id can never show the arguments or identity of the call before it.
+        if (u.sessionUpdate === "tool_call") (this.toolInputs.delete(u.toolCallId), this.toolText.delete(u.toolCallId), this.toolTitles.delete(u.toolCallId));
         if (u.rawInput !== undefined) this.toolInputs.set(u.toolCallId, u.rawInput);
+        if (typeof u.title === "string") this.toolTitles.set(u.toolCallId, u.title);
         const text = Array.isArray(u.content) ? u.content.map((c: any) => (c?.type === "content" && c.content?.type === "text" ? String(c.content.text) : "")).join("") : "";
         if (text) this.toolText.set(u.toolCallId, text);
-        if (u.status === "completed" || u.status === "failed") (this.toolInputs.delete(u.toolCallId), this.toolText.delete(u.toolCallId));
-        for (const map of [this.toolInputs, this.toolText]) while (map.size > TOOL_INPUT_CAP) map.delete(map.keys().next().value as string);
+        if (u.status === "completed" || u.status === "failed") (this.toolInputs.delete(u.toolCallId), this.toolText.delete(u.toolCallId), this.toolTitles.delete(u.toolCallId));
+        for (const map of [this.toolInputs, this.toolText, this.toolTitles]) while (map.size > TOOL_INPUT_CAP) map.delete(map.keys().next().value as string);
       }
       else if (u?.sessionUpdate === "usage_update" && this.opts.onTokens) {
         const f = { ...u, ...(typeof u.usage === "object" ? u.usage : {}) } as Record<string, unknown>;
@@ -239,24 +241,37 @@ export class AcpPeer extends BasePeer {
   private async answerPermission(msg: any): Promise<void> {
     const call = msg.params?.toolCall ?? {};
     const once = (msg.params?.options ?? []).find((o: PermissionOption) => o.kind === "allow_once");
-    if (once && typeof call.title === "string" && this.opts.autoApprove?.(call.title)) {
-      this.opts.log?.(`permission auto-approved for ${this.id}: ${call.title}`); // the name only: arguments may quote a PII turn
+    const id = typeof call.toolCallId === "string" ? call.toolCallId : undefined;
+    const announced = id === undefined ? undefined : this.toolTitles.get(id);
+    // Qwen 0.24.7 announces an MCP call as `<tool> (<server> MCP Server)` and then titles the permission
+    // request with the serialized arguments (#138). Identity comes back from the announced title, bound to
+    // the call id, and only when the server half is a server this session was configured with: the canonical
+    // `mcp__<server>__<tool>` name is the only derived candidate the exact-match whitelist ever sees, and
+    // argument text is never one.
+    const canonical = (() => {
+      const m = announced?.match(/^([\w-]{1,80}) \((.+) MCP Server\)$/);
+      return m && this.opts.mcpServers?.some((s) => s.name === m[2]) ? `mcp__${m[2]}__${m[1]}` : undefined;
+    })();
+    const identity = [typeof call.title === "string" ? call.title : undefined, canonical].find((candidate) => candidate !== undefined && this.opts.autoApprove?.(candidate));
+    if (once && identity) {
+      this.opts.log?.(`permission auto-approved for ${this.id}: ${identity}`); // the name only: arguments may quote a PII turn
       return this.send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "selected", optionId: once.optionId } } });
     }
     // The approver has to see what runs, not only the tool's name ("Bash"). The request itself carries it
     // for some agents; for the rest it was on the `tool_call` update that announced the call, as rawInput or,
     // failing that, as streamed argument text that only counts once it is a complete JSON object.
-    const id = typeof call.toolCallId === "string" ? call.toolCallId : undefined;
     const raw = call.rawInput ?? (id === undefined ? undefined : this.toolInputs.get(id) ?? jsonObject(this.toolText.get(id)));
     const full = raw === undefined ? "" : typeof raw === "string" ? raw : JSON.stringify(raw);
     // A cut payload hides its tail, and a tail can change what runs: it is marked and buys no session-wide grant.
     const cut = full.length > 600;
     const input = raw === undefined ? "" : `: ${cut ? `${full.slice(0, 600)} [cut, ${full.length} chars]` : full}`;
+    // A request titled with the argument JSON is no title at all: display what the call was announced as.
+    const named = typeof call.title === "string" && jsonObject(call.title) === undefined ? call.title : announced;
     // An unknown payload is never dressed up as a description, and it must not buy a blanket grant.
-    const title: string = raw === undefined ? `${call.title ?? "tool call"} (payload not reported by the agent)` : `${call.title ?? "tool call"}${input}`;
+    const title: string = raw === undefined ? `${named ?? "tool call"} (payload not reported by the agent)` : `${named ?? "tool call"}${input}`;
     const options: PermissionOption[] = (msg.params?.options ?? []).filter((o: PermissionOption) => (raw !== undefined && !cut) || o.kind !== "allow_always");
     // Only a bare tool name travels on its own (a desktop notice shows it); anything prose-like stays in the title.
-    const tool = typeof call.title === "string" && /^[\w.:@-]{1,80}$/.test(call.title) ? call.title : undefined;
+    const tool = typeof named === "string" && /^[\w.:@-]{1,80}$/.test(named) ? named : undefined;
     // Waiting for a person is not the agent going silent: keep the watchdog from cancelling the turn meanwhile.
     const turn = this.turn;
     const alive = setInterval(() => this.state === "busy" && turn === this.turn && this.touch(), Math.max(10, Math.min(30_000, Math.floor(this.watchdogMs / 3))));

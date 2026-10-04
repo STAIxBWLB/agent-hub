@@ -32,6 +32,15 @@ async function prompt(id: number, text: string) {
       for (const t of steps) upd({ sessionUpdate: "tool_call_update", status: "in_progress", content: body(t) });
     }
     const reqId = nextId++;
+    // Qwen 0.24.7's shape (captured 2026-10-04, issue #138): the call is announced with a descriptive
+    // `<tool> (<server> MCP Server)` title, and the permission request is titled with the argument JSON.
+    const qwen = text.includes("QWEN");
+    if (qwen) {
+      const upd = (update: object) => send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { toolCallId: "tc3", ...update } } });
+      if (!text.includes("QUIET")) upd({ sessionUpdate: "tool_call", title: text.includes("FOREIGN") ? "hub_send (other-bus MCP Server)" : "hub_send (agent-hub MCP Server)", status: "pending", rawInput: { text: "QWEN_NATIVE_READY" } });
+      if (text.includes("DONE")) upd({ sessionUpdate: "tool_call_update", status: "completed" }); // a finished call's identity is evicted
+      if (text.includes("REUSED")) upd({ sessionUpdate: "tool_call", title: "Bash", status: "pending" }); // a new call under the same id starts clean
+    }
     const result = await new Promise<any>((resolve) => {
       waiting.set(reqId, resolve);
       send({
@@ -40,7 +49,7 @@ async function prompt(id: number, text: string) {
         method: "session/request_permission",
         params: {
           sessionId: "s1",
-          toolCall: announced ? { title: "Bash", toolCallId: "tc1" } : streamed ? { title: tool, toolCallId: "tc2", content: [{ type: "content", content: { type: "text", text: `Requesting approval to ${tool}` } }] } : { title: "write file" },
+          toolCall: qwen ? { title: '{"text":"QWEN_NATIVE_READY"}', toolCallId: text.includes("QUIET") ? "tc9" : "tc3" } : announced ? { title: "Bash", toolCallId: "tc1" } : streamed ? { title: tool, toolCallId: "tc2", content: [{ type: "content", content: { type: "text", text: `Requesting approval to ${tool}` } }] } : { title: "write file" },
           options: [
             ...(text.includes("NOONCE") ? [] : [{ optionId: "yes", name: "Allow", kind: "allow_once" }]),
             { optionId: "always", name: "Approve for this session", kind: "allow_always" },
