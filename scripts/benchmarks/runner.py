@@ -348,6 +348,8 @@ def grade(args):
         if ev.get("input_sha256")!=input_hash: raise BenchError("evaluator output is not bound to the exact submission patch")
         result=ev.get("both_passed")
         claude_usage=run.get("readiness",{}).get("claude",{}).get("nativeUsage")
+        claude_quota=run.get("claudeUsage")  # #134: pre/post quota readings; may be absent in older records
+        if isinstance(claude_quota,dict): claude_usage={"pre":claude_quota.get("pre"),"post":claude_quota.get("post"),**(claude_usage or {})}
         rows.append({"case":case,"arm":arm,"status":"scored" if isinstance(result,bool) else "unavailable","pass":result if isinstance(result,bool) else None,"input_sha256":input_hash,"patch_path":str(patch_path),"evaluation_path":str(output),"evaluation_sha256":file_sha(output),"evaluator_sha256":eval_hash,"native_usage":{"codex":run.get("codexUsage"),"claude":claude_usage}})
     expected_rows=[(case,arm) for case in selected for arm in arms]
     actual_rows=[(row["case"],row["arm"]) for row in rows]

@@ -1,4 +1,4 @@
-import { chmodSync, lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, openSync, fstatSync, closeSync, constants as fsConstants, lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { descendantsOf, processTable, type ProcRow } from '../../src/hub/child-process.ts';
@@ -129,13 +129,35 @@ export function writeAtomic(file: string, text: string): void { writeFileSync(`$
  * its target. The real path is compared against the canonical parent joined with the root's own name: a root reached
  * under a different name than the one on disk (a case-insensitive filesystem opens both) is a substitution too.
  */
-export function fixtureRootProblem(dir: string): string | undefined {
+export interface FixtureRootIdentity { dev: number; ino: number }
+
+export function fixtureRootProblem(dir: string, expected?: FixtureRootIdentity): string | undefined {
     let st;
     try { st = lstatSync(dir); } catch { return 'missing'; }
     if (st.isSymbolicLink()) return 'a symlink, not the prepared directory';
     if (!st.isDirectory()) return 'not a directory';
     if (realPath(dir) !== join(realPath(dirname(dir)), basename(dir))) return 'its real path differs from its prepared name';
+    if (expected && (st.dev !== expected.dev || st.ino !== expected.ino)) return 'its directory identity changed';
     return undefined;
+}
+
+/** Capture the no-follow identity for later mutation/launch checks across async setup work. */
+export function captureFixtureRoot(dir: string): FixtureRootIdentity {
+    const { dev, ino } = lstatSync(dir);
+    const identity = { dev, ino };
+    withFixtureRoot(dir, identity, () => {});
+    return identity;
+}
+
+/**
+ * Recheck immediately before a synchronous mutation batch. This detects substitutions during preceding awaits;
+ * it is not a directory-fd pin and cannot exclude an external rename between this check and a filesystem syscall.
+ * ponytail: boundary checks require stable roots; descriptor-rooted writes and launch APIs would close that race.
+ */
+export function withFixtureRoot(dir: string, expected: FixtureRootIdentity, mutate: () => void): void {
+    const problem = fixtureRootProblem(dir, expected);
+    if (problem) throw new Error(`prepared fixture root was replaced after preparation (${problem}): ${dir}`);
+    mutate();
 }
 
 /**
@@ -455,4 +477,104 @@ export function settleTrust(stage: string, contained: boolean, removeTemp: () =>
     if (!contained) return { outcome: 'kept: the cleanup is incomplete or unknown', stage, restored: false };
     const outcome = restore();
     return { outcome, stage: outcome, restored: outcome === 'restored' };
+}
+
+/**
+ * A regular file's bytes, opened without following a link and without blocking (a fifo swapped in after a check must not
+ * stop the runner), or a string saying why there are none.
+ */
+export function regularBytes(path: string, max: number): Buffer | string {
+    let fd: number | undefined;
+    try {
+        fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+        const st = fstatSync(fd);
+        if (!st.isFile()) return `not a regular file: ${st.mode & 0o170000}`;
+        return st.size > max ? `large: ${st.size} ${st.mtimeMs}` : readFileSync(fd);
+    }
+    catch (e: any) { return e?.code === 'ENOENT' ? 'missing' : `unreadable: ${e?.code ?? 'error'}`; }
+    finally { if (fd !== undefined) closeSync(fd); }
+}
+/**
+ * Claude's quota window from the status-line tee's file (#134). Each reading carries the file's own `at`; a window
+ * whose `resets_at` has already passed says nothing and is marked `stale`, not trusted. Missing or unreadable file
+ * records explicit unknown and never fails the run.
+ *
+ * The native runner disables status lines for all arms (#110), so the file is not guaranteed to be written during
+ * an attempt. A missing file therefore records `unknown`, and the docs say this does not guarantee live quota.
+ */
+export type ClaudeUsageReading =
+    | { at: number; rate_limits: { five_hour?: any; seven_day?: any }; stale?: boolean }
+    | { status: 'unknown'; why: string; at?: number; stale?: boolean };
+
+export function claudeUsageReading(stateDir: string): ClaudeUsageReading {
+    const file = join(stateDir, 'claude-usage.json');
+    const bytes = regularBytes(file, 256 * 1024);
+    if (typeof bytes === 'string') return { status: 'unknown', why: bytes };
+    let data: any;
+    try {
+        data = JSON.parse(bytes.toString('utf8'));
+    } catch {
+        return { status: 'unknown', why: 'unreadable: invalid JSON' };
+    }
+    if (typeof data !== 'object' || data === null)
+        return { status: 'unknown', why: 'malformed: not an object' };
+    if (typeof data.at !== 'number' || !Number.isFinite(data.at))
+        return { status: 'unknown', why: 'malformed: at is not a finite number' };
+    const limits = data.rate_limits;
+    if (!limits || typeof limits !== 'object')
+        return { status: 'unknown', why: 'no rate_limits', at: data.at };
+    // Same seconds/millis disambiguation as claudeWindows in budget.ts.
+    const now = Date.now();
+    const mark = (w: any): any | undefined => {
+        if (!w || typeof w !== 'object') return undefined;
+        if (typeof w.used_percentage !== 'number' || !Number.isFinite(w.used_percentage)) return undefined;
+        const resets = typeof w.resets_at === 'number' ? w.resets_at : undefined;
+        const resetsMs = resets !== undefined && Number.isFinite(resets) && resets > 0 ? (resets < 1e12 ? resets * 1000 : resets) : undefined;
+        // No valid reset: cannot prove the window is live, mark stale (never trusted fresh).
+        const stale = resetsMs === undefined || resetsMs < now;
+        return { ...w, ...(stale ? { stale: true } : {}) };
+    };
+    const five = mark(limits.five_hour);
+    const week = mark(limits.seven_day);
+    if (!five && !week)
+        return { status: 'unknown', why: 'no usable windows', at: data.at };
+    // All present windows expired: the reading says nothing. Preserve at and mark stale.
+    const windows = [five, week].filter(Boolean);
+    if (windows.every((w: any) => w.stale))
+        return { status: 'unknown', why: 'all windows expired', at: data.at, stale: true };
+    const stale = [five, week].some((w: any) => w?.stale === true);
+    return {
+        at: data.at,
+        rate_limits: { ...(five ? { five_hour: five } : {}), ...(week ? { seven_day: week } : {}) },
+        ...(stale ? { stale: true } : {}),
+    };
+}
+
+/** A bounded, fail-open wait for a status-line write after a settled quota boundary. */
+export async function claudeUsageSnapshot(stateDir: string, notBefore: number | undefined, boundMs = 1500, stopped: () => boolean = () => false): Promise<ClaudeUsageReading> {
+    if (notBefore === undefined) return { status: 'unknown', why: 'quota boundary is not settled' };
+    const deadline = performance.now() + boundMs;
+    while (true) {
+        const reading = claudeUsageReading(stateDir);
+        if (stopped()) return { status: 'unknown', why: 'quota observation interrupted' };
+        if (reading.at !== undefined && reading.at >= notBefore) return reading;
+        const remaining = deadline - performance.now();
+        if (remaining <= 0) return { status: 'unknown', why: 'no fresh quota write after the settled boundary', ...(reading.at !== undefined ? { at: reading.at } : {}) };
+        await Bun.sleep(Math.min(25, remaining));
+    }
+}
+
+/**
+ * Benchmark Claude settings (#134, PR136 P1): every Claude arm runs an isolated status-line tee so the hub's
+ * `claude-usage.json` can be written during the attempt. `--restricted` ignores user/project/local settings;
+ * explicit `--settings` supplies our session hooks (turn-free only) and status line. Managed policy still applies.
+ */
+export function benchmarkClaudeSettings(session: { statusLine: unknown; hooks?: unknown }, turnFree: boolean, permissions: unknown, sandbox: unknown) {
+    return {
+        permissions,
+        sandbox,
+        disableAllHooks: false,
+        statusLine: session.statusLine,
+        hooks: turnFree ? (session.hooks ?? {}) : {},
+    };
 }
