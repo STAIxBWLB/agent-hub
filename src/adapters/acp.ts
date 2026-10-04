@@ -214,7 +214,9 @@ export class AcpPeer extends BasePeer {
         // A new call starts clean, so a reused id can never show the arguments or identity of the call before it.
         if (u.sessionUpdate === "tool_call") (this.toolInputs.delete(u.toolCallId), this.toolText.delete(u.toolCallId), this.toolTitles.delete(u.toolCallId));
         if (u.rawInput !== undefined) this.toolInputs.set(u.toolCallId, u.rawInput);
-        if (typeof u.title === "string") this.toolTitles.set(u.toolCallId, u.title);
+        // Identity is bound at the announcement only: a later update's display title is mutable and must
+        // never rewrite what the call was announced as (#138 review).
+        if (u.sessionUpdate === "tool_call" && typeof u.title === "string") this.toolTitles.set(u.toolCallId, u.title);
         const text = Array.isArray(u.content) ? u.content.map((c: any) => (c?.type === "content" && c.content?.type === "text" ? String(c.content.text) : "")).join("") : "";
         if (text) this.toolText.set(u.toolCallId, text);
         if (u.status === "completed" || u.status === "failed") (this.toolInputs.delete(u.toolCallId), this.toolText.delete(u.toolCallId), this.toolTitles.delete(u.toolCallId));
