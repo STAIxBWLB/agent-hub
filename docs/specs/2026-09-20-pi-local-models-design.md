@@ -17,7 +17,7 @@ Issue: #25. Pi is a managed project peer for implementation, edits, tests, summa
 - `mlx/fast` resolves to the machine-shared loopback MLX server.
 - Apple Silicon setup pins Python 3.12, `mlx-lm==0.31.3`, and `Qwen/Qwen3-8B-MLX-4bit` revision `383413e909f3bc5303ce195ebbdf0339c5a1a2a3`.
 - The MLX input estimate is capped at 16,000 tokens; decode and prompt concurrency are one. DGX's default input estimate cap is 262,144 tokens.
-- The relay authenticates every call, rejects browser origins and unknown model aliases, and preserves streamed bytes. It records the requested route and model reported by the backend.
+- The relay authenticates every call, rejects browser origins and unknown model aliases, and preserves streamed bytes. It records the requested route and model reported by the backend. Per request it also journals sanitized identity and lifecycle evidence (#139): resolved alias, upstream-configured model, observed provider and served model with their source (gateway header, generation SSE event, or local MLX configuration), outcome (completed, cancelled, failed), duration, and a confirmed-mismatch flag. A request cancelled before any identification stays explicitly unidentified; a backend's mutable last-served label is never a request's own evidence, and a primary/auxiliary role stays unknown without native evidence. Records carry no prompts, tools, keys or Access headers.
 - MLX may fall back to DGX before response streaming begins. Failed non-PII tasks can escalate to configured cloud peers with an explicit warning to reconcile partial effects.
 - Runtime ownership includes process start identity. Project shutdown releases its relay, while explicit `ahub models stop` controls the shared MLX process.
 

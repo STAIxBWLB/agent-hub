@@ -297,3 +297,155 @@ test("#137 a stream cancelled before identification leaves the served model unkn
   await new Promise((resolve) => setTimeout(resolve, 20));
   expect(relay.status().backends[0]?.actualModel).toBeUndefined();
 });
+
+const waitForRecords = async (relay: { requests: () => unknown[] }, count: number) => {
+  for (let attempt = 0; attempt < 100 && relay.requests().length < count; attempt++) await Bun.sleep(10);
+  return relay.requests();
+};
+
+test("#139 concurrent requests are fenced: a pre-identification cancellation does not contaminate a settled request", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async (request) => {
+    const body = await request.json() as any;
+    const prompt = body.messages[0].content as string;
+    if (prompt.includes("cancel-me")) {
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('data: {"model":"keepalive","choices":[{"index":0,"delta":{}}]}\n\n'));
+          // never identifies and never closes: the client cancels first
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+    }
+    return new Response('data: {"model":"physical/model","choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } });
+  } });
+  const relay = await dgxRelay(upstream);
+  const ask = (prompt: string) => fetch(`${relay.url}/chat/completions`, { method: "POST", headers: { authorization: "Bearer relay-token", "content-type": "application/json" }, body: JSON.stringify({ model: "dgx/coding", messages: [{ role: "user", content: prompt }] }) });
+  const cancelled = await ask("cancel-me");
+  const settled = await ask("settle");
+  expect(await settled.text()).toContain("ok");
+  await cancelled.body?.cancel();
+  const records = (await waitForRecords(relay, 2)) as import("../src/models/relay.ts").RelayRequestRecord[];
+  expect(records).toHaveLength(2);
+  const cancelledRecord = records.find((record) => record.outcome === "cancelled")!;
+  expect(cancelledRecord).toMatchObject({ alias: "dgx/coding", requestedModel: "coding", identified: false, identitySource: "none", role: "unknown" });
+  expect(cancelledRecord.actualModel).toBeUndefined();
+  const settledRecord = records.find((record) => record.outcome === "completed")!;
+  expect(settledRecord).toMatchObject({ alias: "dgx/coding", requestedModel: "coding", actualModel: "physical/model", identitySource: "stream", identified: true, role: "unknown" });
+  expect(settledRecord.mismatch).toBe(true); // observed "physical/model" differs from the configured "coding"
+});
+
+test("#139 a heartbeat-only stream completes unidentified with unknown model", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response('data: {"model":"keepalive","choices":[{"index":0,"delta":{}}]}\n\ndata: {"model":"keepalive","choices":[]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } }) });
+  const relay = await dgxRelay(upstream);
+  const response = await dgxRequest(relay);
+  await response.text();
+  const records = (await waitForRecords(relay, 1)) as import("../src/models/relay.ts").RelayRequestRecord[];
+  expect(records).toHaveLength(1);
+  expect(records[0]).toMatchObject({ outcome: "completed", identified: false, identitySource: "none", role: "unknown" });
+  expect(records[0]!.actualModel).toBeUndefined();
+  expect(records[0]!.mismatch).toBeUndefined();
+});
+
+test("#139 provider headers stay unknown when absent while a stream model is still recorded", async () => {
+  const withHeaders = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream", "x-omniroute-provider": "vllm", "x-model-router-selected-model": "coding" } }) });
+  const relayWith = await dgxRelay(withHeaders);
+  await (await dgxRequest(relayWith)).text();
+  const headerRecord = (await waitForRecords(relayWith, 1))[0] as import("../src/models/relay.ts").RelayRequestRecord;
+  expect(headerRecord).toMatchObject({ provider: "vllm", actualModel: "coding", identitySource: "header", identified: true, outcome: "completed" });
+  expect(headerRecord.mismatch).toBeUndefined(); // observed matches the configured model
+
+  const withoutHeaders = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response('data: {"model":"physical/model","choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } }) });
+  const relayWithout = await dgxRelay(withoutHeaders);
+  await (await dgxRequest(relayWithout)).text();
+  const streamRecord = (await waitForRecords(relayWithout, 1))[0] as import("../src/models/relay.ts").RelayRequestRecord;
+  expect(streamRecord.provider).toBeUndefined();
+  expect(streamRecord).toMatchObject({ actualModel: "physical/model", identitySource: "stream", identified: true, outcome: "completed" });
+});
+
+test("#139 an upstream error closes the record as failed", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("boom", { status: 500 }) });
+  const relay = await dgxRelay(upstream);
+  const response = await dgxRequest(relay);
+  expect(response.status).toBe(502);
+  const records = (await waitForRecords(relay, 1)) as import("../src/models/relay.ts").RelayRequestRecord[];
+  expect(records).toHaveLength(1);
+  expect(records[0]).toMatchObject({ outcome: "failed", identified: false, identitySource: "none", alias: "dgx/coding" });
+  expect(records[0]!.actualModel).toBeUndefined();
+});
+
+test("#139 request records carry no prompt, key or Access material", async () => {
+  const marker = "xyzzy-distinctive-prompt-9f3";
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async (request) => {
+    expect(request.headers.get("authorization")).toBe("Bearer dgx-key");
+    expect(request.headers.get("cf-access-token")).toBe("cf-access-secret");
+    return new Response('data: {"model":"physical/model","choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } });
+  } });
+  cleanup.push(() => upstream.stop(true));
+  const omniWithAccess = { base: async () => `http://127.0.0.1:${upstream.port}/v1`, apiKey: () => "dgx-key", accessHeaders: () => ({ "cf-access-token": "cf-access-secret" }) } as any;
+  const relay = await startModelRelay({ omni: omniWithAccess, allowedDGXmodels: { "dgx/coding": "coding" }, token: "relay-token" });
+  cleanup.push(relay.close);
+  const response = await fetch(`${relay.url}/chat/completions`, { method: "POST", headers: { authorization: "Bearer relay-token", "content-type": "application/json" }, body: JSON.stringify({ model: "dgx/coding", messages: [{ role: "user", content: marker }], tools: [{ name: marker }] }) });
+  await response.text();
+  const records = await waitForRecords(relay, 1);
+  expect(records).toHaveLength(1);
+  const serialized = JSON.stringify(records);
+  expect(serialized).not.toContain(marker);
+  expect(serialized).not.toContain("dgx-key");
+  expect(serialized).not.toContain("cf-access-secret");
+  expect(serialized).not.toContain("relay-token");
+  expect(Object.keys(records[0] as object).sort()).toEqual(["actualModel", "alias", "at", "durationMs", "id", "identified", "identitySource", "mismatch", "outcome", "requestedModel", "role"].sort());
+});
+
+test("#139 onRequest fires exactly once per record at its terminal close", async () => {
+  const emitted: import("../src/models/relay.ts").RelayRequestRecord[] = [];
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async (request) => {
+    const body = await request.json() as any;
+    if ((body.messages[0].content as string).includes("cancel-me")) {
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('data: {"model":"keepalive","choices":[{"index":0,"delta":{}}]}\n\n')); } }), { headers: { "content-type": "text/event-stream" } });
+    }
+    return new Response('data: {"model":"coding","choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } });
+  } });
+  cleanup.push(() => upstream.stop(true));
+  const relay = await startModelRelay({ omni: omni(`http://127.0.0.1:${upstream.port}/v1`), allowedDGXmodels: { "dgx/coding": "coding" }, token: "relay-token", onRequest: (record) => emitted.push(record) });
+  cleanup.push(relay.close);
+  const ask = (prompt: string) => fetch(`${relay.url}/chat/completions`, { method: "POST", headers: { authorization: "Bearer relay-token", "content-type": "application/json" }, body: JSON.stringify({ model: "dgx/coding", messages: [{ role: "user", content: prompt }] }) });
+  const cancelled = await ask("cancel-me");
+  await (await ask("settle")).text();
+  await cancelled.body?.cancel();
+  await waitForRecords(relay, 2);
+  expect(emitted).toHaveLength(2);
+  for (const record of emitted) {
+    expect(["completed", "cancelled"]).toContain(record.outcome);
+    expect(record.durationMs).toBeGreaterThanOrEqual(0);
+    expect(record.at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  }
+  // closing the relay afterwards emits nothing more for already-closed records
+  await relay.close();
+  expect(emitted).toHaveLength(2);
+});
+
+test("#139 a relay close cancels an in-flight unidentified request", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: {"model":"keepalive","choices":[{"index":0,"delta":{}}]}\n\n'));
+    },
+  }), { headers: { "content-type": "text/event-stream" } }) });
+  cleanup.push(() => upstream.stop(true));
+  const relay = await startModelRelay({ omni: omni(`http://127.0.0.1:${upstream.port}/v1`), allowedDGXmodels: { "dgx/coding": "coding" }, token: "relay-token" });
+  const pending = dgxRequest(relay);
+  const response = await pending;
+  const drain = response.text().catch(() => ""); // consume the abort the close delivers to the stream
+  await relay.close();
+  await drain;
+  expect(relay.requests()).toHaveLength(1);
+  expect(relay.requests()[0]).toMatchObject({ outcome: "cancelled", identified: false, identitySource: "none" });
+});
+
+test("#139 the request journal keeps only the last 1000 records", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response('data: {"model":"coding","choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } }) });
+  const relay = await dgxRelay(upstream);
+  for (let index = 0; index < 1001; index++) await (await dgxRequest(relay)).text();
+  const records = relay.requests();
+  expect(records).toHaveLength(1000);
+  expect(new Set(records.map((record) => record.id)).size).toBe(1000);
+  expect(records.every((record) => record.outcome === "completed" && record.identified)).toBe(true);
+});
