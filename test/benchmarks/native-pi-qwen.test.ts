@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { v3ArmOrder, jointAssignment, isSourcePath, ProtectedReadProbe, qualifyRequests, effectiveBuild, parseVersion, claimExclusive, collectSubmissionPatch, disposeAll, writeRecordFresh } from "../../scripts/benchmarks/native-pi-qwen.ts";
+import { v3ArmOrder, jointAssignment, isSourcePath, ProtectedReadProbe, qualifyRequests, effectiveBuild, parseVersion, claimExclusive, collectSubmissionPatch, disposeAll, writeRecordFresh, evaluateProbe, probeReadiness } from "../../scripts/benchmarks/native-pi-qwen.ts";
 import type { RelayRequestRecord } from "../../src/models/relay.ts";
 
 const script = join(import.meta.dir, "../../scripts/benchmarks/runner.py");
@@ -151,6 +151,75 @@ describe("request-linkage qualification over RelayRequestRecord (#139, #140)", (
     expect(q.verified).toBe(true);
     expect(q.coverage.providerMissing).toBe(1);
     expect(qualifyRequests([], expected).verified).toBe(false);
+  });
+});
+
+describe("probe readiness telemetry only from observed evidence (#150)", () => {
+  const targetSha = "a".repeat(64);
+  // runner.py's v3 readiness gate (grade's actor_ok): it accepts only a verified structured denial.
+  const gateAccepts = (probe: Record<string, unknown>) => probe.checked === true && probe.result === "denied" && ["guard-denial", "tool-failure"].includes(String(probe.evidence));
+
+  test("a probe that never settled before the active start reports unknown, never a synthesized denial", () => {
+    // The historical repeat-1 case-07 solo-qwen shape: no answer, no denial event, peer still busy at the deadline.
+    const outcome = evaluateProbe("qwen", { denial: false, answers: [], settled: false, state: "busy" });
+    expect(outcome).toEqual({ checked: false, result: "unknown", reason: "the probe never settled before its deadline" });
+    const probe = probeReadiness("qwen", outcome, targetSha, true);
+    expect(probe.checked).toBe(false);
+    expect(probe.result).toBe("unknown");
+    expect(probe.evidence).toBeUndefined();
+    expect(probe.kernelProbe).toEqual({ checked: true, result: "denied" }); // the seatbelt layer was verified before launch
+    expect(gateAccepts(probe)).toBe(false);
+  });
+
+  test("a peer that failed before settling reports unknown with the state as the reason", () => {
+    const outcome = evaluateProbe("pi", { denial: false, answers: [], settled: false, state: "offline" });
+    expect(outcome).toEqual({ checked: false, result: "unknown", reason: "the probe peer is offline" });
+    expect(gateAccepts(probeReadiness("pi", outcome, targetSha))).toBe(false);
+  });
+
+  test("a probe that never ran (no recorded outcome) reports unknown", () => {
+    const probe = probeReadiness("pi", undefined, targetSha);
+    expect(probe).toEqual({ checked: false, result: "unknown", reason: "the probe never ran", target_sha256: targetSha });
+    expect(gateAccepts(probe)).toBe(false);
+  });
+
+  test("a settled probe without a native read denial reports failed, not denied", () => {
+    // The model wrote the marker, but no guard denial or bound tool failure was observed (correction 2).
+    const markerOnly = evaluateProbe("pi", { denial: false, answers: ["[FYI] AHUB_PROBE_DENIED"], settled: true, state: "idle" });
+    expect(markerOnly).toEqual({ checked: true, result: "failed", reason: "no structured denial evidence was observed" });
+    expect(gateAccepts(probeReadiness("pi", markerOnly, targetSha))).toBe(false);
+    // A guard denial without the peer's own probe answer is incomplete too.
+    const unmarked = evaluateProbe("pi", { denial: true, answers: ["[FYI] done"], settled: true, state: "idle" });
+    expect(unmarked.result).toBe("failed");
+    expect(gateAccepts(probeReadiness("pi", unmarked, targetSha))).toBe(false);
+    // An accessible report is a failure even when denial evidence exists.
+    const accessible = evaluateProbe("qwen", { denial: true, answers: ["[FYI] AHUB_PROBE_ACCESSIBLE"], settled: true, state: "idle" });
+    expect(accessible).toEqual({ checked: true, result: "failed", reason: "the peer reported the protected file accessible" });
+    expect(gateAccepts(probeReadiness("qwen", accessible, targetSha, true))).toBe(false);
+  });
+
+  test("a successful denial serializes checked/denied with its evidence type per peer", () => {
+    const pi = evaluateProbe("pi", { denial: true, answers: ["[FYI] AHUB_PROBE_DENIED"], settled: true, state: "idle" });
+    expect(pi).toEqual({ checked: true, result: "denied", evidence: "guard-denial" });
+    const piProbe = probeReadiness("pi", pi, targetSha);
+    expect(piProbe).toEqual({ checked: true, result: "denied", evidence: "guard-denial", target_sha256: targetSha });
+    expect(gateAccepts(piProbe)).toBe(true);
+    const qwen = evaluateProbe("qwen", { denial: true, answers: [], settled: true, state: "idle" }); // the bound tool failure settles it without an answer
+    expect(qwen).toEqual({ checked: true, result: "denied", evidence: "tool-failure" });
+    const qwenProbe = probeReadiness("qwen", qwen, targetSha, true);
+    expect(qwenProbe.kernelProbe).toEqual({ checked: true, result: "denied" });
+    expect(gateAccepts(qwenProbe)).toBe(true);
+    // Qwen without the kernel probe verified never claims the seatbelt layer.
+    expect(probeReadiness("qwen", qwen, targetSha, false).kernelProbe).toEqual({ checked: false, result: "unknown" });
+  });
+
+  test("one peer failing a joint attempt leaves the other's verified denial intact and the arm refused", () => {
+    const pi = probeReadiness("pi", evaluateProbe("pi", { denial: true, answers: ["[FYI] AHUB_PROBE_DENIED"], settled: true, state: "idle" }), targetSha);
+    const qwen = probeReadiness("qwen", evaluateProbe("qwen", { denial: false, answers: [], settled: false, state: "busy" }), targetSha, true);
+    // Per-peer truth: Pi's denial stands, Qwen's is unknown; the joint gate requires both actors, so it refuses.
+    expect(gateAccepts(pi)).toBe(true);
+    expect(gateAccepts(qwen)).toBe(false);
+    expect(gateAccepts(pi) && gateAccepts(qwen)).toBe(false);
   });
 });
 

@@ -91,6 +91,41 @@ export class ProtectedReadProbe {
     }
 }
 
+/**
+ * What one peer's setup-only protected-file probe actually observed (issue #150). The serialized readiness is
+ * built from this and nothing else: a probe that never settled or never ran is `unknown`, one that settled
+ * without the structured denial evidence is `failed`, and only the observed structured denial (a guard denial
+ * for Pi, `ProtectedReadProbe.denied` for Qwen) is `denied` — never a synthesized denial success.
+ */
+export type ProbeOutcome =
+    | { checked: true; result: 'denied'; evidence: 'guard-denial' | 'tool-failure'; reason?: undefined }
+    | { checked: boolean; result: 'failed' | 'unknown'; evidence?: undefined; reason: string };
+
+/** One peer's probe window, reduced to what its readiness record may claim. */
+export function evaluateProbe(peer: string, observation: { denial: boolean; answers: string[]; settled: boolean; state: string }): ProbeOutcome {
+    if (observation.state === 'offline' || observation.state === 'paused') return { checked: false, result: 'unknown', reason: `the probe peer is ${observation.state}` };
+    if (!observation.settled) return { checked: false, result: 'unknown', reason: 'the probe never settled before its deadline' };
+    if (observation.answers.some((s) => s.includes('AHUB_PROBE_ACCESSIBLE'))) return { checked: true, result: 'failed', reason: 'the peer reported the protected file accessible' };
+    const marked = observation.answers.some((s) => s.includes('AHUB_PROBE_DENIED'));
+    // Pi's denial must pair the guard denial with the peer's own probe answer; Qwen's is the bound tool failure alone.
+    if (observation.denial && (peer === 'qwen' || marked)) return { checked: true, result: 'denied', evidence: peer === 'pi' ? 'guard-denial' : 'tool-failure' };
+    return { checked: true, result: 'failed', reason: observation.denial ? 'the denial evidence lacks the peer probe answer' : 'no structured denial evidence was observed' };
+}
+
+/**
+ * The serialized sandboxProbe readiness of one peer (#150). Only an observed structured denial serializes
+ * `checked: true, result: "denied"`; a missing or failed probe is explicit, never a synthesized denial. Qwen's
+ * record also carries the seatbelt layer's kernel probe, which ran before the peer launched.
+ */
+export function probeReadiness(peer: string, outcome: ProbeOutcome | undefined, targetSha256: string, kernelDenied?: boolean): Record<string, unknown> {
+    const o: ProbeOutcome = outcome ?? { checked: false, result: 'unknown', reason: 'the probe never ran' };
+    const probe: Record<string, unknown> = { checked: o.checked, result: o.result, target_sha256: targetSha256 };
+    if (o.evidence) probe.evidence = o.evidence;
+    if (o.reason) probe.reason = o.reason;
+    if (peer === 'qwen' && kernelDenied !== undefined) probe.kernelProbe = kernelDenied ? { checked: true, result: 'denied' } : { checked: false, result: 'unknown' };
+    return probe;
+}
+
 export interface RequestLinkage {
     requests: number;
     completed: number;
@@ -354,6 +389,9 @@ async function main(): Promise<number> {
         const nativeTools: unknown[] = [];
         const deniedNative = new Set<string>();
         const qwenReadProbe = new ProtectedReadProbe(probeTarget);
+        // Per-peer observed probe outcomes (issue #150): the readiness record reports only these.
+        const probeResults = new Map<string, ProbeOutcome>();
+        let kernelProbeDenied = false;
         const owners = new Map<string, Actor>();
         const tokens: { pi: number; qwen: number | null } = { pi: 0, qwen: null };
         let active = false, deadline: number | undefined, relayToken = '';
@@ -433,6 +471,7 @@ async function main(): Promise<number> {
                 // The kernel denies the protected read under this profile before any agent runs.
                 const check = Bun.spawnSync(['/usr/bin/sandbox-exec', '-f', sb, '/bin/sh', '-c', 'head -c 1 "$1" >/dev/null 2>&1; test "$?" -ne 0', 'probe', probeTarget], { cwd: dir });
                 if (check.exitCode) throw new Error('kernel protected-file denial failed');
+                kernelProbeDenied = true;
                 log('kernel_probe', { denied: true });
             }
             if (hasPi) {
@@ -585,13 +624,14 @@ async function main(): Promise<number> {
                 const settledProbe = () => peer.state === 'idle' && (answers[peer.id]!.length > count || (peer.id === 'qwen' && deniedRead()));
                 const probeStart = Date.now();
                 while (Date.now() - probeStart < 60_000 && !settledProbe()) {
-                    if (peer.state === 'offline' || peer.state === 'paused') throw new Error('probe peer failed');
+                    if (peer.state === 'offline' || peer.state === 'paused') break; // recorded by evaluateProbe; the arm still fails below
                     await Bun.sleep(100);
                 }
-                const probeAnswers = answers[peer.id]!.slice(count);
-                const proven = peer.id === 'qwen' ? deniedRead() : deniedNative.has('pi') && probeAnswers.some((s) => s.includes('AHUB_PROBE_DENIED'));
-                if (peer.state !== 'idle' || !proven || probeAnswers.some((s) => s.includes('AHUB_PROBE_ACCESSIBLE'))) throw new Error('native probe not verified');
-                log('native_probe', { peer: peer.id, denied: true, evidence: peer.id === 'pi' ? 'guard-denial' : 'tool-failure' });
+                const outcome = evaluateProbe(peer.id, { denial: peer.id === 'pi' ? deniedNative.has('pi') : qwenReadProbe.denied, answers: answers[peer.id]!.slice(count), settled: settledProbe(), state: peer.state });
+                probeResults.set(peer.id, outcome);
+                // An unverified probe still fails the attempt (issue #150); only the serialized readiness changed.
+                if (outcome.result !== 'denied') throw new Error(`native probe not verified: ${outcome.reason}`);
+                log('native_probe', { peer: peer.id, denied: true, evidence: outcome.evidence });
             }
             if (setupOnly) { endDetail = 'setup-calibration'; return; }
 
@@ -669,7 +709,7 @@ async function main(): Promise<number> {
             const patchFile = join(recordRoot, 'patches', name + '.patch');
             writeFileSync(patchFile, patch, { mode: 0o600 });
             const readiness: Record<string, unknown> = {};
-            for (const p of peers) readiness[p.id] = { cwd: dir, requestedModel: 'dgx/coding', sessionId: (p.recoveryMetadata() as { sessionId?: string }).sessionId, sandboxProbe: { checked: true, result: 'denied', evidence: p.id === 'pi' ? 'guard-denial' : 'tool-failure', target_sha256: probeTargetSha } };
+            for (const p of peers) readiness[p.id] = { cwd: dir, requestedModel: 'dgx/coding', sessionId: (p.recoveryMetadata() as { sessionId?: string }).sessionId, sandboxProbe: probeReadiness(p.id, probeResults.get(p.id), probeTargetSha, p.id === 'qwen' ? kernelProbeDenied : undefined) };
             const record = {
                 protocol: 'native-pq-v3', platform: process.platform, index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: base,
                 readiness, patchFile, sourceDirs, featureAssignments: jointAssignment(index, repeat),
