@@ -210,6 +210,17 @@ test("Qwen: the announced MCP identity, not the argument-JSON title, is what may
   expect(asked[3]).toBe("tool call (payload not reported by the agent)");
   expect(said[4]!.body).toEndWith("permission=no");
   expect(logs.filter((l) => l.includes("auto-approved"))).toHaveLength(1);
+
+  // a tool_call_update's display title is mutable: it must not rewrite the announced identity,
+  // in either direction
+  bus.publish(newEnvelope("user", "PERMISSION QWEN-RETITLE", { to: ["kimi"] }));
+  await until(() => said.length === 6);
+  expect(asked[4]).toBe('Bash: {"text":"QWEN_NATIVE_READY"}');
+  expect(said[5]!.body).toEndWith("permission=no");
+  bus.publish(newEnvelope("user", "PERMISSION QWEN-RENAME", { to: ["kimi"] }));
+  await until(() => said.length === 7);
+  expect(said[6]!.body).toEndWith("permission=yes"); // still the announced hub tool
+  expect(logs.filter((l) => l.includes("auto-approved"))).toHaveLength(2);
 });
 
 // review of #13: an approval longer than the watchdog must not cancel the turn it belongs to.

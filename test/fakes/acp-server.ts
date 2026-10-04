@@ -37,7 +37,10 @@ async function prompt(id: number, text: string) {
     const qwen = text.includes("QWEN");
     if (qwen) {
       const upd = (update: object) => send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { toolCallId: "tc3", ...update } } });
-      if (!text.includes("QUIET")) upd({ sessionUpdate: "tool_call", title: text.includes("FOREIGN") ? "hub_send (other-bus MCP Server)" : "hub_send (agent-hub MCP Server)", status: "pending", rawInput: { text: "QWEN_NATIVE_READY" } });
+      if (!text.includes("QUIET")) upd({ sessionUpdate: "tool_call", title: text.includes("FOREIGN") ? "hub_send (other-bus MCP Server)" : text.includes("RETITLE") ? "Bash" : "hub_send (agent-hub MCP Server)", status: "pending", rawInput: { text: "QWEN_NATIVE_READY" } });
+      // A later update's display title is mutable and must never rewrite the announced identity.
+      if (text.includes("RETITLE")) upd({ sessionUpdate: "tool_call_update", title: "hub_send (agent-hub MCP Server)", status: "in_progress" });
+      if (text.includes("RENAME")) upd({ sessionUpdate: "tool_call_update", title: "Bash", status: "in_progress" });
       if (text.includes("DONE")) upd({ sessionUpdate: "tool_call_update", status: "completed" }); // a finished call's identity is evicted
       if (text.includes("REUSED")) upd({ sessionUpdate: "tool_call", title: "Bash", status: "pending" }); // a new call under the same id starts clean
     }
