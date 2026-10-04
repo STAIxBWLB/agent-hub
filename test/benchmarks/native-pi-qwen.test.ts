@@ -389,4 +389,75 @@ assert b'new.py' in patch and b'notes.txt' not in patch
       expect(report.arms["joint-pi-qwen"].request_linkage.attempts).toBe(0); // missing record: no evidence, never imputed
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+
+  test("v3_participants names the actors that actually started, from the record itself (#152)", () => {
+    const code = `import importlib.util
+s=importlib.util.spec_from_file_location('r',${JSON.stringify(script)});m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+started={'cwd':'/x','requestedModel':'dgx/coding','sessionId':'s1','sandboxProbe':{'checked':True,'result':'denied'}}
+constructed={'cwd':'/x','requestedModel':'dgx/coding','sandboxProbe':{'checked':True,'result':'denied'}}  # built, never started: no sessionId
+assert m.v3_participants({'kind':'solo-pi','readiness':{'pi':started}})==['pi']
+assert m.v3_participants({'kind':'solo-qwen','readiness':{'qwen':started},'usage':{'pi':0,'qwen':42}})==['qwen']  # the initial pi counter is no participation
+assert m.v3_participants({'kind':'joint-pi-qwen','readiness':{'pi':started,'qwen':started}})==['pi','qwen']
+# Setup failure (elapsedMs 0, no active start): the constructed-but-never-started peer is absent
+setup_failed={'kind':'joint-pi-qwen','readiness':{'pi':started,'qwen':constructed},'elapsedMs':0,'usage':{'pi':17,'qwen':None}}
+assert m.v3_participants(setup_failed)==['pi']
+assert m.v3_participants({'kind':'joint-pi-qwen','readiness':{'pi':constructed,'qwen':constructed},'elapsedMs':0})==[]
+assert m.v3_participants({'kind':'solo-qwen','readiness':{}})==[]
+assert m.v3_participants({'kind':'solo-pi'})==[]
+`;
+    const r = spawnSync("python3", ["-B", "-c", code], { encoding: "utf8" });
+    if (r.status !== 0) throw new Error(r.stderr);
+  });
+
+  test("the v3 report counts a native actor's usage only where that actor participated (#152)", () => {
+    const root = fixture();
+    try {
+      const manifest = { schema: "agent-hub.cooperbench-run/v1", headless: true, upstream: { commit: "63b9d44d9f39a02fccf5bf0052db48a917a011fd" }, arms: ["solo-pi", "solo-qwen", "joint-pi-qwen"], cases: [0, 1].map((i) => ({ repo: "r", task: i + 1, features: [1, 2], image_digest: "i@sha256:" + "d".repeat(64), base_commit: "e".repeat(40), archive_sha256: "a".repeat(64), prompt_sha256: ["a".repeat(64), "b".repeat(64)], source_dirs: ["src"] })) };
+      const bytes = JSON.stringify(manifest);
+      writeFileSync(join(root, "manifest.json"), bytes);
+      writeFileSync(join(root, "cohort.json"), JSON.stringify({ manifest_sha256: sha(bytes), cases: [0, 1], arms: manifest.arms, runner_sha256: "r", native_runner_sha256: "n", teardown_sha256: "t" }));
+      let n = 0;
+      const scored = (caseIndex: number, arm: string, pass: boolean, usage: unknown, participants?: string[]) => {
+        const patch = join(root, `p${n}.patch`), evaluation = join(root, `e${n}.json`);
+        writeFileSync(patch, `diff${n}\n`); writeFileSync(evaluation, `{"both_passed":${pass}}\n`);
+        n++;
+        return { case: caseIndex, arm, status: "scored", pass, input_sha256: sha(`diff${n - 1}\n`), patch_path: patch, evaluation_path: evaluation, evaluation_sha256: sha(`{"both_passed":${pass}}\n`), native_usage: usage, ...(participants ? { native_participants: participants } : {}) };
+      };
+      const rows = [
+        scored(0, "solo-pi", true, { pi: 100, qwen: null }, ["pi"]),
+        scored(0, "solo-qwen", true, { pi: 0, qwen: 250 }), // historical row (no native_participants): the arm names the actors; the pi default 0 is not an observation (#149)
+        scored(0, "joint-pi-qwen", true, { pi: 40, qwen: 70 }, ["pi", "qwen"]),
+        scored(1, "solo-pi", false, { pi: 0, qwen: null }, ["pi"]), // a participant's genuinely observed zero stays counted
+        scored(1, "solo-qwen", false, { pi: 0, qwen: null }, ["qwen"]), // a participant with a missing native reading stays unknown, not zero
+        { case: 1, arm: "joint-pi-qwen", status: "unavailable", reason: "native identity/model/readiness/cleanup gate failed", pass: null, native_participants: ["pi"] }, // setup failure: qwen never started
+      ];
+      writeFileSync(join(root, "grade.json"), JSON.stringify({ manifest_sha256: sha(bytes), runner_sha256: "r", native_runner_sha256: "n", teardown_sha256: "t", cohort: [0, 1], controls: {}, rows }));
+      const run = spawnSync("python3", [script, "report", "--run", root], { encoding: "utf8" });
+      if (run.status !== 0) throw new Error(run.stderr);
+      const report = JSON.parse(readFileSync(join(root, "report.json"), "utf8"));
+      const soloPi = report.arms["solo-pi"].native_usage;
+      expect(soloPi.pi_tokens_known).toBe(2);
+      expect(soloPi.pi_tokens).toBe(100); // 100 plus the observed zero
+      expect(soloPi.pi_participating).toBe(2);
+      expect(soloPi.qwen_session_tokens_known).toBe(0); // solo-pi has no Qwen: not-applicable, never a measured zero
+      expect(soloPi.qwen_session_tokens).toBeNull();
+      expect(soloPi.qwen_participating).toBe(0);
+      const soloQwen = report.arms["solo-qwen"].native_usage;
+      expect(soloQwen.pi_tokens_known).toBe(0); // the defect: the initial Pi counter of 0 was counted as an observation
+      expect(soloQwen.pi_tokens).toBeNull();
+      expect(soloQwen.pi_participating).toBe(0);
+      expect(soloQwen.qwen_session_tokens_known).toBe(1); // the missing reading is unknown, not zero
+      expect(soloQwen.qwen_session_tokens).toBe(250);
+      expect(soloQwen.qwen_participating).toBe(2);
+      const joint = report.arms["joint-pi-qwen"].native_usage;
+      expect(joint.pi_tokens_known).toBe(1);
+      expect(joint.pi_tokens).toBe(40);
+      expect(joint.pi_participating).toBe(2); // the setup-failed attempt still names Pi as a participant, with no usage attached
+      expect(joint.qwen_session_tokens_known).toBe(1);
+      expect(joint.qwen_session_tokens).toBe(70);
+      expect(joint.qwen_participating).toBe(1); // the peer that never started counts as absent
+      expect(report.arms["solo-pi"].both_passed).toBe(1); // pass/fail outcomes unchanged
+      expect(report.arms["joint-pi-qwen"].unavailable).toBe(1);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
 });

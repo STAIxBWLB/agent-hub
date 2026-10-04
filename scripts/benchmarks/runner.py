@@ -333,6 +333,16 @@ def v3_linkage(identity):
     completed=[r for r in reqs if r.get("outcome")=="completed"]
     return {"requests":len(reqs),"completed":len(completed),"identified":sum(r.get("identified") is True for r in completed),"cancelledUnidentified":sum(r.get("outcome")=="cancelled" and r.get("identified") is not True for r in reqs),"mismatches":sum(r.get("mismatch") is True for r in reqs),"providerMissing":sum(r.get("identified") is True and r.get("provider") is None for r in completed)}
 
+def v3_participants(run):
+    """Issue #152: the native actors that actually took part in a v3 attempt. The arm bounds the candidates (a
+    solo-qwen attempt has no Pi peer at all); among them, a peer participated only once it started, which its
+    readiness entry proves by the sessionId the adapter reports after a successful start. A peer that was
+    constructed but never started (a setup failure: elapsedMs 0, no active start) keeps a readiness entry without
+    a sessionId, or none, and is absent — the initial 0 of its token counter is not an observation. The record's
+    answers are no signal: both keys exist on every attempt, empty or not."""
+    ready=run.get("readiness") if isinstance(run.get("readiness"),dict) else {}
+    return [a for a in required_actors(str(run.get("kind") or "")) if a in ("pi","qwen") and isinstance(ready.get(a),dict) and bool(ready[a].get("sessionId"))]
+
 def validate_private_case(path:Path, expected:dict, pinned_hash:str|None):
     data=load(path)
     if (data.get("repo"),data.get("task"),data.get("features"))!=(expected["repo"],expected["task"],expected["features"]): raise BenchError("private case identity differs from the selected feature pair")
@@ -404,7 +414,7 @@ def grade(args):
         run=load(run_path); actors=required_actors(arm)
         teardown=teardown_failure(run)
         mid=run.get("modelIdentity")
-        v3extra={"request_linkage":v3_linkage(mid),"model_identity":{"verified":isinstance(mid,dict) and mid.get("generationVerified") is True}} if v3 else {}
+        v3extra={"request_linkage":v3_linkage(mid),"model_identity":{"verified":isinstance(mid,dict) and mid.get("generationVerified") is True},"native_participants":v3_participants(run)} if v3 else {}
         if teardown:
             rows.append({"case":case,"arm":arm,"status":"unavailable","reason":teardown,"pass":None,**v3extra}); continue
         if v3:
@@ -504,12 +514,27 @@ def report(args):
         if tuple(arms)==ARMS_V3:
             # Issue #140: quality, model-identity and request-linkage coverage are reported separately; unavailable
             # attempts stay in the planned denominator, and Pi and Qwen usage units are never added together.
-            pi=[r["native_usage"].get("pi") for r in rows if isinstance(r.get("native_usage"),dict) and isinstance(r["native_usage"].get("pi"),(int,float)) and not isinstance(r["native_usage"].get("pi"),bool)]
-            qw=[r["native_usage"].get("qwen") for r in rows if isinstance(r.get("native_usage"),dict) and isinstance(r["native_usage"].get("qwen"),(int,float)) and not isinstance(r["native_usage"].get("qwen"),bool)]
+            # Issue #152: an actor's usage counts only in attempts where that actor participated (the row's
+            # native_participants, taken from the run record's arm and per-peer sessions). An absent actor — a
+            # solo arm's other native, or a peer that never started — contributes zero known observations, and its
+            # token counter's initial 0 is never read as a measurement; a participant with no native reading
+            # stays unknown, never zero.
+            def participants_of(r):
+                p=r.get("native_participants")
+                if isinstance(p,list): return [a for a in p if a in ("pi","qwen")]
+                # Grade rows from before #152 name no participants; their native_usage was attached only to scored
+                # attempts, whose readiness gate had proved every required actor's session, so the arm's actors
+                # are exactly the participants.
+                return required_actors(r.get("arm")) if isinstance(r.get("native_usage"),dict) else []
+            def actor_usage(actor):
+                took=[r for r in rows if actor in participants_of(r)]
+                vals=[r["native_usage"].get(actor) for r in took if isinstance(r.get("native_usage"),dict) and isinstance(r["native_usage"].get(actor),(int,float)) and not isinstance(r["native_usage"].get(actor),bool)]
+                return took,vals
+            pi_took,pi=actor_usage("pi"); qw_took,qw=actor_usage("qwen")
             links=[r.get("request_linkage") for r in rows if isinstance(r.get("request_linkage"),dict)]
             agg=lambda k: sum(l.get(k,0) for l in links)
             by_arm[arm]={"planned":len(cohort["cases"]),"scored":len(scored),"both_passed":sum(x["pass"] is True for x in scored),"unavailable":len(rows)-len(scored),
-                "native_usage":{"pi_tokens_known":len(pi),"pi_tokens":sum(pi) if pi else None,"qwen_session_tokens_known":len(qw),"qwen_session_tokens":sum(qw) if qw else None,"units":"pi: incremental onTokens counter; qwen: session usage_update running total; whole attempt including setup probes; never added together"},
+                "native_usage":{"pi_tokens_known":len(pi),"pi_tokens":sum(pi) if pi else None,"pi_participating":len(pi_took),"qwen_session_tokens_known":len(qw),"qwen_session_tokens":sum(qw) if qw else None,"qwen_participating":len(qw_took),"units":"pi: incremental onTokens counter; qwen: session usage_update running total; whole attempt including setup probes; counted only where the actor participated (#152); never added together"},
                 "model_identity":{"verified":sum(r.get("model_identity",{}).get("verified") is True for r in rows if isinstance(r.get("model_identity"),dict)),"attempts":len(rows)},
                 "request_linkage":{"attempts":len(links),"requests":agg("requests"),"completed":agg("completed"),"identified":agg("identified"),"cancelledUnidentified":agg("cancelledUnidentified"),"mismatches":agg("mismatches"),"providerMissing":agg("providerMissing")}}
             continue
