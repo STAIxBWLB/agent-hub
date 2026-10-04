@@ -237,3 +237,63 @@ test("#101 relay model provenance ignores gateway heartbeat model labels", async
   await response.text();
   expect(relay.status().backends[0]?.actualModel).toBe("physical/model");
 });
+
+const dgxRelay = async (upstream: ReturnType<typeof Bun.serve>) => {
+  cleanup.push(() => upstream.stop(true));
+  const relay = await startModelRelay({ omni: omni(`http://127.0.0.1:${upstream.port}/v1`), allowedDGXmodels: { "dgx/coding": "coding" }, token: "relay-token" });
+  cleanup.push(relay.close);
+  return relay;
+};
+const dgxRequest = (relay: { url: string }) => fetch(`${relay.url}/chat/completions`, { method: "POST", headers: { authorization: "Bearer relay-token", "content-type": "application/json" }, body: JSON.stringify({ model: "dgx/coding", messages: [{ role: "user", content: "provenance" }] }) });
+
+test("#137 a nonempty empty-delta heartbeat cannot set the served model", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response('data: {"model":"keepalive","choices":[{"index":0,"delta":{}}]}\n\ndata: {"model":"real-model","choices":[{"index":0,"delta":{"content":"OK"}}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } }) });
+  const relay = await dgxRelay(upstream);
+  const response = await dgxRequest(relay);
+  expect(await response.text()).toContain("OK"); // generation data is forwarded, heartbeat included
+  expect(relay.status().backends[0]?.actualModel).toBe("real-model");
+});
+
+test("#137 a heartbeat-only stream leaves the served model unknown", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response('data: {"model":"keepalive","choices":[{"index":0,"delta":{}}]}\n\ndata: {"model":"keepalive","choices":[]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } }) });
+  const relay = await dgxRelay(upstream);
+  const response = await dgxRequest(relay);
+  await response.text();
+  expect(relay.status().backends[0]?.actualModel).toBeUndefined();
+});
+
+test("#137 a role-only first chunk identifies the served model", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response('data: {"model":"keepalive","choices":[{"index":0,"delta":{}}]}\n\ndata: {"model":"role-model","choices":[{"index":0,"delta":{"role":"assistant"}}]}\n\ndata: {"model":"role-model","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } }) });
+  const relay = await dgxRelay(upstream);
+  const response = await dgxRequest(relay);
+  await response.text();
+  expect(relay.status().backends[0]?.actualModel).toBe("role-model");
+});
+
+test("#137 heartbeat classification survives SSE frames split across chunks", async () => {
+  const frames = ['data: {"model":"keep', 'alive","choices":[{"index":0,"delta":{}}]}\n\nda', 'ta: {"model":"split-model","choices":[{"index":0,"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'];
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(new ReadableStream({
+    async start(controller) {
+      for (const frame of frames) { controller.enqueue(new TextEncoder().encode(frame)); await new Promise((resolve) => setTimeout(resolve, 5)); }
+      controller.close();
+    },
+  }), { headers: { "content-type": "text/event-stream" } }) });
+  const relay = await dgxRelay(upstream);
+  const response = await dgxRequest(relay);
+  await response.text();
+  expect(relay.status().backends[0]?.actualModel).toBe("split-model");
+});
+
+test("#137 a stream cancelled before identification leaves the served model unknown", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: {"model":"keepalive","choices":[{"index":0,"delta":{}}]}\n\n'));
+      // never closes and never identifies: the client cancels first
+    },
+  }), { headers: { "content-type": "text/event-stream" } }) });
+  const relay = await dgxRelay(upstream);
+  const response = await dgxRequest(relay);
+  await response.body?.cancel();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(relay.status().backends[0]?.actualModel).toBeUndefined();
+});

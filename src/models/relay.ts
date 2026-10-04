@@ -100,6 +100,19 @@ function bodyForUpstream(body: RelayRequest, model: string): Record<string, unkn
   };
 }
 
+/** An SSE event carries model identity only with generation activity: a delta with any field (a role-only
+ *  first chunk counts), a finish reason, or a non-streaming message. Empty choices and empty-delta events
+ *  are transport heartbeats and say nothing about the served model. */
+function isGenerationEvent(choices: unknown): boolean {
+  if (!Array.isArray(choices)) return false;
+  return choices.some((choice: any) => {
+    if (choice?.finish_reason) return true;
+    if (choice?.message && typeof choice.message === "object") return true;
+    const delta = choice?.delta;
+    return delta !== null && typeof delta === "object" && Object.keys(delta).length > 0;
+  });
+}
+
 function sseResponse(response: Response, release: () => void, onModel?: (model: string) => void, registerCancel?: (cancel: (reason?: unknown) => Promise<void>) => void): Response {
   if (!response.body) {
     release();
@@ -122,8 +135,9 @@ function sseResponse(response: Response, release: () => void, onModel?: (model: 
       if (!line.startsWith("data:") || line.slice(5).trim() === "[DONE]") continue;
       try {
         const value = JSON.parse(line.slice(5).trim()) as { model?: unknown; choices?: unknown[] };
-        // Gateway heartbeat events can name a synthetic "keepalive" model with no choices.
-        if (Array.isArray(value.choices) && value.choices.length && typeof value.model === "string" && value.model.length < 256) {
+        // Transport heartbeats are not model identity: a gateway keepalive can name a synthetic model on
+        // an event with no generation activity (no choices, or only empty deltas without a finish reason).
+        if (typeof value.model === "string" && value.model.length < 256 && isGenerationEvent(value.choices)) {
           inspectedModel = true;
           onModel(value.model);
           return;
