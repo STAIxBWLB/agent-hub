@@ -4,6 +4,13 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.12.10
+
+- Preserve each Pi/Qwen peer's observed sandbox-probe result in v3 readiness; failed or missing native probes never synthesize a denial (#150).
+- Dispatch native v3 runs through their own coordination ledger, preserving completion, timeout and setup-error classifications independently from official quality; derive model identity and linkage from the request journal and bound timing medians to valid completed attempts (#151).
+- Count official native usage only for actors with started sessions, keeping Pi incremental counters and Qwen session totals separate (#152). Apply the same participation gate to v3 ledger aggregates, with known, unknown and absent measurement coverage (#156).
+- Allow trusted served-model expectations in relay mismatch checks when a provider-prefixed upstream identifier differs from the physical generation model (#139, #140).
+
 ## 0.12.9
 
 - The CooperBench native runner proves each prepared fixture root is still the directory preparation left before anything is locked, written or launched, and each arm checks its own again first (#119): a root replaced after preparation by a symlink to an equivalent outside tree passed the lexical `resolve()` comparison and the baseline content checks and would have redirected setup and agent writes there. The check is read-only (`lstat` and the real path, never a follow), so a substitution is refused without touching its target; a sibling fixture root that is itself a symlink is refused before the sibling-artifact walk reads it.

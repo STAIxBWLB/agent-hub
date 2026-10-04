@@ -406,7 +406,7 @@ const V3_UNITS = { pi: "incremental onTokens counter, whole attempt including th
 function v3record(f: ReturnType<typeof fixture>, kind: string, over: Record<string, unknown> = {}) {
   return {
     protocol: "native-pq-v3", platform: "darwin", index: 0, kind, repo: "pallets/click", features: [1, 2], project: f.cwd, cwd: f.cwd, sealedCommit: f.sealedCommit,
-    readiness: {}, patchFile: "", sourceDirs: ["src"], featureAssignments: { pi: 0, qwen: 1 },
+    readiness: Object.fromEntries((kind === "solo-pi" ? ["pi"] : kind === "solo-qwen" ? ["qwen"] : ["pi", "qwen"]).map((actor) => [actor, { sessionId: `${actor}-session` }])), patchFile: "", sourceDirs: ["src"], featureAssignments: { pi: 0, qwen: 1 },
     modelIdentity: {
       requested: "flashnext/qwen3.8-flash-next", expectedServedModel: "qwen3.8-flash-next", expectedProvider: "prov", probe: { servedModel: "qwen3.8-flash-next", provider: "prov" }, generationVerified: true,
       requests: [
@@ -513,7 +513,7 @@ test("two v3 repeats pool over the fixed 10 cases x 3 arms x 2 repeats matrix; d
     expect(fell.validity.valid).toBe(false);
     const qwen = out.summary["solo-qwen"];
     expect(qwen).toMatchObject({ attempts: 2, completed: 1, valid_completed: 1, elapsed_s_median: 120, not_completed: ["infrastructure-error"] });
-    expect(qwen.native_usage).toMatchObject({ qwen_tokens_total: 9800, qwen_tokens_unknown: 1 }); // the fallback wrote none: unknown, not zero
+    expect(qwen.native_usage).toMatchObject({ qwen_tokens_total: 9800, qwen_tokens_unknown: 0, qwen_not_participating: 1 }); // the fallback started no native session: not an observation
     expect(qwen.native_usage.pi_tokens_total).toBeUndefined(); // no pi actor in the arm
   } finally {
     for (const f of [a, b]) rmSync(f.root, { recursive: true, force: true });
@@ -579,6 +579,42 @@ test("the setup median pools only valid completed attempts", () => {
     const out = f.ledger();
     // The timed-out attempt's 65 s setup is not a measurement of a good attempt's setup.
     expect(out.summary["solo-pi"]).toMatchObject({ attempts: 2, completed: 1, valid_completed: 1, setup_s_median: 5, elapsed_s_median: 120 });
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test("v3 ledger usage counts started sessions, preserving measured zero and missing readings (#156)", () => {
+  const f = fixture();
+  try {
+    f.run("00-joint", v3record(f, "joint-pi-qwen", {
+      readiness: { pi: { sessionId: "pi-started" }, qwen: {} },
+      usage: { pi: 17, qwen: 0, units: V3_UNITS },
+      end_reason: "infrastructure-error", elapsedMs: 0,
+    }));
+    f.run("01-joint", v3record(f, "joint-pi-qwen", {
+      index: 1, readiness: { pi: {}, qwen: {} },
+      usage: { pi: 0, qwen: null, units: V3_UNITS },
+      end_reason: "infrastructure-error", elapsedMs: 0,
+    }));
+    f.run("02-joint", v3record(f, "joint-pi-qwen", {
+      index: 2, usage: { pi: 0, qwen: null, units: V3_UNITS },
+    }));
+    f.run("03-solo-qwen", v3record(f, "solo-qwen", {
+      index: 3, usage: { pi: 0, qwen: 0, units: V3_UNITS },
+    }));
+    const out = f.ledger();
+    const partial = out.rows.find((r: { arm: string; case: number }) => r.arm === "joint-pi-qwen" && r.case === 0);
+    expect(partial.native_participants).toEqual(["pi"]);
+    expect(partial.native_usage.qwen).toBe(0); // retain the raw counter as provenance, never aggregate it
+    expect(out.summary["joint-pi-qwen"].native_usage).toMatchObject({
+      pi_participating: 2, pi_not_participating: 1, pi_tokens_known: 2, pi_tokens_total: 17, pi_tokens_unknown: 0,
+      qwen_participating: 1, qwen_not_participating: 2, qwen_tokens_known: 0, qwen_tokens_total: null, qwen_tokens_unknown: 1,
+    });
+    expect(out.summary["solo-qwen"].native_usage).toMatchObject({
+      qwen_participating: 1, qwen_tokens_known: 1, qwen_tokens_total: 0, qwen_tokens_unknown: 0,
+    });
+    expect(out.summary["solo-qwen"].native_usage.pi_tokens_total).toBeUndefined();
   } finally {
     rmSync(f.root, { recursive: true, force: true });
   }
