@@ -17,14 +17,18 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from runner import TURN_FREE, active_window, end_story, hook_rows, isolation_failure, teardown_failure, transcript, treatment_failure  # noqa: E402  the grader's gates: one definition
+from runner import ARMS_V3, TURN_FREE, active_window, end_story, hook_rows, isolation_failure, required_actors, teardown_failure, transcript, treatment_failure, v3_linkage, v3_request_gate  # noqa: E402  the grader's gates: one definition
+
+V3_PROTOCOL = "native-pq-v3"  # the headless Pi/Qwen driver's records (#140); the Claude/Codex records are native-cc-v1
 
 UNITS = {
     "end_reason": "the runner's class (completed, timeout, interrupted, infrastructure-error, ...); end_reason_detail "
                   "says which (wall-timeout, needs-review, claude-exited, ...), and end_story adds the end_flags that "
                   "made it an infrastructure error (#113). Completed and timed-out attempts are graded unless the "
                   "teardown gate (see validity) says otherwise",
-    "completed": "the runner completed the attempt and every task has a done",
+    "completed": "the runner completed the attempt and every task has a done; a v3 attempt has no board tasks (bus "
+                 "prompts), so its completion is the runner's end classification alone, independent of official "
+                 "quality (the grader's, never this ledger's)",
     "setup_s": "seconds of setup before the first task (native launches, readiness and sandbox probes)",
     "elapsed_s": "the runner's active-work seconds for the attempt (teardown is apart: stopped_s, teardown_s, teardown)",
     "done_s": "per task: seconds to its last done",
@@ -102,6 +106,19 @@ UNITS = {
                 "withheld true is a record kept in recovery/ because its cleanup was incomplete or its sibling read locks "
                 "could not be put back: an attempt, unavailable, until scripts/benchmarks/restore.ts moves it into runs/",
     "split_predictions": "the hub's shadow split predictions (#109) with their traces; they never changed an assignment",
+    "native_usage": "per native actor of a v3 attempt, as its record carries it: pi is the incremental onTokens "
+                    "counter of the whole attempt (the setup probes included), qwen the session usage_update running "
+                    "total; the two are different units and are never added together; null when the record cannot "
+                    "say (a failed attempt that wrote none), never zero",
+    "request_linkage": "per v3 attempt, the coverage of the relay's journaled RelayRequestRecords (#139), recomputed "
+                       "from the journal by the grader's own coverage function (never the record's cached summary): "
+                       "requests, completed, identified, cancelledUnidentified (a request cancelled before "
+                       "identification certifies nothing), mismatches and providerMissing; null when the record "
+                       "carries no journal",
+    "model_identity": "per v3 attempt, the grader's own per-request gate (v3_request_gate) applied to the journaled "
+                      "records against the record's pinned expectations, never the cached generationVerified: every "
+                      "identified request is evidence whatever its outcome, and a cancelled-after-identification "
+                      "mismatch fails it; null (unknown) when the record carries no journal",
     "hooks": "hooks each agent ran as its own records show: Claude transcript hook rows by hook and command label (the "
              "hub's facts hook, or other: the program's name; never paths or arguments), with the durationMs they "
              "carry (Claude Code writes rows for hooks that printed something and for Stop hooks), Codex hook/started "
@@ -123,7 +140,10 @@ UNITS = {
                "over the (case, repeat) pairs every arm completed validly (common) and, for turn-free, over treated "
                "attempts; totals over the attempts whose tasks were handed out and to which the measure applies, each "
                "with the number of those attempts where it was unknown (<name>_unknown; lost contributions are unknown "
-               "when an agent's writes could not be counted), and the coverage notes of the contribution heuristic",
+               "when an agent's writes could not be counted), and the coverage notes of the contribution heuristic. "
+               "A v3 (headless Pi/Qwen) arm instead summarizes completion by the runner's end classification, setup "
+               "and elapsed medians over valid completed attempts (and the common pairs), model-identity "
+               "verification, request-linkage coverage and native usage per unit, never merged across natives",
 }
 IDENT = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{3,}\b")
 SHELL_READS = ("read", "listFiles", "search")
@@ -610,6 +630,100 @@ def ledger_of(run):
     return row
 
 
+# ---- one v3 attempt (headless Pi/Qwen, #140) ----------------------------------------------------------------------
+
+def v3_identity_of(ident):
+    """The attempt's model identity derived from its journaled per-request records by the grader's own gate
+    (v3_request_gate), never the record's cached generationVerified/generationFailureReasons: a stale summary
+    (for example a cancelled-after-identification mismatch while the cached flag stayed true) must not read as
+    verified. The expectations are the record's own pinned copies of the manifest's fixed backend, served model
+    and provider; the ledger reads run records, not the manifest. Every identified request is evidence whatever
+    its outcome; only cancelled-before-identification certifies nothing. A record without its journal is
+    explicitly unknown."""
+    if not isinstance(ident, dict) or not isinstance(ident.get("requests"), list):
+        return {"verified": None, "why": "the record carries no request journal", "requests_journaled": None}
+    gate = v3_request_gate(ident, {"fixed_backend": ident.get("requested"), "expected_served_model": ident.get("expectedServedModel"),
+                                   "expected_provider": ident.get("expectedProvider")})
+    return {"verified": gate is None, "why": gate, "requests_journaled": len(ident["requests"])}
+
+
+def v3_ledger_of(run):
+    """One headless Pi/Qwen attempt (manifest v3): bus prompts, no board taskStates. Completion is the runner's own
+    end classification, apart from official quality (the grader's, #152); usage units are preserved as recorded and
+    never merged. The measures the Claude/Codex records support (board timings, transcript usage, contributions) do
+    not exist here and are absent, not zero."""
+    usage = run.get("usage") if isinstance(run.get("usage"), dict) else {}
+    ident = run.get("modelIdentity") if isinstance(run.get("modelIdentity"), dict) else {}
+    answers = run.get("answers") if isinstance(run.get("answers"), dict) else {}
+    number = lambda v: v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    return {
+        "case": run.get("index"), "arm": run.get("kind"), "repeat": run.get("repeat"), "protocol": V3_PROTOCOL,
+        "end_reason": run.get("end_reason"), "end_reason_detail": run.get("end_reason_detail"), "end_story": end_story(run),
+        "completed": run.get("end_reason") == "completed",
+        "setup_s": round(run["setupMs"] / 1000, 1) if isinstance(run.get("setupMs"), (int, float)) else None,
+        "elapsed_s": round(run["elapsedMs"] / 1000, 1) if isinstance(run.get("elapsedMs"), (int, float)) else None,
+        "native_usage": {"pi": number(usage.get("pi")), "qwen": number(usage.get("qwen")),
+                         "units": usage.get("units"), "tool_surfaces": usage.get("toolSurfaces")},
+        # Recomputed from the journal by the grader's own coverage function, never the record's cached requestLinkage.
+        "request_linkage": v3_linkage(ident) if isinstance(ident.get("requests"), list) else None,
+        "model_identity": v3_identity_of(ident),
+        "answers": {a: len(v) for a, v in sorted(answers.items()) if isinstance(v, list)},
+        "peer_messages": sum(1 for e in run.get("events") or [] if isinstance(e, dict) and e.get("event") == "peer_message"),
+        "feature_assignments": run.get("featureAssignments"),
+        "native_versions": run.get("nativeVersions"),
+        "validity": validity_of(run),
+        "stopped_s": None, "teardown_s": None,  # the v3 driver does not time these apart from the teardown record
+        "teardown": teardown_of(run),
+        "metadata_clean": run.get("metadata_clean"),
+        "tree_changed_after_active_time": run.get("tree_changed_after_active_time"),
+        "error": run.get("error"),
+        "patch_bytes": number(run.get("patchBytes")),
+    }
+
+
+def row_of(run):
+    """Dispatch a run record by its protocol (#151): a v3 record has no board taskStates, and an unknown protocol is
+    refused before any output is written rather than misclassified by the task-based reading."""
+    proto, kind = run.get("protocol"), str(run.get("kind") or "")
+    if proto == V3_PROTOCOL: return v3_ledger_of(run)
+    if proto not in (None, "native-cc-v1"):
+        raise SystemExit(f"ledger: unsupported record protocol {proto!r} (case {run.get('index')} {kind} repeat {run.get('repeat')})")
+    if kind in ARMS_V3:
+        raise SystemExit(f"ledger: a {kind} record without the {V3_PROTOCOL} protocol is not supported (case {run.get('index')} repeat {run.get('repeat')})")
+    return ledger_of(run)
+
+
+def summarize_v3(arm, rs, done, shared, missing, unreadable):
+    """Per-arm summary of headless Pi/Qwen attempts (#151): completion from the records' end classification, elapsed
+    and setup medians over valid completed attempts, request-linkage and model-identity coverage, and native usage
+    per unit (Pi's incremental counter and Qwen's session running total are never added together)."""
+    links = [r["request_linkage"] for r in rs if isinstance(r.get("request_linkage"), dict)]
+    agg = lambda k: sum(l[k] for l in links if isinstance(l.get(k), (int, float)) and not isinstance(l.get(k), bool))
+    usage = {"units": "pi: incremental onTokens counter; qwen: session usage_update running total; whole attempt "
+                      "including the setup probes; never added together"}
+    for actor in required_actors(arm):
+        values = [(r.get("native_usage") or {}).get(actor) for r in rs]
+        known = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        usage[f"{actor}_tokens_total"] = sum(known) if known else None
+        usage[f"{actor}_tokens_unknown"] = sum(1 for v in values if v is None)
+    return {
+        "attempts": len(rs), "completed": sum(1 for r in rs if r.get("completed")), "valid_completed": len(done),
+        "not_completed": sorted(r["end_story"] for r in rs if not r.get("completed")),
+        "excluded": sorted(str((r.get("validity") or {}).get("why")) for r in rs
+                           if r.get("completed") and (r.get("validity") or {}).get("valid") is not True),
+        "missing": sorted(f"case {c} repeat {rep}" for c, a, rep in missing if a == arm),
+        "unreadable": sorted(f"case {c} repeat {rep}" for c, a, rep in unreadable if a == arm),
+        "setup_s_median": median([r["setup_s"] for r in done if r.get("setup_s") is not None]),  # valid completed only, like every median: a setup that failed says nothing about a good one
+        "elapsed_s_median": median([r["elapsed_s"] for r in done if r.get("elapsed_s") is not None]),
+        "elapsed_s_median_common": median([r["elapsed_s"] for r in shared if r.get("elapsed_s") is not None]),
+        "model_identity_verified": sum(1 for r in rs if (r.get("model_identity") or {}).get("verified") is True),
+        "request_linkage": {"attempts": len(links), "requests": agg("requests"), "completed": agg("completed"),
+                            "identified": agg("identified"), "cancelledUnidentified": agg("cancelledUnidentified"),
+                            "mismatches": agg("mismatches"), "providerMissing": agg("providerMissing")},
+        "native_usage": usage,
+    }
+
+
 def summarize(rows, missing=(), unreadable=()):
     by = {}
     for r in rows: by.setdefault(r["arm"], []).append(r)
@@ -640,6 +754,9 @@ def summarize(rows, missing=(), unreadable=()):
     for arm, rs in by.items():
         done = [r for r in rs if ok(r)]
         shared = [r for r in done if (r["case"], r.get("repeat")) in common]
+        if arm in ARMS_V3:
+            out[arm] = summarize_v3(arm, rs, done, shared, missing, unreadable)
+            continue
         treated = [r for r in done if (r.get("treatment") or {}).get("silent_cohort")]
         out[arm] = {
             "attempts": len(rs), "completed": sum(1 for r in rs if r.get("completed")), "valid_completed": len(done),
@@ -715,8 +832,8 @@ def main():
         held = sorted((run_dir / "recovery" / "runs").glob("*.json"))
         moving = {h.name for h in held}
         for f in sorted((run_dir / "runs").glob("*.json")):
-            if f.name not in moving: rows.append({**ledger_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name})
-        for f in held: rows.append({**ledger_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name, "withheld": True})
+            if f.name not in moving: rows.append({**row_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name})
+        for f in held: rows.append({**row_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name, "withheld": True})
         plan |= expected(run_dir)
     if a.plan: plan |= planned(a.run[0], a.plan)
     seen = {}

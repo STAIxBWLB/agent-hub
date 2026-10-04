@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -396,5 +396,190 @@ test("a late transcript append keeps the frozen prefix, is reported, and leaves 
     expect(flagged.summary["solo-claude"].not_completed).toEqual(["completed, then tree-changed-after-active-time"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// issue #151: a v3 headless Pi/Qwen record has no board taskStates (bus prompts); the ledger dispatches on the
+// record's protocol and classifies it by the runner's own end reason, apart from official quality (the grader's).
+const V3_UNITS = { pi: "incremental onTokens counter, whole attempt including the setup probes", qwen: "session usage_update running total, whole attempt including the setup probes" };
+
+function v3record(f: ReturnType<typeof fixture>, kind: string, over: Record<string, unknown> = {}) {
+  return {
+    protocol: "native-pq-v3", platform: "darwin", index: 0, kind, repo: "pallets/click", features: [1, 2], project: f.cwd, cwd: f.cwd, sealedCommit: f.sealedCommit,
+    readiness: {}, patchFile: "", sourceDirs: ["src"], featureAssignments: { pi: 0, qwen: 1 },
+    modelIdentity: {
+      requested: "flashnext/qwen3.8-flash-next", expectedServedModel: "qwen3.8-flash-next", expectedProvider: "prov", probe: { servedModel: "qwen3.8-flash-next", provider: "prov" }, generationVerified: true,
+      requests: [
+        { id: "r1", outcome: "completed", identified: true, requestedModel: "flashnext/qwen3.8-flash-next", actualModel: "qwen3.8-flash-next", provider: "prov" },
+        { id: "r2", outcome: "cancelled", identified: false }, // cancelled before identification: certifies nothing
+      ],
+    },
+    requestLinkage: { requests: 2, completed: 1, identified: 1, cancelledUnidentified: 1, mismatches: 0, providerMissing: 0 },
+    nativeVersions: { pi: { version: "1.0.1", binary: "pi" }, qwen: { version: "0.24.7", binary: "cli.js" } },
+    repeat: 0, setupMs: 5000, elapsedMs: 120_000, startedAt: f.t0,
+    usage: { pi: 4200, qwen: 9800, units: V3_UNITS, toolSurfaces: { pi: "hub-moderated tools", qwen: "own seatbelted tools" } },
+    end_reason: "completed", end_reason_detail: "completed",
+    cleanup: { outcome: "clean", reasons: [] }, cleanup_complete: true,
+    metadata_clean: true, tree_changed_after_active_time: false, changedPaths: [],
+    events: [{ at: f.iso(0), event: "active_start" }, { at: f.iso(10), event: "peer_message", from: "pi", to: "qwen" }],
+    answers: { pi: ["[FYI] done"], qwen: ["[FYI] done"] }, patchSHA256: "x", patchBytes: 120,
+    ...over,
+  };
+}
+
+test("completed v3 records without taskStates classify by their end reason, with usage units kept apart and request linkage consumed", () => {
+  const f = fixture();
+  try {
+    f.run("00-joint-pi-qwen", v3record(f, "joint-pi-qwen"));
+    // A timeout is a normal classification, not a setup error; a solo-pi record has no qwen actor (null, preserved).
+    f.run("00-solo-pi", v3record(f, "solo-pi", {
+      usage: { pi: 3100, qwen: null, units: V3_UNITS }, end_reason: "timeout", end_reason_detail: "wall-timeout", elapsedMs: 300_000, answers: { pi: ["[FYI] partial"] },
+      requestLinkage: { requests: 4, completed: 4, identified: 4, cancelledUnidentified: 0, mismatches: 0, providerMissing: 0 },
+    }));
+    // An infrastructure error with an incomplete cleanup: unavailable by the teardown gate, whatever it managed to do.
+    f.run("00-solo-qwen", v3record(f, "solo-qwen", {
+      usage: { pi: 0, qwen: 5100, units: V3_UNITS }, end_reason: "infrastructure-error", end_reason_detail: "infrastructure-error", error: "relay exploded",
+      cleanup: { outcome: "incomplete_or_unknown", reasons: ["still running: below 107"] }, cleanup_complete: false, elapsedMs: 40_000,
+    }));
+    const out = f.ledger();
+    const joint = out.rows.find((r: { arm: string }) => r.arm === "joint-pi-qwen");
+    expect(joint).toMatchObject({ protocol: "native-pq-v3", completed: true, end_reason: "completed", elapsed_s: 120, setup_s: 5, peer_messages: 1, answers: { pi: 1, qwen: 1 } });
+    expect(joint.done_s).toBeUndefined(); // no board tasks: the task measures are absent, not zero
+    expect(joint.native_usage).toMatchObject({ pi: 4200, qwen: 9800, units: V3_UNITS });
+    expect(joint.request_linkage).toEqual({ requests: 2, completed: 1, identified: 1, cancelledUnidentified: 1, mismatches: 0, providerMissing: 0 });
+    expect(joint.model_identity).toEqual({ verified: true, why: null, requests_journaled: 2 });
+    expect(joint.validity).toEqual({ valid: true, why: null });
+    expect(joint.teardown).toMatchObject({ cleanup: "clean", verified: true, tree_changed_after_active_time: false });
+    const soloPi = out.rows.find((r: { arm: string }) => r.arm === "solo-pi");
+    expect(soloPi).toMatchObject({ completed: false, end_reason: "timeout", end_reason_detail: "wall-timeout", end_story: "wall-timeout", elapsed_s: 300, validity: { valid: true, why: null } });
+    expect(soloPi.native_usage.qwen).toBeNull(); // no qwen actor in the arm: not applicable, preserved as null
+    const soloQwen = out.rows.find((r: { arm: string }) => r.arm === "solo-qwen");
+    expect(soloQwen).toMatchObject({ completed: false, end_reason: "infrastructure-error", error: "relay exploded" });
+    expect(soloQwen.validity).toEqual({ valid: false, why: "cleanup incomplete or unknown: still running: below 107" });
+    const summary = out.summary["joint-pi-qwen"];
+    expect(summary).toMatchObject({ attempts: 1, completed: 1, valid_completed: 1, elapsed_s_median: 120, setup_s_median: 5, model_identity_verified: 1 });
+    expect(summary.request_linkage).toEqual({ attempts: 1, requests: 2, completed: 1, identified: 1, cancelledUnidentified: 1, mismatches: 0, providerMissing: 0 });
+    expect(summary.native_usage).toMatchObject({ pi_tokens_total: 4200, pi_tokens_unknown: 0, qwen_tokens_total: 9800, qwen_tokens_unknown: 0 });
+    expect(summary.native_usage.units).toContain("never added together"); // the two units stay apart
+    expect(out.summary["solo-pi"].not_completed).toEqual(["wall-timeout"]);
+    expect(out.summary["solo-pi"].native_usage.qwen_tokens_total).toBeUndefined(); // no qwen actor: not counted at all
+    expect(out.summary["solo-qwen"]).toMatchObject({ attempts: 1, completed: 0, valid_completed: 0, not_completed: ["infrastructure-error"], elapsed_s_median: null });
+    expect(Object.keys(out.units)).toEqual(expect.arrayContaining(["native_usage", "request_linkage", "model_identity"]));
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test("two v3 repeats pool over the fixed 10 cases x 3 arms x 2 repeats matrix; duplicates and missing planned cells are refused or listed", () => {
+  const a = fixture();
+  const b = fixture();
+  try {
+    // The driver's arm-failure fallback record: a setup error, no usage, no elapsed time, cleanup unknown.
+    const fallback = (f: ReturnType<typeof fixture>, kind: string, repeat: number) => ({
+      protocol: "native-pq-v3", platform: "darwin", index: 0, kind, repo: "pallets/click", features: [1, 2], cwd: f.cwd, sealedCommit: "",
+      readiness: {}, patchFile: "", modelIdentity: { requested: "flashnext/qwen3.8-flash-next", generationVerified: false, requests: [] },
+      requestLinkage: { requests: 0, completed: 0, identified: 0, cancelledUnidentified: 0, mismatches: 0, providerMissing: 0 },
+      nativeVersions: {}, repeat, end_reason: "infrastructure-error", end_reason_detail: "infrastructure-error", error: "probe failed",
+      cleanup_complete: false, metadata_clean: false, events: [], answers: {}, patchSHA256: "x", patchBytes: 0,
+    });
+    const manifest = { arms: ["solo-pi", "solo-qwen", "joint-pi-qwen"], plan: { study: { cases: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], repeats: 2, attempts: 60, active_ceiling_s: 18000 } } };
+    writeFileSync(join(a.root, "manifest.json"), JSON.stringify(manifest));
+    for (const [f, repeat] of [[a, 0], [b, 1]] as const) writeFileSync(join(f.root, "cohort.json"), JSON.stringify({ schema: "agent-hub.cooperbench-run/v1", cases: [0], arms: ["solo-pi", "solo-qwen", "joint-pi-qwen"], repeat }));
+    for (const kind of ["solo-pi", "solo-qwen", "joint-pi-qwen"]) a.run(`00-${kind}`, v3record(a, kind, { repeat: 0, elapsedMs: 120_000 }));
+    b.run("00-solo-pi", v3record(b, "solo-pi", { repeat: 1, elapsedMs: 180_000 }));
+    b.run("00-joint-pi-qwen", v3record(b, "joint-pi-qwen", { repeat: 1, elapsedMs: 180_000 }));
+    b.run("00-solo-qwen", fallback(b, "solo-qwen", 1));
+    // A repeat given twice is refused.
+    const twice = spawnSync("python3", [script, "--run", a.root, "--run", a.root], { encoding: "utf8" });
+    expect(twice.status).not.toBe(0);
+    expect(twice.stderr).toContain("repeat 0 is in both");
+    const r = spawnSync("python3", [script, "--run", a.root, "--run", b.root, "--plan", "study"], { encoding: "utf8" });
+    if (r.status !== 0) throw new Error(r.stderr);
+    const out = JSON.parse(readFileSync(join(a.root, "ledger.json"), "utf8"));
+    expect(out.rows).toHaveLength(6);
+    // 60 planned cells, 6 written: every other planned cell is listed as missing, whole cases included.
+    expect(out.missing).toHaveLength(54);
+    expect(out.missing).toContainEqual({ case: 1, arm: "solo-pi", repeat: 0 });
+    expect(out.missing).toContainEqual({ case: 9, arm: "joint-pi-qwen", repeat: 1 });
+    expect(out.summary["solo-pi"].missing).toHaveLength(18); // cases 1-9 of both repeats
+    expect(out.summary["solo-pi"].missing).toContain("case 1 repeat 0");
+    // Pair (0, 1) is not common: solo-qwen's repeat 1 is unavailable. Medians over valid completed vs common pairs differ.
+    expect(out.summary["solo-pi"]).toMatchObject({ attempts: 2, completed: 2, valid_completed: 2, elapsed_s_median: 150, elapsed_s_median_common: 120 });
+    expect(out.summary["joint-pi-qwen"].missing).toHaveLength(18);
+    // The fallback record keeps its setup-error classification and its usage stays unknown, never zero.
+    const fell = out.rows.find((x: { run: string; arm: string }) => x.run === b.root.split("/").pop() && x.arm === "solo-qwen");
+    expect(fell).toMatchObject({ completed: false, end_reason: "infrastructure-error", elapsed_s: null, setup_s: null, protocol: "native-pq-v3" });
+    expect([fell.native_usage.pi, fell.native_usage.qwen]).toEqual([null, null]);
+    expect(fell.validity.valid).toBe(false);
+    const qwen = out.summary["solo-qwen"];
+    expect(qwen).toMatchObject({ attempts: 2, completed: 1, valid_completed: 1, elapsed_s_median: 120, not_completed: ["infrastructure-error"] });
+    expect(qwen.native_usage).toMatchObject({ qwen_tokens_total: 9800, qwen_tokens_unknown: 1 }); // the fallback wrote none: unknown, not zero
+    expect(qwen.native_usage.pi_tokens_total).toBeUndefined(); // no pi actor in the arm
+  } finally {
+    for (const f of [a, b]) rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test("a record of an unknown protocol is refused before any output is written", () => {
+  const f = fixture();
+  try {
+    f.run("00-solo-pi", v3record(f, "solo-pi", { protocol: "native-pq-v9" }));
+    const r = spawnSync("python3", [script, "--run", f.root], { encoding: "utf8" });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("unsupported record protocol");
+    expect(existsSync(join(f.root, "ledger.json"))).toBe(false);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test("a stale cached model verdict and linkage summary are recomputed from the request journal; a missing journal is unknown (review #151)", () => {
+  const f = fixture();
+  try {
+    // The cached summary claims verified with zero requests; the journal shows a cancelled-AFTER-identification
+    // request with a confirmed mismatch — evidence whatever its outcome, so the verdict is failed.
+    f.run("00-joint-pi-qwen", v3record(f, "joint-pi-qwen", {
+      modelIdentity: {
+        requested: "flashnext/qwen3.8-flash-next", expectedServedModel: "qwen3.8-flash-next", expectedProvider: "prov", generationVerified: true,
+        requests: [
+          { id: "r1", outcome: "completed", identified: true, requestedModel: "flashnext/qwen3.8-flash-next", actualModel: "qwen3.8-flash-next", provider: "prov" },
+          { id: "r2", outcome: "cancelled", identified: true, requestedModel: "flashnext/qwen3.8-flash-next", actualModel: "qwen3.8-flash-next", provider: "prov", mismatch: true },
+        ],
+      },
+      requestLinkage: { requests: 0, completed: 0, identified: 0, cancelledUnidentified: 0, mismatches: 0, providerMissing: 0 }, // stale cache: lies
+    }));
+    // A record without its journal: explicit unknown, never the trusted cached flag.
+    f.run("00-solo-pi", v3record(f, "solo-pi", { index: 1, modelIdentity: { requested: "flashnext/qwen3.8-flash-next", generationVerified: true } }));
+    // Setup failures with recorded setup time stay out of the setup median (valid completed attempts only).
+    f.run("00-solo-qwen", v3record(f, "solo-qwen", { index: 2, setupMs: 60_000, elapsedMs: undefined, startedAt: undefined, end_reason: "infrastructure-error", end_reason_detail: "infrastructure-error", usage: { pi: 0, qwen: null, units: V3_UNITS } }));
+    const out = f.ledger();
+    const joint = out.rows.find((r: { arm: string }) => r.arm === "joint-pi-qwen");
+    expect(joint.model_identity).toEqual({ verified: false, why: "generation served model mismatch flagged", requests_journaled: 2 });
+    expect(joint.request_linkage).toEqual({ requests: 2, completed: 1, identified: 1, cancelledUnidentified: 0, mismatches: 1, providerMissing: 0 });
+    expect(out.summary["joint-pi-qwen"]).toMatchObject({ model_identity_verified: 0 });
+    expect(out.summary["joint-pi-qwen"].request_linkage).toMatchObject({ requests: 2, mismatches: 1 });
+    const soloPi = out.rows.find((r: { arm: string }) => r.arm === "solo-pi");
+    expect(soloPi.model_identity).toEqual({ verified: null, why: "the record carries no request journal", requests_journaled: null });
+    expect(soloPi.request_linkage).toBeNull();
+    expect(soloPi.completed).toBe(true); // an unknown model verdict is not the runner's end classification
+    expect(out.summary["solo-pi"]).toMatchObject({ model_identity_verified: 0, valid_completed: 1 });
+    expect(out.summary["solo-pi"].request_linkage).toEqual({ attempts: 0, requests: 0, completed: 0, identified: 0, cancelledUnidentified: 0, mismatches: 0, providerMissing: 0 });
+    // The failed setup recorded 60 s; only the (absent here) valid completed attempts would feed the median.
+    expect(out.summary["solo-qwen"]).toMatchObject({ attempts: 1, valid_completed: 0, setup_s_median: null, not_completed: ["infrastructure-error"] });
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test("the setup median pools only valid completed attempts", () => {
+  const f = fixture();
+  try {
+    f.run("00-solo-pi", v3record(f, "solo-pi", { setupMs: 5000 }));
+    f.run("01-solo-pi", v3record(f, "solo-pi", { index: 1, setupMs: 65_000, end_reason: "timeout", end_reason_detail: "wall-timeout", elapsedMs: 300_000 }));
+    const out = f.ledger();
+    // The timed-out attempt's 65 s setup is not a measurement of a good attempt's setup.
+    expect(out.summary["solo-pi"]).toMatchObject({ attempts: 2, completed: 1, valid_completed: 1, setup_s_median: 5, elapsed_s_median: 120 });
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
   }
 });
