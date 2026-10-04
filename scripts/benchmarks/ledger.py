@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from runner import ARMS_V3, TURN_FREE, active_window, end_story, hook_rows, isolation_failure, required_actors, teardown_failure, transcript, treatment_failure, v3_linkage, v3_request_gate  # noqa: E402  the grader's gates: one definition
+from runner import ARMS_V3, TURN_FREE, active_window, end_story, hook_rows, isolation_failure, required_actors, teardown_failure, transcript, treatment_failure, v3_linkage, v3_participants, v3_request_gate  # noqa: E402  the grader's gates: one definition
 
 V3_PROTOCOL = "native-pq-v3"  # the headless Pi/Qwen driver's records (#140); the Claude/Codex records are native-cc-v1
 
@@ -109,7 +109,8 @@ UNITS = {
     "native_usage": "per native actor of a v3 attempt, as its record carries it: pi is the incremental onTokens "
                     "counter of the whole attempt (the setup probes included), qwen the session usage_update running "
                     "total; the two are different units and are never added together; null when the record cannot "
-                    "say (a failed attempt that wrote none), never zero",
+                    "say (a failed attempt that wrote none), never zero. Rows preserve raw counters; aggregate totals and coverage "
+                    "include only actors with a started session (the grader's participation gate); absent actors are not unknown readings",
     "request_linkage": "per v3 attempt, the coverage of the relay's journaled RelayRequestRecords (#139), recomputed "
                        "from the journal by the grader's own coverage function (never the record's cached summary): "
                        "requests, completed, identified, cancelledUnidentified (a request cancelled before "
@@ -659,6 +660,7 @@ def v3_ledger_of(run):
     return {
         "case": run.get("index"), "arm": run.get("kind"), "repeat": run.get("repeat"), "protocol": V3_PROTOCOL,
         "end_reason": run.get("end_reason"), "end_reason_detail": run.get("end_reason_detail"), "end_story": end_story(run),
+        "native_participants": v3_participants(run),
         "completed": run.get("end_reason") == "completed",
         "setup_s": round(run["setupMs"] / 1000, 1) if isinstance(run.get("setupMs"), (int, float)) else None,
         "elapsed_s": round(run["elapsedMs"] / 1000, 1) if isinstance(run.get("elapsedMs"), (int, float)) else None,
@@ -700,10 +702,14 @@ def summarize_v3(arm, rs, done, shared, missing, unreadable):
     links = [r["request_linkage"] for r in rs if isinstance(r.get("request_linkage"), dict)]
     agg = lambda k: sum(l[k] for l in links if isinstance(l.get(k), (int, float)) and not isinstance(l.get(k), bool))
     usage = {"units": "pi: incremental onTokens counter; qwen: session usage_update running total; whole attempt "
-                      "including the setup probes; never added together"}
+                      "including the setup probes; counted only for actors with a started native session; never added together"}
     for actor in required_actors(arm):
-        values = [(r.get("native_usage") or {}).get(actor) for r in rs]
+        took = [r for r in rs if actor in r["native_participants"]]
+        values = [(r.get("native_usage") or {}).get(actor) for r in took]
         known = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        usage[f"{actor}_participating"] = len(took)
+        usage[f"{actor}_not_participating"] = len(rs) - len(took)
+        usage[f"{actor}_tokens_known"] = len(known)
         usage[f"{actor}_tokens_total"] = sum(known) if known else None
         usage[f"{actor}_tokens_unknown"] = sum(1 for v in values if v is None)
     return {
