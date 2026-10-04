@@ -258,7 +258,9 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       journal.push({ ...record });
       if (journal.length > JOURNAL_LIMIT) journal.shift();
       try {
-        options.onRequest?.({ ...record });
+        // An async hook fits the void signature: its rejection is handled too, never unobserved.
+        const notified = options.onRequest?.({ ...record }) as unknown;
+        if (notified instanceof Promise) notified.catch(() => { /* a persistence hook must never break the relay */ });
       } catch { /* a persistence hook must never break the proxied stream it observes */ }
     };
     return { record, identify, close };

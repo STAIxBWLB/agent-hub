@@ -472,3 +472,15 @@ test("#139 review: a failed upstream dispatch still records what the relay asked
   expect(relay.requests()).toHaveLength(1);
   expect(relay.requests()[0]).toMatchObject({ outcome: "failed", identified: false, requestedModel: "glm-5", alias: "dgx/coding" });
 });
+
+test("#139 review: a rejecting async onRequest hook is not an unhandled rejection", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response('data: {"model":"coding","choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } }) });
+  cleanup.push(() => upstream.stop(true));
+  const relay = await startModelRelay({ omni: omni(`http://127.0.0.1:${upstream.port}/v1`), allowedDGXmodels: { "dgx/coding": "coding" }, token: "relay-token", onRequest: (() => Promise.reject(new Error("async persistence exploded"))) as () => void });
+  cleanup.push(relay.close);
+  const response = await dgxRequest(relay);
+  expect(await response.text()).toContain("ok");
+  await Bun.sleep(20); // the rejection settles unobserved by the relay
+  expect(relay.requests()).toHaveLength(1);
+  expect(relay.requests()[0]).toMatchObject({ outcome: "completed", identified: true });
+});
