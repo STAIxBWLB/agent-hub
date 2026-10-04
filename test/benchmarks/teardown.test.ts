@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProcRow } from "../../src/hub/child-process.ts";
 import { processTable } from "../../src/hub/child-process.ts";
-import { actorOf, awaitTurnEnd, captureActors, commOf, daemonRoot, endReasonOf, extend, fixtureRootProblem, restoreModes, same, restoreTrust, teardown, turnEnded, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
+import { actorOf, awaitTurnEnd, captureActors, captureFixtureRoot, claudeUsageReading, commOf, daemonRoot, endReasonOf, extend, fixtureRootProblem, restoreModes, same, restoreTrust, teardown, turnEnded, withFixtureRoot, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
 
 // issue #113: an arm's teardown proves what it stops by identity (pid and start time), never by a name in argv.
 const dirs: string[] = [];
@@ -654,3 +654,198 @@ test("a prepared fixture root replaced after preparation is rejected read-only (
   rmSync(fixture);
   expect(fixtureRootProblem(fixture)).toBe("missing");
 });
+
+test("fixture setup rechecks captured identity after async work, before any mutation (#119)", async () => {
+  const base = mkdtempSync(join(tmpdir(), "ahub-fixture-identity-"));
+  dirs.push(base);
+  for (const replacement of ["symlink", "directory"]) {
+    const fixture = join(base, replacement);
+    const outside = join(base, `${replacement}-outside`);
+    mkdirSync(fixture);
+    mkdirSync(outside);
+    writeFileSync(join(fixture, "AGENTS.md"), "baseline");
+    writeFileSync(join(outside, "AGENTS.md"), "baseline");
+    const outsideMode = statSync(outside).mode;
+    const identity = captureFixtureRoot(fixture);
+    // Keep the original inode alive so replacement cannot accidentally reuse it.
+    await Promise.resolve().then(() => {
+      renameSync(fixture, join(base, `${replacement}-original`));
+      if (replacement === "symlink") symlinkSync(outside, fixture);
+      else {
+        mkdirSync(fixture);
+        writeFileSync(join(fixture, "AGENTS.md"), "baseline");
+      }
+    });
+    let invoked = false;
+    expect(() => withFixtureRoot(fixture, identity, () => {
+      invoked = true;
+      writeFileSync(join(fixture, "AGENTS.md"), "setup");
+    })).toThrow("prepared fixture root was replaced after preparation");
+    expect(invoked).toBe(false);
+    expect(readFileSync(join(fixture, "AGENTS.md"), "utf8")).toBe("baseline");
+    expect(readFileSync(join(outside, "AGENTS.md"), "utf8")).toBe("baseline");
+    expect(statSync(outside).mode).toBe(outsideMode);
+  }
+});
+
+test("unchanged captured fixture permits the synchronous setup mutation (#119)", () => {
+  const fixture = mkdtempSync(join(tmpdir(), "ahub-fixture-unchanged-"));
+  dirs.push(fixture);
+  const identity = captureFixtureRoot(fixture);
+  withFixtureRoot(fixture, identity, () => writeFileSync(join(fixture, "AGENTS.md"), "setup"));
+  expect(readFileSync(join(fixture, "AGENTS.md"), "utf8")).toBe("setup");
+});
+
+// #134: Claude quota readings from the status-line tee's file.
+const usageState = (content: string) => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-claude-usage-"));
+  dirs.push(dir);
+  writeFileSync(join(dir, "claude-usage.json"), content);
+  return dir;
+};
+const isKnown = (r: ReturnType<typeof claudeUsageReading>): r is Extract<typeof r, { rate_limits: any }> => "rate_limits" in r;
+const isUnknown = (r: ReturnType<typeof claudeUsageReading>): r is Extract<typeof r, { status: "unknown" }> => "status" in r && r.status === "unknown";
+const FUTURE_S = Math.floor(Date.now() / 1000) + 3600; // 1 h from now, epoch seconds
+const FUTURE_MS = Date.now() + 3_600_000; // 1 h from now, epoch millis
+const PAST_S = Math.floor(Date.now() / 1000) - 60; // 60 s ago, epoch seconds
+
+test("claudeUsageReading: valid windows (epoch seconds) return at and rate_limits (#134)", () => {
+  const dir = usageState(JSON.stringify({ at: 12345, rate_limits: { five_hour: { used_percentage: 10, resets_at: FUTURE_S }, seven_day: { used_percentage: 20, resets_at: FUTURE_S } } }));
+  const r = claudeUsageReading(dir);
+  expect(isKnown(r)).toBe(true);
+  if (!isKnown(r)) throw new Error("expected a known quota reading");
+  expect(r.at).toBe(12345);
+  expect(r.rate_limits.five_hour?.used_percentage).toBe(10);
+  expect(r.rate_limits.seven_day?.used_percentage).toBe(20);
+  expect(r.stale).toBeUndefined();
+});
+
+test("claudeUsageReading: valid windows (epoch millis) return at and rate_limits (#134)", () => {
+  const dir = usageState(JSON.stringify({ at: 12345, rate_limits: { five_hour: { used_percentage: 10, resets_at: FUTURE_MS } } }));
+  const r = claudeUsageReading(dir);
+  expect(isKnown(r)).toBe(true);
+  if (!isKnown(r)) throw new Error("expected a known quota reading");
+  expect(r.rate_limits.five_hour?.used_percentage).toBe(10);
+  expect(r.stale).toBeUndefined();
+});
+
+test("claudeUsageReading: missing file returns explicit unknown (#134)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-claude-usage-"));
+  dirs.push(dir);
+  const r = claudeUsageReading(dir);
+  expect(isUnknown(r)).toBe(true);
+  if (!isUnknown(r)) throw new Error("expected an unknown quota reading");
+  expect(r.why).toBe("missing");
+});
+
+test("claudeUsageReading: malformed file returns explicit unknown (#134)", () => {
+  const dir = usageState("not json");
+  const r = claudeUsageReading(dir);
+  expect(isUnknown(r)).toBe(true);
+  if (!isUnknown(r)) throw new Error("expected an unknown quota reading");
+  expect(r.why).toContain("unreadable");
+});
+
+test("claudeUsageReading: no rate_limits returns unknown with at preserved (#134)", () => {
+  const dir = usageState(JSON.stringify({ at: 999 }));
+  const r = claudeUsageReading(dir);
+  expect(isUnknown(r)).toBe(true);
+  if (!isUnknown(r)) throw new Error("expected an unknown quota reading");
+  expect(r.why).toBe("no rate_limits");
+  expect(r.at).toBe(999);
+});
+
+test("claudeUsageReading: all windows expired returns unknown with at and stale (#134)", () => {
+  const dir = usageState(JSON.stringify({ at: 111, rate_limits: { five_hour: { used_percentage: 50, resets_at: PAST_S }, seven_day: { used_percentage: 60, resets_at: PAST_S } } }));
+  const r = claudeUsageReading(dir);
+  expect(isUnknown(r)).toBe(true);
+  if (!isUnknown(r)) throw new Error("expected an unknown quota reading");
+  expect(r.why).toBe("all windows expired");
+  expect(r.at).toBe(111);
+  expect(r.stale).toBe(true);
+});
+
+test("claudeUsageReading: single window expired returns unknown (#134)", () => {
+  const dir = usageState(JSON.stringify({ at: 222, rate_limits: { five_hour: { used_percentage: 50, resets_at: PAST_S } } }));
+  const r = claudeUsageReading(dir);
+  expect(isUnknown(r)).toBe(true);
+  if (!isUnknown(r)) throw new Error("expected an unknown quota reading");
+  expect(r.why).toBe("all windows expired");
+  expect(r.at).toBe(222);
+  expect(r.stale).toBe(true);
+});
+
+test("claudeUsageReading: mixed live and stale windows returns known with stale marker (#134)", () => {
+  const dir = usageState(JSON.stringify({ at: 333, rate_limits: { five_hour: { used_percentage: 10, resets_at: FUTURE_S }, seven_day: { used_percentage: 20, resets_at: PAST_S } } }));
+  const r = claudeUsageReading(dir);
+  expect(isKnown(r)).toBe(true);
+  if (!isKnown(r)) throw new Error("expected a known quota reading");
+  expect(r.at).toBe(333);
+  expect(r.stale).toBe(true);
+  expect(r.rate_limits.five_hour?.stale).toBeUndefined();
+  expect(r.rate_limits.seven_day?.stale).toBe(true);
+});
+
+test("claudeUsageReading: absent resets_at marks window stale, never trusted fresh (#134)", () => {
+  const dir = usageState(JSON.stringify({ at: 444, rate_limits: { five_hour: { used_percentage: 10 } } }));
+  const r = claudeUsageReading(dir);
+  // single window with no valid reset -> all present windows stale -> unknown
+  expect(isUnknown(r)).toBe(true);
+  if (!isUnknown(r)) throw new Error("expected an unknown quota reading");
+  expect(r.stale).toBe(true);
+});
+
+test("claudeUsageReading: non-numeric used_percentage gives no usable windows (#134)", () => {
+  const dir = usageState(JSON.stringify({ at: 555, rate_limits: { five_hour: { used_percentage: "ten", resets_at: FUTURE_S } } }));
+  const r = claudeUsageReading(dir);
+  expect(isUnknown(r)).toBe(true);
+  if (!isUnknown(r)) throw new Error("expected an unknown quota reading");
+  expect(r.why).toBe("no usable windows");
+});
+
+test("claudeUsageReading: malformed reset objects fail open (#134)", () => {
+  const dir = usageState(JSON.stringify({ at: 666, rate_limits: { five_hour: { used_percentage: 10, resets_at: { valueOf: null, toString: null } } } }));
+  const r = claudeUsageReading(dir);
+  expect(isUnknown(r)).toBe(true);
+  if (!isUnknown(r)) throw new Error("expected an unknown quota reading");
+  expect(r.at).toBe(666);
+  expect(r.stale).toBe(true);
+});
+
+test("claudeUsageReading: refuses symlinks and oversized quota files (#134)", () => {
+  const dir = usageState("{}");
+  const file = join(dir, "claude-usage.json"), target = join(dir, "target.json");
+  writeFileSync(target, "outside sentinel");
+  rmSync(file);
+  symlinkSync(target, file);
+  const linked = claudeUsageReading(dir);
+  expect(isUnknown(linked)).toBe(true);
+  expect(readFileSync(target, "utf8")).toBe("outside sentinel");
+  rmSync(file);
+  writeFileSync(file, "x".repeat(256 * 1024 + 1));
+  const oversized = claudeUsageReading(dir);
+  expect(isUnknown(oversized)).toBe(true);
+  if (!isUnknown(oversized)) throw new Error("expected an unknown quota reading");
+  expect(oversized.why).toStartWith("large:");
+});
+
+test("claudeUsageReading: FIFO cannot block the subsequent cleanup (#134)", async () => {
+  const dir = usageState("{}");
+  const file = join(dir, "claude-usage.json");
+  rmSync(file);
+  const fifo = Bun.spawn(["mkfifo", file], { stdout: "ignore", stderr: "pipe" });
+  expect(await fifo.exited).toBe(0);
+  const helper = join(import.meta.dir, "../../scripts/benchmarks/teardown.ts");
+  const program = `import { claudeUsageReading } from ${JSON.stringify(helper)}; const r = claudeUsageReading(process.argv[1]); console.log(JSON.stringify({ reading: r, cleanupReached: true }));`;
+  const reader = Bun.spawn([process.execPath, "-e", program, dir], { stdout: "pipe", stderr: "pipe" });
+  const deadline = setTimeout(() => reader.kill("SIGKILL"), 2000);
+  try {
+    expect(await reader.exited).toBe(0);
+    const result = JSON.parse(await new Response(reader.stdout).text());
+    expect(result.reading.status).toBe("unknown");
+    expect(result.reading.why).toStartWith("not a regular file:");
+    expect(result.cleanupReached).toBe(true);
+  } finally {
+    clearTimeout(deadline);
+  }
+}, 5000);

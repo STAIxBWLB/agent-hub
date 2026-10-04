@@ -1,4 +1,4 @@
-import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, chmodSync, statSync, lstatSync, readdirSync, readlinkSync, openSync, fstatSync, closeSync, rmSync, constants as fsConstants } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, chmodSync, statSync, lstatSync, readdirSync, readlinkSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
@@ -7,7 +7,7 @@ import { realPath } from '../../src/hub/project.ts';
 import { sessionSettings, statusLineSettings } from '../../src/cli/launch.ts';
 import { readEvents } from '../../src/hub/events.ts';
 import { processTable } from '../../src/hub/child-process.ts';
-import { awaitTurnEnd, captureActors, cwdOf, endReasonOf, fixtureRootProblem, restoreModes, trustTemp, writeAtomic, restoreTrust, reuseProblem, settleTrust, teardown, unrestored, transcriptRows, turnEnded, type Actor } from './teardown.ts';
+import { awaitTurnEnd, captureActors, cwdOf, endReasonOf, captureFixtureRoot, fixtureRootProblem, withFixtureRoot, regularBytes, restoreModes, trustTemp, writeAtomic, restoreTrust, reuseProblem, settleTrust, teardown, unrestored, transcriptRows, turnEnded, type Actor } from './teardown.ts';
 process.umask(0o077);
 const argv = process.argv.slice(2), runArg = argv[argv.indexOf('--run') + 1], inputArg = argv[argv.indexOf('--private-inputs') + 1], upstreamArg = argv[argv.indexOf('--upstream-root') + 1], probeArg = argv[argv.indexOf('--probe-target') + 1];
 if (!runArg || !inputArg || !upstreamArg || !probeArg)
@@ -44,6 +44,7 @@ if (prepared.runner_sha256 !== sourceHash(join(import.meta.dir, 'runner.py')) ||
 const { lookupOrcaWorktree, preflightOrcaWorktrees } = await import('./orca-workspace.ts');
 class NativeCommandError extends Error { constructor(message: string, readonly code?: string) { super(message); } }
 const log = (event: string, data: any = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), event, ...data }));
+import { claudeUsageReading } from './teardown.ts';
 let stopRequested = false;
 process.on('SIGINT', () => { stopRequested = true; });
 process.on('SIGTERM', () => { stopRequested = true; });
@@ -73,12 +74,12 @@ function screenText(value: any): string {
 
 function shellQuote(s: string) { return `'${s.replaceAll("'", "'\\''")}'`; }
 async function ensureOrcaWorktree(dir: string) { return lookupOrcaWorktree(dir, orca); }
-async function createOrcaTerminal(worktreeId: string, title: string, command: string) { const before = await orca(['terminal', 'list', '--worktree', `id:${worktreeId}`]); const prior = new Set<any[]>(); const collect = (v: any) => { if (v && typeof v === 'object') {
+async function createOrcaTerminal(worktreeId: string, title: string, command: string, beforeCreate?: () => void) { const before = await orca(['terminal', 'list', '--worktree', `id:${worktreeId}`]); const prior = new Set<any[]>(); const collect = (v: any) => { if (v && typeof v === 'object') {
     if (typeof v.handle === 'string' && v.worktreeId === worktreeId)
         prior.add([v.handle]);
     for (const child of Object.values(v))
         collect(child);
-} }; collect(before); const old = new Set(Array.from(prior, x => x[0] as string)); const response = await orca(['terminal', 'create', '--worktree', `id:${worktreeId}`, '--title', title, '--command', command]); let terminal = findRecord(response, (x: any) => (x.title === title || x.name === title) && (typeof x.handle === 'string' || typeof x.terminalHandle === 'string')); let handle = terminal?.handle ?? terminal?.terminalHandle; if (typeof handle !== 'string') {
+} }; collect(before); const old = new Set(Array.from(prior, x => x[0] as string)); beforeCreate?.(); const response = await orca(['terminal', 'create', '--worktree', `id:${worktreeId}`, '--title', title, '--command', command]); let terminal = findRecord(response, (x: any) => (x.title === title || x.name === title) && (typeof x.handle === 'string' || typeof x.terminalHandle === 'string')); let handle = terminal?.handle ?? terminal?.terminalHandle; if (typeof handle !== 'string') {
     const after = await orca(['terminal', 'list', '--worktree', `id:${worktreeId}`]);
     const matches: any[] = [];
     const visit = (v: any) => { if (v && typeof v === 'object') {
@@ -276,21 +277,6 @@ function codexUsage(messages: any[], threadId: string | undefined) { let total: 
         total = t;
 } if (!total)
     return undefined; return { input_tokens: numeric(total.inputTokens ?? total.input_tokens) ?? null, output_tokens: numeric(total.outputTokens ?? total.output_tokens) ?? null, cache_read_tokens: numeric(total.cachedInputTokens ?? total.cacheReadInputTokens ?? total.cache_read_input_tokens) ?? null, reasoning_output_tokens: numeric(total.reasoningOutputTokens ?? total.reasoning_output_tokens) ?? null, total_tokens: numeric(total.totalTokens ?? total.total_tokens) ?? null, source: 'Codex thread/tokenUsage/updated cumulative total', scope: 'whole native session including the unscored sandbox probe' }; }
-/**
- * A regular file's bytes, opened without following a link and without blocking (a fifo swapped in after a check must not
- * stop the runner), or a string saying why there are none.
- */
-function regularBytes(path: string, max: number): Buffer | string {
-    let fd: number | undefined;
-    try {
-        fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
-        const st = fstatSync(fd);
-        if (!st.isFile()) return `not a regular file: ${st.mode & 0o170000}`;
-        return st.size > max ? `large: ${st.size} ${st.mtimeMs}` : readFileSync(fd);
-    }
-    catch (e: any) { return e?.code === 'ENOENT' ? 'missing' : `unreadable: ${e?.code ?? 'error'}`; }
-    finally { if (fd !== undefined) closeSync(fd); }
-}
 function fixtureMetadataHash(root: string) { const names = ['AGENTS.md', '.gitignore', '.claude/settings.json', '.agenthub/config.json', '.agenthub/routing.toml'], values: any = {}; for (const name of names) {
     const bytes = regularBytes(join(root, name), 16 * 1024 * 1024);
     values[name] = bytes === 'missing' ? null : typeof bytes === 'string' ? bytes : hash(bytes);
@@ -360,9 +346,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     // name that resolves elsewhere — passes the lexical resolve() and baseline content checks and would redirect every
     // setup write below into the outside tree. Refused read-only, before the Orca lookup, the baseline walk and the
     // first write. runs is canonical, so the prepared path is the expected real path: any symlinked component diverges.
-    const rootProblem = fixtureRootProblem(dir);
-    if (rootProblem)
-        throw new Error(`prepared fixture root was replaced after preparation (${rootProblem}): ${dir}`);
+    const fixtureIdentity = captureFixtureRoot(dir);
     if (realPath(dir) !== dir)
         throw new Error(`prepared fixture root was replaced after preparation (its real path is not its prepared path): ${dir}`);
     const expectedOrca = orcaPreflight.get(resolve(dir));
@@ -404,38 +388,44 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const coordination = turnFree
         ? 'Accept with a concrete plan, then complete with hub_task_done. Do not message the other peer: the hub shows you its changes at your tool calls and asks the last to finish to check its work.'
         : 'Accept with a concrete plan, coordinate interface contracts with the named peer when source overlaps, then complete with hub_task_done.';
-    writeFileSync(join(dir, 'AGENTS.md'), `# Sealed CooperBench fixture\nYou are an authorized native coding agent in a disposable benchmark project. Work only inside this directory. No external apps/messages, installs, network requests, history lookup, commits, subagents, test edits or changes to .gitignore, AGENTS.md, .claude or .agenthub. Hidden tests and gold solutions are not available. Use native source tools and local shell when needed. Each assigned task is the only work to do. ${coordination} Do not propose tasks. The other peer owns only its assigned feature. ${turnFree ? 'Do not silently overwrite its work.' : 'You may agree on integration, but do not silently overwrite its work.'} FYI needs no acknowledgement. Final answer [FYI]. Claude uses hub_send with reply_to for channel replies. No hidden test feedback is supplied.\n`);
-    writeFileSync(join(dir, '.gitignore'), readFileSync(join(dir, '.gitignore'), 'utf8') + '\n.agenthub/\n.claude/\n');
     const state = join(dir, '.agenthub/state');
-    mkdirSync(join(dir, '.agenthub'), { recursive: true, mode: 0o700 });
-    mkdirSync(join(dir, '.claude'), { mode: 0o700 });
     const denied = [...protectedRoots, ...[join(runs, 'runs'), join(runs, 'patches'), join(runs, 'private'), ...(await (async () => { const fs = await import('node:fs/promises'); return (await fs.readdir(join(runs, 'fixtures'))).map(x => join(runs, 'fixtures', x)).filter(x => resolve(x) !== resolve(dir)); })())]];
-    writeFileSync(join(dir, '.agenthub/config.json'), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, snapshots: { enabled: true, keep: 50 }, watchdog_ms: 360000, batch_ms: 0, batch_max: 1, tasks: { release_after_min: 0 }, roles: { codex: ['implementer'], claude: ['implementer'] }, budget: { poll_min: 1 }, approvals: { notify: false }, codex_bin: join(dir, '.agenthub', 'codex-isolated.sh'), ...(turnFree ? { coordination: 'turn-free' } : {}), ...(staleOff ? { experiments: { stale_notices: 'deliver' } } : {}) }));
-    // The Codex the hub runs, isolated (issue #110). Here, in the arm's own fixture, because every other run artifact is
-    // locked while an arm runs; ignored by git, and started once, before Codex can touch anything.
-    writeFileSync(join(dir, '.agenthub', 'codex-isolated.sh'), `#!/bin/sh\nexec ${shellQuote(codexBin)} "$@" ${codexIsolation.map(shellQuote).join(' ')}\n`, { mode: 0o700 });
-    writeFileSync(join(dir, '.agenthub/routing.toml'), '[local]\nfixed_model="coding"\n[classes.implement]\npeers=["codex","claude"]\nescalate_to=[]\n[classes.review]\npeers=[]\nlocal_allowed=false\n');
     const permissions = { defaultMode: 'acceptEdits', allow: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', ...hubNames.map(n => 'mcp__agent-hub__' + n)], deny: ['WebFetch', 'WebSearch', 'Agent', 'Skill', 'Read(./.agenthub/**)', 'Read(./.claude/**)', 'Edit(./.agenthub/**)', 'Edit(./.claude/**)', 'Edit(./AGENTS.md)', 'Edit(./.gitignore)', 'Edit(./tests/**)'] };
-    // Hooks are equal across arms (issue #110): none of the user's or a plugin's; the turn-free arm runs the hub's own
-    // facts hook, which is part of its treatment. `--setting-sources project` keeps user settings out.
     const tee = { script: join(repo, 'src/cli/statusline-tee.ts'), stateDir: state };
     const session = JSON.parse(turnFree ? sessionSettings(tee, { script: join(repo, 'src/cli/facts-hook.ts'), stateDir: state }) : statusLineSettings(tee));
-    // No arm runs a status line (issue #110): `disableAllHooks` turns it off in the other arms, so the turn-free arm,
-    // which needs hooks on, leaves it out. Claude's quota therefore reaches the hub in no arm.
     const settings = { permissions, ...(turnFree ? { disableAllHooks: false, hooks: session.hooks } : { disableAllHooks: true }), sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: denied } } };
-    writeFileSync(join(dir, '.claude/settings.json'), JSON.stringify(settings));
-    // The conditions each attempt ran with (issue #110): bound to its record, next to the capability readbacks in its events.
-    // codex.skills is a placeholder string until skillsCondition() replaces it with its object once Codex is up (`as any`).
     const conditions = { claude: { settingSources: 'project', strictMcpConfig: true, disableAllHooks: !turnFree, statusLine: false, hookEvents: turnFree ? Object.keys(session.hooks ?? {}).sort() : [], settingsSha256: hash(JSON.stringify(settings)), skills: 'off: the Skill tool is denied', instructions: 'fixture AGENTS.md via --append-system-prompt-file' }, codex: { hooksFeature: false, memories: false, externalAgentMemoryImport: false, plugins: false, apps: false, multiAgent: false, notify: false, disabledMcpServers: codexUserServers, skills: (kind === 'solo-claude' ? 'not applicable: no Codex in this arm' : 'not checked: setup did not reach Codex') as any, instructions: 'fixture AGENTS.md as project doc; the user\'s global AGENTS.md too' }, coordination: turnFree ? 'turn-free' : kind.startsWith('hub-') ? 'advisory' : 'solo', ...(staleOff ? { experiments: { stale_notices: 'deliver' } } : {}) };
     const candidateMcp = join(dir, '.claude/candidate-mcp.json');
-    writeFileSync(candidateMcp, JSON.stringify({ mcpServers: { 'agent-hub': { command: 'bun', args: [join(repo, 'plugins/agent-hub/server.js')], env: { AGENTHUB_STATE_DIR: state, AGENTHUB_PROJECT_DIR: dir, AGENTHUB_PEER_ID: 'claude' } } } }), { mode: 0o600 });
+    // No await inside this mutation batch: reject substitutions during the preceding setup awaits.
+    withFixtureRoot(dir, fixtureIdentity, () => {
+        writeFileSync(join(dir, 'AGENTS.md'), `# Sealed CooperBench fixture\nYou are an authorized native coding agent in a disposable benchmark project. Work only inside this directory. No external apps/messages, installs, network requests, history lookup, commits, subagents, test edits or changes to .gitignore, AGENTS.md, .claude or .agenthub. Hidden tests and gold solutions are not available. Use native source tools and local shell when needed. Each assigned task is the only work to do. ${coordination} Do not propose tasks. The other peer owns only its assigned feature. ${turnFree ? 'Do not silently overwrite its work.' : 'You may agree on integration, but do not silently overwrite its work.'} FYI needs no acknowledgement. Final answer [FYI]. Claude uses hub_send with reply_to for channel replies. No hidden test feedback is supplied.\n`);
+        writeFileSync(join(dir, '.gitignore'), readFileSync(join(dir, '.gitignore'), 'utf8') + '\n.agenthub/\n.claude/\n');
+        mkdirSync(join(dir, '.agenthub'), { recursive: true, mode: 0o700 });
+        mkdirSync(join(dir, '.claude'), { mode: 0o700 });
+        writeFileSync(join(dir, '.agenthub/config.json'), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, snapshots: { enabled: true, keep: 50 }, watchdog_ms: 360000, batch_ms: 0, batch_max: 1, tasks: { release_after_min: 0 }, roles: { codex: ['implementer'], claude: ['implementer'] }, budget: { poll_min: 1 }, approvals: { notify: false }, codex_bin: join(dir, '.agenthub', 'codex-isolated.sh'), ...(turnFree ? { coordination: 'turn-free' } : {}), ...(staleOff ? { experiments: { stale_notices: 'deliver' } } : {}) }));
+        // The Codex the hub runs, isolated (issue #110). Here, in the arm's own fixture, because every other run artifact is
+        // locked while an arm runs; ignored by git, and started once, before Codex can touch anything.
+        writeFileSync(join(dir, '.agenthub', 'codex-isolated.sh'), `#!/bin/sh\nexec ${shellQuote(codexBin)} "$@" ${codexIsolation.map(shellQuote).join(' ')}\n`, { mode: 0o700 });
+        writeFileSync(join(dir, '.agenthub/routing.toml'), '[local]\nfixed_model="coding"\n[classes.implement]\npeers=["codex","claude"]\nescalate_to=[]\n[classes.review]\npeers=[]\nlocal_allowed=false\n');
+        // Hooks are equal across arms (issue #110): none of the user's or a plugin's; the turn-free arm runs the hub's own
+        // facts hook, which is part of its treatment. `--setting-sources project` keeps user settings out.
+        // No arm runs a status line (issue #110): `disableAllHooks` turns it off in the other arms, so the turn-free arm,
+        // which needs hooks on, leaves it out. Claude's quota therefore reaches the hub in no arm.
+        writeFileSync(join(dir, '.claude/settings.json'), JSON.stringify(settings));
+        // The conditions each attempt ran with (issue #110): bound to its record, next to the capability readbacks in its events.
+        // codex.skills is a placeholder string until skillsCondition() replaces it with its object once Codex is up (`as any`).
+        writeFileSync(candidateMcp, JSON.stringify({ mcpServers: { 'agent-hub': { command: 'bun', args: [join(repo, 'plugins/agent-hub/server.js')], env: { AGENTHUB_STATE_DIR: state, AGENTHUB_PROJECT_DIR: dir, AGENTHUB_PEER_ID: 'claude' } } } }), { mode: 0o600 });
+    });
+    withFixtureRoot(dir, fixtureIdentity, () => {});
     await cmd(['git', 'add', '-A'], dir);
+    withFixtureRoot(dir, fixtureIdentity, () => {});
     await cmd(['git', '-c', 'user.name=Benchmark', '-c', 'user.email=benchmark@localhost', 'commit', '-qm', 'sealed benchmark runtime fixture'], dir);
     const sealedBase = await cmd(['git', 'rev-parse', 'HEAD'], dir);
     const metadataBaseline = fixtureMetadataHash(dir);
     const setup = Date.now();
     let client: ControlClient | undefined, ws: WebSocket | undefined, claudeTerminal: string | undefined, hubMayRun = false, projectId: any, started = 0, endReason = 'completed', error: string | undefined, armModes = new Map<string, number>();
     let claudeId = randomUUID(), thread: any, trustLease: any, codexMessages: any[] = [], taskStates: any[] = [], ids: number[] = [], pending = new Map<number, any>(), unkept = new Set<number>(), rpcId = 1, codexTaskStart = 0;
+    let claudeUsagePre: any = { status: 'unknown', why: 'not reached: setup failed before the active window' }; // #134: explicit unknown for failed-setup records
     const actors = kind === 'solo-codex' ? ['codex'] : kind === 'solo-claude' ? ['claude'] : ['codex', 'claude'], readiness: any = {};
     // The processes this arm started (issue #113), each with what proves it: the daemon by the pid in its state dir and
     // an argv that serves this fixture, Claude's launch chain by this arm's own session id, the Codex app-server as the
@@ -459,6 +449,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         await lockSiblingArtifacts(dir, armModes);
         if (stopRequested)
             throw new Error('interrupted'); // before a hub is started for nothing
+        withFixtureRoot(dir, fixtureIdentity, () => {});
         hubMayRun = true;
         await cmd(['bun', cliPath, '--project', dir, 'up'], dir);
         client = await wait(async () => { try {
@@ -473,6 +464,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         captured('daemon');
         c.send({ t: 'tail' });
         if (actors.includes('claude')) {
+            withFixtureRoot(dir, fixtureIdentity, () => {});
             const trustFile = join(process.env.HOME!, '.claude.json');
             const trustState = JSON.parse(readFileSync(trustFile, 'utf8'));
             const trustMode = statSync(trustFile).mode & 0o777, hadProjects = !!trustState.projects;
@@ -488,7 +480,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             persistLedger();
             const claudeArgs = ['--restricted', '--strict-mcp-config', '--mcp-config', candidateMcp, '--model', manifest.models.claude, '--effort', manifest.effort.claude, '--session-id', claudeId, '--permission-mode', 'acceptEdits', '--settings', join(dir, '.claude/settings.json'), '--setting-sources', 'project', '--append-system-prompt-file', join(dir, 'AGENTS.md'), '--tools', 'Read,Edit,Write,Glob,Grep,Bash', '--allowedTools', ...permissions.allow];
             const command = `bun ${shellQuote(cliPath)} --project ${shellQuote(dir)} claude ${claudeArgs.map(shellQuote).join(' ')}`;
-            const claudeHandle = await createOrcaTerminal(orcaProject.worktreeId, `bench-claude-${name}`, command);
+            const claudeHandle = await createOrcaTerminal(orcaProject.worktreeId, `bench-claude-${name}`, command, () => withFixtureRoot(dir, fixtureIdentity, () => {}));
             claudeTerminal = claudeHandle;
             const channelPrompt = await waitClaudeTui(claudeHandle);
             const terminalList = await orca(['terminal', 'list', '--worktree', `id:${orcaProject.worktreeId}`]);
@@ -520,6 +512,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             readiness.claude.sandboxProbe = { checked: true, result: 'denied', target_sha256: probeTargetSha, command_sha256: hash(probeCommand) };
         }
         if (actors.includes('codex')) {
+            withFixtureRoot(dir, fixtureIdentity, () => {});
             const r = await c.request({ t: 'start', peer: 'codex' }, 90000);
             if (!r.ok)
                 throw new Error(r.error);
@@ -540,6 +533,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             await rpc('initialize', { clientInfo: { name: 'ahub-native-benchmark', version: '1' }, capabilities: { experimentalApi: true } });
             w.send(JSON.stringify({ method: 'initialized' }));
             // No user or plugin hooks in any arm (issue #110): they cost Codex a median 5.7 s per session on 0.12.2.
+            withFixtureRoot(dir, fixtureIdentity, () => {});
             thread = await rpc('thread/start', { cwd: dir, model: manifest.models.codex, approvalPolicy: 'never', sandbox: 'workspace-write', config: { 'features.memories': false, 'features.external_agent_memory_import': false, 'features.hooks': false, model_reasoning_effort: manifest.effort.codex, web_search: 'disabled', sandbox_workspace_write: { network_access: false, exclude_slash_tmp: true, exclude_tmpdir_env_var: true } } });
             if (typeof thread.thread?.cwd !== 'string' || realPath(thread.thread.cwd) !== realPath(dir)) throw new Error('Codex native thread cwd mismatch');
             if (thread.model !== manifest.models.codex)
@@ -564,6 +558,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             throw new Error(r.error); return r.text; };
         const assigned = kind.startsWith('hub-') && index % 2 ? ['claude', 'codex'] : actors;
         const input = cachedInputs[index];
+        claudeUsagePre = claudeUsageReading(state); // #134: before the active window, every arm
         const detail = `Implement only the assigned feature(s) below in the sealed source tree. You have a 300 second active-work limit with no artificial tool-step cap. Do not touch fixture metadata, tests, history or other directories; no installs, web or external apps. Use hub_task_accept with a concrete source plan and hub_task_done on completion. ${turnFree ? 'Do not message the other owner; the hub shows you its changes as you work.' : 'Coordinate shared-file interfaces with the named other owner when present.'} Do not acknowledge FYI or conflict notices unless work is needed. Final [FYI].\n\n`;
         started = Date.now();
         codexTaskStart = codexMessages.length; // what came before is setup and the probe, never task work (issue #110)
@@ -665,6 +660,8 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         }
         ws?.close();
         client?.close();
+        // #134: after the active window, before the state dir is deleted by the teardown below.
+        const claudeUsagePost = claudeUsageReading(state);
         // The arm's processes (issue #113): the normal shutdown, the table read back, signals only to proven identities.
         try { capture(); } catch (e) { note(`the last capture failed: ${String(e).slice(0, 200)}`); } // never skips the teardown
         const cleanup = await teardown([...owners.values()], dir, async () => {
@@ -753,7 +750,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         writeFileSync(patchFile, patch, { mode: 0o600 });
         let events: any[] = [];
         try { events = readEvents(join(state, 'events.jsonl')); } catch { note('hub events could not be read'); }
-        const result = { protocol: 'native-cc-v1', platform: process.platform, index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: sealedBase.trim(), models: manifest.models, requestedModels: actors.reduce((o: any, a: string) => (o[a] = manifest.models[a], o), {}), readiness, patchFile, model: actors.length === 1 ? manifest.models[actors[0]!] : undefined, setupMs: (started || activeEnd) - setup, elapsedMs, stoppedMs: stoppedAt ? stoppedAt - activeEnd : undefined, teardownMs: Date.now() - activeEnd, stages: { completionMs: completion.ms, shutdownMs: cleanup.normal.ms, settleMs: cleanup.ms.settle, fallbackMs: cleanup.ms.fallback, captureMs, restorationMs }, end_reason: endReasonOf(endReason, endFlags), end_reason_detail: endReason, end_flags: endFlags.length ? endFlags : undefined, error: error ? String(error).replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 300) : undefined, taskStates, effort: manifest.effort, events, codexMessages, codexTaskStart, startedAt: started || undefined, repeat, conditions, codexUsage: codexUsage(codexMessages, thread?.thread?.id), nativeVersions: { codex: codexVersion, claude: claudeVersion }, codexBinarySha256: sourceHash(codexBin), claudeSessionId: actors.includes('claude') ? claudeId : undefined, codexThreadId: thread?.thread?.id, completion, tree_changed_after_active_time: treeAfterActive, cleanup, restoration, trust_restored: trustRestored, cleanup_complete: contained, teardown_errors: teardownErrors.length ? teardownErrors : undefined, metadata_clean: metadataClean, metadata_sha256: metadataBaseline, delivery_status: finalStatus?.peers };
+        const result = { protocol: 'native-cc-v1', platform: process.platform, index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: sealedBase.trim(), models: manifest.models, requestedModels: actors.reduce((o: any, a: string) => (o[a] = manifest.models[a], o), {}), readiness, patchFile, model: actors.length === 1 ? manifest.models[actors[0]!] : undefined, setupMs: (started || activeEnd) - setup, elapsedMs, stoppedMs: stoppedAt ? stoppedAt - activeEnd : undefined, teardownMs: Date.now() - activeEnd, stages: { completionMs: completion.ms, shutdownMs: cleanup.normal.ms, settleMs: cleanup.ms.settle, fallbackMs: cleanup.ms.fallback, captureMs, restorationMs }, end_reason: endReasonOf(endReason, endFlags), end_reason_detail: endReason, end_flags: endFlags.length ? endFlags : undefined, error: error ? String(error).replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/ig, '$1$2[redacted]').slice(0, 300) : undefined, taskStates, effort: manifest.effort, events, codexMessages, codexTaskStart, startedAt: started || undefined, repeat, conditions, codexUsage: codexUsage(codexMessages, thread?.thread?.id), claudeUsage: { pre: claudeUsagePre, post: claudeUsagePost }, nativeVersions: { codex: codexVersion, claude: claudeVersion }, codexBinarySha256: sourceHash(codexBin), claudeSessionId: actors.includes('claude') ? claudeId : undefined, codexThreadId: thread?.thread?.id, completion, tree_changed_after_active_time: treeAfterActive, cleanup, restoration, trust_restored: trustRestored, cleanup_complete: contained, teardown_errors: teardownErrors.length ? teardownErrors : undefined, metadata_clean: metadataClean, metadata_sha256: metadataBaseline, delivery_status: finalStatus?.peers };
         writeAtomic(join(recordRoot, 'runs', name + '.json'), JSON.stringify(result, null, 2)); // the ledger reads recovery/ too: never a cut record
         log('arm-end', { index, kind, elapsedMs, endReason, cleanup: cleanup.outcome, completion: completion.outcome, patchLines: patch.split('\n').length });
         if (!contained)
