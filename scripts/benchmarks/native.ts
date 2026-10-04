@@ -7,7 +7,7 @@ import { realPath } from '../../src/hub/project.ts';
 import { sessionSettings, statusLineSettings } from '../../src/cli/launch.ts';
 import { readEvents } from '../../src/hub/events.ts';
 import { processTable } from '../../src/hub/child-process.ts';
-import { awaitTurnEnd, captureActors, cwdOf, endReasonOf, restoreModes, trustTemp, writeAtomic, restoreTrust, reuseProblem, settleTrust, teardown, unrestored, transcriptRows, turnEnded, type Actor } from './teardown.ts';
+import { awaitTurnEnd, captureActors, cwdOf, endReasonOf, fixtureRootProblem, restoreModes, trustTemp, writeAtomic, restoreTrust, reuseProblem, settleTrust, teardown, unrestored, transcriptRows, turnEnded, type Actor } from './teardown.ts';
 process.umask(0o077);
 const argv = process.argv.slice(2), runArg = argv[argv.indexOf('--run') + 1], inputArg = argv[argv.indexOf('--private-inputs') + 1], upstreamArg = argv[argv.indexOf('--upstream-root') + 1], probeArg = argv[argv.indexOf('--probe-target') + 1];
 if (!runArg || !inputArg || !upstreamArg || !probeArg)
@@ -227,6 +227,9 @@ async function lockSiblingArtifacts(activeFixture: string, modes: Map<string, nu
         const path = join(fixtureRoot, entry);
         if (path === activeFixture)
             continue;
+        // A sibling root that is itself a symlink is refused before the walk below follows it into the outside tree.
+        if (lstatSync(path).isSymbolicLink())
+            throw new Error('refuse symlink as a sibling fixture root');
         const paths = [path, ...(await fs.readdir(path, { recursive: true })).map(x => join(path, String(x)))];
         for (const item of paths) {
             const st = lstatSync(item);
@@ -353,6 +356,15 @@ async function sendTerminalText(handle: string, text: string) { const receipt = 
     throw new Error('Orca rejected native sandbox probe input'); }
 async function arm(cas: any, index: number, kind: string, manifest: any) {
     const name = `${index.toString().padStart(2, '0')}-${kind}`, dir = join(runs, 'fixtures', name);
+    // A fixture root replaced after preparation (#119) — a symlink to an equivalent outside tree, a non-directory, a
+    // name that resolves elsewhere — passes the lexical resolve() and baseline content checks and would redirect every
+    // setup write below into the outside tree. Refused read-only, before the Orca lookup, the baseline walk and the
+    // first write. runs is canonical, so the prepared path is the expected real path: any symlinked component diverges.
+    const rootProblem = fixtureRootProblem(dir);
+    if (rootProblem)
+        throw new Error(`prepared fixture root was replaced after preparation (${rootProblem}): ${dir}`);
+    if (realPath(dir) !== dir)
+        throw new Error(`prepared fixture root was replaced after preparation (its real path is not its prepared path): ${dir}`);
     const expectedOrca = orcaPreflight.get(resolve(dir));
     if (!expectedOrca)
         throw new Error('fixture was not included in the Orca registration preflight: ' + dir);
@@ -786,6 +798,15 @@ if (!selected.length || new Set(selected).size !== selected.length || selected.s
 const selectedFixturePaths = selected.flatMap((i: number) => m.arms.map((kind: string) =>
     join(runs, 'fixtures', `${i.toString().padStart(2, '0')}-${kind}`),
 ));
+// Every selected fixture root proved to be the directory preparation left, before anything is locked, written or
+// launched (#119); each arm checks its own again right before it touches the fixture.
+for (const dir of selectedFixturePaths) {
+    const rootProblem = fixtureRootProblem(dir);
+    if (rootProblem)
+        throw new Error(`prepared fixture root was replaced after preparation (${rootProblem}): ${dir}`);
+    if (realPath(dir) !== dir)
+        throw new Error(`prepared fixture root was replaced after preparation (its real path is not its prepared path): ${dir}`);
+}
 const orcaPreflight = await preflightOrcaWorktrees(selectedFixturePaths, orca);
 if ((existsSync(join(runs, 'runs')) && readdirSync(join(runs, 'runs')).length) || existsSync(join(runs, 'recovery')))
     throw new Error('run directory already contains attempts; use a new attempt directory');

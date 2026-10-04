@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- The CooperBench native runner proves each prepared fixture root is still the directory preparation left before anything is locked, written or launched, and each arm checks its own again first (#119): a root replaced after preparation by a symlink to an equivalent outside tree passed the lexical `resolve()` comparison and the baseline content checks and would have redirected setup and agent writes there. The check is read-only (`lstat` and the real path, never a follow), so a substitution is refused without touching its target; a sibling fixture root that is itself a symlink is refused before the sibling-artifact walk reads it.
+
 ## 0.12.8
 
 - Port Switchyard's Stage signals/scoring, Plan/Execute, advisor gate and escalation policies in-process with source-based golden tests and Apache-2.0 attribution (#124, #125).

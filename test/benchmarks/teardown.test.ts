@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProcRow } from "../../src/hub/child-process.ts";
 import { processTable } from "../../src/hub/child-process.ts";
-import { actorOf, awaitTurnEnd, captureActors, commOf, daemonRoot, endReasonOf, extend, restoreModes, same, restoreTrust, teardown, turnEnded, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
+import { actorOf, awaitTurnEnd, captureActors, commOf, daemonRoot, endReasonOf, extend, fixtureRootProblem, restoreModes, same, restoreTrust, teardown, turnEnded, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
 
 // issue #113: an arm's teardown proves what it stops by identity (pid and start time), never by a name in argv.
 const dirs: string[] = [];
@@ -628,4 +628,29 @@ test("a record's end reason: quota and budget ends stay themselves; a flag makes
     .toEqual(["completed", "delivery-unsettled", "timeout", "interrupted", "interrupted", "provider-quota", "budget-paused", "infrastructure-error"]);
   expect(["completed", "wall-timeout", "needs-review", "interrupted", "provider-quota"].map((d) => endReasonOf(d, ["tree-changed-after-active-time"])))
     .toEqual(["infrastructure-error", "infrastructure-error", "infrastructure-error", "interrupted", "provider-quota"]);
+});
+
+test("a prepared fixture root replaced after preparation is rejected read-only (#119)", () => {
+  const base = mkdtempSync(join(tmpdir(), "ahub-fixture-root-"));
+  dirs.push(base);
+  const fixture = join(base, "fixtures", "00-solo-codex");
+  const outside = join(base, "outside");
+  mkdirSync(fixture, { recursive: true });
+  mkdirSync(join(outside, "sub"), { recursive: true });
+  writeFileSync(join(outside, "sub", "same-baseline.txt"), "baseline");
+  const outsideMode = statSync(outside).mode;
+  // the unchanged prepared root is accepted
+  expect(fixtureRootProblem(fixture)).toBeUndefined();
+  // replaced by a symlink to an equivalent outside tree: rejected, and the target stays untouched
+  rmSync(fixture, { recursive: true });
+  symlinkSync(outside, fixture);
+  expect(fixtureRootProblem(fixture)).toBe("a symlink, not the prepared directory");
+  expect(readFileSync(join(outside, "sub", "same-baseline.txt"), "utf8")).toBe("baseline");
+  expect(statSync(outside).mode).toBe(outsideMode);
+  // a root that is not a directory, and a root that is gone
+  rmSync(fixture);
+  writeFileSync(fixture, "x");
+  expect(fixtureRootProblem(fixture)).toBe("not a directory");
+  rmSync(fixture);
+  expect(fixtureRootProblem(fixture)).toBe("missing");
 });

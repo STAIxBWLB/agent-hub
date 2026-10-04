@@ -22,7 +22,7 @@ python3 scripts/benchmarks/runner.py prepare \
   --output /private/path/to/new-run
 ```
 
-The manifest's archive and prompt hashes are checked before a fixture is accepted. The `prepared.json` ledger binds the fixture roots, baseline commits, complete baseline path counts and manifest hash.
+The manifest's archive and prompt hashes are checked before a fixture is accepted. The `prepared.json` ledger binds the fixture roots, baseline commits, complete baseline path counts and manifest hash. At run time each fixture root must still be the directory preparation left: a root replaced by a symlink to an equivalent outside tree, a non-directory, or a name whose real path differs from the prepared one is refused read-only before anything is locked, written or launched (#119).
 
 ## Native execution
 

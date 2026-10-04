@@ -1,6 +1,8 @@
 import { chmodSync, lstatSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { descendantsOf, processTable, type ProcRow } from '../../src/hub/child-process.ts';
+import { realPath } from '../../src/hub/project.ts';
 
 /**
  * Teardown of one benchmark arm (issue #113). An actor is a process the arm started, recorded with the evidence that
@@ -118,6 +120,23 @@ export function extend(owned: Map<string, Actor>, rows: ProcRow[]): void {
 
 /** Written whole or not at all: a recovery reads it after a runner that may have died mid-write. */
 export function writeAtomic(file: string, text: string): void { writeFileSync(`${file}.tmp`, text, { mode: 0o600 }); renameSync(`${file}.tmp`, file); }
+
+/**
+ * Why a prepared benchmark fixture root cannot be used, or undefined when it is the directory preparation made
+ * (issue #119). A root replaced after preparation by a symlink to an equivalent outside tree passes the lexical
+ * resolve() comparison and the baseline content checks, and redirects setup and agent writes there. The check is
+ * read-only (lstat and the real path, never a follow, never a write), so a substitution is rejected without touching
+ * its target. The real path is compared against the canonical parent joined with the root's own name: a root reached
+ * under a different name than the one on disk (a case-insensitive filesystem opens both) is a substitution too.
+ */
+export function fixtureRootProblem(dir: string): string | undefined {
+    let st;
+    try { st = lstatSync(dir); } catch { return 'missing'; }
+    if (st.isSymbolicLink()) return 'a symlink, not the prepared directory';
+    if (!st.isDirectory()) return 'not a directory';
+    if (realPath(dir) !== join(realPath(dirname(dir)), basename(dir))) return 'its real path differs from its prepared name';
+    return undefined;
+}
 
 /**
  * How a record states an attempt's end. A quota error or a budget pause is the provider's or the hub's doing and stays
