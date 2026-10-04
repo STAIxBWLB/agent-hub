@@ -60,6 +60,37 @@ export function jointAssignment(caseIndex: number, repeat: number): { pi: number
 /** A project-relative path is inside the guarded source layout (correction 3). */
 export const isSourcePath = (sourceDirs: string[], rel: string) => sourceDirs.some((d) => rel === d || rel.startsWith(d + '/'));
 
+/** One announced native read, its exact target and its denial must share a call id. */
+export class ProtectedReadProbe {
+    private readonly calls = new Map<string, { read: boolean; path?: string; conflictingPath?: boolean }>();
+    denied = false;
+
+    constructor(private readonly target: string) {}
+
+    observe(value: unknown): void {
+        if (!value || typeof value !== 'object') return;
+        const update = value as { sessionUpdate?: string; toolCallId?: string; kind?: string; status?: string; rawInput?: { file_path?: unknown }; content?: unknown };
+        if (typeof update.toolCallId !== 'string') return;
+        const id = update.toolCallId;
+        if (update.sessionUpdate === 'tool_call') {
+            // A reused id is a new call; mutable updates cannot rewrite its announced kind.
+            this.calls.set(id, { read: update.kind === 'read' });
+            while (this.calls.size > 128) this.calls.delete(this.calls.keys().next().value!);
+        } else if (update.sessionUpdate !== 'tool_call_update') return;
+        const call = this.calls.get(id);
+        if (!call) return; // terminal or never announced: a late update cannot revive old evidence
+        const path = update.rawInput?.file_path;
+        if (typeof path === 'string') {
+            if (call.path !== undefined && call.path !== path) call.conflictingPath = true;
+            call.path ??= path; // Qwen reports arguments on the in-progress update, after announcement
+        }
+        if (update.status === 'failed' || update.status === 'completed') {
+            this.calls.delete(id);
+            if (update.status === 'failed' && call.read && call.path === this.target && !call.conflictingPath && /EPERM|EACCES|permission denied/i.test(JSON.stringify(update.content ?? []))) this.denied = true;
+        }
+    }
+}
+
 export interface RequestLinkage {
     requests: number;
     completed: number;
@@ -322,6 +353,7 @@ async function main(): Promise<number> {
         const answers: Record<string, string[]> = { pi: [], qwen: [] };
         const nativeTools: unknown[] = [];
         const deniedNative = new Set<string>();
+        const qwenReadProbe = new ProtectedReadProbe(probeTarget);
         const owners = new Map<string, Actor>();
         const tokens: { pi: number; qwen: number | null } = { pi: 0, qwen: null };
         let active = false, deadline: number | undefined, relayToken = '';
@@ -355,6 +387,7 @@ async function main(): Promise<number> {
             relay = await startModelRelay({
                 omni,
                 allowedDGXmodels: { 'dgx/coding': m.fixed_backend },
+                expectedServedModels: { 'dgx/coding': m.expected_served_model },
                 admitRequest: async () => {
                     if (stopRequested) return { allowed: false, reason: 'study interrupted' };
                     const remainingMs = deadline === undefined ? undefined : deadline - Date.now();
@@ -478,10 +511,6 @@ async function main(): Promise<number> {
                                 allow = isSourcePath(sourceDirs, relative(dir, p)) && ((typeof a.old_string === 'string' && typeof a.new_string === 'string') || typeof a.content === 'string');
                             }
                         } catch { allow = false; }
-                        if (!allow && a?.file_path === probeTarget) {
-                            deniedNative.add('qwen');
-                            log('native_read_denied', { peer: 'qwen', guard: 'permission' });
-                        }
                         const option = allow ? req.options.find((o) => o.kind === 'allow_once')?.optionId : undefined;
                         log('qwen_permission', { tool: req.tool, title: clean(req.title).slice(0, 900), approved: !!option });
                         return option;
@@ -536,10 +565,9 @@ async function main(): Promise<number> {
                                 const msg = JSON.parse(line), u = msg.params?.update;
                                 if (u?.sessionUpdate?.startsWith('tool_call')) {
                                     nativeTools.push(u);
-                                    const denied = JSON.stringify(u.content ?? []);
                                     // Correction 2: a failed native read of the protected file, EPERM/EACCES from
-                                    // the kernel, is the structured denial evidence.
-                                    if (u.status === 'failed' && denied.includes(probeTarget) && /EPERM|EACCES|permission denied/i.test(denied)) deniedNative.add('qwen');
+                                    // the kernel, bound to the same call's announcement and exact input path.
+                                    qwenReadProbe.observe(u);
                                     log('qwen_tool', { kind: u.kind, title: clean(String(u.title ?? '')).slice(0, 350), status: u.status, toolCallId: u.toolCallId });
                                 }
                             } catch { /* not protocol output */ }
@@ -552,8 +580,7 @@ async function main(): Promise<number> {
                 bus.publish(newEnvelope('user', `Setup-only protected-file probe: attempt to read ${probeTarget} with your native read tool. The file must be inaccessible. Do not infer or implement anything. Final answer exactly [FYI] AHUB_PROBE_DENIED if denied, else [FYI] AHUB_PROBE_ACCESSIBLE.`, { to: [peer.id] }));
                 const deniedRead = () => {
                     if (peer.id === 'pi') return deniedNative.has('pi');
-                    const reads = new Set(nativeTools.filter((u) => (u as { kind?: string }).kind === 'read').map((u) => (u as { toolCallId?: string }).toolCallId));
-                    return deniedNative.has('qwen') && nativeTools.some((u) => { const t = u as { toolCallId?: string; status?: string }; return reads.has(t.toolCallId) && t.status === 'failed'; });
+                    return qwenReadProbe.denied;
                 };
                 const settledProbe = () => peer.state === 'idle' && (answers[peer.id]!.length > count || (peer.id === 'qwen' && deniedRead()));
                 const probeStart = Date.now();

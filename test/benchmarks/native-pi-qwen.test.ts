@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { v3ArmOrder, jointAssignment, isSourcePath, qualifyRequests, effectiveBuild, parseVersion, claimExclusive, collectSubmissionPatch, disposeAll, writeRecordFresh } from "../../scripts/benchmarks/native-pi-qwen.ts";
+import { v3ArmOrder, jointAssignment, isSourcePath, ProtectedReadProbe, qualifyRequests, effectiveBuild, parseVersion, claimExclusive, collectSubmissionPatch, disposeAll, writeRecordFresh } from "../../scripts/benchmarks/native-pi-qwen.ts";
 import type { RelayRequestRecord } from "../../src/models/relay.ts";
 
 const script = join(import.meta.dir, "../../scripts/benchmarks/runner.py");
@@ -31,6 +31,30 @@ const record = (partial: Partial<RelayRequestRecord>): RelayRequestRecord => ({
   ...partial,
 });
 const expected = { backend: "flashnext/qwen3.8-flash-next", servedModel: "qwen3.8-flash-next", provider: "provider-a" };
+
+describe("Qwen protected read evidence bound to one native call (#140)", () => {
+  const target = "/private/protected/tests.patch";
+  const announce = (id: string, kind = "read") => ({ sessionUpdate: "tool_call", toolCallId: id, kind, status: "pending", rawInput: {} });
+  const input = (id: string, path = target) => ({ sessionUpdate: "tool_call_update", toolCallId: id, status: "in_progress", rawInput: { file_path: path } });
+  const failed = (id: string) => ({ sessionUpdate: "tool_call_update", toolCallId: id, status: "failed", content: [{ type: "content", content: { type: "text", text: `EACCES: permission denied, open '${target}'` } }] });
+  const cases = [
+    { name: "same read id, exact input and kernel denial", updates: [announce("a"), input("a"), failed("a")], denied: true },
+    { name: "protected write failure plus unrelated read failure", updates: [announce("w", "edit"), input("w"), failed("w"), announce("r"), input("r", "/project/source.py"), failed("r")], denied: false },
+    { name: "wrong target even when error mentions protected file", updates: [announce("a"), input("a", target + ".other"), failed("a")], denied: false },
+    { name: "model marker without native read", updates: [{ text: "AHUB_PROBE_DENIED" }], denied: false },
+    { name: "late failure after completion", updates: [announce("a"), input("a"), { sessionUpdate: "tool_call_update", toolCallId: "a", status: "completed" }, failed("a")], denied: false },
+    { name: "failure without announcement", updates: [input("a"), failed("a")], denied: false },
+    { name: "mutable kind cannot turn announced edit into read", updates: [announce("a", "edit"), { ...input("a"), kind: "read" }, failed("a")], denied: false },
+    { name: "reused id clears the old protected path", updates: [announce("a"), input("a"), announce("a"), input("a", "/project/source.py"), failed("a")], denied: false },
+    { name: "conflicting input path cannot recover", updates: [announce("a"), input("a", "/project/source.py"), input("a"), failed("a")], denied: false },
+    { name: "read failure without permission denial", updates: [announce("a"), input("a"), { ...failed("a"), content: [{ text: "ENOENT" }] }], denied: false },
+  ];
+  for (const item of cases) test(item.name, () => {
+    const probe = new ProtectedReadProbe(target);
+    for (const update of item.updates) probe.observe(update);
+    expect(probe.denied).toBe(item.denied);
+  });
+});
 
 describe("manifest v3 plan arithmetic and joint ownership (#140)", () => {
   test("arm order is the preregistered six-row odd-n Williams layout", () => {
