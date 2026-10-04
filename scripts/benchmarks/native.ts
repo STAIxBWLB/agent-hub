@@ -389,9 +389,11 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         ? 'Accept with a concrete plan, then complete with hub_task_done. Do not message the other peer: the hub shows you its changes at your tool calls and asks the last to finish to check its work.'
         : 'Accept with a concrete plan, coordinate interface contracts with the named peer when source overlaps, then complete with hub_task_done.';
     const state = join(dir, '.agenthub/state');
+    // Observer-only: the daemon consumes state/claude-usage.json for budget/routing; do not feed it benchmark samples.
+    const quotaState = join(state, 'benchmark-usage');
     const denied = [...protectedRoots, ...[join(runs, 'runs'), join(runs, 'patches'), join(runs, 'private'), ...(await (async () => { const fs = await import('node:fs/promises'); return (await fs.readdir(join(runs, 'fixtures'))).map(x => join(runs, 'fixtures', x)).filter(x => resolve(x) !== resolve(dir)); })())]];
     const permissions = { defaultMode: 'acceptEdits', allow: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', ...hubNames.map(n => 'mcp__agent-hub__' + n)], deny: ['WebFetch', 'WebSearch', 'Agent', 'Skill', 'Read(./.agenthub/**)', 'Read(./.claude/**)', 'Edit(./.agenthub/**)', 'Edit(./.claude/**)', 'Edit(./AGENTS.md)', 'Edit(./.gitignore)', 'Edit(./tests/**)'] };
-    const tee = { script: join(repo, 'src/cli/statusline-tee.ts'), stateDir: state };
+    const tee = { script: join(repo, 'src/cli/statusline-tee.ts'), stateDir: quotaState };
     const session = JSON.parse(turnFree ? sessionSettings(tee, { script: join(repo, 'src/cli/facts-hook.ts'), stateDir: state }) : statusLineSettings(tee));
     const sandbox = { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: denied } };
     const settings = benchmarkClaudeSettings(session, turnFree, permissions, sandbox); // #134: every Claude arm runs the status-line tee
@@ -558,7 +560,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             throw new Error(r.error); return r.text; };
         const assigned = kind.startsWith('hub-') && index % 2 ? ['claude', 'codex'] : actors;
         const input = cachedInputs[index];
-        claudeUsagePre = actors.includes('claude') ? claudeUsageReading(state) : { status: 'unknown', why: 'no Claude actor in this arm' }; // #134: before the active window
+        claudeUsagePre = actors.includes('claude') ? claudeUsageReading(quotaState) : { status: 'unknown', why: 'no Claude actor in this arm' }; // #134: before the active window
         const detail = `Implement only the assigned feature(s) below in the sealed source tree. You have a 300 second active-work limit with no artificial tool-step cap. Do not touch fixture metadata, tests, history or other directories; no installs, web or external apps. Use hub_task_accept with a concrete source plan and hub_task_done on completion. ${turnFree ? 'Do not message the other owner; the hub shows you its changes as you work.' : 'Coordinate shared-file interfaces with the named other owner when present.'} Do not acknowledge FYI or conflict notices unless work is needed. Final [FYI].\n\n`;
         started = Date.now();
         codexTaskStart = codexMessages.length; // what came before is setup and the probe, never task work (issue #110)
@@ -661,7 +663,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         ws?.close();
         client?.close();
         // #134: after the active window, before the state dir is deleted by the teardown below.
-        const claudeUsagePost = actors.includes('claude') ? claudeUsageReading(state) : { status: 'unknown', why: 'no Claude actor in this arm' }; // #134
+        const claudeUsagePost = actors.includes('claude') ? claudeUsageReading(quotaState) : { status: 'unknown', why: 'no Claude actor in this arm' }; // #134
         // The arm's processes (issue #113): the normal shutdown, the table read back, signals only to proven identities.
         try { capture(); } catch (e) { note(`the last capture failed: ${String(e).slice(0, 200)}`); } // never skips the teardown
         const cleanup = await teardown([...owners.values()], dir, async () => {

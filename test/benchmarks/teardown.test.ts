@@ -854,7 +854,8 @@ test("claudeUsageReading: FIFO cannot block the subsequent cleanup (#134)", asyn
 test("benchmark settings produce real pre/post files and keep facts hooks treatment-specific (#134)", async () => {
   for (const turnFree of [false, true]) {
     const state = usageState("{}");
-    const tee = { stateDir: state, script: join(import.meta.dir, "../../src/cli/statusline-tee.ts") };
+    const quotaState = join(state, "benchmark-usage");
+    const tee = { stateDir: quotaState, script: join(import.meta.dir, "../../src/cli/statusline-tee.ts") };
     const session = JSON.parse(sessionSettings(tee, { stateDir: state, script: join(import.meta.dir, "../../src/cli/facts-hook.ts") }));
     const settings = benchmarkClaudeSettings(session, turnFree, { allow: ["Read"] }, { enabled: true });
     expect(settings.disableAllHooks).toBe(false);
@@ -863,21 +864,24 @@ test("benchmark settings produce real pre/post files and keep facts hooks treatm
     expect(line.type).toBe("command");
     const invoke = async (used: number) => {
       const producer = Bun.spawn(["/bin/sh", "-c", line.command], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-      producer.stdin.write(JSON.stringify({ rate_limits: { five_hour: { used_percentage: used, resets_at: FUTURE_S } } }));
+      producer.stdin.write(JSON.stringify({ session_id: "sample-quota-session", rate_limits: { five_hour: { used_percentage: used, resets_at: FUTURE_S } } }));
       producer.stdin.end();
       expect(await producer.exited).toBe(0);
       await new Response(producer.stdout).text();
     };
     await invoke(12);
-    const pre = claudeUsageReading(state);
+    const pre = claudeUsageReading(quotaState);
     if (!isKnown(pre)) throw new Error("producer did not create a usable pre reading");
     expect(pre.rate_limits.five_hour.used_percentage).toBe(12);
-    expect(pre.at).toBe(JSON.parse(readFileSync(join(state, "claude-usage.json"), "utf8")).at);
+    expect(pre.at).toBe(JSON.parse(readFileSync(join(quotaState, "claude-usage.json"), "utf8")).at);
     await invoke(20);
-    const post = claudeUsageReading(state);
+    const post = claudeUsageReading(quotaState);
     if (!isKnown(post)) throw new Error("producer did not create a usable post reading");
     expect(post.rate_limits.five_hour.used_percentage).toBe(20);
     expect(post.at).toBeGreaterThanOrEqual(pre.at);
-    expect(post.at).toBe(JSON.parse(readFileSync(join(state, "claude-usage.json"), "utf8")).at);
+    expect(post.at).toBe(JSON.parse(readFileSync(join(quotaState, "claude-usage.json"), "utf8")).at);
+    expect(readFileSync(join(state, "claude-usage.json"), "utf8")).toBe("{}");
+    expect(existsSync(join(state, "claude-session.json"))).toBe(false);
+    expect(existsSync(join(quotaState, "claude-session.json"))).toBe(true);
   }
 }, 5000);
