@@ -44,7 +44,7 @@ if (prepared.runner_sha256 !== sourceHash(join(import.meta.dir, 'runner.py')) ||
 const { lookupOrcaWorktree, preflightOrcaWorktrees } = await import('./orca-workspace.ts');
 class NativeCommandError extends Error { constructor(message: string, readonly code?: string) { super(message); } }
 const log = (event: string, data: any = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), event, ...data }));
-import { claudeUsageReading } from './teardown.ts';
+import { benchmarkClaudeSettings, claudeUsageReading } from './teardown.ts';
 let stopRequested = false;
 process.on('SIGINT', () => { stopRequested = true; });
 process.on('SIGTERM', () => { stopRequested = true; });
@@ -393,8 +393,9 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const permissions = { defaultMode: 'acceptEdits', allow: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', ...hubNames.map(n => 'mcp__agent-hub__' + n)], deny: ['WebFetch', 'WebSearch', 'Agent', 'Skill', 'Read(./.agenthub/**)', 'Read(./.claude/**)', 'Edit(./.agenthub/**)', 'Edit(./.claude/**)', 'Edit(./AGENTS.md)', 'Edit(./.gitignore)', 'Edit(./tests/**)'] };
     const tee = { script: join(repo, 'src/cli/statusline-tee.ts'), stateDir: state };
     const session = JSON.parse(turnFree ? sessionSettings(tee, { script: join(repo, 'src/cli/facts-hook.ts'), stateDir: state }) : statusLineSettings(tee));
-    const settings = { permissions, ...(turnFree ? { disableAllHooks: false, hooks: session.hooks } : { disableAllHooks: true }), sandbox: { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: denied } } };
-    const conditions = { claude: { settingSources: 'project', strictMcpConfig: true, disableAllHooks: !turnFree, statusLine: false, hookEvents: turnFree ? Object.keys(session.hooks ?? {}).sort() : [], settingsSha256: hash(JSON.stringify(settings)), skills: 'off: the Skill tool is denied', instructions: 'fixture AGENTS.md via --append-system-prompt-file' }, codex: { hooksFeature: false, memories: false, externalAgentMemoryImport: false, plugins: false, apps: false, multiAgent: false, notify: false, disabledMcpServers: codexUserServers, skills: (kind === 'solo-claude' ? 'not applicable: no Codex in this arm' : 'not checked: setup did not reach Codex') as any, instructions: 'fixture AGENTS.md as project doc; the user\'s global AGENTS.md too' }, coordination: turnFree ? 'turn-free' : kind.startsWith('hub-') ? 'advisory' : 'solo', ...(staleOff ? { experiments: { stale_notices: 'deliver' } } : {}) };
+    const sandbox = { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: denied } };
+    const settings = benchmarkClaudeSettings(session, turnFree, permissions, sandbox); // #134: every Claude arm runs the status-line tee
+    const conditions = { claude: { settingSources: 'project', strictMcpConfig: true, disableAllHooks: false, statusLine: true, hookEvents: turnFree ? Object.keys(session.hooks ?? {}).sort() : [], settingsSha256: hash(JSON.stringify(settings)), skills: 'off: the Skill tool is denied', instructions: 'fixture AGENTS.md via --append-system-prompt-file' }, codex: { hooksFeature: false, memories: false, externalAgentMemoryImport: false, plugins: false, apps: false, multiAgent: false, notify: false, disabledMcpServers: codexUserServers, skills: (kind === 'solo-claude' ? 'not applicable: no Codex in this arm' : 'not checked: setup did not reach Codex') as any, instructions: 'fixture AGENTS.md as project doc; the user\'s global AGENTS.md too' }, coordination: turnFree ? 'turn-free' : kind.startsWith('hub-') ? 'advisory' : 'solo', ...(staleOff ? { experiments: { stale_notices: 'deliver' } } : {}) };
     const candidateMcp = join(dir, '.claude/candidate-mcp.json');
     // No await inside this mutation batch: reject substitutions during the preceding setup awaits.
     withFixtureRoot(dir, fixtureIdentity, () => {
@@ -408,9 +409,8 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         writeFileSync(join(dir, '.agenthub', 'codex-isolated.sh'), `#!/bin/sh\nexec ${shellQuote(codexBin)} "$@" ${codexIsolation.map(shellQuote).join(' ')}\n`, { mode: 0o700 });
         writeFileSync(join(dir, '.agenthub/routing.toml'), '[local]\nfixed_model="coding"\n[classes.implement]\npeers=["codex","claude"]\nescalate_to=[]\n[classes.review]\npeers=[]\nlocal_allowed=false\n');
         // Hooks are equal across arms (issue #110): none of the user's or a plugin's; the turn-free arm runs the hub's own
-        // facts hook, which is part of its treatment. `--setting-sources project` keeps user settings out.
-        // No arm runs a status line (issue #110): `disableAllHooks` turns it off in the other arms, so the turn-free arm,
-        // which needs hooks on, leaves it out. Claude's quota therefore reaches the hub in no arm.
+        // facts hook, which is part of its treatment. `--restricted` ignores user/project/local settings; explicit
+        // `--settings` supplies our session hooks and status-line tee (#134). Managed policy still applies unchanged.
         writeFileSync(join(dir, '.claude/settings.json'), JSON.stringify(settings));
         // The conditions each attempt ran with (issue #110): bound to its record, next to the capability readbacks in its events.
         // codex.skills is a placeholder string until skillsCondition() replaces it with its object once Codex is up (`as any`).
@@ -425,7 +425,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const setup = Date.now();
     let client: ControlClient | undefined, ws: WebSocket | undefined, claudeTerminal: string | undefined, hubMayRun = false, projectId: any, started = 0, endReason = 'completed', error: string | undefined, armModes = new Map<string, number>();
     let claudeId = randomUUID(), thread: any, trustLease: any, codexMessages: any[] = [], taskStates: any[] = [], ids: number[] = [], pending = new Map<number, any>(), unkept = new Set<number>(), rpcId = 1, codexTaskStart = 0;
-    let claudeUsagePre: any = { status: 'unknown', why: 'not reached: setup failed before the active window' }; // #134: explicit unknown for failed-setup records
+    let claudeUsagePre: any = kind === 'solo-codex' ? { status: 'unknown', why: 'no Claude actor in this arm' } : { status: 'unknown', why: 'not reached: setup failed before the active window' }; // #134
     const actors = kind === 'solo-codex' ? ['codex'] : kind === 'solo-claude' ? ['claude'] : ['codex', 'claude'], readiness: any = {};
     // The processes this arm started (issue #113), each with what proves it: the daemon by the pid in its state dir and
     // an argv that serves this fixture, Claude's launch chain by this arm's own session id, the Codex app-server as the
@@ -558,7 +558,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             throw new Error(r.error); return r.text; };
         const assigned = kind.startsWith('hub-') && index % 2 ? ['claude', 'codex'] : actors;
         const input = cachedInputs[index];
-        claudeUsagePre = claudeUsageReading(state); // #134: before the active window, every arm
+        claudeUsagePre = actors.includes('claude') ? claudeUsageReading(state) : { status: 'unknown', why: 'no Claude actor in this arm' }; // #134: before the active window
         const detail = `Implement only the assigned feature(s) below in the sealed source tree. You have a 300 second active-work limit with no artificial tool-step cap. Do not touch fixture metadata, tests, history or other directories; no installs, web or external apps. Use hub_task_accept with a concrete source plan and hub_task_done on completion. ${turnFree ? 'Do not message the other owner; the hub shows you its changes as you work.' : 'Coordinate shared-file interfaces with the named other owner when present.'} Do not acknowledge FYI or conflict notices unless work is needed. Final [FYI].\n\n`;
         started = Date.now();
         codexTaskStart = codexMessages.length; // what came before is setup and the probe, never task work (issue #110)
@@ -661,7 +661,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         ws?.close();
         client?.close();
         // #134: after the active window, before the state dir is deleted by the teardown below.
-        const claudeUsagePost = claudeUsageReading(state);
+        const claudeUsagePost = actors.includes('claude') ? claudeUsageReading(state) : { status: 'unknown', why: 'no Claude actor in this arm' }; // #134
         // The arm's processes (issue #113): the normal shutdown, the table read back, signals only to proven identities.
         try { capture(); } catch (e) { note(`the last capture failed: ${String(e).slice(0, 200)}`); } // never skips the teardown
         const cleanup = await teardown([...owners.values()], dir, async () => {

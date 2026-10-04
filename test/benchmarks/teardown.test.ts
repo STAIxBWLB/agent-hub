@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProcRow } from "../../src/hub/child-process.ts";
 import { processTable } from "../../src/hub/child-process.ts";
-import { actorOf, awaitTurnEnd, captureActors, captureFixtureRoot, claudeUsageReading, commOf, daemonRoot, endReasonOf, extend, fixtureRootProblem, restoreModes, same, restoreTrust, teardown, turnEnded, withFixtureRoot, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
+import { sessionSettings } from "../../src/cli/launch.ts";
+import { actorOf, awaitTurnEnd, benchmarkClaudeSettings, captureActors, captureFixtureRoot, claudeUsageReading, commOf, daemonRoot, endReasonOf, extend, fixtureRootProblem, restoreModes, same, restoreTrust, teardown, turnEnded, withFixtureRoot, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
 
 // issue #113: an arm's teardown proves what it stops by identity (pid and start time), never by a name in argv.
 const dirs: string[] = [];
@@ -847,5 +848,36 @@ test("claudeUsageReading: FIFO cannot block the subsequent cleanup (#134)", asyn
     expect(result.cleanupReached).toBe(true);
   } finally {
     clearTimeout(deadline);
+  }
+}, 5000);
+
+test("benchmark settings produce real pre/post files and keep facts hooks treatment-specific (#134)", async () => {
+  for (const turnFree of [false, true]) {
+    const state = usageState("{}");
+    const tee = { stateDir: state, script: join(import.meta.dir, "../../src/cli/statusline-tee.ts") };
+    const session = JSON.parse(sessionSettings(tee, { stateDir: state, script: join(import.meta.dir, "../../src/cli/facts-hook.ts") }));
+    const settings = benchmarkClaudeSettings(session, turnFree, { allow: ["Read"] }, { enabled: true });
+    expect(settings.disableAllHooks).toBe(false);
+    expect(settings.hooks).toEqual(turnFree ? session.hooks : {});
+    const line = settings.statusLine as { type: string; command: string };
+    expect(line.type).toBe("command");
+    const invoke = async (used: number) => {
+      const producer = Bun.spawn(["/bin/sh", "-c", line.command], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+      producer.stdin.write(JSON.stringify({ rate_limits: { five_hour: { used_percentage: used, resets_at: FUTURE_S } } }));
+      producer.stdin.end();
+      expect(await producer.exited).toBe(0);
+      await new Response(producer.stdout).text();
+    };
+    await invoke(12);
+    const pre = claudeUsageReading(state);
+    if (!isKnown(pre)) throw new Error("producer did not create a usable pre reading");
+    expect(pre.rate_limits.five_hour.used_percentage).toBe(12);
+    expect(pre.at).toBe(JSON.parse(readFileSync(join(state, "claude-usage.json"), "utf8")).at);
+    await invoke(20);
+    const post = claudeUsageReading(state);
+    if (!isKnown(post)) throw new Error("producer did not create a usable post reading");
+    expect(post.rate_limits.five_hour.used_percentage).toBe(20);
+    expect(post.at).toBeGreaterThanOrEqual(pre.at);
+    expect(post.at).toBe(JSON.parse(readFileSync(join(state, "claude-usage.json"), "utf8")).at);
   }
 }, 5000);

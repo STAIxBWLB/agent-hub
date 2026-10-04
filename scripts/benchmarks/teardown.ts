@@ -549,3 +549,18 @@ export function claudeUsageReading(stateDir: string): ClaudeUsageReading {
         ...(stale ? { stale: true } : {}),
     };
 }
+
+/**
+ * Benchmark Claude settings (#134, PR136 P1): every Claude arm runs an isolated status-line tee so the hub's
+ * `claude-usage.json` can be written during the attempt. `--restricted` ignores user/project/local settings;
+ * explicit `--settings` supplies our session hooks (turn-free only) and status line. Managed policy still applies.
+ */
+export function benchmarkClaudeSettings(session: { statusLine: unknown; hooks?: unknown }, turnFree: boolean, permissions: unknown, sandbox: unknown) {
+    return {
+        permissions,
+        sandbox,
+        disableAllHooks: false,
+        statusLine: session.statusLine,
+        hooks: turnFree ? (session.hooks ?? {}) : {},
+    };
+}
