@@ -550,6 +550,20 @@ export function claudeUsageReading(stateDir: string): ClaudeUsageReading {
     };
 }
 
+/** A bounded, fail-open wait for a status-line write after a settled quota boundary. */
+export async function claudeUsageSnapshot(stateDir: string, notBefore: number | undefined, boundMs = 1500, stopped: () => boolean = () => false): Promise<ClaudeUsageReading> {
+    if (notBefore === undefined) return { status: 'unknown', why: 'quota boundary is not settled' };
+    const deadline = performance.now() + boundMs;
+    while (true) {
+        const reading = claudeUsageReading(stateDir);
+        if (stopped()) return { status: 'unknown', why: 'quota observation interrupted' };
+        if (reading.at !== undefined && reading.at >= notBefore) return reading;
+        const remaining = deadline - performance.now();
+        if (remaining <= 0) return { status: 'unknown', why: 'no fresh quota write after the settled boundary', ...(reading.at !== undefined ? { at: reading.at } : {}) };
+        await Bun.sleep(Math.min(25, remaining));
+    }
+}
+
 /**
  * Benchmark Claude settings (#134, PR136 P1): every Claude arm runs an isolated status-line tee so the hub's
  * `claude-usage.json` can be written during the attempt. `--restricted` ignores user/project/local settings;

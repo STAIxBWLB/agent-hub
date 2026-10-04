@@ -44,7 +44,7 @@ if (prepared.runner_sha256 !== sourceHash(join(import.meta.dir, 'runner.py')) ||
 const { lookupOrcaWorktree, preflightOrcaWorktrees } = await import('./orca-workspace.ts');
 class NativeCommandError extends Error { constructor(message: string, readonly code?: string) { super(message); } }
 const log = (event: string, data: any = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), event, ...data }));
-import { benchmarkClaudeSettings, claudeUsageReading } from './teardown.ts';
+import { benchmarkClaudeSettings, claudeUsageSnapshot } from './teardown.ts';
 let stopRequested = false;
 process.on('SIGINT', () => { stopRequested = true; });
 process.on('SIGTERM', () => { stopRequested = true; });
@@ -393,7 +393,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
     const quotaState = join(state, 'benchmark-usage');
     const denied = [...protectedRoots, ...[join(runs, 'runs'), join(runs, 'patches'), join(runs, 'private'), ...(await (async () => { const fs = await import('node:fs/promises'); return (await fs.readdir(join(runs, 'fixtures'))).map(x => join(runs, 'fixtures', x)).filter(x => resolve(x) !== resolve(dir)); })())]];
     const permissions = { defaultMode: 'acceptEdits', allow: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', ...hubNames.map(n => 'mcp__agent-hub__' + n)], deny: ['WebFetch', 'WebSearch', 'Agent', 'Skill', 'Read(./.agenthub/**)', 'Read(./.claude/**)', 'Edit(./.agenthub/**)', 'Edit(./.claude/**)', 'Edit(./AGENTS.md)', 'Edit(./.gitignore)', 'Edit(./tests/**)'] };
-    const tee = { script: join(repo, 'src/cli/statusline-tee.ts'), stateDir: quotaState };
+    const tee = { script: join(repo, 'src/cli/statusline-tee.ts'), stateDir: quotaState, original: { refreshInterval: 1 } };
     const session = JSON.parse(turnFree ? sessionSettings(tee, { script: join(repo, 'src/cli/facts-hook.ts'), stateDir: state }) : statusLineSettings(tee));
     const sandbox = { enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowedDomains: [] }, filesystem: { denyRead: denied } };
     const settings = benchmarkClaudeSettings(session, turnFree, permissions, sandbox); // #134: every Claude arm runs the status-line tee
@@ -512,6 +512,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             if (!transcriptSessions.has(claudeId) || transcriptSessions.size !== 1) throw new Error('Claude sandbox probe crossed session identity');
             writeFileSync(join(state, 'claude-session.json'), JSON.stringify({ at: Date.now(), sessionId: claudeId, transcriptPath: nativeTranscript, instanceId: nativeInstance, launchId: launch.launchId }), { mode: 0o600 });
             readiness.claude.sandboxProbe = { checked: true, result: 'denied', target_sha256: probeTargetSha, command_sha256: hash(probeCommand) };
+            readiness.claude.quotaProbeCompletedAt = readiness.claude.completionMarker ? Date.now() : undefined;
         }
         if (actors.includes('codex')) {
             withFixtureRoot(dir, fixtureIdentity, () => {});
@@ -560,7 +561,8 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
             throw new Error(r.error); return r.text; };
         const assigned = kind.startsWith('hub-') && index % 2 ? ['claude', 'codex'] : actors;
         const input = cachedInputs[index];
-        claudeUsagePre = actors.includes('claude') ? claudeUsageReading(quotaState) : { status: 'unknown', why: 'no Claude actor in this arm' }; // #134: before the active window
+        claudeUsagePre = actors.includes('claude') ? await claudeUsageSnapshot(quotaState, readiness.claude.quotaProbeCompletedAt === undefined ? undefined : readiness.claude.quotaProbeCompletedAt + 300, 1500, () => stopRequested) : { status: 'unknown', why: 'no Claude actor in this arm' }; // #134: before the active window
+        if (stopRequested) throw new Error('interrupted');
         const detail = `Implement only the assigned feature(s) below in the sealed source tree. You have a 300 second active-work limit with no artificial tool-step cap. Do not touch fixture metadata, tests, history or other directories; no installs, web or external apps. Use hub_task_accept with a concrete source plan and hub_task_done on completion. ${turnFree ? 'Do not message the other owner; the hub shows you its changes as you work.' : 'Coordinate shared-file interfaces with the named other owner when present.'} Do not acknowledge FYI or conflict notices unless work is needed. Final [FYI].\n\n`;
         started = Date.now();
         codexTaskStart = codexMessages.length; // what came before is setup and the probe, never task work (issue #110)
@@ -663,7 +665,7 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         ws?.close();
         client?.close();
         // #134: after the active window, before the state dir is deleted by the teardown below.
-        const claudeUsagePost = actors.includes('claude') ? claudeUsageReading(quotaState) : { status: 'unknown', why: 'no Claude actor in this arm' }; // #134
+        const claudeUsagePost = actors.includes('claude') ? await claudeUsageSnapshot(quotaState, completion.outcome === 'ended' ? Date.now() + 300 : undefined, 1500, () => stopRequested) : { status: 'unknown', why: 'no Claude actor in this arm' }; // #134
         // The arm's processes (issue #113): the normal shutdown, the table read back, signals only to proven identities.
         try { capture(); } catch (e) { note(`the last capture failed: ${String(e).slice(0, 200)}`); } // never skips the teardown
         const cleanup = await teardown([...owners.values()], dir, async () => {

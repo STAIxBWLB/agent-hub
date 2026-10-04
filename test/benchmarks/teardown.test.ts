@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { ProcRow } from "../../src/hub/child-process.ts";
 import { processTable } from "../../src/hub/child-process.ts";
 import { sessionSettings } from "../../src/cli/launch.ts";
-import { actorOf, awaitTurnEnd, benchmarkClaudeSettings, captureActors, captureFixtureRoot, claudeUsageReading, commOf, daemonRoot, endReasonOf, extend, fixtureRootProblem, restoreModes, same, restoreTrust, teardown, turnEnded, withFixtureRoot, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
+import { actorOf, awaitTurnEnd, benchmarkClaudeSettings, captureActors, captureFixtureRoot, claudeUsageReading, claudeUsageSnapshot, commOf, daemonRoot, endReasonOf, extend, fixtureRootProblem, restoreModes, same, restoreTrust, teardown, turnEnded, withFixtureRoot, type Actor, type Deps } from "../../scripts/benchmarks/teardown.ts";
 
 // issue #113: an arm's teardown proves what it stops by identity (pid and start time), never by a name in argv.
 const dirs: string[] = [];
@@ -885,3 +885,30 @@ test("benchmark settings produce real pre/post files and keep facts hooks treatm
     expect(existsSync(join(quotaState, "claude-session.json"))).toBe(true);
   }
 }, 5000);
+
+test("quota snapshot waits for a delayed write after the boundary (#134)", async () => {
+  const boundary = Date.now();
+  const state = usageState(JSON.stringify({ at: boundary - 1000, rate_limits: { five_hour: { used_percentage: 10, resets_at: FUTURE_S } } }));
+  const producer = setTimeout(() => writeFileSync(join(state, "claude-usage.json"), JSON.stringify({ at: Date.now(), rate_limits: { five_hour: { used_percentage: 20, resets_at: FUTURE_S } } })), 60);
+  try {
+    const reading = await claudeUsageSnapshot(state, boundary, 300);
+    if (!isKnown(reading)) throw new Error("missing delayed quota write");
+    expect(reading.at).toBeGreaterThanOrEqual(boundary);
+    expect(reading.rate_limits.five_hour.used_percentage).toBe(20);
+  } finally { clearTimeout(producer); }
+});
+
+test("quota snapshot never counts cached data for a timeout or unsettled final turn (#134)", async () => {
+  const at = Date.now();
+  const state = usageState(JSON.stringify({ at, rate_limits: { five_hour: { used_percentage: 10, resets_at: FUTURE_S } } }));
+  const unsettled = await claudeUsageSnapshot(state, undefined);
+  expect(isUnknown(unsettled)).toBe(true);
+  expect("rate_limits" in unsettled).toBe(false);
+  const expiredWait = await claudeUsageSnapshot(state, at + 1, 30);
+  if (!isUnknown(expiredWait)) throw new Error("cached quota was trusted as fresh");
+  expect(expiredWait.at).toBe(at);
+  expect(expiredWait.why).toContain("no fresh quota write");
+  const interrupted = await claudeUsageSnapshot(state, at, 30, () => true);
+  if (!isUnknown(interrupted)) throw new Error("interrupted quota wait was trusted");
+  expect(interrupted.why).toContain("interrupted");
+});
