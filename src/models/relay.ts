@@ -34,7 +34,8 @@ export interface ModelRelayStatus {
 /** Sanitized per-request identity and lifecycle evidence. One record per upstream dispatch attempt
  *  (a fallback dispatch is its own record). Records carry no messages, tools, keys or Access headers.
  *  `identified: false` with `outcome: "cancelled"` is the cancelled-before-identification state; an
- *  observed `actualModel` that differs from the upstream-configured `requestedModel` sets `mismatch`.
+ *  observed `actualModel` that differs from the trusted expected served model sets `mismatch`.
+ *  Without an explicit expectation, the upstream-configured identifier remains the comparison default.
  *  `identitySource` says where the served-model label came from: the gateway response header, a
  *  generation SSE event (#137 classification: heartbeats never identify), or the locally validated
  *  MLX configuration. HTTP 200, the requested alias and a previous request's label never identify. */
@@ -56,7 +57,7 @@ export interface RelayRequestRecord {
   role: "primary" | "auxiliary" | "unknown";
   outcome: "completed" | "cancelled" | "failed";
   identified: boolean;
-  /** Set only when the observed served model differs from the upstream-configured model. */
+  /** Set only when the observed served model differs from the expected model. */
   mismatch?: boolean;
   durationMs: number;
 }
@@ -76,6 +77,10 @@ export interface ModelRelayOptions {
   routeSessionKey?: (request: RelayRequest) => string | undefined;
   onRoute?: (event: { route: "hub/auto"; tier: string; source: "override" | "dimensions" | "hold" | "classifier" | "default"; score: number; ms: number }) => void;
   allowedDGXmodels: Record<string, string>;
+  /** Trusted physical model expectations by backend alias. Gateway identifiers can include a provider
+   *  prefix or route name that differs from the model reported by generation. Omission preserves the
+   *  existing literal upstream-identifier comparison; never derive this map from a response. */
+  expectedServedModels?: Record<string, string>;
   dgxMaxInputTokens?: number;
   mlx?: MlxOptions;
   mlxAlias?: string;
@@ -235,6 +240,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
   // so interleaved requests for the same alias never write into each other's evidence.
   const openRequestRecord = (alias: string): RequestJournalEntry => {
     const start = Date.now();
+    const expectedServedModel = options.expectedServedModels?.[alias];
     const record: RelayRequestRecord = {
       id: randomUUID(), at: new Date(start).toISOString(), alias,
       identitySource: "none", role: "unknown", outcome: "completed", identified: false, durationMs: 0,
@@ -254,7 +260,8 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       closed = true;
       record.outcome = outcome;
       record.durationMs = Date.now() - start;
-      if (record.identified && record.requestedModel !== undefined && record.actualModel !== record.requestedModel) record.mismatch = true;
+      const expectedModel = expectedServedModel ?? record.requestedModel;
+      if (record.identified && expectedModel !== undefined && record.actualModel !== expectedModel) record.mismatch = true;
       journal.push({ ...record });
       if (journal.length > JOURNAL_LIMIT) journal.shift();
       try {

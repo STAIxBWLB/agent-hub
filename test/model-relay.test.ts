@@ -484,3 +484,60 @@ test("#139 review: a rejecting async onRequest hook is not an unhandled rejectio
   expect(relay.requests()).toHaveLength(1);
   expect(relay.requests()[0]).toMatchObject({ outcome: "completed", identified: true });
 });
+
+test("#139 explicit physical expectation separates a provider-prefixed route from the served model", async () => {
+  let requested: unknown;
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async (request) => {
+    requested = (await request.json() as { model?: unknown }).model;
+    return new Response('data: {"model":"physical/model","choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } });
+  } });
+  cleanup.push(() => upstream.stop(true));
+  const relay = await startModelRelay({ omni: omni(`http://127.0.0.1:${upstream.port}/v1`), allowedDGXmodels: { "dgx/coding": "provider/physical/model" }, expectedServedModels: { "dgx/coding": "physical/model" }, token: "relay-token" });
+  cleanup.push(relay.close);
+  await (await dgxRequest(relay)).text();
+  const records = await waitForRecords(relay, 1) as import("../src/models/relay.ts").RelayRequestRecord[];
+  expect(requested).toBe("provider/physical/model");
+  expect(records[0]).toMatchObject({ requestedModel: "provider/physical/model", actualModel: "physical/model", identified: true, outcome: "completed" });
+  expect(records[0]?.mismatch).toBeUndefined();
+});
+
+test("#139 explicit physical expectation still rejects an identified wrong model after cancellation", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(new ReadableStream({ start(controller) {
+    controller.enqueue(new TextEncoder().encode('data: {"model":"other/model","choices":[{"delta":{"content":"wrong"}}]}\n\n'));
+  } }), { headers: { "content-type": "text/event-stream" } }) });
+  cleanup.push(() => upstream.stop(true));
+  const relay = await startModelRelay({ omni: omni(`http://127.0.0.1:${upstream.port}/v1`), allowedDGXmodels: { "dgx/coding": "provider/physical/model" }, expectedServedModels: { "dgx/coding": "physical/model" }, token: "relay-token" });
+  cleanup.push(relay.close);
+  const response = await dgxRequest(relay);
+  const reader = response.body!.getReader();
+  await reader.read();
+  await reader.cancel();
+  const records = await waitForRecords(relay, 1) as import("../src/models/relay.ts").RelayRequestRecord[];
+  expect(records[0]).toMatchObject({ actualModel: "other/model", identified: true, mismatch: true, outcome: "cancelled" });
+});
+
+
+test("#139 physical expectation is frozen per request while later requests see configuration changes", async () => {
+  let announce!: () => void;
+  let release!: () => void;
+  const announced = new Promise<void>((resolve) => { announce = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async () => {
+    announce();
+    await released;
+    return new Response('data: {"model":"physical/model","choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } });
+  } });
+  cleanup.push(() => upstream.stop(true));
+  const expectedServedModels = { "dgx/coding": "physical/model" };
+  const relay = await startModelRelay({ omni: omni(`http://127.0.0.1:${upstream.port}/v1`), allowedDGXmodels: { "dgx/coding": "provider/physical/model" }, expectedServedModels, token: "relay-token" });
+  cleanup.push(relay.close);
+  const first = dgxRequest(relay);
+  await announced;
+  expectedServedModels["dgx/coding"] = "replacement/model";
+  release();
+  await (await first).text();
+  await (await dgxRequest(relay)).text();
+  const records = await waitForRecords(relay, 2) as import("../src/models/relay.ts").RelayRequestRecord[];
+  expect(records[0]?.mismatch).toBeUndefined();
+  expect(records[1]?.mismatch).toBe(true);
+});
