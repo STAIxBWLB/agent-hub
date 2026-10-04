@@ -449,3 +449,26 @@ test("#139 the request journal keeps only the last 1000 records", async () => {
   expect(new Set(records.map((record) => record.id)).size).toBe(1000);
   expect(records.every((record) => record.outcome === "completed" && record.identified)).toBe(true);
 });
+
+test("#139 review: a throwing onRequest hook never breaks the proxied stream", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response('data: {"model":"coding","choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } }) });
+  cleanup.push(() => upstream.stop(true));
+  const relay = await startModelRelay({ omni: omni(`http://127.0.0.1:${upstream.port}/v1`), allowedDGXmodels: { "dgx/coding": "coding" }, token: "relay-token", onRequest: () => { throw new Error("persistence exploded"); } });
+  cleanup.push(relay.close);
+  const response = await dgxRequest(relay);
+  expect(response.status).toBe(200);
+  expect(await response.text()).toContain("ok");
+  expect(relay.requests()).toHaveLength(1); // the journal itself is not the hook
+  expect(relay.requests()[0]).toMatchObject({ outcome: "completed", identified: true });
+});
+
+test("#139 review: a failed upstream dispatch still records what the relay asked for", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("upstream broken", { status: 500 }) });
+  cleanup.push(() => upstream.stop(true));
+  const relay = await startModelRelay({ omni: omni(`http://127.0.0.1:${upstream.port}/v1`), allowedDGXmodels: { "dgx/coding": "glm-5" }, token: "relay-token" });
+  cleanup.push(relay.close);
+  const response = await dgxRequest(relay);
+  expect(response.status).toBe(502);
+  expect(relay.requests()).toHaveLength(1);
+  expect(relay.requests()[0]).toMatchObject({ outcome: "failed", identified: false, requestedModel: "glm-5", alias: "dgx/coding" });
+});

@@ -257,7 +257,9 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       if (record.identified && record.requestedModel !== undefined && record.actualModel !== record.requestedModel) record.mismatch = true;
       journal.push({ ...record });
       if (journal.length > JOURNAL_LIMIT) journal.shift();
-      options.onRequest?.({ ...record });
+      try {
+        options.onRequest?.({ ...record });
+      } catch { /* a persistence hook must never break the proxied stream it observes */ }
     };
     return { record, identify, close };
   };
@@ -311,6 +313,8 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
     }
     const key = backend.kind === "dgx" ? options.omni.apiKey() : "";
     if (backend.kind === "dgx" && !key) throw new Error("DGX gateway key is unavailable");
+    // What the relay will ask the upstream for is known before the call: a failed dispatch keeps it too.
+    journalEntry.record.requestedModel = model;
     count(1);
     const releaseOnce = () => {
       if (released) return;
@@ -343,7 +347,6 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
     }
     const provider = safeHeader(response.headers.get("x-omniroute-provider"));
     const actualModel = safeHeader(response.headers.get("x-model-router-selected-model"));
-    journalEntry.record.requestedModel = model;
     if (provider) journalEntry.record.provider = provider;
     if (actualModel) journalEntry.identify(actualModel, "header");
     else if (backend.kind === "mlx") journalEntry.identify(model, "configured");
