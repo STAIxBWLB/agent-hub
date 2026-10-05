@@ -134,7 +134,7 @@ def isolation_failure(run):
     if any(c and "facts-hook.ts" not in c for _,c,_ in hook_rows(rows)): return "hook isolation failed: Claude ran a hook that is not the hub's"
     return None
 
-GRADED_ENDS=("completed","timeout")
+GRADED_ENDS=("completed","timeout","peer-failure")  # a peer-failure end's preserved partial submission is graded under the same gates as a timeout's (#160); old records carry no such end and read unchanged
 
 def teardown_failure(run):
     """Issue #113: an attempt whose processes are not known to be gone, whose evidence could not be taken, or whose
@@ -156,7 +156,8 @@ def end_story(run):
     return story+(", then "+", ".join(map(str,run["end_flags"])) if run.get("end_flags") else "")
 
 def unavailable_reason(arm, run):
-    """Why an attempt with a run record is not graded, or None. Completed and timed-out attempts are graded."""
+    """Why an attempt with a run record is not graded, or None. Completed, timed-out and peer-failed attempts are
+    graded (a peer-failure end preserves its partial submission, #160)."""
     if run.get("end_reason") not in GRADED_ENDS: return end_story(run)
     return treatment_failure(arm,run) or isolation_failure(run)
 

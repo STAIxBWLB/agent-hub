@@ -163,12 +163,14 @@ export function withFixtureRoot(dir: string, expected: FixtureRootIdentity, muta
 /**
  * How a record states an attempt's end. A quota error or a budget pause is the provider's or the hub's doing and stays
  * itself; a flag beside any other end but an interruption (an unverified model, modified metadata, a tree changed after
- * the active time) makes it an infrastructure error, the original kept as end_reason_detail.
+ * the active time) makes it an infrastructure error, the original kept as end_reason_detail. A terminal peer failure
+ * (#160) keeps its own class beside timeout: its preserved partial submission is graded under the same gates.
  */
 export function endReasonOf(detail: string, flags: string[]): string {
     if (['infrastructure-error', 'provider-quota', 'budget-paused'].includes(detail)) return detail;
     if (flags.length && detail !== 'interrupted') return 'infrastructure-error';
     if (detail === 'completed' || detail === 'delivery-unsettled') return detail;
+    if (detail === 'peer-failure') return 'peer-failure';
     return detail === 'wall-timeout' ? 'timeout' : 'interrupted';
 }
 
