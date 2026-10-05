@@ -205,6 +205,12 @@ export function activeExit(state: { stopRequested: boolean; terminalFailure: boo
     return undefined;
 }
 
+/** A new peer-failure submission must retain the same active-window tree as a completed one. */
+export function activeTreeFlag(end: string, changed: boolean | null): string | undefined {
+    if ((end === 'completed' || end === 'peer-failure') && changed !== false) return changed ? 'tree-changed-after-active-time' : 'tree-unverified-after-active-time';
+    return undefined;
+}
+
 /**
  * Request-linkage qualification over the relay's journaled records (#139). A request's served model comes only
  * from its own record. Every identified record is evidence, whatever its outcome: a request cancelled after its
@@ -783,7 +789,8 @@ async function main(): Promise<number> {
             const metadataClean = finalTree ? changed.every((p) => isSourcePath(sourceDirs, p)) && fixtureMetadataHash(dir) === metadataBaseline : false;
             if (!metadataClean) endFlags.push('metadata-modified');
             const lateWrites = activeTree && finalTree ? canonical(activeTree) !== canonical(finalTree) : null;
-            if (lateWrites !== false && endDetail === 'completed') endFlags.push(lateWrites ? 'tree-changed-after-active-time' : 'tree-unverified-after-active-time');
+            const treeFlag = activeTreeFlag(endDetail, lateWrites);
+            if (treeFlag) endFlags.push(treeFlag);
             let patch = '';
             try { patch = await collectSubmissionPatch(dir, base, sourceDirs); } catch (e) { note(`patch could not be collected: ${String(e).slice(0, 200)}`); }
             actorLedger.set(dir, cleanup.owned);

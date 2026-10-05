@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { v3ArmOrder, jointAssignment, isSourcePath, ProtectedReadProbe, qualifyRequests, effectiveBuild, parseVersion, claimExclusive, collectSubmissionPatch, disposeAll, writeRecordFresh, evaluateProbe, probeReadiness, ActiveFailureLatch, activeExit } from "../../scripts/benchmarks/native-pi-qwen.ts";
+import { v3ArmOrder, jointAssignment, isSourcePath, ProtectedReadProbe, qualifyRequests, effectiveBuild, parseVersion, claimExclusive, collectSubmissionPatch, disposeAll, writeRecordFresh, evaluateProbe, probeReadiness, ActiveFailureLatch, activeExit, activeTreeFlag } from "../../scripts/benchmarks/native-pi-qwen.ts";
 import type { RelayRequestRecord } from "../../src/models/relay.ts";
 
 const script = join(import.meta.dir, "../../scripts/benchmarks/runner.py");
@@ -322,6 +322,13 @@ describe("disposal ordering (correction 5)", () => {
 });
 
 describe("terminal active-turn peer failure (#160)", () => {
+  test("peer-failure submissions refuse late or unverified source trees", () => {
+    expect(activeTreeFlag("peer-failure", true)).toBe("tree-changed-after-active-time");
+    expect(activeTreeFlag("peer-failure", null)).toBe("tree-unverified-after-active-time");
+    expect(activeTreeFlag("peer-failure", false)).toBeUndefined();
+    expect(activeTreeFlag("completed", true)).toBe("tree-changed-after-active-time");
+    expect(activeTreeFlag("wall-timeout", true)).toBeUndefined(); // legacy timeout semantics
+  });
   test("a failure latched during the active phase exits at once as peer-failure, not after the wall budget", () => {
     // The observed study failure: Pi hit its 100-step ceiling and sat idle with no answer; the poll must end on
     // the latch's first tick instead of idling out the remaining wall limit for an answer that cannot come.
