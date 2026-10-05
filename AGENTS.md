@@ -68,7 +68,7 @@ Area rules live in `docs/agent-notes/`. Before editing a path below, read its no
 - Daemon and recovery (`docs/agent-notes/daemon.md`): `src/hub/daemon.ts`, `src/hub/control-client.ts`, `src/adapters/claude-channel.ts`, `src/hub/restart.ts`, `src/hub/recovery-store.ts`, `src/hub/snapshots.ts`, `src/hub/manager.ts`, `src/hub/lifecycle.ts`, `src/hub/crash.ts`, `src/cli/setup.ts`, `src/cli/upgrade*.ts`, `src/cli/terminal-recovery.ts`, `src/cli/recovery-package.ts`, `src/cli/facts-hook.ts`, or adding a native peer.
 - Tests (`docs/agent-notes/tests.md`): any test or fake under `test/`, `scripts/check.sh`, `scripts/hang-watch.sh`.
 
-`src/hub/daemon.ts`, `src/cli/main.ts` and `src/cli/launch.ts` wire every area. Before editing either, read all notes in `docs/agent-notes/`.
+`src/hub/daemon.ts`, `src/cli/main.ts` and `src/cli/launch.ts` wire every area. Before editing any of them, read all notes in `docs/agent-notes/`.
 
 <!-- AGENT_HUB:BEGIN (managed by `ahub init`, edits inside are overwritten) -->
 ## agent-hub
