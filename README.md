@@ -182,3 +182,22 @@ Before upgrading an older hub, inspect the plan with the matching CLI.
 Incompatible or unverified processes are shown explicitly and are never killed by
 PID-name matching. See the [operations guide](docs/operations.md) and the
 [multi-project specification](docs/specs/2026-09-19-multi-project-design.md).
+
+## Agent instructions
+
+`AGENTS.md` holds what every agent session loads: commands, conventions,
+architecture and the rules that hold anywhere in the code. Rules that hold in one
+area (benchmarks, adapters, the bus, the local worker, models, the task board,
+budget, the daemon and recovery, tests) live in [`docs/agent-notes/`](docs/agent-notes/),
+and `AGENTS.md` names the paths that call for each note, so a session loads only
+the notes for what it edits (#158). Background behind some of those rules:
+
+- Benchmark trust entry: the review rounds of #115 kept finding paths that broke
+  the runner's settlement of the Claude trust entry.
+- Reply addressing: leaving `to` empty fanned a reply out to every peer, which is
+  what made one directed question cost every agent a turn.
+- Bun test hang: the stacks of two local hangs show a test timeout starting the next
+  test inside `Bun.spawnSync`'s own event loop (#115,
+  `docs/verification/2026-10-03-0.12.6.md`); minimal reproductions did not hang, so
+  the full trigger is not pinned down. On Bun 1.4.2 the next test still starts there
+  (#121, checked directly); the spin was not reproduced on demand on either version.

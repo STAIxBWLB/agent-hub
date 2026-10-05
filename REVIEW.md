@@ -26,4 +26,4 @@ Report at most 5 nits per review; summarize the rest as a count.
 
 ## Feedback into AGENTS.md
 
-When the same finding appears twice, the correction goes into `AGENTS.md` in the same PR.
+When the same finding appears twice, the correction goes into `AGENTS.md` in the same PR, or into the area's note in `docs/agent-notes/` when it holds in one area only.
