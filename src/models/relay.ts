@@ -39,8 +39,20 @@ export interface ModelRelayStatus {
  *  `identitySource` says where the served-model label came from: the gateway response header, a
  *  generation SSE event (#137 classification: heartbeats never identify), or the locally validated
  *  MLX configuration. HTTP 200, the requested alias and a previous request's label never identify. */
+export interface RelayUsageObservation {
+  source: "openai-stream-usage";
+  completeness: "complete" | "partial";
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+}
+
 export interface RelayRequestRecord {
   id: string;
+  dispatchGroupId?: string;
+  fallbackOfId?: string;
+  failureClass?: "http" | "transport";
+  httpStatus?: number;
   /** Admission timestamp (start of the upstream dispatch attempt), ISO. */
   at: string;
   /** Resolved backend alias (the requested route). */
@@ -49,6 +61,11 @@ export interface RelayRequestRecord {
   requestedModel?: string;
   /** Sanitized `x-omniroute-provider` header; absent stays unknown. */
   provider?: string;
+  providerSource?: "header" | "none";
+  providerAvailability?: "known" | "missing";
+  /** Independent transport counter, never a native session counter. */
+  requestUsage?: RelayUsageObservation;
+  usageAvailability?: "known" | "partial" | "missing" | "invalid";
   /** Observed served model; never read back from the backend's mutable last label. */
   actualModel?: string;
   identitySource: "header" | "stream" | "configured" | "none";
@@ -103,6 +120,7 @@ export interface ModelRelay {
 interface RequestJournalEntry {
   readonly record: RelayRequestRecord;
   identify(model: string, source: "header" | "stream" | "configured"): void;
+  usage(value: unknown): void;
   close(outcome: RelayRequestRecord["outcome"]): void;
 }
 
@@ -116,7 +134,24 @@ interface ActiveRequest {
 
 class ExecutionAdmissionError extends Error {}
 
-const safeHeader = (value: string | null): string | undefined => value && value.length < 256 ? value : undefined;
+const safeHeader = (value: string | null): string | undefined => value && value.length < 256 && !/\p{C}/u.test(value) ? value : undefined;
+
+export function normalizeRelayUsage(value: unknown): RelayUsageObservation | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const usage = value as Record<string, unknown>;
+  const fields = [["prompt_tokens", "promptTokens"], ["completion_tokens", "completionTokens"], ["total_tokens", "totalTokens"]] as const;
+  const result: RelayUsageObservation = { source: "openai-stream-usage", completeness: "partial" };
+  let count = 0;
+  for (const [input, output] of fields) {
+    if (usage[input] === undefined) continue;
+    const v = usage[input];
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) return undefined;
+    result[output] = v; count++;
+  }
+  if (!count) return undefined;
+  if (count === 3) result.completeness = "complete";
+  return result;
+}
 
 function assertLoopback(host: string): void {
   const value = host.toLowerCase();
@@ -159,7 +194,7 @@ function isGenerationEvent(choices: unknown): boolean {
   });
 }
 
-function sseResponse(response: Response, release: () => void, onModel?: (model: string) => void, registerCancel?: (cancel: (reason?: unknown) => Promise<void>) => void, onClose?: (outcome: RelayRequestRecord["outcome"]) => void): Response {
+function sseResponse(response: Response, release: () => void, onModel?: (model: string) => void, registerCancel?: (cancel: (reason?: unknown) => Promise<void>) => void, onClose?: (outcome: RelayRequestRecord["outcome"]) => void, onUsage?: (value: unknown) => void): Response {
   if (!response.body) {
     release();
     onClose?.("failed");
@@ -172,22 +207,23 @@ function sseResponse(response: Response, release: () => void, onModel?: (model: 
   registerCancel?.(cancel);
   let inspectBuffer = "";
   let inspectedModel = false;
+  const decoder = new TextDecoder();
   const inspect = (chunk: Uint8Array) => {
-    if (!onModel || inspectedModel) return;
-    inspectBuffer += new TextDecoder().decode(chunk);
+    if (!onUsage && (!onModel || inspectedModel)) return;
+    inspectBuffer += decoder.decode(chunk, { stream: true });
     if (inspectBuffer.length > 64_000) inspectBuffer = inspectBuffer.slice(-64_000);
     const lines = inspectBuffer.split(/\r?\n/);
     inspectBuffer = lines.pop() ?? "";
     for (const line of lines) {
       if (!line.startsWith("data:") || line.slice(5).trim() === "[DONE]") continue;
       try {
-        const value = JSON.parse(line.slice(5).trim()) as { model?: unknown; choices?: unknown[] };
+        const value = JSON.parse(line.slice(5).trim()) as { model?: unknown; choices?: unknown[]; usage?: unknown };
+        if (value.usage !== undefined && value.usage !== null) onUsage?.(value.usage);
         // Transport heartbeats are not model identity: a gateway keepalive can name a synthetic model on
         // an event with no generation activity (no choices, or only empty deltas without a finish reason).
-        if (typeof value.model === "string" && value.model.length < 256 && isGenerationEvent(value.choices)) {
+        if (!inspectedModel && typeof value.model === "string" && safeHeader(value.model) !== undefined && isGenerationEvent(value.choices)) {
           inspectedModel = true;
-          onModel(value.model);
-          return;
+          onModel?.(value.model);
         }
       } catch { /* incomplete or non-JSON SSE data */ }
     }
@@ -219,6 +255,8 @@ function sseResponse(response: Response, release: () => void, onModel?: (model: 
   });
 }
 
+const copyRecord = (record: RelayRequestRecord): RelayRequestRecord => ({ ...record, ...(record.requestUsage ? { requestUsage: { ...record.requestUsage } } : {}) });
+
 export async function startModelRelay(options: ModelRelayOptions): Promise<ModelRelay> {
   const host = options.host ?? "127.0.0.1";
   assertLoopback(host);
@@ -238,12 +276,13 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
 
   // The record object is the generation fence: every update goes through this entry's own closure,
   // so interleaved requests for the same alias never write into each other's evidence.
-  const openRequestRecord = (alias: string): RequestJournalEntry => {
+  const openRequestRecord = (alias: string, dispatchGroupId: string): RequestJournalEntry => {
     const start = Date.now();
     const expectedServedModel = options.expectedServedModels?.[alias];
     const record: RelayRequestRecord = {
-      id: randomUUID(), at: new Date(start).toISOString(), alias,
+      id: randomUUID(), dispatchGroupId, at: new Date(start).toISOString(), alias,
       identitySource: "none", role: "unknown", outcome: "completed", identified: false, durationMs: 0,
+      providerSource: "none", providerAvailability: "missing", usageAvailability: "missing",
     };
     let closed = false;
     const identify: RequestJournalEntry["identify"] = (model, source) => {
@@ -262,15 +301,23 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       record.durationMs = Date.now() - start;
       const expectedModel = expectedServedModel ?? record.requestedModel;
       if (record.identified && expectedModel !== undefined && record.actualModel !== expectedModel) record.mismatch = true;
-      journal.push({ ...record });
+      journal.push(copyRecord(record));
       if (journal.length > JOURNAL_LIMIT) journal.shift();
       try {
         // An async hook fits the void signature: its rejection is handled too, never unobserved.
-        const notified = options.onRequest?.({ ...record }) as unknown;
+        const notified = options.onRequest?.(copyRecord(record)) as unknown;
         if (notified instanceof Promise) notified.catch(() => { /* a persistence hook must never break the relay */ });
       } catch { /* a persistence hook must never break the proxied stream it observes */ }
     };
-    return { record, identify, close };
+    const usage = (value: unknown) => {
+      if (closed) return;
+      const observation = normalizeRelayUsage(value);
+      if (observation) {
+        record.requestUsage = observation;
+        record.usageAvailability = observation.completeness === "complete" ? "known" : "partial";
+      } else if (!record.requestUsage) record.usageAvailability = "invalid";
+    };
+    return { record, identify, usage, close };
   };
 
   const ensureMlxHandle = async (): Promise<MlxHandle> => (mlx ??= await (mlxStarting ??= ensureMlx(options.mlx).finally(() => { mlxStarting = undefined; })));
@@ -345,18 +392,25 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       response = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, { method: "POST", ...(isOllama ? { redirect: "error" as const } : {}), headers, body: JSON.stringify(bodyForUpstream(boundedRequest, model)), signal: AbortSignal.any([signal, AbortSignal.timeout(deadline)]) });
     } catch (error) {
       releaseOnce();
+      journalEntry.record.failureClass = "transport";
       setState(backend, { state: "error", lastError: error instanceof Error ? error.message.slice(0, 160) : "upstream request failed" });
       throw error;
     }
     if (!response.ok) {
       releaseOnce();
+      journalEntry.record.failureClass = "http";
+      journalEntry.record.httpStatus = response.status;
       const message = `backend returned HTTP ${response.status}`;
       setState(backend, { state: "error", lastError: message });
       throw new Error(message);
     }
     const provider = safeHeader(response.headers.get("x-omniroute-provider"));
     const actualModel = safeHeader(response.headers.get("x-model-router-selected-model"));
-    if (provider) journalEntry.record.provider = provider;
+    if (provider) {
+      journalEntry.record.provider = provider;
+      journalEntry.record.providerSource = "header";
+      journalEntry.record.providerAvailability = "known";
+    }
     if (actualModel) journalEntry.identify(actualModel, "header");
     else if (backend.kind === "mlx") journalEntry.identify(model, "configured");
     setState(backend, { state: "ready", requestedModel: request.model, active: activeByAlias.get(alias) ?? 0,
@@ -419,8 +473,12 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
         return Response.json({ error: "input exceeds the model context budget" }, { status: 400 });
       }
       const fallback = backend.kind === "mlx" && options.fallbackDGXAlias ? { kind: "dgx", alias: options.fallbackDGXAlias } as ModelBackend : undefined;
+      const dispatchGroupId = randomUUID();
+      let primaryDispatchId: string | undefined;
       const dispatch = async (selected: ModelBackend, body: RelayRequest) => {
-        const journalEntry = openRequestRecord(aliasOf(selected, mlxAlias));
+        const journalEntry = openRequestRecord(aliasOf(selected, mlxAlias), dispatchGroupId);
+        if (primaryDispatchId) journalEntry.record.fallbackOfId = primaryDispatchId;
+        else primaryDispatchId = journalEntry.record.id;
         record.closeRecord = journalEntry.close;
         const result = await upstream(body, selected, controller.signal, journalEntry);
         let released = false;
@@ -432,11 +490,12 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
           activeRequests.delete(record);
         };
         record.release = release;
-        return { result, release, journalEntry };
+        const onUsage = journalEntry.usage;
+        return { result, release, journalEntry, onUsage };
       };
       try {
-        const { result, release, journalEntry } = await dispatch(backend, body);
-        return sseResponse(result.response, release, result.onModel, (cancel) => { record.cancel = cancel; }, journalEntry.close);
+        const { result, release, journalEntry, onUsage } = await dispatch(backend, body);
+        return sseResponse(result.response, release, result.onModel, (cancel) => { record.cancel = cancel; }, journalEntry.close, onUsage);
       } catch (error) {
         record.closeRecord?.(controller.signal.aborted ? "cancelled" : "failed");
         if (!fallback || controller.signal.aborted || error instanceof ExecutionAdmissionError) {
@@ -445,8 +504,8 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
           return Response.json({ error: error instanceof Error ? error.message : "backend unavailable" }, { status: 502 });
         }
         try {
-          const { result, release, journalEntry } = await dispatch(fallback, { ...body, model: fallback.alias });
-          return sseResponse(result.response, release, result.onModel, (cancel) => { record.cancel = cancel; }, journalEntry.close);
+          const { result, release, journalEntry, onUsage } = await dispatch(fallback, { ...body, model: fallback.alias });
+          return sseResponse(result.response, release, result.onModel, (cancel) => { record.cancel = cancel; }, journalEntry.close, onUsage);
         } catch (fallbackError) {
           record.closeRecord?.(controller.signal.aborted ? "cancelled" : "failed");
           record.cleanup();
@@ -458,7 +517,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
   });
   const url = `http://${host}:${server.port}/v1`;
   const status = (): ModelRelayStatus => ({ url, models, backends: [...states.values()].map((value) => ({ ...value })) });
-  const requests = (): RelayRequestRecord[] => journal.map((record) => ({ ...record }));
+  const requests = (): RelayRequestRecord[] => journal.map(copyRecord);
   return { url, token, models, status, requests, close: async () => {
     const closing = [...activeRequests].map(async (request) => {
       // The relay-initiated cancellation closes the record first: the abort below settles the stream

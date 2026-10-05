@@ -372,3 +372,12 @@ test("the adapter stops a launcher that ignores SIGTERM together with the agent 
     rmSync(dir, { recursive: true, force: true });
   }
 }, 20_000);
+
+test("#161 native cumulative usage preserves zero and projects only checked counters", async () => {
+  const { normalizeACPUsage } = await import('../src/adapters/acp.ts');
+  expect(normalizeACPUsage({ totalTokens: 0, prompt: 'private' })).toEqual({ source: 'usage_update', availability: 'known', shape: 'total', total: 0 });
+  expect(normalizeACPUsage({ used: 42, size: 1000 })).toEqual({ source: 'usage_update', availability: 'unsupported', shape: 'context-used', contextUsed: 42, contextCapacity: 1000 });
+  expect(normalizeACPUsage({ usage: { input_tokens: 2, output_tokens: 3 } })).toMatchObject({ total: 5, shape: 'input-output' });
+  for (const value of [{ totalTokens: -1 }, { totalTokens: Infinity }, { totalTokens: '0' }, { inputTokens: 2 }]) expect(normalizeACPUsage(value).availability).toBe('invalid');
+  expect(normalizeACPUsage({ unrelated: 'private' }, 'prompt_result')).toEqual({ source: 'prompt_result', availability: 'unsupported', shape: 'none' });
+});

@@ -541,3 +541,35 @@ test("#139 physical expectation is frozen per request while later requests see c
   expect(records[0]?.mismatch).toBeUndefined();
   expect(records[1]?.mismatch).toBe(true);
 });
+
+test("#161 final streaming usage remains separate and request-bound after model identification", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async (request) => {
+    const body = await request.json() as any;
+    const prompt = body.messages[0].content;
+    return new Response(
+    'data: {"model":"coding","choices":[{"delta":{"content":"ok"}}]}\n\n' +
+    'data: {"choices":[],"usage":' + (prompt === 'zero' ? '{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}' : '{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}') + '}\n\ndata: [DONE]\n\n',
+    { headers: { "content-type": "text/event-stream" } },
+  ); } });
+  const relay = await dgxRelay(upstream);
+  await Promise.all(['zero', 'five'].map(async (p) => { const r = await fetch(`${relay.url}/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer relay-token', 'content-type': 'application/json' }, body: JSON.stringify({ model: 'dgx/coding', messages: [{ role: 'user', content: p }] }) }); await r.text(); }));
+  const records = relay.requests();
+  expect(records).toHaveLength(2);
+  expect(records.map((r) => r.requestUsage?.totalTokens).sort()).toEqual([0, 5]);
+  for (const r of records) expect(r).toMatchObject({ identified: true, providerSource: 'none', providerAvailability: 'missing', usageAvailability: 'known', requestUsage: { source: 'openai-stream-usage', completeness: 'complete' } });
+});
+
+test("#161 usage validation preserves measured zero and rejects invalid readings", async () => {
+  const { normalizeRelayUsage } = await import('../src/models/relay.ts');
+  expect(normalizeRelayUsage({ total_tokens: 0 })).toMatchObject({ totalTokens: 0, completeness: 'partial' });
+  for (const value of [null, {}, { total_tokens: -1 }, { total_tokens: Infinity }, { total_tokens: '0' }]) expect(normalizeRelayUsage(value)).toBeUndefined();
+});
+
+test('#163 disabled local capability omits and rejects mlx/fast', async () => {
+  const relay = await startModelRelay({ omni: omni('http://127.0.0.1:9/v1'), enableHubAuto: true, allowedDGXmodels: { 'dgx/fast': 'fast', 'dgx/coding': 'coding' }, token: 'relay-token' });
+  cleanup.push(relay.close);
+  expect(relay.models).toEqual(['hub/auto', 'dgx/fast', 'dgx/coding']);
+  const response = await fetch(`${relay.url}/chat/completions`, { method: 'POST', headers: { authorization: 'Bearer relay-token', 'content-type': 'application/json' }, body: JSON.stringify({ model: 'mlx/fast', messages: [{ role: 'user', content: 'hello' }] }) });
+  expect(response.status).toBe(400);
+  expect(relay.requests()).toHaveLength(0);
+});

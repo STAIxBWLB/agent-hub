@@ -2,6 +2,7 @@
 """Opt-in, fail-closed CooperBench fixture and evidence runner (stdlib only)."""
 from __future__ import annotations
 import argparse, hashlib, json, os, re, shutil, subprocess, sys, tarfile
+import math
 from pathlib import Path, PurePosixPath
 
 PROCESS_TABLE=Path(__file__).resolve().parents[2]/"src"/"hub"/"child-process.ts"  # the teardown decides on its process table
@@ -334,6 +335,48 @@ def v3_linkage(identity):
     completed=[r for r in reqs if r.get("outcome")=="completed"]
     return {"requests":len(reqs),"completed":len(completed),"identified":sum(r.get("identified") is True for r in completed),"cancelledUnidentified":sum(r.get("outcome")=="cancelled" and r.get("identified") is not True for r in reqs),"mismatches":sum(r.get("mismatch") is True for r in reqs),"providerMissing":sum(r.get("identified") is True and r.get("provider") is None for r in completed)}
 
+def v3_observability(identity):
+    """Request counters and provider coverage are independent of native usage and model qualification.
+    Old records infer only header provenance from their own provider value; no other request fills an absence.
+    """
+    raw = identity.get("requests") if isinstance(identity, dict) else None
+    if not isinstance(raw, list): return None
+    reqs = [r for r in raw if isinstance(r, dict)]
+    outcomes = {}
+    for outcome in ("completed", "cancelled", "failed"):
+        rows = [r for r in reqs if r.get("outcome") == outcome]
+        known = [r for r in rows if isinstance(r.get("provider"), str) and 0 < len(r["provider"]) < 256]
+        outcomes[outcome] = {"dispatches": len(rows), "providerKnown": len(known), "providerMissing": len(rows) - len(known)}
+    observations = []
+    for r in reqs:
+        u = r.get("requestUsage")
+        if not isinstance(u, dict) or u.get("source") != "openai-stream-usage": continue
+        fields = {k: v for k, v in u.items() if k in ("promptTokens", "completionTokens", "totalTokens")}
+        if fields and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0 for v in fields.values()): observations.append(fields)
+    totals = {}
+    for key in ("promptTokens", "completionTokens", "totalTokens"):
+        values = [u[key] for u in observations if key in u]
+        totals[key] = {"known": len(values), "total": sum(values) if values else None}
+    complete = sum(len(u) == 3 for u in observations)
+    return {"provider": outcomes, "requestUsage": {"dispatches": len(reqs), "known": complete,
+            "partial": len(observations) - complete, "unknown": len(reqs) - len(observations), "counters": totals,
+            "units": "upstream per-request token counters, independent of native cumulative session counters; never added together"}}
+
+
+def aggregate_v3_observability(rows):
+    observations = [r["request_observability"] for r in rows if isinstance(r.get("request_observability"), dict)]
+    if not observations: return None
+    provider = {outcome: {key: sum(o["provider"][outcome][key] for o in observations)
+                 for key in ("dispatches", "providerKnown", "providerMissing")} for outcome in ("completed", "cancelled", "failed")}
+    usage = {key: sum(o["requestUsage"][key] for o in observations) for key in ("dispatches", "known", "partial", "unknown")}
+    usage["counters"] = {}
+    for key in ("promptTokens", "completionTokens", "totalTokens"):
+        counts = [o["requestUsage"]["counters"][key] for o in observations]
+        known = sum(c["known"] for c in counts)
+        usage["counters"][key] = {"known": known, "total": sum(c["total"] for c in counts if c["total"] is not None) if known else None}
+    usage["units"] = observations[0]["requestUsage"]["units"]
+    return {"attempts": len(observations), "provider": provider, "requestUsage": usage}
+
 def v3_participants(run):
     """Issue #152: the native actors that actually took part in a v3 attempt. The arm bounds the candidates (a
     solo-qwen attempt has no Pi peer at all); among them, a peer participated only once it started, which its
@@ -415,7 +458,7 @@ def grade(args):
         run=load(run_path); actors=required_actors(arm)
         teardown=teardown_failure(run)
         mid=run.get("modelIdentity")
-        v3extra={"request_linkage":v3_linkage(mid),"model_identity":{"verified":isinstance(mid,dict) and mid.get("generationVerified") is True},"native_participants":v3_participants(run)} if v3 else {}
+        v3extra={"request_observability":v3_observability(mid),"request_linkage":v3_linkage(mid),"model_identity":{"verified":isinstance(mid,dict) and mid.get("generationVerified") is True},"native_participants":v3_participants(run)} if v3 else {}
         if teardown:
             rows.append({"case":case,"arm":arm,"status":"unavailable","reason":teardown,"pass":None,**v3extra}); continue
         if v3:
@@ -535,6 +578,7 @@ def report(args):
             links=[r.get("request_linkage") for r in rows if isinstance(r.get("request_linkage"),dict)]
             agg=lambda k: sum(l.get(k,0) for l in links)
             by_arm[arm]={"planned":len(cohort["cases"]),"scored":len(scored),"both_passed":sum(x["pass"] is True for x in scored),"unavailable":len(rows)-len(scored),
+                "request_observability":aggregate_v3_observability(rows),
                 "native_usage":{"pi_tokens_known":len(pi),"pi_tokens":sum(pi) if pi else None,"pi_participating":len(pi_took),"qwen_session_tokens_known":len(qw),"qwen_session_tokens":sum(qw) if qw else None,"qwen_participating":len(qw_took),"units":"pi: incremental onTokens counter; qwen: session usage_update running total; whole attempt including setup probes; counted only where the actor participated (#152); never added together"},
                 "model_identity":{"verified":sum(r.get("model_identity",{}).get("verified") is True for r in rows if isinstance(r.get("model_identity"),dict)),"attempts":len(rows)},
                 "request_linkage":{"attempts":len(links),"requests":agg("requests"),"completed":agg("completed"),"identified":agg("identified"),"cancelledUnidentified":agg("cancelledUnidentified"),"mismatches":agg("mismatches"),"providerMissing":agg("providerMissing")}}
