@@ -153,3 +153,65 @@ Relay `requestUsage` is an independent per-dispatch observation of OpenAI-shaped
 Provider provenance is currently `header` (`x-omniroute-provider`) or `none`; no generation event provider contract has been verified. Provider absence leaves model qualification unchanged. `request_observability` in grading and ledger exports independently reconciles provider known/missing denominators for completed, cancelled and failed dispatches, including cancelled-after-identification. Older records remain readable: their own provider value supplies legacy header coverage, while absent request counters stay unknown. Heartbeats and another request never fill a missing provider.
 
 The bounded live capability probe is `bun scripts/benchmarks/probe-qwen-usage.ts --qwen-package PINNED_PACKAGE --run NEW_PRIVATE_DIR --config-dir PROJECT`. It verifies Qwen 0.24.7 under the final seatbelt environment, uses host-owned OmniRoute authentication through a loopback relay, and saves only counter/source/availability projections. Use a fresh disposable directory; sealed historical unknowns remain unchanged.
+
+## Durable native v3 study supervision (#165)
+
+Use `scripts/benchmarks/study_supervisor.py` for a manifest-defined study. Choose a
+new directory under an existing private, durable parent outside this repository
+and the OS temporary directory. The supervisor atomically claims that directory;
+existing roots, including incomplete ones, are refused. It never retries a cell or
+resumes a cohort. Prior archives remain read-only.
+
+```sh
+python3 -B scripts/benchmarks/study_supervisor.py \
+  --manifest scripts/benchmarks/manifest-v3-pi-qwen.json \
+  --output "$STUDY_ROOT" --archives "$ARCHIVE_ROOT" \
+  --private-inputs "$PRIVATE_CASE_ROOT" --upstream-root "$UPSTREAM_ROOT" \
+  --probe-target "$PROTECTED_PROBE" --qwen-package "$QWEN_PACKAGE" \
+  --protect "$PRIOR_ARTIFACT_ROOT" --preflight-only
+```
+
+Repeat the command without `--preflight-only` to execute. Every required archive,
+upstream commit, prompt pin, native build, protected root, probe and cached
+Docker image must be available before fixture preparation. Explicitly optional
+prior roots use `--optional-protect`; their presence or absence is recorded.
+For a bounded native lifecycle check, use a separate manifest with a declared
+small plan and `--plan` to select it; preserve all case/model/order/budget pins.
+`--generation-only` stops at restored generation, records outcome generation-only,
+and never grades or seals that root. The fixed study plan remains unchanged.
+Version mismatch fails unless `--bind-current-hub` explicitly changes only
+`hub_version` and `versions.hub`. Both original and runtime hashes, source
+identity, invocation, and preparation's archive-path additions are sealed in the
+private provenance file. Native versions are checked in isolation at preflight
+and rechecked by the existing driver in each arm's final environment.
+
+The phase order is claimed, prepared, generated, restored, graded, sealed. All
+repeat roots are freshly prepared, each generation runs sequentially, and all
+planned generations finish before any official controls or grading. Restoration
+markers, their ledgers, and live PID/start-time identities must agree before
+grading. A failure preserves an incomplete private root and logs for inspection.
+The procedure uses the existing native driver, official grade/report commands,
+and pooled ledger, without Orca registration or toolchain tree copying.
+
+This entrypoint requires the evaluator service and images to be available. It
+never starts or stops a shared VM or service. An operator who explicitly starts a
+service must retain original-state and ownership evidence separately and restore
+only that owned service after proving no unrelated usage; otherwise restoration
+is deferred. Service ownership in this supervisor is recorded as require-existing.
+
+Audit historical repeat roots without changing them:
+
+```sh
+python3 -B scripts/benchmarks/study_audit.py \
+  --run "$STUDY_ROOT/r0" --run "$STUDY_ROOT/r1" \
+  --export "$NEW_SAFE_EXPORT"
+```
+
+The auditor reconstructs the exact matrix and checks restoration, request-based
+model gates, official controls, evaluation/patch bindings and owned live processes.
+It constructs its output from fixed scalar fields and hashes. Nested official
+test output, answers, native events, errors, provider identifiers and machine paths
+are never copied to stdout or the safe aggregate. Unknown usage remains null.
+Export creation is exclusive, so it cannot overwrite a historical artifact. The
+complete private logs, evidence hash index, and safe aggregate stay in the durable
+study root. A failed audit exits nonzero with a fixed error code and no raw error.
