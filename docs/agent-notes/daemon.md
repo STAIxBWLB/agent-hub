@@ -1,6 +1,6 @@
 # Daemon, control protocol and recovery
 
-Scope: the control WS and its protocol, state files, the Claude channel's reconnect, `ahub setup`, git snapshots, upgrade and recovery. Read before editing `src/hub/daemon.ts`, `src/hub/control-client.ts`, `src/adapters/claude-channel.ts`, `src/hub/restart.ts`, `src/hub/recovery-store.ts`, `src/hub/snapshots.ts`, `src/hub/manager.ts`, `src/hub/lifecycle.ts`, `src/cli/setup.ts`, `src/cli/upgrade*.ts` or `src/cli/terminal-recovery.ts`, or before adding a native peer.
+Scope: the control WS and its protocol, state files, the Claude channel's reconnect, `ahub setup`, git snapshots, upgrade and recovery. Read before editing `src/hub/daemon.ts`, `src/hub/control-client.ts`, `src/adapters/claude-channel.ts`, `src/hub/restart.ts`, `src/hub/recovery-store.ts`, `src/hub/snapshots.ts`, `src/hub/manager.ts`, `src/hub/lifecycle.ts`, `src/hub/crash.ts`, `src/cli/setup.ts`, `src/cli/upgrade*.ts`, `src/cli/terminal-recovery.ts` or `src/cli/recovery-package.ts`, or before adding a native peer.
 
 - The plugin bundle is installed apart from the daemon. Any change to a control WS message shape bumps `PROTOCOL` in `control-client.ts`.
 - `ahub setup` reads Claude Code's state from `--json` listings and takes one step at a time, re-reading after each; never match paths or names by substring.

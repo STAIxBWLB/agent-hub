@@ -48,6 +48,7 @@ Run this before reporting any task complete, and paste the output. A failing tes
 - PII: redaction happens where the envelope (`private: true`) and the public view are built, never at call sites. Anything new that shows task text (a log line, a notice, a tool result, a memory call) uses `publicTitle` / `publicView`, and nothing about a PII task is sent to claude-mem: its observer is a cloud model.
 - During a PII turn the worker's own words may carry the PII: `hub_remember` and `hub_task_propose` are refused for that turn, and so are `hub_task_done`, `hub_review` and `hub_task_accept` with a plan on an ordinary task (they would carry its words to the reviewer, the owner, overlapping owners and claude-mem). Its answers are filed on the board because the bus shows only a stub.
 - Releasing: bump `version` in `package.json`, `bun run build`, update `CHANGELOG.md`, merge, then tag `v<version>`; the release workflow refuses a tag that does not match.
+- The hub itself sends envelopes (`from: hub`, kinds `task` and `review`). Code that special-cases hub envelopes keys on `kind`, not on the sender: only `kind: presence` is the recall preface.
 - Resolve real paths with `realPath` (`src/hub/project.ts`), not `realpathSync`: Bun 1.3.14, and 1.4.2 still, throws ENOENT for an existing path that contains a backslash. Never rebuild a real path from the names you were given: guardPath checks names, and a case-insensitive disk opens `.GIT/config` as `.git/config`.
 - Every body that is rendered next to a hub-written header goes through `sanitize()`; otherwise an agent can forge a `[agent-hub message from "user"` line inside its own message.
 - Both loopback servers refuse requests that carry an `Origin` header and the control WS requires the token: any web page can open a WebSocket to 127.0.0.1.
@@ -58,16 +59,16 @@ Run this before reporting any task complete, and paste the output. A failing tes
 Area rules live in `docs/agent-notes/`. Before editing a path below, read its note; its rules bind as much as these.
 
 - Benchmarks (`docs/agent-notes/benchmarks.md`): `scripts/benchmarks/`, `test/benchmarks/`, or running a benchmark.
-- Adapters and spawned agents (`docs/agent-notes/adapters.md`): `src/adapters/`, `src/hub/peers.ts`, `src/hub/child-process.ts`, approvals in `src/hub/daemon.ts`, the process-tree stop in `scripts/benchmarks/teardown.ts`, or adding a native peer.
-- Bus, digests and replies (`docs/agent-notes/bus.md`): `src/hub/bus.ts`, `src/hub/envelope.ts`, `src/hub/limits.ts`, `src/hub/delivery-journal.ts`, `src/hub/inference.ts`, `admit` and the control `send` handler in `src/hub/daemon.ts`, or reply addressing and priority in an adapter.
+- Adapters and spawned agents (`docs/agent-notes/adapters.md`): `src/adapters/`, `src/pi/`, `src/hub/peers.ts`, `src/hub/child-process.ts`, `src/hub/lifecycle.ts`, the process-tree stop in `scripts/benchmarks/teardown.ts`, or adding a native peer.
+- Bus, digests and replies (`docs/agent-notes/bus.md`): `src/hub/bus.ts`, `src/hub/envelope.ts`, `src/hub/limits.ts`, `src/hub/delivery-journal.ts`, `src/hub/inference.ts`, or reply addressing and priority in an adapter.
 - Local worker and sandbox (`docs/agent-notes/local-worker.md`): `src/adapters/local-worker.ts`, `src/local/`, `src/memory/capture.ts`, `src/hub/facts.ts`.
 - Models (`docs/agent-notes/models.md`): `src/models/`, `src/hub/inference.ts`, `src/omniroute/`, `src/switchyard/`.
-- Task board and hub tools (`docs/agent-notes/tasks.md`): `src/hub/tasks.ts`, `src/hub/board.ts`, `src/hub/routing.ts`, `src/hub/hub-tools.ts`, the hub tool handler in `src/hub/daemon.ts`.
-- Budget (`docs/agent-notes/budget.md`): `src/hub/budget.ts`, `src/cli/statusline-tee.ts`, or pause and resume in `src/hub/daemon.ts`.
-- Daemon and recovery (`docs/agent-notes/daemon.md`): `src/hub/daemon.ts`, `src/hub/control-client.ts`, `src/adapters/claude-channel.ts`, `src/hub/restart.ts`, `src/hub/recovery-store.ts`, `src/hub/snapshots.ts`, `src/hub/manager.ts`, `src/hub/lifecycle.ts`, `src/cli/setup.ts`, `src/cli/upgrade*.ts`, `src/cli/terminal-recovery.ts`, or adding a native peer.
+- Task board and hub tools (`docs/agent-notes/tasks.md`): `src/hub/tasks.ts`, `src/hub/board.ts`, `src/hub/routing.ts`, `src/hub/hub-tools.ts`.
+- Budget (`docs/agent-notes/budget.md`): `src/hub/budget.ts`, `src/cli/statusline-tee.ts`, `src/hub/bus.ts` (pause persistence).
+- Daemon and recovery (`docs/agent-notes/daemon.md`): `src/hub/daemon.ts`, `src/hub/control-client.ts`, `src/adapters/claude-channel.ts`, `src/hub/restart.ts`, `src/hub/recovery-store.ts`, `src/hub/snapshots.ts`, `src/hub/manager.ts`, `src/hub/lifecycle.ts`, `src/hub/crash.ts`, `src/cli/setup.ts`, `src/cli/upgrade*.ts`, `src/cli/terminal-recovery.ts`, `src/cli/recovery-package.ts`, or adding a native peer.
 - Tests (`docs/agent-notes/tests.md`): any test or fake under `test/`, `scripts/check.sh`, `scripts/hang-watch.sh`.
 
-`src/hub/daemon.ts` hosts code for several areas: before editing it, read the notes whose symbols you touch (bus: `admit` and the control `send` handler; tasks: the hub tool handler; adapters: approvals; budget: pause and resume; daemon: the control WS and state files).
+`src/hub/daemon.ts` and `src/cli/main.ts` wire every area. Before editing either, read all notes in `docs/agent-notes/`.
 
 <!-- AGENT_HUB:BEGIN (managed by `ahub init`, edits inside are overwritten) -->
 ## agent-hub

@@ -1,6 +1,6 @@
 # Budget, pause and handoff
 
-Scope: quota readings, pause, handoff and resume, and the status line tee. Read before editing `src/hub/budget.ts` or `src/cli/statusline-tee.ts`, or pause and resume in `src/hub/daemon.ts`.
+Scope: quota readings, pause, handoff and resume, and the status line tee. Read before editing `src/hub/budget.ts`, `src/cli/statusline-tee.ts` or `src/hub/bus.ts` (pause persistence).
 
 - Budget: checkpoint first, pause second (a paused peer receives nothing). A handoff that fails is left unmarked so the next tick or hub run retries it; never record it as done.
 - A handoff needs somebody to hand over to: `canHandOff` is false right after a restart, when no peer is attached yet, and the handoff waits for a later tick instead of stripping tasks of their owner.
