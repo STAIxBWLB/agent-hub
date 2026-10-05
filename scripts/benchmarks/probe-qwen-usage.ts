@@ -27,11 +27,17 @@ const reject = args.includes("--reject-upstream");
 const latch = new ActiveFailureLatch();
 const requests: RelayRequestRecord[] = [];
 let nativeUsage: number | null = null, answer = false;
-const relay = await startModelRelay({ observeRequestMetadata: true, omni: new OmniRoute(config.omniroute), allowedDGXmodels: { 'dgx/coding': config.pi.dgx_coding }, ...(reject ? { admitRequest: async () => ({ allowed: false, reason: 'controlled probe rejection' }) } : {}), onRequest: (r) => { requests.push(r); } });
+const relay = await startModelRelay({ observeRequestMetadata: true, omni: new OmniRoute(config.omniroute), allowedDGXmodels: { 'dgx/coding': config.pi.dgx_coding }, onRequest: (r) => { requests.push(r); } });
+const rejection = reject ? Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: (request) => {
+  if (request.headers.has('origin') || request.headers.get('authorization') !== `Bearer ${relay.token}`) return new Response(null, { status: 403 });
+  if (new URL(request.url).pathname.endsWith('/models')) return Response.json({ object: 'list', data: [{ id: 'dgx/coding', object: 'model' }] });
+  return Response.json({ error: { message: 'controlled authentication rejection', type: 'authentication_error', code: 'invalid_api_key' } }, { status: 401 });
+} }) : undefined;
+const baseUrl = rejection ? `http://127.0.0.1:${rejection.port}/v1` : relay.url;
 const sandboxFile = join(root, 'qwen.sb');
-writeFileSync(sandboxFile, profile(cwd, false, [], []) + `\n(allow file-read* (subpath ${sbplString(resolve(pkg))}))\n(allow file-read* file-write* (subpath ${sbplString(home)}))\n(allow network-outbound (remote ip ${sbplString('localhost:' + new URL(relay.url).port)}))\n(deny file-write* (subpath ${sbplString(cwd)}))`);
+writeFileSync(sandboxFile, profile(cwd, false, [], []) + `\n(allow file-read* (subpath ${sbplString(resolve(pkg))}))\n(allow file-read* file-write* (subpath ${sbplString(home)}))\n(allow network-outbound (remote ip ${sbplString('localhost:' + new URL(baseUrl).port)}))\n(deny file-write* (subpath ${sbplString(cwd)}))`);
 const peer = new AcpPeer('qwen', {
-  cwd, cmd: ['/usr/bin/sandbox-exec', '-f', sandboxFile, ...command, '--acp', '--bare', '--advisor', 'off', '--auth-type', 'openai', '--model', 'dgx/coding', '--openai-base-url', relay.url, '--telemetry=false'],
+  cwd, cmd: ['/usr/bin/sandbox-exec', '-f', sandboxFile, ...command, '--acp', '--bare', '--advisor', 'off', '--auth-type', 'openai', '--model', 'dgx/coding', '--openai-base-url', baseUrl, '--telemetry=false'],
   env: { ...env, OPENAI_API_KEY: relay.token }, watchdogMs: 60_000,
   onTokens: (n) => { nativeUsage = n; },
   onUsageDiagnostic: (reading) => { if (observations.length < 32) observations.push(reading); },
@@ -52,7 +58,7 @@ try {
     nativeAvailability: nativeUsage === null ? 'no-reading' : 'known', observations,
     requestUsage: requests.map((r) => ({ id: r.id, outcome: r.outcome, usage: r.requestUsage ?? null, availability: r.usageAvailability, providerSource: r.providerSource, providerAvailability: r.providerAvailability })) };
 } catch { result = { verdict: 'probe-error', nativeUsage, observations }; }
-finally { await peer.stop(); await relay.close(); rmSync(home, { recursive: true, force: true }); }
+finally { await peer.stop(); await relay.close(); rejection?.stop(true); rmSync(home, { recursive: true, force: true }); }
 writeFileSync(join(root, 'usage-capability.json'), JSON.stringify(result, null, 2), { flag: 'wx', mode: 0o600 });
 console.log(JSON.stringify(result));
 if (result?.verdict !== (reject ? 'peer-failure' : 'answered')) process.exitCode = 1;
