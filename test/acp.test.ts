@@ -6,6 +6,7 @@ import { AcpPeer, type AcpOptions } from "../src/adapters/acp.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { processTable } from "../src/hub/child-process.ts";
+import { ActiveFailureLatch, activeExit } from "../scripts/benchmarks/native-pi-qwen.ts";
 
 const FAKE = ["bun", join(import.meta.dir, "fakes/acp-server.ts")];
 let peer: AcpPeer | undefined;
@@ -51,6 +52,55 @@ test("correlated ACP delivery reports acceptance before completion and ignores a
     await until(() => receipts.some((r) => r.id === "d-slow" && r.state === "needs_review"));
     await Bun.sleep(100);
     expect(receipts.filter((r) => r.id === "d-slow")).toHaveLength(2); // accepted + one uncertain terminal state
+  } finally { await acp.stop(); }
+});
+
+test("a failed prompt turn reports onTurnFailure; an abnormal end with no answer does too; a stale cancelled turn never does (#160)", async () => {
+  const failures: { ids: string[]; reason: string }[] = [];
+  const latch = new ActiveFailureLatch();
+  latch.begin(Date.now());
+  const acpPeer = new AcpPeer("qwen", { cmd: FAKE, cwd: process.cwd(), onTurnFailure: (envs, reason) => {
+    failures.push({ ids: envs.map((e) => e.id), reason });
+    latch.note("qwen", reason, Date.now());
+  } });
+  peer = acpPeer;
+  const said: string[] = [];
+  acpPeer.onMessage = (body) => said.push(body);
+  await acpPeer.start();
+  // A rejected prompt: the peer returns to idle with no answer, but the failure is reported — no silent wait.
+  const broken = newEnvelope("user", "BROKEN", { to: ["kimi"] });
+  await acpPeer.deliver([broken]);
+  await until(() => failures.length === 1);
+  expect(failures[0]!.reason).toContain("session error");
+  expect(failures[0]!.ids).toEqual([broken.id]);
+  expect(peer!.state).toBe("idle");
+  expect(said).toHaveLength(0);
+  expect(latch.failure?.peer).toBe("qwen");
+  expect(activeExit({ stopRequested: false, terminalFailure: !!latch.failure, peerUnreachable: acpPeer.state === "offline", settled: false, quietMs: 0 })).toBe("peer-failure");
+  // An abnormal end that streamed nothing (a turn cap): the same report, with the adapter's reason.
+  await acpPeer.deliver([newEnvelope("user", "CAPPED", { to: ["qwen"] })]);
+  await until(() => failures.length === 2);
+  expect(failures[1]!.reason).toBe("ACP prompt ended without normal completion (max_turn_requests)");
+  expect(said).toHaveLength(0);
+  await acpPeer.deliver([newEnvelope("user", "PARTIAL_CAPPED", { to: ["qwen"] })]);
+  await until(() => failures.length === 3);
+  expect(said).toEqual(["partial work"]);
+  expect(failures[2]!.reason).toBe("ACP prompt ended without normal completion (max_turn_requests)");
+  await peer!.stop();
+
+  // A watchdog-cancelled turn's late report is stale and never fires the callback.
+  const lateFailures: string[] = [];
+  const acp = new AcpPeer("kimi", { cmd: FAKE, cwd: process.cwd(), watchdogMs: 40, onTurnFailure: async (_e, r) => { lateFailures.push(r); } });
+  await acp.start();
+  try {
+    const answered: string[] = [];
+    acp.onMessage = (body) => answered.push(body);
+    await acp.deliver([newEnvelope("user", "SLOW", { to: ["kimi"] })]); // no deliveryId: the watchdog returns it to idle
+    await until(() => acp.state === "idle");
+    await acp.deliver([newEnvelope("user", "ping", { to: ["kimi"] })]);
+    await until(() => answered.length === 1);
+    await Bun.sleep(150); // the cancelled prompt's late report lands here, stale
+    expect(lateFailures).toEqual([]);
   } finally { await acp.stop(); }
 });
 

@@ -625,10 +625,11 @@ test("an unresolved process is recorded by the name of its executable, never by 
 });
 
 test("a record's end reason: quota and budget ends stay themselves; a flag makes any other end but an interruption an infrastructure error", () => {
-  expect(["completed", "delivery-unsettled", "wall-timeout", "interrupted", "needs-review", "provider-quota", "budget-paused", "infrastructure-error"].map((d) => endReasonOf(d, [])))
-    .toEqual(["completed", "delivery-unsettled", "timeout", "interrupted", "interrupted", "provider-quota", "budget-paused", "infrastructure-error"]);
-  expect(["completed", "wall-timeout", "needs-review", "interrupted", "provider-quota"].map((d) => endReasonOf(d, ["tree-changed-after-active-time"])))
-    .toEqual(["infrastructure-error", "infrastructure-error", "infrastructure-error", "interrupted", "provider-quota"]);
+  expect(["completed", "delivery-unsettled", "wall-timeout", "interrupted", "needs-review", "provider-quota", "budget-paused", "infrastructure-error", "peer-failure"].map((d) => endReasonOf(d, [])))
+    .toEqual(["completed", "delivery-unsettled", "timeout", "interrupted", "interrupted", "provider-quota", "budget-paused", "infrastructure-error", "peer-failure"]);
+  // #160: a terminal peer failure keeps its own class; a flag beside it still makes it an infrastructure error.
+  expect(["completed", "wall-timeout", "needs-review", "interrupted", "provider-quota", "peer-failure"].map((d) => endReasonOf(d, ["tree-changed-after-active-time"])))
+    .toEqual(["infrastructure-error", "infrastructure-error", "infrastructure-error", "interrupted", "provider-quota", "infrastructure-error"]);
 });
 
 test("a prepared fixture root replaced after preparation is rejected read-only (#119)", () => {

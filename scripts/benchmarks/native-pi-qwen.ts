@@ -135,6 +135,82 @@ export interface RequestLinkage {
     providerMissing: number;
 }
 
+/** The preserved metadata of a terminal active-turn peer failure (#160): peer, original failure class and time. */
+export interface PeerFailure {
+    peer: string;
+    failureClass: string;
+    failedAt: string;
+    activeElapsedMs: number;
+    generation: number;
+}
+
+/**
+ * The terminal active-turn failure latch of one attempt (#160). A required peer's terminal failure during the
+ * active phase ends the whole attempt at once, with the original failure class and time preserved (the first
+ * latch wins), instead of waiting out the wall limit for an answer the failed peer cannot produce. The latch is
+ * fenced twice: by phase — only the active window between `begin` and `freeze` latches, so a setup-phase failure
+ * (an expected denied tool read is a tool error, and even a turn failure there never latches) and a stop or
+ * watchdog callback during teardown are recorded as events but never change the end cause — and by generation:
+ * each attempt's active phase is a new generation, so a callback belonging to an earlier turn cannot bind to it.
+ */
+export class ActiveFailureLatch {
+    private phase: 'setup' | 'active' | 'ended' = 'setup';
+    private generation = 0;
+    private activeStart = 0;
+    private latched: PeerFailure | undefined;
+
+    /** Opens the attempt's next active generation at `now` (ms epoch): a fresh generation latches afresh. */
+    begin(now: number): void {
+        this.phase = 'active';
+        this.generation += 1;
+        this.activeStart = now;
+        this.latched = undefined;
+    }
+
+    /** Freezes the end cause at active_end: later failures are teardown events only. */
+    freeze(): void {
+        this.phase = 'ended';
+    }
+
+    /** Records a peer's terminal turn failure. The first failure of the active generation latches; every other call is an event. */
+    note(peer: string, reason: string, now: number): { latched: boolean; phase: string } {
+        if (this.phase !== 'active') return { latched: false, phase: this.phase };
+        this.latched ??= { peer, failureClass: reason.slice(0, 300), failedAt: new Date(now).toISOString(), activeElapsedMs: now - this.activeStart, generation: this.generation };
+        return { latched: true, phase: this.phase };
+    }
+
+    /** The first failure of the current active generation, if one latched. */
+    get failure(): PeerFailure | undefined {
+        return this.latched;
+    }
+
+    /** Whether the end cause was frozen at active_end. */
+    get frozen(): boolean {
+        return this.phase === 'ended';
+    }
+}
+
+/**
+ * Why the active poll ends this tick (#160), or undefined to keep waiting. A latched terminal peer failure
+ * outranks both an unreachable peer (its failure callback is what latches, so the original class is kept) and
+ * the idle wait for answers: the attempt stops at once instead of idling out the wall limit. An operator's
+ * interrupt outranks the failure. The wall limit is checked after terminal causes on the final tick.
+ */
+export function activeExit(state: { stopRequested: boolean; terminalFailure: boolean; peerUnreachable: boolean; settled: boolean; quietMs: number; wallExpired?: boolean }): string | undefined {
+    if (state.stopRequested) return 'interrupted';
+    if (state.terminalFailure) return 'peer-failure';
+    if (state.peerUnreachable) return 'native-failure';
+    if (state.settled && state.quietMs >= 1000) return 'completed';
+    if (state.wallExpired) return 'wall-timeout';
+    return undefined;
+}
+
+/** A new peer-failure submission must retain the same active-window tree as a completed one. */
+export function activeTreeFlag(end: string, changed: boolean | null): string | undefined {
+    if ((end === 'completed' || end === 'peer-failure') && changed !== false) return changed ? 'tree-changed-after-active-time' : 'tree-unverified-after-active-time';
+    return undefined;
+}
+
 /**
  * Request-linkage qualification over the relay's journaled records (#139). A request's served model comes only
  * from its own record. Every identified record is evidence, whatever its outcome: a request cancelled after its
@@ -412,6 +488,16 @@ async function main(): Promise<number> {
         const peers: (PiPeer | AcpPeer)[] = [];
         let relay: Awaited<ReturnType<typeof startModelRelay>> | undefined;
         let endDetail = 'infrastructure-error', error: string | undefined, elapsedMs = 0, started = 0;
+        // The attempt's terminal peer-failure latch (#160): armed at active_start, frozen at active_end.
+        const failureLatch = new ActiveFailureLatch();
+        // Both natives report terminal turn failure through the same latch (#160, review): a failure during the
+        // active phase latches and ends the attempt; the same callback before active_start (the setup probes,
+        // where an expected denied tool read is a tool error, never a turn failure) or after the frozen
+        // active_end (stop/watchdog during teardown) is an event only, never the end cause.
+        const noteTurnFailure = async (peer: string, reason: string) => {
+            const noted = failureLatch.note(peer, clean(reason), Date.now());
+            log('failure', { peer, reason: clean(reason), ...(noted.latched ? { terminal: true } : { phase: noted.phase }) });
+        };
         let activeTree: Record<string, string> | undefined, finalTree: Record<string, string> | undefined;
         let probeIdentity: { servedModel?: string; provider?: string } = {};
         const setup = Date.now();
@@ -490,7 +576,7 @@ async function main(): Promise<number> {
                     tools: TOOL_SCHEMAS.filter((t) => ['read', 'write', 'edit', 'git', 'hub_send'].includes(t.function.name)).map((t) => t.function),
                     maxSteps: 100, watchdogMs: 300_000,
                     onTokens: (n) => { tokens.pi += n; },
-                    onTurnFailure: async (_e, reason) => log('failure', { peer: 'pi', reason: clean(reason) }),
+                    onTurnFailure: (_e, reason) => noteTurnFailure('pi', reason),
                     executeTool: async (name, raw, _id, _sid, signal) => {
                         const a = raw as Record<string, unknown>;
                         let target = '';
@@ -538,6 +624,7 @@ async function main(): Promise<number> {
                     // canonical name itself; the whitelist is the exact canonical name and nothing else.
                     autoApprove: (title) => title === 'mcp__pilot-peer-bus__hub_send',
                     onTokens: (n) => { tokens.qwen = n; },
+                    onTurnFailure: (_e, reason) => noteTurnFailure('qwen', reason),
                     log: (s) => log('qwen_log', { text: clean(s).slice(0, 500) }),
                     onPermission: async (req) => {
                         const match = /\{.*\}/s.exec(req.title);
@@ -640,6 +727,7 @@ async function main(): Promise<number> {
             active = true;
             started = Date.now();
             deadline = started + m.wall_limit_s * 1000;
+            failureLatch.begin(started);
             log('active_start', { wallLimitSeconds: m.wall_limit_s, sourceDirs, featureAssignments: assignment });
             for (const peer of peers) {
                 const featurePrompts = kind === 'joint-pi-qwen' ? [cachedInputs[index].prompts[assignment[peer.id as 'pi' | 'qwen']]] : cachedInputs[index].prompts;
@@ -648,24 +736,24 @@ async function main(): Promise<number> {
             }
             endDetail = 'wall-timeout';
             let quiet = 0, captureAt = 0;
-            while (Date.now() - started < m.wall_limit_s * 1000) {
-                if (stopRequested) { endDetail = 'interrupted'; break; }
-                if (peers.some((p) => p.state === 'paused' || p.state === 'offline')) { endDetail = 'native-failure'; break; }
+            while (true) {
                 if (Date.now() - captureAt >= 5000) { captureNow(); captureAt = Date.now(); }
-                const done = peers.every((p) => p.state === 'idle' && answers[p.id]!.length > (counts[p.id] ?? 0) && (bus.snapshot().queues[p.id]?.length ?? 0) === 0);
-                if (done) {
-                    quiet ||= Date.now();
-                    if (Date.now() - quiet >= 1000) { endDetail = 'completed'; break; }
-                } else quiet = 0;
+                const settled = peers.every((p) => p.state === 'idle' && answers[p.id]!.length > (counts[p.id] ?? 0) && (bus.snapshot().queues[p.id]?.length ?? 0) === 0);
+                if (settled) quiet ||= Date.now(); else quiet = 0;
+                // #160: a latched terminal failure exits at once, without exhausting the remaining wall budget;
+                // check terminal causes even on the first tick after the wall limit.
+                const exit = activeExit({ stopRequested, terminalFailure: failureLatch.failure !== undefined, peerUnreachable: peers.some((p) => p.state === 'paused' || p.state === 'offline'), settled, quietMs: quiet ? Date.now() - quiet : 0, wallExpired: Date.now() >= deadline });
+                if (exit) { endDetail = exit; break; }
                 await Bun.sleep(100);
             }
             elapsedMs = Date.now() - started;
             active = false;
             activeTree = tree(dir); // the active-window record, captured before any disposal (correction 5)
-            log('active_end', { reason: endDetail, elapsedMs });
+            failureLatch.freeze(); // the end cause is fixed here: later stop/watchdog callbacks are teardown events
+            log('active_end', { reason: endDetail, elapsedMs, ...(failureLatch.failure ? { failedPeer: failureLatch.failure.peer, failureClass: failureLatch.failure.failureClass, failedAt: failureLatch.failure.failedAt } : {}) });
         } catch (e) {
             error = clean(String(e));
-            endDetail = stopRequested ? 'interrupted' : 'infrastructure-error';
+            if (!failureLatch.frozen) endDetail = stopRequested ? 'interrupted' : 'infrastructure-error'; // a frozen active end cause is never replaced
             log('infrastructure_failure', { error });
         } finally {
             active = false;
@@ -674,6 +762,9 @@ async function main(): Promise<number> {
             const uncertainBefore = containmentUncertain;
             containmentUncertain = true;
             try { captureNow(); } catch (e) { note(`the last capture failed: ${String(e).slice(0, 200)}`); }
+            // A peer-failure end cancels the whole attempt through this same owned-process teardown (#160): in a
+            // joint arm both owned peers are stopped, so a failed actor never leaves the other performing an
+            // undefined partial treatment.
             const cleanup = await teardown([...owners.values()], dir, async () => {
                 const errors: string[] = [];
                 for (const p of [...peers].reverse()) {
@@ -698,7 +789,8 @@ async function main(): Promise<number> {
             const metadataClean = finalTree ? changed.every((p) => isSourcePath(sourceDirs, p)) && fixtureMetadataHash(dir) === metadataBaseline : false;
             if (!metadataClean) endFlags.push('metadata-modified');
             const lateWrites = activeTree && finalTree ? canonical(activeTree) !== canonical(finalTree) : null;
-            if (lateWrites !== false && endDetail === 'completed') endFlags.push(lateWrites ? 'tree-changed-after-active-time' : 'tree-unverified-after-active-time');
+            const treeFlag = activeTreeFlag(endDetail, lateWrites);
+            if (treeFlag) endFlags.push(treeFlag);
             let patch = '';
             try { patch = await collectSubmissionPatch(dir, base, sourceDirs); } catch (e) { note(`patch could not be collected: ${String(e).slice(0, 200)}`); }
             actorLedger.set(dir, cleanup.owned);
@@ -718,6 +810,8 @@ async function main(): Promise<number> {
                 nativeVersions: builds, repeat, setupMs: (started || Date.now()) - setup, elapsedMs, startedAt: started || undefined,
                 usage: { pi: tokens.pi, qwen: tokens.qwen, units: { pi: 'incremental onTokens counter, whole attempt including the setup probes', qwen: 'session usage_update running total, whole attempt including the setup probes' }, toolSurfaces: { pi: 'hub-moderated read/write/edit/git ls-files/hub_send tools', qwen: 'own file tools under seatbelt auto-edit, the excluded list, hub_send over MCP in the joint arm' } },
                 end_reason: endReasonOf(endDetail, endFlags), end_reason_detail: endDetail, end_flags: endFlags.length ? endFlags : undefined,
+                // #160: the preserved terminal failure (peer, original class, failure time) whenever one latched.
+                peer_failure: failureLatch.failure,
                 error: error ? error.replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/gi, '$1$2[redacted]').slice(0, 300) : undefined,
                 cleanup, cleanup_complete: contained, teardown_errors: teardownErrors.length ? teardownErrors : undefined,
                 metadata_clean: metadataClean, metadata_sha256: metadataBaseline, tree_changed_after_active_time: lateWrites, changedPaths: changed,

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { v3ArmOrder, jointAssignment, isSourcePath, ProtectedReadProbe, qualifyRequests, effectiveBuild, parseVersion, claimExclusive, collectSubmissionPatch, disposeAll, writeRecordFresh, evaluateProbe, probeReadiness } from "../../scripts/benchmarks/native-pi-qwen.ts";
+import { v3ArmOrder, jointAssignment, isSourcePath, ProtectedReadProbe, qualifyRequests, effectiveBuild, parseVersion, claimExclusive, collectSubmissionPatch, disposeAll, writeRecordFresh, evaluateProbe, probeReadiness, ActiveFailureLatch, activeExit, activeTreeFlag } from "../../scripts/benchmarks/native-pi-qwen.ts";
 import type { RelayRequestRecord } from "../../src/models/relay.ts";
 
 const script = join(import.meta.dir, "../../scripts/benchmarks/runner.py");
@@ -321,6 +321,96 @@ describe("disposal ordering (correction 5)", () => {
   });
 });
 
+describe("terminal active-turn peer failure (#160)", () => {
+  test("peer-failure submissions refuse late or unverified source trees", () => {
+    expect(activeTreeFlag("peer-failure", true)).toBe("tree-changed-after-active-time");
+    expect(activeTreeFlag("peer-failure", null)).toBe("tree-unverified-after-active-time");
+    expect(activeTreeFlag("peer-failure", false)).toBeUndefined();
+    expect(activeTreeFlag("completed", true)).toBe("tree-changed-after-active-time");
+    expect(activeTreeFlag("wall-timeout", true)).toBeUndefined(); // legacy timeout semantics
+  });
+  test("a failure latched during the active phase exits at once as peer-failure, not after the wall budget", () => {
+    // The observed study failure: Pi hit its 100-step ceiling and sat idle with no answer; the poll must end on
+    // the latch's first tick instead of idling out the remaining wall limit for an answer that cannot come.
+    const latch = new ActiveFailureLatch();
+    const started = 1_000_000;
+    latch.begin(started);
+    const failedAt = started + 147_125; // 152.875 s of budget left when the step limit hit
+    const noted = latch.note("pi", "step limit reached (100)", failedAt);
+    expect(noted).toEqual({ latched: true, phase: "active" });
+    expect(latch.failure).toEqual({ peer: "pi", failureClass: "step limit reached (100)", failedAt: new Date(failedAt).toISOString(), activeElapsedMs: 147_125, generation: 1 });
+    // Nothing is settled — the failed peer never answers — yet the poll exits immediately with the distinct detail.
+    expect(activeExit({ stopRequested: false, terminalFailure: latch.failure !== undefined, peerUnreachable: false, settled: false, quietMs: 0 })).toBe("peer-failure");
+  });
+
+  test("the first latched failure wins: the original class and time are preserved", () => {
+    const latch = new ActiveFailureLatch();
+    latch.begin(1_000_000);
+    latch.note("pi", "step limit reached (100)", 1_100_000);
+    latch.note("qwen", "session shut down", 1_100_050); // the joint arm's other actor cannot overwrite it
+    expect(latch.failure).toMatchObject({ peer: "pi", failureClass: "step limit reached (100)", activeElapsedMs: 100_000 });
+  });
+
+  test("an expected denied tool read during setup is not a terminal failure", () => {
+    // The protected-file probe denies a native read on purpose; nothing before active_start may latch.
+    const latch = new ActiveFailureLatch();
+    expect(latch.note("pi", "error: outside benchmark scope", Date.now())).toEqual({ latched: false, phase: "setup" });
+    expect(latch.failure).toBeUndefined();
+    expect(activeExit({ stopRequested: false, terminalFailure: latch.failure !== undefined, peerUnreachable: false, settled: false, quietMs: 0 })).toBeUndefined();
+  });
+
+  test("teardown-only and stale-generation callbacks cannot change a fixed active end cause", () => {
+    const latch = new ActiveFailureLatch();
+    latch.begin(1_000_000);
+    latch.note("pi", "step limit reached (100)", 1_100_000);
+    latch.freeze(); // active_end: the end cause is fixed here
+    expect(latch.frozen).toBe(true);
+    // A stop/watchdog callback during teardown is recorded as an event only; the latched failure stands.
+    expect(latch.note("pi", "Pi session shut down before settlement", 1_101_000)).toEqual({ latched: false, phase: "ended" });
+    expect(latch.failure).toMatchObject({ peer: "pi", failureClass: "step limit reached (100)", activeElapsedMs: 100_000, generation: 1 });
+    // The next attempt's active phase is a new generation: it latches afresh and cannot inherit a stale failure.
+    latch.begin(2_000_000);
+    expect(latch.failure).toBeUndefined();
+    latch.note("qwen", "agent run failed", 2_050_000);
+    expect(latch.failure).toMatchObject({ peer: "qwen", activeElapsedMs: 50_000, generation: 2 });
+  });
+
+  test("a solo-qwen terminal prompt failure latches and exits early with the qwen metadata (#160 review)", () => {
+    // The review's gap: AcpPeer reported a rejected prompt only as a needs_review receipt the driver never
+    // observes, so a failed Qwen sat idle until the wall limit exactly as Pi had; its onTurnFailure now feeds
+    // the same latch.
+    const latch = new ActiveFailureLatch();
+    const started = 2_000_000;
+    latch.begin(started);
+    latch.note("qwen", "session error", started + 61_000);
+    expect(latch.failure).toMatchObject({ peer: "qwen", failureClass: "session error", activeElapsedMs: 61_000, generation: 1 });
+    // Qwen produced no answer and its process stayed alive (idle, reachable): only the latch ends the wait.
+    expect(activeExit({ stopRequested: false, terminalFailure: latch.failure !== undefined, peerUnreachable: false, settled: false, quietMs: 0 })).toBe("peer-failure");
+  });
+
+  test("a qwen failure in a joint attempt ends the attempt for both owned actors (#160 review)", () => {
+    const latch = new ActiveFailureLatch();
+    latch.begin(3_000_000);
+    latch.note("qwen", "session error", 3_040_000); // Pi never failed
+    expect(latch.failure).toMatchObject({ peer: "qwen" });
+    expect(activeExit({ stopRequested: false, terminalFailure: true, peerUnreachable: false, settled: false, quietMs: 0 })).toBe("peer-failure");
+    // The exit routes both owned peers through the driver's owned-process teardown (see the teardown call
+    // site): a failed actor never leaves the other performing an undefined partial treatment.
+  });
+
+  test("the poll's other exits keep their classes; a genuine wall limit is the loop's own exit", () => {
+    expect(activeExit({ stopRequested: false, terminalFailure: true, peerUnreachable: false, settled: false, quietMs: 0, wallExpired: true })).toBe("peer-failure");
+    expect(activeExit({ stopRequested: false, terminalFailure: false, peerUnreachable: false, settled: false, quietMs: 0, wallExpired: true })).toBe("wall-timeout");
+    expect(activeExit({ stopRequested: true, terminalFailure: true, peerUnreachable: false, settled: false, quietMs: 0 })).toBe("interrupted"); // the operator outranks the failure
+    expect(activeExit({ stopRequested: false, terminalFailure: true, peerUnreachable: true, settled: false, quietMs: 0 })).toBe("peer-failure"); // the latch outranks the unreachable state it caused
+    expect(activeExit({ stopRequested: false, terminalFailure: false, peerUnreachable: true, settled: false, quietMs: 0 })).toBe("native-failure");
+    expect(activeExit({ stopRequested: false, terminalFailure: false, peerUnreachable: false, settled: true, quietMs: 999 })).toBeUndefined();
+    expect(activeExit({ stopRequested: false, terminalFailure: false, peerUnreachable: false, settled: true, quietMs: 1000 })).toBe("completed");
+    // Nothing to end on: undefined, so the loop's own condition exits it as a genuine wall-timeout.
+    expect(activeExit({ stopRequested: false, terminalFailure: false, peerUnreachable: false, settled: false, quietMs: 0 })).toBeUndefined();
+  });
+});
+
 // runner.py's v3 gates: manifest validation, prepare provenance, request gate, outside-changes and the report's
 // separate quality/model/request-linkage coverage (no Docker, no live agents).
 describe("runner.py v3 gates (#140)", () => {
@@ -473,6 +563,29 @@ assert m.v3_participants(setup_failed)==['pi']
 assert m.v3_participants({'kind':'joint-pi-qwen','readiness':{'pi':constructed,'qwen':constructed},'elapsedMs':0})==[]
 assert m.v3_participants({'kind':'solo-qwen','readiness':{}})==[]
 assert m.v3_participants({'kind':'solo-pi'})==[]
+`;
+    const r = spawnSync("python3", ["-B", "-c", code], { encoding: "utf8" });
+    if (r.status !== 0) throw new Error(r.stderr);
+  });
+
+  test("a peer-failure end joins the graded classes; old records without it read unchanged (#160)", () => {
+    const code = `import importlib.util
+s=importlib.util.spec_from_file_location('r',${JSON.stringify(script)});m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+assert 'peer-failure' in m.GRADED_ENDS
+# A peer-failed attempt passes the end-class gate to the identity/teardown gates, like a timeout: its preserved
+# partial submission is gradeable, and never reads as completed.
+failed={'end_reason':'peer-failure','end_reason_detail':'peer-failure','kind':'joint-pi-qwen'}
+assert m.unavailable_reason('joint-pi-qwen',failed) is None
+assert m.end_story(failed)=='peer-failure'
+# A flag beside it still makes the runner's class an infrastructure error (endReasonOf's rule, applied by the driver).
+flagged={'end_reason':'infrastructure-error','end_reason_detail':'peer-failure','end_flags':['metadata-modified']}
+assert m.unavailable_reason('solo-pi',flagged)=='peer-failure, then metadata-modified'
+# Old timeout records carry no peer_failure field and nothing about their reading changes.
+old={'end_reason':'timeout','end_reason_detail':'wall-timeout','kind':'solo-pi'}
+assert m.unavailable_reason('solo-pi',old) is None
+assert m.end_story(old)=='wall-timeout'
+# Every other end still refuses by its story.
+assert m.unavailable_reason('solo-pi',{'end_reason':'interrupted','end_reason_detail':'interrupted'})=='interrupted'
 `;
     const r = spawnSync("python3", ["-B", "-c", code], { encoding: "utf8" });
     if (r.status !== 0) throw new Error(r.stderr);

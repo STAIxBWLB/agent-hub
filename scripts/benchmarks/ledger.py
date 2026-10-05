@@ -22,10 +22,18 @@ from runner import ARMS_V3, TURN_FREE, active_window, end_story, hook_rows, isol
 V3_PROTOCOL = "native-pq-v3"  # the headless Pi/Qwen driver's records (#140); the Claude/Codex records are native-cc-v1
 
 UNITS = {
-    "end_reason": "the runner's class (completed, timeout, interrupted, infrastructure-error, ...); end_reason_detail "
-                  "says which (wall-timeout, needs-review, claude-exited, ...), and end_story adds the end_flags that "
-                  "made it an infrastructure error (#113). Completed and timed-out attempts are graded unless the "
-                  "teardown gate (see validity) says otherwise",
+    "end_reason": "the runner's class (completed, timeout, peer-failure, interrupted, infrastructure-error, ...); "
+                  "end_reason_detail says which (wall-timeout, peer-failure, needs-review, claude-exited, ...), and "
+                  "end_story adds the end_flags that made it an infrastructure error (#113). Completed, timed-out and "
+                  "peer-failed attempts are graded unless the teardown gate (see validity) says otherwise (#160: a "
+                  "terminal active-turn peer failure ends the attempt at once and preserves its partial submission); "
+                  "old records carry no peer-failure end and read unchanged",
+    "peer_failure": "per v3 attempt ended by a required peer's terminal active-turn failure (#160): the peer, the "
+                    "original failure class and the failure time (failed_at, active_elapsed_ms), preserved as first "
+                    "latched during the active phase; the attempt stops at once — a joint arm stops both owned peers "
+                    "through the owned-process teardown — instead of waiting out the wall limit, and the end cause "
+                    "frozen at active_end cannot be replaced by later stop/watchdog callbacks; absent for every "
+                    "other end and for records from before #160",
     "completed": "the runner completed the attempt and every task has a done; a v3 attempt has no board tasks (bus "
                  "prompts), so its completion is the runner's end classification alone, independent of official "
                  "quality (the grader's, never this ledger's)",
@@ -660,6 +668,7 @@ def v3_ledger_of(run):
     return {
         "case": run.get("index"), "arm": run.get("kind"), "repeat": run.get("repeat"), "protocol": V3_PROTOCOL,
         "end_reason": run.get("end_reason"), "end_reason_detail": run.get("end_reason_detail"), "end_story": end_story(run),
+        "peer_failure": run.get("peer_failure"),  # None for records from before #160 and for every other end
         "native_participants": v3_participants(run),
         "completed": run.get("end_reason") == "completed",
         "setup_s": round(run["setupMs"] / 1000, 1) if isinstance(run.get("setupMs"), (int, float)) else None,

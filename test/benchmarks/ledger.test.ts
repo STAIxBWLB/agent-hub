@@ -470,6 +470,34 @@ test("completed v3 records without taskStates classify by their end reason, with
   }
 });
 
+test("a v3 peer-failure record keeps its failure metadata and stays uncompleted; old records read null (#160)", () => {
+  const f = fixture();
+  try {
+    // The observed study failure shape: Pi's step limit latched mid-window; the attempt ended at once with its
+    // partial patch preserved, and the end classifies as peer-failure, never as completed.
+    f.run("00-joint-pi-qwen", v3record(f, "joint-pi-qwen", {
+      end_reason: "peer-failure", end_reason_detail: "peer-failure", elapsedMs: 147_125,
+      peer_failure: { peer: "pi", failureClass: "step limit reached (100)", failedAt: f.iso(147.125), activeElapsedMs: 147_125, generation: 1 },
+      answers: { pi: [], qwen: ["[FYI] partial"] },
+    }));
+    // A record from before #160 carries no peer_failure field: it reads as null, its classification unchanged.
+    f.run("00-solo-pi", v3record(f, "solo-pi", { end_reason: "timeout", end_reason_detail: "wall-timeout", elapsedMs: 300_000 }));
+    const out = f.ledger();
+    const joint = out.rows.find((r: { arm: string }) => r.arm === "joint-pi-qwen");
+    expect(joint.completed).toBe(false); // no failure is silently reported as completed
+    expect(joint).toMatchObject({ end_reason: "peer-failure", end_reason_detail: "peer-failure", end_story: "peer-failure", elapsed_s: 147.1 });
+    expect(joint.peer_failure).toEqual({ peer: "pi", failureClass: "step limit reached (100)", failedAt: f.iso(147.125), activeElapsedMs: 147_125, generation: 1 });
+    expect(joint.validity).toEqual({ valid: true, why: null }); // gradeable under the same teardown gates as a timeout
+    const solo = out.rows.find((r: { arm: string }) => r.arm === "solo-pi");
+    expect(solo.peer_failure).toBeNull();
+    expect(solo.end_story).toBe("wall-timeout");
+    expect(out.summary["joint-pi-qwen"].not_completed).toEqual(["peer-failure"]);
+    expect(out.units.peer_failure).toContain("terminal active-turn failure");
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
 test("two v3 repeats pool over the fixed 10 cases x 3 arms x 2 repeats matrix; duplicates and missing planned cells are refused or listed", () => {
   const a = fixture();
   const b = fixture();

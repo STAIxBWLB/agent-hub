@@ -1,6 +1,7 @@
 // Fake ACP agent over stdio. Echoes prompts in two chunks, rejects overlapping prompts with
 // turn.agent_busy, asks permission when the prompt contains "PERMISSION", goes silent for 10 s on
-// "SLOW" (until session/cancel), and fails the prompt on "BROKEN".
+// "SLOW" (until session/cancel), and fails the prompt on "BROKEN". "CAPPED" ends the prompt with an
+// abnormal stop reason and no answer chunks at all.
 import { createInterface } from "node:readline";
 
 const delay = Number(process.env.FAKE_ACP_DELAY_MS ?? 20);
@@ -66,6 +67,12 @@ async function prompt(id: number, text: string) {
   if (text.includes("BROKEN")) {
     busy = false;
     return send({ jsonrpc: "2.0", id, error: { code: -32603, message: "session error" } });
+  }
+  if (text.includes("CAPPED")) {
+    if (text.includes("PARTIAL_CAPPED")) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "partial work" } } } });
+    // A turn cap with nothing streamed: the prompt ends abnormally and there is no answer to share.
+    busy = false;
+    return send({ jsonrpc: "2.0", id, result: { stopReason: "max_turn_requests" } });
   }
   if (text.includes("SLOW")) {
     if (text.includes("ACK_SLOW")) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "started" } } } });
