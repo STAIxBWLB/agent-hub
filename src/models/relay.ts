@@ -51,7 +51,7 @@ export interface RelayRequestRecord {
   id: string;
   dispatchGroupId?: string;
   fallbackOfId?: string;
-  failureClass?: "http" | "transport";
+  failureClass?: "http" | "transport" | "startup" | "admission" | "cancelled";
   httpStatus?: number;
   /** Admission timestamp (start of the upstream dispatch attempt), ISO. */
   at: string;
@@ -485,7 +485,13 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
         }
         else primaryDispatchId = journalEntry.record.id;
         record.closeRecord = journalEntry.close;
-        const result = await upstream(body, selected, controller.signal, journalEntry);
+        let result: Awaited<ReturnType<typeof upstream>>;
+        try {
+          result = await upstream(body, selected, controller.signal, journalEntry);
+        } catch (error) {
+          journalEntry.record.failureClass ??= controller.signal.aborted ? "cancelled" : error instanceof ExecutionAdmissionError ? "admission" : "startup";
+          throw error;
+        }
         let released = false;
         const release = () => {
           if (released) return;
