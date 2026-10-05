@@ -117,7 +117,7 @@ def audit(roots, plan="study", live=None, require_grades=True):
                                 ev.get("case_sha256") == cohort.get("private_case_sha256", {}).get(str(c)))
                     checks["controls"] &= good
                     controls += int(good)
-                    if digest(control.get("evaluation_sha256")):
+                    if good:
                         hashes.append({"cohort": rep, "case": c, "artifact": "control-oracle" if control.get("mode") == "oracle" else "control-base",
                                        "sha256": digest(control.get("evaluation_sha256"))})
         for c in spec["cases"]:
@@ -173,8 +173,8 @@ def audit(roots, plan="study", live=None, require_grades=True):
                                 ev.get("upstream_commit") == manifest["upstream"]["commit"] and
                                 ev.get("image_digest") == manifest["cases"][c]["image_digest"])
                     checks["bindings"] &= good
-                    cell.update({"input_sha256": digest(row.get("input_sha256")),
-                                 "evaluation_sha256": digest(row.get("evaluation_sha256"))})
+                    cell.update({"input_sha256": digest(row.get("input_sha256")) if good else None,
+                                 "evaluation_sha256": digest(row.get("evaluation_sha256")) if good else None})
                 cells.append(cell)
         # Fixed file names become ordinal labels, so private names never enter the export.
         for name in ("manifest.json", "prepared.json", "cohort.json", "restoration.json", "restoration-ledger.json", "grade.json"):
