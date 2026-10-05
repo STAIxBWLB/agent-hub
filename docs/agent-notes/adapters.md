@@ -1,6 +1,6 @@
 # Native adapters and spawned agents
 
-Scope: the Codex, ACP and Pi adapters, peer turn state, approvals, and the agent processes the hub spawns and stops. Read before editing `src/adapters/`, `src/hub/peers.ts`, `src/hub/child-process.ts` or the approval code in `src/hub/daemon.ts`, or before adding a native peer.
+Scope: the Codex, ACP and Pi adapters, peer turn state, approvals, and the agent processes the hub spawns and stops. Read before editing `src/adapters/`, `src/hub/peers.ts`, `src/hub/child-process.ts`, the approval code in `src/hub/daemon.ts` or the process-tree stop in `scripts/benchmarks/teardown.ts`, or before adding a native peer.
 
 - Codex: the adapter never sends its own `initialize`. It is a proxy; hub requests use negative ids and their responses must not reach the TUI.
 - Codex 0.154.0 `agentMessage` items carry `text` and `phase` (not `content[]`); only the last non-`commentary` message of a turn is shared.
