@@ -368,6 +368,29 @@ describe("terminal active-turn peer failure (#160)", () => {
     expect(latch.failure).toMatchObject({ peer: "qwen", activeElapsedMs: 50_000, generation: 2 });
   });
 
+  test("a solo-qwen terminal prompt failure latches and exits early with the qwen metadata (#160 review)", () => {
+    // The review's gap: AcpPeer reported a rejected prompt only as a needs_review receipt the driver never
+    // observes, so a failed Qwen sat idle until the wall limit exactly as Pi had; its onTurnFailure now feeds
+    // the same latch.
+    const latch = new ActiveFailureLatch();
+    const started = 2_000_000;
+    latch.begin(started);
+    latch.note("qwen", "session error", started + 61_000);
+    expect(latch.failure).toMatchObject({ peer: "qwen", failureClass: "session error", activeElapsedMs: 61_000, generation: 1 });
+    // Qwen produced no answer and its process stayed alive (idle, reachable): only the latch ends the wait.
+    expect(activeExit({ stopRequested: false, terminalFailure: latch.failure !== undefined, peerUnreachable: false, settled: false, quietMs: 0 })).toBe("peer-failure");
+  });
+
+  test("a qwen failure in a joint attempt ends the attempt for both owned actors (#160 review)", () => {
+    const latch = new ActiveFailureLatch();
+    latch.begin(3_000_000);
+    latch.note("qwen", "session error", 3_040_000); // Pi never failed
+    expect(latch.failure).toMatchObject({ peer: "qwen" });
+    expect(activeExit({ stopRequested: false, terminalFailure: true, peerUnreachable: false, settled: false, quietMs: 0 })).toBe("peer-failure");
+    // The exit routes both owned peers through the driver's owned-process teardown (see the teardown call
+    // site): a failed actor never leaves the other performing an undefined partial treatment.
+  });
+
   test("the poll's other exits keep their classes; a genuine wall limit is the loop's own exit", () => {
     expect(activeExit({ stopRequested: true, terminalFailure: true, peerUnreachable: false, settled: false, quietMs: 0 })).toBe("interrupted"); // the operator outranks the failure
     expect(activeExit({ stopRequested: false, terminalFailure: true, peerUnreachable: true, settled: false, quietMs: 0 })).toBe("peer-failure"); // the latch outranks the unreachable state it caused

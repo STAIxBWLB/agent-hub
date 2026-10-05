@@ -34,6 +34,9 @@ export interface AcpOptions {
   preamble?: string;
   /** The session's running token total from `usage_update` (inferred shape: totalTokens, else input + output, else `used`). Cumulative, not a delta. */
   onTokens?: (sessionTotal: number, sessionId: string) => void;
+  /** The prompt turn ended in failure with no answer to share: the JSON-RPC prompt rejected, or it ended without
+   *  normal completion and streamed no text. Same shape as Pi's onTurnFailure; a stale cancelled turn never reports. */
+  onTurnFailure?: (envs: Envelope[], reason: string) => Promise<void> | void;
   /** Resolve with an optionId, or undefined to cancel. Absent = every request is cancelled.
    *  A request whose payload could not be resolved is titled as such and carries no session-wide allow option. */
   onPermission?: (req: PermissionRequest) => Promise<string | undefined>;
@@ -149,6 +152,8 @@ export class AcpPeer extends BasePeer {
         this.primed = true;
         const body = this.chunks.join("").trim();
         if (body) this.onMessage?.(body, { inReplyTo: replyParent(envs), to: replyAudience(envs) });
+        // An abnormal end that streamed nothing is a terminal turn failure with no answer to share (#160).
+        else if (result?.stopReason !== "end_turn") this.reportTurnFailure(envs, `ACP prompt ended without normal completion (${String(result?.stopReason ?? "unknown")})`);
         if (deliveryId && this.activeDeliveryId === deliveryId) {
           this.acceptDelivery();
           this.delivery({ id: deliveryId, state: result?.stopReason === "end_turn" ? "completed" : "needs_review", ...(result?.stopReason === "end_turn" ? {} : { reason: "ACP prompt ended without normal completion" }) });
@@ -156,6 +161,7 @@ export class AcpPeer extends BasePeer {
       })
       .catch((e: Error) => {
         this.opts.log?.(`[${this.id}] prompt failed: ${e.message}`);
+        if (turn === this.turn) this.reportTurnFailure(envs, e.message); // a watchdog-cancelled turn reports stale, never as this turn's failure
         if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: e.message });
         else if (!deliveryId) this.onFailed?.(envs);
       })
@@ -163,6 +169,15 @@ export class AcpPeer extends BasePeer {
         if (turn === this.turn && this.state === "busy") this.setState("idle");
         if (turn === this.turn && this.activeDeliveryId === deliveryId) this.activeDeliveryId = undefined;
       });
+  }
+
+  private reportTurnFailure(envs: Envelope[], reason: string): void {
+    try {
+      const result = this.opts.onTurnFailure?.(envs, reason);
+      if (result) void result.catch(() => this.opts.log?.("ACP failure handoff could not be completed"));
+    } catch {
+      this.opts.log?.("ACP failure handoff could not be completed");
+    }
   }
 
   protected override onWatchdog(): void {

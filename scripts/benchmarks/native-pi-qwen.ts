@@ -483,6 +483,14 @@ async function main(): Promise<number> {
         let endDetail = 'infrastructure-error', error: string | undefined, elapsedMs = 0, started = 0;
         // The attempt's terminal peer-failure latch (#160): armed at active_start, frozen at active_end.
         const failureLatch = new ActiveFailureLatch();
+        // Both natives report terminal turn failure through the same latch (#160, review): a failure during the
+        // active phase latches and ends the attempt; the same callback before active_start (the setup probes,
+        // where an expected denied tool read is a tool error, never a turn failure) or after the frozen
+        // active_end (stop/watchdog during teardown) is an event only, never the end cause.
+        const noteTurnFailure = async (peer: string, reason: string) => {
+            const noted = failureLatch.note(peer, clean(reason), Date.now());
+            log('failure', { peer, reason: clean(reason), ...(noted.latched ? { terminal: true } : { phase: noted.phase }) });
+        };
         let activeTree: Record<string, string> | undefined, finalTree: Record<string, string> | undefined;
         let probeIdentity: { servedModel?: string; provider?: string } = {};
         const setup = Date.now();
@@ -561,13 +569,7 @@ async function main(): Promise<number> {
                     tools: TOOL_SCHEMAS.filter((t) => ['read', 'write', 'edit', 'git', 'hub_send'].includes(t.function.name)).map((t) => t.function),
                     maxSteps: 100, watchdogMs: 300_000,
                     onTokens: (n) => { tokens.pi += n; },
-                    onTurnFailure: async (_e, reason) => {
-                        // #160: a terminal failure during the active phase latches and ends the attempt; the
-                        // same callback before active_start (the setup probes) or after the frozen active_end
-                        // (stop/watchdog during teardown) is an event only, never the end cause.
-                        const noted = failureLatch.note('pi', clean(reason), Date.now());
-                        log('failure', { peer: 'pi', reason: clean(reason), ...(noted.latched ? { terminal: true } : { phase: noted.phase }) });
-                    },
+                    onTurnFailure: (_e, reason) => noteTurnFailure('pi', reason),
                     executeTool: async (name, raw, _id, _sid, signal) => {
                         const a = raw as Record<string, unknown>;
                         let target = '';
@@ -615,6 +617,7 @@ async function main(): Promise<number> {
                     // canonical name itself; the whitelist is the exact canonical name and nothing else.
                     autoApprove: (title) => title === 'mcp__pilot-peer-bus__hub_send',
                     onTokens: (n) => { tokens.qwen = n; },
+                    onTurnFailure: (_e, reason) => noteTurnFailure('qwen', reason),
                     log: (s) => log('qwen_log', { text: clean(s).slice(0, 500) }),
                     onPermission: async (req) => {
                         const match = /\{.*\}/s.exec(req.title);
