@@ -280,9 +280,9 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
     const start = Date.now();
     const expectedServedModel = options.expectedServedModels?.[alias];
     const record: RelayRequestRecord = {
-      id: randomUUID(), dispatchGroupId, at: new Date(start).toISOString(), alias,
+      id: randomUUID(), ...(options.onRequest ? { dispatchGroupId } : {}), at: new Date(start).toISOString(), alias,
       identitySource: "none", role: "unknown", outcome: "completed", identified: false, durationMs: 0,
-      providerSource: "none", providerAvailability: "missing", usageAvailability: "missing",
+      ...(options.onRequest ? { providerSource: "none" as const, providerAvailability: "missing" as const, usageAvailability: "missing" as const } : {}),
     };
     let closed = false;
     const identify: RequestJournalEntry["identify"] = (model, source) => {
@@ -311,6 +311,8 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
     };
     const usage = (value: unknown) => {
       if (closed) return;
+      record.providerSource ??= "none";
+      record.providerAvailability ??= "missing";
       const observation = normalizeRelayUsage(value);
       if (observation) {
         record.requestUsage = observation;
@@ -477,7 +479,10 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       let primaryDispatchId: string | undefined;
       const dispatch = async (selected: ModelBackend, body: RelayRequest) => {
         const journalEntry = openRequestRecord(aliasOf(selected, mlxAlias), dispatchGroupId);
-        if (primaryDispatchId) journalEntry.record.fallbackOfId = primaryDispatchId;
+        if (primaryDispatchId) {
+          journalEntry.record.fallbackOfId = primaryDispatchId;
+          journalEntry.record.dispatchGroupId = dispatchGroupId;
+        }
         else primaryDispatchId = journalEntry.record.id;
         record.closeRecord = journalEntry.close;
         const result = await upstream(body, selected, controller.signal, journalEntry);
