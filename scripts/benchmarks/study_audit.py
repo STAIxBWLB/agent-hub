@@ -75,6 +75,7 @@ SOURCE_FILES = {
     "process_table_sha256": "src/hub/child-process.ts",
     "evaluator_sha256": "scripts/benchmarks/evaluate.py",
 }
+_VERIFIED_SOURCE_TREES = {}
 
 
 def source_provenance(root, prepared):
@@ -87,15 +88,66 @@ def source_provenance(root, prepared):
     if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
         return False
     repository = Path(provenance.get("source_repository", Path(__file__).resolve().parents[2]))
-    def matches(name, expected):
-        if not digest(expected): return False
-        process = subprocess.run(["git", "-C", str(repository), "show", f"{head}:{name}"], capture_output=True)
-        return process.returncode == 0 and runner.sha(process.stdout) == expected
     pins = prepared.get("source_pins")
     if not isinstance(pins, dict) or set(pins) != set(runner.SOURCE_PIN_PATHS):
         return False
-    return (all(matches(path, prepared.get(field)) for field, path in SOURCE_FILES.items()) and
-            all(matches(path, pins[path]) for path in runner.SOURCE_PIN_PATHS))
+    expected = {name: prepared.get(field) for field, name in SOURCE_FILES.items()}
+    for name, value in pins.items():
+        if name in expected and expected[name] != value:
+            return False
+        expected[name] = value
+    if any(not digest(value) for value in expected.values()):
+        return False
+    # Successful byte verification can be reused only for this immutable commit and exact pin map.
+    # Fixture, patch, metadata and grade checks below are always read back on each audit.
+    cache_key = (str(repository.resolve()), head, tuple(sorted(expected.items())))
+    if cache_key in _VERIFIED_SOURCE_TREES:
+        return True
+    # Query raw immutable blobs in two bounded batches, not one Git process per pin.
+    # Unlike git archive, cat-file does not apply export-ignore or export-subst attributes.
+    queries = "".join(f"{head}:{name}\n" for name in expected).encode()
+    command = ["git", "--no-replace-objects", "-C", str(repository), "cat-file"]
+    sizes = subprocess.run(command + ["--batch-check=%(objecttype) %(objectsize)"],
+                           input=queries, capture_output=True, timeout=30)
+    if sizes.returncode:
+        return False
+    rows = sizes.stdout.splitlines()
+    if len(rows) != len(expected):
+        return False
+    lengths = []
+    for row in rows:
+        fields = row.split()
+        if len(fields) != 2 or fields[0] != b"blob" or not fields[1].isdigit():
+            return False
+        length = int(fields[1])
+        if length > 16 * 1024 * 1024:
+            return False
+        lengths.append(length)
+    if sum(lengths) > 64 * 1024 * 1024:
+        return False
+    blobs = subprocess.run(command + ["--batch"], input=queries, capture_output=True, timeout=30)
+    if blobs.returncode:
+        return False
+    offset = 0
+    for value, length in zip(expected.values(), lengths):
+        end = blobs.stdout.find(b"\n", offset)
+        fields = blobs.stdout[offset:end].split()
+        if end < 0 or len(fields) != 3 or fields[1] != b"blob" or fields[2] != str(length).encode():
+            return False
+        offset = end + 1
+        content = blobs.stdout[offset:offset + length]
+        if len(content) != length or runner.sha(content) != value:
+            return False
+        offset += length
+        if blobs.stdout[offset:offset + 1] != b"\n":
+            return False
+        offset += 1
+    if offset != len(blobs.stdout):
+        return False
+    if len(_VERIFIED_SOURCE_TREES) >= 64:
+        del _VERIFIED_SOURCE_TREES[next(iter(_VERIFIED_SOURCE_TREES))]
+    _VERIFIED_SOURCE_TREES[cache_key] = True
+    return True
 
 
 def native_fixture_binding(root, manifest, prepared, run, case, arm):
@@ -208,6 +260,7 @@ def audit(roots, plan="study", live=None, require_grades=True):
                 status = row.get("status") if row.get("status") in ("scored", "unavailable", "missing") else "missing"
                 cell = {"case": c, "arm": arm, "repeat": rep, "status": status,
                         "passed": row.get("pass") if type(row.get("pass")) is bool else None}
+                native_bound = False
                 if path.is_file():
                     run = runner.load(path)
                     checks["matrix"] &= (run.get("index"), run.get("kind"), run.get("repeat")) == key
@@ -231,7 +284,8 @@ def audit(roots, plan="study", live=None, require_grades=True):
                                  "usage_pi": number(run.get("usage", {}).get("pi")) if "pi" in participating else None,
                                  "usage_qwen": number(run.get("usage", {}).get("qwen")) if "qwen" in participating else None})
                     checks["restoration"] &= cell["cleanup_complete"] and cell["metadata_clean"]
-                    checks["bindings"] &= native_fixture_binding(root, manifest, prep, run, c, arm)
+                    native_bound = native_fixture_binding(root, manifest, prep, run, c, arm)
+                    checks["bindings"] &= native_bound
                 elif status != "missing" or not require_grades:
                     checks["matrix"] = False
                 if status == "scored":
@@ -247,7 +301,7 @@ def audit(roots, plan="study", live=None, require_grades=True):
                                 (manifest["cases"][c]["repo"], manifest["cases"][c]["task"], manifest["cases"][c]["features"]) and
                                 ev.get("upstream_commit") == manifest["upstream"]["commit"] and
                                 ev.get("image_digest") == manifest["cases"][c]["image_digest"])
-                    good = good and path.is_file() and submission_binding(root, run, row)
+                    good = good and native_bound and path.is_file() and submission_binding(root, run, row)
                     checks["bindings"] &= good
                     cell.update({"input_sha256": digest(row.get("input_sha256")) if good else None,
                                  "evaluation_sha256": digest(row.get("evaluation_sha256")) if good else None})
