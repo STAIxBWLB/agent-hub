@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startModelRelay } from "../src/models/relay.ts";
+import { startModelRelay, type RelayRequestRecord } from "../src/models/relay.ts";
 
 const cleanup: (() => Promise<void> | void)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -298,7 +298,7 @@ test("#137 a stream cancelled before identification leaves the served model unkn
   expect(relay.status().backends[0]?.actualModel).toBeUndefined();
 });
 
-const waitForRecords = async (relay: { requests: () => unknown[] }, count: number) => {
+const waitForRecords = async (relay: { requests: () => RelayRequestRecord[] }, count: number) => {
   for (let attempt = 0; attempt < 100 && relay.requests().length < count; attempt++) await Bun.sleep(10);
   return relay.requests();
 };
