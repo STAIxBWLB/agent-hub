@@ -571,6 +571,11 @@ const commands: Record<string, () => Promise<void> | void> = {
   models: async () => {
     const action = args[0] ?? "status";
     const configured = projectConfig().mlx;
+    if (configured.enabled === false) {
+      if (action === "status") return console.log(JSON.stringify({ state: "disabled", enabled: false }, null, 2));
+      if (["setup", "start", "stop"].includes(action)) fail("MLX is disabled by mlx.enabled=false; models commands do not manage shared Ollama");
+      fail("usage: ahub models setup|status|start|stop");
+    }
     const runtimeDir = configured.runtimeDir ? resolve(cwd, configured.runtimeDir) : join(homedir(), ".agenthub", "runtimes", "mlx");
     const modelPath = configured.modelPath ? resolve(cwd, configured.modelPath) : join(homedir(), ".agenthub", "models", "qwen3-8b-mlx");
     const mlxOptions = configured.provider === "ollama" ? configured : { ...configured, runtimeDir, modelPath };
@@ -953,8 +958,11 @@ const commands: Record<string, () => Promise<void> | void> = {
     const sy = spawnSync(process.env.AGENTHUB_SWITCHYARD_BIN ?? "switchyard-server", ["--version"], { encoding: "utf8" });
     row(sy.status === 0 ? true : undefined, "switchyard", sy.status === 0 ? sy.stdout.trim() : "not installed: ahub local uses fixed_model on OmniRoute (cargo install --locked switchyard-server)");
     const mlxConfig = config.mlx;
-    const mlx = await inspectMlx({ ...mlxConfig, runtimeDir: mlxConfig.runtimeDir ? resolve(cwd, mlxConfig.runtimeDir) : undefined, modelPath: mlxConfig.modelPath ? resolve(cwd, mlxConfig.modelPath) : undefined });
-    row(mlx.state === "ready" || mlx.state === "stopped", "pi mlx", `${mlx.state}${mlx.model ? ` (${mlx.model})` : ""}${mlx.lastError ? `: ${mlx.lastError}` : ""}`);
+    if (mlxConfig.enabled === false) row(true, "pi mlx", "disabled (mlx.enabled=false; local endpoint not probed)");
+    else {
+      const mlx = await inspectMlx({ ...mlxConfig, runtimeDir: mlxConfig.runtimeDir ? resolve(cwd, mlxConfig.runtimeDir) : undefined, modelPath: mlxConfig.modelPath ? resolve(cwd, mlxConfig.modelPath) : undefined });
+      row(mlx.state === "ready" || mlx.state === "stopped", "pi mlx", `${mlx.state}${mlx.model ? ` (${mlx.model})` : ""}${mlx.lastError ? `: ${mlx.lastError}` : ""}`);
+    }
 
     const memory = new MemoryClient();
     const mem = await memory.health();

@@ -69,7 +69,7 @@ export interface HubConfig {
   inference: InferenceConfig;
   omniroute: OmniRouteConfig;
   pi: { enabled: boolean; auto_start: boolean; cmd: string[]; backend: "auto" | "dgx" | "mlx"; dgx_coding: string; dgx_fast: string; max_steps: number };
-  mlx: Pick<MlxOptions, "provider" | "host" | "runtimeDir" | "modelPath" | "port" | "model" | "sourceModel" | "contextWindow" | "maxInputTokens" | "maxTokens" | "maxConcurrency">;
+  mlx: { enabled: boolean } & Pick<MlxOptions, "provider" | "host" | "runtimeDir" | "modelPath" | "port" | "model" | "sourceModel" | "contextWindow" | "maxInputTokens" | "maxTokens" | "maxConcurrency">;
   /** `bash_network`: true is network through the egress proxy to `network_allow` (#65); "direct" is everything, until 0.13.0 (#83). */
   local: { deny: string[]; bash_network: boolean | "direct"; network_allow: string[]; max_steps: number; read_allow: string[] };
   /** Pending permission requests: how long they wait, and whether the desktop is told (issue #5). */
@@ -113,7 +113,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   inference: DEFAULT_INFERENCE,
   omniroute: DEFAULT_OMNIROUTE,
   pi: { enabled: false, auto_start: false, cmd: ["pi"], backend: "auto", dgx_coding: "coding", dgx_fast: "fast", max_steps: 30 },
-  mlx: { provider: "ollama", model: "agenthub-fast-mlx:4b-8k", sourceModel: "qwen3.5:4b-mlx", contextWindow: 8192, maxInputTokens: 6000, maxTokens: 2048, maxConcurrency: 1 },
+  mlx: { enabled: true, provider: "ollama", model: "agenthub-fast-mlx:4b-8k", sourceModel: "qwen3.5:4b-mlx", contextWindow: 8192, maxInputTokens: 6000, maxTokens: 2048, maxConcurrency: 1 },
   local: { deny: [], bash_network: false, network_allow: DEFAULT_NETWORK_ALLOW, max_steps: 30, read_allow: [] },
   // Off here, so tests and a hub without a config file stay silent; a project's config defaults it on for macOS.
   approvals: { timeout_s: 120, notify: false },
@@ -166,11 +166,13 @@ export function loadConfig(cwd: string): HubConfig {
   }
   if (file.local?.bash_network === "direct") retired.push('local.bash_network "direct" (the open network) goes in 0.13.0: set it to true and list the hosts in local.network_allow');
   if (file.mlx != null && (typeof file.mlx !== "object" || Array.isArray(file.mlx))) throw new Error("mlx configuration must be an object");
+  if (file.mlx?.enabled !== undefined && typeof file.mlx.enabled !== "boolean") throw new Error("mlx.enabled must be a boolean");
   if (file.mlx?.provider !== undefined && !["ollama", "legacy"].includes(file.mlx.provider)) throw new Error("mlx.provider must be ollama or legacy");
   if (file.mlx?.provider === undefined && (file.mlx?.modelPath || file.mlx?.runtimeDir || file.mlx?.bin || file.mlx?.port)) {
     throw new Error("legacy MLX configuration requires explicit mlx.provider=legacy; migrate to provider=ollama to avoid Python serving");
   }
-  const mlx = { ...(file.mlx?.provider === "legacy" ? { provider: "legacy" as const, maxInputTokens: 16_000, maxTokens: 2048 } : DEFAULT_CONFIG.mlx), ...file.mlx };
+  const mlx = { ...(file.mlx?.provider === "legacy" ? { enabled: true, provider: "legacy" as const, maxInputTokens: 16_000, maxTokens: 2048 } : DEFAULT_CONFIG.mlx), ...file.mlx };
+  if (!mlx.enabled && file.pi?.backend === "mlx") throw new Error("Pi backend mlx conflicts with mlx.enabled=false");
   if (typeof mlx.runtimeDir === "string" && mlx.runtimeDir) mlx.runtimeDir = resolve(cwd, mlx.runtimeDir);
   if (typeof mlx.modelPath === "string" && mlx.modelPath) mlx.modelPath = resolve(cwd, mlx.modelPath);
   return {
@@ -198,6 +200,20 @@ export function loadConfig(cwd: string): HubConfig {
     ...(ignored.length ? { ignored } : {}),
     ...(retired.length ? { retired } : {}),
   };
+}
+
+/** Explicit launch choices are never replaced when the local capability is disabled. */
+export function mlxLaunchProblem(config: HubConfig, args: { backend?: unknown; model?: unknown }): string | undefined {
+  if (config.mlx.enabled !== false) return undefined;
+  if (args.backend === "mlx" || args.model === "mlx/fast") return "Pi MLX launch conflicts with mlx.enabled=false; select auto or a DGX alias";
+  return undefined;
+}
+
+/** Shipped defaults remain capability-aware; operator-written MLX pins require an explicit migration. */
+function disabledMlxPolicyProblem(config: HubConfig, cwd: string): string | undefined {
+  if (config.mlx.enabled !== false || !existsSync(join(cwd, ".agenthub", "routing.toml"))) return undefined;
+  const conflict = Object.entries(currentRouting(cwd).classes).find(([, policy]) => policy?.pi_backend === "mlx");
+  return conflict ? `routing.toml: [classes.${conflict[0]}] pi_backend=mlx conflicts with mlx.enabled=false; remove the pin for hub/auto or select dgx` : undefined;
 }
 
 export interface DaemonOptions {
@@ -284,6 +300,8 @@ export async function startDaemon(opts: DaemonOptions) {
   let ready = false;
   try {
   const config = opts.config ?? loadConfig(opts.cwd);
+  const mlxConfigProblem = mlxLaunchProblem(config, config.pi) ?? disabledMlxPolicyProblem(config, opts.cwd);
+  if (mlxConfigProblem) throw new Error(mlxConfigProblem);
   mkdirSync(opts.stateDir, { recursive: true });
   const logFile = join(opts.stateDir, "hub.log");
   // The state dir can vanish under a running hub (issue #56): a log line must never take a handler down with it.
@@ -333,6 +351,13 @@ export async function startDaemon(opts: DaemonOptions) {
 
   // A session record left by a run that never shut down means it crashed (issue #37). A controlled restart has its own.
   const crashed = !recoveryOperation && !restartFilePresent ? readSessions(opts.stateDir) : undefined;
+  if (config.mlx.enabled === false) {
+    const launches = [...(restored?.peers ?? []).filter(peer => peer.id === "pi").map(peer => peer.launch), ...(crashed?.peers ?? []).filter(peer => peer.peer === "pi").map(peer => peer.meta.launch)];
+    for (const launch of launches) {
+      const problem = mlxLaunchProblem(config, (launch ?? {}) as { backend?: unknown; model?: unknown });
+      if (problem) throw new Error(`recorded Pi recovery: ${problem}`);
+    }
+  }
   // A controlled restart's source may have been cut short before it removed its record: this run is not a crash, and
   // a record left now would make the next ordinary start look like one.
   if (recoveryOperation || restartFilePresent) try { removeSessions(opts.stateDir); } catch { /* nothing to remove */ }
@@ -1516,6 +1541,8 @@ export async function startDaemon(opts: DaemonOptions) {
 
   async function startPeerBody(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean }, mute: (p: PeerAdapter) => void): Promise<Record<string, unknown>> {
     if (peer === "pi") {
+      const problem = mlxLaunchProblem(config, { backend: args.backend ?? config.pi.backend, model: args.model }) ?? disabledMlxPolicyProblem(config, opts.cwd);
+      if (problem) return { ok: false, error: problem };
       if (args.mode !== undefined && !["headless", "tui"].includes(args.mode)) return { ok: false, error: "invalid Pi mode" };
       if (args.backend !== undefined && !["auto", "dgx", "mlx"].includes(args.backend)) return { ok: false, error: "invalid Pi backend" };
       if (args.model !== undefined && !["dgx/coding", "dgx/fast", "mlx/fast"].includes(args.model)) return { ok: false, error: "unknown Pi model alias" };
@@ -1650,7 +1677,9 @@ export async function startDaemon(opts: DaemonOptions) {
       const mode = args.mode ?? "headless";
       const backend = args.backend ?? config.pi.backend;
       if (!["headless", "tui"].includes(mode) || !["auto", "dgx", "mlx"].includes(backend)) return { ok: false, error: "invalid Pi mode/backend" };
-      modelRelay ??= await startModelRelay({ omni, admitRequest: admitPiRequest, dgxMaxInputTokens: currentRouting(opts.cwd, log).pi.dgx_max_context_tokens, allowedDGXmodels: { "dgx/coding": config.pi.dgx_coding, "dgx/fast": config.pi.dgx_fast }, mlx: config.mlx, mlxAlias: "mlx/fast", fallbackDGXAlias: "dgx/fast", enableHubAuto: true,
+      const problem = mlxLaunchProblem(config, { backend, model: args.model });
+      if (problem) return { ok: false, error: problem };
+      modelRelay ??= await startModelRelay({ omni, admitRequest: admitPiRequest, dgxMaxInputTokens: currentRouting(opts.cwd, log).pi.dgx_max_context_tokens, allowedDGXmodels: { "dgx/coding": config.pi.dgx_coding, "dgx/fast": config.pi.dgx_fast }, mlx: config.mlx.enabled === false ? undefined : config.mlx, mlxAlias: "mlx/fast", fallbackDGXAlias: "dgx/fast", enableHubAuto: true,
         routeSessionKey: () => { const session = bus.peers.get("pi")?.recoveryMetadata?.().sessionId; return typeof session === "string" ? session : undefined; },
         onRoute: record => event({ type: "route", peer: "pi", ...record }),
       });
@@ -1673,7 +1702,7 @@ export async function startDaemon(opts: DaemonOptions) {
         model: args.model,
         sessionId: args.sessionId, sessionFile: args.sessionFile,
         admitBudget: async (envs, unit) => unit === "model_calls" ? [] : tasks.admitExecutionEnvelopes(envs, "pi", unit),
-        relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? Math.min(routing.pi.mlx_max_context_tokens, config.mlx.provider === "ollama" ? (config.mlx.contextWindow ?? 8192) : routing.pi.mlx_max_context_tokens) : routing.pi.dgx_max_context_tokens, maxTokens: id === "hub/auto" ? Math.min(config.mlx.maxTokens ?? 2048, 8192) : id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
+        relay: { url: modelRelay.url, token: modelRelay.token, models: modelRelay.models.map((id) => ({ id, contextWindow: id.startsWith("mlx/") ? Math.min(routing.pi.mlx_max_context_tokens, config.mlx.provider === "ollama" ? (config.mlx.contextWindow ?? 8192) : routing.pi.mlx_max_context_tokens) : routing.pi.dgx_max_context_tokens, maxTokens: id === "hub/auto" ? (config.mlx.enabled === false ? 8192 : Math.min(config.mlx.maxTokens ?? 2048, 8192)) : id.startsWith("mlx/") ? (config.mlx.maxTokens ?? 2048) : 8192 })) },
         tools: [...TOOL_SCHEMAS.map((t) => t.function), ...TASK_TOOLS.map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema }))],
         executeTool: async (name, raw, callId, sessionId, signal) => {
           if (signal?.aborted) return "error: turn cancelled before tool effects";
@@ -1709,7 +1738,12 @@ export async function startDaemon(opts: DaemonOptions) {
           const taskId = envs.find(env => env.refs?.task)?.refs?.task;
           const task = taskId ? board.get(Number(taskId)) : undefined;
           const policyBackend = task ? currentRouting(opts.cwd, log).classes[task.class]?.pi_backend : undefined;
-          if (policyBackend === "mlx") return "mlx/fast";
+          if (policyBackend === "mlx") {
+            if (config.mlx.enabled !== false) return "mlx/fast";
+            const problem = disabledMlxPolicyProblem(config, opts.cwd);
+            if (problem) throw new Error(problem);
+            return "hub/auto";
+          }
           if (policyBackend === "dgx") return task && ["bulk_edit", "test"].includes(task.class) ? "dgx/fast" : "dgx/coding";
           return "hub/auto";
         },

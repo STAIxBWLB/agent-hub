@@ -89,3 +89,20 @@ test("Ollama CLI uses an external model and refuses shared-service shutdown", as
   expect(stopped.stderr).toContain("externally managed");
   expect(calls.every(path => ["/api/tags", "/api/ps", "/api/show"].includes(path))).toBe(true);
 });
+
+test("disabled models commands never probe or change shared Ollama", async () => {
+  const project = mkdtempSync(join(tmpdir(), "ahub-disabled-models-"));
+  const home = mkdtempSync(join(tmpdir(), "ahub-disabled-home-"));
+  let calls = 0;
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { calls++; return new Response("must not probe", { status: 500 }); } });
+  cleanup.push(async () => { server.stop(true); rmSync(project, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); });
+  mkdirSync(join(project, ".agenthub"));
+  writeFileSync(join(project, ".agenthub/config.json"), JSON.stringify({ mlx: { enabled: false, provider: "ollama", port: server.port } }));
+  for (const action of ["status", "setup", "start", "stop"]) {
+    const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", project, "models", action], { cwd: project, env: { ...process.env, AGENTHUB_HOME: home }, stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    if (action === "status") { expect(code).toBe(0); expect(JSON.parse(stdout)).toEqual({ state: "disabled", enabled: false }); }
+    else { expect(code).not.toBe(0); expect(stderr).toContain("MLX is disabled"); }
+  }
+  expect(calls).toBe(0);
+});
