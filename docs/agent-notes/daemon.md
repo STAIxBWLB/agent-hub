@@ -1,0 +1,12 @@
+# Daemon, control protocol and recovery
+
+Scope: the control WS and its protocol, state files, the Claude channel's reconnect, `ahub setup`, upgrade and recovery. Read before editing `src/hub/daemon.ts`, `src/hub/control-client.ts`, `src/adapters/claude-channel.ts`, `src/hub/restart.ts`, `src/hub/recovery-store.ts`, `src/hub/snapshots.ts`, `src/cli/setup.ts` or `src/cli/upgrade*.ts`, or before adding a native peer.
+
+- The plugin bundle is installed apart from the daemon. Any change to a control WS message shape bumps `PROTOCOL` in `control-client.ts`.
+- `ahub setup` reads Claude Code's state from `--json` listings and takes one step at a time, re-reading after each; never match paths or names by substring.
+- State files that clients read (`status.json`, `control-token`) are written after the port is bound, and `status.json` via temp file + rename.
+- The channel's reconnect loop stops on closes a retry cannot fix (`TERMINAL_CLOSES` in `claude-channel.ts`); a new daemon close code that means "do not come back" belongs there, or two clients fight over it forever.
+- Close 4000 is the one close that ends on its own, so it is not in `TERMINAL_CLOSES`: the session stands by and reconnects only once `status.json` reports the peer offline and not `claiming`. Reconnecting blind would evict whoever holds the id now, and the two would trade it forever. `claim()` happens at hello and `attach()` only after the preface, so the peer reads as offline in between: the daemon writes the status file at the claim and the flag covers that window.
+- Adding a native peer requires testing the command emitted by the actual recovery driver, not only its inspection or launch helpers. Never let a generic non-Codex branch treat a new peer as Claude.
+- Cross-version recovery must use the authenticated source protocol for prepare/commit/abort and the target protocol after startup. Prove the transition against a real prior release before claiming compatibility.
+- A zero-turn Claude session has no transcript, so it can never be resumed: every identity gate that compares session ids (restore, coordinator verify, daemon readiness) must tolerate a fresh session while the transcript is absent and stay strict the moment one exists. The commit snapshot records `sessionPersisted` for the restored daemon, and snapshots too old to have it are re-derived from disk. Never treat "session id changed" as proof of a lost conversation without checking the transcript first.
