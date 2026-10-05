@@ -27,7 +27,7 @@ const reject = args.includes("--reject-upstream");
 const latch = new ActiveFailureLatch();
 const requests: RelayRequestRecord[] = [];
 let nativeUsage: number | null = null, answer = false;
-const relay = await startModelRelay({ omni: new OmniRoute(config.omniroute), allowedDGXmodels: { 'dgx/coding': config.pi.dgx_coding }, ...(reject ? { admitRequest: async () => ({ allowed: false, reason: 'controlled probe rejection' }) } : {}), onRequest: (r) => { requests.push(r); } });
+const relay = await startModelRelay({ observeRequestMetadata: true, omni: new OmniRoute(config.omniroute), allowedDGXmodels: { 'dgx/coding': config.pi.dgx_coding }, ...(reject ? { admitRequest: async () => ({ allowed: false, reason: 'controlled probe rejection' }) } : {}), onRequest: (r) => { requests.push(r); } });
 const sandboxFile = join(root, 'qwen.sb');
 writeFileSync(sandboxFile, profile(cwd, false, [], []) + `\n(allow file-read* (subpath ${sbplString(resolve(pkg))}))\n(allow file-read* file-write* (subpath ${sbplString(home)}))\n(allow network-outbound (remote ip ${sbplString('localhost:' + new URL(relay.url).port)}))\n(deny file-write* (subpath ${sbplString(cwd)}))`);
 const peer = new AcpPeer('qwen', {

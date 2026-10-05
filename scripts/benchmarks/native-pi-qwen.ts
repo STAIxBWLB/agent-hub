@@ -510,6 +510,7 @@ async function main(): Promise<number> {
             log('physical_model_probe', { requested: m.fixed_backend, served: identityProbe.servedModel, provider: identityProbe.provider, replyPresent: !!identityProbe.message.content?.trim() });
 
             relay = await startModelRelay({
+                observeRequestMetadata: true,
                 omni,
                 allowedDGXmodels: { 'dgx/coding': m.fixed_backend },
                 expectedServedModels: { 'dgx/coding': m.expected_served_model },

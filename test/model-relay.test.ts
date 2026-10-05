@@ -580,3 +580,19 @@ test('#162 failed HTTP dispatch keeps only its own observed provider header', as
   expect((await dgxRequest(relay)).status).toBe(502);
   expect(relay.requests()[0]).toMatchObject({ outcome: 'failed', failureClass: 'http', httpStatus: 503, identified: false, provider: 'observed-provider', providerSource: 'header', providerAvailability: 'known' });
 });
+
+test("explicit missing observability is independent of request notification hooks (#162)", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response('data: {"model":"coding","choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } }) });
+  cleanup.push(() => upstream.stop(true));
+  for (const notify of [false, true]) {
+    let notified = 0;
+    const relay = await startModelRelay({ omni: omni(`http://127.0.0.1:${upstream.port}/v1`), allowedDGXmodels: { "dgx/coding": "coding" }, observeRequestMetadata: true, ...(notify ? { onRequest: () => { notified++; } } : {}) });
+    cleanup.push(relay.close);
+    const response = await fetch(`${relay.url}/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${relay.token}`, "content-type": "application/json" }, body: JSON.stringify({ model: "dgx/coding", messages: [{ role: "user", content: "probe" }] }) });
+    await response.text();
+    const records = await waitForRecords(relay, 1);
+    expect(records[0]).toMatchObject({ providerSource: "none", providerAvailability: "missing", usageAvailability: "missing" });
+    expect(records[0]!.dispatchGroupId).toBeString();
+    expect(notified).toBe(notify ? 1 : 0);
+  }
+});

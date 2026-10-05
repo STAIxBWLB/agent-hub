@@ -103,6 +103,9 @@ export interface ModelRelayOptions {
   mlxAlias?: string;
   mlxModel?: string;
   fallbackDGXAlias?: string;
+  /** Include explicit missing usage/provider metadata and dispatch groups, independently of observers.
+   *  Omission preserves the legacy absent-metadata journal schema. */
+  observeRequestMetadata?: boolean;
   /** Called exactly once per journaled request, at its terminal close, with a sanitized copy. */
   onRequest?: (record: RelayRequestRecord) => void;
 }
@@ -280,9 +283,9 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
     const start = Date.now();
     const expectedServedModel = options.expectedServedModels?.[alias];
     const record: RelayRequestRecord = {
-      id: randomUUID(), ...(options.onRequest ? { dispatchGroupId } : {}), at: new Date(start).toISOString(), alias,
+      id: randomUUID(), ...(options.observeRequestMetadata ? { dispatchGroupId } : {}), at: new Date(start).toISOString(), alias,
       identitySource: "none", role: "unknown", outcome: "completed", identified: false, durationMs: 0,
-      ...(options.onRequest ? { providerSource: "none" as const, providerAvailability: "missing" as const, usageAvailability: "missing" as const } : {}),
+      ...(options.observeRequestMetadata ? { providerSource: "none" as const, providerAvailability: "missing" as const, usageAvailability: "missing" as const } : {}),
     };
     let closed = false;
     const identify: RequestJournalEntry["identify"] = (model, source) => {

@@ -17,7 +17,7 @@ const choices: string[] = [];
 const requests: RelayRequestRecord[] = [];
 const omni = new OmniRoute(config.omniroute);
 let peer: PiPeer | undefined;
-const relay = await startModelRelay({ omni, allowedDGXmodels: { "dgx/fast": config.pi.dgx_fast, "dgx/coding": config.pi.dgx_coding }, mlx: (config.mlx as typeof config.mlx & { enabled?: boolean }).enabled === false ? undefined : config.mlx, enableHubAuto: true, fallbackDGXAlias: "dgx/fast", onRoute: e => choices.push(e.tier), onRequest: record => { requests.push(record); }, routeSessionKey: () => { const id = peer?.recoveryMetadata().sessionId; return typeof id === "string" ? id : undefined; } });
+const relay = await startModelRelay({ observeRequestMetadata: true, omni, allowedDGXmodels: { "dgx/fast": config.pi.dgx_fast, "dgx/coding": config.pi.dgx_coding }, mlx: (config.mlx as typeof config.mlx & { enabled?: boolean }).enabled === false ? undefined : config.mlx, enableHubAuto: true, fallbackDGXAlias: "dgx/fast", onRoute: e => choices.push(e.tier), onRequest: record => { requests.push(record); }, routeSessionKey: () => { const id = peer?.recoveryMetadata().sessionId; return typeof id === "string" ? id : undefined; } });
 let answer = "", failed = false;
 try {
   peer = new PiPeer("pi", { cwd: root, stateDir: root, mode: "headless", backend: "auto", model: "hub/auto", cmd: process.env.PI_BIN ? [process.env.PI_BIN] : config.pi.cmd, relay: { url: relay.url, token: relay.token, models: relay.models.map(id => ({ id, contextWindow: id === "hub/auto" ? 8192 : config.pi.backend === "mlx" ? 8192 : 262144, maxTokens: 128 })) }, tools: [], executeTool: async () => { throw new Error("No tools are allowed in the smoke"); }, maxSteps: 2, watchdogMs: 120_000, onTurnFailure: async () => { failed = true; } });
