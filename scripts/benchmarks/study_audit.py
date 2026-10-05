@@ -51,7 +51,7 @@ def restoration_ok(root, live):
     ok = ok and not (protected.get("paths") and protected.get("restored") is not True)
     ok = ok and all(x.get("restored") is True for x in siblings.values())
     ok = ok and not (trust and not trust.get("restored") and trust.get("stage") != "changed_concurrently")
-    actors = [a for group in ledger.get("actors", {}).values() for a in group]
+    actors = [ledger["runner"], *[a for group in ledger.get("actors", {}).values() for a in group]]
     matches = sum((a.get("pid"), a.get("started")) in live for a in actors)
     return bool(ok and not matches), len(actors), matches
 
@@ -139,7 +139,7 @@ def audit(roots, plan="study", live=None, require_grades=True):
                     actors = runner.required_actors(arm)
                     native = run.get("nativeVersions", {})
                     ready = run.get("readiness", {})
-                    isolation = all(native.get(a) == manifest["versions"][a] and
+                    isolation = all(isinstance(native.get(a), dict) and native[a].get("version") == manifest["versions"][a] and
                                     isinstance(ready.get(a), dict) and
                                     ready[a].get("sandboxProbe", {}).get("checked") is True and
                                     ready[a].get("sandboxProbe", {}).get("result") == "denied" and
