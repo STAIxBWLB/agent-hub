@@ -59,7 +59,7 @@ Area rules live in `docs/agent-notes/`. Before editing a path below, read its no
 
 - Benchmarks (`docs/agent-notes/benchmarks.md`): `scripts/benchmarks/`, `test/benchmarks/`, or running a benchmark.
 - Adapters and spawned agents (`docs/agent-notes/adapters.md`): `src/adapters/`, `src/hub/peers.ts`, `src/hub/child-process.ts`, approvals in `src/hub/daemon.ts`, the process-tree stop in `scripts/benchmarks/teardown.ts`, or adding a native peer.
-- Bus, digests and replies (`docs/agent-notes/bus.md`): `src/hub/bus.ts`, `src/hub/envelope.ts`, `src/hub/limits.ts`, `src/hub/inference.ts`, `admit` and the control `send` handler in `src/hub/daemon.ts`, or reply addressing and priority in an adapter.
+- Bus, digests and replies (`docs/agent-notes/bus.md`): `src/hub/bus.ts`, `src/hub/envelope.ts`, `src/hub/limits.ts`, `src/hub/delivery-journal.ts`, `src/hub/inference.ts`, `admit` and the control `send` handler in `src/hub/daemon.ts`, or reply addressing and priority in an adapter.
 - Local worker and sandbox (`docs/agent-notes/local-worker.md`): `src/adapters/local-worker.ts`, `src/local/`, `src/memory/capture.ts`, `src/hub/facts.ts`.
 - Models (`docs/agent-notes/models.md`): `src/models/`, `src/hub/inference.ts`, `src/omniroute/`, `src/switchyard/`.
 - Task board and hub tools (`docs/agent-notes/tasks.md`): `src/hub/tasks.ts`, `src/hub/board.ts`, `src/hub/routing.ts`, `src/hub/hub-tools.ts`, the hub tool handler in `src/hub/daemon.ts`.

@@ -1,6 +1,6 @@
 # Bus, digests and replies
 
-Scope: delivery, digests and condensation, hub envelopes, reply addressing, priority and limits. Read before editing `src/hub/bus.ts`, `src/hub/envelope.ts`, `src/hub/limits.ts`, `src/hub/inference.ts` (digest condensation), or `admit` and the control `send` handler in `src/hub/daemon.ts`, or how an adapter addresses a reply or sets its priority.
+Scope: delivery, digests and condensation, hub envelopes, reply addressing, priority and limits. Read before editing `src/hub/bus.ts`, `src/hub/envelope.ts`, `src/hub/limits.ts`, `src/hub/delivery-journal.ts`, `src/hub/inference.ts` (digest condensation), or `admit` and the control `send` handler in `src/hub/daemon.ts`, or how an adapter addresses a reply or sets its priority.
 
 - A failed digest is retried one envelope at a time, so a poison envelope cannot take its neighbours down with it.
 - An `important` envelope being steered is not in the queue while the steer is in flight; queue it first and an idle transition delivers it twice.
