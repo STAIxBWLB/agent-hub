@@ -1130,3 +1130,32 @@ Compare Claude usage events against its explicit native session transcript, dedu
 by assistant message ID. Compare local usage events with actual successful provider
 response counters; absent counters remain unknown and model aliases remain separate
 from reported served-model provenance. Do not infer dollar spend from token counts.
+
+## Native Pi auto-route dispatch verdicts (#164)
+
+Run `bun scripts/smoke-pi-route.ts` for permissive connectivity, or add
+`--require-primary` to require a successful primary dispatch without fallback.
+`AHUB_SMOKE_PROJECT` selects the project configuration; the smoke creates a
+separate temporary Pi workspace, permits no tools and leaves existing hubs alone.
+The project `mlx.enabled = false` capability excludes local routing from this
+smoke as well as the daemon. The response must equal `PI_HUB_AUTO_OK` exactly.
+
+The JSON verdict separates `nativeResponse`, `primaryRoute`, `fallbackRoute` and
+`fallbackOccurred`. `choices` records routing intent. `dispatches` records actual
+upstream attempts, with dispatch IDs and `fallbackOfId` linking a fallback to its
+failed primary; model identification comes only from that dispatch's journal.
+Backend readiness, a selected tier and a previous model label cannot certify
+that a generation completed. Failure diagnostics contain only bounded categories
+and HTTP status; raw errors, URLs, headers and native answer text are omitted.
+
+For an unavailable MLX primary followed by a completed DGX fallback, expect
+`nativeResponse: passed`, `primaryRoute: failed`, `fallbackRoute: passed` and
+`fallbackOccurred: true`. Connectivity passes, but the local route failed.
+The same evidence fails with `--require-primary`. Primary-only completion reports
+`fallbackRoute: unknown`; a cancelled primary reports `primaryRoute: cancelled`.
+If both attempts fail, connectivity fails even if unrelated answer text contains
+the sentinel. Missing served-model evidence remains `identified: false`.
+
+Before recording live acceptance, run a bounded unavailable-local/healthy-remote
+leg and retain the sanitized JSON plus process cleanup confirmation. Fixture
+verdicts do not certify provider availability or a real local generation.
