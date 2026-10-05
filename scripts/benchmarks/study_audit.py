@@ -117,6 +117,9 @@ def audit(roots, plan="study", live=None, require_grades=True):
                                 ev.get("case_sha256") == cohort.get("private_case_sha256", {}).get(str(c)))
                     checks["controls"] &= good
                     controls += int(good)
+                    if digest(control.get("evaluation_sha256")):
+                        hashes.append({"cohort": rep, "case": c, "artifact": "control-oracle" if control.get("mode") == "oracle" else "control-base",
+                                       "sha256": digest(control.get("evaluation_sha256"))})
         for c in spec["cases"]:
             for arm in manifest["arms"]:
                 key = (c, arm, rep)
@@ -138,7 +141,11 @@ def audit(roots, plan="study", live=None, require_grades=True):
                     ready = run.get("readiness", {})
                     isolation = all(native.get(a) == manifest["versions"][a] and
                                     isinstance(ready.get(a), dict) and
-                                    ready[a].get("sandboxProbe", {}).get("result") == "denied" for a in actors)
+                                    ready[a].get("sandboxProbe", {}).get("checked") is True and
+                                    ready[a].get("sandboxProbe", {}).get("result") == "denied" and
+                                    isinstance(ready[a].get("sessionId"), str) and bool(ready[a]["sessionId"]) and
+                                    ready[a].get("requestedModel") == manifest["models"][a] and
+                                    ready[a].get("cwd") == run.get("cwd") for a in actors)
                     checks["model_gates"] &= (gate and isolation) or status in ("unavailable", "missing")
                     cell.update({"record_sha256": runner.file_sha(path), "cleanup_complete": run.get("cleanup_complete") is True,
                                  "metadata_clean": run.get("metadata_clean") is True, "model_gate": gate,
@@ -146,6 +153,10 @@ def audit(roots, plan="study", live=None, require_grades=True):
                                  "usage_pi": number(run.get("usage", {}).get("pi")),
                                  "usage_qwen": number(run.get("usage", {}).get("qwen"))})
                     checks["restoration"] &= cell["cleanup_complete"] and cell["metadata_clean"]
+                    if status == "scored":
+                        cwd = Path(str(run.get("cwd", ""))).resolve()
+                        metadata_ok = (root.resolve() / "fixtures") == cwd.parent and cwd.is_dir()
+                        checks["bindings"] &= metadata_ok and runner.fixture_metadata_sha256(cwd) == run.get("metadata_sha256")
                 elif status != "missing" or not require_grades:
                     checks["matrix"] = False
                 if status == "scored":
