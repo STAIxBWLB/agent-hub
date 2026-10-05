@@ -207,7 +207,7 @@ def main():
         if a.export: write_new(a.export, result)
         print(json.dumps(result, sort_keys=True, allow_nan=False))
         return 0 if result["verified"] else 1
-    except (OSError, ValueError, TypeError, KeyError, runner.BenchError, subprocess.SubprocessError):
+    except (Exception, KeyboardInterrupt):
         print('{"schema":"agent-hub.native-study-audit/v1","verified":false,"error":"audit_failed"}')
         return 1
 
