@@ -45,6 +45,10 @@ def read_command(cmd, env=None):
 
 def preflight(a):
     """No fixtures, output roots, services or model calls are mutated here."""
+    for key, value in vars(a).items():
+        if isinstance(value, Path): setattr(a, key, value.resolve())
+        elif isinstance(value, list) and all(isinstance(x, Path) for x in value):
+            setattr(a, key, [x.resolve() for x in value])
     original = runner.load(a.manifest)
     version = runner.load(REPO / "package.json")["version"]
     m, amendments = bind_manifest(original, version, a.bind_current_hub)
@@ -182,11 +186,11 @@ def execute(a):
         result = study_audit.audit(cohorts, a.plan)
         if not result["verified"]: raise runner.BenchError("final audit failed")
         study_audit.write_new(root / "safe-aggregate.json", result)
+        evidence = [{"artifact": p.relative_to(root).as_posix(), "sha256": runner.file_sha(p)}
+                    for p in sorted(root.rglob("*")) if p.is_file() and ".git" not in p.parts and "fixtures" not in p.parts and p.name != "study.json"]
+        study_audit.write_new(root / "private-evidence-hashes.json", evidence)
         study.advance("sealed")
         study.state["outcome"] = "complete"; study.save()
-        evidence = [{"artifact": p.relative_to(root).as_posix(), "sha256": runner.file_sha(p)}
-                    for p in sorted(root.rglob("*")) if p.is_file() and ".git" not in p.parts and "fixtures" not in p.parts]
-        study_audit.write_new(root / "private-evidence-hashes.json", evidence)
         print(json.dumps({"phase": "sealed", "planned": result["planned"], "retained": result["retained"], "verified": True}))
     except BaseException:
         study.fail()

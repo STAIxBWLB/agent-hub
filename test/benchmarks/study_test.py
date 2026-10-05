@@ -1,5 +1,5 @@
 """Focused stdlib tests; synthetic metadata only, no evaluator or native processes."""
-import copy, importlib.util, json, sys, tempfile, unittest
+import copy, importlib.util, json, subprocess, sys, tempfile, unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -38,6 +38,115 @@ class StudyTests(unittest.TestCase):
             rows.append({"case": 0, "arm": arm, "status": "unavailable", "pass": None, "reason": "PRIVATE ERROR"})
         runner.dump(root / "grade.json", {"manifest_sha256": h, "rows": rows, "controls": {"0": []}})
         return root
+
+    def scored_fixture(self, root, rep, repository):
+        root = root.resolve()  # native runner records canonical paths on macOS
+        self.fixture(root, rep)
+        m = self.manifest(); case = m["cases"][0]
+        head = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
+        runner.dump(root.parent / "provenance.json", {"source_head": head, "source_repository": str(repository)})
+        prep = runner.load(root / "prepared.json")
+        prep.update({key: runner.file_sha(repository / path) for key, path in audit.SOURCE_FILES.items()})
+        prep["source_pins"] = {path: runner.file_sha(repository / path) for path in runner.SOURCE_PIN_PATHS}
+        prep["fixtures"] = []
+        cohort = runner.load(root / "cohort.json")
+        cohort.update({key: prep[key] for key in ("runner_sha256", "native_runner_sha256", "pi_qwen_runner_sha256", "peer_bus_sha256", "teardown_sha256")})
+        cohort["private_case_sha256"] = {"0": "c" * 64}
+        grade = {"schema": m["schema"], "manifest_sha256": prep["manifest_sha256"], "cohort": [0],
+                 **{k: prep[k] for k in ("runner_sha256", "native_runner_sha256", "teardown_sha256", "evaluator_sha256")}, "rows": [], "controls": {"0": []}}
+        evbase = {"repo": case["repo"], "task": case["task"], "features": case["features"],
+                  "upstream_commit": m["upstream"]["commit"], "image_digest": case["image_digest"],
+                  "evaluator_sha256": prep["evaluator_sha256"], "case_sha256": "c" * 64}
+        for mode in ("base", "oracle"):
+            ev = root / "evaluations" / (mode + ".json")
+            runner.dump(ev, {**evbase, "input_sha256": "d" * 64, "both_passed": mode == "oracle",
+                             "valid_negative": mode == "base", "valid_oracle": mode == "oracle", "feature1": {"test_output": "PRIVATE TEST"}})
+            grade["controls"]["0"].append({"mode": mode, "check_passed": True, "observed": mode == "oracle",
+                                         "input_sha256": "d" * 64, "evaluation_path": str(ev), "evaluation_sha256": runner.file_sha(ev)})
+        for arm in m["arms"]:
+            cwd = root / "fixtures" / f"00-{arm}"; (cwd / "src").mkdir(parents=True)
+            (cwd / "src/example.py").write_text("original = True\n")
+            self.git(cwd, "init", "-q"); self.git(cwd, "add", "-A"); self.git(cwd, "commit", "-qm", "sealed fixture")
+            sealed = self.git(cwd, "rev-parse", "HEAD")
+            (cwd / "src/example.py").write_text("original = False\n")
+            patchbytes = subprocess.check_output(["git", "-C", str(cwd), "diff", "--binary", sealed, "--", "src"])
+            patchfile = root / "patches" / (arm + ".patch"); patchfile.parent.mkdir(exist_ok=True); patchfile.write_bytes(patchbytes)
+            nativepatch = root / "attempts" / (arm + ".patch"); nativepatch.parent.mkdir(exist_ok=True); nativepatch.write_bytes(patchbytes)
+            patchhash = runner.sha(patchbytes)
+            actors = runner.required_actors(arm)
+            run = runner.load(root / "runs" / f"00-{arm}.json")
+            run.update(cwd=str(cwd), sealedCommit=sealed, sourceDirs=["src"], patchFile=str(nativepatch), patchSHA256=patchhash,
+                       nativeVersions={a: {"version": m["versions"][a]} for a in actors},
+                       readiness={a: {"cwd": str(cwd), "sessionId": "session", "requestedModel": m["models"][a], "sandboxProbe": {"checked": True, "result": "denied"}} for a in actors},
+                       modelIdentity={"requests": [{"outcome": "completed", "identified": True, "requestedModel": m["fixed_backend"], "actualModel": m["expected_served_model"], "provider": m["expected_provider"]}]},
+                       usage={"pi": 0, "qwen": 0}, metadata_sha256=runner.fixture_metadata_sha256(cwd))
+            runner.dump(root / "runs" / f"00-{arm}.json", run)
+            prep["fixtures"].append({"case": 0, "arm": arm, "cwd": str(cwd), "base_commit": sealed, "source_dirs": ["src"]})
+            ev = root / "evaluations" / (arm + ".json")
+            runner.dump(ev, {**evbase, "input_sha256": patchhash, "both_passed": True})
+            grade["rows"].append({"case": 0, "arm": arm, "status": "scored", "pass": True, "input_sha256": patchhash,
+                                  "patch_path": str(patchfile), "evaluation_path": str(ev), "evaluation_sha256": runner.file_sha(ev)})
+        for name, data in (("prepared.json", prep), ("cohort.json", cohort), ("grade.json", grade)): runner.dump(root / name, data)
+        return root
+
+    def git(self, cwd, *args):
+        return subprocess.check_output(["git", "-C", str(cwd), "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost",
+                                        "-c", "commit.gpgsign=false", *args], text=True, stderr=subprocess.PIPE).strip()
+
+    def source_repo(self, root):
+        root.mkdir()
+        for path in set(audit.SOURCE_FILES.values()) | set(runner.SOURCE_PIN_PATHS):
+            p = root / path; p.parent.mkdir(parents=True, exist_ok=True); p.write_text("sealed source " + path)
+        self.git(root, "init", "-q"); self.git(root, "add", "-A"); self.git(root, "commit", "-qm", "source provenance")
+        return root
+
+    def test_full_immutable_source_and_submission_chain_rejects_tampering(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d); repo = self.source_repo(base / "source")
+            roots = [self.scored_fixture(base / f"r{i}", i, repo) for i in range(2)]
+            self.assertTrue(audit.audit(roots, live=set())["verified"])
+            # Current source changes do not invalidate a correctly sealed old Git tree.
+            (repo / "scripts/benchmarks/runner.py").write_text("later unrelated source")
+            self.assertTrue(audit.audit(roots, live=set())["verified"])
+            for field in ("runner_sha256", "native_runner_sha256", "teardown_sha256", "evaluator_sha256"):
+                with self.subTest(grade_field=field):
+                    path = roots[0] / "grade.json"; original = runner.load(path); bad = copy.deepcopy(original)
+                    bad[field] = "b" * 64; runner.dump(path, bad)
+                    self.assertFalse(audit.audit(roots, live=set())["checks"]["bindings"])
+                    runner.dump(path, original)
+            for field in ("process_table_sha256", "evaluator_sha256", "source_pins"):
+                with self.subTest(prepared_field=field):
+                    path = roots[0] / "prepared.json"; original = runner.load(path); bad = copy.deepcopy(original)
+                    if field == "source_pins": bad[field][runner.SOURCE_PIN_PATHS[0]] = "b" * 64
+                    else: bad[field] = "b" * 64
+                    runner.dump(path, bad)
+                    self.assertFalse(audit.audit(roots, live=set())["checks"]["bindings"])
+                    runner.dump(path, original)
+            for field in ("patchSHA256", "sealedCommit", "patchFile"):
+                with self.subTest(native_field=field):
+                    path = roots[0] / "runs/00-solo-pi.json"; original = runner.load(path); bad = copy.deepcopy(original)
+                    bad[field] = "b" * (40 if field == "sealedCommit" else 64) if field != "patchFile" else str(roots[0] / "missing.patch")
+                    runner.dump(path, bad)
+                    self.assertFalse(audit.audit(roots, live=set())["checks"]["bindings"])
+                    runner.dump(path, original)
+            cwd = roots[0] / "fixtures/00-solo-pi"
+            (cwd / "src/new.py").write_text("untracked source added after the run")
+            self.assertFalse(audit.audit(roots, live=set())["checks"]["bindings"])
+            (cwd / "src/new.py").unlink()
+            (cwd / "unauthorized.py").write_text("outside source")
+            self.assertFalse(audit.audit(roots, live=set())["checks"]["bindings"])
+
+    def test_participation_preserves_observed_zero_and_excludes_absent_and_unstarted(self):
+        with tempfile.TemporaryDirectory() as d:
+            roots = [self.fixture(Path(d) / f"r{i}", i) for i in range(2)]
+            path = roots[0] / "runs/00-solo-pi.json"; run = runner.load(path)
+            run.update(usage={"pi": 0, "qwen": 0}, readiness={"pi": {"sessionId": "started"}})
+            runner.dump(path, run)
+            rows = audit.audit(roots, live=set())["cells"]
+            observed = next(x for x in rows if x["repeat"] == 0 and x["arm"] == "solo-pi")
+            self.assertEqual(observed["usage_pi"], 0); self.assertIsNone(observed["usage_qwen"])
+            unstarted = next(x for x in rows if x["repeat"] == 0 and x["arm"] == "joint-pi-qwen")
+            self.assertIsNone(unstarted["usage_pi"]); self.assertIsNone(unstarted["usage_qwen"])
 
     def test_matrix_and_version_binding_preserve_every_other_pin(self):
         m = runner.load(SCRIPTS / "manifest-v3-pi-qwen.json")
@@ -147,6 +256,54 @@ class StudyTests(unittest.TestCase):
             result = audit.audit(roots, live=set())
             self.assertFalse(result["verified"])
             self.assertNotIn(secret, json.dumps(result))
+
+    def test_relative_input_paths_are_resolved_before_repository_cwd_commands(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve(); m = self.manifest()
+            m["hub_version"] = runner.load(supervisor.REPO / "package.json")["version"]
+            m["versions"]["hub"] = m["hub_version"]
+            runner.dump(root / "manifest.json", m)
+            a = type("Args", (), {})()
+            a.manifest = Path("manifest.json"); a.output = Path("study")
+            a.upstream_root = Path("missing"); a.private_inputs = Path("private")
+            a.archives = Path("archives"); a.qwen_package = Path("qwen")
+            a.protect = [Path("prior")]; a.optional_protect = []
+            a.python = Path(sys.executable); a.bind_current_hub = False; a.plan = "study"
+            old = Path.cwd()
+            try:
+                import os
+                os.chdir(root)
+                with self.assertRaises(runner.BenchError): supervisor.preflight(a)
+            finally:
+                os.chdir(old)
+            for key in ("manifest", "output", "upstream_root", "private_inputs", "archives", "qwen_package"):
+                self.assertEqual(getattr(a, key), root / {"manifest": "manifest.json", "output": "study", "upstream_root": "missing", "private_inputs": "private", "archives": "archives", "qwen_package": "qwen"}[key])
+            self.assertEqual(a.protect, [root / "prior"])
+            self.assertFalse(a.output.exists())
+
+    def test_failed_immutable_index_write_never_reports_sealed_complete(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); m = self.manifest(); runner.dump(root / "manifest.json", m)
+            a = type("Args", (), {})()
+            a.manifest = root / "manifest.json"; a.output = root / "study"
+            a.plan = "study"; a.generation_only = False; a.python = Path(sys.executable)
+            for key in ("archives", "upstream_root", "private_inputs", "probe_target", "qwen_package"):
+                setattr(a, key, root)
+            result = {"checks": {"restoration": True, "matrix": True, "bindings": True}, "verified": True, "planned": 6, "retained": 6}
+            write = audit.write_new
+            def fail_index(path, value):
+                if path.name == "private-evidence-hashes.json": raise OSError("injected seal failure")
+                write(path, value)
+            def command(cmd, log, timeout=None): log.write_text("private output")
+            with patch.object(supervisor, "preflight", return_value=(m, m, [], [root], [])), \
+                 patch.object(supervisor, "run_command", side_effect=command), \
+                 patch.object(supervisor, "read_command", return_value="a" * 40), \
+                 patch.object(audit, "audit", return_value=result), \
+                 patch.object(audit, "write_new", side_effect=fail_index):
+                with self.assertRaises(OSError): supervisor.execute(a)
+            state = runner.load(a.output / "study.json")
+            self.assertEqual(state["phase"], "graded"); self.assertEqual(state["outcome"], "incomplete")
+            self.assertNotIn("sealed", [x["phase"] for x in state["history"]])
 
     def test_export_refuses_overwrite(self):
         with tempfile.TemporaryDirectory() as d:

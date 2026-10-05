@@ -66,6 +66,68 @@ def bound_file(root, value, expected):
     return runner.file_sha(path) == expected
 
 
+SOURCE_FILES = {
+    "runner_sha256": "scripts/benchmarks/runner.py",
+    "native_runner_sha256": "scripts/benchmarks/native.ts",
+    "pi_qwen_runner_sha256": "scripts/benchmarks/native-pi-qwen.ts",
+    "peer_bus_sha256": "scripts/benchmarks/peer-bus-mcp.py",
+    "teardown_sha256": "scripts/benchmarks/teardown.ts",
+    "process_table_sha256": "src/hub/child-process.ts",
+    "evaluator_sha256": "scripts/benchmarks/evaluate.py",
+}
+
+
+def source_provenance(root, prepared):
+    """Verify pinned bytes from the recorded immutable Git tree, including old studies."""
+    path = next((p for p in (root.parent / "provenance.json", root.parent / "summary.json") if p.is_file()), None)
+    if path is None:
+        return False
+    provenance = runner.load(path)
+    head = provenance.get("source_head")
+    if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
+        return False
+    repository = Path(provenance.get("source_repository", Path(__file__).resolve().parents[2]))
+    def matches(name, expected):
+        if not digest(expected): return False
+        process = subprocess.run(["git", "-C", str(repository), "show", f"{head}:{name}"], capture_output=True)
+        return process.returncode == 0 and runner.sha(process.stdout) == expected
+    pins = prepared.get("source_pins")
+    if not isinstance(pins, dict) or set(pins) != set(runner.SOURCE_PIN_PATHS):
+        return False
+    return (all(matches(path, prepared.get(field)) for field, path in SOURCE_FILES.items()) and
+            all(matches(path, pins[path]) for path in runner.SOURCE_PIN_PATHS))
+
+
+def submission_binding(root, manifest, prepared, run, row, case, arm):
+    """Read-only link from prepared fixture and sealed baseline through both patches."""
+    if not bound_file(root, run.get("patchFile"), run.get("patchSHA256")):
+        return False
+    if run.get("patchSHA256") != row.get("input_sha256"):
+        return False
+    entries = [f for f in prepared.get("fixtures", []) if (f.get("case"), f.get("arm")) == (case, arm)]
+    if len(entries) != 1:
+        return False
+    fixture = entries[0]
+    cwd = root.resolve() / "fixtures" / f"{case:02d}-{arm}"
+    if (run.get("cwd") != str(cwd) or fixture.get("cwd") != str(cwd) or not cwd.is_dir() or
+        run.get("sourceDirs") != manifest["cases"][case]["source_dirs"] or
+        fixture.get("source_dirs") != run.get("sourceDirs")):
+        return False
+    sealed = run.get("sealedCommit")
+    base = fixture.get("base_commit")
+    if any(not isinstance(x, str) or not re.fullmatch(r"[0-9a-f]{40}", x) for x in (sealed, base)):
+        return False
+    relation = subprocess.run(["git", "-C", str(cwd), "merge-base", "--is-ancestor", base, sealed], capture_output=True)
+    if relation.returncode or runner.v3_outside_changes(cwd, run["sourceDirs"]):
+        return False
+    status = subprocess.run(["git", "-C", str(cwd), "status", "--porcelain", "-uall"], capture_output=True, text=True)
+    if status.returncode or any(line.startswith("??") for line in status.stdout.splitlines()):
+        return False
+    diff = subprocess.run(["git", "-C", str(cwd), "diff", "--binary", sealed, "--", *run["sourceDirs"]], capture_output=True)
+    return (diff.returncode == 0 and diff.stdout == Path(run["patchFile"]).read_bytes() == Path(row["patch_path"]).read_bytes() and
+            runner.sha(diff.stdout) == run["patchSHA256"])
+
+
 def audit(roots, plan="study", live=None, require_grades=True):
     if not roots:
         raise runner.BenchError("no cohorts")
@@ -96,10 +158,18 @@ def audit(roots, plan="study", live=None, require_grades=True):
         checks["bindings"] &= prep.get("manifest_sha256") == mh == cohort.get("manifest_sha256")
         for name in ("runner_sha256", "native_runner_sha256", "pi_qwen_runner_sha256", "peer_bus_sha256", "teardown_sha256"):
             checks["bindings"] &= bool(digest(prep.get(name))) and prep.get(name) == cohort.get(name)
+        checks["bindings"] &= source_provenance(root, prep)
         grade = runner.load(root / "grade.json") if require_grades else {"rows": []}
         rows = {(x.get("case"), x.get("arm")): x for x in grade.get("rows", [])}
         if require_grades:
             checks["bindings"] &= grade.get("manifest_sha256") == mh
+            checks["bindings"] &= grade.get("schema") == manifest["schema"]
+            for field in ("runner_sha256", "native_runner_sha256", "teardown_sha256"):
+                checks["bindings"] &= grade.get(field) == prep.get(field) == cohort.get(field)
+            checks["bindings"] &= grade.get("evaluator_sha256") == prep.get("evaluator_sha256")
+            checks["matrix"] &= grade.get("cohort") == cohort.get("cases")
+            checks["matrix"] &= [(r.get("case"), r.get("arm")) for r in grade.get("rows", [])] == [
+                (c, a) for c in spec["cases"] for a in manifest["arms"]]
             checks["matrix"] &= len(rows) == len(grade.get("rows", [])) == len(spec["cases"]) * len(manifest["arms"])
             for c in spec["cases"]:
                 ctrl = grade.get("controls", {}).get(str(c), [])
@@ -147,11 +217,12 @@ def audit(roots, plan="study", live=None, require_grades=True):
                                     ready[a].get("requestedModel") == manifest["models"][a] and
                                     ready[a].get("cwd") == run.get("cwd") for a in actors)
                     checks["model_gates"] &= (gate and isolation) or status in ("unavailable", "missing")
+                    participating = runner.v3_participants(run)
                     cell.update({"record_sha256": runner.file_sha(path), "cleanup_complete": run.get("cleanup_complete") is True,
                                  "metadata_clean": run.get("metadata_clean") is True, "model_gate": gate,
                                  "elapsed_ms": number(run.get("elapsedMs")),
-                                 "usage_pi": number(run.get("usage", {}).get("pi")),
-                                 "usage_qwen": number(run.get("usage", {}).get("qwen"))})
+                                 "usage_pi": number(run.get("usage", {}).get("pi")) if "pi" in participating else None,
+                                 "usage_qwen": number(run.get("usage", {}).get("qwen")) if "qwen" in participating else None})
                     checks["restoration"] &= cell["cleanup_complete"] and cell["metadata_clean"]
                     if status == "scored":
                         cwd = Path(str(run.get("cwd", ""))).resolve()
@@ -172,6 +243,7 @@ def audit(roots, plan="study", live=None, require_grades=True):
                                 (manifest["cases"][c]["repo"], manifest["cases"][c]["task"], manifest["cases"][c]["features"]) and
                                 ev.get("upstream_commit") == manifest["upstream"]["commit"] and
                                 ev.get("image_digest") == manifest["cases"][c]["image_digest"])
+                    good = good and path.is_file() and submission_binding(root, manifest, prep, run, row, c, arm)
                     checks["bindings"] &= good
                     cell.update({"input_sha256": digest(row.get("input_sha256")) if good else None,
                                  "evaluation_sha256": digest(row.get("evaluation_sha256")) if good else None})
