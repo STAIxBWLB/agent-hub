@@ -392,6 +392,8 @@ describe("terminal active-turn peer failure (#160)", () => {
   });
 
   test("the poll's other exits keep their classes; a genuine wall limit is the loop's own exit", () => {
+    expect(activeExit({ stopRequested: false, terminalFailure: true, peerUnreachable: false, settled: false, quietMs: 0, wallExpired: true })).toBe("peer-failure");
+    expect(activeExit({ stopRequested: false, terminalFailure: false, peerUnreachable: false, settled: false, quietMs: 0, wallExpired: true })).toBe("wall-timeout");
     expect(activeExit({ stopRequested: true, terminalFailure: true, peerUnreachable: false, settled: false, quietMs: 0 })).toBe("interrupted"); // the operator outranks the failure
     expect(activeExit({ stopRequested: false, terminalFailure: true, peerUnreachable: true, settled: false, quietMs: 0 })).toBe("peer-failure"); // the latch outranks the unreachable state it caused
     expect(activeExit({ stopRequested: false, terminalFailure: false, peerUnreachable: true, settled: false, quietMs: 0 })).toBe("native-failure");

@@ -194,13 +194,14 @@ export class ActiveFailureLatch {
  * Why the active poll ends this tick (#160), or undefined to keep waiting. A latched terminal peer failure
  * outranks both an unreachable peer (its failure callback is what latches, so the original class is kept) and
  * the idle wait for answers: the attempt stops at once instead of idling out the wall limit. An operator's
- * interrupt outranks the failure. A genuine wall limit is the loop's own exit and stays wall-timeout.
+ * interrupt outranks the failure. The wall limit is checked after terminal causes on the final tick.
  */
-export function activeExit(state: { stopRequested: boolean; terminalFailure: boolean; peerUnreachable: boolean; settled: boolean; quietMs: number }): string | undefined {
+export function activeExit(state: { stopRequested: boolean; terminalFailure: boolean; peerUnreachable: boolean; settled: boolean; quietMs: number; wallExpired?: boolean }): string | undefined {
     if (state.stopRequested) return 'interrupted';
     if (state.terminalFailure) return 'peer-failure';
     if (state.peerUnreachable) return 'native-failure';
     if (state.settled && state.quietMs >= 1000) return 'completed';
+    if (state.wallExpired) return 'wall-timeout';
     return undefined;
 }
 
@@ -729,13 +730,13 @@ async function main(): Promise<number> {
             }
             endDetail = 'wall-timeout';
             let quiet = 0, captureAt = 0;
-            while (Date.now() - started < m.wall_limit_s * 1000) {
+            while (true) {
                 if (Date.now() - captureAt >= 5000) { captureNow(); captureAt = Date.now(); }
                 const settled = peers.every((p) => p.state === 'idle' && answers[p.id]!.length > (counts[p.id] ?? 0) && (bus.snapshot().queues[p.id]?.length ?? 0) === 0);
                 if (settled) quiet ||= Date.now(); else quiet = 0;
                 // #160: a latched terminal failure exits at once, without exhausting the remaining wall budget;
-                // exhausting the loop condition with nothing latched is a genuine wall limit (wall-timeout).
-                const exit = activeExit({ stopRequested, terminalFailure: failureLatch.failure !== undefined, peerUnreachable: peers.some((p) => p.state === 'paused' || p.state === 'offline'), settled, quietMs: quiet ? Date.now() - quiet : 0 });
+                // check terminal causes even on the first tick after the wall limit.
+                const exit = activeExit({ stopRequested, terminalFailure: failureLatch.failure !== undefined, peerUnreachable: peers.some((p) => p.state === 'paused' || p.state === 'offline'), settled, quietMs: quiet ? Date.now() - quiet : 0, wallExpired: Date.now() >= deadline });
                 if (exit) { endDetail = exit; break; }
                 await Bun.sleep(100);
             }

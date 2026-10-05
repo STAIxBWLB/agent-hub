@@ -69,6 +69,7 @@ async function prompt(id: number, text: string) {
     return send({ jsonrpc: "2.0", id, error: { code: -32603, message: "session error" } });
   }
   if (text.includes("CAPPED")) {
+    if (text.includes("PARTIAL_CAPPED")) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "partial work" } } } });
     // A turn cap with nothing streamed: the prompt ends abnormally and there is no answer to share.
     busy = false;
     return send({ jsonrpc: "2.0", id, result: { stopReason: "max_turn_requests" } });

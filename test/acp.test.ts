@@ -82,6 +82,10 @@ test("a failed prompt turn reports onTurnFailure; an abnormal end with no answer
   await until(() => failures.length === 2);
   expect(failures[1]!.reason).toBe("ACP prompt ended without normal completion (max_turn_requests)");
   expect(said).toHaveLength(0);
+  await acpPeer.deliver([newEnvelope("user", "PARTIAL_CAPPED", { to: ["qwen"] })]);
+  await until(() => failures.length === 3);
+  expect(said).toEqual(["partial work"]);
+  expect(failures[2]!.reason).toBe("ACP prompt ended without normal completion (max_turn_requests)");
   await peer!.stop();
 
   // A watchdog-cancelled turn's late report is stale and never fires the callback.
