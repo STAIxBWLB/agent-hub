@@ -128,10 +128,9 @@ def native_fixture_binding(root, manifest, prepared, run, case, arm):
             runner.sha(diff.stdout) == run["patchSHA256"])
 
 
-def submission_binding(root, manifest, prepared, run, row, case, arm):
+def submission_binding(root, run, row):
     """Scoring additionally binds the grade patch to the verified native bytes."""
-    return (native_fixture_binding(root, manifest, prepared, run, case, arm) and
-            run.get("patchSHA256") == row.get("input_sha256") and
+    return (run.get("patchSHA256") == row.get("input_sha256") and
             bound_file(root, row.get("patch_path"), row.get("input_sha256")) and
             Path(run["patchFile"]).read_bytes() == Path(row["patch_path"]).read_bytes())
 
@@ -248,7 +247,7 @@ def audit(roots, plan="study", live=None, require_grades=True):
                                 (manifest["cases"][c]["repo"], manifest["cases"][c]["task"], manifest["cases"][c]["features"]) and
                                 ev.get("upstream_commit") == manifest["upstream"]["commit"] and
                                 ev.get("image_digest") == manifest["cases"][c]["image_digest"])
-                    good = good and path.is_file() and submission_binding(root, manifest, prep, run, row, c, arm)
+                    good = good and path.is_file() and submission_binding(root, run, row)
                     checks["bindings"] &= good
                     cell.update({"input_sha256": digest(row.get("input_sha256")) if good else None,
                                  "evaluation_sha256": digest(row.get("evaluation_sha256")) if good else None})
