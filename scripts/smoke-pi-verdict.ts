@@ -12,7 +12,7 @@ export type SmokeDispatch = Pick<RelayRequestRecord, "id" | "alias" | "outcome" 
 const aliases = new Set(["mlx/fast", "dgx/fast", "dgx/coding"]);
 const failureClasses = new Set(["startup", "transport", "network", "http", "timeout", "cancelled", "admission", "configuration", "upstream", "unknown"]);
 const safeId = (id: string | undefined) => id && /^[a-zA-Z0-9-]{1,80}$/.test(id) ? id : undefined;
-const outcome = (records: SmokeDispatch[]): Verdict => !records.length ? "unknown"
+const outcome = (records: Pick<SmokeDispatch, "outcome">[]): Verdict => !records.length ? "unknown"
   : records.some(r => r.outcome === "failed") ? "failed"
   : records.some(r => r.outcome === "cancelled") ? "cancelled" : "passed";
 
