@@ -383,8 +383,9 @@ inside a peer.
   rolling 5 h against `budget.kimi_tokens_5h` (off by default). Verified live on kimi
   2.0.1: one update per turn, payload `{"sessionUpdate":"usage_update","used":<tokens>,
   "size":<context window>}`; `used` is the session's context occupancy against `size`
-  (1M), not billed quota; the parser matches it through the `used` fallback and it grows
-  monotonically within a session (a compaction reads as a new session). `ahub budget set`
+  (1M), not billed quota. ACP records this shape as context occupancy diagnostics,
+  never as cumulative consumed tokens. Only validated cumulative totals or input/output
+  pairs feed native token readings; unsupported shapes remain unknown. `ahub budget set`
   feeds a reading by hand. `local` has no quota and is never paused.
 - Gate at `budget.gate` (default 0.9) on any fresh window; readings older than
   `budget.stale_min` are ignored. Checkpoint first, pause second: the peer gets one
@@ -1228,3 +1229,16 @@ upgrade sources; ordinary clients must use protocol 12 (13 from 0.12.4, with 12 
 - `Tasks.splitObservations` reads one observation per hand-over to the peer with the profile it has now, across hub runs of the project (what happened from that hand-over up to and with the next one is that peer's: a decline or escalation away is its failure, never the next owner's), never the routed task itself, leaves out claims, types failures (failed check, changes requested, escalation, release, decline, unresolved integration), ends the work stage at the first done call (checks and integration are not work) and leaves the stages unknown for an accept recorded by the done itself. The `split` event carries the trace.
 - An overlap that forms or changes a cohort records a `split` event for the task, routed or named (a benchmark names every owner); `ahub route explain <id>` appends the trace as it would be now. Rerouting needs held-out evidence through #110 first.
 - 2026-10-03 (T3 calibration data, issue #109 amendment): every hand-over records the new owner's split profile on its history entry: the hub's version, the agent's version (Codex's from app-server's `initialize` answer, Claude Code's from its transcript rows) and the hook profile, which is the hub's own (the coordination mode: a turn-free project runs the facts hooks in Claude). Observations count for a prediction only with the peer's current profile; while a version is unknown there is no profile, and the prediction is unknown. The prediction calibration reads is the one recorded when routing chose the first owner (no single named candidate, no claim; not an escalation, budget relay or reassignment of work already begun) of a task that overlaps another owner's task not started yet (`where: "routing"`), and `route explain` prefers the same unstarted pair; cohort-time predictions stay in the log with `where: "cohort"` and are not calibration data. The user's and plugins' hooks are not seen by the hub (ponytail: read them from the native records as the benchmark ledger does), and only Claude and Codex report a version so far.
+
+### Optional local MLX capability (0.12.11)
+
+`mlx.enabled` is an optional boolean, defaulting to true. When false, the daemon
+omits local MLX relay capability while remote `hub/auto` retains fast/coding
+selection. Explicit MLX backend/model, project policy and recovery conflicts are
+refused before local startup. Model diagnostics report disabled without probing
+that endpoint. The switch never starts or stops shared Ollama.
+
+Relay native-session counters and per-dispatch transport usage are separate
+measurements. Request usage and provider availability are optional metadata,
+bound to their own dispatch IDs; provider absence does not change model
+qualification. Primary and fallback dispatches have independent outcomes.

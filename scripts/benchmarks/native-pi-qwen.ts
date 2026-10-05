@@ -469,6 +469,7 @@ async function main(): Promise<number> {
         const probeResults = new Map<string, ProbeOutcome>();
         let kernelProbeDenied = false;
         const owners = new Map<string, Actor>();
+        const qwenUsageDiagnostics: unknown[] = [];
         const tokens: { pi: number; qwen: number | null } = { pi: 0, qwen: null };
         let active = false, deadline: number | undefined, relayToken = '';
         const captureNow = () => {
@@ -509,6 +510,7 @@ async function main(): Promise<number> {
             log('physical_model_probe', { requested: m.fixed_backend, served: identityProbe.servedModel, provider: identityProbe.provider, replyPresent: !!identityProbe.message.content?.trim() });
 
             relay = await startModelRelay({
+                observeRequestMetadata: true,
                 omni,
                 allowedDGXmodels: { 'dgx/coding': m.fixed_backend },
                 expectedServedModels: { 'dgx/coding': m.expected_served_model },
@@ -625,6 +627,7 @@ async function main(): Promise<number> {
                     autoApprove: (title) => title === 'mcp__pilot-peer-bus__hub_send',
                     onTokens: (n) => { tokens.qwen = n; },
                     onTurnFailure: (_e, reason) => noteTurnFailure('qwen', reason),
+                    onUsageDiagnostic: (reading) => { if (qwenUsageDiagnostics.length < 32) qwenUsageDiagnostics.push(reading); },
                     log: (s) => log('qwen_log', { text: clean(s).slice(0, 500) }),
                     onPermission: async (req) => {
                         const match = /\{.*\}/s.exec(req.title);
@@ -808,7 +811,7 @@ async function main(): Promise<number> {
                 modelIdentity: { requested: m.fixed_backend, expectedServedModel: m.expected_served_model, expectedProvider: m.expected_provider, probe: probeIdentity, generationVerified: qualification.verified, generationFailureReasons: qualification.verified ? undefined : qualification.reasons, requests: requestRecords },
                 requestLinkage: qualification.coverage,
                 nativeVersions: builds, repeat, setupMs: (started || Date.now()) - setup, elapsedMs, startedAt: started || undefined,
-                usage: { pi: tokens.pi, qwen: tokens.qwen, units: { pi: 'incremental onTokens counter, whole attempt including the setup probes', qwen: 'session usage_update running total, whole attempt including the setup probes' }, toolSurfaces: { pi: 'hub-moderated read/write/edit/git ls-files/hub_send tools', qwen: 'own file tools under seatbelt auto-edit, the excluded list, hub_send over MCP in the joint arm' } },
+                usage: { pi: tokens.pi, qwen: tokens.qwen, qwenAvailability: tokens.qwen === null ? "no-reading" : "known", qwenDiagnostics: qwenUsageDiagnostics, units: { pi: 'incremental onTokens counter, whole attempt including the setup probes', qwen: 'session usage_update running total, whole attempt including the setup probes' }, toolSurfaces: { pi: 'hub-moderated read/write/edit/git ls-files/hub_send tools', qwen: 'own file tools under seatbelt auto-edit, the excluded list, hub_send over MCP in the joint arm' } },
                 end_reason: endReasonOf(endDetail, endFlags), end_reason_detail: endDetail, end_flags: endFlags.length ? endFlags : undefined,
                 // #160: the preserved terminal failure (peer, original class, failure time) whenever one latched.
                 peer_failure: failureLatch.failure,

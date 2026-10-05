@@ -28,3 +28,13 @@ test("malformed configuration cannot silently resurrect a runtime", () => {
   expect(() => loadConfig(project({ mlx: { provider: "other" } }))).toThrow("mlx.provider");
   expect(() => loadConfig(project({ mlx: [] }))).toThrow("object");
 });
+
+test("MLX opt-out is boolean and preserves legacy enablement", () => {
+  expect(loadConfig(project()).mlx.enabled).toBe(true);
+  expect(loadConfig(project({ mlx: { provider: "legacy" } })).mlx.enabled).toBe(true);
+  expect(loadConfig(project({ mlx: { enabled: false } })).mlx.enabled).toBe(false);
+  for (const enabled of ["false", 0, null, [], {}]) {
+    expect(() => loadConfig(project({ mlx: { enabled } }))).toThrow("mlx.enabled must be a boolean");
+  }
+  expect(() => loadConfig(project({ mlx: { enabled: false }, pi: { backend: "mlx" } }))).toThrow("conflicts with mlx.enabled=false");
+});

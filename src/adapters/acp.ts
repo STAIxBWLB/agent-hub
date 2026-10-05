@@ -17,6 +17,40 @@ export interface PermissionRequest {
   tool?: string;
 }
 
+export interface ACPUsageDiagnostic {
+  source: "usage_update" | "prompt_result";
+  availability: "known" | "unsupported" | "invalid";
+  shape: "total" | "input-output" | "context-used" | "none";
+  contextUsed?: number;
+  contextCapacity?: number;
+  total?: number;
+}
+
+/** Counter-only projection: no source payload, text, tools or metadata escapes. */
+export function normalizeACPUsage(value: unknown, source: ACPUsageDiagnostic["source"] = "usage_update"): ACPUsageDiagnostic {
+  const unknown: ACPUsageDiagnostic = { source, availability: "unsupported", shape: "none" };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return unknown;
+  const raw = value as Record<string, unknown>;
+  const f = raw.usage && typeof raw.usage === "object" && !Array.isArray(raw.usage) ? raw.usage as Record<string, unknown> : raw;
+  const valid = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+  for (const key of ["totalTokens", "total_tokens"]) {
+    if (f[key] === undefined) continue;
+    const shape = "total";
+    return valid(f[key]) ? { source, availability: "known", shape, total: f[key] } : { source, availability: "invalid", shape };
+  }
+  for (const [input, output] of [["inputTokens", "outputTokens"], ["input_tokens", "output_tokens"]]) {
+    if (f[input!] === undefined && f[output!] === undefined) continue;
+    const a = f[input!], b = f[output!];
+    return valid(a) && valid(b) && Number.isFinite(a + b) ? { source, availability: "known", shape: "input-output", total: a + b } : { source, availability: "invalid", shape: "input-output" };
+  }
+  if (f.used !== undefined) {
+    if (!valid(f.used) || !valid(f.size) || !Number.isSafeInteger(f.used) || !Number.isSafeInteger(f.size) || f.size <= 0) return { source, availability: "invalid", shape: "context-used" };
+    // Qwen 0.24.7 derives this from collectContextData: occupancy is not cumulative consumption.
+    return { source, availability: "unsupported", shape: "context-used", contextUsed: f.used, contextCapacity: f.size };
+  }
+  return unknown;
+}
+
 export interface AcpOptions {
   /** e.g. ["kimi", "acp"]. `opencode acp` fits the same adapter. */
   cmd: string[];
@@ -32,11 +66,12 @@ export interface AcpOptions {
   mcpServers?: { name: string; command: string; args: string[]; env: { name: string; value: string }[] }[];
   /** Appended to the standing instruction of the first delivery (role contract). */
   preamble?: string;
-  /** The session's running token total from `usage_update` (inferred shape: totalTokens, else input + output, else `used`). Cumulative, not a delta. */
+  /** The session's running token total from `usage_update` (checked totalTokens or input/output pair; `used` context occupancy is diagnostic only). Cumulative, not a delta. */
   onTokens?: (sessionTotal: number, sessionId: string) => void;
   /** The prompt rejected or ended without normal completion, even when it streamed partial text.
    *  Same shape as Pi's onTurnFailure; a stale cancelled turn never reports. */
   onTurnFailure?: (envs: Envelope[], reason: string) => Promise<void> | void;
+  onUsageDiagnostic?: (observation: ACPUsageDiagnostic) => void;
   /** Resolve with an optionId, or undefined to cancel. Absent = every request is cancelled.
    *  A request whose payload could not be resolved is titled as such and carries no session-wide allow option. */
   onPermission?: (req: PermissionRequest) => Promise<string | undefined>;
@@ -149,6 +184,7 @@ export class AcpPeer extends BasePeer {
     prompt
       .then((result) => {
         if (turn !== this.turn) return; // superseded: these chunks belong to a later turn
+        this.observeUsage(result, "prompt_result");
         this.primed = true;
         const body = this.chunks.join("").trim();
         if (body) this.onMessage?.(body, { inReplyTo: replyParent(envs), to: replyAudience(envs) });
@@ -190,6 +226,12 @@ export class AcpPeer extends BasePeer {
     // keep the adapter offline until it is restarted so late chunks cannot contaminate a new turn.
     if (durable) this.setState("offline");
     else super.onWatchdog();
+  }
+
+  private observeUsage(value: unknown, source: ACPUsageDiagnostic["source"]): void {
+    const observation = normalizeACPUsage(value, source);
+    this.opts.onUsageDiagnostic?.(observation);
+    if (observation.availability === "known") this.opts.onTokens?.(observation.total!, this.sessionId);
   }
 
   private acceptDelivery(): void {
@@ -237,12 +279,7 @@ export class AcpPeer extends BasePeer {
         if (u.status === "completed" || u.status === "failed") (this.toolInputs.delete(u.toolCallId), this.toolText.delete(u.toolCallId), this.toolTitles.delete(u.toolCallId));
         for (const map of [this.toolInputs, this.toolText, this.toolTitles]) while (map.size > TOOL_INPUT_CAP) map.delete(map.keys().next().value as string);
       }
-      else if (u?.sessionUpdate === "usage_update" && this.opts.onTokens) {
-        const f = { ...u, ...(typeof u.usage === "object" ? u.usage : {}) } as Record<string, unknown>;
-        const num = (k: string) => (typeof f[k] === "number" ? (f[k] as number) : 0);
-        const total = num("totalTokens") || num("total_tokens") || num("inputTokens") + num("outputTokens") || num("input_tokens") + num("output_tokens") || num("used");
-        if (total > 0) this.opts.onTokens(total, this.sessionId);
-      }
+      else if (u?.sessionUpdate === "usage_update") this.observeUsage(u, "usage_update");
     } else if (msg.method === "session/request_permission") {
       void this.answerPermission(msg);
     } else if (msg.method && msg.id !== undefined) {

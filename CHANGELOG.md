@@ -4,6 +4,14 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.12.11
+
+- End native benchmark attempts on terminal Pi or Qwen failures, retain the first failure cause at the final deadline tick, and gate peer-failure patches on active-window tree preservation (#160).
+- Validate ACP native counters without treating context occupancy as consumed tokens; record independent request usage and provider coverage with request-bound primary/fallback linkage (#161, #162).
+- Add `mlx.enabled=false` to omit local inference while preserving remote `hub/auto` fast/coding selection, with explicit launch/recovery conflict diagnostics (#163).
+- Separate exact native-response, primary-route and fallback verdicts in Pi smoke; add optional `--require-primary` (#164).
+- Add a durable, version-bound native study supervisor and scalar-only evidence audit; keep generation ahead of evaluation, refuse reused roots and preserve private artifacts (#165).
+
 ## 0.12.10
 
 - Preserve each Pi/Qwen peer's observed sandbox-probe result in v3 readiness; failed or missing native probes never synthesize a denial (#150).

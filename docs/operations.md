@@ -896,3 +896,31 @@ Pi exposes `hub/auto` for stage routing when available. Fixed `dgx/coding`, `dgx
 and `mlx/fast` aliases still pin the backend. Automatic MLX selection admits the complete
 input, tool schemas and requested output within the configured context window.
 Progress judgements suggest reassignment; they never change task ownership.
+
+## Disable local MLX while keeping remote auto routing
+
+`mlx.enabled` is an optional boolean and defaults to `true`, including legacy
+configurations. Operators without an available local service can set:
+
+```json
+{
+  "pi": { "enabled": true, "backend": "auto" },
+  "mlx": { "enabled": false }
+}
+```
+
+This removes `mlx/fast` from the relay inventory. `hub/auto` continues selecting
+`dgx/fast` for efficient work and `dgx/coding` for capable work. Neither a local
+probe nor a local startup occurs. `ahub models status` reports `disabled` and
+`ahub doctor` reports a successful disabled row without probing the endpoint.
+`models setup`, `start`, and `stop` are refused while disabled; shared Ollama
+continues under its existing owner.
+
+Migrate an earlier `pi.backend=dgx` workaround to `auto` explicitly. In a project
+routing file, remove `pi_backend="mlx"` pins to use `hub/auto`, or set `dgx` to
+keep a remote class pin. The hub refuses conflicting operator-written routing
+before startup, while inherited shipped MLX class defaults use `hub/auto` when
+the capability is absent. It never rewrites these settings. Explicit
+`--backend mlx`, `--model mlx/fast`, and recorded MLX recovery launches are
+refused before any local startup. Re-enable MLX or explicitly migrate the
+recorded launch before recovery.

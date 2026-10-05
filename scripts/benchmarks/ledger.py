@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from runner import ARMS_V3, TURN_FREE, active_window, end_story, hook_rows, isolation_failure, required_actors, teardown_failure, transcript, treatment_failure, v3_linkage, v3_participants, v3_request_gate  # noqa: E402  the grader's gates: one definition
+from runner import ARMS_V3, TURN_FREE, active_window, end_story, hook_rows, isolation_failure, required_actors, teardown_failure, transcript, treatment_failure, aggregate_v3_observability, v3_observability, v3_linkage, v3_participants, v3_request_gate  # noqa: E402  the grader's gates: one definition
 
 V3_PROTOCOL = "native-pq-v3"  # the headless Pi/Qwen driver's records (#140); the Claude/Codex records are native-cc-v1
 
@@ -676,6 +676,7 @@ def v3_ledger_of(run):
         "native_usage": {"pi": number(usage.get("pi")), "qwen": number(usage.get("qwen")),
                          "units": usage.get("units"), "tool_surfaces": usage.get("toolSurfaces")},
         # Recomputed from the journal by the grader's own coverage function, never the record's cached requestLinkage.
+        "request_observability": v3_observability(ident),
         "request_linkage": v3_linkage(ident) if isinstance(ident.get("requests"), list) else None,
         "model_identity": v3_identity_of(ident),
         "answers": {a: len(v) for a, v in sorted(answers.items()) if isinstance(v, list)},
@@ -735,6 +736,7 @@ def summarize_v3(arm, rs, done, shared, missing, unreadable):
         "request_linkage": {"attempts": len(links), "requests": agg("requests"), "completed": agg("completed"),
                             "identified": agg("identified"), "cancelledUnidentified": agg("cancelledUnidentified"),
                             "mismatches": agg("mismatches"), "providerMissing": agg("providerMissing")},
+        "request_observability": aggregate_v3_observability(rs),
         "native_usage": usage,
     }
 

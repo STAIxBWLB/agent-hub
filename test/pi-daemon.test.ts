@@ -300,3 +300,58 @@ test("the actual daemon model selector preserves DGX fast for bulk/test class po
   }
   expect(await peer["opts"].selectModel!([newEnvelope("user", "No class pin")])).toBe("hub/auto");
 });
+
+test("disabled MLX exposes remote auto only and refuses explicit local launches", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-pi-remote-only-"));
+  const config = { ...DEFAULT_CONFIG, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { daemon, console_, stateDir } = await hub(config);
+  for (const args of [{ backend: "mlx" }, { model: "mlx/fast" }]) {
+    const denied = await console_.request({ t: "start", peer: "pi", args });
+    expect(denied.ok).toBe(false);
+    expect(denied.error).toContain("mlx.enabled=false");
+    expect(daemon.bus.peers.has("pi")).toBe(false);
+  }
+  expect((await console_.request({ t: "start", peer: "pi", args: { backend: "auto" } })).ok).toBe(true);
+  const peer = daemon.bus.peers.get("pi") as PiPeer;
+  const models = peer["opts"].relay.models;
+  expect(models.map(model => model.id).sort()).toEqual(["dgx/coding", "dgx/fast", "hub/auto"]);
+  expect(models.find(model => model.id === "hub/auto")?.maxTokens).toBe(8192);
+  expect(await peer["opts"].selectModel!([newEnvelope("user", "unassigned")])).toBe("hub/auto");
+  const proposed = await console_.request({ t: "task", op: "hub_task_propose", args: { title: "Summarize remotely", class: "summarize", owner: "pi" } });
+  const id = String(proposed.text).match(/task #(\d+)/)?.[1];
+  expect(id).toBeDefined();
+  expect(await peer["opts"].selectModel!([newEnvelope("hub", "Task", { kind: "task", refs: { task: id! } })])).toBe("hub/auto");
+  mkdirSync(join(stateDir, ".agenthub"), { recursive: true });
+  writeFileSync(join(stateDir, ".agenthub/routing.toml"), '[local]\nfixed_model="coding"\n[classes.summarize]\npi_backend="mlx"\n');
+  const conflict = await console_.request({ t: "start", peer: "pi", args: { backend: "auto" } });
+  expect(conflict.ok).toBe(false);
+  expect(conflict.error).toContain("classes.summarize");
+});
+
+test("recorded MLX crash recovery is rejected before Pi starts", async () => {
+  for (const launch of [{ backend: "mlx" }, { backend: "auto", model: "mlx/fast" }]) {
+    const stateDir = mkdtempSync(join(tmpdir(), "ahub-pi-disabled-recovery-"));
+    writeFileSync(join(stateDir, "sessions.json"), JSON.stringify({ instanceId: "old", at: Date.now(), peers: [{ peer: "pi", meta: { launch } }] }));
+    const config = { ...DEFAULT_CONFIG, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true, cmd: ["must-not-be-spawned"] } };
+    await expect(startDaemon({ cwd: stateDir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config })).rejects.toThrow("recorded Pi recovery");
+    expect(existsSync(join(stateDir, "sessions.json"))).toBe(true);
+    expect(existsSync(join(stateDir, "pi-sessions"))).toBe(false);
+  }
+});
+
+test("controlled restart refuses recorded MLX without consuming the snapshot", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-pi-disabled-restart-"));
+  const priorOperation = process.env.AGENTHUB_RECOVERY_OPERATION;
+  const operationId = "disabled-mlx-recovery";
+  writeFileSync(join(stateDir, "restart.json"), JSON.stringify({ schemaVersion: 1, projectRoot: stateDir, projectId: "disabled-test", sourceInstanceId: "prior", operationId, committedAt: Date.now(), bus: { schemaVersion: 1, queues: {}, prefaces: {}, seen: [], attempts: {}, withdrawn: [] }, manualPaused: [], peers: [{ id: "pi", state: "idle", queueIds: [], launch: { kind: "pi", backend: "mlx" } }] }));
+  process.env.AGENTHUB_RECOVERY_OPERATION = operationId;
+  try {
+    const config = { ...DEFAULT_CONFIG, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false } };
+    await expect(startDaemon({ cwd: stateDir, stateDir, projectId: "disabled-test", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config })).rejects.toThrow("recorded Pi recovery");
+    expect(existsSync(join(stateDir, "restart.json"))).toBe(true);
+    expect(existsSync(join(stateDir, "pi-sessions"))).toBe(false);
+  } finally {
+    if (priorOperation === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION;
+    else process.env.AGENTHUB_RECOVERY_OPERATION = priorOperation;
+  }
+});

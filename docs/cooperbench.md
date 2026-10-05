@@ -95,7 +95,7 @@ The v3 driver supplies a trusted `expectedServedModels` map to the relay: `fixed
 
 Served-model evidence is per request, from the relay's journaled `RelayRequestRecord` (#139), not from a response wrapper: a completed request that was never identified fails the attempt's model gate (a heartbeat-only stream identifies nothing), an observed mismatch flags it, and a request cancelled before identification stays explicitly unidentified and never certifies another request. Qwen's peer tool is approved through the adapter's shipped tool-identity binding (#138): the announced `hub_send (pilot-peer-bus MCP Server)` title resolves to the canonical `mcp__pilot-peer-bus__hub_send`, the only name on the exact whitelist. The joint arm's MCP peer bus is the versioned `scripts/benchmarks/peer-bus-mcp.py`, pinned with the driver in `prepared.json` and `cohort.json` next to the candidate source pins (`src/adapters/pi.ts`, `src/adapters/acp.ts`, `src/models/relay.ts`).
 
-A required peer's terminal active-turn failure ends the whole attempt at once (#160), instead of waiting out the wall limit for an answer the failed peer cannot produce: in the fixed study two attempts idled 153 s and 193 s after Pi's 100-step ceiling before recording a wall-timeout. The driver latches the first failure either native's active-phase turn callback reports (Pi's and Qwen's `onTurnFailure`: a rejected prompt turn, or one that ended without normal completion and streamed no answer), with the peer, the original failure class and the failure time preserved in the record's `peer_failure` field and beside the `active_end` event. The latch is fenced by phase and by generation: nothing before the active start latches (the setup probe's expected denied tool read is a tool error, never a terminal turn failure, and even a turn failure there does not end the attempt), and the end cause freezes at `active_end`, so a later stop or watchdog callback during teardown is recorded as a teardown event only and can never replace it. A joint attempt cancels both owned peers through the same owned-process teardown — a failed actor never leaves the other actor performing an undefined partial treatment — and no failure is ever silently reported as completed. A genuine wall limit with no latched failure stays `wall-timeout`/`timeout`. The preserved partial submission (the source tree at the end of the active window and its scoped patch) remains independently gradeable exactly when the existing setup, identity, metadata, source and teardown gates pass: `peer-failure` joins `completed` and `timeout` in the runner's graded end classes, and a flag beside it (modified metadata, an unverified tree) still makes the record an infrastructure error. Records from before #160 carry no `peer_failure` field and no peer-failure end class; the ledger and grader read them unchanged.
+A required peer's terminal active-turn failure ends the whole attempt at once (#160), instead of waiting out the wall limit for an answer the failed peer cannot produce: in the fixed study two attempts idled 153 s and 193 s after Pi's 100-step ceiling before recording a wall-timeout. The driver latches the first failure either native's active-phase turn callback reports (Pi's and Qwen's `onTurnFailure`: a rejected prompt turn, or one that ended without normal completion, including partial ACP text), with the peer, the original failure class and the failure time preserved in the record's `peer_failure` field and beside the `active_end` event. The latch is fenced by phase and by generation: nothing before the active start latches (the setup probe's expected denied tool read is a tool error, never a terminal turn failure, and even a turn failure there does not end the attempt), and the end cause freezes at `active_end`, so a later stop or watchdog callback during teardown is recorded as a teardown event only and can never replace it. A joint attempt cancels both owned peers through the same owned-process teardown — a failed actor never leaves the other actor performing an undefined partial treatment — and no failure is ever silently reported as completed. A genuine wall limit with no latched failure stays `wall-timeout`/`timeout`. The preserved partial submission (the source tree at the end of the active window and its scoped patch) remains independently gradeable exactly when the existing setup, identity, metadata, source and teardown gates pass: `peer-failure` joins `completed` and `timeout` in the runner's graded end classes, and a flag beside it (modified metadata, an unverified tree) still makes the record an infrastructure error. Records from before #160 carry no `peer_failure` field and no peer-failure end class; the ledger and grader read them unchanged.
 
 Grading flows through the same official evaluator adapter and controls; a quality failure is never a retry selector and no evaluator feedback reaches the candidate agents during generation. Reports keep quality, model-identity and request-linkage coverage separate per arm, with unavailable attempts (failed, missing or unavailable) retained in the planned denominator, and name the usage units (Pi's incremental `onTokens` counter, Qwen's session `usage_update` running total — never added together) and the tool-surface difference (Pi's hub-moderated tools against Qwen's own seatbelted auto-edit tools). A native actor's usage is counted only in attempts where that actor participated (#152): every v3 grade row carries `native_participants`, the actors the attempt record shows actually started — the arm bounds the candidates (a solo-qwen attempt has no Pi peer), and among them a peer participated only once its readiness entry carries the sessionId its adapter reported after start. A peer that was constructed but never started (a setup failure: `elapsedMs` 0, no active start) is absent; its token counter's initial 0 is never read as a measurement. An absent actor reports zero known observations and a null total (`*_tokens_known: 0`, `*_tokens: null`), a participant whose native reading is missing stays unknown rather than zero, and a participant's genuinely observed 0 stays counted. The summary's `pi_participating`/`qwen_participating` fields give each coverage figure's participation denominator. Grade rows from before #152 carry no `native_participants`; the report takes their participants from the arm, which is exact for them: their `native_usage` was attached only to scored attempts, whose readiness gate had proved every required actor's session. A live cohort, the official Docker controls and a native readback of an attempt's records remain manual live legs requiring accounts and the pinned archives; they are not part of the checked-in tests.
 
@@ -143,3 +143,80 @@ The fixed ten-pair sample is a convenience sample, not the full 652-pair suite. 
 The optional `--codex-bin` selects an absolute native executable when PATH contains several Codex installations. Its reported version must match the manifest. Codex automatic memories and external agent memory import are disabled for the benchmark thread. Native usage totals include the unscored sandbox probe and are labelled as whole-session counters.
 
 `--setup-only` runs every selected arm through native readiness and read-denial probes without assigning feature work. Its cohort is marked as calibration and the grader refuses it. A zero-turn Claude session is bound through its verified Orca launch and then checked against native transcript session IDs after the probe. The instance-fenced metadata file enables the daemon's optional usage reader.
+
+## Independent usage and provider coverage (#161, #162)
+
+ACP's native cumulative counter accepts checked nonnegative finite totals (including measured zero) and input/output pairs. The pinned Qwen 0.24.7 ACP source emits `usage_update {used,size}` from context occupancy (`collectContextData`), which is recorded as an unsupported cumulative-counter shape with context counters only, never consumed tokens. `usage_update` and prompt-result observations expose only a bounded counter projection with a supported, unsupported or invalid shape verdict. Cumulative readings replace the native counter; they are never summed. A started Qwen session with no compatible reading remains `no-reading`.
+
+Relay `requestUsage` is an independent per-dispatch observation of OpenAI-shaped stream `usage` fields, including a final usage-only event after model identification. Missing fields make it partial; malformed readings remain invalid or unknown. This measurement never substitutes for, or adds to, a native session total. The relay records counters only when upstream supplies them, and does not claim billing or force an unsupported stream option.
+
+Provider provenance is currently `header` (`x-omniroute-provider`) or `none`; no generation event provider contract has been verified. Provider absence leaves model qualification unchanged. `request_observability` in grading and ledger exports independently reconciles provider known/missing denominators for completed, cancelled and failed dispatches, including cancelled-after-identification. Older records remain readable: their own provider value supplies legacy header coverage, while absent request counters stay unknown. Heartbeats and another request never fill a missing provider.
+
+The bounded live capability probe is `bun scripts/benchmarks/probe-qwen-usage.ts --qwen-package PINNED_PACKAGE --run NEW_PRIVATE_DIR --config-dir PROJECT`. It verifies Qwen 0.24.7 under the final seatbelt environment, uses host-owned OmniRoute authentication through a loopback relay, and saves only counter/source/availability projections. Use a fresh disposable directory; sealed historical unknowns remain unchanged.
+
+## Durable native v3 study supervision (#165)
+
+Use `scripts/benchmarks/study_supervisor.py` for a manifest-defined study. Choose a
+new directory under an existing private, durable parent outside this repository
+and the OS temporary directory. The supervisor atomically claims that directory;
+existing roots, including incomplete ones, are refused. It never retries a cell or
+resumes a cohort. Prior archives remain read-only.
+
+```sh
+python3 -B scripts/benchmarks/study_supervisor.py \
+  --manifest scripts/benchmarks/manifest-v3-pi-qwen.json \
+  --output "$STUDY_ROOT" --archives "$ARCHIVE_ROOT" \
+  --private-inputs "$PRIVATE_CASE_ROOT" --upstream-root "$UPSTREAM_ROOT" \
+  --probe-target "$PROTECTED_PROBE" --qwen-package "$QWEN_PACKAGE" \
+  --protect "$PRIOR_ARTIFACT_ROOT" --preflight-only
+```
+
+Repeat the command without `--preflight-only` to execute. Every required archive,
+upstream commit, prompt pin, native build, protected root, probe and cached
+Docker image must be available before fixture preparation. Use `--python` to
+select the evaluator Python environment with the upstream dependencies installed. Explicitly optional
+prior roots use `--optional-protect`; their presence or absence is recorded.
+For a bounded native lifecycle check, use a separate manifest with a declared
+small plan and `--plan` to select it; preserve all case/model/order/budget pins.
+`--generation-only` stops at restored generation, records outcome generation-only,
+and never grades or seals that root. The fixed study plan remains unchanged.
+Version mismatch fails unless `--bind-current-hub` explicitly changes only
+`hub_version` and `versions.hub`. Both original and runtime hashes, source
+identity, invocation, and preparation's archive-path additions are sealed in the
+private provenance file. Native versions are checked in isolation at preflight
+and rechecked by the existing driver in each arm's final environment.
+
+The phase order is claimed, prepared, generated, restored, graded, sealed. All
+repeat roots are freshly prepared, each generation runs sequentially, and all
+planned generations finish before any official controls or grading. Restoration
+markers, their ledgers, and live PID/start-time identities must agree before
+grading. Every retained cell also passes a grade-independent readback of its
+actual fixture metadata, guarded source diff, sealed baseline and native patch
+bytes/hash. This same gate runs before reporting restored generation with
+`--generation-only`; stored `metadata_clean` flags alone never qualify it.
+Scored cells add the grade/evaluation bindings to that native evidence chain. A failure preserves an incomplete private root and logs for inspection.
+The procedure uses the existing native driver, official grade/report commands,
+and pooled ledger, without Orca registration or toolchain tree copying.
+
+This entrypoint requires the evaluator service and images to be available. It
+never starts or stops a shared VM or service. An operator who explicitly starts a
+service must retain original-state and ownership evidence separately and restore
+only that owned service after proving no unrelated usage; otherwise restoration
+is deferred. Service ownership in this supervisor is recorded as require-existing.
+
+Audit historical repeat roots without changing them:
+
+```sh
+python3 -B scripts/benchmarks/study_audit.py \
+  --run "$STUDY_ROOT/r0" --run "$STUDY_ROOT/r1" \
+  --export "$NEW_SAFE_EXPORT"
+```
+
+The auditor reconstructs the exact matrix and checks restoration, request-based
+model gates, official controls, evaluation/patch bindings and owned live processes.
+It constructs its output from fixed scalar fields and hashes. Nested official
+test output, answers, native events, errors, provider identifiers and machine paths
+are never copied to stdout or the safe aggregate. Unknown usage remains null.
+Export creation is exclusive, so it cannot overwrite a historical artifact. The
+complete private logs, evidence hash index, and safe aggregate stay in the durable
+study root. A failed audit exits nonzero with a fixed error code and no raw error.
