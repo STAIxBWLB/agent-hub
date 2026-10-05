@@ -463,7 +463,7 @@ export function reuseProblem(status: string | undefined, ledger: string | undefi
 }
 
 /**
- * How the runner settles an arm's trust lease at the arm's end (#115; the rule is in AGENTS.md): the outcome its record
+ * How the runner settles an arm's trust lease at the arm's end (#115; the rule is in docs/agent-notes/benchmarks.md): the outcome its record
  * says, and the restoration ledger's stage and `restored`. `pending` in the runner's own process: the write or its rename
  * threw, before Claude was started, so nothing landed and no entry is touched, now or by the recovery; its temp file is
  * removed here (`removeTemp` says whether it was), or by the recovery when it cannot be. Not contained: Claude may still

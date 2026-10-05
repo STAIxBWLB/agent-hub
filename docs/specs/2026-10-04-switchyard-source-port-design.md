@@ -293,7 +293,7 @@ related: 261004-review-agent-hub-switchyard-comparison.md, 261004-plan-agent-hub
   - `crates/libsy/src/prompts/*`, `crates/libsy-llm-client/src/{client,backend,run}.rs`(호출 정책).
   - 소스 분석 보고(조사 에이전트, 2026-10-04)와 주요 상수·공식의 직접 확인.
 - agent-hub(main `ab16c7b`)
-  - `src/adapters/local-worker.ts`(`call()`, `commit()`), `src/local/tools.ts`(도구 이름), `src/models/relay.ts`(`selectBackend`, 폴백), `src/hub/daemon.ts`(relay 시작, Pi 설정), `src/hub/inference.ts`, `src/hub/facts.ts`, `src/adapters/codex-appserver.ts`, `test/fakes/model-server.ts`, `docs/events.md`, `AGENTS.md`(inference·history·PII 규칙).
+  - `src/adapters/local-worker.ts`(`call()`, `commit()`), `src/local/tools.ts`(도구 이름), `src/models/relay.ts`(`selectBackend`, 폴백), `src/hub/daemon.ts`(relay 시작, Pi 설정), `src/hub/inference.ts`, `src/hub/facts.ts`, `src/adapters/codex-appserver.ts`, `test/fakes/model-server.ts`, `docs/events.md`, `AGENTS.md`(PII 규칙), `docs/agent-notes/models.md`(inference 규칙), `docs/agent-notes/local-worker.md`(history·PII turn 규칙).
   - 기본 설정: Pi `dgx_coding = "coding"`, `dgx_fast = "fast"`, MLX `qwen3.5:4b-mlx`(8k).
 
 ## Implementation contract (approved 2026-10-04)
