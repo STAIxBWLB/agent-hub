@@ -136,6 +136,18 @@ class StudyTests(unittest.TestCase):
             self.assertFalse(any("grade" in cmd for cmd in calls))
             self.assertEqual(runner.load(a.output / "study.json")["outcome"], "incomplete")
 
+    def test_unverified_hash_shaped_adversarial_values_are_not_exported(self):
+        with tempfile.TemporaryDirectory() as d:
+            roots = [self.fixture(Path(d) / f"r{i}", i) for i in range(2)]
+            secret = "0123456789abcdef" * 4
+            grade = runner.load(roots[0] / "grade.json")
+            grade["rows"][0].update(status="scored", input_sha256=secret, evaluation_sha256=secret,
+                                     patch_path="/private/SECRET", evaluation_path="/private/SECRET")
+            runner.dump(roots[0] / "grade.json", grade)
+            result = audit.audit(roots, live=set())
+            self.assertFalse(result["verified"])
+            self.assertNotIn(secret, json.dumps(result))
+
     def test_export_refuses_overwrite(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "safe.json"
