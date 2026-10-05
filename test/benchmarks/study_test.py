@@ -108,7 +108,7 @@ class StudyTests(unittest.TestCase):
             m = self.manifest(); runner.dump(root / "manifest.json", m)
             a = type("Args", (), {})()
             a.manifest = root / "manifest.json"; a.output = root / "study"
-            a.plan = "study"; a.generation_only = False
+            a.plan = "study"; a.generation_only = False; a.python = Path(sys.executable)
             for key in ("archives", "upstream_root", "private_inputs", "probe_target", "qwen_package"):
                 setattr(a, key, root)
             calls = []

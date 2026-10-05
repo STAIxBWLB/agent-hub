@@ -102,7 +102,8 @@ def preflight(a):
     probe_python = "import sys,types,pathlib; p=pathlib.Path(sys.argv[1])/'src'/'cooperbench'; "
     probe_python += "[(sys.modules.setdefault(n,types.ModuleType(n)), setattr(sys.modules[n],'__path__',[str(q)])) for n,q in [('cooperbench',p),('cooperbench.eval',p/'eval'),('cooperbench.runner',p/'runner')]]; "
     probe_python += "from cooperbench.eval.sandbox import test_solo"
-    read_command([sys.executable, "-B", "-c", probe_python, a.upstream_root.resolve()])
+    if not a.python.is_file(): raise runner.BenchError("evaluator Python runtime unavailable")
+    read_command([a.python, "-B", "-c", probe_python, a.upstream_root.resolve()])
     study_audit.process_identities()
     return original, m, amendments, protect, optional
 
@@ -172,7 +173,7 @@ def execute(a):
             return
         for rep, cohort in enumerate(cohorts):
             run_command([sys.executable, "-B", HERE / "runner.py", "grade", "--run", cohort,
-                         "--private-inputs", a.private_inputs, "--upstream-root", a.upstream_root], root / f"grade-{rep}.log")
+                         "--private-inputs", a.private_inputs, "--upstream-root", a.upstream_root, "--python", a.python], root / f"grade-{rep}.log")
             run_command([sys.executable, "-B", HERE / "runner.py", "report", "--run", cohort], root / f"report-{rep}.log")
         study.advance("graded")
         cmd = [sys.executable, "-B", HERE / "ledger.py", "--plan", a.plan, "--json"]
@@ -199,6 +200,7 @@ def main():
     p.add_argument("--protect", type=Path, action="append", default=[])
     p.add_argument("--optional-protect", type=Path, action="append", default=[])
     p.add_argument("--plan", default="study")
+    p.add_argument("--python", type=Path, default=Path(sys.executable), help="official evaluator Python with pinned upstream dependencies")
     p.add_argument("--bind-current-hub", action="store_true")
     p.add_argument("--preflight-only", action="store_true")
     p.add_argument("--generation-only", action="store_true", help="stop after restored generation; never evaluate or seal")

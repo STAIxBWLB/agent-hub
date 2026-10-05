@@ -173,7 +173,8 @@ python3 -B scripts/benchmarks/study_supervisor.py \
 
 Repeat the command without `--preflight-only` to execute. Every required archive,
 upstream commit, prompt pin, native build, protected root, probe and cached
-Docker image must be available before fixture preparation. Explicitly optional
+Docker image must be available before fixture preparation. Use `--python` to
+select the evaluator Python environment with the upstream dependencies installed. Explicitly optional
 prior roots use `--optional-protect`; their presence or absence is recorded.
 For a bounded native lifecycle check, use a separate manifest with a declared
 small plan and `--plan` to select it; preserve all case/model/order/budget pins.
