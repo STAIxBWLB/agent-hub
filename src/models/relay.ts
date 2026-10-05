@@ -396,6 +396,12 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       setState(backend, { state: "error", lastError: error instanceof Error ? error.message.slice(0, 160) : "upstream request failed" });
       throw error;
     }
+    const provider = safeHeader(response.headers.get("x-omniroute-provider"));
+    if (provider) {
+      journalEntry.record.provider = provider;
+      journalEntry.record.providerSource = "header";
+      journalEntry.record.providerAvailability = "known";
+    }
     if (!response.ok) {
       releaseOnce();
       journalEntry.record.failureClass = "http";
@@ -404,13 +410,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       setState(backend, { state: "error", lastError: message });
       throw new Error(message);
     }
-    const provider = safeHeader(response.headers.get("x-omniroute-provider"));
     const actualModel = safeHeader(response.headers.get("x-model-router-selected-model"));
-    if (provider) {
-      journalEntry.record.provider = provider;
-      journalEntry.record.providerSource = "header";
-      journalEntry.record.providerAvailability = "known";
-    }
     if (actualModel) journalEntry.identify(actualModel, "header");
     else if (backend.kind === "mlx") journalEntry.identify(model, "configured");
     setState(backend, { state: "ready", requestedModel: request.model, active: activeByAlias.get(alias) ?? 0,

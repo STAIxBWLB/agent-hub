@@ -573,3 +573,10 @@ test('#163 disabled local capability omits and rejects mlx/fast', async () => {
   expect(response.status).toBe(400);
   expect(relay.requests()).toHaveLength(0);
 });
+
+test('#162 failed HTTP dispatch keeps only its own observed provider header', async () => {
+  const upstream = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('unavailable', { status: 503, headers: { 'x-omniroute-provider': 'observed-provider' } }) });
+  const relay = await dgxRelay(upstream);
+  expect((await dgxRequest(relay)).status).toBe(502);
+  expect(relay.requests()[0]).toMatchObject({ outcome: 'failed', failureClass: 'http', httpStatus: 503, identified: false, provider: 'observed-provider', providerSource: 'header', providerAvailability: 'known' });
+});
