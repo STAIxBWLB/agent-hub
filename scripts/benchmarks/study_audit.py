@@ -98,11 +98,9 @@ def source_provenance(root, prepared):
             all(matches(path, pins[path]) for path in runner.SOURCE_PIN_PATHS))
 
 
-def submission_binding(root, manifest, prepared, run, row, case, arm):
-    """Read-only link from prepared fixture and sealed baseline through both patches."""
+def native_fixture_binding(root, manifest, prepared, run, case, arm):
+    """Grade-independent readback of the actual retained fixture and native patch."""
     if not bound_file(root, run.get("patchFile"), run.get("patchSHA256")):
-        return False
-    if run.get("patchSHA256") != row.get("input_sha256"):
         return False
     entries = [f for f in prepared.get("fixtures", []) if (f.get("case"), f.get("arm")) == (case, arm)]
     if len(entries) != 1:
@@ -112,6 +110,8 @@ def submission_binding(root, manifest, prepared, run, row, case, arm):
     if (run.get("cwd") != str(cwd) or fixture.get("cwd") != str(cwd) or not cwd.is_dir() or
         run.get("sourceDirs") != manifest["cases"][case]["source_dirs"] or
         fixture.get("source_dirs") != run.get("sourceDirs")):
+        return False
+    if runner.fixture_metadata_sha256(cwd) != run.get("metadata_sha256"):
         return False
     sealed = run.get("sealedCommit")
     base = fixture.get("base_commit")
@@ -124,8 +124,16 @@ def submission_binding(root, manifest, prepared, run, row, case, arm):
     if status.returncode or any(line.startswith("??") for line in status.stdout.splitlines()):
         return False
     diff = subprocess.run(["git", "-C", str(cwd), "diff", "--binary", sealed, "--", *run["sourceDirs"]], capture_output=True)
-    return (diff.returncode == 0 and diff.stdout == Path(run["patchFile"]).read_bytes() == Path(row["patch_path"]).read_bytes() and
+    return (diff.returncode == 0 and diff.stdout == Path(run["patchFile"]).read_bytes() and
             runner.sha(diff.stdout) == run["patchSHA256"])
+
+
+def submission_binding(root, manifest, prepared, run, row, case, arm):
+    """Scoring additionally binds the grade patch to the verified native bytes."""
+    return (native_fixture_binding(root, manifest, prepared, run, case, arm) and
+            run.get("patchSHA256") == row.get("input_sha256") and
+            bound_file(root, row.get("patch_path"), row.get("input_sha256")) and
+            Path(run["patchFile"]).read_bytes() == Path(row["patch_path"]).read_bytes())
 
 
 def audit(roots, plan="study", live=None, require_grades=True):
@@ -224,10 +232,7 @@ def audit(roots, plan="study", live=None, require_grades=True):
                                  "usage_pi": number(run.get("usage", {}).get("pi")) if "pi" in participating else None,
                                  "usage_qwen": number(run.get("usage", {}).get("qwen")) if "qwen" in participating else None})
                     checks["restoration"] &= cell["cleanup_complete"] and cell["metadata_clean"]
-                    if status == "scored":
-                        cwd = Path(str(run.get("cwd", ""))).resolve()
-                        metadata_ok = (root.resolve() / "fixtures") == cwd.parent and cwd.is_dir()
-                        checks["bindings"] &= metadata_ok and runner.fixture_metadata_sha256(cwd) == run.get("metadata_sha256")
+                    checks["bindings"] &= native_fixture_binding(root, manifest, prep, run, c, arm)
                 elif status != "missing" or not require_grades:
                     checks["matrix"] = False
                 if status == "scored":

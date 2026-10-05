@@ -136,6 +136,28 @@ class StudyTests(unittest.TestCase):
             (cwd / "unauthorized.py").write_text("outside source")
             self.assertFalse(audit.audit(roots, live=set())["checks"]["bindings"])
 
+    def test_generation_only_rechecks_metadata_source_and_native_patch_without_grades(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d); repo = self.source_repo(base / "source")
+            roots = [self.scored_fixture(base / f"r{i}", i, repo) for i in range(2)]
+            for root in roots:
+                (root / "grade.json").unlink()  # this gate cannot depend on grading
+            self.assertTrue(audit.audit(roots, live=set(), require_grades=False)["verified"])
+            fixture = roots[0] / "fixtures/00-solo-pi"
+            mutations = [(fixture / "AGENTS.md", "mutated instructions"),
+                         (fixture / ".agenthub/config.json", "mutated configuration"),
+                         (fixture / "src/example.py", "mutated source"),
+                         (roots[0] / "attempts/solo-pi.patch", "mutated native patch")]
+            for path, value in mutations:
+                with self.subTest(tamper=path.name):
+                    original = path.read_bytes() if path.exists() else None
+                    path.parent.mkdir(parents=True, exist_ok=True); path.write_text(value)
+                    result = audit.audit(roots, live=set(), require_grades=False)
+                    self.assertFalse(result["verified"]); self.assertFalse(result["checks"]["bindings"])
+                    if original is None: path.unlink()
+                    else: path.write_bytes(original)
+                    self.assertTrue(audit.audit(roots, live=set(), require_grades=False)["verified"])
+
     def test_participation_preserves_observed_zero_and_excludes_absent_and_unstarted(self):
         with tempfile.TemporaryDirectory() as d:
             roots = [self.fixture(Path(d) / f"r{i}", i) for i in range(2)]

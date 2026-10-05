@@ -190,7 +190,11 @@ The phase order is claimed, prepared, generated, restored, graded, sealed. All
 repeat roots are freshly prepared, each generation runs sequentially, and all
 planned generations finish before any official controls or grading. Restoration
 markers, their ledgers, and live PID/start-time identities must agree before
-grading. A failure preserves an incomplete private root and logs for inspection.
+grading. Every retained cell also passes a grade-independent readback of its
+actual fixture metadata, guarded source diff, sealed baseline and native patch
+bytes/hash. This same gate runs before reporting restored generation with
+`--generation-only`; stored `metadata_clean` flags alone never qualify it.
+Scored cells add the grade/evaluation bindings to that native evidence chain. A failure preserves an incomplete private root and logs for inspection.
 The procedure uses the existing native driver, official grade/report commands,
 and pooled ledger, without Orca registration or toolchain tree copying.
 
