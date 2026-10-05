@@ -46,7 +46,8 @@ def read_command(cmd, env=None):
 def preflight(a):
     """No fixtures, output roots, services or model calls are mutated here."""
     for key, value in vars(a).items():
-        if isinstance(value, Path): setattr(a, key, value.resolve())
+        # A virtualenv interpreter is often a symlink; resolving its target loses that environment.
+        if isinstance(value, Path): setattr(a, key, Path(os.path.abspath(value)) if key == "python" else value.resolve())
         elif isinstance(value, list) and all(isinstance(x, Path) for x in value):
             setattr(a, key, [x.resolve() for x in value])
     original = runner.load(a.manifest)
