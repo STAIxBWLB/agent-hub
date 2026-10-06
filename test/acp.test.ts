@@ -2,11 +2,11 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { AcpPeer, type AcpOptions } from "../src/adapters/acp.ts";
+import { AcpPeer, canonicalMcpToolName, type AcpOptions } from "../src/adapters/acp.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { processTable } from "../src/hub/child-process.ts";
-import { ActiveFailureLatch, activeExit } from "../scripts/benchmarks/native-pi-qwen.ts";
+import { ActiveFailureLatch, activeExit, classifyNativeTermination, QWEN_0_24_7_LOOP_PROTECTION_MESSAGE } from "../scripts/benchmarks/native-pi-qwen.ts";
 
 const FAKE = ["bun", join(import.meta.dir, "fakes/acp-server.ts")];
 let peer: AcpPeer | undefined;
@@ -102,6 +102,36 @@ test("a failed prompt turn reports onTurnFailure; an abnormal end with no answer
     await Bun.sleep(150); // the cancelled prompt's late report lands here, stale
     expect(lateFailures).toEqual([]);
   } finally { await acp.stop(); }
+});
+
+// issue #175: Qwen 0.24.7's native loop-protection stop rejects session/prompt with the pinned message and
+// structured error data; the failure callback surfaces the message alone, and it classifies as the fixed
+// terminal class.
+test("a native loop-protection rejection reports the pinned message and classifies as tool-loop-protection", async () => {
+  const failures: string[] = [];
+  const latch = new ActiveFailureLatch();
+  latch.begin(Date.now());
+  const acp = new AcpPeer("qwen", { cmd: FAKE, cwd: process.cwd(), onTurnFailure: (_e, reason) => { failures.push(reason); latch.note("qwen", reason, Date.now()); } });
+  try {
+    await acp.start();
+    await acp.deliver([newEnvelope("user", "LOOPPROTECT", { to: ["qwen"] })]);
+    await until(() => failures.length === 1);
+    expect(failures[0]).toBe(QWEN_0_24_7_LOOP_PROTECTION_MESSAGE); // the message alone; the error data stays in the protocol
+    const classification = classifyNativeTermination("qwen", failures[0]);
+    expect(classification).toEqual({ class: "tool-loop-protection", evidence: "pinned-message" });
+    expect(latch.failure).toMatchObject({ peer: "qwen", failureClass: QWEN_0_24_7_LOOP_PROTECTION_MESSAGE });
+    expect(activeExit({ stopRequested: false, terminalFailure: latch.failure !== undefined, peerUnreachable: false, settled: false, quietMs: 0 })).toBe("peer-failure");
+    // A peer whose pinned contract this is not: the same words are not its loop-protection evidence.
+    expect(classifyNativeTermination("pi", failures[0]).class).toBe("unknown");
+  } finally { await acp.stop(); }
+});
+
+test("the canonical MCP binding resolves only a configured server's announced title (#138)", () => {
+  expect(canonicalMcpToolName("hub_send (pilot-peer-bus MCP Server)", ["pilot-peer-bus"])).toBe("mcp__pilot-peer-bus__hub_send");
+  expect(canonicalMcpToolName("hub_send (other-bus MCP Server)", ["pilot-peer-bus"])).toBeUndefined(); // an unconfigured server resolves to nothing
+  expect(canonicalMcpToolName('{"text":"arguments quoted as the title"}', ["pilot-peer-bus"])).toBeUndefined();
+  expect(canonicalMcpToolName("hub_send (pilot-peer-bus MCP Server)", undefined)).toBeUndefined(); // no configured servers
+  expect(canonicalMcpToolName(undefined, ["pilot-peer-bus"])).toBeUndefined();
 });
 
 test("messages arriving mid-prompt are queued, then drained as one digest prompt, never lost", async () => {

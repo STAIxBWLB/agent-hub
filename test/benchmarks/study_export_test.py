@@ -7,6 +7,7 @@ sys.path.insert(0, str(SCRIPTS))
 import runner
 import ledger
 import study_audit as audit
+import study_supervisor as supervisor
 
 
 class StudyExportTests(unittest.TestCase):
@@ -140,18 +141,27 @@ class StudyExportTests(unittest.TestCase):
         return root
 
     def study(self, base):
-        """A sealed synthetic study root: two graded cohorts, the verified safe aggregate and the pooled ledger."""
+        """A sealed supervisor-shaped study root (#173): the raw source manifest bytes differ from the
+        supervisor's serialized copy of equal contents, the runtime manifest is that copy plus the recorded
+        hub-version amendments, and provenance pins each of them separately; two graded cohorts, the verified
+        safe aggregate and the pooled ledger."""
         repo = self.source_repo(base / "source")
         root = base / "study"
         root.mkdir()
         m = self.manifest()
-        runner.dump(root / "original-manifest.json", m)
-        runner.dump(root / "runtime-manifest.json", m)
+        # The supervisor parses the raw source and serializes the copy through write_new, so a compact unsorted
+        # raw source hashes differently from the sealed copy while their parsed contents are equal.
+        source = base / "manifest-source.json"
+        source.write_text(json.dumps(m, separators=(",", ":")) + "\n", encoding="utf-8")
+        audit.write_new(root / "original-manifest.json", m)
+        runtime, amendments = supervisor.bind_manifest(m, "0.12.12", allowed=True)
+        audit.write_new(root / "runtime-manifest.json", runtime)
         cohorts = [self.cohort(root / f"r{rep}", rep, repo) for rep in range(2)]
         runner.dump(root / "provenance.json", {
             "source_head": self.git(repo, "rev-parse", "HEAD"), "source_repository": str(repo.resolve()),
-            "original_sha256": runner.file_sha(root / "original-manifest.json"),
-            "runtime_sha256": runner.file_sha(root / "runtime-manifest.json")})
+            "original_sha256": runner.file_sha(source),
+            "original_copy_sha256": runner.file_sha(root / "original-manifest.json"),
+            "runtime_sha256": runner.file_sha(root / "runtime-manifest.json"), "amendments": amendments})
         result = audit.audit(cohorts, live=set())
         self.assertTrue(result["verified"], json.dumps(result["checks"]))  # the fixture must seal before every test
         audit.write_new(root / "safe-aggregate.json", result)
@@ -317,6 +327,77 @@ class StudyExportTests(unittest.TestCase):
             om = runner.load(om_path); om["hub_version"] = "0.0.0"; runner.dump(om_path, om)
             refused()  # the sealed manifest copy must match its pin
             om_path.write_text(original, encoding="utf-8")
+            self.assertEqual(audit.study_summary(root)["planned"], 6)
+
+    def test_supervisor_shaped_root_with_distinct_source_and_copy_pins_exports(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = self.study(Path(d))
+            provenance = runner.load(root / "provenance.json")
+            # The fixture exercises the real binding contract: distinct raw/copy pins and a recorded amendment.
+            self.assertNotEqual(provenance["original_sha256"], provenance["original_copy_sha256"])
+            self.assertEqual(provenance["original_sha256"], runner.file_sha(Path(d) / "manifest-source.json"))
+            self.assertEqual(provenance["original_copy_sha256"], runner.file_sha(root / "original-manifest.json"))
+            self.assertEqual([a["field"] for a in provenance["amendments"]], ["hub_version", "versions.hub"])
+            self.assertEqual(runner.load(root / "original-manifest.json"), self.manifest())
+            out, table = Path(d) / "summary.json", Path(d) / "summary.csv"
+            p = subprocess.run([sys.executable, "-B", str(SCRIPTS / "study_audit.py"), "--summary", str(root),
+                                "--export", str(out), "--csv", str(table)], capture_output=True, text=True)
+            self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+            s = runner.load(out)
+            self.assertEqual((s["schema"], s["planned"], s["retained"]), (audit.SUMMARY_SCHEMA, 6, 6))
+            b = s["bindings"]
+            self.assertEqual(b["original_manifest_sha256"], provenance["original_sha256"])
+            self.assertEqual(b["original_copy_sha256"], provenance["original_copy_sha256"])
+            self.assertTrue(table.read_text(encoding="utf-8").startswith("arm,planned,"))
+
+    def test_export_refuses_copy_pin_and_amendment_violations(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = self.study(Path(d))
+
+            def refused():
+                with self.assertRaises(runner.BenchError):
+                    audit.study_summary(root)
+
+            provenance_path = root / "provenance.json"
+            provenance = runner.load(provenance_path)
+
+            legacy = {k: v for k, v in provenance.items() if k != "original_copy_sha256"}
+            runner.dump(provenance_path, legacy)
+            refused()  # legacy provenance without the copy pin is unsupported, never given an invented pin
+            for pins in ({"original_copy_sha256": "0" * 64}, {"runtime_sha256": "0" * 64},
+                         {"original_sha256": "not-a-digest"}):
+                runner.dump(provenance_path, {**provenance, **pins})
+                refused()  # a pin that is malformed or does not match the sealed bytes refuses
+            runner.dump(provenance_path, provenance)
+            self.assertEqual(audit.study_summary(root)["planned"], 6)
+
+            copy_path = root / "original-manifest.json"
+            original = copy_path.read_text(encoding="utf-8")
+            copy_path.write_text(json.dumps(runner.load(copy_path)) + "\n", encoding="utf-8")
+            runner.dump(provenance_path, {**provenance, "original_copy_sha256": runner.file_sha(copy_path)})
+            refused()  # a re-pinned copy that is not the supervisor's serialization refuses
+            copy_path.write_text(original, encoding="utf-8")
+            runner.dump(provenance_path, provenance)
+            self.assertEqual(audit.study_summary(root)["planned"], 6)
+
+            runtime_path = root / "runtime-manifest.json"
+            original = runtime_path.read_text(encoding="utf-8")
+            runtime = runner.load(runtime_path); runtime["hub_version"] = "9.9.9"; runner.dump(runtime_path, runtime)
+            runner.dump(provenance_path, {**provenance, "runtime_sha256": runner.file_sha(runtime_path)})
+            refused()  # a runtime manifest beyond the recorded amendments refuses even when re-pinned
+            runtime_path.write_text(original, encoding="utf-8")
+
+            bad = [{"field": "upstream.commit", "from": "a" * 40, "to": "b" * 40}]
+            runner.dump(provenance_path, {**provenance, "amendments": bad})
+            refused()  # an amendment outside the hub-version binding refuses
+            bad = [{"field": "hub_version", "from": "0.0.0", "to": "0.12.12"},
+                   {"field": "versions.hub", "from": "0.12.9", "to": "0.12.12"}]
+            runner.dump(provenance_path, {**provenance, "amendments": bad})
+            refused()  # an amendment whose recorded source value does not match the copy refuses
+            missing = {k: v for k, v in provenance.items() if k != "amendments"}
+            runner.dump(provenance_path, missing)
+            refused()  # provenance without recorded amendments is unsupported
+            runner.dump(provenance_path, provenance)
             self.assertEqual(audit.study_summary(root)["planned"], 6)
 
     def test_csv_matches_json_counts(self):

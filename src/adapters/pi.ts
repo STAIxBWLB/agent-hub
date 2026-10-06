@@ -5,6 +5,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
+import { processSignature } from "../pi/process-signature.ts";
 import { realPath } from "../hub/project.ts";
 import type { ExecutionBudgetDecision, ExecutionUnit } from "../hub/execution-budget.ts";
 
@@ -29,7 +30,6 @@ export interface PiOptions {
 export interface PiTuiLaunch { cmd: string; args: string[]; env: NodeJS.ProcessEnv; }
 type RpcMessage = { type?: string; id?: string | number; command?: string; success?: boolean; data?: any; [key: string]: any };
 type VerifiedEmptyResume = { sessionId: string };
-function processSignature(pid: number): string | undefined { try { const result = Bun.spawnSync(["ps", "-p", String(pid), "-o", "lstart=,comm="], { stdout: "pipe", stderr: "pipe" }); if (result.exitCode !== 0) return undefined; const text = result.stdout.toString().trim(); return text ? new Bun.CryptoHasher("sha256").update(text).digest("hex") : undefined; } catch { return undefined; } }
 function ownerStillAlive(pid: number, signature: string | undefined): boolean { const current = processSignature(pid); if (current !== undefined) return current === signature; try { process.kill(pid, 0); return true; } catch { return false; } }
 
 const modelFor = (backend: PiOptions["backend"], models: PiModelDescriptor[]): string => {

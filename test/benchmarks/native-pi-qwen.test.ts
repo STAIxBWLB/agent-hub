@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { v3ArmOrder, jointAssignment, isSourcePath, ProtectedReadProbe, qualifyRequests, effectiveBuild, parseVersion, claimExclusive, collectSubmissionPatch, disposeAll, writeRecordFresh, evaluateProbe, probeReadiness, ActiveFailureLatch, activeExit, activeTreeFlag, probeErrorClass, emptyProbeWindowStats, diagnoseProbe, safeProbeDiagnosis, PROBE_TRACE_EVENTS, type ProbeWindowStats, type ProbeDiagnosis, type ProbeDiagnosisCategory } from "../../scripts/benchmarks/native-pi-qwen.ts";
+import { v3ArmOrder, jointAssignment, isSourcePath, ProtectedReadProbe, qualifyRequests, effectiveBuild, parseVersion, claimExclusive, collectSubmissionPatch, disposeAll, writeRecordFresh, evaluateProbe, probeReadiness, ActiveFailureLatch, activeExit, activeTreeFlag, probeErrorClass, emptyProbeWindowStats, diagnoseProbe, safeProbeDiagnosis, PROBE_TRACE_EVENTS, QWEN_0_24_7_LOOP_PROTECTION_MESSAGE, classifyNativeTermination, ActiveToolTrace, diagnoseActiveTermination, safeActiveLoopDiagnosis, ACTIVE_TRACE_COUNTERS, ACTIVE_TOOL_CATEGORIES, type ProbeWindowStats, type ProbeDiagnosis, type ProbeDiagnosisCategory, type PeerFailure, type ActiveLoopDiagnosis } from "../../scripts/benchmarks/native-pi-qwen.ts";
 import type { RelayRequestRecord } from "../../src/models/relay.ts";
 
 const script = join(import.meta.dir, "../../scripts/benchmarks/runner.py");
@@ -664,6 +664,237 @@ describe("terminal active-turn peer failure (#160)", () => {
     expect(activeExit({ stopRequested: false, terminalFailure: false, peerUnreachable: false, settled: true, quietMs: 1000 })).toBe("completed");
     // Nothing to end on: undefined, so the loop's own condition exits it as a genuine wall-timeout.
     expect(activeExit({ stopRequested: false, terminalFailure: false, peerUnreachable: false, settled: false, quietMs: 0 })).toBeUndefined();
+  });
+});
+
+describe("bounded active-window loop-protection diagnostics (#175)", () => {
+  const announce = (id: string, kind = "read", title?: string) => ({ sessionUpdate: "tool_call", toolCallId: id, kind, status: "pending", ...(title === undefined ? {} : { title }) });
+  const progress = (id: string) => ({ sessionUpdate: "tool_call_update", toolCallId: id, status: "in_progress" });
+  const settle = (id: string, status: string, content?: unknown) => ({ sessionUpdate: "tool_call_update", toolCallId: id, status, ...(content === undefined ? {} : { content }) });
+  const deniedContent = [{ type: "content", content: { type: "text", text: "EACCES: permission denied, open '/private/x'" } }];
+  const failure = (partial: Partial<PeerFailure>): PeerFailure => ({ peer: "qwen", failureClass: "session error", failedAt: new Date(0).toISOString(), activeElapsedMs: 100, generation: 1, ...partial });
+  const traced = (updates: unknown[], opts: { servers?: string[]; generation?: number; session?: string } = {}) => {
+    const trace = new ActiveToolTrace("qwen", opts.servers ?? []);
+    trace.begin(opts.generation ?? 1, opts.session);
+    for (const u of updates) trace.observe(u);
+    trace.freeze();
+    return trace;
+  };
+
+  test("the pinned loop-protection message produces the fixed terminal class; anything else stays unknown", () => {
+    expect(classifyNativeTermination("qwen", QWEN_0_24_7_LOOP_PROTECTION_MESSAGE)).toEqual({ class: "tool-loop-protection", evidence: "pinned-message" });
+    for (const other of ["loop detected", "Tool-call loop protection stopped this turn.", `${QWEN_0_24_7_LOOP_PROTECTION_MESSAGE} `, `prefix ${QWEN_0_24_7_LOOP_PROTECTION_MESSAGE}`, "session error", "", undefined]) {
+      expect(classifyNativeTermination("qwen", other)).toEqual({ class: "unknown", evidence: "none" });
+    }
+    // The contract is the pinned Qwen build's: the same words from another peer are not its evidence.
+    expect(classifyNativeTermination("pi", QWEN_0_24_7_LOOP_PROTECTION_MESSAGE).class).toBe("unknown");
+  });
+
+  test("setup and teardown observations are phase-gated out of the active window", () => {
+    const trace = new ActiveToolTrace("qwen");
+    trace.observe(announce("s1")); // the setup probe window: dropped
+    trace.begin(1, "sess-1");
+    trace.observe(announce("a"));
+    trace.observe(progress("a"));
+    trace.observe(settle("a", "completed"));
+    trace.freeze();
+    trace.observe(announce("t1")); // teardown: dropped
+    const stats = trace.stats();
+    expect(stats.counts.updateEvents).toBe(3);
+    expect(stats.counts.announcements).toBe(1);
+    expect(stats.counts.settled).toBe(1);
+    expect(stats.counts.completed).toBe(1);
+    expect(stats.counts.unsettled).toBe(0);
+    expect(trace.binding).toEqual({ peer: "qwen", session: "sess-1", generation: 1 });
+  });
+
+  test("update events, distinct ids and verified settlements are different measures; duplicates never mix them", () => {
+    // The study table's shape, scaled down: several update events per call, a duplicate settlement included.
+    const trace = traced([
+      announce("a"), progress("a"), progress("a"), settle("a", "completed"), settle("a", "completed"),
+      announce("b"), progress("b"), settle("b", "failed", deniedContent),
+      announce("c"), // never settled
+    ]);
+    const c = trace.stats().counts;
+    expect(c.updateEvents).toBe(9);
+    expect(c.distinctCallIds).toBe(3);
+    expect(c.announcements).toBe(3);
+    expect(c.settled).toBe(2); // verified executions: a terminal update bound to the in-window call
+    expect(c.duplicateSettlements).toBe(1); // a repeated terminal update is an event, never a second execution
+    expect(c.unsettled).toBe(1);
+    expect(c.completed).toBe(1);
+    expect(c.failedPermission).toBe(1);
+  });
+
+  test("a reused id is a new call: its predecessor's settlement cannot attach to it", () => {
+    const trace = traced([
+      announce("x"), settle("x", "completed"),
+      announce("x"), settle("x", "failed", deniedContent), // a new call under the same id starts clean
+    ]);
+    const c = trace.stats().counts;
+    expect(c.announcements).toBe(2);
+    expect(c.distinctCallIds).toBe(1);
+    expect(c.reusedIds).toBe(1);
+    expect(c.settled).toBe(2);
+    expect(c.completed).toBe(1);
+    expect(c.failedPermission).toBe(1);
+  });
+
+  test("interleaved calls, peers and generations keep separate counters", () => {
+    const trace = traced([
+      announce("a"), announce("b"), progress("a"), settle("b", "completed"), progress("a"), settle("a", "failed", [{ text: "ENOENT: no such file" }]),
+    ]);
+    const c = trace.stats().counts;
+    expect(c.updateEvents).toBe(6);
+    expect(c.settled).toBe(2);
+    expect(c.completed).toBe(1);
+    expect(c.failedNotFound).toBe(1);
+    // A second peer's trace never shares the first's counters.
+    const other = new ActiveToolTrace("qwen");
+    other.begin(1);
+    other.observe(announce("z"));
+    other.freeze();
+    expect(other.stats().counts.announcements).toBe(1);
+    expect(trace.stats().counts.announcements).toBe(2);
+    // A new generation inherits nothing, and a stale cancelled generation's late events bind nowhere.
+    const stale = new ActiveToolTrace("qwen");
+    stale.begin(1, "s1");
+    stale.observe(announce("old"));
+    stale.observe(settle("old", "completed"));
+    stale.begin(2, "s1");
+    expect(stale.stats().counts.announcements).toBe(0);
+    stale.observe(settle("old", "completed")); // no in-window announcement binds it
+    stale.freeze();
+    expect(stale.stats().counts.unresolved).toBe(1);
+    expect(stale.stats().counts.settled).toBe(0);
+  });
+
+  test("expected denial, tool failure, unparsed, unsettled and unresolved outcomes stay distinct", () => {
+    const trace = traced([
+      announce("p"), settle("p", "failed", deniedContent), // the expected guard/seatbelt denial class
+      announce("e"), settle("e", "failed", [{ text: "ENOENT: no such file or directory" }]),
+      announce("o"), settle("o", "failed", [{ text: "EIO: something else" }]),
+      announce("u"), settle("u", "failed"), // no extractable error text: unparsed
+      announce("h"), // open at the freeze: unsettled
+      settle("foreign", "failed", deniedContent), // no in-window announcement: unresolved
+    ]);
+    const c = trace.stats().counts;
+    expect(c.failedPermission).toBe(1);
+    expect(c.failedNotFound).toBe(1);
+    expect(c.failedOther).toBe(1);
+    expect(c.failedUnparsed).toBe(1);
+    expect(c.unsettled).toBe(1);
+    expect(c.unresolved).toBe(1);
+    expect(c.settled).toBe(4);
+    expect(c.completed).toBe(0);
+  });
+
+  test("canonical categories come from the protocol kind and the #138 binding, never re-derived from titles", () => {
+    const trace = traced([
+      announce("r", "read", "read_file"),
+      announce("w", "edit", "write_file"),
+      announce("m", "other", "hub_send (pilot-peer-bus MCP Server)"), // a canonical-bound MCP call: its kind is not its identity
+      announce("f", "execute", "hub_send (other-bus MCP Server)"), // an unconfigured server: the binding resolves nothing
+      announce("n", "not-a-kind", "mystery"),
+      announce("j", "read", '{"file_path":"/x"}'), // a title quoting argument JSON is no category source
+    ], { servers: ["pilot-peer-bus"] });
+    const cats = trace.stats().categories;
+    expect(cats.read).toBe(2);
+    expect(cats.edit).toBe(1);
+    expect(cats.mcp).toBe(1);
+    expect(cats.execute).toBe(1);
+    expect(cats.unclassed).toBe(1);
+    expect(Object.keys(cats).sort()).toEqual([...ACTIVE_TOOL_CATEGORIES].sort());
+  });
+
+  test("repeated announcements are a supported pattern; the native guard threshold is never derived from totals", () => {
+    // Six identical announcements — past the pinned build's internal consecutive-identical guard (5) — still
+    // classify nothing natively: the guard's threshold and predicate are not exposed over the ACP surface.
+    const updates = Array.from({ length: 6 }, (_, i) => announce(`r${i}`, "read", "read_file"));
+    const trace = traced(updates);
+    const c = trace.stats().counts;
+    expect(c.announcements).toBe(6);
+    expect(c.repeatGroups).toBe(1);
+    expect(c.repeatedAnnouncements).toBe(5);
+    expect(c.maxRepeat).toBe(6);
+    const diagnosis = diagnoseActiveTermination(failure({}), trace);
+    expect(diagnosis.supportedPatterns).toEqual(["repeated-announcements"]);
+    expect(diagnosis.terminal).toBe("unknown"); // repetition alone classifies nothing
+    expect(diagnosis.capabilities).toEqual({ nativeGuardThreshold: "unavailable", nativeGuardPredicate: "unavailable", noopOutcomes: "unavailable" });
+    // Distinct titles form no group; a settled permission denial is its own supported pattern.
+    expect(traced([announce("a", "read", "one"), announce("b", "read", "two")]).stats().counts.repeatGroups).toBe(0);
+    expect(diagnoseActiveTermination(failure({}), traced([announce("a"), settle("a", "failed", deniedContent)])).supportedPatterns).toEqual(["denied-operations"]);
+  });
+
+  test("an observed loop-protection stop composes the fixed terminal class with the frozen window", () => {
+    // The observed study cells' shape: a busy tool stream, then the pinned loop-protection rejection.
+    const trace = traced([
+      announce("a"), progress("a"), settle("a", "completed"),
+      announce("b", "edit", "edit_file"), settle("b", "failed", deniedContent),
+      announce("c", "read", "read_file"), announce("d", "read", "read_file"),
+    ], { session: "0192ab-cdef" });
+    const diagnosis = diagnoseActiveTermination(failure({ failureClass: QWEN_0_24_7_LOOP_PROTECTION_MESSAGE }), trace);
+    expect(diagnosis.terminal).toBe("tool-loop-protection");
+    expect(diagnosis.terminalEvidence).toBe("pinned-message");
+    expect(diagnosis.observations).toBe("acp-tool-stream");
+    expect(diagnosis.window).toBe("active");
+    expect(diagnosis.generation).toBe(1);
+    expect(diagnosis.session).toBe("0192ab-cdef");
+    expect(diagnosis.supportedPatterns).toEqual(["repeated-announcements", "denied-operations"]);
+    expect(diagnosis.counts?.updateEvents).toBe(7);
+    expect(diagnosis.counts?.distinctCallIds).toBe(4);
+    expect(diagnosis.counts?.unsettled).toBe(2);
+    const safe = safeActiveLoopDiagnosis(diagnosis);
+    expect(JSON.stringify(safe)).not.toContain("read_file"); // titles never leave the trace
+    expect(JSON.stringify(safe)).not.toContain(QWEN_0_24_7_LOOP_PROTECTION_MESSAGE.slice(0, 20)); // the raw message is not copied
+  });
+
+  test("the safe view is a strict scalar allowlist: nested titles, arguments and dynamic keys cannot inject", () => {
+    const sentinel = "SENTINEL-ARG-/private/secret";
+    const trace = traced([
+      { sessionUpdate: "tool_call", toolCallId: "a", kind: "read", title: `read ${sentinel}`, extra: sentinel, counts: { settled: 99 } },
+      { sessionUpdate: "tool_call_update", toolCallId: "a", status: "failed", content: [{ text: `EACCES ${sentinel}` }], session: sentinel },
+    ], { session: `bad session/${sentinel}` });
+    const diagnosis = diagnoseActiveTermination(failure({ failureClass: `loop protection ${sentinel}` }), trace);
+    expect(diagnosis.terminal).toBe("unknown"); // an arbitrary message never classifies, and is never copied
+    const safe = safeActiveLoopDiagnosis(diagnosis);
+    expect(Object.keys(safe).sort()).toEqual(["capabilities", "categories", "counts", "generation", "observations", "peer", "supportedPatterns", "terminal", "terminalEvidence", "window"].sort()); // the bad session id is dropped
+    expect(Object.keys(safe.counts as Record<string, unknown>).sort()).toEqual([...ACTIVE_TRACE_COUNTERS].sort());
+    expect(Object.keys(safe.categories as Record<string, unknown>).sort()).toEqual([...ACTIVE_TOOL_CATEGORIES].sort());
+    expect(JSON.stringify(safe)).not.toContain("SENTINEL");
+    // A hand-built diagnosis with hostile values is reduced to the allowlist too.
+    const hostile = {
+      peer: "evil", session: "ok-session_1", generation: -2, window: "setup-probe", terminal: "tool-loop-protection", terminalEvidence: "none",
+      observations: "acp-tool-stream", capabilities: { nativeGuardThreshold: 5, injected: sentinel }, supportedPatterns: ["repeated-announcements", sentinel],
+      counts: { settled: -3, completed: 1.5, injected: sentinel }, categories: { read: 2, injected: sentinel }, extra: sentinel,
+    } as unknown as ActiveLoopDiagnosis;
+    const cleaned = safeActiveLoopDiagnosis(hostile);
+    expect(cleaned.peer).toBe("unknown");
+    expect(cleaned.window).toBe("active");
+    expect(cleaned.generation).toBe(0);
+    expect(cleaned.terminal).toBe("unknown"); // without the pinned-message evidence the class cannot stand
+    expect(cleaned.terminalEvidence).toBe("none");
+    expect(cleaned.session).toBe("ok-session_1");
+    expect(cleaned.capabilities).toEqual({ nativeGuardThreshold: "unavailable", nativeGuardPredicate: "unavailable", noopOutcomes: "unavailable" });
+    expect(cleaned.supportedPatterns).toEqual(["repeated-announcements"]);
+    expect((cleaned.counts as Record<string, number>).settled).toBe(0);
+    expect((cleaned.counts as Record<string, number>).completed).toBe(0);
+    expect((cleaned.categories as Record<string, number>).read).toBe(2);
+    expect(JSON.stringify(cleaned)).not.toContain("SENTINEL");
+    expect(JSON.stringify(cleaned)).not.toContain("injected");
+  });
+
+  test("a peer without an observed protocol stream reports observations unavailable, with no counts", () => {
+    // Pi latched (its 100-step ceiling): no ACP tool stream is observed for it, and none is synthesized.
+    const diagnosis = diagnoseActiveTermination(failure({ peer: "pi", failureClass: "step limit reached (100)" }), undefined);
+    expect(diagnosis.observations).toBe("unavailable");
+    expect(diagnosis.counts).toBeUndefined();
+    expect(diagnosis.supportedPatterns).toEqual([]);
+    expect(diagnosis.terminal).toBe("unknown");
+    const safe = safeActiveLoopDiagnosis(diagnosis);
+    expect(safe.counts).toBeUndefined();
+    expect(safe.categories).toBeUndefined();
+    expect(safe.observations).toBe("unavailable");
   });
 });
 

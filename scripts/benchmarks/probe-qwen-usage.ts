@@ -9,7 +9,7 @@ import { OmniRoute } from '../../src/omniroute/client.ts';
 import { startModelRelay, type RelayRequestRecord } from '../../src/models/relay.ts';
 import { profile } from '../../src/local/sandbox.ts';
 import { sbplString } from '../../src/local/deny.ts';
-import { effectiveBuild, parseVersion, ActiveFailureLatch } from './native-pi-qwen.ts';
+import { effectiveBuild, parseVersion, ActiveFailureLatch, classifyNativeTermination } from './native-pi-qwen.ts';
 async function main() {
 const args = process.argv.slice(2);
 const arg = (name: string) => { const i = args.indexOf(name); return i < 0 ? undefined : args[i + 1]; };
@@ -55,6 +55,9 @@ try {
   const deadline = Date.now() + 65_000;
   while (!latch.failure && peer.state === 'busy' && Date.now() < deadline) await Bun.sleep(50);
   result = { version, verdict: latch.failure ? 'peer-failure' : answer ? 'answered' : peer.state === 'busy' ? 'timeout' : 'no-answer', failedPeer: latch.failure?.peer, failureClass: latch.failure ? 'acp-prompt-failed' : undefined, activeElapsedMs: latch.failure?.activeElapsedMs, processReachableAtFailure: latch.failure ? peer.state !== 'offline' : undefined, nativeUsage,
+    // #175: the bounded readback of the failure surface — the fixed terminal class the pinned message
+    // contract supports, never the raw reason text.
+    termination: latch.failure ? classifyNativeTermination('qwen', latch.failure.failureClass) : undefined,
     nativeAvailability: nativeUsage === null ? 'no-reading' : 'known', observations,
     requestUsage: requests.map((r) => ({ id: r.id, outcome: r.outcome, usage: r.requestUsage ?? null, availability: r.usageAvailability, providerSource: r.providerSource, providerAvailability: r.providerAvailability })) };
 } catch { result = { verdict: 'probe-error', nativeUsage, observations }; }

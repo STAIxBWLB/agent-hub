@@ -4,6 +4,12 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.12.13
+
+- Bind serialized original manifest copies to their own pin in study summary export: the copy's bytes verify against `original_copy_sha256` with the raw source pin kept distinct, the copy must equal the supervisor's canonical serialization of its parsed contents, and the runtime manifest may differ only by the recorded hub-version amendments; legacy provenance without the copy pin refuses explicitly instead of receiving an invented pin (#173).
+- Normalize Pi process-signature inspection to one pinned `LC_ALL=C`/`TZ=UTC` ps contract shared by the adapter, the Pi extension and the TUI owner monitor, so a valid native owner is accepted when the parent's timezone or locale differs from the child's; strict PID/start/command identity, owner token and generation/session checks are unchanged (#174).
+- Export bounded active-window diagnostics for Qwen's native tool-call loop protection stops: a fixed terminal class bound to peer/session/generation with pinned-message evidence (anything else stays unknown), scalar-only counters that keep update events, distinct call ids, settlements, expected denials, tool failures and repeated announcements distinct, and an allowlist-built public view that cannot carry titles, arguments, paths, raw messages or dynamic keys; no native guard threshold is derived from event totals (#175).
+
 ## 0.12.12
 
 - Restore owned native cohorts when a study supervisor is interrupted: bounded orderly cancellation with signal-time verified child identity, restoration settled only when the marker and ledger agree, a bounded identity-checked fallback with explicit restoration-failure records, and the interrupted phase, cause and restoration status persisted before the incomplete exit. Grading never starts after interrupted generation, and no resume, root reuse or retry is added (#168).

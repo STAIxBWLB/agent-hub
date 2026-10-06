@@ -1,7 +1,8 @@
 // Fake ACP agent over stdio. Echoes prompts in two chunks, rejects overlapping prompts with
 // turn.agent_busy, asks permission when the prompt contains "PERMISSION", goes silent for 10 s on
 // "SLOW" (until session/cancel), and fails the prompt on "BROKEN". "CAPPED" ends the prompt with an
-// abnormal stop reason and no answer chunks at all.
+// abnormal stop reason and no answer chunks at all. "LOOPPROTECT" rejects with Qwen 0.24.7's pinned
+// loop-protection error (message plus structured data).
 import { createInterface } from "node:readline";
 
 const delay = Number(process.env.FAKE_ACP_DELAY_MS ?? 20);
@@ -67,6 +68,12 @@ async function prompt(id: number, text: string) {
   if (text.includes("BROKEN")) {
     busy = false;
     return send({ jsonrpc: "2.0", id, error: { code: -32603, message: "session error" } });
+  }
+  // Qwen 0.24.7's native tool-call loop protection (#175): the prompt rejects with the pinned message and
+  // structured error data; the adapter surfaces the message alone.
+  if (text.includes("LOOPPROTECT")) {
+    busy = false;
+    return send({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool-call loop protection stopped this turn. The session is still available; send a more specific instruction to continue.", data: { code: "LOOP_DETECTED", errorKind: "loop_detected", loopType: "consecutive_identical_tool_calls" } } });
   }
   if (text.includes("CAPPED")) {
     if (text.includes("PARTIAL_CAPPED")) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "partial work" } } } });
