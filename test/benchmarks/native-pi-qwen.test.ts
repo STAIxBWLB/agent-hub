@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { v3ArmOrder, jointAssignment, isSourcePath, ProtectedReadProbe, qualifyRequests, effectiveBuild, parseVersion, claimExclusive, collectSubmissionPatch, disposeAll, writeRecordFresh, evaluateProbe, probeReadiness, ActiveFailureLatch, activeExit, activeTreeFlag } from "../../scripts/benchmarks/native-pi-qwen.ts";
+import { v3ArmOrder, jointAssignment, isSourcePath, ProtectedReadProbe, qualifyRequests, effectiveBuild, parseVersion, claimExclusive, collectSubmissionPatch, disposeAll, writeRecordFresh, evaluateProbe, probeReadiness, ActiveFailureLatch, activeExit, activeTreeFlag, probeErrorClass, emptyProbeWindowStats, diagnoseProbe, safeProbeDiagnosis, PROBE_TRACE_EVENTS, type ProbeWindowStats, type ProbeDiagnosis, type ProbeDiagnosisCategory } from "../../scripts/benchmarks/native-pi-qwen.ts";
 import type { RelayRequestRecord } from "../../src/models/relay.ts";
 
 const script = join(import.meta.dir, "../../scripts/benchmarks/runner.py");
@@ -220,6 +220,262 @@ describe("probe readiness telemetry only from observed evidence (#150)", () => {
     expect(gateAccepts(pi)).toBe(true);
     expect(gateAccepts(qwen)).toBe(false);
     expect(gateAccepts(pi) && gateAccepts(qwen)).toBe(false);
+  });
+});
+
+describe("bounded structured diagnosis of native probe failures (#169)", () => {
+  const target = "/private/protected/tests.patch";
+  const targetSha = "b".repeat(64);
+  const announce = (id: string, kind = "read") => ({ sessionUpdate: "tool_call", toolCallId: id, kind, status: "pending", rawInput: {} });
+  const input = (id: string, path = target) => ({ sessionUpdate: "tool_call_update", toolCallId: id, status: "in_progress", rawInput: { file_path: path } });
+  const settle = (id: string, status: string, content?: unknown) => ({ sessionUpdate: "tool_call_update", toolCallId: id, status, ...(content === undefined ? {} : { content }) });
+  const deniedContent = [{ type: "content", content: { type: "text", text: `EACCES: permission denied, open '${target}'` } }];
+  // runner.py's v3 readiness gate, as in the #150 block: only a verified structured denial passes.
+  const gateAccepts = (probe: Record<string, unknown>) => probe.checked === true && probe.result === "denied" && ["guard-denial", "tool-failure"].includes(String(probe.evidence));
+  // Feed the fake ACP tool-update stream (the #140 fixtures' infrastructure) and snapshot the window stats.
+  const observed = (updates: unknown[]) => {
+    const probe = new ProtectedReadProbe(target);
+    for (const u of updates) probe.observe(u);
+    return { probe, stats: probe.stats() };
+  };
+  const diagnose = (peer: string, o: { denial: boolean; answers: string[]; settled: boolean; state: string; deadlineExpired?: boolean; stats?: ProbeWindowStats; sessionId?: string }) =>
+    diagnoseProbe(peer, { denial: o.denial, answers: o.answers, settled: o.settled, state: o.state, deadlineExpired: o.deadlineExpired ?? false, stats: o.stats ?? emptyProbeWindowStats(), sessionId: o.sessionId });
+
+  test("the error class is a fixed enum and never carries the raw error text", () => {
+    expect(probeErrorClass(undefined)).toBe("unparsed");
+    expect(probeErrorClass([])).toBe("unparsed");
+    expect(probeErrorClass([{ text: "EACCES: permission denied" }])).toBe("permission");
+    expect(probeErrorClass([{ text: "EPERM: operation not permitted" }])).toBe("permission");
+    expect(probeErrorClass([{ text: "ENOENT: no such file or directory" }])).toBe("not-found");
+    expect(probeErrorClass([{ text: "EIO: something else" }])).toBe("other");
+  });
+
+  test("no read: an answer-only marker diagnoses answer-only with protocol evidence unavailable", () => {
+    const { probe, stats } = observed([]); // the peer answered without any tool event
+    const answers = ["[FYI] AHUB_PROBE_DENIED"];
+    const outcome = evaluateProbe("qwen", { denial: probe.denied, answers, settled: true, state: "idle" });
+    expect(outcome).toEqual({ checked: true, result: "failed", reason: "no structured denial evidence was observed" });
+    const diagnosis = diagnose("qwen", { denial: probe.denied, answers, settled: true, state: "idle", stats });
+    expect(diagnosis.category).toBe("answer-only");
+    expect(diagnosis.origin).toBe("unknown"); // agent behavior vs tool-event coverage is indistinguishable
+    expect(diagnosis.counts["answer-only"]).toBe(1);
+    expect(diagnosis.counts["protocol-evidence-unavailable"]).toBe(1);
+    expect(diagnosis.counts["target-read-attempted"]).toBe(0);
+    const readiness = probeReadiness("qwen", outcome, targetSha, true, diagnosis);
+    expect(gateAccepts(readiness)).toBe(false); // the marker alone still never passes (#150)
+    expect((readiness.diagnosis as Record<string, unknown>).category).toBe("answer-only");
+    // A write (not a read) beside the answer keeps answer-only, with the coverage flag cleared.
+    const wrote = observed([announce("w", "edit"), input("w", "/project/source.py"), settle("w", "completed")]);
+    const d2 = diagnose("qwen", { denial: wrote.probe.denied, answers, settled: true, state: "idle", stats: wrote.stats });
+    expect(d2.category).toBe("answer-only");
+    expect(d2.counts["protocol-evidence-unavailable"]).toBe(0);
+    expect(d2.counts["target-read-attempted"]).toBe(0);
+  });
+
+  test("wrong target: reads on other paths diagnose wrong-target as agent behavior", () => {
+    const { probe, stats } = observed([announce("a"), input("a", "/project/source.py"), settle("a", "failed", deniedContent)]);
+    expect(probe.denied).toBe(false); // a denial-text failure on the wrong path is not the probe's evidence (#140)
+    const outcome = evaluateProbe("qwen", { denial: probe.denied, answers: ["[FYI] AHUB_PROBE_DENIED"], settled: true, state: "idle" });
+    expect(outcome.result).toBe("failed");
+    const diagnosis = diagnose("qwen", { denial: probe.denied, answers: ["[FYI] AHUB_PROBE_DENIED"], settled: true, state: "idle", stats });
+    expect(diagnosis.category).toBe("wrong-target");
+    expect(diagnosis.origin).toBe("agent-behavior");
+    expect(diagnosis.counts["target-read-attempted"]).toBe(1);
+    expect(diagnosis.counts["target-matched"]).toBe(0);
+    expect(diagnosis.counts["tool-settled"]).toBe(0);
+    expect(gateAccepts(probeReadiness("qwen", outcome, targetSha, true, diagnosis))).toBe(false);
+  });
+
+  test("permission refusal: the bound EPERM/EACCES failure is the supported tool denial", () => {
+    const { probe, stats } = observed([announce("a"), input("a"), settle("a", "failed", deniedContent)]);
+    expect(probe.denied).toBe(true);
+    expect(stats.permissionDenials).toBe(1);
+    expect(stats.settledTargetReads).toBe(1);
+    const outcome = evaluateProbe("qwen", { denial: probe.denied, answers: [], settled: true, state: "idle" });
+    expect(outcome).toEqual({ checked: true, result: "denied", evidence: "tool-failure" });
+    const diagnosis = diagnose("qwen", { denial: probe.denied, answers: [], settled: true, state: "idle", stats });
+    expect(diagnosis.category).toBe("verified-denial");
+    expect(diagnosis.origin).toBe("none");
+    expect(diagnosis.counts["permission-outcome"]).toBe(1);
+    expect(diagnosis.counts["structured-error-class"]).toBe(1);
+    // A verified denial's readiness keeps its exact pre-#169 shape: no diagnosis is attached.
+    const readiness = probeReadiness("qwen", outcome, targetSha, true, diagnosis);
+    expect(readiness.diagnosis).toBeUndefined();
+    expect(readiness.kernelProbe).toEqual({ checked: true, result: "denied" });
+    expect(gateAccepts(readiness)).toBe(true);
+  });
+
+  test("a kernel denial alone never substitutes for the native structured evidence", () => {
+    // The observed 2026-10-06 cell: kernel probe denied, native probe unsupported. Still failed, still unavailable.
+    const { probe, stats } = observed([]);
+    const outcome = evaluateProbe("qwen", { denial: probe.denied, answers: ["[FYI] AHUB_PROBE_DENIED"], settled: true, state: "idle" });
+    const diagnosis = diagnose("qwen", { denial: probe.denied, answers: ["[FYI] AHUB_PROBE_DENIED"], settled: true, state: "idle", stats });
+    const readiness = probeReadiness("qwen", outcome, targetSha, true, diagnosis);
+    expect(readiness.kernelProbe).toEqual({ checked: true, result: "denied" }); // the seatbelt layer was verified
+    expect(readiness.result).toBe("failed"); // the native layer was not
+    expect(gateAccepts(readiness)).toBe(false);
+    expect((readiness.diagnosis as Record<string, unknown>).category).toBe("answer-only");
+  });
+
+  test("successful protected read: a completed target read diagnoses accessible, never a denial", () => {
+    const { probe, stats } = observed([announce("a"), input("a"), settle("a", "completed", [{ text: "secret" }])]);
+    expect(probe.denied).toBe(false);
+    expect(stats.completedTargetReads).toBe(1);
+    const outcome = evaluateProbe("qwen", { denial: probe.denied, answers: ["[FYI] AHUB_PROBE_ACCESSIBLE"], settled: true, state: "idle" });
+    expect(outcome).toEqual({ checked: true, result: "failed", reason: "the peer reported the protected file accessible" });
+    const diagnosis = diagnose("qwen", { denial: probe.denied, answers: ["[FYI] AHUB_PROBE_ACCESSIBLE"], settled: true, state: "idle", stats });
+    expect(diagnosis.category).toBe("accessible");
+    expect(diagnosis.origin).toBe("agent-behavior");
+    expect(diagnosis.counts["tool-settled"]).toBe(1);
+    expect(diagnosis.counts["permission-outcome"]).toBe(0);
+    expect(gateAccepts(probeReadiness("qwen", outcome, targetSha, true, diagnosis))).toBe(false);
+    // The completed read diagnoses accessible even without the model's accessible report.
+    const silent = diagnose("qwen", { denial: probe.denied, answers: [], settled: true, state: "idle", stats });
+    expect(silent.category).toBe("accessible");
+  });
+
+  test("malformed/unsupported error: unparsed content is normalization, a known non-permission class is agent behavior", () => {
+    const malformed = observed([announce("a"), input("a"), settle("a", "failed")]); // no content at all
+    expect(malformed.probe.denied).toBe(false);
+    const d1 = diagnose("qwen", { denial: malformed.probe.denied, answers: [], settled: true, state: "idle", stats: malformed.stats });
+    expect(d1.category).toBe("unsupported-error");
+    expect(d1.origin).toBe("normalization");
+    expect(d1.counts["tool-settled"]).toBe(1);
+    expect(d1.counts["structured-error-class"]).toBe(0);
+    const notFound = observed([announce("a"), input("a"), settle("a", "failed", [{ text: "ENOENT: no such file or directory" }])]);
+    const d2 = diagnose("qwen", { denial: notFound.probe.denied, answers: [], settled: true, state: "idle", stats: notFound.stats });
+    expect(d2.category).toBe("unsupported-error");
+    expect(d2.origin).toBe("agent-behavior");
+    expect(d2.counts["structured-error-class"]).toBe(1);
+    expect(gateAccepts(probeReadiness("qwen", evaluateProbe("qwen", { denial: false, answers: [], settled: true, state: "idle" }), targetSha, true, d2))).toBe(false);
+  });
+
+  test("deadline expiry: an unsettled probe diagnoses deadline and serializes unknown, never a denial", () => {
+    const { probe, stats } = observed([]); // no answer, no tool event, still busy at the deadline
+    const outcome = evaluateProbe("qwen", { denial: probe.denied, answers: [], settled: false, state: "busy" });
+    expect(outcome).toEqual({ checked: false, result: "unknown", reason: "the probe never settled before its deadline" });
+    const diagnosis = diagnose("qwen", { denial: probe.denied, answers: [], settled: false, state: "busy", deadlineExpired: true, stats });
+    expect(diagnosis.category).toBe("deadline");
+    expect(diagnosis.counts.deadline).toBe(1);
+    expect(diagnosis.counts["protocol-evidence-unavailable"]).toBe(1);
+    const readiness = probeReadiness("qwen", outcome, targetSha, true, diagnosis);
+    expect(readiness.result).toBe("unknown");
+    expect((readiness.diagnosis as Record<string, unknown>).category).toBe("deadline");
+    expect(gateAccepts(readiness)).toBe(false);
+    // A read attempted but never settled by the deadline keeps the coverage flag clear.
+    const hanging = observed([announce("a"), input("a")]);
+    const d2 = diagnose("qwen", { denial: hanging.probe.denied, answers: [], settled: false, state: "busy", deadlineExpired: true, stats: hanging.stats });
+    expect(d2.category).toBe("deadline");
+    expect(d2.counts["target-read-attempted"]).toBe(1);
+    expect(d2.counts["protocol-evidence-unavailable"]).toBe(0);
+  });
+
+  test("peer offline: the probe diagnoses peer-offline and stays unknown", () => {
+    const outcome = evaluateProbe("pi", { denial: false, answers: [], settled: false, state: "offline" });
+    const diagnosis = diagnose("pi", { denial: false, answers: [], settled: false, state: "offline" });
+    expect(diagnosis.category).toBe("peer-offline");
+    expect(diagnosis.counts["peer-offline"]).toBe(1);
+    expect(diagnosis.counts.deadline).toBe(0);
+    const readiness = probeReadiness("pi", outcome, targetSha, undefined, diagnosis);
+    expect(readiness.result).toBe("unknown");
+    expect(gateAccepts(readiness)).toBe(false);
+  });
+
+  test("pi: a guard denial without the peer's probe answer diagnoses denial-unconfirmed (#150 stands)", () => {
+    const stats = { ...emptyProbeWindowStats(), readsAttempted: 1, targetReads: 1, settledTargetReads: 1, permissionDenials: 1, toolEventsSeen: 1 };
+    const outcome = evaluateProbe("pi", { denial: true, answers: ["[FYI] done"], settled: true, state: "idle" });
+    expect(outcome.result).toBe("failed"); // the missing pairing answer still fails the probe
+    const diagnosis = diagnose("pi", { denial: true, answers: ["[FYI] done"], settled: true, state: "idle", stats });
+    expect(diagnosis.category).toBe("denial-unconfirmed");
+    expect(diagnosis.origin).toBe("agent-behavior");
+    expect(diagnosis.counts["permission-outcome"]).toBe(1);
+    expect(gateAccepts(probeReadiness("pi", outcome, targetSha, undefined, diagnosis))).toBe(false);
+    // With the pairing answer the same evidence verifies, exactly as before #169.
+    const ok = evaluateProbe("pi", { denial: true, answers: ["[FYI] AHUB_PROBE_DENIED"], settled: true, state: "idle" });
+    expect(ok).toEqual({ checked: true, result: "denied", evidence: "guard-denial" });
+    expect(diagnose("pi", { denial: true, answers: ["[FYI] AHUB_PROBE_DENIED"], settled: true, state: "idle", stats }).category).toBe("verified-denial");
+  });
+
+  test("pi: a kernel refusal without the guard denial diagnoses permission-refused as normalization", () => {
+    // Pi's accepted evidence is its guard denial; a seatbelt EPERM string from runTool is a refusal seen across
+    // a normalization boundary, so it neither passes the predicate nor reads as agent behavior.
+    const stats = { ...emptyProbeWindowStats(), readsAttempted: 1, targetReads: 1, settledTargetReads: 1, permissionDenials: 1, toolEventsSeen: 1 };
+    const outcome = evaluateProbe("pi", { denial: false, answers: ["[FYI] AHUB_PROBE_DENIED"], settled: true, state: "idle" });
+    expect(outcome.result).toBe("failed");
+    const diagnosis = diagnose("pi", { denial: false, answers: ["[FYI] AHUB_PROBE_DENIED"], settled: true, state: "idle", stats });
+    expect(diagnosis.category).toBe("permission-refused");
+    expect(diagnosis.origin).toBe("normalization");
+    expect(gateAccepts(probeReadiness("pi", outcome, targetSha, undefined, diagnosis))).toBe(false);
+  });
+
+  test("the safe view is a strict scalar allowlist: malicious nested content cannot inject keys or strings", () => {
+    const sentinel = "SENTINEL-PATH-/private/secret-do-not-leak";
+    const malicious = [
+      { sessionUpdate: "tool_call", toolCallId: "a", kind: "read", status: "pending", rawInput: { __proto__: { injected: true }, extra: sentinel }, diagnosis: { category: "verified-denial" } },
+      { sessionUpdate: "tool_call_update", toolCallId: "a", status: "in_progress", rawInput: { file_path: target }, session: sentinel, window: "active" },
+      { sessionUpdate: "tool_call_update", toolCallId: "a", status: "failed", content: [{ text: `EACCES ${sentinel}` }], counts: { "permission-outcome": 99 } },
+    ];
+    const { probe, stats } = observed(malicious);
+    expect(probe.denied).toBe(true); // the evidence predicate itself is unaffected by the extra keys
+    const diagnosis = diagnose("qwen", { denial: probe.denied, answers: [sentinel], settled: true, state: "idle", stats, sessionId: `bad session/id ${sentinel}` });
+    const safe = safeProbeDiagnosis(diagnosis);
+    expect(Object.keys(safe).sort()).toEqual(["category", "counts", "origin", "peer", "window"]); // the bad session id is dropped
+    expect(Object.keys(safe.counts as Record<string, unknown>).sort()).toEqual([...PROBE_TRACE_EVENTS].sort());
+    expect(safe.window).toBe("setup-probe");
+    expect(JSON.stringify(safe)).not.toContain("SENTINEL");
+    // A hand-built diagnosis with injected keys and hostile values is reduced to the allowlist too.
+    const hostile = { peer: "evil", session: "ok-session_1", window: "active", category: "verified-denial; DROP", origin: sentinel, counts: { "target-matched": -3, "tool-settled": 1.5, injected: sentinel }, extra: sentinel } as unknown as ProbeDiagnosis;
+    const cleaned = safeProbeDiagnosis(hostile);
+    expect(Object.keys(cleaned).sort()).toEqual(["category", "counts", "origin", "peer", "session", "window"]);
+    expect(cleaned.peer).toBe("unknown");
+    expect(cleaned.category).toBe("unknown");
+    expect(cleaned.origin).toBe("unknown");
+    expect(cleaned.session).toBe("ok-session_1");
+    expect((cleaned.counts as Record<string, number>)["target-matched"]).toBe(0);
+    expect((cleaned.counts as Record<string, number>)["tool-settled"]).toBe(0);
+    expect(JSON.stringify(cleaned)).not.toContain("SENTINEL");
+    expect(JSON.stringify(cleaned)).not.toContain("injected");
+  });
+
+  test("the diagnosis binds peer, session and the setup probe window; stats snapshots are immutable", () => {
+    const probe = new ProtectedReadProbe(target);
+    probe.observe(announce("a"));
+    const snapshot = probe.stats();
+    probe.observe(input("a"));
+    probe.observe(settle("a", "failed", deniedContent));
+    expect(snapshot.readsAttempted).toBe(1); // the snapshot is bound to the window it was taken in
+    expect(snapshot.settledTargetReads).toBe(0);
+    expect(probe.stats().settledTargetReads).toBe(1);
+    const diagnosis = diagnose("qwen", { denial: probe.denied, answers: [], settled: true, state: "idle", stats: probe.stats(), sessionId: "0192ab-cdef" });
+    const safe = safeProbeDiagnosis(diagnosis);
+    expect(safe.peer).toBe("qwen");
+    expect(safe.session).toBe("0192ab-cdef");
+    expect(safe.window).toBe("setup-probe");
+  });
+
+  test("no failing diagnosis ever reclassifies the setup as a success", () => {
+    // Every failing category: the predicate outcome is failed/unknown, the readiness gate refuses, and the
+    // setup loop's throw condition (result !== 'denied') still fires — no retry, no success reclassification.
+    const failing: { name: ProbeDiagnosisCategory; peer: string; observation: { denial: boolean; answers: string[]; settled: boolean; state: string; deadlineExpired?: boolean; stats?: ProbeWindowStats } }[] = [
+      { name: "answer-only", peer: "qwen", observation: { denial: false, answers: ["[FYI] AHUB_PROBE_DENIED"], settled: true, state: "idle" } },
+      { name: "wrong-target", peer: "qwen", observation: { denial: false, answers: [], settled: true, state: "idle", stats: { ...emptyProbeWindowStats(), readsAttempted: 2, wrongTargetReads: 2, toolEventsSeen: 4 } } },
+      { name: "accessible", peer: "pi", observation: { denial: true, answers: ["[FYI] AHUB_PROBE_ACCESSIBLE"], settled: true, state: "idle" } },
+      { name: "denial-unconfirmed", peer: "pi", observation: { denial: true, answers: [], settled: true, state: "idle", stats: { ...emptyProbeWindowStats(), readsAttempted: 1, targetReads: 1, settledTargetReads: 1, permissionDenials: 1, toolEventsSeen: 1 } } },
+      { name: "permission-refused", peer: "pi", observation: { denial: false, answers: ["[FYI] AHUB_PROBE_DENIED"], settled: true, state: "idle", stats: { ...emptyProbeWindowStats(), readsAttempted: 1, targetReads: 1, settledTargetReads: 1, permissionDenials: 1, toolEventsSeen: 1 } } },
+      { name: "unsupported-error", peer: "qwen", observation: { denial: false, answers: [], settled: true, state: "idle", stats: { ...emptyProbeWindowStats(), readsAttempted: 1, targetReads: 1, settledTargetReads: 1, otherFailures: 1, toolEventsSeen: 3 } } },
+      { name: "peer-offline", peer: "qwen", observation: { denial: false, answers: [], settled: false, state: "offline" } },
+      { name: "deadline", peer: "qwen", observation: { denial: false, answers: [], settled: false, state: "busy", deadlineExpired: true } },
+    ];
+    for (const f of failing) {
+      const outcome = evaluateProbe(f.peer, { denial: f.observation.denial, answers: f.observation.answers, settled: f.observation.settled, state: f.observation.state });
+      expect(outcome.result).not.toBe("denied"); // the arm still throws: setup stays unavailable with elapsed zero
+      const diagnosis = diagnose(f.peer, f.observation);
+      expect(diagnosis.category).toBe(f.name);
+      const readiness = probeReadiness(f.peer, outcome, targetSha, f.peer === "qwen" ? true : undefined, diagnosis);
+      expect(gateAccepts(readiness)).toBe(false);
+      expect((readiness.diagnosis as Record<string, unknown>).category).toBe(f.name); // the unavailable reason is exposed
+      expect(readiness.peer_failure).toBeUndefined(); // separate from any active-window peer failure
+    }
   });
 });
 
