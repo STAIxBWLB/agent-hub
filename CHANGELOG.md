@@ -4,6 +4,10 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.12.14
+
+- Normalize the remaining `ps lstart` identity reads to the shared pinned `LC_ALL=C`/`TZ=UTC` contract: the terminal-recovery launcher signature now goes through `processSignature`, and the MLX owner/generation identity read pins the same environment, so a record written under one timezone or locale still authenticates the same live process under another; strict PID/start/command identity and the fail-closed refusal paths are unchanged (#177).
+
 ## 0.12.13
 
 - Bind serialized original manifest copies to their own pin in study summary export: the copy's bytes verify against `original_copy_sha256` with the raw source pin kept distinct, the copy must equal the supervisor's canonical serialization of its parsed contents, and the runtime manifest may differ only by the recorded hub-version amendments; legacy provenance without the copy pin refuses explicitly instead of receiving an invented pin (#173).

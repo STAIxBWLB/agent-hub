@@ -97,7 +97,9 @@ function readOwner(runtimeDir: string): OwnerRecord | undefined {
 
 function processInfo(pid: number): ProcessSignature | undefined {
   try {
-    const result = spawnSync("ps", ["-p", String(pid), "-o", "lstart=", "-o", "command="], { encoding: "utf8" });
+    // `lstart` follows the reader's TZ and locale; pin the read so a record written by
+    // one hub invocation compares equal when a later one re-reads it elsewhere (#177).
+    const result = spawnSync("ps", ["-p", String(pid), "-o", "lstart=", "-o", "command="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" } });
     if (result.status !== 0) return undefined;
     const line = String(result.stdout).trim();
     const match = /^(\w{3}\s+\w{3}\s+\d+\s+\d+:\d+:\d+\s+\d{4})\s+(.*)$/.exec(line);

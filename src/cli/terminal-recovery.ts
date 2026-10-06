@@ -2,6 +2,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { processSignature } from "../pi/process-signature.ts";
 
 /** The only terminal commands used by this adapter. Keep this list in sync with Orca's public CLI. */
 export type OrcaTerminalCommand = "list" | "show" | "wait" | "close" | "create";
@@ -226,15 +227,7 @@ function resolveOrcaExecutable(): string {
 
 function defaultProcessIdentity(pid: number): string | undefined {
   if (!Number.isInteger(pid) || pid <= 0) return undefined;
-  try {
-    const result = Bun.spawnSync(["ps", "-p", String(pid), "-o", "lstart=,comm="], { stdout: "pipe", stderr: "pipe" });
-    if (result.exitCode !== 0) return undefined;
-    const identity = result.stdout.toString().trim();
-    if (!identity) return undefined;
-    return new Bun.CryptoHasher("sha256").update(identity).digest("hex");
-  } catch {
-    return undefined;
-  }
+  return processSignature(pid);
 }
 
 function defaultRunner(executable: string): CommandRunner {

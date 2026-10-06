@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureMlx, inspectMlx, stopMlx } from "../src/models/mlx.ts";
+import { acquireGeneration, ensureMlx, inspectMlx, stopMlx } from "../src/models/mlx.ts";
 
 const cleanup: (() => Promise<void> | void)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -123,4 +123,44 @@ test("an absent optional MLX executable rejects without an unhandled child error
   expect(result.exitCode).toBe(0);
   expect(result.stdout.toString()).toContain("caller survived");
   expect(result.stderr.toString()).not.toContain("ENOENT");
+});
+
+// issue #177: the default process identity pins LC_ALL=C/TZ=UTC on the ps read, so a
+// generation claimant recorded under one timezone is still authenticated when a later
+// invocation re-reads it under another. The fake ps renders lstart from its own TZ,
+// like the real one; unpinned, the second acquisition would reclaim the live claimant's slot.
+test("MLX generation identity survives a timezone change between invocations", async () => {
+  const runtimeDir = mkdtempSync(join(tmpdir(), "agenthub-mlx-tz-"));
+  const binDir = mkdtempSync(join(tmpdir(), "agenthub-mlx-ps-"));
+  cleanup.push(() => { rmSync(runtimeDir, { recursive: true, force: true }); rmSync(binDir, { recursive: true, force: true }); });
+  const log = join(binDir, "ps-env.log");
+  const fakePs = [
+    "#!/bin/sh",
+    `echo "LC_ALL=$LC_ALL TZ=$TZ" >> '${log}'`,
+    'if [ "$TZ" = "UTC" ]; then echo "Wed Oct 07 12:00:00 2026 /fake/mlx_lm.server --model /models/qwen3"; else echo "Wed Oct 07 21:00:00 2026 /fake/mlx_lm.server --model /models/qwen3"; fi',
+    "",
+  ].join("\n");
+  writeFileSync(join(binDir, "ps"), fakePs, { mode: 0o755 });
+  const previous = { path: process.env.PATH, tz: process.env.TZ, lc: process.env.LC_ALL };
+  cleanup.push(() => {
+    if (previous.path === undefined) delete process.env.PATH; else process.env.PATH = previous.path;
+    if (previous.tz === undefined) delete process.env.TZ; else process.env.TZ = previous.tz;
+    if (previous.lc === undefined) delete process.env.LC_ALL; else process.env.LC_ALL = previous.lc;
+  });
+  process.env.PATH = `${binDir}:${previous.path}`;
+  process.env.TZ = "UTC";
+  delete process.env.LC_ALL;
+
+  const first = await acquireGeneration(runtimeDir, 2);
+  process.env.TZ = "America/New_York";
+  const second = await acquireGeneration(runtimeDir, 2);
+  const db = new Database(join(runtimeDir, "generation-slots.db"), { readonly: true });
+  const rows = db.query("SELECT slot FROM generation_slots ORDER BY slot").all() as { slot: number }[];
+  db.close();
+  expect(rows.map((row) => row.slot)).toEqual([0, 1]);
+  const lines = readFileSync(log, "utf8").trim().split("\n");
+  expect(lines.length).toBeGreaterThan(0);
+  expect(new Set(lines)).toEqual(new Set(["LC_ALL=C TZ=UTC"]));
+  first();
+  second();
 });
