@@ -3,7 +3,7 @@ import { join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
 import { PiPeer } from '../../src/adapters/pi.ts';
-import { AcpPeer } from '../../src/adapters/acp.ts';
+import { AcpPeer, canonicalMcpToolName } from '../../src/adapters/acp.ts';
 import { Bus, type BusEvent } from '../../src/hub/bus.ts';
 import { newEnvelope } from '../../src/hub/envelope.ts';
 import { realPath } from '../../src/hub/project.ts';
@@ -40,6 +40,14 @@ import { captureFixtureRoot, endReasonOf, extend, fixtureRootProblem, reuseProbl
  *    satisfied (agent behavior, tool event coverage or normalization, else explicit unknown). The diagnosis
  *    changes no predicate: the probe still counts only with structured denial evidence (correction 2), a failed
  *    setup stays unavailable with active elapsed zero, and nothing is retried or reclassified.
+ * 9. A latched active-window terminal failure carries a bounded loop-protection diagnosis (#175): the pinned
+ *    Qwen build's exact loop-protection message contract classifies as `tool-loop-protection` (any other cause
+ *    stays unknown), and the active-window tool trace is count-only — update events, distinct reported ids,
+ *    supported start/settlement counts, canonical tool categories (the protocol kinds plus the #138 canonical
+ *    MCP binding) and the #169 error classes. The native guard's threshold, predicate and no-op signals are not
+ *    exposed by the pinned build and are declared unavailable, never derived from event totals. The diagnosis
+ *    changes nothing: the #160 latch, the end cause and the preserved failure class stand, and nothing is
+ *    retried or continued.
  *
  * Served-model evidence comes from the relay's journaled RelayRequestRecord per request (#139); Qwen's MCP tool
  * approval uses the adapter's shipped tool-identity binding (#138): the exact canonical name only. The headless
@@ -377,6 +385,11 @@ export class ActiveFailureLatch {
         return this.latched;
     }
 
+    /** The current generation (`begin` increments it); what an active-window diagnostic binds to. */
+    get currentGeneration(): number {
+        return this.generation;
+    }
+
     /** Whether the end cause was frozen at active_end. */
     get frozen(): boolean {
         return this.phase === 'ended';
@@ -402,6 +415,279 @@ export function activeExit(state: { stopRequested: boolean; terminalFailure: boo
 export function activeTreeFlag(end: string, changed: boolean | null): string | undefined {
     if ((end === 'completed' || end === 'peer-failure') && changed !== false) return changed ? 'tree-changed-after-active-time' : 'tree-unverified-after-active-time';
     return undefined;
+}
+
+/**
+ * The pinned Qwen 0.24.7 ACP turn error for a native tool-call loop-protection stop (#175): the session's
+ * `session/prompt` request rejects with code -32603, this exact message and error data
+ * `{ code: 'LOOP_DETECTED', errorKind: 'loop_detected', loopType? }` (pinned source: qwen-code v0.24.7
+ * packages/cli/src/acp-integration/session/Session.ts, LOOP_DETECTED_TURN_ERROR_MESSAGE). The adapter's
+ * failure callback surfaces the message only — the structured error data is not forwarded — so the exact
+ * pinned message contract is the supported evidence. Any other text is an unknown native cause, and the
+ * raw message is never copied into an export.
+ */
+export const QWEN_0_24_7_LOOP_PROTECTION_MESSAGE = 'Tool-call loop protection stopped this turn. The session is still available; send a more specific instruction to continue.';
+
+/** The fixed terminal classes of a native active-window termination (#175). Unknown native causes stay unknown. */
+export const NATIVE_TERMINAL_CLASSES = ['tool-loop-protection', 'unknown'] as const;
+export type NativeTerminalClass = (typeof NATIVE_TERMINAL_CLASSES)[number];
+
+/**
+ * Classify a peer's terminal turn failure by the pinned build's documented message contract only. The raw
+ * reason is compared, never returned or stored. The contract is the pinned Qwen build's: the same words from
+ * another peer are not evidence of a native loop-protection stop.
+ */
+export function classifyNativeTermination(peer: string, reason: string | undefined): { class: NativeTerminalClass; evidence: 'pinned-message' | 'none' } {
+    if (peer === 'qwen' && reason === QWEN_0_24_7_LOOP_PROTECTION_MESSAGE) return { class: 'tool-loop-protection', evidence: 'pinned-message' };
+    return { class: 'unknown', evidence: 'none' };
+}
+
+/** The ACP protocol's fixed tool kinds (ToolKind in the schema): what an announced call may carry. */
+export const ACP_TOOL_KINDS = ['read', 'edit', 'delete', 'move', 'search', 'execute', 'think', 'fetch', 'switch_mode', 'other'] as const;
+
+/**
+ * The canonical tool categories of the active-window summary (#175): the protocol kinds, `mcp` for an
+ * announcement the #138 canonical binding resolves against the session's configured servers (bound identity
+ * takes precedence over the mutable kind), and `unclassed` for everything else. Categories are never
+ * re-derived from title text beyond the #138 binding, and titles are never exported.
+ */
+export const ACTIVE_TOOL_CATEGORIES = [...ACP_TOOL_KINDS, 'mcp', 'unclassed'] as const;
+export type ActiveToolCategory = (typeof ACTIVE_TOOL_CATEGORIES)[number];
+
+/**
+ * The scalar counters of the active-window summary (#175). `updateEvents` counts every protocol tool event;
+ * `distinctCallIds` the unique reported ids; neither is an execution count. `announcements` counts `tool_call`
+ * starts (a reused id is a new call, as the adapter treats it); `settled` terminal updates bound to an
+ * in-window announced call; `unsettled` calls open at freeze; `unresolved` terminal updates bound to no
+ * in-window call (stale or foreign); `duplicateSettlements` repeated terminal updates for an already settled
+ * call. The failure classes come from the #169 error-class predicate on the settled content; the repeat
+ * counters are computed at freeze from the announcements' opaque repeat keys.
+ */
+export const ACTIVE_TRACE_COUNTERS = ['updateEvents', 'announcements', 'distinctCallIds', 'reusedIds', 'settled', 'unsettled', 'unresolved', 'duplicateSettlements', 'completed', 'failedPermission', 'failedNotFound', 'failedOther', 'failedUnparsed', 'repeatGroups', 'repeatedAnnouncements', 'maxRepeat'] as const;
+export type ActiveTraceCounter = (typeof ACTIVE_TRACE_COUNTERS)[number];
+
+/** The count-only active-window tool statistics (#175): fixed counter and category keys, nothing else. */
+export interface ActiveWindowStats {
+    counts: Record<ActiveTraceCounter, number>;
+    categories: Record<ActiveToolCategory, number>;
+}
+
+const zeroCounts = <K extends string>(keys: readonly K[]): Record<K, number> => Object.fromEntries(keys.map((k) => [k, 0])) as Record<K, number>;
+
+/** Retention bound for the per-window tracking maps; eviction follows the probe's oldest-first rule. */
+const ACTIVE_TRACE_CAP = 4096;
+
+/**
+ * The count-only active-window ACP tool trace of one peer (#175), the active-phase analogue of the #169
+ * setup probe window. Every counter is a non-negative integer; no title, argument, path, tool response or
+ * error text is retained (the repeat key is a hash of the announced category and title, compared and counted,
+ * never exported). The trace is fenced like the #160 latch: `begin` opens the active generation at
+ * active_start, `freeze` closes it at active_end, and observations outside the active phase — the setup
+ * probes, teardown, a stale cancelled turn — are dropped, so windows and peers never mix counters.
+ */
+export class ActiveToolTrace {
+    private phase: 'inactive' | 'active' | 'ended' = 'inactive';
+    private generation = 0;
+    private session: string | undefined;
+    private counts = zeroCounts(ACTIVE_TRACE_COUNTERS);
+    private categories = zeroCounts(ACTIVE_TOOL_CATEGORIES);
+    private readonly open = new Map<string, true>(); // announced in this window, not settled yet
+    private readonly announcedIds = new Set<string>();
+    private readonly settledIds = new Set<string>();
+    private readonly seenIds = new Set<string>();
+    private readonly repeatKeys = new Map<string, number>();
+
+    constructor(private readonly peer: string, private readonly mcpServers: readonly string[] = []) {}
+
+    /** Opens the next active window: a fresh generation binds afresh and inherits nothing. */
+    begin(generation: number, sessionId?: string): void {
+        this.counts = zeroCounts(ACTIVE_TRACE_COUNTERS);
+        this.categories = zeroCounts(ACTIVE_TOOL_CATEGORIES);
+        this.open.clear();
+        this.announcedIds.clear();
+        this.settledIds.clear();
+        this.seenIds.clear();
+        this.repeatKeys.clear();
+        this.phase = 'active';
+        this.generation = generation;
+        this.session = sessionId;
+    }
+
+    /** Closes the window at active_end: calls still open are unsettled, and the repeat counters settle. */
+    freeze(): void {
+        if (this.phase !== 'active') return;
+        this.phase = 'ended';
+        this.counts.unsettled = this.open.size;
+        this.open.clear();
+        const groups = [...this.repeatKeys.values()].filter((n) => n >= 2);
+        this.counts.repeatGroups = groups.length;
+        this.counts.repeatedAnnouncements = groups.reduce((a, n) => a + n - 1, 0);
+        this.counts.maxRepeat = groups.reduce((a, n) => Math.max(a, n), 0);
+    }
+
+    observe(value: unknown): void {
+        if (this.phase !== 'active') return;
+        if (!value || typeof value !== 'object') return;
+        const u = value as { sessionUpdate?: unknown; toolCallId?: unknown; kind?: unknown; title?: unknown; status?: unknown; content?: unknown };
+        if (u.sessionUpdate !== 'tool_call' && u.sessionUpdate !== 'tool_call_update') return;
+        if (typeof u.toolCallId !== 'string') return;
+        const id = u.toolCallId;
+        this.counts.updateEvents++;
+        if (!this.seenIds.has(id)) this.counts.distinctCallIds++;
+        this.seenIds.add(id);
+        while (this.seenIds.size > ACTIVE_TRACE_CAP) this.seenIds.delete(this.seenIds.values().next().value!);
+        if (u.sessionUpdate === 'tool_call') {
+            this.counts.announcements++;
+            // A reused id is a new call (the adapter's own semantics): it starts clean, and what the earlier
+            // call settled cannot attach to it.
+            if (this.announcedIds.has(id)) this.counts.reusedIds++;
+            this.announcedIds.add(id);
+            this.settledIds.delete(id);
+            const category = this.categoryOf(u);
+            this.categories[category]++;
+            const key = sha(`${category}\n${typeof u.title === 'string' ? u.title : ''}`);
+            this.repeatKeys.set(key, (this.repeatKeys.get(key) ?? 0) + 1);
+            while (this.repeatKeys.size > ACTIVE_TRACE_CAP) this.repeatKeys.delete(this.repeatKeys.keys().next().value!);
+            this.open.set(id, true);
+            while (this.open.size > ACTIVE_TRACE_CAP) this.open.delete(this.open.keys().next().value!);
+            return;
+        }
+        if (u.status !== 'completed' && u.status !== 'failed') return; // a progress update is an event, never a settlement
+        if (this.settledIds.has(id)) {
+            this.counts.duplicateSettlements++;
+            return;
+        }
+        if (!this.open.has(id)) {
+            this.counts.unresolved++; // settled without an in-window announcement: stale or foreign, never an execution
+            return;
+        }
+        this.open.delete(id);
+        this.settledIds.add(id);
+        this.counts.settled++;
+        if (u.status === 'completed') {
+            this.counts.completed++;
+            return;
+        }
+        const cls = probeErrorClass(u.content);
+        if (cls === 'permission') this.counts.failedPermission++;
+        else if (cls === 'not-found') this.counts.failedNotFound++;
+        else if (cls === 'unparsed') this.counts.failedUnparsed++;
+        else this.counts.failedOther++;
+    }
+
+    private categoryOf(u: { kind?: unknown; title?: unknown }): ActiveToolCategory {
+        if (canonicalMcpToolName(typeof u.title === 'string' ? u.title : undefined, this.mcpServers)) return 'mcp';
+        const kind = typeof u.kind === 'string' ? u.kind : '';
+        return (ACP_TOOL_KINDS as readonly string[]).includes(kind) ? (kind as ActiveToolCategory) : 'unclassed';
+    }
+
+    /** A copy of the window counters: a snapshot binds to the window it was taken in. */
+    stats(): ActiveWindowStats {
+        return { counts: { ...this.counts }, categories: { ...this.categories } };
+    }
+
+    /** What the window is bound to: this peer, its session and the active generation. */
+    get binding(): { peer: string; session?: string; generation: number } {
+        return { peer: this.peer, ...(this.session !== undefined ? { session: this.session } : {}), generation: this.generation };
+    }
+}
+
+/**
+ * The repeated/no-op/denied patterns a diagnosis may report (#175), each only when its supported observations
+ * establish it: `repeated-announcements` when one opaque repeat key was announced more than once in the window,
+ * `denied-operations` when a settled call failed with the permission error class. No-op outcomes have no
+ * supported protocol signal and are never reported.
+ */
+export const ACTIVE_LOOP_PATTERNS = ['repeated-announcements', 'denied-operations'] as const;
+export type ActiveLoopPattern = (typeof ACTIVE_LOOP_PATTERNS)[number];
+
+/**
+ * One latched active-window termination, reduced to fixed enums and counts (#175). `observations` is the
+ * evidence availability of the window stream: the pinned Qwen peer's ACP tool updates are observed
+ * (`acp-tool-stream`); a peer without an observed protocol stream is explicit (`unavailable`), with no counts.
+ * `capabilities` is the unsupported ceiling: the pinned build does not expose its native guard threshold, its
+ * guard predicate or a no-op outcome signal over the ACP failure surface, so none is ever derived from event
+ * totals.
+ */
+export interface ActiveLoopDiagnosis {
+    peer: string;
+    session?: string;
+    generation: number;
+    window: 'active';
+    terminal: NativeTerminalClass;
+    terminalEvidence: 'pinned-message' | 'none';
+    observations: 'acp-tool-stream' | 'unavailable';
+    capabilities: { nativeGuardThreshold: 'unavailable'; nativeGuardPredicate: 'unavailable'; noopOutcomes: 'unavailable' };
+    supportedPatterns: ActiveLoopPattern[];
+    counts?: Record<ActiveTraceCounter, number>;
+    categories?: Record<ActiveToolCategory, number>;
+}
+
+/**
+ * Compose the bounded diagnosis of a latched terminal failure (#175) from the failure's original class and
+ * the frozen count-only trace of the failed peer. It explains the latched failure and never changes it: the
+ * latch, the end cause and the record's preserved failure class are exactly what #160 made them. The raw
+ * failure text is read by the classifier and appears nowhere in the diagnosis.
+ */
+export function diagnoseActiveTermination(failure: PeerFailure, trace?: ActiveToolTrace): ActiveLoopDiagnosis {
+    const terminal = classifyNativeTermination(failure.peer, failure.failureClass);
+    const stats = trace?.stats();
+    const supportedPatterns: ActiveLoopPattern[] = [];
+    if (stats) {
+        if (stats.counts.repeatGroups > 0) supportedPatterns.push('repeated-announcements');
+        if (stats.counts.failedPermission > 0) supportedPatterns.push('denied-operations');
+    }
+    const session = trace?.binding.session;
+    return {
+        peer: failure.peer,
+        ...(session !== undefined ? { session } : {}),
+        generation: failure.generation,
+        window: 'active',
+        terminal: terminal.class,
+        terminalEvidence: terminal.evidence,
+        observations: stats ? 'acp-tool-stream' : 'unavailable',
+        capabilities: { nativeGuardThreshold: 'unavailable', nativeGuardPredicate: 'unavailable', noopOutcomes: 'unavailable' },
+        supportedPatterns,
+        ...(stats ? { counts: stats.counts, categories: stats.categories } : {}),
+    };
+}
+
+/**
+ * The strict scalar allowlist serialization of an active-window termination diagnosis (#175), the #169 safe
+ * view's shape applied here: every key is fixed, every string comes from a fixed enum (or the sanitized
+ * session token), every count is coerced to a non-negative safe integer. A terminal class without its
+ * pinned-message evidence serializes as unknown. Whatever nested content the tool stream carried, it cannot
+ * inject keys or strings into this view.
+ */
+export function safeActiveLoopDiagnosis(d: ActiveLoopDiagnosis): Record<string, unknown> {
+    const evidence = d.terminalEvidence === 'pinned-message' ? 'pinned-message' : 'none';
+    const out: Record<string, unknown> = {
+        peer: d.peer === 'pi' || d.peer === 'qwen' ? d.peer : 'unknown',
+        window: 'active',
+        generation: Number.isSafeInteger(d.generation) && d.generation >= 0 ? d.generation : 0,
+        terminal: evidence === 'pinned-message' && (NATIVE_TERMINAL_CLASSES as readonly string[]).includes(d.terminal) ? d.terminal : 'unknown',
+        terminalEvidence: evidence,
+        observations: d.observations === 'acp-tool-stream' ? 'acp-tool-stream' : 'unavailable',
+        capabilities: { nativeGuardThreshold: 'unavailable', nativeGuardPredicate: 'unavailable', noopOutcomes: 'unavailable' },
+        supportedPatterns: (Array.isArray(d.supportedPatterns) ? d.supportedPatterns : []).filter((p): p is ActiveLoopPattern => (ACTIVE_LOOP_PATTERNS as readonly string[]).includes(p as string)),
+    };
+    const session = cleanSessionId(d.session);
+    if (session !== undefined) out.session = session;
+    if (out.observations === 'acp-tool-stream' && d.counts && d.categories) {
+        const counts: Record<string, number> = {};
+        for (const c of ACTIVE_TRACE_COUNTERS) {
+            const n: unknown = (d.counts as Record<string, unknown>)[c];
+            counts[c] = typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : 0;
+        }
+        const categories: Record<string, number> = {};
+        for (const c of ACTIVE_TOOL_CATEGORIES) {
+            const n: unknown = (d.categories as Record<string, unknown>)[c];
+            categories[c] = typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : 0;
+        }
+        out.counts = counts;
+        out.categories = categories;
+    }
+    return out;
 }
 
 /**
@@ -688,6 +974,9 @@ async function main(): Promise<number> {
         let endDetail = 'infrastructure-error', error: string | undefined, elapsedMs = 0, started = 0;
         // The attempt's terminal peer-failure latch (#160): armed at active_start, frozen at active_end.
         const failureLatch = new ActiveFailureLatch();
+        // #175: the per-peer count-only active-window tool traces. Only Qwen has an observed protocol tool
+        // stream (the stdout tap below); a peer without one is diagnosed with observations unavailable.
+        const activeTraces = new Map<string, ActiveToolTrace>();
         // Both natives report terminal turn failure through the same latch (#160, review): a failure during the
         // active phase latches and ends the attempt; the same callback before active_start (the setup probes,
         // where an expected denied tool read is a tool error, never a turn failure) or after the frozen
@@ -856,6 +1145,9 @@ async function main(): Promise<number> {
                     },
                 });
                 peers.push(qwen);
+                // #175: the active-window trace binds the #138 canonical binding to this session's configured
+                // MCP servers (the joint arm's peer bus), never a title re-derivation.
+                activeTraces.set('qwen', new ActiveToolTrace('qwen', kind === 'joint-pi-qwen' ? ['pilot-peer-bus'] : []));
             }
             for (const p of peers) bus.add(p);
             bus.tap((e: BusEvent) => {
@@ -907,6 +1199,9 @@ async function main(): Promise<number> {
                                     // Correction 2: a failed native read of the protected file, EPERM/EACCES from
                                     // the kernel, bound to the same call's announcement and exact input path.
                                     qwenReadProbe.observe(u);
+                                    // #175: the active-window trace counts only between its begin and freeze;
+                                    // setup probe and teardown events are phase-gated out here.
+                                    activeTraces.get('qwen')?.observe(u);
                                     log('qwen_tool', { kind: u.kind, title: clean(String(u.title ?? '')).slice(0, 350), status: u.status, toolCallId: u.toolCallId });
                                 }
                             } catch { /* not protocol output */ }
@@ -954,6 +1249,8 @@ async function main(): Promise<number> {
             started = Date.now();
             deadline = started + m.wall_limit_s * 1000;
             failureLatch.begin(started);
+            // #175: the active-window traces open with the latch's generation, bound to each peer's session.
+            for (const p of peers) activeTraces.get(p.id)?.begin(failureLatch.currentGeneration, (p.recoveryMetadata() as { sessionId?: string }).sessionId);
             log('active_start', { wallLimitSeconds: m.wall_limit_s, sourceDirs, featureAssignments: assignment });
             for (const peer of peers) {
                 const featurePrompts = kind === 'joint-pi-qwen' ? [cachedInputs[index].prompts[assignment[peer.id as 'pi' | 'qwen']]] : cachedInputs[index].prompts;
@@ -976,6 +1273,7 @@ async function main(): Promise<number> {
             active = false;
             activeTree = tree(dir); // the active-window record, captured before any disposal (correction 5)
             failureLatch.freeze(); // the end cause is fixed here: later stop/watchdog callbacks are teardown events
+            for (const trace of activeTraces.values()) trace.freeze(); // the active window closes with it (#175)
             log('active_end', { reason: endDetail, elapsedMs, ...(failureLatch.failure ? { failedPeer: failureLatch.failure.peer, failureClass: failureLatch.failure.failureClass, failedAt: failureLatch.failure.failedAt } : {}) });
         } catch (e) {
             error = clean(String(e));
@@ -983,6 +1281,7 @@ async function main(): Promise<number> {
             log('infrastructure_failure', { error });
         } finally {
             active = false;
+            for (const trace of activeTraces.values()) trace.freeze(); // #175: idempotent; covers an error path that never reached active_end
             const teardownErrors: string[] = [];
             const note = (e: string) => { teardownErrors.push(e); log('cleanup-error', { error: e }); };
             const uncertainBefore = containmentUncertain;
@@ -1028,6 +1327,11 @@ async function main(): Promise<number> {
             writeFileSync(patchFile, patch, { mode: 0o600 });
             const readiness: Record<string, unknown> = {};
             for (const p of peers) readiness[p.id] = { cwd: dir, requestedModel: 'dgx/coding', sessionId: (p.recoveryMetadata() as { sessionId?: string }).sessionId, sandboxProbe: probeReadiness(p.id, probeResults.get(p.id), probeTargetSha, p.id === 'qwen' ? kernelProbeDenied : undefined, probeDiagnoses.get(p.id)) };
+            // #175: the bounded diagnosis of a latched active-window termination — the pinned message contract
+            // for the terminal class and the failed peer's frozen count-only trace for the window. It explains
+            // the latched failure and never changes it, and the raw failure text appears nowhere in it.
+            const loopDiagnosis = failureLatch.failure ? safeActiveLoopDiagnosis(diagnoseActiveTermination(failureLatch.failure, activeTraces.get(failureLatch.failure.peer))) : undefined;
+            if (loopDiagnosis) log('native_loop_diagnosis', { diagnosis: loopDiagnosis });
             const record = {
                 protocol: 'native-pq-v3', platform: process.platform, index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: base,
                 readiness, patchFile, sourceDirs, featureAssignments: jointAssignment(index, repeat),
@@ -1038,6 +1342,8 @@ async function main(): Promise<number> {
                 end_reason: endReasonOf(endDetail, endFlags), end_reason_detail: endDetail, end_flags: endFlags.length ? endFlags : undefined,
                 // #160: the preserved terminal failure (peer, original class, failure time) whenever one latched.
                 peer_failure: failureLatch.failure,
+                // #175: its bounded loop-protection diagnosis (fixed enums and counts only), beside it.
+                loop_diagnosis: loopDiagnosis,
                 error: error ? error.replace(/(token|secret|api[_-]?key)(\s*[:=]\s*)[^\s,;]+/gi, '$1$2[redacted]').slice(0, 300) : undefined,
                 cleanup, cleanup_complete: contained, teardown_errors: teardownErrors.length ? teardownErrors : undefined,
                 metadata_clean: metadataClean, metadata_sha256: metadataBaseline, tree_changed_after_active_time: lateWrites, changedPaths: changed,

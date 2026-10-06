@@ -84,6 +84,16 @@ const HANDSHAKE_MS = 30_000;
 /** Tool calls whose arguments are remembered until their permission request arrives. */
 const TOOL_INPUT_CAP = 64;
 
+/**
+ * The canonical tool binding (#138): an announced `<tool> (<server> MCP Server)` title resolves to
+ * `mcp__<server>__<tool>` only when <server> is one this session was configured with. A title that
+ * quotes argument JSON or names an unconfigured server resolves to nothing.
+ */
+export function canonicalMcpToolName(announcedTitle: string | undefined, serverNames: readonly string[] | undefined): string | undefined {
+  const m = announcedTitle?.match(/^([\w-]{1,80}) \((.+) MCP Server\)$/);
+  return m && serverNames?.some((name) => name === m[2]) ? `mcp__${m[2]}__${m[1]}` : undefined;
+}
+
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 
 /** Streamed argument text as a payload: a complete JSON object, or nothing (a partial stream is not what will run). */
@@ -302,10 +312,7 @@ export class AcpPeer extends BasePeer {
     // the call id, and only when the server half is a server this session was configured with: the canonical
     // `mcp__<server>__<tool>` name is the only derived candidate the exact-match whitelist ever sees, and
     // argument text is never one.
-    const canonical = (() => {
-      const m = announced?.match(/^([\w-]{1,80}) \((.+) MCP Server\)$/);
-      return m && this.opts.mcpServers?.some((s) => s.name === m[2]) ? `mcp__${m[2]}__${m[1]}` : undefined;
-    })();
+    const canonical = canonicalMcpToolName(announced, this.opts.mcpServers?.map((s) => s.name));
     const identity = [typeof call.title === "string" ? call.title : undefined, canonical].find((candidate) => candidate !== undefined && this.opts.autoApprove?.(candidate));
     if (once && identity) {
       this.opts.log?.(`permission auto-approved for ${this.id}: ${identity}`); // the name only: arguments may quote a PII turn
