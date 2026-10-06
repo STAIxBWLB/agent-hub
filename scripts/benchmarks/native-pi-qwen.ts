@@ -35,6 +35,11 @@ import { captureFixtureRoot, endReasonOf, extend, fixtureRootProblem, reuseProbl
  *    started.json and native-owner.json are exclusive ('wx') claims, and no record is ever written over another.
  * 7. The driver is preflighted with strict typechecking (scripts/check.sh) and executable lifecycle checks, not
  *    transpilation alone.
+ * 8. A setup probe failure carries a bounded structured diagnosis (#169): a fixed-enum, count-only trace bound to
+ *    the peer, its session and the setup probe window, classifying WHY the native evidence predicate was not
+ *    satisfied (agent behavior, tool event coverage or normalization, else explicit unknown). The diagnosis
+ *    changes no predicate: the probe still counts only with structured denial evidence (correction 2), a failed
+ *    setup stays unavailable with active elapsed zero, and nothing is retried or reclassified.
  *
  * Served-model evidence comes from the relay's journaled RelayRequestRecord per request (#139); Qwen's MCP tool
  * approval uses the adapter's shipped tool-identity binding (#138): the exact canonical name only. The headless
@@ -60,9 +65,44 @@ export function jointAssignment(caseIndex: number, repeat: number): { pi: number
 /** A project-relative path is inside the guarded source layout (correction 3). */
 export const isSourcePath = (sourceDirs: string[], rel: string) => sourceDirs.some((d) => rel === d || rel.startsWith(d + '/'));
 
+/**
+ * The count-only setup probe window statistics (#169). Every field is a non-negative integer counter; no path,
+ * argument, answer text or error string is ever copied here, so the safe view built from these counters cannot
+ * carry model-controlled content. `toolEventsSeen` counts every protocol tool event in the window; the rest
+ * classify the announced read calls against the probe target.
+ */
+export interface ProbeWindowStats {
+    readsAttempted: number;
+    targetReads: number;
+    settledTargetReads: number;
+    permissionDenials: number;
+    otherFailures: number;
+    unclassedFailures: number;
+    completedTargetReads: number;
+    wrongTargetReads: number;
+    toolEventsSeen: number;
+}
+
+export const emptyProbeWindowStats = (): ProbeWindowStats => ({ readsAttempted: 0, targetReads: 0, settledTargetReads: 0, permissionDenials: 0, otherFailures: 0, unclassedFailures: 0, completedTargetReads: 0, wrongTargetReads: 0, toolEventsSeen: 0 });
+
+/**
+ * The bounded error class of a failed tool call, reduced to a fixed enum (#169). `permission` is exactly the
+ * #140 denial predicate (EPERM/EACCES/permission denied anywhere in the serialized content); `unparsed` is a
+ * failure whose content carries no extractable error text at all (malformed). The raw error text never leaves
+ * this function.
+ */
+export const probeErrorClass = (content: unknown): 'permission' | 'not-found' | 'other' | 'unparsed' => {
+    const text = JSON.stringify(content ?? []);
+    if (text === '[]' || text === '{}' || text === 'null') return 'unparsed';
+    if (/EPERM|EACCES|permission denied/i.test(text)) return 'permission';
+    if (/ENOENT|no such file/i.test(text)) return 'not-found';
+    return 'other';
+};
+
 /** One announced native read, its exact target and its denial must share a call id. */
 export class ProtectedReadProbe {
     private readonly calls = new Map<string, { read: boolean; path?: string; conflictingPath?: boolean }>();
+    private readonly window = emptyProbeWindowStats();
     denied = false;
 
     constructor(private readonly target: string) {}
@@ -73,10 +113,14 @@ export class ProtectedReadProbe {
         if (typeof update.toolCallId !== 'string') return;
         const id = update.toolCallId;
         if (update.sessionUpdate === 'tool_call') {
+            this.window.toolEventsSeen++;
+            if (update.kind === 'read') this.window.readsAttempted++;
             // A reused id is a new call; mutable updates cannot rewrite its announced kind.
             this.calls.set(id, { read: update.kind === 'read' });
             while (this.calls.size > 128) this.calls.delete(this.calls.keys().next().value!);
-        } else if (update.sessionUpdate !== 'tool_call_update') return;
+        } else if (update.sessionUpdate === 'tool_call_update') {
+            this.window.toolEventsSeen++;
+        } else return;
         const call = this.calls.get(id);
         if (!call) return; // terminal or never announced: a late update cannot revive old evidence
         const path = update.rawInput?.file_path;
@@ -86,8 +130,26 @@ export class ProtectedReadProbe {
         }
         if (update.status === 'failed' || update.status === 'completed') {
             this.calls.delete(id);
-            if (update.status === 'failed' && call.read && call.path === this.target && !call.conflictingPath && /EPERM|EACCES|permission denied/i.test(JSON.stringify(update.content ?? []))) this.denied = true;
+            if (!call.read) return;
+            if (call.path === this.target && !call.conflictingPath) {
+                this.window.settledTargetReads++;
+                if (update.status === 'completed') {
+                    this.window.completedTargetReads++;
+                    return;
+                }
+                const cls = probeErrorClass(update.content);
+                if (cls === 'permission') {
+                    this.window.permissionDenials++;
+                    this.denied = true;
+                } else if (cls === 'unparsed') this.window.unclassedFailures++;
+                else this.window.otherFailures++;
+            } else this.window.wrongTargetReads++;
         }
+    }
+
+    /** A copy of the window counters: a snapshot taken at probe evaluation is bound to the setup window forever. */
+    stats(): ProbeWindowStats {
+        return { ...this.window };
     }
 }
 
@@ -113,15 +175,146 @@ export function evaluateProbe(peer: string, observation: { denial: boolean; answ
 }
 
 /**
+ * The fixed trace events of the bounded setup-probe diagnosis (#169). The safe view carries only these keys,
+ * each with a count: how many window events of that kind were observed. Nothing else — no paths, no tool
+ * arguments, no answer text, no error strings — may appear under any of them.
+ */
+export const PROBE_TRACE_EVENTS = ['target-read-attempted', 'target-matched', 'tool-settled', 'permission-outcome', 'structured-error-class', 'answer-only', 'peer-offline', 'deadline', 'protocol-evidence-unavailable'] as const;
+export type ProbeTraceEvent = (typeof PROBE_TRACE_EVENTS)[number];
+
+/**
+ * The diagnosed category of a setup probe outcome (#169). `verified-denial` is the satisfied predicate; every
+ * other category is a distinct failure cause: the peer reported or achieved access (`accessible`), answered
+ * without any tool call (`answer-only`), never attempted a read (`no-read-attempted`), read only other paths
+ * (`wrong-target`), saw a permission refusal that is not the evidence class this peer's predicate accepts
+ * (`permission-refused`), saw the denial evidence without the peer's pairing answer (`denial-unconfirmed`),
+ * failed the target read with a malformed or non-permission error (`unsupported-error`), went offline
+ * (`peer-offline`) or ran out the probe deadline (`deadline`). `protocol-evidence-unavailable` is a settled
+ * window with answers or activity the protocol stream cannot account for; `unknown` is everything unresolved.
+ */
+export const PROBE_DIAGNOSIS_CATEGORIES = ['verified-denial', 'accessible', 'answer-only', 'no-read-attempted', 'wrong-target', 'permission-refused', 'denial-unconfirmed', 'unsupported-error', 'peer-offline', 'deadline', 'protocol-evidence-unavailable', 'unknown'] as const;
+export type ProbeDiagnosisCategory = (typeof PROBE_DIAGNOSIS_CATEGORIES)[number];
+
+/** Where the diagnosed cause lies (#169): agent behavior, tool event coverage, normalization, none (a verified denial), or explicitly unknown. */
+export const PROBE_DIAGNOSIS_ORIGINS = ['agent-behavior', 'tool-event-coverage', 'normalization', 'none', 'unknown'] as const;
+export type ProbeDiagnosisOrigin = (typeof PROBE_DIAGNOSIS_ORIGINS)[number];
+
+/** One peer's bounded probe diagnosis, bound to that peer, its session and the setup probe window (#169). */
+export interface ProbeDiagnosis {
+    peer: string;
+    session?: string;
+    window: 'setup-probe';
+    category: ProbeDiagnosisCategory;
+    origin: ProbeDiagnosisOrigin;
+    counts: Record<ProbeTraceEvent, number>;
+}
+
+/** A session id enters the safe view only as an opaque bounded token; anything else is dropped. */
+const cleanSessionId = (value: unknown): string | undefined => (typeof value === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(value) ? value : undefined);
+
+/**
+ * Why the native protected-file probe evidence predicate was not satisfied (#169), reduced to a fixed category,
+ * a coarse origin and count-only trace events. The decision order mirrors evaluateProbe exactly, so the diagnosis
+ * can never disagree with the predicate it explains: accessible first, then the satisfied denial, then the
+ * failure causes. Causes that cannot be told apart (a marker answer with no tool events could be agent behavior
+ * or a tool-event coverage gap) stay explicitly `unknown`. This function changes no predicate.
+ */
+export function diagnoseProbe(peer: string, observation: { denial: boolean; answers: string[]; settled: boolean; state: string; deadlineExpired: boolean; stats: ProbeWindowStats; sessionId?: string }): ProbeDiagnosis {
+    const s = observation.stats;
+    const counts: Record<ProbeTraceEvent, number> = {
+        'target-read-attempted': s.readsAttempted,
+        'target-matched': s.targetReads,
+        'tool-settled': s.settledTargetReads,
+        'permission-outcome': s.permissionDenials,
+        'structured-error-class': s.permissionDenials + s.otherFailures,
+        'answer-only': 0,
+        'peer-offline': 0,
+        deadline: 0,
+        'protocol-evidence-unavailable': 0,
+    };
+    const marked = observation.answers.some((a) => a.includes('AHUB_PROBE_DENIED'));
+    const accessible = observation.answers.some((a) => a.includes('AHUB_PROBE_ACCESSIBLE'));
+    let category: ProbeDiagnosisCategory = 'unknown';
+    let origin: ProbeDiagnosisOrigin = 'unknown';
+    if (observation.state === 'offline' || observation.state === 'paused') {
+        category = 'peer-offline';
+        counts['peer-offline'] = 1;
+    } else if (!observation.settled) {
+        if (observation.deadlineExpired) {
+            category = 'deadline';
+            counts.deadline = 1;
+        }
+        if (s.toolEventsSeen === 0) counts['protocol-evidence-unavailable'] = 1;
+    } else if (accessible || s.completedTargetReads > 0) {
+        category = 'accessible';
+        origin = 'agent-behavior';
+    } else if (observation.denial && (peer === 'qwen' || marked)) {
+        category = 'verified-denial';
+        origin = 'none';
+    } else if (observation.denial) {
+        // The structured denial was observed but the peer's own probe answer never paired with it (#150 stands).
+        category = 'denial-unconfirmed';
+        origin = 'agent-behavior';
+    } else if (s.permissionDenials > 0) {
+        // A refusal was seen, but not in the evidence class this peer's predicate accepts (e.g. Pi's seatbelt
+        // kernel error string, which is not its guard denial): a normalization boundary, not agent behavior.
+        category = 'permission-refused';
+        origin = 'normalization';
+    } else if (s.unclassedFailures > 0 || s.otherFailures > 0) {
+        category = 'unsupported-error';
+        origin = s.unclassedFailures > 0 ? 'normalization' : 'agent-behavior';
+    } else if (s.targetReads === 0 && s.readsAttempted > 0) {
+        category = 'wrong-target';
+        origin = 'agent-behavior';
+    } else if (s.readsAttempted === 0 && observation.answers.length > 0) {
+        category = 'answer-only';
+        counts['answer-only'] = 1;
+        if (s.toolEventsSeen === 0) counts['protocol-evidence-unavailable'] = 1;
+        // Agent behavior (the model never called the tool) and a tool-event coverage gap are indistinguishable here.
+    } else if (s.readsAttempted === 0) {
+        category = s.toolEventsSeen === 0 ? 'protocol-evidence-unavailable' : 'no-read-attempted';
+        origin = s.toolEventsSeen === 0 ? 'unknown' : 'agent-behavior';
+        if (s.toolEventsSeen === 0) counts['protocol-evidence-unavailable'] = 1;
+    }
+    return { peer, session: cleanSessionId(observation.sessionId), window: 'setup-probe', category, origin, counts };
+}
+
+/**
+ * The strict scalar allowlist serialization of a probe diagnosis (#169): every key is fixed, every string comes
+ * from a fixed enum (or the sanitized session token), every count is coerced to a non-negative safe integer.
+ * Whatever nested content the model or the tool stream carried, it cannot inject keys or strings into this view.
+ */
+export function safeProbeDiagnosis(d: ProbeDiagnosis): Record<string, unknown> {
+    const counts: Record<string, number> = {};
+    for (const e of PROBE_TRACE_EVENTS) {
+        const n: unknown = d.counts[e];
+        counts[e] = typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : 0;
+    }
+    const out: Record<string, unknown> = {
+        peer: d.peer === 'pi' || d.peer === 'qwen' ? d.peer : 'unknown',
+        window: 'setup-probe',
+        category: (PROBE_DIAGNOSIS_CATEGORIES as readonly string[]).includes(d.category) ? d.category : 'unknown',
+        origin: (PROBE_DIAGNOSIS_ORIGINS as readonly string[]).includes(d.origin) ? d.origin : 'unknown',
+        counts,
+    };
+    const session = cleanSessionId(d.session);
+    if (session !== undefined) out.session = session;
+    return out;
+}
+
+/**
  * The serialized sandboxProbe readiness of one peer (#150). Only an observed structured denial serializes
  * `checked: true, result: "denied"`; a missing or failed probe is explicit, never a synthesized denial. Qwen's
- * record also carries the seatbelt layer's kernel probe, which ran before the peer launched.
+ * record also carries the seatbelt layer's kernel probe, which ran before the peer launched. A failed or unknown
+ * probe additionally carries its bounded diagnosis (#169) — the unavailable setup reason, kept separate from
+ * any active-window peer failure — while a verified denial's record keeps its exact pre-#169 shape.
  */
-export function probeReadiness(peer: string, outcome: ProbeOutcome | undefined, targetSha256: string, kernelDenied?: boolean): Record<string, unknown> {
+export function probeReadiness(peer: string, outcome: ProbeOutcome | undefined, targetSha256: string, kernelDenied?: boolean, diagnosis?: ProbeDiagnosis): Record<string, unknown> {
     const o: ProbeOutcome = outcome ?? { checked: false, result: 'unknown', reason: 'the probe never ran' };
     const probe: Record<string, unknown> = { checked: o.checked, result: o.result, target_sha256: targetSha256 };
     if (o.evidence) probe.evidence = o.evidence;
     if (o.reason) probe.reason = o.reason;
+    if (diagnosis && o.result !== 'denied') probe.diagnosis = safeProbeDiagnosis(diagnosis);
     if (peer === 'qwen' && kernelDenied !== undefined) probe.kernelProbe = kernelDenied ? { checked: true, result: 'denied' } : { checked: false, result: 'unknown' };
     return probe;
 }
@@ -467,6 +660,10 @@ async function main(): Promise<number> {
         const qwenReadProbe = new ProtectedReadProbe(probeTarget);
         // Per-peer observed probe outcomes (issue #150): the readiness record reports only these.
         const probeResults = new Map<string, ProbeOutcome>();
+        // Per-peer bounded probe diagnoses (issue #169): why the evidence predicate was not satisfied. They
+        // explain probeResults, never change them; Pi's window counters are filled by its executeTool wrapper.
+        const probeDiagnoses = new Map<string, ProbeDiagnosis>();
+        const piProbeStats = emptyProbeWindowStats();
         let kernelProbeDenied = false;
         const owners = new Map<string, Actor>();
         const qwenUsageDiagnostics: unknown[] = [];
@@ -583,6 +780,17 @@ async function main(): Promise<number> {
                         const a = raw as Record<string, unknown>;
                         let target = '';
                         if (stopRequested || (deadline !== undefined && Date.now() >= deadline)) return 'error: attempt stopped before tool execution';
+                        // #169: count-only setup probe window trace. The pre-active window is exactly the setup
+                        // probes (the only pre-active tool turns); these counters change no predicate — the
+                        // protected target read still needs the guard denial in the catch below (#150).
+                        const setupWindow = !active;
+                        if (setupWindow) {
+                            piProbeStats.toolEventsSeen++;
+                            if (name === 'read') {
+                                piProbeStats.readsAttempted++;
+                                if (typeof a.path === 'string' && resolve(dir, a.path) === probeTarget) piProbeStats.targetReads++;
+                            }
+                        }
                         try {
                             if (['read', 'write', 'edit'].includes(name)) {
                                 const p = guardPath({ cwd: dir, deny: [] }, String(a.path), name === 'read' ? 'read' : 'write');
@@ -597,6 +805,7 @@ async function main(): Promise<number> {
                                 return 'sent';
                             }
                             const result = await runTool(name, JSON.stringify(a), { cwd: dir, deny: [], sandboxProfile: sandbox, signal, permit: async () => true, send: () => '' });
+                            if (setupWindow && name === 'read' && !(typeof a.path === 'string' && resolve(dir, a.path) === probeTarget)) piProbeStats.wrongTargetReads++;
                             log('pi_tool', { name, path: target, ok: !result.startsWith('error:') });
                             return result;
                         } catch {
@@ -604,8 +813,9 @@ async function main(): Promise<number> {
                             // structured evidence; the model's marker alone never proves the probe.
                             if (name === 'read' && typeof a.path === 'string' && resolve(dir, a.path) === probeTarget) {
                                 deniedNative.add('pi');
+                                if (setupWindow) { piProbeStats.settledTargetReads++; piProbeStats.permissionDenials++; }
                                 log('native_read_denied', { peer: 'pi', guard: 'guardPath' });
-                            }
+                            } else if (setupWindow && name === 'read') piProbeStats.wrongTargetReads++;
                             return 'error: outside benchmark scope';
                         }
                     },
@@ -717,10 +927,23 @@ async function main(): Promise<number> {
                     if (peer.state === 'offline' || peer.state === 'paused') break; // recorded by evaluateProbe; the arm still fails below
                     await Bun.sleep(100);
                 }
-                const outcome = evaluateProbe(peer.id, { denial: peer.id === 'pi' ? deniedNative.has('pi') : qwenReadProbe.denied, answers: answers[peer.id]!.slice(count), settled: settledProbe(), state: peer.state });
+                const probeObservation = { denial: peer.id === 'pi' ? deniedNative.has('pi') : qwenReadProbe.denied, answers: answers[peer.id]!.slice(count), settled: settledProbe(), state: peer.state };
+                const outcome = evaluateProbe(peer.id, probeObservation);
                 probeResults.set(peer.id, outcome);
+                // #169: the bounded diagnosis of WHY the evidence predicate was not satisfied. The stats snapshot
+                // binds it to this setup probe window (Pi's counters count only pre-active tool calls; Qwen's are
+                // snapshotted here, before the active phase can add to them). It explains the outcome and never
+                // changes it: the arm still fails below on anything but an observed structured denial.
+                const diagnosis = diagnoseProbe(peer.id, {
+                    ...probeObservation,
+                    deadlineExpired: !probeObservation.settled && peer.state !== 'offline' && peer.state !== 'paused',
+                    stats: peer.id === 'pi' ? { ...piProbeStats } : qwenReadProbe.stats(),
+                    sessionId: (peer.recoveryMetadata() as { sessionId?: string }).sessionId,
+                });
+                probeDiagnoses.set(peer.id, diagnosis);
+                log('native_probe_diagnosis', { peer: peer.id, diagnosis: safeProbeDiagnosis(diagnosis) });
                 // An unverified probe still fails the attempt (issue #150); only the serialized readiness changed.
-                if (outcome.result !== 'denied') throw new Error(`native probe not verified: ${outcome.reason}`);
+                if (outcome.result !== 'denied') throw new Error(`native probe not verified: ${outcome.reason} (diagnosed: ${diagnosis.category})`);
                 log('native_probe', { peer: peer.id, denied: true, evidence: outcome.evidence });
             }
             if (setupOnly) { endDetail = 'setup-calibration'; return; }
@@ -804,7 +1027,7 @@ async function main(): Promise<number> {
             const patchFile = join(recordRoot, 'patches', name + '.patch');
             writeFileSync(patchFile, patch, { mode: 0o600 });
             const readiness: Record<string, unknown> = {};
-            for (const p of peers) readiness[p.id] = { cwd: dir, requestedModel: 'dgx/coding', sessionId: (p.recoveryMetadata() as { sessionId?: string }).sessionId, sandboxProbe: probeReadiness(p.id, probeResults.get(p.id), probeTargetSha, p.id === 'qwen' ? kernelProbeDenied : undefined) };
+            for (const p of peers) readiness[p.id] = { cwd: dir, requestedModel: 'dgx/coding', sessionId: (p.recoveryMetadata() as { sessionId?: string }).sessionId, sandboxProbe: probeReadiness(p.id, probeResults.get(p.id), probeTargetSha, p.id === 'qwen' ? kernelProbeDenied : undefined, probeDiagnoses.get(p.id)) };
             const record = {
                 protocol: 'native-pq-v3', platform: process.platform, index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: base,
                 readiness, patchFile, sourceDirs, featureAssignments: jointAssignment(index, repeat),

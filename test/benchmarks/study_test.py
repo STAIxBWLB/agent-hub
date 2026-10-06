@@ -1,5 +1,5 @@
-"""Focused stdlib tests; synthetic metadata only, no evaluator or native processes."""
-import copy, importlib.util, json, subprocess, sys, tempfile, unittest
+"""Focused stdlib tests; synthetic metadata and deterministic fake native children only, never real evaluator or native processes."""
+import contextlib, copy, importlib.util, io, json, os, signal, subprocess, sys, tempfile, threading, time, unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,12 +10,16 @@ import study_audit as audit
 import study_supervisor as supervisor
 
 
+def manifest():
+    m = runner.load(SCRIPTS / "manifest-v3-pi-qwen.json")
+    m["cases"] = m["cases"][:1]
+    m["plan"]["study"].update(cases=[0], repeats=2, attempts=6, active_ceiling_s=1800)
+    return m
+
+
 class StudyTests(unittest.TestCase):
     def manifest(self):
-        m = runner.load(SCRIPTS / "manifest-v3-pi-qwen.json")
-        m["cases"] = m["cases"][:1]
-        m["plan"]["study"].update(cases=[0], repeats=2, attempts=6, active_ceiling_s=1800)
-        return m
+        return manifest()
 
     def fixture(self, root, rep):
         root.mkdir()
@@ -244,7 +248,7 @@ class StudyTests(unittest.TestCase):
                 setattr(a, key, root)
             calls = []
             result = {"checks": {"restoration": True, "matrix": True, "bindings": True}, "verified": True, "planned": 6, "retained": 6}
-            def command(cmd, log, timeout=None):
+            def command(cmd, log, timeout=None, **_):
                 calls.append([str(x) for x in cmd])
                 log.write_text("private output")
             with patch.object(supervisor, "preflight", return_value=(m, m, [], [root], [])), \
@@ -316,7 +320,7 @@ class StudyTests(unittest.TestCase):
             def fail_index(path, value):
                 if path.name == "private-evidence-hashes.json": raise OSError("injected seal failure")
                 write(path, value)
-            def command(cmd, log, timeout=None): log.write_text("private output")
+            def command(cmd, log, timeout=None, **_): log.write_text("private output")
             with patch.object(supervisor, "preflight", return_value=(m, m, [], [root], [])), \
                  patch.object(supervisor, "run_command", side_effect=command), \
                  patch.object(supervisor, "read_command", return_value="a" * 40), \
@@ -334,6 +338,377 @@ class StudyTests(unittest.TestCase):
             with self.assertRaises(FileExistsError): audit.write_new(path, {"verified": False})
             self.assertEqual(runner.load(path), {"verified": True})
 
+# A deterministic fake native child (#168): it records the same restoration marker/ledger pair the real native
+# runner does, commits run records slowly, and answers or ignores cancellation by mode. It never touches real
+# protected state: its cohort is a synthetic temp directory and its ledger locks nothing.
+FAKE_NATIVE = """
+import json, os, signal, subprocess, sys, time
+from pathlib import Path
+
+cohort = Path(sys.argv[1]); mode = sys.argv[2]
+records = int(sys.argv[3]); signal_after = int(sys.argv[4])
+delay = float(sys.argv[5])
+
+def started_of(pid):
+    p = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                       env={**os.environ, "LC_ALL": "C", "TZ": "UTC"})
+    return p.stdout.strip()
+
+cohort.mkdir(parents=True, exist_ok=True)
+(cohort / "runs").mkdir(exist_ok=True)
+ident = {"pid": os.getpid(), "started": started_of(os.getpid())}
+(cohort / "restoration-ledger.json").write_text(json.dumps(
+    {"runner": ident, "protected": {"paths": {}, "restored": True}, "siblings": {}, "actors": {}, "trust": None}))
+(cohort / "restoration.json").write_text(json.dumps({"restored": False, "runner": ident}))
+
+stop = []
+def on_signal(signum, frame):
+    stop.append(signum)
+
+if mode.startswith("ignores"):
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+else:
+    signal.signal(signal.SIGINT, on_signal)
+    signal.signal(signal.SIGTERM, on_signal)
+if mode == "ignores-corrupt-ledger":
+    (cohort / "restoration-ledger.json").write_text("not json")
+
+for i in range(records):
+    if stop:
+        break
+    (cohort / "runs" / ("%02d-arm.json" % i)).write_text(json.dumps({"index": i, "kind": "fake", "repeat": 0}))
+    if i + 1 == signal_after:
+        os.kill(os.getppid(), signal.SIGINT)
+        time.sleep(max(delay, 0.4))  # the operator's signal must reach the supervisor before this child settles
+    time.sleep(delay)
+
+if mode.startswith("ignores"):
+    while True:
+        time.sleep(1)
+
+# Cooperative mode settles its own restoration in cleanup, then exits nonzero when interrupted, like the native runner.
+(cohort / "restoration.json").write_text(json.dumps({"restored": True, "interrupted": bool(stop)}))
+sys.exit(1 if stop else 0)
+"""
+
+
+class InterruptionTests(unittest.TestCase):
+    """The #168 supervisor interruption contract, driven through the real signal path with a fake native child."""
+
+    def setUp(self):
+        supervisor._INTERRUPT.clear()
+
+    def tearDown(self):
+        supervisor._INTERRUPT.clear()
+
+    def fake_native(self, root):
+        path = Path(root) / "fake-native.py"
+        path.write_text(FAKE_NATIVE)
+        return path
+
+    def study(self, root, phase):
+        study = supervisor.Study(Path(root) / "study", 3)
+        for target in ("prepared", "generated", "restored"):
+            if supervisor.PHASES.index(target) <= supervisor.PHASES.index(phase):
+                study.advance(target)
+        return study
+
+    def run_fake(self, study, cohort, mode, records, signal_after, kind="generate", repeat=0, planned=3):
+        supervisor._INTERRUPT.clear()
+        log = study.root / f"{kind}-{repeat}.log"
+        with supervisor.interrupt_handlers(), \
+             patch.object(supervisor, "PROGRESS_INTERVAL_S", 0.05), \
+             patch.object(supervisor, "CANCEL_SETTLE_S", 5.0 if mode == "cooperative" else 0.6), \
+             patch.object(supervisor, "FALLBACK_SETTLE_S", 5.0), \
+             patch.object(supervisor, "RECOVERY_TIMEOUT_S", 120.0):
+            with self.assertRaises(supervisor.StudyInterrupted):
+                supervisor.run_command([sys.executable, "-B", self.fake, cohort, mode, str(records), str(signal_after), "0.05"],
+                                       log, study=study, kind=kind, repeat=repeat, cohort=cohort, planned=planned)
+        state = runner.load(study.root / "study.json")
+        self.assertEqual(state["outcome"], "incomplete")
+        return state["interrupted"]
+
+    def assert_records_byte_identical(self, cohort, count):
+        written = sorted((Path(cohort) / "runs").glob("*.json"))
+        self.assertEqual(len(written), count)
+        for path in written:
+            i = int(path.name[:2])
+            self.assertEqual(path.read_text(), json.dumps({"index": i, "kind": "fake", "repeat": 0}))
+
+    def test_cooperative_child_settles_restoration_before_incomplete_exit(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); self.fake = self.fake_native(root)
+            study = self.study(root, "prepared")
+            cohort = study.root / "r0"
+            record = self.run_fake(study, cohort, "cooperative", 3, 2)
+            self.assertEqual((record["phase"], record["command"], record["repeat"], record["cohort"]),
+                             ("prepared", "generate", 0, "r0"))
+            self.assertEqual((record["cause"], record["signal"]), ("operator-signal", "SIGINT"))
+            self.assertEqual(record["child"]["pid"] and isinstance(record["child"]["started"], str), True)
+            self.assertTrue(record["cancellation_requested"])
+            self.assertIsNone(record["fallback"])
+            self.assertTrue(record["child_exited"])
+            self.assertEqual(record["exit_code"], 1)
+            self.assertEqual(record["restoration"]["state"], "restored")
+            # The milestone phase never advanced on progress or interruption.
+            self.assertEqual(runner.load(study.root / "study.json")["phase"], "prepared")
+            marker = runner.load(cohort / "restoration.json")
+            self.assertTrue(marker["restored"])
+            self.assertTrue(marker["interrupted"])
+            self.assert_records_byte_identical(cohort, 2)
+            # Nothing was left to recover, so the recovery never ran.
+            self.assertFalse((study.root / "recovery-r0.log").exists())
+
+    def test_child_ignoring_cancellation_reaches_verified_bounded_fallback(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); self.fake = self.fake_native(root)
+            study = self.study(root, "prepared")
+            cohort = study.root / "r0"
+            record = self.run_fake(study, cohort, "ignores", 1, 1)
+            self.assertTrue(record["cancellation_requested"])
+            self.assertEqual(record["fallback"], "sigkill-after-cancel-timeout")
+            self.assertTrue(record["fallback_kill_sent"])
+            self.assertTrue(record["child_exited"])
+            # The killed identity is gone (or, under heavy pid churn, no longer matches it), the bounded
+            # restore.ts recovery ran once, and marker plus ledger agree.
+            self.assertNotEqual(supervisor.ps_fields(record["child"]["pid"]),
+                                (record["child"]["started"], record["child"]["pgid"]))
+            self.assertEqual(record["restoration"]["state"], "restored")
+            self.assertEqual(record["restoration"]["recovery"], {"attempted": True, "recovered": True})
+            self.assertTrue(runner.load(cohort / "restoration.json")["restored"])
+
+    def test_unprovable_cleanup_records_explicit_restoration_failure(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); self.fake = self.fake_native(root)
+            study = self.study(root, "prepared")
+            cohort = study.root / "r0"
+            record = self.run_fake(study, cohort, "ignores-corrupt-ledger", 1, 1)
+            self.assertTrue(record["fallback_kill_sent"])
+            self.assertTrue(record["child_exited"])
+            self.assertEqual(record["restoration"]["state"], "restoration_failed")
+            self.assertEqual(record["restoration"]["verification"]["state"], "unknown")
+            self.assertEqual(record["restoration"]["recovery"]["attempted"], True)
+            self.assertEqual(record["restoration"]["recovery"]["recovered"], False)
+
+    def test_interrupted_preparation_and_grading_have_their_documented_outcomes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); self.fake = self.fake_native(root)
+            # Preparation: nothing is locked yet, so there is nothing to restore.
+            study = self.study(root, "claimed")
+            record = self.run_fake(study, study.root / "r0", "cooperative", 1, 1, kind="prepare", planned=3)
+            self.assertEqual((record["phase"], record["command"]), ("claimed", "prepare"))
+            self.assertEqual(record["restoration"], {"state": "not-applicable"})
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); self.fake = self.fake_native(root)
+            # Grading: the cohort was already restored; interruption re-verifies exactly that.
+            study = self.study(root, "restored")
+            record = self.run_fake(study, study.root / "r0", "cooperative", 1, 1, kind="grade")
+            self.assertEqual((record["phase"], record["command"]), ("restored", "grade"))
+            self.assertEqual(record["restoration"]["state"], "restored")
+
+    def test_reused_pid_and_unknown_identity_are_never_signalled(self):
+        with tempfile.TemporaryDirectory() as d:
+            child = supervisor.Child(["true"], Path(d) / "log")
+            # A live pid whose start time does not match: a reused identity, never signalled.
+            child.pid, child.started, child.pgid = os.getpid(), "definitely-not-the-start-time", os.getpid()
+            self.assertFalse(child.signal_group(signal.SIGTERM))
+            # An exited pid: no live identity to verify, never signalled.
+            gone = subprocess.Popen(["true"]); gone.wait()
+            child.pid, child.started, child.pgid = gone.pid, "Mon Jan  1 00:00:00 1990", gone.pid
+            self.assertFalse(child.signal_group(signal.SIGKILL))
+
+    def test_execute_interrupted_generation_restores_and_never_grades(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); self.fake = self.fake_native(root)
+            m = manifest(); runner.dump(root / "manifest.json", m)
+            a = type("Args", (), {})()
+            a.manifest = root / "manifest.json"; a.output = root / "study"
+            a.plan = "study"; a.generation_only = False; a.python = Path(sys.executable)
+            for key in ("archives", "upstream_root", "private_inputs", "probe_target", "qwen_package"):
+                setattr(a, key, root)
+            calls = []
+            result = {"checks": {"restoration": True, "matrix": True, "bindings": True}, "verified": True, "planned": 6, "retained": 6}
+            real_run_command = supervisor.run_command
+            def command(cmd, log, timeout=None, study=None, kind=None, repeat=None, cohort=None, planned=None):
+                calls.append([str(x) for x in cmd])
+                if kind == "generate":
+                    return real_run_command([sys.executable, "-B", self.fake, cohort, "cooperative", "3", "2", "0.05"],
+                                            log, study=study, kind=kind, repeat=repeat, cohort=cohort, planned=planned)
+                log.write_text("private output")
+            observed = {}
+            def watch():
+                deadline = time.time() + 15
+                while time.time() < deadline:
+                    try:
+                        progress = runner.load(a.output / "progress.json")
+                    except Exception:
+                        time.sleep(0.02); continue
+                    if progress.get("command") == "generate" and progress.get("retained", 0) >= 1 and isinstance(progress.get("child"), dict):
+                        report = supervisor.status_report(a.output, stale_after=60)
+                        committed = supervisor.committed_records(a.output / "r0")
+                        observed.update(progress=progress, report=report, committed=committed)
+                        return
+                    time.sleep(0.02)
+            watcher = threading.Thread(target=watch); watcher.start()
+            try:
+                with patch.object(supervisor, "preflight", return_value=(m, m, [], [root], [])), \
+                     patch.object(supervisor, "run_command", side_effect=command), \
+                     patch.object(supervisor, "read_command", return_value="a" * 40), \
+                     patch.object(audit, "audit", return_value=result), \
+                     patch.object(supervisor, "PROGRESS_INTERVAL_S", 0.05), \
+                     patch.object(supervisor, "CANCEL_SETTLE_S", 5.0):
+                    with self.assertRaises(supervisor.StudyInterrupted):
+                        supervisor.execute(a)
+            finally:
+                watcher.join()
+            # r1 generation never started and grading never started after interrupted generation.
+            self.assertEqual(sum(any(x.endswith("native-pi-qwen.ts") for x in c) for c in calls), 1)
+            self.assertFalse(any("grade" in c for c in calls))
+            # While the fake child ran, status identified generation and cohort and counted only committed records.
+            self.assertTrue(observed)
+            self.assertEqual(observed["report"]["observation"], "live")
+            self.assertEqual((observed["report"]["command"], observed["report"]["repeat"], observed["report"]["cohort"]),
+                             ("generate", 0, "r0"))
+            self.assertGreaterEqual(observed["report"]["retained"], 1)
+            self.assertLessEqual(observed["report"]["retained"], observed["committed"])
+            self.assertEqual(observed["report"]["child_pid"], observed["progress"]["child"]["pid"])
+            state = runner.load(a.output / "study.json")
+            self.assertEqual(state["outcome"], "incomplete")
+            self.assertEqual(state["phase"], "prepared")  # the milestone never advanced on progress or interruption
+            self.assertEqual(state["interrupted"]["restoration"]["state"], "restored")
+            final = supervisor.status_report(a.output, stale_after=60)
+            self.assertEqual((final["observation"], final["cause"], final["restoration"]),
+                             ("failed", "operator-signal", "restored"))
+            self.assert_records_byte_identical(a.output / "r0", 2)
+
+
+class StatusTests(unittest.TestCase):
+    """The #170 bounded status observation: fixed scalars, explicit stale/unknown, never claimed liveness."""
+
+    def setUp(self):
+        supervisor._INTERRUPT.clear()
+
+    def tearDown(self):
+        supervisor._INTERRUPT.clear()
+
+    def study_root(self, root, outcome="running", interrupted=None):
+        directory = Path(root) / "study"
+        directory.mkdir(parents=True)
+        state = {"schema": "agent-hub.native-study/v1", "owner": {"pid": os.getpid(), "id": "test-owner"},
+                 "phase": "prepared", "outcome": outcome, "expected": 6, "history": []}
+        if interrupted:
+            state["interrupted"] = interrupted
+        runner.dump(directory / "study.json", state)
+        return directory
+
+    def progress(self, root, **over):
+        started = supervisor.ps_fields(os.getpid())[0]
+        record = {"schema": "agent-hub.native-study-progress/v1", "command": "generate", "repeat": 0,
+                  "planned": 3, "retained": 1, "updated": time.time(),
+                  "child": {"pid": os.getpid(), "started": started, "pgid": os.getpid()},
+                  "supervisor": {"pid": os.getpid(), "id": "test-owner"}}
+        record.update(over)
+        runner.dump(Path(root) / "progress.json", record)
+        return record
+
+    def test_live_observation_and_status_cli(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = self.study_root(Path(d))
+            record = self.progress(root)
+            report = supervisor.status_report(root)
+            self.assertEqual(report["observation"], "live")
+            self.assertEqual((report["command"], report["repeat"], report["cohort"]), ("generate", 0, "r0"))
+            self.assertEqual((report["retained"], report["planned"]), (1, 3))
+            self.assertEqual(report["child_pid"], os.getpid())
+            self.assertLess(report["age_s"], 5)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(supervisor.main(["status", "--output", str(root)]), 0)
+            cli = json.loads(out.getvalue())
+            self.assertEqual(cli["observation"], "live")
+            # Fixed scalar fields only; nothing parsed from model or evaluator output.
+            self.assertEqual(set(cli), {"schema", "phase", "outcome", "observation", "command", "cohort",
+                                        "repeat", "planned", "retained", "updated", "age_s", "child_pid"})
+
+    def test_grading_is_identified_without_exposing_scores(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = self.study_root(Path(d), outcome="running")
+            self.progress(root, command="grade", repeat=1)
+            report = supervisor.status_report(root)
+            self.assertEqual(report["observation"], "live")
+            self.assertEqual((report["command"], report["cohort"]), ("grade", "r1"))
+            self.assertNotIn("score", json.dumps(report))
+            self.assertNotIn("pass", json.dumps(report))
+
+    def test_crash_stall_pid_reuse_and_unreadable_are_explicit_unknown_or_stale(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            # Crash: the study claims to run but no progress was ever recorded.
+            root = self.study_root(base / "crash")
+            report = supervisor.status_report(root)
+            self.assertEqual((report["observation"], report["reason"]), ("unknown", "no-progress-record"))
+            # Unreadable observation.
+            root = self.study_root(base / "unreadable")
+            (root / "progress.json").write_text("not json")
+            report = supervisor.status_report(root)
+            self.assertEqual((report["observation"], report["reason"]), ("unknown", "progress-unreadable"))
+            # Malformed scalars.
+            root = self.study_root(base / "malformed")
+            self.progress(root, retained="lots")
+            report = supervisor.status_report(root)
+            self.assertEqual((report["observation"], report["reason"]), ("unknown", "progress-malformed"))
+            # A sidecar left by another study.
+            root = self.study_root(base / "owner")
+            self.progress(root, supervisor={"pid": os.getpid(), "id": "someone-else"})
+            report = supervisor.status_report(root)
+            self.assertEqual((report["observation"], report["reason"]), ("unknown", "progress-owner-mismatch"))
+            # Stalled update: the progress timestamp is too old to mean liveness.
+            root = self.study_root(base / "stalled")
+            self.progress(root, updated=time.time() - 1000)
+            report = supervisor.status_report(root, stale_after=10)
+            self.assertEqual((report["observation"], report["reason"]), ("stalled", "progress-stalled"))
+            # Pid reuse: the recorded pid lives again under a different start time.
+            root = self.study_root(base / "reused")
+            self.progress(root, child={"pid": os.getpid(), "started": "Mon Jan  1 00:00:00 1990", "pgid": os.getpid()})
+            report = supervisor.status_report(root)
+            self.assertEqual((report["observation"], report["reason"]), ("unknown", "child-identity-mismatch"))
+            # The recorded child is gone while the study still claims to run: never completion.
+            root = self.study_root(base / "gone")
+            gone = subprocess.Popen(["true"]); gone.wait()
+            self.progress(root, child={"pid": gone.pid, "started": "Mon Jan  1 00:00:00 1990", "pgid": gone.pid})
+            report = supervisor.status_report(root)
+            self.assertEqual(report["observation"], "unknown")
+            self.assertIn(report["reason"], ("child-not-running", "child-identity-mismatch"))
+            # Between commands the fresh sidecar has no child: still not liveness.
+            root = self.study_root(base / "between")
+            self.progress(root, child=None)
+            report = supervisor.status_report(root)
+            self.assertEqual((report["observation"], report["reason"]), ("unknown", "no-child-recorded"))
+
+    def test_completed_and_failed_work_are_distinguished_from_observation(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            root = self.study_root(base / "done", outcome="complete")
+            self.assertEqual(supervisor.status_report(root)["observation"], "completed")
+            root = self.study_root(base / "genonly", outcome="generation-only")
+            self.assertEqual(supervisor.status_report(root)["observation"], "completed")
+            record = {"phase": "generated", "command": "generate", "repeat": 1, "cause": "operator-signal",
+                      "signal": "SIGTERM", "restoration": {"state": "restoration_failed"}}
+            root = self.study_root(base / "failed", outcome="incomplete", interrupted=record)
+            report = supervisor.status_report(root)
+            self.assertEqual(report["observation"], "failed")
+            self.assertEqual((report["cause"], report["interrupted_phase"], report["restoration"]),
+                             ("operator-signal", "generated", "restoration_failed"))
+            root = self.study_root(base / "weird", outcome="running")
+            runner.dump(root / "study.json", {"schema": "agent-hub.native-study/v1", "owner": {"id": "x"}, "outcome": "mystery"})
+            report = supervisor.status_report(root)
+            self.assertEqual((report["observation"], report["reason"]), ("unknown", "study-state-malformed"))
+            missing = Path(d) / "missing"
+            report = supervisor.status_report(missing)
+            self.assertEqual((report["observation"], report["reason"]), ("unknown", "study-state-unreadable"))
+
 
 if __name__ == "__main__":
     unittest.main()
+

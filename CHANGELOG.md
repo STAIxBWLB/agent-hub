@@ -4,6 +4,13 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.12.12
+
+- Restore owned native cohorts when a study supervisor is interrupted: bounded orderly cancellation with signal-time verified child identity, restoration settled only when the marker and ledger agree, a bounded identity-checked fallback with explicit restoration-failure records, and the interrupted phase, cause and restoration status persisted before the incomplete exit. Grading never starts after interrupted generation, and no resume, root reuse or retry is added (#168).
+- Diagnose native sandbox probe failures with a bounded structured outcome: a fixed-enum, count-only probe trace bound to peer, session and setup window explains why the protected-file evidence predicate was not satisfied (agent behavior, tool event coverage or normalization, with unresolved causes explicitly unknown), exposed as the unavailable setup reason in serialized readiness. The #138 and #150 evidence predicates are unchanged and the safe view cannot carry paths, arguments, answers or arbitrary strings (#169).
+- Persist scalar progress for long native studies separately from the verified milestone phase: command kind, repeat ordinal, retained/planned committed-record counts, updated timestamp and verified child identity, with a bounded `status` command that reports stale, crashed, pid-reused and unreadable observations as explicit unknown/stalled and never advances a milestone from progress (#170).
+- Export an audited, versioned per-arm study summary (JSON, optional CSV) after the final audit: planned/scored/passed/unavailable/missing counts reconciled with the audited cells, setup and active medians with valid-completed and common-pair denominators, and native usage, relay usage and provider availability kept distinct. The summary is hash-bound to the manifest, audit, grades and ledger, refuses inconsistent bindings or unsealed studies, and is built allowlist-only so private row content cannot enter it (#171).
+
 ## 0.12.11
 
 - End native benchmark attempts on terminal Pi or Qwen failures, retain the first failure cause at the final deadline tick, and gate peer-failure patches on active-window tree preservation (#160).

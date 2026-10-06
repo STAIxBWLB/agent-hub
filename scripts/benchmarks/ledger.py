@@ -732,6 +732,12 @@ def summarize_v3(arm, rs, done, shared, missing, unreadable):
         "setup_s_median": median([r["setup_s"] for r in done if r.get("setup_s") is not None]),  # valid completed only, like every median: a setup that failed says nothing about a good one
         "elapsed_s_median": median([r["elapsed_s"] for r in done if r.get("elapsed_s") is not None]),
         "elapsed_s_median_common": median([r["elapsed_s"] for r in shared if r.get("elapsed_s") is not None]),
+        # #171: the paired subset and the exact median denominators, so an export can record N instead of deriving it.
+        "common_pairs": len(shared),
+        "setup_s_median_common": median([r["setup_s"] for r in shared if r.get("setup_s") is not None]),
+        "setup_s_values": sum(1 for r in done if r.get("setup_s") is not None),
+        "elapsed_s_values": sum(1 for r in done if r.get("elapsed_s") is not None),
+        "elapsed_s_common_values": sum(1 for r in shared if r.get("elapsed_s") is not None),
         "model_identity_verified": sum(1 for r in rs if (r.get("model_identity") or {}).get("verified") is True),
         "request_linkage": {"attempts": len(links), "requests": agg("requests"), "completed": agg("completed"),
                             "identified": agg("identified"), "cancelledUnidentified": agg("cancelledUnidentified"),
@@ -830,14 +836,12 @@ def planned(run_dir, plan):
     return {(case, arm, rep) for case in spec.get("cases") or [] for arm in m.get("arms") or [] for rep in range(spec.get("repeats") or 0)}
 
 
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--run", type=Path, action="append", required=True, help="a run directory; give several to pool repeats")
-    p.add_argument("--plan", help="the manifest plan these directories carry out (pilot, study): its whole repeats are expected")
-    p.add_argument("--json", action="store_true")
-    a = p.parse_args()
-    rows, plan, unreadable, locked = [], set(), set(), []
-    for run_dir in a.run:
+def pool(run_dirs, plan=None):
+    """The pooled ledger of whole run directories, computed without writing anything (#171: the sealed-study
+    summary export recomputes exactly this and refuses to export when it differs from the recorded pooled
+    ledger). run_dirs are Paths; plan names the manifest plan whose whole repeats are expected."""
+    rows, plan_set, unreadable, locked = [], set(), set(), []
+    for run_dir in run_dirs:
         # An incomplete cleanup leaves runs/ locked with the arm's siblings until restore.ts: a glob there sees nothing, so
         # the run's planned attempts without a record are unreadable, not missing.
         shut = [d for d in (run_dir / "runs", run_dir / "recovery" / "runs") if d.exists() and not os.access(d, os.R_OK | os.X_OK)]
@@ -851,19 +855,28 @@ def main():
         for f in sorted((run_dir / "runs").glob("*.json")):
             if f.name not in moving: rows.append({**row_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name})
         for f in held: rows.append({**row_of(json.loads(f.read_text(encoding="utf-8"))), "run": run_dir.name, "withheld": True})
-        plan |= expected(run_dir)
-    if a.plan: plan |= planned(a.run[0], a.plan)
+        plan_set |= expected(run_dir)
+    if plan: plan_set |= planned(run_dirs[0], plan)
     seen = {}
     for r in rows:
         key = (r["case"], r["arm"], r.get("repeat"))
         if key in seen: raise SystemExit(f"ledger: case {key[0]} {key[1]} repeat {key[2]} is in both {seen[key]} and {r['run']}")
         seen[key] = r["run"]
-    missing = sorted(plan - set(seen) - unreadable, key=str)
+    missing = sorted(plan_set - set(seen) - unreadable, key=str)
     hidden = sorted(unreadable - set(seen), key=str)
-    out = {"units": UNITS, "rows": rows, "missing": [{"case": c, "arm": arm, "repeat": rep} for c, arm, rep in missing],
-           "unreadable": [{"case": c, "arm": arm, "repeat": rep} for c, arm, rep in hidden], "locked": locked,
-           "summary": summarize(rows, missing, hidden)}
-    if locked: print(f"ledger: locked until scripts/benchmarks/restore.ts restores it (a cleanup is incomplete): {', '.join(locked)}", file=sys.stderr)
+    return {"units": UNITS, "rows": rows, "missing": [{"case": c, "arm": arm, "repeat": rep} for c, arm, rep in missing],
+            "unreadable": [{"case": c, "arm": arm, "repeat": rep} for c, arm, rep in hidden], "locked": locked,
+            "summary": summarize(rows, missing, hidden)}
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--run", type=Path, action="append", required=True, help="a run directory; give several to pool repeats")
+    p.add_argument("--plan", help="the manifest plan these directories carry out (pilot, study): its whole repeats are expected")
+    p.add_argument("--json", action="store_true")
+    a = p.parse_args()
+    out = pool(a.run, a.plan)
+    if out["locked"]: print(f"ledger: locked until scripts/benchmarks/restore.ts restores it (a cleanup is incomplete): {', '.join(out['locked'])}", file=sys.stderr)
     (a.run[0] / "ledger.json").write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if a.json: print(json.dumps(out, indent=2, sort_keys=True))
     else:
