@@ -3,9 +3,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync
 import { processTable } from "../src/hub/child-process.ts";
 import { join } from "node:path";
 import { PiPeer } from "../src/adapters/pi.ts";
+import { processSignature } from "../src/pi/process-signature.ts";
 import { newEnvelope, type EnvelopeOpts } from "../src/hub/envelope.ts";
 
-const currentSignature = (pid = process.pid) => { const p = Bun.spawnSync(["ps", "-p", String(pid), "-o", "lstart=,comm="], { stdout: "pipe" }); return new Bun.CryptoHasher("sha256").update(p.stdout.toString().trim()).digest("hex"); };
+const currentSignature = (pid = process.pid) => { const signature = processSignature(pid); if (!signature) throw new Error("test owner process is not visible"); return signature; };
 
 test("Pi headless owner uses RPC and settles one reply through the trusted bridge", async () => {
 const stateDir = mkdtempSync(join(process.cwd(), ".pi-test-"));

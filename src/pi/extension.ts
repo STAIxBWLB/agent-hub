@@ -1,7 +1,6 @@
 import { assistantTokens } from "./usage.ts";
+import { processSignature } from "./process-signature.ts";
 type ExtensionAPI = any;
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 type BudgetUnit = "model_calls" | "tool_calls";
 
 type BridgeEvent = { type: string; text?: string; sessionId?: string; sessionFile?: string; error?: string };
@@ -49,8 +48,6 @@ async function admitBudget(unit: BudgetUnit, idleUserBash = false): Promise<{ al
   runtimeCtx?.abort?.();
   return { allowed: false };
 }
-function processSignature(): string | undefined { try { const text = execFileSync("ps", ["-p", String(process.pid), "-o", "lstart=,comm="], { encoding: "utf8" }).trim(); return text ? createHash("sha256").update(text).digest("hex") : undefined; } catch { return undefined; } }
-
 async function poll(pi: ExtensionAPI): Promise<void> {
   while (!pollStopped) {
     try {
@@ -107,7 +104,7 @@ export default function(pi: ExtensionAPI): void {
     shutdown = ctx.shutdown;
     const state = ctx.sessionManager.getHeader();
     try {
-      const claimed = await post("/event", { type: "session_start", ownerToken, pid: process.pid, signature: processSignature(), sessionId: state?.id, sessionFile: ctx.sessionManager.getSessionFile() });
+      const claimed = await post("/event", { type: "session_start", ownerToken, pid: process.pid, signature: processSignature(process.pid), sessionId: state?.id, sessionFile: ctx.sessionManager.getSessionFile() });
       if (claimed?.ok === false) { ctx.shutdown?.(); return; }
     } catch (error) { ctx.shutdown?.(); throw error; }
     if (!pollStarted) { pollStarted = true; void poll(pi); }

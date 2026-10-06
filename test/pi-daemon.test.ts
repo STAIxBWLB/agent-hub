@@ -2,9 +2,9 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { PiPeer } from "../src/adapters/pi.ts";
+import { processSignature as ownerSignature } from "../src/pi/process-signature.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 
@@ -37,9 +37,9 @@ async function hub(config = DEFAULT_CONFIG, unattended = false) {
 }
 
 function processSignature(pid: number): string {
-  const result = Bun.spawnSync(["ps", "-p", String(pid), "-o", "lstart=,comm="]);
-  if (result.exitCode !== 0) throw new Error("test owner process is not visible");
-  return createHash("sha256").update(result.stdout.toString().trim()).digest("hex");
+  const signature = ownerSignature(pid);
+  if (!signature) throw new Error("test owner process is not visible");
+  return signature;
 }
 
 test("Pi is disabled by default and its peer identity remains reserved", async () => {
