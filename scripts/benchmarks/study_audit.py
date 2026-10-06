@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read-only v3 metadata audit. Output is constructed from fixed keys, never raw evidence."""
 from __future__ import annotations
-import argparse, csv, io, json, math, os, re, subprocess, sys
+import argparse, copy, csv, io, json, math, os, re, subprocess, sys
 from pathlib import Path
 import runner
 import ledger
@@ -348,6 +348,35 @@ def _measure(value, field):
     raise runner.BenchError(f"ledger aggregate {field} is not a non-negative number or null")
 
 
+def _amended_copy(source, amendments):
+    """The sealed runtime manifest is the source copy plus exactly the amendments bind_manifest recorded (#173):
+    hub-version bindings only, each matching the copy's value at that field. Anything else refuses the export."""
+    if not isinstance(amendments, list):
+        raise runner.BenchError("sealed runtime amendments are not recorded")
+    runtime = copy.deepcopy(source)
+    for amendment in amendments:
+        if not isinstance(amendment, dict) or set(amendment) != {"field", "from", "to"}:
+            raise runner.BenchError("sealed runtime amendment is malformed")
+        field, previous, new = amendment["field"], amendment["from"], amendment["to"]
+        if (field not in ("hub_version", "versions.hub") or not isinstance(new, str) or
+            (previous is not None and not isinstance(previous, str))):
+            raise runner.BenchError("sealed runtime amendment is not an allowed hub-version binding")
+        if field == "hub_version":
+            current = runtime.get("hub_version")
+        else:
+            versions = runtime.get("versions", {})
+            if not isinstance(versions, dict):
+                raise runner.BenchError("sealed manifest copy is malformed")
+            current = versions.get("hub")
+        if current != previous:
+            raise runner.BenchError("sealed runtime amendment does not match the source copy")
+        if field == "hub_version":
+            runtime["hub_version"] = new
+        else:
+            runtime.setdefault("versions", {})["hub"] = new
+    return runtime
+
+
 def _summary_cells(sealed, cases, repeats):
     cells = []
     for c in sealed.get("cells", []):
@@ -378,15 +407,27 @@ def study_summary(root, plan="study"):
     provenance = runner.load(root / "provenance.json")
     head = provenance.get("source_head")
     original = provenance.get("original_sha256")
+    copy_pin = provenance.get("original_copy_sha256")
     runtime_hash = provenance.get("runtime_sha256")
     if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
         raise runner.BenchError("immutable source head is not pinned")
     if not digest(original) or not digest(runtime_hash):
         raise runner.BenchError("sealed manifest hashes are not pinned")
-    if (runner.file_sha(root / "original-manifest.json") != original or
+    if not digest(copy_pin):
+        # Provenance sealed before the serialized-copy pin existed is unsupported; no pin is invented for it (#173).
+        raise runner.BenchError("legacy provenance records no manifest copy pin")
+    copy_path = root / "original-manifest.json"
+    if (runner.file_sha(copy_path) != copy_pin or
         runner.file_sha(root / "runtime-manifest.json") != runtime_hash):
         raise runner.BenchError("sealed manifest copies differ from their pins")
+    # The copy binds the raw source by parsed content, so its bytes must be exactly the supervisor's write_new
+    # serialization of that content; only then do the raw-source pin and the copy pin bind the same manifest.
+    source = runner.load(copy_path)
+    if json.dumps(source, indent=2, sort_keys=True, allow_nan=False) + "\n" != copy_path.read_text(encoding="utf-8"):
+        raise runner.BenchError("sealed manifest copy is not the canonical serialization of its contents")
     manifest = runner.load(root / "runtime-manifest.json")
+    if _amended_copy(source, provenance.get("amendments")) != manifest:
+        raise runner.BenchError("sealed runtime manifest differs from the amended source copy")
     runner.validate_manifest(manifest)
     if tuple(manifest["arms"]) != runner.ARMS_V3:
         raise runner.BenchError("study requires native v3")
@@ -558,6 +599,7 @@ def study_summary(root, plan="study"):
         "schema": SUMMARY_SCHEMA,
         "plan": plan,
         "bindings": {"source_head": head, "original_manifest_sha256": original,
+                     "original_copy_sha256": copy_pin,
                      "runtime_manifest_sha256": runtime_hash, "audit_sha256": runner.file_sha(audit_path),
                      "grades_sha256": grades, "ledger_sha256": runner.file_sha(ledger_path)},
         **total,
