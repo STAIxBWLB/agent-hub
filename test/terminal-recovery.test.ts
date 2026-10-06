@@ -255,3 +255,51 @@ test("terminal close tolerates one stale inventory read without closing twice", 
   expect(calls.filter((argv) => argv[1] === "close")).toHaveLength(1);
   expect(reads).toBe(2);
 });
+
+// issue #177: the default launcher signature is the shared pinned processSignature, so a
+// record written by one CLI invocation still matches when a later invocation inspects the
+// same live launcher under another timezone. Two invocations are separate processes, so
+// the recorder stays alive while the inspector runs under its own explicit TZ (in-process
+// env mutation does not reach Bun.spawnSync's default child environment). Unpinned,
+// `ps lstart` renders per-TZ and the second read mismatches: ownership-unknown for the
+// hub's own record.
+test("the default launcher signature is stable across the reading invocation's timezone", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-terminal-tz-"));
+  const driver = (mode: string) => `
+    import { recordTerminalLaunch, inspectTerminals } from ${JSON.stringify(join(import.meta.dir, "../src/cli/terminal-recovery.ts"))};
+    const root = ${JSON.stringify(root)};
+    const shown = { handle: "term-tz", incarnationId: "inc-tz", worktreeId: ${JSON.stringify(worktreeId)}, worktreePath: root, connected: true, orphaned: false, agentWait: null };
+    const runner = async (argv) => argv[1] === "show" ? { result: { terminal: shown } } : argv[1] === "list" ? { result: { terminals: [shown] } } : { result: {} };
+    process.env.ORCA_TERMINAL_HANDLE = "term-tz";
+    process.env.ORCA_WORKTREE_ID = ${JSON.stringify(worktreeId)};
+    if (${JSON.stringify(mode)} === "record") {
+      const recorded = await recordTerminalLaunch("codex", root, ${JSON.stringify(stateDir)}, "instance-tz", runner);
+      console.log(recorded ? "recorded" : "skipped");
+      await Bun.sleep(60_000);
+    } else {
+      const inspected = await inspectTerminals(root, { codex: "session-1" }, { runner, stateDir: ${JSON.stringify(stateDir)}, instanceId: "instance-tz" });
+      console.log(JSON.stringify({ manualRequired: inspected.manualRequired, blockers: inspected.blockers.map((item) => item.code) }));
+    }`;
+  const recorder = Bun.spawn([process.execPath, "-e", driver("record")], { stdout: "pipe", stderr: "pipe", env: { ...process.env, TZ: "UTC" } });
+  try {
+    let buf = "";
+    const decoder = new TextDecoder();
+    const reader = recorder.stdout.getReader();
+    while (!buf.includes("\n")) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+    }
+    reader.releaseLock();
+    expect(buf.trim()).toBe("recorded");
+    const inspector = Bun.spawnSync([process.execPath, "-e", driver("inspect")], { stdout: "pipe", stderr: "pipe", env: { ...process.env, TZ: "America/New_York" } });
+    if (inspector.exitCode !== 0) throw new Error(`inspector failed: ${inspector.stderr.toString()}`);
+    const inspected = JSON.parse(inspector.stdout.toString().trim());
+    expect(inspected.manualRequired).toBe(false);
+    expect(inspected.blockers).not.toContain("ownership-unknown");
+  } finally {
+    recorder.kill();
+    await recorder.exited;
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});

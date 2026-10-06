@@ -7,3 +7,4 @@ Scope: the model relay and its journal, the hub's own inference and its slots, O
 - Secrets stay inside `OmniRoute`: never put the key or Access values in a log line, an error message, a return value or the generated Switchyard file (the key goes by env var name).
 - Switchyard's docs drift from the released binary. Any change to `switchyardToml` is checked with the real `switchyard-server --dry-run`, not only the stand-in in `test/fakes/`.
 - Shared inference slots must recover after a hub process dies, without evicting a live owner. Cancellation has to reach slot acquisition from the relay caller, not just exist in the helper signature.
+- MLX owner and generation identity read `ps lstart` with LC_ALL=C/TZ=UTC pinned (#177): unpinned, a record written under one environment reads as a foreign process under another, and the fail-closed paths would refuse the hub's own server.
