@@ -22,6 +22,13 @@ report their recorded outcome; a running study reports live only while its progr
 child's pid and start time still match. A crash (no or stalled progress), a stalled update, a reused pid and an
 unreadable observation all report explicit unknown/stalled, never claimed liveness or completion. Status launches
 nothing, recovers nothing and reads no model or evaluator output.
+
+Terminal coverage (#180). A completed study additionally reports bounded coverage composed from the sealed
+evidence (the recorded final audit and pooled ledger): planned/retained/scored/passed/unavailable/missing over
+the planned denominator, the fixed native end-class counts and the recorded audit/restoration result, marked
+recorded-at-seal with no fresh verification performed. Lifecycle completion, quality availability and test
+passing stay separate; missing, unreadable or inconsistent final evidence reports an explicit unavailable
+coverage, never a fabricated zero.
 """
 from __future__ import annotations
 import argparse, copy, json, os, re, shutil, signal, subprocess, sys, tempfile, time, uuid
@@ -411,11 +418,11 @@ def preflight(a):
 
 
 class Study:
-    def __init__(self, root, expected):
+    def __init__(self, root, expected, plan="study"):
         root.mkdir(mode=0o700)  # atomic claim; an existing incomplete root is never reused
         self.root = root
         self.state = {"schema": "agent-hub.native-study/v1", "owner": {"pid": os.getpid(), "id": str(uuid.uuid4())},
-                      "phase": "claimed", "outcome": "running", "expected": expected, "history": []}
+                      "phase": "claimed", "outcome": "running", "expected": expected, "plan": plan, "history": []}
         self.save()
 
     def save(self):
@@ -449,7 +456,7 @@ def execute(a):
     root = a.output.resolve()
     cohorts = [root / f"r{r}" for r in range(spec["repeats"])]
     planned = len(spec["cases"]) * len(runtime["arms"])
-    study = Study(root, spec["attempts"])
+    study = Study(root, spec["attempts"], a.plan)
     with interrupt_handlers():
         try:
             study_audit.write_new(root / "original-manifest.json", original)
@@ -528,13 +535,21 @@ def status_report(root, stale_after=STALE_AFTER_S):
     root = Path(root)
     report = {"schema": STATUS_SCHEMA}
     try:
-        state = runner.load(root / "study.json")
+        state, _ = study_audit._coverage_read(root / "study.json")
+        if not isinstance(state, dict):
+            raise ValueError("study state is not an object")
     except (OSError, ValueError):
         return {**report, "observation": "unknown", "reason": "study-state-unreadable"}
     phase, outcome = state.get("phase"), state.get("outcome")
     report.update(phase=phase, outcome=outcome)
-    if outcome in ("complete", "generation-only"):
-        return {**report, "observation": "completed"}
+    if outcome == "complete":
+        # Terminal coverage (#180): bounded sealed-evidence counts alongside the lifecycle outcome, so a
+        # completed lifecycle never reads as every attempt scoreable or passed. Recorded, never freshly
+        # verified; missing or inconsistent evidence is explicit, never a fabricated zero.
+        return {**report, "observation": "completed", "coverage": study_audit.terminal_coverage(root)}
+    if outcome == "generation-only":
+        return {**report, "observation": "completed",
+                "coverage": {"available": False, "reason": "study-not-sealed"}}
     if outcome == "incomplete":
         report["observation"] = "failed"
         record = state.get("interrupted")

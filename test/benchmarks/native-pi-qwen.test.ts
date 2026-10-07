@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { v3ArmOrder, jointAssignment, isSourcePath, ProtectedReadProbe, qualifyRequests, effectiveBuild, parseVersion, claimExclusive, collectSubmissionPatch, disposeAll, writeRecordFresh, evaluateProbe, probeReadiness, ActiveFailureLatch, activeExit, activeTreeFlag, probeErrorClass, emptyProbeWindowStats, diagnoseProbe, safeProbeDiagnosis, PROBE_TRACE_EVENTS, QWEN_0_24_7_LOOP_PROTECTION_MESSAGE, classifyNativeTermination, ActiveToolTrace, diagnoseActiveTermination, safeActiveLoopDiagnosis, ACTIVE_TRACE_COUNTERS, ACTIVE_TOOL_CATEGORIES, type ProbeWindowStats, type ProbeDiagnosis, type ProbeDiagnosisCategory, type PeerFailure, type ActiveLoopDiagnosis } from "../../scripts/benchmarks/native-pi-qwen.ts";
+import { v3ArmOrder, jointAssignment, isSourcePath, ProtectedReadProbe, qualifyRequests, effectiveBuild, parseVersion, claimExclusive, collectSubmissionPatch, disposeAll, writeRecordFresh, evaluateProbe, probeReadiness, ActiveFailureLatch, activeExit, activeTreeFlag, probeErrorClass, emptyProbeWindowStats, diagnoseProbe, safeProbeDiagnosis, PROBE_TRACE_EVENTS, QWEN_0_24_7_LOOP_PROTECTION_MESSAGE, classifyNativeTermination, ActiveToolTrace, diagnoseActiveTermination, safeActiveLoopDiagnosis, storeCeilingSignal, boundCeilingSignal, ACTIVE_TRACE_COUNTERS, ACTIVE_TOOL_CATEGORIES, BENCH_PI_TOOL_NAMES, benchPiToolDescriptors, benchPiToolProblem, intendedSurfaces, verifySurfaceSource, requireToolStudyCondition, surfaceNameClass, reconcileToolSurfaces, surfaceMismatchProblem, surfaceReadinessProblem, surfaceReport, QWEN_BARE_PUBLISHED, JOINT_MCP_TOOL, type ProbeWindowStats, type ProbeDiagnosis, type ProbeDiagnosisCategory, type PeerFailure, type ActiveLoopDiagnosis, type IntendedNativeSurface } from "../../scripts/benchmarks/native-pi-qwen.ts";
+import { piToolStepCeiling, type PiToolStepCeiling } from "../../src/pi/ceiling.ts";
+import { TOOL_SCHEMAS } from "../../src/local/tools.ts";
+import { toolSurfaceProjection, type RelayToolSurface } from "../../src/models/relay.ts";
 import type { RelayRequestRecord } from "../../src/models/relay.ts";
 
 const script = join(import.meta.dir, "../../scripts/benchmarks/runner.py");
@@ -898,8 +901,355 @@ describe("bounded active-window loop-protection diagnostics (#175)", () => {
   });
 });
 
-// runner.py's v3 gates: manifest validation, prepare provenance, request gate, outside-changes and the report's
-// separate quality/model/request-linkage coverage (no Docker, no live agents).
+describe("validated Pi tool-step ceiling diagnostics (#179)", () => {
+  const failure = (partial: Partial<PeerFailure>): PeerFailure => ({ peer: "pi", failureClass: "Pi tool step limit 100 reached", failedAt: new Date(0).toISOString(), activeElapsedMs: 100, generation: 1, ...partial });
+  // A signal as the adapter delivers it: schema-validated (piToolStepCeiling), session/turn-bound.
+  const signal = (over: Partial<PiToolStepCeiling> = {}): PiToolStepCeiling => ({ kind: "tool-step-ceiling", unit: "tool-step", count: 101, limit: 100, sessionId: "sess-1", generation: 3, ...over });
+
+  test("only the validated extension signal classifies the Pi ceiling; free text stays unknown", () => {
+    expect(classifyNativeTermination("pi", "Pi tool step limit 100 reached", signal())).toEqual({ class: "tool-step-ceiling", evidence: "extension-signal" });
+    // The real producer's exact reason text without the signal — historical records, an older extension —
+    // classifies nothing.
+    expect(classifyNativeTermination("pi", "Pi tool step limit 100 reached")).toEqual({ class: "unknown", evidence: "none" });
+    expect(classifyNativeTermination("pi", "Pi tool step limit 100 reached", undefined)).toEqual({ class: "unknown", evidence: "none" });
+    // Cross-peer: a Pi signal never classifies Qwen, and Qwen's pinned contract never classifies Pi.
+    expect(classifyNativeTermination("qwen", "Pi tool step limit 100 reached", signal())).toEqual({ class: "unknown", evidence: "none" });
+    expect(classifyNativeTermination("pi", QWEN_0_24_7_LOOP_PROTECTION_MESSAGE)).toEqual({ class: "unknown", evidence: "none" });
+    // Qwen's pinned message keeps its own evidence even beside a foreign signal.
+    expect(classifyNativeTermination("qwen", QWEN_0_24_7_LOOP_PROTECTION_MESSAGE, signal())).toEqual({ class: "tool-loop-protection", evidence: "pinned-message" });
+    // Shared execution-budget exhaustion (#102) is a different signal and never this class.
+    expect(classifyNativeTermination("pi", "execution budget exhausted: run:r tool_calls used 5 of 5")).toEqual({ class: "unknown", evidence: "none" });
+  });
+
+  test("a validated ceiling composes the fixed class with the observed counter, limit and turn scope", () => {
+    const diagnosis = diagnoseActiveTermination(failure({}), undefined, signal());
+    expect(diagnosis.terminal).toBe("tool-step-ceiling");
+    expect(diagnosis.terminalEvidence).toBe("extension-signal");
+    expect(diagnosis.observations).toBe("unavailable"); // Pi still has no ACP tool stream (#175 stands)
+    expect(diagnosis.counts).toBeUndefined();
+    expect(diagnosis.ceiling).toEqual({ unit: "tool-step", count: 101, limit: 100, turnGeneration: 3 });
+    const safe = safeActiveLoopDiagnosis(diagnosis);
+    expect(safe.terminal).toBe("tool-step-ceiling");
+    expect(safe.terminalEvidence).toBe("extension-signal");
+    expect(safe.ceiling).toEqual({ unit: "tool-step", count: 101, limit: 100, turnGeneration: 3 });
+    // The producer's failure text appears nowhere in the public view.
+    expect(JSON.stringify(safe)).not.toContain("Pi tool step limit");
+    expect(JSON.stringify(safe)).not.toContain("sess-1");
+  });
+
+  test("the safe view re-validates the ceiling block: malformed or evidence-less classes fall to unknown", () => {
+    const base = diagnoseActiveTermination(failure({}), undefined, signal());
+    const cases: { name: string; d: ActiveLoopDiagnosis }[] = [
+      { name: "count not beyond the limit", d: { ...base, ceiling: { unit: "tool-step", count: 100, limit: 100, turnGeneration: 3 } } },
+      { name: "negative count", d: { ...base, ceiling: { unit: "tool-step", count: -1, limit: 100, turnGeneration: 3 } } },
+      { name: "non-integer count", d: { ...base, ceiling: { unit: "tool-step", count: 100.5, limit: 100, turnGeneration: 3 } } },
+      { name: "wrong unit", d: { ...base, ceiling: { unit: "tool_calls" as never, count: 101, limit: 100, turnGeneration: 3 } } },
+      { name: "missing block", d: { ...base, ceiling: undefined } },
+      { name: "no evidence", d: { ...base, terminalEvidence: "none" } },
+      { name: "cross evidence", d: { ...base, terminalEvidence: "pinned-message" } },
+      { name: "ceiling class on the pinned evidence enum", d: { ...diagnoseActiveTermination(failure({ peer: "qwen", failureClass: QWEN_0_24_7_LOOP_PROTECTION_MESSAGE }), undefined, signal()), terminal: "tool-step-ceiling", terminalEvidence: "pinned-message" } },
+    ];
+    for (const { name, d } of cases) {
+      const safe = safeActiveLoopDiagnosis(d);
+      expect(safe.terminal, name).toBe("unknown");
+      expect(safe.ceiling, name).toBeUndefined();
+    }
+    // Hostile nested content cannot inject keys or strings through the ceiling block.
+    const sentinel = "SENTINEL-PATH-/private/secret";
+    const hostile = {
+      ...base,
+      terminalEvidence: "extension-signal",
+      ceiling: { unit: "tool-step", count: 101, limit: 100, turnGeneration: 3, sessionId: sentinel, args: sentinel, extra: { nested: sentinel } },
+    } as unknown as ActiveLoopDiagnosis;
+    const cleaned = safeActiveLoopDiagnosis(hostile);
+    expect(cleaned.terminal).toBe("tool-step-ceiling");
+    expect(Object.keys(cleaned.ceiling as Record<string, unknown>).sort()).toEqual(["count", "limit", "turnGeneration", "unit"]);
+    expect(JSON.stringify(cleaned)).not.toContain("SENTINEL");
+  });
+
+  test("the signal binds to the latching callback, the peer and the active generation only", () => {
+    const signals = new Map<number, PiToolStepCeiling>();
+    const latch = new ActiveFailureLatch();
+    // Setup phase: no latch, no store.
+    expect(latch.note("pi", "probe error", 1_000)).toEqual({ latched: false, phase: "setup" });
+    storeCeilingSignal(signals, latch.failure, "pi", signal(), false);
+    expect(signals.size).toBe(0);
+    // The latching callback stores its signal against the active generation.
+    latch.begin(2_000);
+    const unlatched = latch.failure === undefined;
+    const noted = latch.note("pi", "Pi tool step limit 100 reached", 2_147);
+    storeCeilingSignal(signals, latch.failure, "pi", signal(), unlatched && noted.phase === "active");
+    expect(signals.get(1)).toMatchObject({ count: 101, limit: 100 });
+    // A later failure's signal in the same window never overwrites the latched failure's.
+    const second = latch.note("pi", "Pi tool step limit 100 reached", 2_200);
+    storeCeilingSignal(signals, latch.failure, "pi", signal({ count: 105 }), latch.failure === undefined && second.phase === "active");
+    expect(signals.get(1)).toMatchObject({ count: 101 });
+    // Cross-peer: a Pi-shaped signal beside Qwen's latching failure stores nothing for it.
+    const qwenLatch = new ActiveFailureLatch();
+    qwenLatch.begin(5_000);
+    const qNoted = qwenLatch.note("qwen", "session error", 5_100);
+    storeCeilingSignal(signals, qwenLatch.failure, "qwen", signal(), qNoted.phase === "active");
+    expect(signals.has(2)).toBe(false);
+    expect(boundCeilingSignal(qwenLatch.failure, signals)).toBeUndefined();
+    // Teardown and the next generation: the frozen cause keeps its own binding.
+    latch.freeze();
+    storeCeilingSignal(signals, latch.failure, "pi", signal({ count: 110 }), latch.note("pi", "teardown failure", 3_000).phase === "active");
+    expect(signals.get(1)).toMatchObject({ count: 101 });
+    const latchedFailure = latch.failure!;
+    latch.begin(9_000);
+    latch.note("pi", "Pi tool step limit 100 reached", 9_050);
+    // The stale generation-1 signal never binds to the generation-2 failure.
+    expect(boundCeilingSignal(latch.failure, signals)).toBeUndefined();
+    expect(boundCeilingSignal(latchedFailure, signals)).toMatchObject({ count: 101 });
+    const diagnosis = diagnoseActiveTermination(latchedFailure, undefined, boundCeilingSignal(latchedFailure, signals));
+    expect(diagnosis.terminal).toBe("tool-step-ceiling");
+    expect(diagnosis.generation).toBe(1);
+  });
+});
+
+describe("benchmark Pi tool descriptors match the executor policy (#182)", () => {
+  const cwd = "/private/fixture";
+  const policy = (over: Partial<{ joint: boolean; active: boolean; sourceDirs: string[] }> = {}) => ({ cwd, sourceDirs: over.sourceDirs ?? ["src"], joint: over.joint ?? false, active: over.active ?? false });
+  const validArgs: Record<string, Record<string, unknown>> = {
+    read: { path: "src/a.py" },
+    write: { path: "src/a.py", content: "x" },
+    edit: { path: "src/a.py", old: "a", new: "b" },
+    git: { args: ["ls-files"] },
+    hub_send: { text: "status update" },
+  };
+
+  test("the descriptor set is the arm's permitted set: solo has no peer messaging, joint adds hub_send", () => {
+    const solo = benchPiToolDescriptors({ sourceDirs: ["src"], joint: false });
+    expect(solo.map((t) => t.name).sort()).toEqual(["edit", "git", "read", "write"]);
+    const joint = benchPiToolDescriptors({ sourceDirs: ["src"], joint: true });
+    expect(joint.map((t) => t.name).sort()).toEqual(["edit", "git", "hub_send", "read", "write"]);
+    // The drift guard: for every executor-known tool, a valid call is permitted exactly when a descriptor
+    // exists for it in this arm (hub_send's active-window refusal is a time restriction, not a capability).
+    for (const jointArm of [false, true]) {
+      const names = benchPiToolDescriptors({ sourceDirs: ["src"], joint: jointArm }).map((t) => t.name);
+      for (const name of BENCH_PI_TOOL_NAMES) {
+        const permitted = benchPiToolProblem(name, validArgs[name]!, policy({ joint: jointArm, active: true })) === undefined;
+        expect(permitted, `${name} in joint=${jointArm}`).toBe(names.includes(name));
+      }
+    }
+  });
+
+  test("advertised operations are permitted; refused operations are not advertised as available", () => {
+    const p = policy({ joint: true, active: true });
+    // Permitted: source read/edit/write, the restricted git enumeration, peer messaging when assigned.
+    expect(benchPiToolProblem("read", { path: "tests/test_core.py" }, p)).toBeUndefined(); // reads are not source-scoped
+    expect(benchPiToolProblem("write", validArgs.write!, p)).toBeUndefined();
+    expect(benchPiToolProblem("edit", validArgs.edit!, p)).toBeUndefined();
+    expect(benchPiToolProblem("edit", { path: "dirty_equals/_boolean.py", old: "a", new: "b" }, policy({ joint: true, active: true, sourceDirs: ["dirty_equals"] }))).toBeUndefined();
+    expect(benchPiToolProblem("git", { args: ["ls-files"] }, p)).toBeUndefined();
+    expect(benchPiToolProblem("git", { args: ["ls-files", "src"] }, p)).toBeUndefined();
+    expect(benchPiToolProblem("hub_send", validArgs.hub_send!, p)).toBeUndefined();
+    // Refused: every capability the 2026-10-07 sessions saw refused.
+    for (const sub of ["status", "diff", "log", "show", "blame", "rev-parse", "add", "commit", "push", "grep", "checkout"]) {
+      expect(benchPiToolProblem("git", { args: [sub] }, p), `git ${sub}`).toBe("git ls-files only");
+    }
+    expect(benchPiToolProblem("git", { args: ["ls-files", "-c"] }, p)).toBe("git ls-files only");
+    expect(benchPiToolProblem("git", { args: ["ls-files", "../x"] }, p)).toBe("git ls-files only");
+    expect(benchPiToolProblem("git", { args: ["ls-files", "/abs"] }, p)).toBe("git ls-files only");
+    expect(benchPiToolProblem("git", { args: [] }, p)).toBe("git ls-files only");
+    expect(benchPiToolProblem("git", {}, p)).toBe("git ls-files only"); // a non-array args is refused, never thrown over
+    expect(benchPiToolProblem("write", { path: "tests/test_core.py", content: "x" }, p)).toContain("source edits only");
+    expect(benchPiToolProblem("edit", { path: "../outside.py", old: "a", new: "b" }, p)).toContain("source edits only");
+    expect(benchPiToolProblem("write", { path: "/etc/x", content: "x" }, p)).toContain("source edits only");
+    expect(benchPiToolProblem("hub_send", validArgs.hub_send!, policy({ joint: false, active: true }))).toBe("no other assigned peer");
+    expect(benchPiToolProblem("hub_send", validArgs.hub_send!, policy({ joint: true, active: false }))).toBe("no other assigned peer");
+    expect(benchPiToolProblem("bash", { command: "ls" }, p)).toBe("unknown tool bash");
+  });
+
+  test("descriptors claim no approval flow and no unavailable git capability; hub_send fixes the peer", () => {
+    for (const joint of [false, true]) {
+      const tools = benchPiToolDescriptors({ sourceDirs: ["dirty_equals"], joint });
+      const byName = new Map(tools.map((t) => [t.name, t]));
+      for (const t of tools) expect(t.description, t.name).not.toMatch(/approv/i); // in-scope writes are applied directly
+      expect(byName.get("write")!.description).toContain("dirty_equals/");
+      expect(byName.get("edit")!.description).toContain("dirty_equals/");
+      const git = byName.get("git")!;
+      expect(git.description).toContain("ls-files");
+      expect(git.description).toContain("refused");
+      expect(git.description).not.toContain("run freely");
+      const hubSend = byName.get("hub_send");
+      if (!joint) expect(hubSend).toBeUndefined();
+      else {
+        expect(hubSend!.description).toContain("other agent assigned");
+        expect(Object.keys(hubSend!.parameters.properties as Record<string, unknown>)).toEqual(["text"]); // the wrapper fixes the peer; no `to` is advertised
+      }
+    }
+  });
+
+  test("the production TOOL_SCHEMAS stay the general managed-peer descriptors, untouched", () => {
+    const prod = new Map(TOOL_SCHEMAS.map((t) => [t.function.name, t.function]));
+    expect(prod.get("git")!.description).toContain("status, diff, log, show, ls-files, blame, rev-parse run freely");
+    expect(prod.get("write")!.description).toContain("approval");
+    expect(prod.get("hub_send")!.description).toBeDefined(); // production registers it for every managed peer
+    // The benchmark descriptors are a separate object graph: editing one never leaks into the other.
+    const bench = benchPiToolDescriptors({ sourceDirs: ["src"], joint: true });
+    expect(bench.map((t) => t.name).sort()).toEqual([...TOOL_SCHEMAS.filter((t) => t.function.name !== "bash").map((t) => t.function.name)].sort());
+  });
+});
+
+describe("declared tool surface and bootstrap reconciliation (#183)", () => {
+  const excluded = ["exec", "web_search", "save_memory"];
+  const qwenProj = (names: string[]) => toolSurfaceProjection(names.map((name) => ({ name, parameters: { type: "object" } })))!;
+  const pins = { sourceFiles: { "cli.js": "a".repeat(64) }, schemas: { solo: qwenProj(["edit", "read_file"]).schemaSha256, joint: qwenProj(["edit", "read_file", JOINT_MCP_TOOL]).schemaSha256 } };
+  const declared = (arm: string, dirs: string[], deny: string[]) => intendedSurfaces(arm, dirs, deny, pins);
+  const proj = (names: string[]): RelayToolSurface => {
+    if (names.includes("read_file") || names.includes(JOINT_MCP_TOOL)) return qwenProj(names);
+    const pi = benchPiToolDescriptors({ sourceDirs: ["src"], joint: names.includes("hub_send") });
+    return toolSurfaceProjection(names.map((name) => pi.find((t) => t.name === name) ?? { name, parameters: { type: "object" } }))!;
+  };
+
+  test("the intended surface is declared per native and arm, from the same sources the launch uses", () => {
+    expect([...QWEN_BARE_PUBLISHED]).toEqual(["edit", "read_file"]); // the pinned bare publication
+    expect(JOINT_MCP_TOOL).toBe("mcp__pilot-peer-bus__hub_send");
+    const soloPi = declared("solo-pi", ["src"], excluded);
+    expect(soloPi).toHaveLength(1);
+    expect(soloPi[0]).toMatchObject({ native: "pi", published: ["edit", "git", "read", "write"], mcp: [], excluded: [], aliases: {}, discovery: "driver-published" });
+    const soloQwen = declared("solo-qwen", ["src"], excluded);
+    expect(soloQwen).toHaveLength(1);
+    expect(soloQwen[0]).toMatchObject({ native: "qwen", published: ["edit", "read_file"], mcp: [], excluded: [...excluded].sort(), aliases: {}, discovery: "relay-request-tools" });
+    const joint = declared("joint-pi-qwen", ["src"], excluded);
+    expect(joint.map((s) => s.native)).toEqual(["pi", "qwen"]);
+    expect(joint[0]!.published).toEqual(["edit", "git", "hub_send", "read", "write"]); // the #182 descriptors, same source
+    expect(joint[1]!.published).toEqual(["edit", "mcp__pilot-peer-bus__hub_send", "read_file"]);
+    expect(joint[1]!.mcp).toEqual([JOINT_MCP_TOOL]);
+  });
+
+  test("an observed name is classed against the verified surface: declared, alias, excluded, else unknown", () => {
+    const intended = declared("joint-pi-qwen", ["src"], excluded);
+    expect(surfaceNameClass("read", intended)).toBe("declared");
+    expect(surfaceNameClass("mcp__pilot-peer-bus__hub_send", intended)).toBe("declared");
+    expect(surfaceNameClass("exec", intended)).toBe("excluded");
+    expect(surfaceNameClass("grep_search", intended)).toBe("unknown"); // not published under bare, not excluded: never assumed registered
+    const withAlias: IntendedNativeSurface[] = [{ native: "qwen", published: ["edit"], mcp: [], excluded: [], aliases: { edit_file: "edit" }, discovery: "relay-request-tools" }];
+    expect(surfaceNameClass("edit_file", withAlias)).toBe("alias"); // a pinned alias names a canonical tool; it widens nothing
+  });
+
+  test("an exact observed publication matches per native; identical sets dedupe", () => {
+    const intended = declared("joint-pi-qwen", ["src"], excluded);
+    const observed = [proj(["read", "write", "edit", "git", "hub_send"]), proj(["hub_send", "read", "write", "edit", "git"]), proj(["read_file", "edit", JOINT_MCP_TOOL])];
+    const r = reconcileToolSurfaces(intended, observed);
+    expect(r.observedSets).toBe(2);
+    expect(r.unknownNameCount).toBe(0);
+    expect(r.natives).toHaveLength(2);
+    for (const n of r.natives) expect(n.verdict).toBe("matched");
+    expect(r.natives[1]!.schemaSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(surfaceMismatchProblem(r)).toBeUndefined();
+  });
+
+  test("a changed publication is a condition mismatch; extras are counted, never named", () => {
+    const intended = declared("solo-qwen", ["src"], excluded);
+    // The non-bare publication the probe observed: a source/flag update that changes effective publication.
+    const r = reconcileToolSurfaces(intended, [proj(["read_file", "edit", "grep_search", "glob", "write_file"])]);
+    const qwen = r.natives[0]!;
+    expect(qwen.verdict).toBe("mismatched");
+    expect(qwen.observedNames).toEqual(["edit", "read_file"]); // allowlisted declared names only
+    expect(qwen.missingNames).toEqual([]);
+    expect(qwen.extraNameCount).toBe(3); // grep_search, glob, write_file: counted, never named
+    expect(r.unknownNameCount).toBe(3); // published but neither declared nor a pinned alias
+    expect(surfaceMismatchProblem(r)).toContain("match no declared surface");
+    // A lost tool is a mismatch too (the bare publication shrinking).
+    const shrunk = reconcileToolSurfaces(intended, [proj(["read_file"])]);
+    expect(shrunk.natives[0]).toMatchObject({ verdict: "mismatched", missingNames: ["edit"], extraNameCount: 0 });
+    expect(surfaceMismatchProblem(shrunk)).toContain("qwen");
+  });
+
+  test("an unobserved publication defers explicitly and never fails on its own", () => {
+    // A native that publishes nothing the relay can see (no tools array in its requests) is recorded, not inferred.
+    const intended = declared("solo-pi", ["src"], excluded);
+    const r = reconcileToolSurfaces(intended, []);
+    expect(r.natives[0]!.verdict).toBe("unobserved");
+    expect(r.observedSets).toBe(0);
+    expect(surfaceMismatchProblem(r)).toBeUndefined();
+    // A foreign publication touches no declared surface: unobserved for the native, but its names are unknown.
+    const foreign = reconcileToolSurfaces(intended, [proj(["mystery_tool"])]);
+    expect(foreign.natives[0]!.verdict).toBe("unobserved");
+    expect(foreign.unknownNameCount).toBe(1);
+    expect(surfaceMismatchProblem(foreign)).toBeDefined();
+  });
+
+  test("the record block is bounded: allowlisted names, counts and opaque hashes only", () => {
+    const sentinel = "SENTINEL-TOOL-/private/secret";
+    const intended = declared("joint-pi-qwen", ["src"], excluded);
+    const observed = [proj(["read", "write", "edit", "git", "hub_send", "mystery_tool", sentinel.replace(/[^A-Za-z0-9_.-]/g, "_")]), proj(["read_file", "edit", JOINT_MCP_TOOL])];
+    const r = reconcileToolSurfaces(intended, observed);
+    const report = surfaceReport(intended, r);
+    expect(report.definition_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(report.unknownNameCount).toBe(2);
+    const json = JSON.stringify(report);
+    expect(json).not.toContain("SENTINEL");
+    expect(json).not.toContain("mystery_tool");
+    expect(json).not.toContain("save_memory"); // the exclusion list enters as count and hash, never by name
+    expect(json).not.toContain("web_search");
+    const qwen = (report.natives as Record<string, unknown>[]).find((n) => n.native === "qwen")!;
+    expect(qwen.excludedCount).toBe(3);
+    expect(qwen.excludedSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(qwen.aliasCount).toBe(0);
+    const pi = (report.natives as Record<string, unknown>[]).find((n) => n.native === "pi")!;
+    expect(pi.verdict).toBe("mismatched");
+    expect(pi.extraNameCount).toBe(2);
+    expect(pi.published).toEqual(["edit", "git", "hub_send", "read", "write"]);
+    // The definition hash changes when the declaration changes (an arm, an exclusion or a descriptor).
+    const other = surfaceReport(declared("solo-qwen", ["src"], excluded), reconcileToolSurfaces(declared("solo-qwen", ["src"], excluded), []));
+    expect(other.definition_sha256).not.toBe(report.definition_sha256);
+  });
+  test("every observation and structural schema is qualified, not just one matching name set", () => {
+    const intended = declared("joint-pi-qwen", ["src"], excluded);
+    const pi = proj(intended[0]!.published), qwen = proj(intended[1]!.published);
+    const drift = toolSurfaceProjection([{ name: "read_file", parameters: { type: "object", properties: { file_path: { type: "integer" } }, required: ["file_path"] } }, { name: "edit", parameters: { type: "object" } }, { name: JOINT_MCP_TOOL, parameters: { type: "object" } }])!;
+    for (const extra of [proj(["edit"]), drift, toolSurfaceProjection([])!, toolSurfaceProjection([...benchPiToolDescriptors({ sourceDirs: ["src"], joint: true }), { name: "bad/name", parameters: {} }])!]) {
+      expect(surfaceMismatchProblem(reconcileToolSurfaces(intended, [pi, qwen, extra]))).toBeDefined();
+    }
+    const duplicate = toolSurfaceProjection([...benchPiToolDescriptors({ sourceDirs: ["src"], joint: true }), benchPiToolDescriptors({ sourceDirs: ["src"], joint: true })[0]!])!;
+    expect(surfaceMismatchProblem(reconcileToolSurfaces(intended, [duplicate, qwen]))).toBeDefined();
+    expect(surfaceMismatchProblem(reconcileToolSurfaces(intendedSurfaces("solo-qwen", ["src"], excluded, { sourceFiles: {}, schemas: { solo: "", joint: "" } }), []))).toContain("attestation");
+  });
+
+  test("native package source pins reject changed bytes and unsafe paths", () => {
+    const dir = fixture();
+    try {
+      writeFileSync(join(dir, "cli.js"), "fixed native source");
+      const hash = createHash("sha256").update("fixed native source").digest("hex");
+      const attestation = { sourceFiles: { "cli.js": hash }, schemas: pins.schemas };
+      expect(verifySurfaceSource(dir, attestation)).toMatch(/^[0-9a-f]{64}$/);
+      writeFileSync(join(dir, "cli.js"), "changed native source");
+      expect(() => verifySurfaceSource(dir, attestation)).toThrow("source differs");
+      expect(() => verifySurfaceSource(dir, { sourceFiles: { "../cli.js": hash }, schemas: pins.schemas })).toThrow("pin invalid");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("joint bootstrap permits only pinned two-to-three MCP startup, never regression", () => {
+    const intended = declared("joint-pi-qwen", ["src"], excluded);
+    const pi = proj(intended[0]!.published), initial = qwenProj(["edit", "read_file"]), final = proj(intended[1]!.published);
+    expect(surfaceMismatchProblem(reconcileToolSurfaces(intended, [initial, pi, initial, final]))).toBeUndefined();
+    expect(surfaceMismatchProblem(reconcileToolSurfaces(intended, [initial, pi]))).toBeDefined();
+    expect(surfaceMismatchProblem(reconcileToolSurfaces(intended, [pi, final, initial]))).toBeDefined();
+    expect(() => requireToolStudyCondition(undefined)).toThrow("new native-tools/v2");
+    expect(() => requireToolStudyCondition("agent-hub.native-tools/v1")).toThrow("new native-tools/v2");
+    expect(() => requireToolStudyCondition("agent-hub.native-tools/v2")).not.toThrow();
+  });
+
+  test("missing native discovery defers every arm before active generation", () => {
+    for (const arm of ["solo-pi", "solo-qwen", "joint-pi-qwen"]) {
+      const intended = declared(arm, ["src"], excluded);
+      const absent = reconcileToolSurfaces(intended, []);
+      expect(absent.natives.every((n) => n.verdict === "unobserved")).toBe(true);
+      expect(surfaceReadinessProblem(absent)).toContain("generation deferred");
+      expect(surfaceReport(intended, absent).readiness).toBe("deferred");
+      const ready = reconcileToolSurfaces(intended, intended.map((n) => proj(n.published)));
+      expect(surfaceReadinessProblem(ready)).toBeUndefined();
+    }
+    const intended = declared("joint-pi-qwen", ["src"], excluded);
+    expect(surfaceReadinessProblem(reconcileToolSurfaces(intended, [proj(intended[0]!.published)]))).toBeDefined();
+  });
+
+});
+
+
 describe("runner.py v3 gates (#140)", () => {
   test("manifest v3 validates, its plan adds up, and malformed v3 fields are refused", () => {
     const code = `import importlib.util,json
@@ -1129,4 +1479,6 @@ assert m.unavailable_reason('solo-pi',{'end_reason':'interrupted','end_reason_de
       expect(report.arms["joint-pi-qwen"].unavailable).toBe(1);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+
+
 });

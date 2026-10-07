@@ -1,5 +1,5 @@
 """Focused stdlib tests for the sealed-study summary export (#171); synthetic metadata only, no evaluator or native processes."""
-import csv, io, json, subprocess, sys, tempfile, unittest
+import csv, io, json, os, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "benchmarks"
@@ -168,6 +168,7 @@ class StudyExportTests(unittest.TestCase):
         pooled = ledger.pool(cohorts, "study")
         (root / "pooled-ledger.log").write_text(json.dumps(pooled, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         runner.dump(root / "study.json", {"schema": "agent-hub.native-study/v1", "phase": "sealed", "outcome": "complete"})
+        self.seal_index(root)
         return root
 
     def test_counts_reconcile_and_unavailable_and_missing_stay_visible(self):
@@ -399,6 +400,84 @@ class StudyExportTests(unittest.TestCase):
             refused()  # provenance without recorded amendments is unsupported
             runner.dump(provenance_path, provenance)
             self.assertEqual(audit.study_summary(root)["planned"], 6)
+
+    @staticmethod
+    def seal_index(root):
+        runner.dump(root / "private-evidence-hashes.json", [
+            {"artifact": name, "sha256": runner.file_sha(root / name)}
+            for name in ("safe-aggregate.json", "pooled-ledger.log", "runtime-manifest.json")])
+
+    def test_terminal_coverage_refuses_inconsistent_or_unbound_seal(self):
+        mutations = [
+            ("safe-aggregate.json", lambda s: s.pop("checks"), "final-audit-unverified"),
+            ("safe-aggregate.json", lambda s: s["checks"].pop("matrix"), "final-audit-unverified"),
+            ("safe-aggregate.json", lambda s: s.update(passed=s["scored"] + 1), "coverage-inconsistent"),
+            ("safe-aggregate.json", lambda s: s.update(live_owned_matches=1), "coverage-inconsistent"),
+            ("safe-aggregate.json", lambda s: s.update(controls_verified=0), "coverage-inconsistent"),
+            ("pooled-ledger.log", lambda s: s["rows"].__setitem__(0, s["rows"][1]), "coverage-inconsistent"),
+            ("pooled-ledger.log", lambda s: s["rows"][0].update(case=999), "coverage-inconsistent"),
+            ("pooled-ledger.log", lambda s: s["rows"][0].update(end_reason=[]), "ledger-malformed"),
+            ("study.json", lambda s: s.update(phase="graded"), "study-not-sealed"),
+        ]
+        for artifact, change, reason in mutations:
+            with self.subTest(artifact=artifact, reason=reason), tempfile.TemporaryDirectory() as d:
+                root = self.study(Path(d))
+                value = runner.load(root / artifact)
+                change(value)
+                runner.dump(root / artifact, value)
+                # A changed artifact is rejected before interpreting its alleged recorded status.
+                if artifact != "study.json":
+                    self.assertEqual(audit.terminal_coverage(root)["reason"], "seal-binding-mismatch")
+                self.seal_index(root)
+                self.assertEqual(audit.terminal_coverage(root), {"available": False, "reason": reason})
+        with tempfile.TemporaryDirectory() as d:
+            root = self.study(Path(d))
+            (root / "private-evidence-hashes.json").unlink()
+            self.assertEqual(audit.terminal_coverage(root)["reason"], "seal-index-missing")
+            ledger_path = root / "pooled-ledger.log"
+            ledger_path.unlink()
+            os.mkfifo(ledger_path)
+            self.assertEqual(audit.terminal_coverage(root)["reason"], "ledger-unreadable")
+            ledger_path.unlink()
+            ledger_path.symlink_to(root / "safe-aggregate.json")
+            self.assertEqual(audit.terminal_coverage(root)["reason"], "ledger-unreadable")
+            # Oversized metadata is refused before JSON parsing; no native log/evaluation scan occurs.
+            (root / "safe-aggregate.json").write_bytes(b" " * (4 * 1024 * 1024 + 1))
+            self.assertEqual(audit.terminal_coverage(root)["reason"], "final-audit-unreadable")
+
+    def test_terminal_coverage_composes_sealed_evidence_without_fresh_verification(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = self.study(Path(d))
+            s = audit.study_summary(root)
+            report = supervisor.status_report(root)
+            self.assertEqual((report["observation"], report["phase"], report["outcome"]),
+                             ("completed", "sealed", "complete"))
+            coverage = report["coverage"]
+            self.assertTrue(coverage["available"])
+            self.assertEqual((coverage["provenance"], coverage["fresh_verification"]),
+                             ("recorded-at-seal", False))
+            # The terminal counts and native end classes are exactly the verified summary's.
+            for key in ("planned", "retained", "scored", "passed", "unavailable", "missing"):
+                self.assertEqual(coverage[key], s[key])
+            self.assertEqual(coverage["end_reasons"], s["end_reasons"])
+            self.assertEqual((coverage["end_reasons"]["completed"], coverage["end_reasons"]["interrupted"]),
+                             (4, 1))
+            self.assertEqual(coverage["audit"]["controls_verified"], 4)
+            self.assertEqual(coverage["restoration"],
+                             {"verified": True, "owned_identities": 2, "live_owned_matches": 0})
+            text = json.dumps(coverage)
+            for secret in ("PRIVATE", "/private", "adversarial-key", str(Path(d).resolve()), d):
+                self.assertNotIn(secret, text)
+            # Tampered or absent sealed evidence degrades to an explicit unavailable coverage.
+            (root / "pooled-ledger.log").unlink()
+            self.assertEqual(supervisor.status_report(root)["coverage"],
+                             {"available": False, "reason": "ledger-missing"})
+            pooled = ledger.pool([root / "r0", root / "r1"], "study")
+            pooled["rows"] = pooled["rows"][:-1]
+            (root / "pooled-ledger.log").write_text(json.dumps(pooled, indent=2, sort_keys=True) + "\n",
+                                                    encoding="utf-8")
+            self.assertEqual(supervisor.status_report(root)["coverage"],
+                             {"available": False, "reason": "seal-binding-mismatch"})
 
     def test_csv_matches_json_counts(self):
         with tempfile.TemporaryDirectory() as d:

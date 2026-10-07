@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import type { OmniRoute, ChatMessage } from "../omniroute/client.ts";
 import { ensureMlx, type MlxHandle, type MlxOptions, type MlxStatus } from "./mlx.ts";
@@ -32,7 +32,9 @@ export interface ModelRelayStatus {
 }
 
 /** Sanitized per-request identity and lifecycle evidence. One record per upstream dispatch attempt
- *  (a fallback dispatch is its own record). Records carry no messages, tools, keys or Access headers.
+ *  (a fallback dispatch is its own record). Records carry no messages, keys or Access headers; with the
+ *  opt-in `observeToolSurface` they additionally carry the bounded `toolSurface` projection (allowlist-
+ *  charset names, a count and an opaque schema hash — never descriptions, arguments or message text).
  *  `identified: false` with `outcome: "cancelled"` is the cancelled-before-identification state; an
  *  observed `actualModel` that differs from the trusted expected served model sets `mismatch`.
  *  Without an explicit expectation, the upstream-configured identifier remains the comparison default.
@@ -45,6 +47,63 @@ export interface RelayUsageObservation {
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
+}
+
+/**
+ * The bounded tool-surface projection of one request's published `tools` array (#183): what the native
+ * declared to the model, reduced to allowlist-charset names (sorted, deduplicated), the raw entry count
+ * and an opaque full structural JSON-schema fingerprint. Schema annotations are omitted, while types,
+ * constraints and literal default/const/enum values are hashed only, never exported.
+ */
+export interface RelayToolSurface {
+  count: number;
+  names: string[];
+  schemaSha256: string;
+  invalidEntries: number;
+  duplicateNames: number;
+  truncated: boolean;
+}
+
+const SURFACE_NAME = /^[A-Za-z0-9_.-]{1,128}$/;
+const SURFACE_CAP = 64;
+const SCHEMA_ANNOTATIONS = new Set(["description", "title", "examples", "$comment"]);
+const SCHEMA_MAPS = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependentRequired"]);
+
+/** Structural JSON-schema fingerprint, including types, constraints and nested shapes. Annotation text is
+ * omitted; all remaining values enter only the opaque hash. Resource ceilings fail explicitly, never silently
+ * qualify a partial schema. */
+export function toolSurfaceProjection(tools: unknown): RelayToolSurface | undefined {
+  if (!Array.isArray(tools)) return undefined;
+  let invalidEntries = 0, duplicateNames = 0, truncated = tools.length > SURFACE_CAP, nodes = 0;
+  const names = new Set<string>();
+  const canonical = (value: unknown, depth = 0, keyword = "", schemaMap = false, literal = false): unknown => {
+    if (++nodes > 8192 || depth > 20) { truncated = true; return null; }
+    if (value === null || typeof value === "boolean") return value;
+    if (typeof value === "number") { if (Number.isFinite(value)) return value; invalidEntries++; return null; }
+    if (typeof value === "string") { if (value.length > 8192) { truncated = true; return null; } return value; }
+    if (Array.isArray(value)) {
+      if (value.length > 256) truncated = true;
+      const result = value.slice(0, 256).map((v) => canonical(v, depth + 1, "", false, literal || keyword === "enum"));
+      return !literal && (keyword === "required" || keyword === "enum" || keyword === "type") ? result.sort((a, b) => { const x = JSON.stringify(a), y = JSON.stringify(b); return x < y ? -1 : x > y ? 1 : 0; }) : result;
+    }
+    if (value && typeof value === "object") {
+      const keys = Object.keys(value).filter((k) => literal || schemaMap || !SCHEMA_ANNOTATIONS.has(k)).sort();
+      if (keys.length > 256) truncated = true;
+      return Object.fromEntries(keys.slice(0, 256).map((k) => [k, canonical((value as Record<string, unknown>)[k], depth + 1, schemaMap ? "" : k, !literal && !schemaMap && SCHEMA_MAPS.has(k), literal || (!schemaMap && ["default", "const", "enum"].includes(k)))]));
+    }
+    invalidEntries++; return null;
+  };
+  const schema: { name: string; parameters: unknown }[] = [];
+  for (const entry of tools.slice(0, SURFACE_CAP)) {
+    const e = entry as { function?: unknown; name?: unknown; parameters?: unknown } | null;
+    const fn = (e && typeof e === "object" && e.function && typeof e.function === "object" ? e.function : e) as { name?: unknown; parameters?: unknown } | null;
+    const name = typeof fn?.name === "string" && SURFACE_NAME.test(fn.name) ? fn.name : "";
+    if (!name || !fn?.parameters || typeof fn.parameters !== "object" || Array.isArray(fn.parameters)) invalidEntries++;
+    if (name) { if (names.has(name)) duplicateNames++; names.add(name); }
+    schema.push({ name, parameters: canonical(fn?.parameters ?? null) });
+  }
+  schema.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  return { count: tools.length, names: [...names].sort(), schemaSha256: createHash("sha256").update(JSON.stringify(schema)).digest("hex"), invalidEntries, duplicateNames, truncated };
 }
 
 export interface RelayRequestRecord {
@@ -68,6 +127,8 @@ export interface RelayRequestRecord {
   usageAvailability?: "known" | "partial" | "missing" | "invalid";
   /** Observed served model; never read back from the backend's mutable last label. */
   actualModel?: string;
+  /** Bounded tool-surface projection of the request's published tools; only when the owner opted in. */
+  toolSurface?: RelayToolSurface;
   identitySource: "header" | "stream" | "configured" | "none";
   // ponytail: the relay cannot see native turn structure, so role stays "unknown"; a native surface
   // that knows primary vs auxiliary work (benchmark wiring, issue #140) is the upgrade path.
@@ -106,6 +167,9 @@ export interface ModelRelayOptions {
   /** Include explicit missing usage/provider metadata and dispatch groups, independently of observers.
    *  Omission preserves the legacy absent-metadata journal schema. */
   observeRequestMetadata?: boolean;
+  /** Journal each request's bounded tool-surface projection (#183). Omission preserves the no-tools
+   *  journal contract. */
+  observeToolSurface?: boolean;
   /** Called exactly once per journaled request, at its terminal close, with a sanitized copy. */
   onRequest?: (record: RelayRequestRecord) => void;
 }
@@ -258,7 +322,7 @@ function sseResponse(response: Response, release: () => void, onModel?: (model: 
   });
 }
 
-const copyRecord = (record: RelayRequestRecord): RelayRequestRecord => ({ ...record, ...(record.requestUsage ? { requestUsage: { ...record.requestUsage } } : {}) });
+const copyRecord = (record: RelayRequestRecord): RelayRequestRecord => ({ ...record, ...(record.requestUsage ? { requestUsage: { ...record.requestUsage } } : {}), ...(record.toolSurface ? { toolSurface: { ...record.toolSurface, names: [...record.toolSurface.names] } } : {}) });
 
 export async function startModelRelay(options: ModelRelayOptions): Promise<ModelRelay> {
   const host = options.host ?? "127.0.0.1";
@@ -482,6 +546,12 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       let primaryDispatchId: string | undefined;
       const dispatch = async (selected: ModelBackend, body: RelayRequest) => {
         const journalEntry = openRequestRecord(aliasOf(selected, mlxAlias), dispatchGroupId);
+        // The surface is a property of the request as admitted: even a failed dispatch keeps what the
+        // native published. A request without a tools array carries no observation, never an empty one.
+        if (options.observeToolSurface) {
+          const surface = toolSurfaceProjection(body.tools);
+          if (surface) journalEntry.record.toolSurface = surface;
+        }
         if (primaryDispatchId) {
           journalEntry.record.fallbackOfId = primaryDispatchId;
           journalEntry.record.dispatchGroupId = dispatchGroupId;

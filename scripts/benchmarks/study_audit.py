@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read-only v3 metadata audit. Output is constructed from fixed keys, never raw evidence."""
 from __future__ import annotations
-import argparse, copy, csv, io, json, math, os, re, subprocess, sys
+import argparse, copy, csv, hashlib, io, json, math, os, re, stat, subprocess, sys
 from pathlib import Path
 import runner
 import ledger
@@ -659,6 +659,126 @@ def summary_csv(summary):
                                   ("planned", "retained", "scored", "passed", "unavailable", "missing")},
                         total_end, total_cleanup, total_timing, total_identity))
     return out.getvalue()
+
+
+# ---- terminal status coverage (#180) --------------------------------------------------------------------------------
+# Bounded coverage of a sealed study for the supervisor's read-only status, composed from the maintained sealed
+# artifacts only: the final audit (safe-aggregate.json) and the recorded pooled ledger. No fresh audit, ledger
+# recompute, log parse or process check runs here, so recorded verification is reported as recorded, never as a
+# fresh success. Lifecycle completion, quality availability and test passing stay separate counts over the
+# planned denominator. Anything missing, unreadable or inconsistent yields an explicit unavailable coverage,
+# never a fabricated zero.
+
+COVERAGE_AUDIT_CHECKS = ("restoration", "bindings", "controls", "model_gates", "matrix")
+
+
+def _coverage_count(value):
+    return type(value) is int and value >= 0
+
+
+def _coverage_read(path, limit=4 * 1024 * 1024):
+    # No recursive evidence walk, native logs or unbounded reads on a status poll.
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW), "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError("coverage artifact exceeds bound")
+        raw = stream.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError("coverage artifact exceeds bound")
+    return json.loads(raw), hashlib.sha256(raw).hexdigest()
+
+
+def terminal_coverage(root):
+    """Bounded recorded coverage, with current artifact bytes rebound to the seal's index.
+    This verifies metadata bindings only, never reruns the full audit or evaluator."""
+    def unavailable(reason):
+        return {"available": False, "reason": reason}
+    root = Path(root)
+    try:
+        state, _ = _coverage_read(root / "study.json")
+        if not isinstance(state, dict) or state.get("phase") != "sealed" or state.get("outcome") != "complete":
+            return unavailable("study-not-sealed")
+        artifacts = {}
+        for name, missing, unreadable in (
+                ("safe-aggregate.json", "final-audit-missing", "final-audit-unreadable"),
+                ("pooled-ledger.log", "ledger-missing", "ledger-unreadable"),
+                ("runtime-manifest.json", "manifest-missing", "manifest-unreadable"),
+                ("private-evidence-hashes.json", "seal-index-missing", "seal-index-unreadable")):
+            try:
+                artifacts[name] = _coverage_read(root / name)
+            except FileNotFoundError:
+                return unavailable(missing)
+            except (OSError, ValueError):
+                return unavailable(unreadable)
+        index = artifacts["private-evidence-hashes.json"][0]
+        if not isinstance(index, list):
+            return unavailable("seal-index-malformed")
+        pins = {}
+        for entry in index:
+            if (not isinstance(entry, dict) or not isinstance(entry.get("artifact"), str) or
+                    not digest(entry.get("sha256")) or entry["artifact"] in pins):
+                return unavailable("seal-index-malformed")
+            pins[entry["artifact"]] = entry["sha256"]
+        for name in ("safe-aggregate.json", "pooled-ledger.log", "runtime-manifest.json"):
+            if pins.get(name) != artifacts[name][1]:
+                return unavailable("seal-binding-mismatch")
+        sealed = artifacts["safe-aggregate.json"][0]
+        if not isinstance(sealed, dict) or sealed.get("schema") != SCHEMA:
+            return unavailable("final-audit-malformed")
+        checks = sealed.get("checks")
+        if (sealed.get("verified") is not True or not isinstance(checks, dict) or
+                any(checks.get(key) is not True for key in COVERAGE_AUDIT_CHECKS)):
+            return unavailable("final-audit-unverified")
+        checks = {key: checks[key] for key in COVERAGE_AUDIT_CHECKS}
+        counts = {}
+        for key in ("planned", "retained", "scored", "passed", "unavailable", "missing",
+                    "controls_verified", "owned_identities", "live_owned_matches"):
+            value = sealed.get(key)
+            if not _coverage_count(value):
+                return unavailable("final-audit-malformed")
+            counts[key] = value
+        if (counts["retained"] != counts["planned"] or counts["passed"] > counts["scored"] or
+                counts["live_owned_matches"] != 0 or
+                counts["scored"] + counts["unavailable"] + counts["missing"] != counts["planned"]):
+            return unavailable("coverage-inconsistent")
+        manifest = artifacts["runtime-manifest.json"][0]
+        plan = state.get("plan", "study")
+        if not isinstance(plan, str):
+            return unavailable("coverage-inconsistent")
+        expected = matrix(manifest, plan)
+        spec = manifest["plan"][plan]
+        cells = _summary_cells(sealed, set(spec["cases"]), spec["repeats"])
+        keys = [(c["case"], c["arm"], c["repeat"]) for c in cells]
+        if (len(expected) != counts["planned"] or len(keys) != len(set(keys)) or set(keys) != expected or
+                counts["controls_verified"] != len(spec["cases"]) * spec["repeats"] * 2 or
+                any(sum(c["status"] == key for c in cells) != counts[key]
+                    for key in ("scored", "unavailable", "missing")) or
+                sum(c["passed"] is True for c in cells) != counts["passed"]):
+            return unavailable("coverage-inconsistent")
+        pooled = artifacts["pooled-ledger.log"][0]
+        rows = pooled.get("rows") if isinstance(pooled, dict) else None
+        if not isinstance(rows, list) or any(not isinstance(r, dict) for r in rows):
+            return unavailable("ledger-malformed")
+        row_keys = []
+        end = {key: 0 for key in SUMMARY_END_REASONS}
+        for row in rows:
+            case, arm, rep, reason = (row.get(key) for key in ("case", "arm", "repeat", "end_reason"))
+            if (type(case) is not int or not isinstance(arm, str) or type(rep) is not int or
+                    not isinstance(reason, str)):
+                return unavailable("ledger-malformed")
+            row_keys.append((case, arm, rep))
+            end[reason if reason in end else "other"] += 1
+        present = {(c["case"], c["arm"], c["repeat"]) for c in cells if c["status"] != "missing"}
+        if len(row_keys) != len(set(row_keys)) or set(row_keys) != present:
+            return unavailable("coverage-inconsistent")
+        return {"available": True, "provenance": "recorded-at-seal", "fresh_verification": False,
+                **{key: counts[key] for key in ("planned", "retained", "scored", "passed", "unavailable", "missing")},
+                "end_reasons": end,
+                "audit": {"verified": True, "checks": checks, "controls_verified": counts["controls_verified"]},
+                "restoration": {"verified": True, "owned_identities": counts["owned_identities"],
+                                "live_owned_matches": counts["live_owned_matches"]}}
+    except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError, runner.BenchError):
+        return unavailable("coverage-unreadable")
 
 
 def write_new(path, value):

@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startModelRelay, type RelayRequestRecord } from "../src/models/relay.ts";
+import { startModelRelay, toolSurfaceProjection, type RelayRequestRecord } from "../src/models/relay.ts";
 
 const cleanup: (() => Promise<void> | void)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -595,4 +595,88 @@ test("explicit missing observability is independent of request notification hook
     expect(records[0]!.dispatchGroupId).toBeString();
     expect(notified).toBe(notify ? 1 : 0);
   }
+});
+
+test("#183 tool surface projection: allowlisted names, count and schema hash only", () => {
+  const openai = (name: string, properties: Record<string, unknown>, required: string[], description = "d") => ({ type: "function", function: { name, description, parameters: { type: "object", properties, required } } });
+  const surface = toolSurfaceProjection([
+    openai("read_file", { file_path: { type: "string" }, limit: { type: "integer" } }, ["file_path"], "reads a secret path from disk"),
+    { name: "edit", parameters: { type: "object", properties: { file_path: {}, old_string: {}, new_string: {} }, required: ["file_path", "old_string", "new_string"] } },
+    { name: "bad/name with spaces" }, // counted, never named
+    "not-an-object",
+  ])!;
+  expect(surface.count).toBe(4);
+  expect(surface.names).toEqual(["edit", "read_file"]);
+  expect(surface.schemaSha256).toMatch(/^[0-9a-f]{64}$/);
+  // The hash binds names, property names and required fields — never descriptions, defaults or argument values.
+  const same = toolSurfaceProjection([openai("read_file", { file_path: { type: "string", description: "CHANGED" }, limit: { type: "integer" } }, ["file_path"], "rewritten entirely"), { name: "edit", parameters: { type: "object", properties: { new_string: {}, old_string: {}, file_path: {} }, required: ["new_string", "file_path", "old_string"] } }, { name: "bad/name with spaces" }, "not-an-object"])!;
+  expect(same.schemaSha256).toBe(surface.schemaSha256);
+  expect(toolSurfaceProjection([openai("read_file", { file_path: {} }, ["file_path"])])!.schemaSha256).not.toBe(surface.schemaSha256); // a lost property changes it
+  expect(toolSurfaceProjection([openai("read_file", { file_path: {}, limit: {} }, [])])!.schemaSha256).not.toBe(surface.schemaSha256); // a changed required set changes it
+  expect(toolSurfaceProjection([openai("write_file", { file_path: {}, limit: {} }, ["file_path"])])!.schemaSha256).not.toBe(surface.schemaSha256);
+  // A non-array tools field is no observation at all; an explicit empty array is a real empty surface.
+  for (const none of [undefined, null, {}, "tools"]) expect(toolSurfaceProjection(none)).toBeUndefined();
+  expect(toolSurfaceProjection([])).toEqual({ count: 0, names: [], schemaSha256: expect.any(String), invalidEntries: 0, duplicateNames: 0, truncated: false });
+});
+
+test("#183 the relay journals the bounded tool surface only when the owner opted in", async () => {
+  const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response('data: {"model":"coding","choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } }) });
+  cleanup.push(() => upstream.stop(true));
+  const tools = [
+    { type: "function", function: { name: "read_file", description: "private description text", parameters: { type: "object", properties: { file_path: { type: "string" } }, required: ["file_path"] } } },
+    { type: "function", function: { name: "edit", parameters: { type: "object", properties: {}, required: [] } } },
+  ];
+  const withSurface = await startModelRelay({ omni: omni(`http://127.0.0.1:${upstream.port}/v1`), allowedDGXmodels: { "dgx/coding": "coding" }, token: "relay-token", observeToolSurface: true });
+  cleanup.push(withSurface.close);
+  const response = await fetch(`${withSurface.url}/chat/completions`, { method: "POST", headers: { authorization: "Bearer relay-token", "content-type": "application/json" }, body: JSON.stringify({ model: "dgx/coding", messages: [{ role: "user", content: "probe" }], tools }) });
+  await response.text();
+  const records = await waitForRecords(withSurface, 1);
+  const record = records[0]!;
+  expect(record.toolSurface).toEqual(toolSurfaceProjection(tools));
+  expect(record.toolSurface!.names).toEqual(["edit", "read_file"]);
+  expect(JSON.stringify(record)).not.toContain("private description text");
+  // The journal copies: mutating a fetched record never rewrites the stored evidence.
+  record.toolSurface!.names.push("forged");
+  expect((await waitForRecords(withSurface, 1))[0]!.toolSurface!.names).toEqual(["edit", "read_file"]);
+  // Without the opt-in the journal keeps its no-tools contract, even for the same request.
+  const plain = await startModelRelay({ omni: omni(`http://127.0.0.1:${upstream.port}/v1`), allowedDGXmodels: { "dgx/coding": "coding" }, token: "relay-token" });
+  cleanup.push(plain.close);
+  const response2 = await fetch(`${plain.url}/chat/completions`, { method: "POST", headers: { authorization: "Bearer relay-token", "content-type": "application/json" }, body: JSON.stringify({ model: "dgx/coding", messages: [{ role: "user", content: "probe" }], tools }) });
+  await response2.text();
+  expect((await waitForRecords(plain, 1))[0]!.toolSurface).toBeUndefined();
+});
+
+
+test("#183 full nested schema constraints and incomplete surfaces cannot hide behind names", () => {
+  const project = (parameters: unknown) => toolSurfaceProjection([{ name: "read_file", parameters }])!;
+  const a = project({ type: "object", properties: { file_path: { type: "string", minLength: 1 }, options: { type: "array", items: { type: "integer", minimum: 0 } } }, required: ["file_path"], additionalProperties: false });
+  for (const changed of [
+    { type: "object", properties: { file_path: { type: "integer", minLength: 1 }, options: { type: "array", items: { type: "integer", minimum: 0 } } }, required: ["file_path"], additionalProperties: false },
+    { type: "object", properties: { file_path: { type: "string", minLength: 1 }, options: { type: "array", items: { type: "integer", minimum: 1 } } }, required: ["file_path"], additionalProperties: false },
+    { type: "object", properties: { file_path: { type: "string", minLength: 1 }, options: { type: "array", items: { type: "integer", minimum: 0 } } }, required: ["file_path"], additionalProperties: true },
+  ]) expect(project(changed).schemaSha256).not.toBe(a.schemaSha256);
+  expect(toolSurfaceProjection([{ name: "bad/name", parameters: {} }])!.invalidEntries).toBe(1);
+  expect(toolSurfaceProjection([{ name: "read_file", parameters: {} }, { name: "read_file", parameters: {} }])!.duplicateNames).toBe(1);
+  expect(toolSurfaceProjection(Array.from({ length: 65 }, (_, i) => ({ name: `tool${i}`, parameters: {} })))!.truncated).toBe(true);
+  expect(project({ type: "string", enum: ["x".repeat(8193)] }).truncated).toBe(true);
+});
+
+
+test("#183 annotation-named parameter properties remain structural schema", () => {
+  const a = toolSurfaceProjection([{ name: "tool", parameters: { type: "object", properties: { description: { type: "string" } } } }])!;
+  const b = toolSurfaceProjection([{ name: "tool", parameters: { type: "object", properties: {} } }])!;
+  expect(a.schemaSha256).not.toBe(b.schemaSha256);
+});
+
+
+test("#183 literal default const and enum objects retain annotation-named keys", () => {
+  for (const key of ["default", "const", "enum"]) {
+    const parameters = (value: string) => ({ type: "object", [key]: key === "enum" ? [{ description: value, nested: { title: value } }] : { description: value, nested: { title: value } } });
+    expect(toolSurfaceProjection([{ name: "tool", parameters: parameters("a") }])!.schemaSha256).not.toBe(toolSurfaceProjection([{ name: "tool", parameters: parameters("b") }])!.schemaSha256);
+  }
+});
+
+ test("#183 arrays inside literal defaults retain their order", () => {
+  const project = (type: string[]) => toolSurfaceProjection([{ name: "tool", parameters: { type: "object", default: { type } } }])!;
+  expect(project(["a", "b"]).schemaSha256).not.toBe(project(["b", "a"]).schemaSha256);
 });

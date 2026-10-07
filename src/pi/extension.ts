@@ -1,5 +1,6 @@
 import { assistantTokens } from "./usage.ts";
 import { processSignature } from "./process-signature.ts";
+import { PI_CEILING_KIND, PI_CEILING_UNIT } from "./ceiling.ts";
 type ExtensionAPI = any;
 type BudgetUnit = "model_calls" | "tool_calls";
 
@@ -20,6 +21,7 @@ let lastActivity = 0;
 let usageSeq = 0;
 let forcedFailure = "";
 let turnGeneration = 0;
+let sessionId = "";
 const maxSteps = Number(process.env.AGENTHUB_PI_MAX_STEPS ?? 30);
 let shutdown: (() => void) | undefined;
 let runtimeCtx: any;
@@ -103,6 +105,7 @@ export default function(pi: ExtensionAPI): void {
     modelRegistry = ctx.modelRegistry;
     shutdown = ctx.shutdown;
     const state = ctx.sessionManager.getHeader();
+    sessionId = String(state?.id ?? "");
     try {
       const claimed = await post("/event", { type: "session_start", ownerToken, pid: process.pid, signature: processSignature(process.pid), sessionId: state?.id, sessionFile: ctx.sessionManager.getSessionFile() });
       if (claimed?.ok === false) { ctx.shutdown?.(); return; }
@@ -163,9 +166,24 @@ export default function(pi: ExtensionAPI): void {
     if (!raw || typeof raw.name !== "string" || !raw.parameters) continue;
     pi.registerTool({ name: raw.name, label: raw.name, description: raw.description ?? raw.name, parameters: raw.parameters, async execute(toolCallId: string, params: unknown) {
       if (!(await admitBudget("tool_calls")).allowed) return { content: [{ type: "text", text: `error: ${forcedFailure}` }], details: {}, isError: true };
-      if (toolSteps++ >= maxSteps) { const reason = `Pi tool step limit ${maxSteps} reached`; forcedFailure = reason; await post("/event", { type: "agent_end", generation: turnGeneration, failed: true, error: reason }); runtimeCtx?.abort?.(); return { content: [{ type: "text", text: `error: ${reason}` }], details: {}, isError: true }; }
+      if (toolSteps++ >= maxSteps) {
+        const reason = `Pi tool step limit ${maxSteps} reached`;
+        forcedFailure = reason;
+        // #179: the structured ceiling signal at the actual rejection boundary, before the failure
+        // event, so the adapter binds it while the turn still owns it. The counter already counts the
+        // rejected pre-effect invocation (toolSteps++ above); its side effect never executes. The
+        // reason text stays the failure record; the signal adds the validated counts.
+        try { await post("/event", { type: "ceiling", kind: PI_CEILING_KIND, unit: PI_CEILING_UNIT, count: toolSteps, limit: maxSteps, sessionId, generation: turnGeneration }); } catch { /* the agent_end failure below remains authoritative */ }
+        await post("/event", { type: "agent_end", generation: turnGeneration, failed: true, error: reason });
+        runtimeCtx?.abort?.();
+        return { content: [{ type: "text", text: `error: ${reason}` }], details: {}, isError: true };
+      }
       const result = await post("/tool", { name: raw.name, args: params, toolCallId });
-      return { content: [{ type: "text", text: String(result.text ?? result) }], details: {} };
+      const text = String(result.text ?? result);
+      // Pi 1.0.1 reads isError === true alone (#181). The bridge computes `failed` with the
+      // managed-tool failure contract (toolResultFailed); the extension never re-parses the text.
+      // A bridge too old to send `failed` leaves the result unflagged, exactly as before the fix.
+      return { content: [{ type: "text", text }], details: {}, isError: result.failed === true };
     } });
   }
 }
