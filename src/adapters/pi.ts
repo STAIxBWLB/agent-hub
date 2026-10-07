@@ -7,6 +7,8 @@ import { BasePeer } from "../hub/peers.ts";
 import { stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { processSignature } from "../pi/process-signature.ts";
 import { realPath } from "../hub/project.ts";
+import { toolResultFailed } from "../local/tools.ts";
+import { piToolStepCeiling, type PiToolStepCeiling } from "../pi/ceiling.ts";
 import type { ExecutionBudgetDecision, ExecutionUnit } from "../hub/execution-budget.ts";
 
 export interface PiModelDescriptor { id: string; name?: string; contextWindow?: number; maxTokens?: number; reasoning?: boolean; }
@@ -22,7 +24,8 @@ export interface PiOptions {
   admitBudget?: (envs: Envelope[], unit: ExecutionUnit) => Promise<ExecutionBudgetDecision[]>;
   /** Reported message usage as increments, before agent_settled releases the turn. */
   onTokens?: (added: number) => void;
-  onTurnFailure?: (envs: Envelope[], reason: string) => Promise<void>;
+  /** `ceiling` is the validated, session/turn-bound tool-step ceiling signal (#179), present only when the trusted extension emitted one for this turn. */
+  onTurnFailure?: (envs: Envelope[], reason: string, ceiling?: PiToolStepCeiling) => Promise<void>;
   watchdogMs?: number; log?: (line: string) => void;
   /** How long stop() waits for a graceful TUI owner exit before verified teardown. Tests shrink this. */
   stopGraceMs?: number;
@@ -58,6 +61,7 @@ export class PiPeer extends BasePeer {
   private executionBudgetTimer?: ReturnType<typeof setTimeout>;
   private executionAbort?: AbortController;
   private readonly budgetStops = new Map<number, string>();
+  private readonly ceilingStops = new Map<number, PiToolStepCeiling>();
   private readonly idleBashReservations = new Map<string, { generation: number; expiresAt: number; deadlineAt?: number }>();
   private budgetGeneration = 0;
   private modelStep = 0;
@@ -185,8 +189,11 @@ export class PiPeer extends BasePeer {
     this.activeTools++;
     if (this.state === "idle") this.setState("busy");
     if (this.state === "busy") this.touch();
-    try { return Response.json({ text: await this.opts.executeTool(String(body.name), body.args, String(body.toolCallId ?? ""), this.sessionId, executionSignal) }); }
-    catch (error) { return Response.json({ text: `error: ${(error as Error).message}` }, { status: 200 }); }
+    // `failed` is the managed-tool failure verdict (toolResultFailed, the one contract): Pi 1.0.1
+    // classifies a native tool result by isError === true alone, so the extension needs the flag,
+    // not just the text (#181). An older extension simply ignores the extra field.
+    try { const text = await this.opts.executeTool(String(body.name), body.args, String(body.toolCallId ?? ""), this.sessionId, executionSignal); return Response.json({ text, failed: toolResultFailed(String(body.name), text) }); }
+    catch (error) { return Response.json({ text: `error: ${(error as Error).message}`, failed: true }, { status: 200 }); }
     finally {
       clearTimeout(idleBashTimer);
       this.activeTools--;
@@ -426,7 +433,17 @@ export class PiPeer extends BasePeer {
       const generation = Number.isSafeInteger(event.generation) ? event.generation : this.budgetGeneration + 1;
       if (generation <= this.budgetGeneration) return;
       this.modelStep = 0;
-      this.usageSeen.clear(); this.idleBashReservations.clear(); this.executionAbort = new AbortController(); this.budgetGeneration = generation; this.noteActivity(); this.agentRunning = true; this.setState("busy");
+      this.usageSeen.clear(); this.idleBashReservations.clear(); this.ceilingStops.clear(); this.executionAbort = new AbortController(); this.budgetGeneration = generation; this.noteActivity(); this.agentRunning = true; this.setState("busy");
+    }
+    // #179: the extension's tool-step ceiling signal. Only a schema-valid event bound to THIS session,
+    // THIS turn generation and a running turn is stored; the first signal of a turn stands. Anything
+    // else (stale, cross-session, free text) is dropped and the failure stays unclassified.
+    if (event.type === "ceiling") {
+      const ceiling = piToolStepCeiling(event);
+      if (ceiling && ceiling.sessionId === this.sessionId && ceiling.generation === this.budgetGeneration && this.agentRunning && this.state === "busy" && !this.ceilingStops.has(ceiling.generation)) {
+        this.ceilingStops.set(ceiling.generation, ceiling);
+        for (const old of this.ceilingStops.keys()) if (old < ceiling.generation - 8) this.ceilingStops.delete(old);
+      }
     }
     if (event.type === "activity" && this.state === "busy") this.touch();
     if (event.type === "tokens" && this.state === "busy" && typeof event.id === "string" && event.id.length <= 100 && Number.isSafeInteger(event.tokens) && event.tokens >= 0 && !this.usageSeen.has(event.id)) {
@@ -451,14 +468,16 @@ export class PiPeer extends BasePeer {
       if (typeof event.text === "string" && event.text.trim()) this.settledText = event.text;
       const generation = Number.isSafeInteger(event.generation) ? event.generation : this.budgetGeneration;
       const text = this.settledText.trim(); const error = this.budgetStops.get(generation) ?? this.settledError; const cancelled = !error && this.settledCancelled;
+      const ceiling = this.ceilingStops.get(generation);
       this.budgetStops.delete(generation);
+      this.ceilingStops.delete(generation);
       this.settledText = ""; this.settledError = ""; this.settledCancelled = false;
       // Answer the peers this turn was for, not every peer on the bus (issue #29). activeEnvs still holds the
       // whole delivery here, steered additions included.
       const reply = { inReplyTo: this.currentReply, to: replyAudience(this.activeEnvs) };
       if (cancelled) this.onMessage?.("Pi turn cancelled; inspect any partial effects before continuing.", reply);
       else if (error?.startsWith("execution budget")) this.onMessage?.(`Pi stopped at the execution budget: ${error}. Inspect partial work before continuing.`, reply);
-      else if (error) void this.opts.onTurnFailure?.(this.activeEnvs, error);
+      else if (error) void this.opts.onTurnFailure?.(this.activeEnvs, error, ceiling);
       else if (text) this.onMessage?.(text, reply);
       for (const id of this.activeDeliveryIds) this.delivery({ id, state: error || cancelled ? "needs_review" : "completed", ...(error || cancelled ? { reason: error || "Pi turn cancelled; partial effects are possible" } : {}) });
       this.activeDeliveryIds.clear();

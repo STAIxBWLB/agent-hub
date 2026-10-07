@@ -592,11 +592,11 @@ class StatusTests(unittest.TestCase):
     def tearDown(self):
         supervisor._INTERRUPT.clear()
 
-    def study_root(self, root, outcome="running", interrupted=None):
+    def study_root(self, root, outcome="running", interrupted=None, phase="prepared"):
         directory = Path(root) / "study"
         directory.mkdir(parents=True)
         state = {"schema": "agent-hub.native-study/v1", "owner": {"pid": os.getpid(), "id": "test-owner"},
-                 "phase": "prepared", "outcome": outcome, "expected": 6, "history": []}
+                 "phase": phase, "outcome": outcome, "expected": 6, "history": []}
         if interrupted:
             state["interrupted"] = interrupted
         runner.dump(directory / "study.json", state)
@@ -689,8 +689,10 @@ class StatusTests(unittest.TestCase):
     def test_completed_and_failed_work_are_distinguished_from_observation(self):
         with tempfile.TemporaryDirectory() as d:
             base = Path(d)
-            root = self.study_root(base / "done", outcome="complete")
-            self.assertEqual(supervisor.status_report(root)["observation"], "completed")
+            root = self.study_root(base / "done", outcome="complete", phase="sealed")
+            report = supervisor.status_report(root)
+            self.assertEqual(report["observation"], "completed")
+            self.assertEqual(report["coverage"], {"available": False, "reason": "final-audit-missing"})
             root = self.study_root(base / "genonly", outcome="generation-only")
             self.assertEqual(supervisor.status_report(root)["observation"], "completed")
             record = {"phase": "generated", "command": "generate", "repeat": 1, "cause": "operator-signal",
@@ -707,6 +709,178 @@ class StatusTests(unittest.TestCase):
             missing = Path(d) / "missing"
             report = supervisor.status_report(missing)
             self.assertEqual((report["observation"], report["reason"]), ("unknown", "study-state-unreadable"))
+
+    def test_status_metadata_is_fixed_and_deep_json_returns_unknown(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = self.study_root(Path(d), outcome="complete", phase="sealed")
+            for field in ("phase", "outcome"):
+                for private in ("/private/SECRET", {"PRIVATE": ["hidden"]}):
+                    state = {"phase": "sealed", "outcome": "complete", field: private}
+                    runner.dump(root / "study.json", state)
+                    report = supervisor.status_report(root)
+                    self.assertEqual(report, {"schema": supervisor.STATUS_SCHEMA,
+                                              "observation": "unknown", "reason": "study-state-malformed"})
+            with patch.object(audit, "_coverage_read", side_effect=RecursionError("PRIVATE")):
+                self.assertEqual(supervisor.status_report(root)["reason"], "study-state-unreadable")
+            runner.dump(root / "study.json", {"phase": "generated", "outcome": "incomplete",
+                        "interrupted": {"phase": {"PRIVATE": "hidden"}, "cause": "/private/SECRET",
+                                        "restoration": {"state": ["hidden"]}}})
+            report = supervisor.status_report(root)
+            self.assertEqual((report["interrupted_phase"], report["cause"], report["restoration"]),
+                             ("unknown", "unknown", "unknown"))
+            (root / "study.json").write_text("[" * 2000 + "0" + "]" * 2000)
+            self.assertEqual(supervisor.status_report(root)["reason"], "study-state-unreadable")
+            runner.dump(root / "study.json", {"phase": "prepared", "outcome": "running", "owner": {"id": "test-owner"}})
+            (root / "progress.json").write_text("[" * 2000 + "0" + "]" * 2000)
+            self.assertEqual(supervisor.status_report(root)["reason"], "progress-unreadable")
+            for update in ({"updated": float("nan")}, {"updated": float("inf")},
+                           {"updated": 10 ** 1000}, {"repeat": 10 ** 1000}, {"supervisor": []}):
+                self.progress(root, **update)
+                report = supervisor.status_report(root)
+                self.assertEqual(report["observation"], "unknown")
+                self.assertNotIn("PRIVATE", json.dumps(report, allow_nan=False))
+
+    def sealed_root(self, root, **counts):
+        """A complete synthetic seal, including unique planned cells and bound metadata."""
+        directory = self.study_root(root, outcome="complete")
+        state = runner.load(directory / "study.json")
+        state["phase"] = "sealed"
+        runner.dump(directory / "study.json", state)
+        audit_counts = {"planned": 60, "retained": 60, "scored": 59, "passed": 32, "unavailable": 1,
+                        "missing": 0, "controls_verified": 40, "owned_identities": 3, "live_owned_matches": 0}
+        audit_counts.update(counts)
+        manifest = runner.load(SCRIPTS / "manifest-v3-pi-qwen.json")
+        runner.dump(directory / "runtime-manifest.json", manifest)
+        cells = [{"case": case, "arm": arm, "repeat": rep,
+                  "status": "scored" if n < 59 else "unavailable", "passed": n < 32,
+                  "record_sha256": "a" * 64} for n, (case, arm, rep) in enumerate(sorted(audit.matrix(manifest)))]
+        runner.dump(directory / "safe-aggregate.json",
+                    {"schema": audit.SCHEMA, "verified": True,
+                     "checks": {key: True for key in audit.COVERAGE_AUDIT_CHECKS}, "cells": cells, **audit_counts})
+        self.ledger(directory, ["completed"] * 60)
+        return directory
+
+    @staticmethod
+    def seal_index(root):
+        runner.dump(Path(root) / "private-evidence-hashes.json", [
+            {"artifact": name, "sha256": runner.file_sha(Path(root) / name)}
+            for name in ("safe-aggregate.json", "runtime-manifest.json", "pooled-ledger.log")
+            if (Path(root) / name).is_file()])
+
+    def ledger(self, root, reasons):
+        keys = sorted(audit.matrix(runner.load(Path(root) / "runtime-manifest.json")))
+        rows = [{"case": case, "arm": arm, "repeat": rep, "end_reason": reason}
+                for (case, arm, rep), reason in zip(keys, reasons)]
+        runner.dump(Path(root) / "pooled-ledger.log", {"rows": rows})
+        self.seal_index(root)
+
+    def test_sealed_completion_reports_recorded_coverage_independent_of_lifecycle(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = self.sealed_root(Path(d))
+            self.ledger(root, ["completed"] * 52 + ["peer-failure"] * 7 + ["infrastructure-error"])
+            report = supervisor.status_report(root)
+            self.assertEqual((report["observation"], report["phase"], report["outcome"]),
+                             ("completed", "sealed", "complete"))
+            coverage = report["coverage"]
+            self.assertTrue(coverage["available"])
+            # Recorded at seal; status performed no fresh audit, recompute or process check for these counts.
+            self.assertEqual((coverage["provenance"], coverage["fresh_verification"]),
+                             ("recorded-at-seal", False))
+            # The availability denominator is reported independently of lifecycle completion.
+            self.assertEqual((coverage["planned"], coverage["retained"], coverage["scored"],
+                              coverage["unavailable"], coverage["missing"], coverage["passed"]),
+                             (60, 60, 59, 1, 0, 32))
+            # Native end classes reconcile with the retained records; a partial peer-failure keeps its class.
+            self.assertEqual(sum(coverage["end_reasons"].values()), 60)
+            self.assertEqual((coverage["end_reasons"]["completed"], coverage["end_reasons"]["peer-failure"],
+                              coverage["end_reasons"]["infrastructure-error"]), (52, 7, 1))
+            self.assertEqual(coverage["audit"], {"verified": True, "controls_verified": 40,
+                                                 "checks": {key: True for key in audit.COVERAGE_AUDIT_CHECKS}})
+            self.assertEqual(coverage["restoration"], {"verified": True, "owned_identities": 3,
+                                                       "live_owned_matches": 0})
+            self.assertEqual(set(coverage), {"available", "provenance", "fresh_verification", "planned",
+                                             "retained", "scored", "passed", "unavailable", "missing",
+                                             "end_reasons", "audit", "restoration"})
+            self.assertEqual(set(coverage["end_reasons"]), set(audit.SUMMARY_END_REASONS))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(supervisor.main(["status", "--output", str(root)]), 0)
+            cli = json.loads(out.getvalue())
+            self.assertEqual(set(cli), {"schema", "phase", "outcome", "observation", "coverage"})
+            self.assertNotIn("PRIVATE", json.dumps(cli))
+            # An end class outside the fixed summary classes stays visible under "other", never relabelled.
+            self.ledger(root, ["completed"] * 58 + ["peer-failure", "unrecorded-novel-class"])
+            coverage = supervisor.status_report(root)["coverage"]
+            self.assertEqual((coverage["end_reasons"]["completed"], coverage["end_reasons"]["peer-failure"],
+                              coverage["end_reasons"]["other"]), (58, 1, 1))
+
+    def test_terminal_coverage_is_explicit_unavailable_never_fabricated(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+
+            def reason(root):
+                # These fixtures declare malformed data at seal; post-seal tampering is tested separately.
+                self.seal_index(root)
+                coverage = supervisor.status_report(root)["coverage"]
+                self.assertEqual(set(coverage), {"available", "reason"})  # no count is ever fabricated
+                self.assertFalse(coverage["available"])
+                return coverage["reason"]
+
+            root = self.sealed_root(base / "missing")
+            (root / "safe-aggregate.json").unlink()
+            self.assertEqual(reason(root), "final-audit-missing")
+            root = self.sealed_root(base / "unreadable")
+            (root / "safe-aggregate.json").write_text("not json")
+            self.assertEqual(reason(root), "final-audit-unreadable")
+            root = self.sealed_root(base / "schema")
+            sealed = runner.load(root / "safe-aggregate.json")
+            sealed["schema"] = "other-schema"
+            runner.dump(root / "safe-aggregate.json", sealed)
+            self.assertEqual(reason(root), "final-audit-malformed")
+            root = self.sealed_root(base / "unverified")
+            sealed = runner.load(root / "safe-aggregate.json")
+            sealed["verified"] = False
+            runner.dump(root / "safe-aggregate.json", sealed)
+            self.assertEqual(reason(root), "final-audit-unverified")
+            root = self.sealed_root(base / "check")
+            sealed = runner.load(root / "safe-aggregate.json")
+            sealed["checks"]["restoration"] = False  # a failed recorded check is never claimed as success
+            runner.dump(root / "safe-aggregate.json", sealed)
+            self.assertEqual(reason(root), "final-audit-unverified")
+            root = self.sealed_root(base / "counts", scored=60)  # 60 + 1 + 0 != 60 planned
+            self.assertEqual(reason(root), "coverage-inconsistent")
+            root = self.sealed_root(base / "shape", scored="59")
+            self.assertEqual(reason(root), "final-audit-malformed")
+            root = self.sealed_root(base / "noledger")
+            (root / "pooled-ledger.log").unlink()
+            self.assertEqual(reason(root), "ledger-missing")
+            root = self.sealed_root(base / "badledger")
+            (root / "pooled-ledger.log").write_text("not json")
+            self.assertEqual(reason(root), "ledger-unreadable")
+            root = self.sealed_root(base / "rowsledger")
+            runner.dump(root / "pooled-ledger.log", {"rows": "lots"})
+            self.assertEqual(reason(root), "ledger-malformed")
+            root = self.sealed_root(base / "shortledger")
+            self.ledger(root, ["completed"] * 59)  # 59 rows != 60 retained - 0 missing
+            self.assertEqual(reason(root), "coverage-inconsistent")
+
+    def test_pending_and_unsealed_work_never_infers_final_coverage(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            root = self.study_root(base / "genonly", outcome="generation-only")
+            report = supervisor.status_report(root)
+            self.assertEqual(report["observation"], "completed")
+            self.assertEqual(report["coverage"], {"available": False, "reason": "study-not-sealed"})
+            # Pending generation/evaluation: no final score, qualification or coverage is inferred.
+            root = self.study_root(base / "running")
+            self.progress(root)
+            report = supervisor.status_report(root)
+            self.assertEqual(report["observation"], "live")
+            self.assertNotIn("coverage", report)
+            record = {"phase": "generated", "command": "generate", "repeat": 1, "cause": "operator-signal",
+                      "signal": "SIGTERM", "restoration": {"state": "restored"}}
+            root = self.study_root(base / "failed", outcome="incomplete", interrupted=record)
+            self.assertNotIn("coverage", supervisor.status_report(root))
 
 
 if __name__ == "__main__":

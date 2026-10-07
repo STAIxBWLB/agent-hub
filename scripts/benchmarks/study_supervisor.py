@@ -22,9 +22,16 @@ report their recorded outcome; a running study reports live only while its progr
 child's pid and start time still match. A crash (no or stalled progress), a stalled update, a reused pid and an
 unreadable observation all report explicit unknown/stalled, never claimed liveness or completion. Status launches
 nothing, recovers nothing and reads no model or evaluator output.
+
+Terminal coverage (#180). A completed study additionally reports bounded coverage composed from the sealed
+evidence (the recorded final audit and pooled ledger): planned/retained/scored/passed/unavailable/missing over
+the planned denominator, the fixed native end-class counts and the recorded audit/restoration result, marked
+recorded-at-seal with no fresh verification performed. Lifecycle completion, quality availability and test
+passing stay separate; missing, unreadable or inconsistent final evidence reports an explicit unavailable
+coverage, never a fabricated zero.
 """
 from __future__ import annotations
-import argparse, copy, json, os, re, shutil, signal, subprocess, sys, tempfile, time, uuid
+import argparse, copy, json, math, os, re, shutil, signal, subprocess, sys, tempfile, time, uuid
 from pathlib import Path
 import runner
 import study_audit
@@ -411,11 +418,11 @@ def preflight(a):
 
 
 class Study:
-    def __init__(self, root, expected):
+    def __init__(self, root, expected, plan="study"):
         root.mkdir(mode=0o700)  # atomic claim; an existing incomplete root is never reused
         self.root = root
         self.state = {"schema": "agent-hub.native-study/v1", "owner": {"pid": os.getpid(), "id": str(uuid.uuid4())},
-                      "phase": "claimed", "outcome": "running", "expected": expected, "history": []}
+                      "phase": "claimed", "outcome": "running", "expected": expected, "plan": plan, "history": []}
         self.save()
 
     def save(self):
@@ -449,7 +456,7 @@ def execute(a):
     root = a.output.resolve()
     cohorts = [root / f"r{r}" for r in range(spec["repeats"])]
     planned = len(spec["cases"]) * len(runtime["arms"])
-    study = Study(root, spec["attempts"])
+    study = Study(root, spec["attempts"], a.plan)
     with interrupt_handlers():
         try:
             study_audit.write_new(root / "original-manifest.json", original)
@@ -528,29 +535,44 @@ def status_report(root, stale_after=STALE_AFTER_S):
     root = Path(root)
     report = {"schema": STATUS_SCHEMA}
     try:
-        state = runner.load(root / "study.json")
-    except (OSError, ValueError):
+        state, _ = study_audit._coverage_read(root / "study.json")
+        if not isinstance(state, dict):
+            raise ValueError("study state is not an object")
+    except (OSError, ValueError, RecursionError):
         return {**report, "observation": "unknown", "reason": "study-state-unreadable"}
     phase, outcome = state.get("phase"), state.get("outcome")
+    if (not isinstance(phase, str) or phase not in PHASES or
+            not isinstance(outcome, str) or outcome not in ("running", "complete", "generation-only", "incomplete")):
+        return {**report, "observation": "unknown", "reason": "study-state-malformed"}
     report.update(phase=phase, outcome=outcome)
-    if outcome in ("complete", "generation-only"):
-        return {**report, "observation": "completed"}
+    if outcome == "complete":
+        # Terminal coverage (#180): bounded sealed-evidence counts alongside the lifecycle outcome, so a
+        # completed lifecycle never reads as every attempt scoreable or passed. Recorded, never freshly
+        # verified; missing or inconsistent evidence is explicit, never a fabricated zero.
+        return {**report, "observation": "completed", "coverage": study_audit.terminal_coverage(root)}
+    if outcome == "generation-only":
+        return {**report, "observation": "completed",
+                "coverage": {"available": False, "reason": "study-not-sealed"}}
     if outcome == "incomplete":
         report["observation"] = "failed"
         record = state.get("interrupted")
         if isinstance(record, dict):
-            report["interrupted_phase"] = record.get("phase")
-            report["cause"] = record.get("cause")
+            recorded_phase, cause = record.get("phase"), record.get("cause")
+            report["interrupted_phase"] = recorded_phase if isinstance(recorded_phase, str) and recorded_phase in PHASES else "unknown"
+            report["cause"] = cause if cause == "operator-signal" else "unknown"
             restoration = record.get("restoration")
-            report["restoration"] = restoration.get("state") if isinstance(restoration, dict) else None
+            restored = restoration.get("state") if isinstance(restoration, dict) else None
+            report["restoration"] = restored if isinstance(restored, str) and restored in ("restored", "unrestored", "unknown", "not-applicable", "restoration_failed") else "unknown"
         return report
     if outcome != "running":
         return {**report, "observation": "unknown", "reason": "study-state-malformed"}
     try:
-        progress = runner.load(root / "progress.json")
+        progress, _ = study_audit._coverage_read(root / "progress.json")
+        if not isinstance(progress, dict):
+            raise ValueError("progress is not an object")
     except FileNotFoundError:
         return {**report, "observation": "unknown", "reason": "no-progress-record"}
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return {**report, "observation": "unknown", "reason": "progress-unreadable"}
     command, repeat = progress.get("command"), progress.get("repeat")
     planned, retained, updated = progress.get("planned"), progress.get("retained"), progress.get("updated")
@@ -559,7 +581,12 @@ def status_report(root, stale_after=STALE_AFTER_S):
             type(retained) is not int or not isinstance(updated, (int, float)) or isinstance(updated, bool) or
             not (child is None or isinstance(child, dict))):
         return {**report, "observation": "unknown", "reason": "progress-malformed"}
-    if progress.get("supervisor", {}).get("id") != state.get("owner", {}).get("id"):
+    if (not 0 <= repeat <= 2 ** 53 or not 0 <= planned <= 2 ** 53 or
+            not 0 <= retained <= planned or not 0 <= updated <= 2 ** 53 or not math.isfinite(updated)):
+        return {**report, "observation": "unknown", "reason": "progress-malformed"}
+    supervisor, owner = progress.get("supervisor"), state.get("owner")
+    if (not isinstance(supervisor, dict) or not isinstance(owner, dict) or
+            supervisor.get("id") != owner.get("id")):
         return {**report, "observation": "unknown", "reason": "progress-owner-mismatch"}
     age = time.time() - updated
     report.update(command=command, cohort=f"r{repeat}", repeat=repeat, planned=planned, retained=retained,

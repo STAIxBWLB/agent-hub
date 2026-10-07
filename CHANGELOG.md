@@ -4,6 +4,14 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.12.15
+
+- Bind Pi tool-step ceiling diagnostics to the trusted producer's session and turn, retain the rejected pre-effect invocation count, and keep the first active failure cause frozen (#179).
+- Add bounded sealed-study status coverage, with audit/ledger/manifest bytes bound to the seal index and planned, scored, passed, unavailable, missing, native end classes and recorded restoration shown separately (#180).
+- Carry the shared managed-tool failure verdict through Pi's bridge to native `isError`, preserving result text and compatibility with older bridges (#181).
+- Publish Pi benchmark descriptors for the executor's actual source-write and git ls-files policy, with peer messaging only in the joint arm; production descriptors stay unchanged (#182).
+- Attest every native bootstrap publication against structural schema and source fingerprints. Reject malformed, mixed, changed or missing final publications before scored generation; permit only the pinned Qwen MCP startup transition. Declare the corrected surface as a new study condition and preserve historical studies (#183).
+
 ## 0.12.14
 
 - Normalize the remaining `ps lstart` identity reads to the shared pinned `LC_ALL=C`/`TZ=UTC` contract: the terminal-recovery launcher signature now goes through `processSignature`, and the MLX owner/generation identity read pins the same environment, so a record written under one timezone or locale still authenticates the same live process under another; strict PID/start/command identity and the fail-closed refusal paths are unchanged (#177).

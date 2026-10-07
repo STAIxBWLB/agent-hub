@@ -2,16 +2,17 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
-import { PiPeer } from '../../src/adapters/pi.ts';
+import { PiPeer, type PiToolSchema } from '../../src/adapters/pi.ts';
+import type { PiToolStepCeiling } from '../../src/pi/ceiling.ts';
 import { AcpPeer, canonicalMcpToolName } from '../../src/adapters/acp.ts';
 import { Bus, type BusEvent } from '../../src/hub/bus.ts';
 import { newEnvelope } from '../../src/hub/envelope.ts';
 import { realPath } from '../../src/hub/project.ts';
 import { loadConfig } from '../../src/hub/daemon.ts';
 import { processTable } from '../../src/hub/child-process.ts';
-import { startModelRelay, type RelayRequestRecord } from '../../src/models/relay.ts';
+import { startModelRelay, type RelayRequestRecord, type RelayToolSurface, toolSurfaceProjection } from '../../src/models/relay.ts';
 import { OmniRoute } from '../../src/omniroute/client.ts';
-import { TOOL_SCHEMAS, runTool, guardPath } from '../../src/local/tools.ts';
+import { runTool, guardPath } from '../../src/local/tools.ts';
 import { profile } from '../../src/local/sandbox.ts';
 import { sbplString } from '../../src/local/deny.ts';
 import { captureFixtureRoot, endReasonOf, extend, fixtureRootProblem, reuseProblem, teardown, writeAtomic, withFixtureRoot, type Actor, type FixtureRootIdentity } from './teardown.ts';
@@ -48,6 +49,26 @@ import { captureFixtureRoot, endReasonOf, extend, fixtureRootProblem, reuseProbl
  *    exposed by the pinned build and are declared unavailable, never derived from event totals. The diagnosis
  *    changes nothing: the #160 latch, the end cause and the preserved failure class stand, and nothing is
  *    retried or continued.
+ * 10. A latched Pi failure can additionally classify as `tool-step-ceiling` (#179), fed ONLY by the trusted
+ *    extension's structured ceiling signal at its real rejection boundary — fixed kind/unit, validated
+ *    finite nonnegative count/limit with count > limit, bound by the adapter to the session and turn
+ *    generation, and bound here to the latched peer and active generation. Historical or arbitrary free
+ *    text that resembles a ceiling stays unknown, the class stays distinct from shared execution-budget
+ *    exhaustion (#102) and from Qwen's pinned loop-protection guard (#175), and the public view is fixed
+ *    enums and counts only.
+ * 11. Pi's tool descriptors are benchmark-specific (#182), generated from the executor's own allowlist
+ *    (`benchPiToolProblem` is the single source of truth): source read/edit/write with in-scope writes
+ *    applied without an approval step, git ls-files with plain relative path arguments only, and hub_send
+ *    registered only when the arm assigns a peer. The general production TOOL_SCHEMAS (which advertise
+ *    git status/diff/log/show/blame/rev-parse as free and approval-gated writes) stay untouched for normal
+ *    managed peers and are never published here.
+ * 12. The intended native tool surface is declared per native and arm (#183) and verified at bootstrap,
+ *    before any scored generation: the relay journals each request's bounded tool-surface projection
+ *    (allowlist-charset names, count and an opaque schema hash, never descriptions or arguments), and the
+ *    driver reconciles it against the declared surface. A mismatched publication or an unknown published
+ *    name fails the attempt as a condition mismatch; a native with no observed publication is recorded
+ *    explicitly (`unobserved`) and defers generation, never inferred. The current treatment (Qwen --bare, the exclusion list,
+ *    the #138 MCP binding) is pinned and verified, not changed.
  *
  * Served-model evidence comes from the relay's journaled RelayRequestRecord per request (#139); Qwen's MCP tool
  * approval uses the adapter's shipped tool-identity binding (#138): the exact canonical name only. The headless
@@ -72,6 +93,303 @@ export function jointAssignment(caseIndex: number, repeat: number): { pi: number
 
 /** A project-relative path is inside the guarded source layout (correction 3). */
 export const isSourcePath = (sourceDirs: string[], rel: string) => sourceDirs.some((d) => rel === d || rel.startsWith(d + '/'));
+
+/**
+ * The benchmark Pi executor's tool allowlist (#182). Every tool the benchmark registers for Pi; anything
+ * else is unknown. The descriptors published to the model are generated from the same policy below, so a
+ * capability the wrapper refuses is never advertised and an advertised capability is never refused at the
+ * argument level.
+ */
+export const BENCH_PI_TOOL_NAMES = ['read', 'write', 'edit', 'git', 'hub_send'] as const;
+export type BenchPiToolName = (typeof BENCH_PI_TOOL_NAMES)[number];
+
+/** The executor policy inputs that decide an argument-level refusal. */
+export interface BenchPiPolicy {
+    /** Fixture root, for lexical path normalization (the wrapper re-checks after guardPath resolution). */
+    cwd: string;
+    sourceDirs: string[];
+    /** The joint arm assigns a peer; solo arms have no peer messaging at all. */
+    joint: boolean;
+    /** Peer messaging is refused outside the active task window. */
+    active: boolean;
+}
+
+/**
+ * The argument-level refusal of one benchmark Pi tool call (#182), the single source of truth shared by
+ * the published descriptors and the executor wrapper. Pure: no filesystem, no side effects. `read` is
+ * always permitted here (guardPath and the denylist still constrain it at execution); `write`/`edit` must
+ * name a path inside the guarded source layout; `git` is exactly `ls-files` with plain relative path
+ * arguments (no flags, no absolute paths, no `..`); `hub_send` requires an assigned peer in the active
+ * window. The returned strings are the executor's refusal messages.
+ */
+export function benchPiToolProblem(name: string, args: Record<string, unknown>, policy: BenchPiPolicy): string | undefined {
+    if (!(BENCH_PI_TOOL_NAMES as readonly string[]).includes(name)) return `unknown tool ${name}`;
+    if (name === 'write' || name === 'edit') {
+        const rel = relative(policy.cwd, resolve(policy.cwd, String(args.path ?? '')));
+        if (!isSourcePath(policy.sourceDirs, rel)) return 'source edits only under ' + policy.sourceDirs.join(', ') + '/';
+    }
+    if (name === 'git') {
+        const gitArgs: string[] = Array.isArray(args.args) ? args.args.map(String) : [];
+        if (gitArgs[0] !== 'ls-files' || gitArgs.some((v) => v.startsWith('-') || v.includes('..') || v.startsWith('/'))) return 'git ls-files only';
+    }
+    if (name === 'hub_send' && (!policy.joint || !policy.active)) return 'no other assigned peer';
+    return undefined;
+}
+
+const benchStr = { type: 'string' } as const;
+
+/**
+ * The tool descriptors published to Pi for one arm (#182), generated from the executor policy. Every
+ * sentence matches what the wrapper permits: writes and edits inside the source layout are applied
+ * directly (the benchmark's own auto-permit, no user approval exists here), git offers exactly the
+ * ls-files enumeration the wrapper accepts and names the other operations as refused, and hub_send
+ * exists only when the arm assigns a peer. Parameter shapes mirror the production schemas the shared
+ * runTool executes, except hub_send: the wrapper fixes the peer, so no `to` argument is advertised.
+ */
+export function benchPiToolDescriptors(policy: { sourceDirs: string[]; joint: boolean }): PiToolSchema[] {
+    const dirs = policy.sourceDirs.map((d) => d + '/').join(', ');
+    const tools: PiToolSchema[] = [
+        { name: 'read', description: 'Read a text file inside the project. Returns numbered lines.', parameters: { type: 'object', properties: { path: benchStr, offset: { type: 'integer', minimum: 1 }, limit: { type: 'integer', minimum: 1 } }, required: ['path'], additionalProperties: false } },
+        { name: 'write', description: `Create or overwrite a source file under ${dirs} In-scope source writes are applied directly; anything outside the source directories is refused.`, parameters: { type: 'object', properties: { path: benchStr, content: benchStr }, required: ['path', 'content'], additionalProperties: false } },
+        { name: 'edit', description: `Replace one exact, unique occurrence of \`old\` with \`new\` in a source file under ${dirs} In-scope edits are applied directly; edits outside the source directories are refused.`, parameters: { type: 'object', properties: { path: benchStr, old: benchStr, new: benchStr }, required: ['path', 'old', 'new'], additionalProperties: false } },
+        { name: 'git', description: 'List the files git tracks: only `git ls-files` with plain relative path arguments is available (no flags, no absolute paths, no `..`). Every other git operation (status, diff, log, show, blame, rev-parse, add, commit, push, ...) is refused.', parameters: { type: 'object', properties: { args: { type: 'array', items: benchStr, minItems: 1 } }, required: ['args'], additionalProperties: false } },
+    ];
+    if (policy.joint) tools.push({ name: 'hub_send', description: 'Send a message to the other agent assigned to this shared checkout, during the active task window. Conclusions only. Your final answer is shared anyway; use this for something that cannot wait.', parameters: { type: 'object', properties: { text: benchStr }, required: ['text'], additionalProperties: false } });
+    return tools;
+}
+
+/** The canonical MCP peer-messaging tool of the joint arm, the only name on the #138 whitelist. */
+export const JOINT_MCP_TOOL = 'mcp__pilot-peer-bus__hub_send';
+
+/**
+ * The pinned Qwen build's effective native publication under the benchmark's `--bare` launch (#183): the
+ * controlled no-model probe of the actual pinned Qwen 0.24.7 ACP binary observed exactly `read_file` and
+ * `edit` published with the benchmark's exclusion list (its qwen-surface-probe.json stays private). The
+ * joint arm's peer bus adds the canonical MCP name. Bare mode and the exclusions are the CURRENT
+ * treatment: this declaration pins and verifies them; it changes nothing.
+ */
+export const QWEN_BARE_PUBLISHED = ['edit', 'read_file'] as const;
+
+/** Versioned expected publication from an isolated no-model capture, never learned from study traffic. */
+export interface NativeSurfaceAttestation {
+    sourceFiles: Record<string, string>;
+    schemas: { solo: string; joint: string };
+}
+// Filled only from the pinned-build bootstrap capture before collecting a new study condition.
+export const QWEN_SURFACE_ATTESTATION: NativeSurfaceAttestation = {
+    sourceFiles: {
+  "package.json": "4741fd922f84ddfdb377ed579439d35d41d527072d3e334ae5f135d23eea5bad",
+  "cli.js": "25f33ddb1be51d39d5bf9bb00dd07a9b3fa45df220b2fe4a4354fb33f67d0df6",
+  "cli-entry.js": "06c2be3fcb1b451931d3e100acc7edd3ff748c74189f6fcc70300b5cd758f8e6",
+  "chunks/chunk-GDDUKWKB.js": "25cbc08a5d02b0ab3329261a48ed1179b18c6460556fc6aa20e9684c2689967e",
+  "chunks/chunk-AN36BHDM.js": "e927d87f7d3ce5e8a3ee9013258acfbf5bdbb702424a5b35e7ac0d49a970a411",
+  "chunks/acpAgent-UCU7OI47.js": "4381baa6c5f880ef9e97665dbf1f9601e9727d842b29b0556161d3183a05ff7d",
+  "chunks/chunk-RNCNPWV4.js": "8d0c96f0270ac5dfb7aed400c2a16bd126043270e01a8f8888cd9e3c381438ff"
+},
+    schemas: { solo: '59630e41a3d4f71bbd3aff7a3cde175c4ab45abcb535f704beb0fe450b478ee1', joint: '49f829387c04e0031b7af2a6f894b412418a409673a976c31ffa9ffa8b7a1465' },
+};
+
+export const STUDY_TOOL_CONDITION = 'agent-hub.native-tools/v2';
+export function requireToolStudyCondition(value: unknown): void {
+    if (value !== STUDY_TOOL_CONDITION) throw new Error('native tool condition requires a new native-tools/v2 manifest');
+}
+
+export function verifySurfaceSource(packageRoot: string, attestation: NativeSurfaceAttestation): string {
+    const entries = Object.entries(attestation.sourceFiles).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+    if (!entries.length || entries.length > 32) throw new Error('native surface source pins unavailable');
+    for (const [path, expected] of entries) {
+        if (!/^[A-Za-z0-9_./-]+$/.test(path) || path.startsWith('/') || path.split('/').includes('..') || !/^[0-9a-f]{64}$/.test(expected)) throw new Error('native surface source pin invalid');
+        if (sourceHash(join(packageRoot, path)) !== expected) throw new Error('native surface source differs from attestation');
+    }
+    return sha(JSON.stringify(entries));
+}
+
+/**
+ * The intended published tool surface of one native in one arm (#183): the exact declared-to-model name
+ * set, the canonical MCP names inside it, the intentionally excluded native tools, the verified native
+ * registry compatibility aliases (none are pinned for the verified builds — a non-excluded name is never
+ * assumed registered), and how the effective surface is read back. Pi's surface is published by the
+ * driver itself (#182 descriptors); Qwen's is its own registry's publication, observed at the relay.
+ */
+export interface IntendedNativeSurface {
+    native: 'pi' | 'qwen';
+    published: string[];
+    mcp: string[];
+    excluded: string[];
+    aliases: Record<string, string>;
+    discovery: 'driver-published' | 'relay-request-tools';
+    expectedSchemaSha256?: string;
+    sourceSha256?: string;
+    bootstrapSchemaSha256?: string;
+    bootstrapPublished?: string[];
+}
+
+/** The intended surfaces of one arm's natives, sorted names, from the same sources the launch uses. */
+export function intendedSurfaces(arm: string, sourceDirs: string[], qwenExcluded: string[], attestation: NativeSurfaceAttestation | undefined = QWEN_SURFACE_ATTESTATION): IntendedNativeSurface[] {
+    const surfaces: IntendedNativeSurface[] = [];
+    if (arm !== 'solo-qwen') {
+        const published = benchPiToolDescriptors({ sourceDirs, joint: arm === 'joint-pi-qwen' }).map((t) => t.name).sort();
+        surfaces.push({ native: 'pi', published, mcp: [], excluded: [], aliases: {}, discovery: 'driver-published', expectedSchemaSha256: toolSurfaceProjection(benchPiToolDescriptors({ sourceDirs, joint: arm === 'joint-pi-qwen' }))!.schemaSha256, sourceSha256: sourceHash(import.meta.path) });
+    }
+    if (arm !== 'solo-pi') {
+        const mcp = arm === 'joint-pi-qwen' ? [JOINT_MCP_TOOL] : [];
+        surfaces.push({ native: 'qwen', published: [...QWEN_BARE_PUBLISHED, ...mcp].sort(), mcp, excluded: [...qwenExcluded].sort(), aliases: {}, discovery: 'relay-request-tools', expectedSchemaSha256: attestation?.schemas[arm === 'joint-pi-qwen' ? 'joint' : 'solo'], sourceSha256: attestation ? sha(JSON.stringify(Object.entries(attestation.sourceFiles).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))) : undefined, ...(arm === 'joint-pi-qwen' ? { bootstrapSchemaSha256: attestation?.schemas.solo, bootstrapPublished: [...QWEN_BARE_PUBLISHED] } : {}) });
+    }
+    return surfaces;
+}
+
+/**
+ * The fixed class of one observed tool name against the declared surfaces (#183): `declared` (published
+ * to the model), `alias` (a pinned native registry compatibility alias — never a permission widening),
+ * `excluded` (intentionally excluded), else `unknown`. Unknown requested names (the persisted
+ * tool_not_registered rejections) diagnose against this without synthesizing execution counts.
+ */
+export function surfaceNameClass(name: string, intended: IntendedNativeSurface[]): 'declared' | 'alias' | 'excluded' | 'unknown' {
+    for (const s of intended) if (s.published.includes(name)) return 'declared';
+    for (const s of intended) if (name in s.aliases) return 'alias';
+    for (const s of intended) if (s.excluded.includes(name)) return 'excluded';
+    return 'unknown';
+}
+
+/** One native's reconciliation verdict (#183). `observedNames`/`missingNames` carry allowlisted declared names only; extras are counted, never named. */
+export interface SurfaceNativeReport {
+    native: string;
+    verdict: 'matched' | 'mismatched' | 'unobserved';
+    observedCount?: number;
+    observedNames?: string[];
+    missingNames?: string[];
+    extraNameCount?: number;
+    schemaSha256?: string;
+}
+
+export interface SurfaceReconciliation {
+    natives: SurfaceNativeReport[];
+    /** Distinct published names that no declared surface, alias or MCP name accounts for; never named. */
+    unknownNameCount: number;
+    /** Distinct observed name sets. */
+    observedSets: number;
+    rejectedObservations: number;
+    missingAttestations: number;
+    requiredPublicationsMissing: number;
+}
+
+/**
+ * Reconcile every ordered relay observation against the complete expected structural schema and exact
+ * declared names. Incomplete/duplicate/truncated entries and any drift remain rejected even beside an
+ * earlier matching publication. Identical full observations dedupe for reporting only. A native matches
+ * only its attested final surface. The pinned Qwen joint bootstrap may publish its solo surface before
+ * final MCP publication, never after. Missing discovery is recorded unobserved and separately defers
+ * generation; unknown names are counted, never exported.
+ */
+export function reconcileToolSurfaces(intended: IntendedNativeSurface[], observed: RelayToolSurface[]): SurfaceReconciliation {
+    const bySet = new Map<string, RelayToolSurface>();
+    let rejectedObservations = 0;
+    const finalized = new Set<string>();
+    for (const o of observed) {
+        const key = JSON.stringify(o);
+        if (!bySet.has(key)) bySet.set(key, o);
+        const complete = o.invalidEntries === 0 && o.duplicateNames === 0 && o.truncated === false && o.count === o.names.length;
+        const matches = complete && intended.some((s) => s.expectedSchemaSha256 === o.schemaSha256
+            && s.published.length === o.names.length && s.published.every((n) => o.names.includes(n)));
+        if (matches) {
+            for (const s of intended) if (s.expectedSchemaSha256 === o.schemaSha256 && s.published.length === o.names.length && s.published.every((n) => o.names.includes(n))) finalized.add(s.native);
+        } else {
+            // Pinned Qwen MCP startup registers asynchronously. Only its exact two-tool publication may
+            // precede the exact joint three-tool publication; it cannot recur after joint readiness.
+            const transitioning = complete && intended.some((s) => !finalized.has(s.native)
+                && s.bootstrapSchemaSha256 === o.schemaSha256 && s.bootstrapPublished?.length === o.names.length
+                && s.bootstrapPublished.every((n) => o.names.includes(n)));
+            if (!transitioning) rejectedObservations++;
+        }
+    }
+    const sets = [...bySet.values()];
+    const known = new Set(intended.flatMap((s) => [...s.published, ...Object.keys(s.aliases)]));
+    const unknowns = new Set(sets.flatMap((o) => o.names.filter((n) => !known.has(n))));
+    const natives = intended.map((s): SurfaceNativeReport => {
+        const touching = sets.filter((o) => o.names.some((n) => s.published.includes(n))
+            && !intended.some((other) => other.native !== s.native && o.invalidEntries === 0 && o.duplicateNames === 0 && !o.truncated
+                && o.count === other.published.length && o.names.length === other.published.length
+                && o.names.every((n) => other.published.includes(n)) && o.schemaSha256 === other.expectedSchemaSha256));
+        const exact = touching.find((o) => o.invalidEntries === 0 && o.duplicateNames === 0 && !o.truncated
+            && o.count === s.published.length && o.names.length === s.published.length
+            && o.names.every((n) => s.published.includes(n)) && o.schemaSha256 === s.expectedSchemaSha256);
+        if (exact) return { native: s.native, verdict: 'matched', observedCount: exact.count, observedNames: exact.names, schemaSha256: exact.schemaSha256 };
+        if (touching.length && touching.every((o) => o.invalidEntries === 0 && o.duplicateNames === 0 && !o.truncated
+            && s.bootstrapPublished?.length === o.count && s.bootstrapPublished.length === o.names.length
+            && o.names.every((n) => s.bootstrapPublished!.includes(n)) && o.schemaSha256 === s.bootstrapSchemaSha256)) {
+            return { native: s.native, verdict: 'unobserved' }; // pinned transition seen, final publication still missing
+        }
+        if (touching.length) {
+            const overlap = (o: RelayToolSurface) => o.names.filter((n) => s.published.includes(n)).length;
+            const best = touching.reduce((a, b) => overlap(b) > overlap(a) ? b : a);
+            return { native: s.native, verdict: 'mismatched', observedCount: best.count, observedNames: best.names.filter((n) => s.published.includes(n)), missingNames: s.published.filter((n) => !best.names.includes(n)), extraNameCount: best.names.filter((n) => !s.published.includes(n)).length, schemaSha256: best.schemaSha256 };
+        }
+        return { native: s.native, verdict: 'unobserved' };
+    });
+    return { natives, unknownNameCount: unknowns.size, observedSets: sets.length, rejectedObservations,
+        missingAttestations: intended.filter((s) => !s.expectedSchemaSha256 || !s.sourceSha256).length,
+        requiredPublicationsMissing: intended.filter((s) => s.bootstrapPublished !== undefined && natives.find((n) => n.native === s.native)?.verdict !== 'matched').length };
+}
+
+/**
+ * The declared fail/defer policy's fail condition (#183): a mismatched publication or any unknown
+ * published name is a condition mismatch. An unobserved native is kept distinct from mismatch; the
+ * surfaceReadinessProblem gate defers all missing discovery before scored generation.
+ */
+export function surfaceMismatchProblem(surface: SurfaceReconciliation): string | undefined {
+    if (surface.unknownNameCount > 0) return `${surface.unknownNameCount} published tool name(s) match no declared surface, alias or exclusion`;
+    if (surface.missingAttestations > 0) return 'expected native schema/source attestation unavailable';
+    if (surface.requiredPublicationsMissing > 0) return 'required qwen joint publication was not observed';
+    const mismatched = surface.natives.filter((n) => n.verdict === 'mismatched');
+    if (mismatched.length) return `the effective published tool surface differs from the declared surface for ${mismatched.map((n) => n.native).join(', ')}`;
+    if (surface.rejectedObservations > 0) return 'published schema, entry integrity or additional observation differs from the declared surface';
+    return undefined;
+}
+
+/** Missing discovery is a defer condition, distinct from a mismatched publication, and must stop before
+ * active generation. Every required native needs its fully attested publication, including solo arms. */
+export function surfaceReadinessProblem(surface: SurfaceReconciliation): string | undefined {
+    const mismatch = surfaceMismatchProblem({ ...surface, requiredPublicationsMissing: 0 });
+    if (mismatch) return mismatch;
+    if (surface.natives.some((n) => n.verdict === 'unobserved')) return 'tool surface discovery unavailable; generation deferred';
+    return undefined;
+}
+
+/**
+ * The bounded tool-surface block of an attempt record (#182, #183): allowlisted declared names, counts
+ * and opaque hashes only. The exclusion list enters as its count and hash, aliases as a count, and the
+ * whole declaration as its definition hash; observed extras are counted, never named. No description,
+ * path, example, argument or model text can appear here.
+ */
+export function surfaceReport(intended: IntendedNativeSurface[], surface: SurfaceReconciliation): Record<string, unknown> {
+    const byNative = new Map(surface.natives.map((n) => [n.native, n]));
+    return {
+        definition_sha256: sha(JSON.stringify(intended)),
+        policy: 'mismatch, incomplete entries or missing attestation fail; unobserved discovery defers before generation; joint permits only pinned bootstrap two-to-three transition',
+        observedSets: surface.observedSets,
+        unknownNameCount: surface.unknownNameCount,
+        rejectedObservations: surface.rejectedObservations,
+        missingAttestations: surface.missingAttestations,
+        requiredPublicationsMissing: surface.requiredPublicationsMissing,
+        readiness: surfaceReadinessProblem(surface) === undefined ? 'ready' : surface.natives.some((n) => n.verdict === 'unobserved') && surface.unknownNameCount === 0 && surface.rejectedObservations === 0 && surface.missingAttestations === 0 ? 'deferred' : 'failed',
+        natives: intended.map((s) => {
+            const { native: _reportNative, ...report } = byNative.get(s.native) ?? { native: s.native, verdict: 'unobserved' as const };
+            return {
+                native: s.native,
+                discovery: s.discovery,
+                expectedSchemaSha256: s.expectedSchemaSha256,
+                sourceSha256: s.sourceSha256,
+                bootstrapSchemaSha256: s.bootstrapSchemaSha256,
+                published: s.published,
+                mcp: s.mcp,
+                excludedCount: s.excluded.length,
+                excludedSha256: s.excluded.length ? sha(JSON.stringify(s.excluded)) : undefined,
+                aliasCount: Object.keys(s.aliases).length,
+                ...report,
+            };
+        }),
+    };
+}
 
 /**
  * The count-only setup probe window statistics (#169). Every field is a non-negative integer counter; no path,
@@ -428,17 +746,23 @@ export function activeTreeFlag(end: string, changed: boolean | null): string | u
  */
 export const QWEN_0_24_7_LOOP_PROTECTION_MESSAGE = 'Tool-call loop protection stopped this turn. The session is still available; send a more specific instruction to continue.';
 
-/** The fixed terminal classes of a native active-window termination (#175). Unknown native causes stay unknown. */
-export const NATIVE_TERMINAL_CLASSES = ['tool-loop-protection', 'unknown'] as const;
+/** The fixed terminal classes of a native active-window termination (#175, #179). Unknown native causes stay unknown. */
+export const NATIVE_TERMINAL_CLASSES = ['tool-loop-protection', 'tool-step-ceiling', 'unknown'] as const;
 export type NativeTerminalClass = (typeof NATIVE_TERMINAL_CLASSES)[number];
 
+/** The evidence kinds a terminal class may stand on: Qwen's pinned message (#175) or Pi's validated extension signal (#179). */
+export type NativeTerminalEvidence = 'pinned-message' | 'extension-signal' | 'none';
+
 /**
- * Classify a peer's terminal turn failure by the pinned build's documented message contract only. The raw
- * reason is compared, never returned or stored. The contract is the pinned Qwen build's: the same words from
- * another peer are not evidence of a native loop-protection stop.
+ * Classify a peer's terminal turn failure. Qwen classifies by the pinned build's documented message
+ * contract only: the raw reason is compared, never returned or stored, and the same words from another
+ * peer are not evidence of a native loop-protection stop. Pi classifies ONLY by the validated extension
+ * ceiling signal (#179): a schema-valid, session/turn-bound `tool-step-ceiling` record carried with the
+ * failure, never its free text — a reason that merely resembles the ceiling stays unknown.
  */
-export function classifyNativeTermination(peer: string, reason: string | undefined): { class: NativeTerminalClass; evidence: 'pinned-message' | 'none' } {
+export function classifyNativeTermination(peer: string, reason: string | undefined, ceiling?: PiToolStepCeiling): { class: NativeTerminalClass; evidence: NativeTerminalEvidence } {
     if (peer === 'qwen' && reason === QWEN_0_24_7_LOOP_PROTECTION_MESSAGE) return { class: 'tool-loop-protection', evidence: 'pinned-message' };
+    if (peer === 'pi' && ceiling !== undefined) return { class: 'tool-step-ceiling', evidence: 'extension-signal' };
     return { class: 'unknown', evidence: 'none' };
 }
 
@@ -615,12 +939,21 @@ export interface ActiveLoopDiagnosis {
     generation: number;
     window: 'active';
     terminal: NativeTerminalClass;
-    terminalEvidence: 'pinned-message' | 'none';
+    terminalEvidence: NativeTerminalEvidence;
     observations: 'acp-tool-stream' | 'unavailable';
     capabilities: { nativeGuardThreshold: 'unavailable'; nativeGuardPredicate: 'unavailable'; noopOutcomes: 'unavailable' };
     supportedPatterns: ActiveLoopPattern[];
     counts?: Record<ActiveTraceCounter, number>;
     categories?: Record<ActiveToolCategory, number>;
+    /**
+     * The validated Pi tool-step ceiling signal (#179), present only when the terminal class stands on
+     * it. `unit` is the fixed counter unit; `count` is the producer's counter at the rejection, already
+     * including the rejected pre-effect invocation (so always > limit); `limit` is the configured
+     * ceiling; `turnGeneration` is the extension's native turn scope the adapter bound the signal to.
+     * Counter/reset semantics are the producer contract in src/pi/ceiling.ts; counted calls are
+     * execution attempts, never asserted successful effects.
+     */
+    ceiling?: { unit: 'tool-step'; count: number; limit: number; turnGeneration: number };
 }
 
 /**
@@ -629,8 +962,8 @@ export interface ActiveLoopDiagnosis {
  * latch, the end cause and the record's preserved failure class are exactly what #160 made them. The raw
  * failure text is read by the classifier and appears nowhere in the diagnosis.
  */
-export function diagnoseActiveTermination(failure: PeerFailure, trace?: ActiveToolTrace): ActiveLoopDiagnosis {
-    const terminal = classifyNativeTermination(failure.peer, failure.failureClass);
+export function diagnoseActiveTermination(failure: PeerFailure, trace?: ActiveToolTrace, ceiling?: PiToolStepCeiling): ActiveLoopDiagnosis {
+    const terminal = classifyNativeTermination(failure.peer, failure.failureClass, failure.peer === 'pi' ? ceiling : undefined);
     const stats = trace?.stats();
     const supportedPatterns: ActiveLoopPattern[] = [];
     if (stats) {
@@ -649,28 +982,59 @@ export function diagnoseActiveTermination(failure: PeerFailure, trace?: ActiveTo
         capabilities: { nativeGuardThreshold: 'unavailable', nativeGuardPredicate: 'unavailable', noopOutcomes: 'unavailable' },
         supportedPatterns,
         ...(stats ? { counts: stats.counts, categories: stats.categories } : {}),
+        ...(terminal.class === 'tool-step-ceiling' && ceiling ? { ceiling: { unit: 'tool-step', count: ceiling.count, limit: ceiling.limit, turnGeneration: ceiling.generation } } : {}),
     };
+}
+
+/**
+ * The Pi ceiling signal store of one attempt (#179): keyed by the latch's active generation. A signal is
+ * stored only by the callback that LATCHED the failure (`first`: the latch was unlatched before it and the
+ * phase was active) and only for that peer — a later failure's signal, a setup/teardown-phase signal and a
+ * signal arriving beside another peer's failure never attach, so the frozen active cause cannot be
+ * overwritten.
+ */
+export function storeCeilingSignal(signals: Map<number, PiToolStepCeiling>, failure: PeerFailure | undefined, peer: string, ceiling: PiToolStepCeiling | undefined, first: boolean): void {
+    if (!first || !ceiling || peer !== 'pi' || failure?.peer !== 'pi') return;
+    signals.set(failure.generation, ceiling);
+}
+
+/** The signal bound to a latched failure: the same peer and the same active generation, else none (#179). */
+export function boundCeilingSignal(failure: PeerFailure | undefined, signals: Map<number, PiToolStepCeiling>): PiToolStepCeiling | undefined {
+    if (!failure || failure.peer !== 'pi') return undefined;
+    return signals.get(failure.generation);
 }
 
 /**
  * The strict scalar allowlist serialization of an active-window termination diagnosis (#175), the #169 safe
  * view's shape applied here: every key is fixed, every string comes from a fixed enum (or the sanitized
  * session token), every count is coerced to a non-negative safe integer. A terminal class without its
- * pinned-message evidence serializes as unknown. Whatever nested content the tool stream carried, it cannot
- * inject keys or strings into this view.
+ * evidence serializes as unknown: the loop-protection class needs the pinned message (#175), the
+ * tool-step-ceiling class needs the extension-signal evidence and a re-validated count/limit/turn block
+ * (#179). Whatever nested content the tool stream carried, it cannot inject keys or strings into this view.
  */
 export function safeActiveLoopDiagnosis(d: ActiveLoopDiagnosis): Record<string, unknown> {
-    const evidence = d.terminalEvidence === 'pinned-message' ? 'pinned-message' : 'none';
+    const evidence: NativeTerminalEvidence = d.terminalEvidence === 'pinned-message' || d.terminalEvidence === 'extension-signal' ? d.terminalEvidence : 'none';
+    // The ceiling class stands only with its evidence and a re-validated block: the fixed unit, finite
+    // nonnegative safe-integer counts with count > limit and a nonnegative native turn generation.
+    const c = d.ceiling as { unit?: unknown; count?: unknown; limit?: unknown; turnGeneration?: unknown } | undefined;
+    const ceilingValid = !!c && c.unit === 'tool-step'
+        && Number.isSafeInteger(c.count) && (c.count as number) >= 1
+        && Number.isSafeInteger(c.limit) && (c.limit as number) >= 0
+        && (c.count as number) > (c.limit as number)
+        && Number.isSafeInteger(c.turnGeneration) && (c.turnGeneration as number) >= 0;
+    const ceilingClass = d.terminal === 'tool-step-ceiling' && evidence === 'extension-signal' && ceilingValid;
+    const pinnedClass = evidence === 'pinned-message' && (NATIVE_TERMINAL_CLASSES as readonly string[]).includes(d.terminal) && d.terminal !== 'tool-step-ceiling';
     const out: Record<string, unknown> = {
         peer: d.peer === 'pi' || d.peer === 'qwen' ? d.peer : 'unknown',
         window: 'active',
         generation: Number.isSafeInteger(d.generation) && d.generation >= 0 ? d.generation : 0,
-        terminal: evidence === 'pinned-message' && (NATIVE_TERMINAL_CLASSES as readonly string[]).includes(d.terminal) ? d.terminal : 'unknown',
+        terminal: pinnedClass || ceilingClass ? d.terminal : 'unknown',
         terminalEvidence: evidence,
         observations: d.observations === 'acp-tool-stream' ? 'acp-tool-stream' : 'unavailable',
         capabilities: { nativeGuardThreshold: 'unavailable', nativeGuardPredicate: 'unavailable', noopOutcomes: 'unavailable' },
         supportedPatterns: (Array.isArray(d.supportedPatterns) ? d.supportedPatterns : []).filter((p): p is ActiveLoopPattern => (ACTIVE_LOOP_PATTERNS as readonly string[]).includes(p as string)),
     };
+    if (ceilingClass) out.ceiling = { unit: 'tool-step', count: c!.count, limit: c!.limit, turnGeneration: c!.turnGeneration };
     const session = cleanSessionId(d.session);
     if (session !== undefined) out.session = session;
     if (out.observations === 'acp-tool-stream' && d.counts && d.categories) {
@@ -829,6 +1193,7 @@ async function main(): Promise<number> {
     if (runs === repo || runs.startsWith(repo + '/') || repo.startsWith(runs + '/')) throw new Error('private run root must be outside the repository');
     if (!existsSync(join(runs, 'prepared.json'))) throw new Error('prepared run missing');
     const m = JSON.parse(readFileSync(join(runs, 'manifest.json'), 'utf8')), prepared = JSON.parse(readFileSync(join(runs, 'prepared.json'), 'utf8'));
+    requireToolStudyCondition(m.study_condition);
     if ((lstatSync(runs).mode & 0o777) !== 0o700) throw new Error('run directory must have mode 0700');
     const selfPath = join(import.meta.dir, 'native-pi-qwen.ts');
     const pins: Record<string, string> = prepared.source_pins ?? {};
@@ -845,6 +1210,8 @@ async function main(): Promise<number> {
     if (packageJson.version !== m.hub_version || m.versions?.hub !== packageJson.version) throw new Error('hub version differs from the pinned manifest');
     const config = loadConfig(repo);
     const omni = new OmniRoute(config.omniroute);
+    if (!QWEN_SURFACE_ATTESTATION) throw new Error('expected Qwen surface attestation unavailable');
+    verifySurfaceSource(qwenPackage, QWEN_SURFACE_ATTESTATION);
     const qwenCommand = [realPath(Bun.which('node') ?? (() => { throw new Error('node is unavailable'); })()), '--expose-gc', join(qwenPackage, 'cli.js')];
     const piCommand: string[] = config.pi.cmd;
     const peerBus = realPath(join(import.meta.dir, 'peer-bus-mcp.py'));
@@ -981,11 +1348,18 @@ async function main(): Promise<number> {
         // active phase latches and ends the attempt; the same callback before active_start (the setup probes,
         // where an expected denied tool read is a tool error, never a turn failure) or after the frozen
         // active_end (stop/watchdog during teardown) is an event only, never the end cause.
-        const noteTurnFailure = async (peer: string, reason: string) => {
+        // #179: a Pi failure may carry the extension's validated tool-step ceiling signal. It is stored only
+        // beside the failure this callback latched — never beside another peer's, a later failure's or a
+        // setup/teardown event — keyed by the latch's active generation.
+        const piCeilingSignals = new Map<number, PiToolStepCeiling>();
+        const noteTurnFailure = async (peer: string, reason: string, ceiling?: PiToolStepCeiling) => {
+            const unlatched = failureLatch.failure === undefined;
             const noted = failureLatch.note(peer, clean(reason), Date.now());
+            storeCeilingSignal(piCeilingSignals, failureLatch.failure, peer, ceiling, unlatched && noted.phase === 'active');
             log('failure', { peer, reason: clean(reason), ...(noted.latched ? { terminal: true } : { phase: noted.phase }) });
         };
         let activeTree: Record<string, string> | undefined, finalTree: Record<string, string> | undefined;
+        let surfaceRecord: Record<string, unknown> | undefined;
         let probeIdentity: { servedModel?: string; provider?: string } = {};
         const setup = Date.now();
         try {
@@ -997,6 +1371,7 @@ async function main(): Promise<number> {
 
             relay = await startModelRelay({
                 observeRequestMetadata: true,
+                observeToolSurface: true,
                 omni,
                 allowedDGXmodels: { 'dgx/coding': m.fixed_backend },
                 expectedServedModels: { 'dgx/coding': m.expected_served_model },
@@ -1061,10 +1436,12 @@ async function main(): Promise<number> {
                 const pi = new PiPeer('pi', {
                     cwd: dir, stateDir: join(attemptDir, 'pi-state'), mode: 'headless', backend: 'dgx', model: 'dgx/coding', cmd: piCommand,
                     relay: { url: relay.url, token: relay.token, models: relay.models.map((id) => ({ id, contextWindow: 262144, maxTokens: 4096 })) },
-                    tools: TOOL_SCHEMAS.filter((t) => ['read', 'write', 'edit', 'git', 'hub_send'].includes(t.function.name)).map((t) => t.function),
+                    // #182: benchmark-specific descriptors generated from the executor policy below, never the
+                    // general production TOOL_SCHEMAS (which advertise capabilities this wrapper refuses).
+                    tools: benchPiToolDescriptors({ sourceDirs, joint: kind === 'joint-pi-qwen' }),
                     maxSteps: 100, watchdogMs: 300_000,
                     onTokens: (n) => { tokens.pi += n; },
-                    onTurnFailure: (_e, reason) => noteTurnFailure('pi', reason),
+                    onTurnFailure: (_e, reason, ceiling) => noteTurnFailure('pi', reason, ceiling),
                     executeTool: async (name, raw, _id, _sid, signal) => {
                         const a = raw as Record<string, unknown>;
                         let target = '';
@@ -1081,14 +1458,17 @@ async function main(): Promise<number> {
                             }
                         }
                         try {
+                            // #182: the argument-level policy the published descriptors are generated from.
+                            // Read never refuses here, so the probe's guard-denial evidence path below is
+                            // unchanged; execution-time guardPath and the post-resolution scope re-check stand.
+                            const refusal = benchPiToolProblem(name, a, { cwd: dir, sourceDirs, joint: kind === 'joint-pi-qwen', active });
+                            if (refusal) return `error: ${refusal}`;
                             if (['read', 'write', 'edit'].includes(name)) {
                                 const p = guardPath({ cwd: dir, deny: [] }, String(a.path), name === 'read' ? 'read' : 'write');
                                 target = relative(dir, p);
                                 if (name !== 'read' && !isSourcePath(sourceDirs, target)) return 'error: source edits only under ' + sourceDirs.join(', ') + '/';
                             }
-                            if (name === 'git' && ((a.args as string[] | undefined)?.[0] !== 'ls-files' || (a.args as string[]).some((v: string) => v.startsWith('-') || v.includes('..') || v.startsWith('/')))) return 'error: git ls-files only';
                             if (name === 'hub_send') {
-                                if (!active || kind !== 'joint-pi-qwen') return 'error: no other assigned peer';
                                 bus.publish(newEnvelope('pi', String(a.text).slice(0, 4000), { to: ['qwen'] }));
                                 log('peer_message', { from: 'pi', to: 'qwen' });
                                 return 'sent';
@@ -1241,6 +1621,21 @@ async function main(): Promise<number> {
                 if (outcome.result !== 'denied') throw new Error(`native probe not verified: ${outcome.reason} (diagnosed: ${diagnosis.category})`);
                 log('native_probe', { peer: peer.id, denied: true, evidence: outcome.evidence });
             }
+            // #183: the bootstrap tool-surface readback, after every peer's probe turn (its generation
+            // requests journaled their bounded surface projections) and BEFORE any scored generation.
+            // The declared per-native surface is reconciled against what the pinned builds actually
+            // published; the declared fail/defer policy is surfaceReadinessProblem: a mismatch or an
+            // unknown published name is a condition mismatch and fails the attempt here, while an
+            // unobserved publication is recorded explicitly and generation is deferred, never inferred.
+            {
+                const surfaceIntended = intendedSurfaces(kind, sourceDirs, excluded);
+                const surfaceObserved = relay.requests().flatMap((r) => (r.toolSurface ? [r.toolSurface] : []));
+                const surface = reconcileToolSurfaces(surfaceIntended, surfaceObserved);
+                surfaceRecord = surfaceReport(surfaceIntended, surface);
+                log('tool_surface', { surface: surfaceRecord });
+                const surfaceProblem = surfaceReadinessProblem(surface);
+                if (surfaceProblem) throw new Error(`tool surface not ready: ${surfaceProblem}`);
+            }
             if (setupOnly) { endDetail = 'setup-calibration'; return; }
 
             const counts = Object.fromEntries(peers.map((p) => [p.id, answers[p.id]!.length]));
@@ -1328,9 +1723,10 @@ async function main(): Promise<number> {
             const readiness: Record<string, unknown> = {};
             for (const p of peers) readiness[p.id] = { cwd: dir, requestedModel: 'dgx/coding', sessionId: (p.recoveryMetadata() as { sessionId?: string }).sessionId, sandboxProbe: probeReadiness(p.id, probeResults.get(p.id), probeTargetSha, p.id === 'qwen' ? kernelProbeDenied : undefined, probeDiagnoses.get(p.id)) };
             // #175: the bounded diagnosis of a latched active-window termination — the pinned message contract
-            // for the terminal class and the failed peer's frozen count-only trace for the window. It explains
-            // the latched failure and never changes it, and the raw failure text appears nowhere in it.
-            const loopDiagnosis = failureLatch.failure ? safeActiveLoopDiagnosis(diagnoseActiveTermination(failureLatch.failure, activeTraces.get(failureLatch.failure.peer))) : undefined;
+            // for the terminal class and the failed peer's frozen count-only trace for the window. #179 adds
+            // Pi's validated tool-step ceiling signal, bound to the latched peer and active generation. It
+            // explains the latched failure and never changes it, and the raw failure text appears nowhere in it.
+            const loopDiagnosis = failureLatch.failure ? safeActiveLoopDiagnosis(diagnoseActiveTermination(failureLatch.failure, activeTraces.get(failureLatch.failure.peer), boundCeilingSignal(failureLatch.failure, piCeilingSignals))) : undefined;
             if (loopDiagnosis) log('native_loop_diagnosis', { diagnosis: loopDiagnosis });
             const record = {
                 protocol: 'native-pq-v3', platform: process.platform, index, kind, repo: cas.repo, features: cas.features, project: dir, cwd: dir, sealedCommit: base,
@@ -1338,7 +1734,10 @@ async function main(): Promise<number> {
                 modelIdentity: { requested: m.fixed_backend, expectedServedModel: m.expected_served_model, expectedProvider: m.expected_provider, probe: probeIdentity, generationVerified: qualification.verified, generationFailureReasons: qualification.verified ? undefined : qualification.reasons, requests: requestRecords },
                 requestLinkage: qualification.coverage,
                 nativeVersions: builds, repeat, setupMs: (started || Date.now()) - setup, elapsedMs, startedAt: started || undefined,
-                usage: { pi: tokens.pi, qwen: tokens.qwen, qwenAvailability: tokens.qwen === null ? "no-reading" : "known", qwenDiagnostics: qwenUsageDiagnostics, units: { pi: 'incremental onTokens counter, whole attempt including the setup probes', qwen: 'session usage_update running total, whole attempt including the setup probes' }, toolSurfaces: { pi: 'hub-moderated read/write/edit/git ls-files/hub_send tools', qwen: 'own file tools under seatbelt auto-edit, the excluded list, hub_send over MCP in the joint arm' } },
+                usage: { pi: tokens.pi, qwen: tokens.qwen, qwenAvailability: tokens.qwen === null ? "no-reading" : "known", qwenDiagnostics: qwenUsageDiagnostics, units: { pi: 'incremental onTokens counter, whole attempt including the setup probes', qwen: 'session usage_update running total, whole attempt including the setup probes' }, toolSurfaces: { pi: `benchmark descriptors (#182): read/write/edit/git ls-files${kind === 'joint-pi-qwen' ? '/hub_send' : ''}, hub-moderated`, qwen: `own file tools under seatbelt auto-edit, --bare and the excluded list${kind === 'joint-pi-qwen' ? ', hub_send over MCP' : ''} (#183)` } },
+                // #183: the declared per-native tool surface and its bootstrap reconciliation (allowlisted
+                // names, counts and opaque hashes only); undefined only when the arm failed before the check.
+                toolSurface: surfaceRecord,
                 end_reason: endReasonOf(endDetail, endFlags), end_reason_detail: endDetail, end_flags: endFlags.length ? endFlags : undefined,
                 // #160: the preserved terminal failure (peer, original class, failure time) whenever one latched.
                 peer_failure: failureLatch.failure,
