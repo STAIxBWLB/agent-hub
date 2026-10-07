@@ -31,7 +31,7 @@ passing stay separate; missing, unreadable or inconsistent final evidence report
 coverage, never a fabricated zero.
 """
 from __future__ import annotations
-import argparse, copy, json, os, re, shutil, signal, subprocess, sys, tempfile, time, uuid
+import argparse, copy, json, math, os, re, shutil, signal, subprocess, sys, tempfile, time, uuid
 from pathlib import Path
 import runner
 import study_audit
@@ -538,9 +538,12 @@ def status_report(root, stale_after=STALE_AFTER_S):
         state, _ = study_audit._coverage_read(root / "study.json")
         if not isinstance(state, dict):
             raise ValueError("study state is not an object")
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return {**report, "observation": "unknown", "reason": "study-state-unreadable"}
     phase, outcome = state.get("phase"), state.get("outcome")
+    if (not isinstance(phase, str) or phase not in PHASES or
+            not isinstance(outcome, str) or outcome not in ("running", "complete", "generation-only", "incomplete")):
+        return {**report, "observation": "unknown", "reason": "study-state-malformed"}
     report.update(phase=phase, outcome=outcome)
     if outcome == "complete":
         # Terminal coverage (#180): bounded sealed-evidence counts alongside the lifecycle outcome, so a
@@ -554,18 +557,22 @@ def status_report(root, stale_after=STALE_AFTER_S):
         report["observation"] = "failed"
         record = state.get("interrupted")
         if isinstance(record, dict):
-            report["interrupted_phase"] = record.get("phase")
-            report["cause"] = record.get("cause")
+            recorded_phase, cause = record.get("phase"), record.get("cause")
+            report["interrupted_phase"] = recorded_phase if isinstance(recorded_phase, str) and recorded_phase in PHASES else "unknown"
+            report["cause"] = cause if cause == "operator-signal" else "unknown"
             restoration = record.get("restoration")
-            report["restoration"] = restoration.get("state") if isinstance(restoration, dict) else None
+            restored = restoration.get("state") if isinstance(restoration, dict) else None
+            report["restoration"] = restored if isinstance(restored, str) and restored in ("restored", "unrestored", "unknown", "not-applicable", "restoration_failed") else "unknown"
         return report
     if outcome != "running":
         return {**report, "observation": "unknown", "reason": "study-state-malformed"}
     try:
-        progress = runner.load(root / "progress.json")
+        progress, _ = study_audit._coverage_read(root / "progress.json")
+        if not isinstance(progress, dict):
+            raise ValueError("progress is not an object")
     except FileNotFoundError:
         return {**report, "observation": "unknown", "reason": "no-progress-record"}
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return {**report, "observation": "unknown", "reason": "progress-unreadable"}
     command, repeat = progress.get("command"), progress.get("repeat")
     planned, retained, updated = progress.get("planned"), progress.get("retained"), progress.get("updated")
@@ -574,7 +581,12 @@ def status_report(root, stale_after=STALE_AFTER_S):
             type(retained) is not int or not isinstance(updated, (int, float)) or isinstance(updated, bool) or
             not (child is None or isinstance(child, dict))):
         return {**report, "observation": "unknown", "reason": "progress-malformed"}
-    if progress.get("supervisor", {}).get("id") != state.get("owner", {}).get("id"):
+    if (not 0 <= repeat <= 2 ** 53 or not 0 <= planned <= 2 ** 53 or
+            not 0 <= retained <= planned or not 0 <= updated <= 2 ** 53 or not math.isfinite(updated)):
+        return {**report, "observation": "unknown", "reason": "progress-malformed"}
+    supervisor, owner = progress.get("supervisor"), state.get("owner")
+    if (not isinstance(supervisor, dict) or not isinstance(owner, dict) or
+            supervisor.get("id") != owner.get("id")):
         return {**report, "observation": "unknown", "reason": "progress-owner-mismatch"}
     age = time.time() - updated
     report.update(command=command, cohort=f"r{repeat}", repeat=repeat, planned=planned, retained=retained,

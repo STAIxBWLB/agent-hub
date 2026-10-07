@@ -710,6 +710,36 @@ class StatusTests(unittest.TestCase):
             report = supervisor.status_report(missing)
             self.assertEqual((report["observation"], report["reason"]), ("unknown", "study-state-unreadable"))
 
+    def test_status_metadata_is_fixed_and_deep_json_returns_unknown(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = self.study_root(Path(d), outcome="complete", phase="sealed")
+            for field in ("phase", "outcome"):
+                for private in ("/private/SECRET", {"PRIVATE": ["hidden"]}):
+                    state = {"phase": "sealed", "outcome": "complete", field: private}
+                    runner.dump(root / "study.json", state)
+                    report = supervisor.status_report(root)
+                    self.assertEqual(report, {"schema": supervisor.STATUS_SCHEMA,
+                                              "observation": "unknown", "reason": "study-state-malformed"})
+            with patch.object(audit, "_coverage_read", side_effect=RecursionError("PRIVATE")):
+                self.assertEqual(supervisor.status_report(root)["reason"], "study-state-unreadable")
+            runner.dump(root / "study.json", {"phase": "generated", "outcome": "incomplete",
+                        "interrupted": {"phase": {"PRIVATE": "hidden"}, "cause": "/private/SECRET",
+                                        "restoration": {"state": ["hidden"]}}})
+            report = supervisor.status_report(root)
+            self.assertEqual((report["interrupted_phase"], report["cause"], report["restoration"]),
+                             ("unknown", "unknown", "unknown"))
+            (root / "study.json").write_text("[" * 2000 + "0" + "]" * 2000)
+            self.assertEqual(supervisor.status_report(root)["reason"], "study-state-unreadable")
+            runner.dump(root / "study.json", {"phase": "prepared", "outcome": "running", "owner": {"id": "test-owner"}})
+            (root / "progress.json").write_text("[" * 2000 + "0" + "]" * 2000)
+            self.assertEqual(supervisor.status_report(root)["reason"], "progress-unreadable")
+            for update in ({"updated": float("nan")}, {"updated": float("inf")},
+                           {"updated": 10 ** 1000}, {"repeat": 10 ** 1000}, {"supervisor": []}):
+                self.progress(root, **update)
+                report = supervisor.status_report(root)
+                self.assertEqual(report["observation"], "unknown")
+                self.assertNotIn("PRIVATE", json.dumps(report, allow_nan=False))
+
     def sealed_root(self, root, **counts):
         """A complete synthetic seal, including unique planned cells and bound metadata."""
         directory = self.study_root(root, outcome="complete")
