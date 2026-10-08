@@ -1287,3 +1287,49 @@ ownership records. JSON contains argv/settings with arbitrary user-supplied
 values and custom executable overrides redacted, environment names only, and
 explicit reasons for unresolved native-assigned endpoints/session identities.
 A preview does not assert runtime, account or executable readiness.
+
+
+## Native context telemetry and checkpoints (issue #185)
+
+Context occupancy is separate from quota and accumulated billable session usage.
+Claude reports `context_window.used_percentage` and `context_window_size` from
+its status-line payload. A valid `current_usage` counter tuple is required;
+null, malformed or missing current usage is unknown, including immediately
+after compaction. Its input occupancy excludes output and sums input tokens,
+cache creation and cache reads, matching the [official status-line schema](https://code.claude.com/docs/en/statusline).
+Codex reports `tokenUsage.last.totalTokens / tokenUsage.modelContextWindow` in
+`thread/tokenUsage/updated`. The [native protocol](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/typescript/v2/ThreadTokenUsage.ts)
+and [native TUI](https://github.com/openai/codex/blob/main/codex-rs/tui/src/token_usage.rs)
+distinguish the last active context from the accumulated `total`; the displayed
+raw occupancy does not apply the TUI's baseline-adjusted remaining percentage.
+Pi's RPC state exposes no measured native counter. Its extension context API
+returns an estimate, so Pi and unsupported peers remain unknown here.
+
+Each reading records source and measurement time. Claude's status-line file is
+bound to the daemon instance, managed launcher and native session; Codex's
+notification is fenced by its owning link and native thread. Stale, invalid,
+disconnected or replaced-session readings expose unknown occupancy, never zero.
+`context.gate` defaults to 0 (off); `context.stale_min` defaults to 30.
+A valid above-gate reading emits one metadata-only `context_pressure` event
+and one crossing notice. Invalid or stale readings do not rearm a crossing;
+a valid below-gate reading or a new native session does.
+
+Context and quota checkpoints share the same request/wait path. Only one
+request per peer may wait at a time. Context responses must carry the supplied
+`request_id` and match the attached peer and native session. Timeout,
+disconnection, recovery hold, shutdown and session replacement invalidate the
+request. Context requests leave quota records, task assignments, pause state,
+native compaction settings and session ownership unchanged.
+
+A valid non-private context response is saved in the state directory as a
+0600 `context-checkpoint-<peer>.json` note. With memory enabled, its text is
+also saved as a handover note only after the active-turn, task PII and text
+pattern checks. It is never broadcast to peers or quoted in logs/events.
+Private turns/tasks are not asked for context checkpoints. The operator chooses
+whether to continue the native session or restart; this change provides no
+automatic session replacement. Status, tail and dashboard expose readings with
+source, measurement time and freshness beside quota information.
+
+The control contract is protocol 14. Recovery sources 9 through 13 remain
+supported; protocol 13 identifies releases 0.12.4 through 0.12.15, while
+0.12.16 uses protocol 14.

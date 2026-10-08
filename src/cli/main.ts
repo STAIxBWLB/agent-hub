@@ -30,7 +30,7 @@ import { recordTerminalLaunch } from "./terminal-recovery.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
 import { setupOllamaModel } from "./models-setup.ts";
 
-import { backendLine, peerLine, type BackendRow, type PeerRow } from "./status-lines.ts";
+import { backendLine, contextLine, peerLine, type BackendRow, type PeerRow } from "./status-lines.ts";
 import { parseSince, readEvents } from "../hub/events.ts";
 import { formatReport, summarize } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
@@ -663,6 +663,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const hub = await connect();
     hub.onPush = (msg) => {
       if (msg.t === "event") console.log(render(msg.e));
+      else if (msg.t === "context") console.log(`  ${msg.peer}: ${contextLine(msg.reading)}`);
       else if (msg.t === "notice") console.log(`  * ${msg.line}`);
       else if (msg.t === "permission") {
         const options = msg.options.map((o: any) => `${o.optionId} (${o.name})`).join(", ");

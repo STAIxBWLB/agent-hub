@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.15 and control protocol 13. Live verification
+This guide describes ahub 0.12.16 and control protocol 14. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Install and start
@@ -647,15 +647,15 @@ Rows without a live process are stale registrations; forget them with
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3) or 13 (0.12.4 through 0.12.15) and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3) 13 (0.12.4 through 0.12.15) or 14 (0.12.16) and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.15 ahub upgrade --to 0.12.15 --dry-run
-bunx --package @staix/agent-hub@0.12.15 ahub upgrade --to 0.12.15 --yes
+bunx --package @staix/agent-hub@0.12.16 ahub upgrade --to 0.12.16 --dry-run
+bunx --package @staix/agent-hub@0.12.16 ahub upgrade --to 0.12.16 --yes
 ```
 
 | Running now | Coordinator to use |
@@ -693,14 +693,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.15 --dry-run
+ahub upgrade --to 0.12.16 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.15 --yes
+ahub upgrade --to 0.12.16 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>
@@ -1039,3 +1039,36 @@ Environment values and arbitrary supplied values are withheld. Native-assigned
 proxy/bridge endpoints and new session identity remain unresolved.
 These previews do not connect to the daemon, toggle permissions, record terminal
 ownership, bind servers or start agents, sidecars or models.
+
+
+## Native context readings and optional checkpoints
+
+`ahub status`, `ahub tail` and the dashboard show native context occupancy,
+source and measurement freshness. Claude readings come from the status-line
+tee installed by `ahub claude`; Codex readings come from its current thread's
+native token-usage updates. Pi and other unsupported surfaces show unknown.
+A stale or disconnected reading is unknown, not 0%. Codex's accumulated session
+usage is never used as context occupancy.
+
+Context-triggered checkpoints are disabled by default. To enable them, add
+this to `.agenthub/config.json` and restart the daemon deliberately:
+
+```json
+{"context":{"gate":0.85,"stale_min":30}}
+```
+
+`gate` is a fraction between 0 and 1; 0 disables checkpoint requests.
+`stale_min` must be positive. An above-threshold crossing records a metadata-only
+event and console notice, then asks an attached Claude/Codex with active work
+for a checkpoint. The request supplies a `request_id`; include that id with
+`hub_checkpoint {summary, request_id}`. Repeated high readings do not repeat
+it until a fresh below-threshold reading or new session rearms the crossing.
+
+The resulting non-private note is saved in the state directory as
+`context-checkpoint-<peer>.json`, mode 0600, and to enabled shared memory without
+broadcasting its body. Private turns and PII-pattern text are refused. Requests
+expire when their peer/session changes or the checkpoint timeout passes.
+Quota pause and task handoff are separate; a context checkpoint neither pauses
+nor hands work over. Continue normally or deliberately restart into a fresh
+session with your chosen checkpoint as preface. No automatic restart or native
+compaction override is performed.

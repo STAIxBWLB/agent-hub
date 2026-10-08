@@ -70,7 +70,8 @@
         "src/cli/statusline-tee.ts",
         "src/hub/bus.ts",
         "src/hub/delivery-journal.ts",
-        "src/hub/restart.ts"
+        "src/hub/restart.ts",
+        "src/hub/context-window.ts"
       ]
     },
     "docs/agent-notes/bus.md": {
@@ -101,7 +102,8 @@
         "src/cli/terminal-recovery.ts",
         "src/cli/recovery-package.ts",
         "src/cli/facts-hook.ts",
-        "src/pi/process-signature.ts"
+        "src/pi/process-signature.ts",
+        "src/hub/context-window.ts"
       ]
     },
     "docs/agent-notes/local-worker.md": {

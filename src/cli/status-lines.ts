@@ -1,6 +1,7 @@
+import type { ContextView } from "../hub/context-window.ts";
 // What `ahub status` prints for a peer and for a model backend, kept pure so it can be checked.
 
-export interface PeerRow { state?: string; queued?: number; queuedImportant?: number; needsReview?: number; heldBy?: string; holdNote?: string; liveAccepted?: string[]; oldestQueuedAt?: number; attached?: boolean; paused?: string; servedBy?: string; requestedModel?: string }
+export interface PeerRow { context?: ContextView; state?: string; queued?: number; queuedImportant?: number; needsReview?: number; heldBy?: string; holdNote?: string; liveAccepted?: string[]; oldestQueuedAt?: number; attached?: boolean; paused?: string; servedBy?: string; requestedModel?: string }
 export interface BackendRow { kind?: string; alias?: string; state?: string; active?: number; requestedModel?: string; actualModel?: string; provider?: string }
 
 /** Aliases are already namespaced ("dgx/coding"); only an alias that is not gets its kind in front of it. */
@@ -8,6 +9,10 @@ export function backendLabel(backend: BackendRow): string {
   const kind = backend.kind ?? "unknown";
   const alias = backend.alias ?? "unknown";
   return alias.startsWith(`${kind}/`) ? alias : `${kind}/${alias}`;
+}
+
+export function contextLine(reading: ContextView): string {
+  return `context ${reading.used === null ? "unknown" : `${Math.round(reading.used * 100)}%`} (${reading.freshness}${reading.source ? `, ${reading.source}` : ""}${reading.measuredAt !== null ? `, measured ${new Date(reading.measuredAt).toISOString()}` : ""})`;
 }
 
 export function peerLine(id: string, p: PeerRow): string {
@@ -23,7 +28,8 @@ export function peerLine(id: string, p: PeerRow): string {
     (p.servedBy ? `  last call: ${p.servedBy}` : "") +
     // Which backend the peer asked for on its last turn: without it, telling a Pi DGX turn from an MLX one
     // meant reading status.json by hand.
-    (p.requestedModel ? `  model: ${p.requestedModel}` : "");
+    (p.requestedModel ? `  model: ${p.requestedModel}` : "") +
+    (p.context ? `  ${contextLine(p.context)}` : "");
 }
 
 export function backendLine(backend: BackendRow): string {

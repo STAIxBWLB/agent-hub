@@ -23,6 +23,20 @@ try {
   }
   const sessionId = typeof parsed.session_id === "string" ? parsed.session_id : typeof parsed.sessionId === "string" ? parsed.sessionId : "";
   if (sessionId && dir) {
+    // Bind context to the launcher, daemon and native session. Persist no prompts or transcript text.
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, "claude-context.json");
+    const c = parsed.context_window;
+    const current = c?.current_usage;
+    const numeric = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
+    const record = current !== null && typeof current === "object" && !Array.isArray(current);
+    const context = { context_window_size: numeric(c?.context_window_size), used_percentage: numeric(c?.used_percentage),
+      current_usage: !record ? null : { input_tokens: numeric(current.input_tokens), cache_creation_input_tokens: numeric(current.cache_creation_input_tokens), cache_read_input_tokens: numeric(current.cache_read_input_tokens) } };
+    writeFileSync(`${file}.tmp`, JSON.stringify({ at: Date.now(), sessionId, instanceId: process.env.AGENTHUB_INSTANCE_ID, launchId: process.env.AGENTHUB_LAUNCH_ID, context }), { mode: 0o600 });
+    chmodSync(`${file}.tmp`, 0o600);
+    renameSync(`${file}.tmp`, file);
+  }
+  if (sessionId && dir) {
     mkdirSync(dir, { recursive: true });
     const file = join(dir, "claude-session.json");
     // The transcript path lets the hub tell a zero-turn session (file not yet created, so

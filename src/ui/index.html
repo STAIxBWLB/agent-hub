@@ -205,6 +205,12 @@ function render(snapshot) {
     if (!Object.keys(snapshot.budget).length) return empty(target, 'No usage readings yet. Usage appears when a peer reports it.');
     for (const [peer, budget] of Object.entries(snapshot.budget)) {
       const row = el('div', undefined, 'row'); row.append(el('div', peer, 'label'));
+      const context = budget.context;
+      if (context) {
+        const pct = context.used === null ? null : Math.round(context.used * 100);
+        row.append(el('p', 'Context: ' + (pct === null ? 'unknown' : pct + '% used') + ' (' + context.freshness + ')' + (context.source ? ' / ' + context.source : '') + (context.measuredAt !== null ? ' / measured ' + time(context.measuredAt) : ''), 'meta'));
+        if (pct !== null) { const bar = el('progress'); bar.max = 1; bar.value = context.used; bar.setAttribute('aria-label', peer + ' context usage'); row.append(bar); }
+      }
       if (budget.paused) { const line = el('p', 'Paused: ' + budget.paused.reason + ' / resets ', 'meta'), stamp = el('span'); stamp.dataset.ts = budget.paused.resetsAt; stamp.title = time(budget.paused.resetsAt); stamp.textContent = rel(budget.paused.resetsAt); line.append(stamp); row.append(line); }
       if (!budget.windows.length) row.append(el('p', 'No usage windows reported.', 'meta'));
       for (const window of budget.windows) {
