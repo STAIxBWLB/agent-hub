@@ -1343,7 +1343,7 @@ whether to continue the native session or restart; this change provides no
 automatic session replacement. Status, tail and dashboard expose readings with
 source, measurement time and freshness beside quota information.
 
-The control contract is protocol 14. Recovery sources 9 through 13 remain
+Release 0.12.16 uses control protocol 14. Recovery sources 9 through 13 remain
 supported; protocol 13 identifies releases 0.12.4 through 0.12.15, while
 0.12.16 uses protocol 14.
 
