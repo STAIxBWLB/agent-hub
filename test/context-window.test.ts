@@ -35,3 +35,18 @@ test("context pressure stays off by default and deduplicates crossings without r
   windows.report("codex", reading(0.9, now + 2, "replacement"), "replacement"); expect(events).toHaveLength(3);
   expect(windows.view("pi", "p", true).used).toBeNull();
 });
+
+
+test.each(["pause", "recovery"])("context crossing held by %s retries once after release using only fresh session-bound telemetry", () => {
+  let now = 120_000, held = true; const events: number[] = [];
+  const windows = new ContextWindows({ gate: 0.8, stale_min: 1 }, (_peer, r) => { if (held) return false; events.push(r.used!); return true; }, () => now);
+  const sample = (used: number | null, sessionId = "native") => ({ source: "codex_token_usage" as const, sessionId, measuredAt: now, tokens: used === null ? null : used * 100, window: 100, used });
+  windows.report("codex", sample(0.9), "native"); windows.retry("codex", "native"); expect(events).toHaveLength(0);
+  held = false; windows.retry("codex", "native"); windows.retry("codex", "native"); expect(events).toEqual([0.9]);
+  windows.report("codex", sample(null), "native"); windows.retry("codex", "native"); windows.report("codex", sample(0.95), "native"); expect(events).toHaveLength(1);
+  windows.report("codex", sample(0.1), "native"); held = true; windows.report("codex", sample(0.9), "native"); now += 70_000;
+  held = false; windows.retry("codex", "native"); expect(events).toHaveLength(1);
+  windows.report("codex", sample(0.9), "native"); expect(events).toHaveLength(2);
+  held = true; windows.report("codex", sample(0.9, "replacement"), "replacement"); held = false;
+  windows.retry("codex", "another-session"); expect(events).toHaveLength(2);
+});

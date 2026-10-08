@@ -1312,7 +1312,7 @@ disconnected or replaced-session readings expose unknown occupancy, never zero.
 `context.gate` defaults to 0 (off); `context.stale_min` defaults to 30.
 A valid above-gate reading emits one metadata-only `context_pressure` event
 and one crossing notice. Invalid or stale readings do not rearm a crossing;
-a valid below-gate reading or a new native session does.
+a valid below-gate reading or a new native session does. A crossing held by pause or recovery remains unlatched and is reconsidered after release using only a still-fresh, current-session reading; no new native sample is required.
 
 Context and quota checkpoints share the same request/wait path. Only one
 request per peer may wait at a time. Context responses must carry the supplied
@@ -1325,7 +1325,7 @@ A valid non-private context response is saved in the state directory as a
 0600 `context-checkpoint-<peer>.json` note. With memory enabled, its text is
 also saved as a handover note only after the active-turn, task PII and text
 pattern checks. It is never broadcast to peers or quoted in logs/events.
-Private turns/tasks are not asked for context checkpoints. The operator chooses
+Private turns and all non-approved PII tasks associated with the peer as owner or reviewer, including tasks already in review, block requests and completion. The current routing PII policy is rechecked at both boundaries. The operator chooses
 whether to continue the native session or restart; this change provides no
 automatic session replacement. Status, tail and dashboard expose readings with
 source, measurement time and freshness beside quota information.

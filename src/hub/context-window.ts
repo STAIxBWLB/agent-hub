@@ -42,7 +42,7 @@ export const unknownContext = (): ContextView => ({ source: null, measuredAt: nu
 export class ContextWindows {
   private readings = new Map<string, ContextReading>();
   private high = new Map<string, { sessionId: string; crossed: boolean }>();
-  constructor(private cfg: ContextConfig, private crossing: (peer: string, reading: ContextReading) => void, private now: () => number = Date.now) {
+  constructor(private cfg: ContextConfig, private crossing: (peer: string, reading: ContextReading) => unknown, private now: () => number = Date.now) {
     if (!Number.isFinite(cfg.gate) || cfg.gate < 0 || cfg.gate > 1 || !Number.isFinite(cfg.stale_min) || cfg.stale_min <= 0) throw new Error("context: gate must be 0..1 and stale_min positive");
   }
   report(peer: string, reading: ContextReading, currentSession: string | undefined): void {
@@ -54,8 +54,13 @@ export class ContextWindows {
     const state = this.high.get(peer);
     const crossed = state?.sessionId === reading.sessionId && state.crossed;
     const over = reading.used >= this.cfg.gate;
+    if (over && !crossed && this.crossing(peer, reading) === false) return;
     this.high.set(peer, { sessionId: reading.sessionId, crossed: over });
-    if (over && !crossed) this.crossing(peer, reading);
+  }
+  /** Reconsider a held crossing after release, using only the still-fresh reading and current native session. */
+  retry(peer: string, currentSession: string | undefined): void {
+    const reading = this.readings.get(peer);
+    if (reading) this.report(peer, reading, currentSession);
   }
   view(peer: string, currentSession: string | undefined, attached: boolean): ContextView {
     const r = this.readings.get(peer);

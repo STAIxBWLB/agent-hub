@@ -74,7 +74,8 @@
         "src/hub/bus.ts",
         "src/hub/delivery-journal.ts",
         "src/hub/restart.ts",
-        "src/hub/context-window.ts"
+        "src/hub/context-window.ts",
+        "src/hub/daemon.ts"
       ]
     },
     "docs/agent-notes/bus.md": {

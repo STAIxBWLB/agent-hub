@@ -30,6 +30,7 @@ import { recordTerminalLaunch } from "./terminal-recovery.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
 import { setupOllamaModel } from "./models-setup.ts";
 
+import { unknownContext } from "../hub/context-window.ts";
 import { backendLine, contextLine, peerLine, type BackendRow, type PeerRow } from "./status-lines.ts";
 import { parseSince, readEvents } from "../hub/events.ts";
 import { formatReport, summarize } from "../hub/report.ts";
@@ -797,7 +798,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (status.deliveryError) console.log(`  delivery storage: ${status.deliveryError}; dispatch is stopped`);
     for (const line of (status as { crash?: string[] }).crash ?? []) console.log(`  crash recovery: ${line}`);
     const peers = Object.entries(status.peers as Record<string, PeerRow>);
-    for (const [id, p] of peers) console.log(peerLine(id, p));
+    for (const [id, p] of peers) console.log(peerLine(id, { ...p, context: p.context ?? unknownContext() }));
     const models = (status as any).models?.backends as BackendRow[] | undefined;
     if (models?.length) for (const backend of models) console.log(backendLine(backend));
     if (status.switchyard) console.log(`  switchyard: ${status.switchyard}`);

@@ -770,6 +770,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (p instanceof AcpPeer || p instanceof PiPeer) { const id = p.recoveryMetadata().sessionId; return typeof id === "string" ? id : undefined; }
     return undefined;
   };
+  const contextPii = (peer: PeerId) => board.list().some(t => t.state !== "approved" && (t.owner === peer || t.reviewer === peer) && tasks.isPii(t));
   const requestCheckpoint = (peer: PeerId, reason: "quota" | "context"): Promise<string | undefined> => {
     // One outstanding request per peer. A quota transition may proceed without a summary rather than steal a context waiter.
     if (checkpointWaits.has(peer) || recoveryActive() || stopping) return Promise.resolve(undefined);
@@ -777,9 +778,12 @@ export async function startDaemon(opts: DaemonOptions) {
     const state = bus.stateOf(peer);
     const session = contextSession(peer);
     const generation = owner instanceof WsPeer || owner instanceof CodexPeer ? owner.sessionGeneration : undefined;
-    if (!owner || (owner instanceof WsPeer && owner.claiming) || (state !== "idle" && state !== "busy") || (reason === "context" && (!session || turns.get(peer)?.private || holdsPii(peer)))) return Promise.resolve(undefined);
+    if (!owner || (owner instanceof WsPeer && owner.claiming) || (state !== "idle" && state !== "busy") || (reason === "context" && (!session || turns.get(peer)?.private || contextPii(peer)))) return Promise.resolve(undefined);
     const openWork = board.list().some((t) => (["proposed", "in_progress", "changes_requested", "in_review"].includes(t.state) && t.owner === peer) || (t.state === "in_review" && t.reviewer === peer));
-    if (!openWork && !bus.queued(peer) && !bus.hasInFlight(peer) && state !== "busy") return Promise.resolve(undefined);
+    if (!openWork && !bus.queued(peer) && !bus.hasInFlight(peer) && state !== "busy") {
+      if (reason === "quota") log(`budget ${peer}: no open work, no checkpoint`);
+      return Promise.resolve(undefined);
+    }
     const requestId = randomUUID();
     const body = reason === "quota"
       ? "Checkpoint request: your quota window is almost used up and the hub is about to pause you. Finish the step you are on, write what you were doing, what is half done and what whoever continues must know to .agenthub/checkpoint.md, then call hub_checkpoint {summary} with the same text. Your open tasks will be handed to another peer; you will be resumed when the window resets."
@@ -799,11 +803,11 @@ export async function startDaemon(opts: DaemonOptions) {
     });
   };
   const contexts = new ContextWindows(config.context, (peer, reading) => {
-    if (!["idle", "busy"].includes(bus.stateOf(peer)) || recoveryActive() || stopping) return;
+    if (!["idle", "busy"].includes(bus.stateOf(peer)) || recoveryActive() || stopping) return false;
     event({ type: "context_pressure", peer, source: reading.source, measuredAt: reading.measuredAt, used: reading.used!, window: reading.window });
     notify(`context: ${peer} crossed ${Math.round(config.context.gate * 100)}% (${reading.source}, measured ${new Date(reading.measuredAt).toISOString()}); the operator controls session continuation`);
-    if (peer !== "claude" && peer !== "codex") return;
-    void requestCheckpoint(peer, "context").catch(() => {});
+    if (peer === "claude" || peer === "codex") void requestCheckpoint(peer, "context").catch(() => {});
+    return true;
   });
   const PLATFORM: Record<PeerId, string> = { claude: "claude", codex: "codex", kimi: "kimi" };
   const budget = new Budget(join(opts.stateDir, "hub.db"), config.budget, {
@@ -888,6 +892,7 @@ export async function startDaemon(opts: DaemonOptions) {
     setInterval(() => {
       for (const pending of checkpointWaits.values()) if (!pending.valid()) pending.done(undefined);
       for (const peer of bus.knownPeers()) {
+        contexts.retry(peer, contextSession(peer));
         const reading = contexts.view(peer, contextSession(peer), bus.peers.has(peer) && ["idle", "busy", "paused"].includes(bus.stateOf(peer)));
         const stamp = JSON.stringify(reading);
         if (contextTailSeen.get(peer) !== stamp) {
@@ -901,7 +906,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (payload === claudeContextSeen) return;
         const c = JSON.parse(payload);
         const session = claudeSession();
-        if (c.instanceId !== instanceId || !session.sessionId || c.sessionId !== session.sessionId || c.launchId !== session.launchId || !["idle", "busy"].includes(bus.stateOf("claude"))) return;
+        if (c.instanceId !== instanceId || !session.sessionId || c.sessionId !== session.sessionId || c.launchId !== session.launchId || !["idle", "busy", "paused"].includes(bus.stateOf("claude"))) return;
         claudeContextSeen = payload;
         const bound = contextSession("claude");
         if (bound) contexts.report("claude", claudeContext(c.context, bound, c.at), bound);
@@ -1030,7 +1035,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!pending || !pending.valid()) { pending?.done(undefined); throw new Error("checkpoint request expired or its peer/session changed"); }
         if (pending.reason === "context") {
           if (a.request_id !== pending.requestId) throw new Error("context checkpoint request_id does not match");
-          if (piiTurn || turns.get(by)?.private || holdsPii(by) || !tasks.nameable(summary)) { pending.done(undefined); throw new Error("private context checkpoints are not saved or shared"); }
+          if (piiTurn || turns.get(by)?.private || contextPii(by) || !tasks.nameable(summary)) { pending.done(undefined); throw new Error("private context checkpoints are not saved or shared"); }
           // No broadcast, body-bearing notice or quota record. Memory's cloud observer is allowed only after the PII/session fences.
           const file = join(opts.stateDir, `context-checkpoint-${by}.json`);
           writeFileSync(`${file}.tmp`, JSON.stringify({ at: Date.now(), instanceId, session: pending.session, summary }), { mode: 0o600 });
@@ -1259,7 +1264,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      bus.knownPeers().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); return [id, { state: bus.stateOf(id), context: contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
+      bus.knownPeers().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
     ),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
     ...(modelRelay ? { models: modelRelay.status() } : {}),
@@ -1996,6 +2001,8 @@ export async function startDaemon(opts: DaemonOptions) {
   }
 
   function uiSnapshot(after: number) {
+    const quota = budget.status();
+    const peers = [...new Set([...Object.keys(quota), ...bus.knownPeers()])];
     return {
       ok: true,
       projectId,
@@ -2006,7 +2013,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // Refs and history can themselves quote private text. The dashboard needs neither.
         return { id: task.id, title: view.title, detail: view.detail, class: task.class, state: task.state, owner: task.owner, reviewer: task.reviewer };
       }),
-      budget: Object.fromEntries(bus.knownPeers().map((id) => [id, { ...(budget.status()[id] ?? { windows: [] }), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
+      budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[id] ?? { windows: [] }), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
       permissions: [...permissions.values()].map(({ push }) => {
         const req = JSON.parse(push);
         // Local tool titles quote file contents and commands, including those of PII turns.

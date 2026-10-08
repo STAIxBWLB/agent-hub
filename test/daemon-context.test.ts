@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, statSync, existsSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, statSync, existsSync, mkdirSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
@@ -10,13 +10,13 @@ import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 const until = async (f: () => boolean) => { for (let n = 0; n < 350 && !f(); n++) await Bun.sleep(10); expect(f()).toBe(true); };
-async function fixture(gate = 0.8) {
+async function fixture(gate = 0.8, reviewOther = false) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-context-")); cleanup.push(() => rmSync(cwd, { recursive: true, force: true }));
   const mem = startFakeMemWorker(); cleanup.push(mem.stop);
   mkdirSync(join(cwd, ".agenthub"));
   const routing = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8").replace(/^pii_patterns = .*$/m, 'pii_patterns = ["PRIVATE-MARKER"]');
   writeFileSync(join(cwd, ".agenthub", "routing.toml"), routing);
-  const daemon = await startDaemon({ cwd, stateDir: cwd, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, instanceId: "context-instance", config: { ...DEFAULT_CONFIG, batch_ms: 0, context: { gate, stale_min: 1 }, memory: { ...DEFAULT_CONFIG.memory, enabled: true, worker_url: mem.url }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false }, budget: { ...DEFAULT_CONFIG.budget, checkpoint_timeout_s: 5 } } });
+  const daemon = await startDaemon({ cwd, stateDir: cwd, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, instanceId: "context-instance", config: { ...DEFAULT_CONFIG, batch_ms: 0, ...(reviewOther ? { roles: { ...DEFAULT_CONFIG.roles, other: ["reviewer"] } } : {}), context: { gate, stale_min: 1 }, memory: { ...DEFAULT_CONFIG.memory, enabled: true, worker_url: mem.url }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false }, budget: { ...DEFAULT_CONFIG.budget, checkpoint_timeout_s: 5 } } });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(cwd, { role: "console" }); cleanup.push(() => console_.close());
   const pushes: any[] = []; console_.onPush = m => pushes.push(m); console_.send({ t: "tail" });
@@ -64,10 +64,11 @@ test("context request rejects a replaced session and private text before local p
 
 test("identity-mismatched and stale native files stay unknown; default threshold reports only", async () => {
   const f = await fixture(0); f.reading(90, { instanceId: "previous-daemon" }); await Bun.sleep(1100);
-  expect((await f.console_.request({ t: "status" })).status.peers.claude.context.used).toBeNull();
+  expect((await f.console_.request({ t: "status" })).status.peers.claude.context).toBeUndefined();
   f.reading(90, { launchId: "other-launch" }); await Bun.sleep(1100); expect(pressure(f.cwd)).toHaveLength(0);
   f.reading(90, { at: Date.now() - 70_000 }); await Bun.sleep(1100);
-  expect((await f.console_.request({ t: "status" })).status.peers.claude.context.freshness).toBe("stale");
+  const stale = (await f.console_.request({ t: "status" })).status.peers.claude.context;
+  expect(stale.freshness).toBe("stale"); expect(stale.used).toBeNull(); expect(stale.source).toBe("claude_statusline"); expect(stale.measuredAt).toBeGreaterThan(0);
   f.reading(); await until(() => f.pushes.some(p => p.t === "context" && p.peer === "claude" && p.reading.used === 0.9));
   expect(pressure(f.cwd)).toHaveLength(0); expect(request(f.pushes)).toBeUndefined();
 }, 20_000);
@@ -90,4 +91,74 @@ test("expired context requests cannot persist a late checkpoint", async () => {
   expect(late.ok).toBe(false); expect(existsSync(join(f.cwd, "context-checkpoint-claude.json"))).toBe(false);
   expect(f.daemon.bus.stateOf("claude")).not.toBe("paused");
   const budget = await f.console_.request({ t: "budget" }); expect(budget.budget.claude?.paused).toBeUndefined();
+}, 20_000);
+
+
+test("dashboard retains a persisted quota pause after restart before its peer attaches, with no journal queue", async () => {
+  const f = await fixture(0);
+  const paused = await f.console_.request({ t: "budget", set: { peer: "other", used: 0.95, resetsInMs: 3_600_000 } });
+  expect(paused.ok).toBe(true);
+  await until(() => f.daemon.bus.stateOf("other") === "paused");
+  expect(f.daemon.bus.queueList("other")).toHaveLength(0);
+  await f.daemon.stop();
+  const restarted = await startDaemon({ cwd: f.cwd, stateDir: f.cwd, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, context: { gate: 0, stale_min: 1 }, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false } } });
+  cleanup.push(() => restarted.stop());
+  const console_ = await ControlClient.connect(f.cwd, { role: "console" }); cleanup.push(() => console_.close());
+  expect(restarted.bus.peers.has("other")).toBe(false);
+  expect(restarted.bus.knownPeers()).not.toContain("other");
+  expect(restarted.bus.queueList("other")).toHaveLength(0);
+  const quota = await console_.request({ t: "budget" }); expect(quota.budget.other.paused).toBeDefined();
+  const opened = await console_.request({ t: "ui" }), url = new URL(opened.url);
+  const headers: Record<string, string> = { origin: url.origin, "content-type": "application/json" };
+  const session = await fetch(`${url.origin}/session`, { method: "POST", headers, body: JSON.stringify({ ticket: url.hash.slice(1) }) });
+  expect(session.status).toBe(200); headers.cookie = session.headers.get("set-cookie")!.split(";")[0]!;
+  const response = await fetch(`${url.origin}/snapshot`, { method: "POST", headers, body: JSON.stringify({ after: 0 }) });
+  expect(response.status).toBe(200);
+  const snapshot = await response.json() as { budget: Record<string, { paused?: unknown; windows: unknown[]; context: { used: number | null; freshness: string } }> };
+  expect(snapshot.budget.other!.paused).toEqual(quota.budget.other.paused);
+  expect(snapshot.budget.other!.context.used).toBeNull(); expect(snapshot.budget.other!.context.freshness).toBe("unknown");
+}, 20_000);
+
+
+test("paused context pressure is delivered once on release without another native reading", async () => {
+  const f = await fixture();
+  expect((await f.console_.request({ t: "pause", peer: "claude" })).ok).toBe(true);
+  f.reading(); await Bun.sleep(1200);
+  expect(pressure(f.cwd)).toHaveLength(0); expect(request(f.pushes)).toBeUndefined();
+  const file = readFileSync(join(f.cwd, "claude-context.json"), "utf8");
+  expect((await f.console_.request({ t: "resume", peer: "claude" })).ok).toBe(true);
+  await until(() => pressure(f.cwd).length === 1 && !!request(f.pushes));
+  expect(readFileSync(join(f.cwd, "claude-context.json"), "utf8")).toBe(file);
+  await Bun.sleep(1100); expect(pressure(f.cwd)).toHaveLength(1);
+  expect(f.pushes.filter(p => p.t === "notice" && p.line.startsWith("context: claude crossed"))).toHaveLength(1);
+}, 20_000);
+
+test.each(["owner", "reviewer"] as const)("context request and clean completion refuse a PII task in review associated as %s after a routing-policy change", async role => {
+  const f = await fixture(0.8, true);
+  f.reading(); await until(() => !!request(f.pushes));
+  const firstId = /request_id: "([^"]+)"/.exec(request(f.pushes).body)![1];
+  const routePath = join(f.cwd, ".agenthub", "routing.toml");
+  const setPolicy = (policy: string, tick: number) => {
+    writeFileSync(routePath, readFileSync(routePath, "utf8").replace(/^pii = .*$/m, `pii = "${policy}"`));
+    utimesSync(routePath, new Date(tick), new Date(tick));
+  };
+  const tick = Date.now(); setPolicy("off", tick + 1);
+  const owner = role === "owner" ? "claude" : "other";
+  const tools = await ControlClient.connect(f.cwd, { role: "tools", peer: owner }); cleanup.push(() => tools.close());
+  const proposed = await tools.request({ t: "task", op: "hub_task_propose", args: { title: "PRIVATE-MARKER historical task", owner, class: "implement", plan: { paths: ["src/private.ts"] } } });
+  expect(proposed.ok).toBe(true);
+  const done = await tools.request({ t: "task", op: "hub_task_done", args: { id: 2, summary: "work complete" } }); expect(done.ok).toBe(true); expect(done.text).toContain("in_review");
+  const task = JSON.parse((await f.console_.request({ t: "task", op: "task_show", args: { id: 2 } })).text);
+  expect(task.owner).toBe(owner); expect(task.reviewer).toBe(role === "reviewer" ? "claude" : "other"); expect(task.signals).toContain("pii");
+  // Settle the explicitly allowed off-policy note before measuring whether the context response leaks another note.
+  await until(() => f.mem.calls.some(c => c.path === "/api/memory/save" && JSON.stringify(c.body).includes("PRIVATE-MARKER") && JSON.stringify(c.body).includes("work complete")));
+  setPolicy("local_only", tick + 2);
+  const savesBefore = f.mem.calls.filter(c => c.path === "/api/memory/save").length;
+  const rejected = await f.claude.request({ t: "task", op: "hub_checkpoint", args: { summary: "clean checkpoint with no PII pattern", request_id: firstId } });
+  expect(rejected.ok).toBe(false); expect(existsSync(join(f.cwd, "context-checkpoint-claude.json"))).toBe(false);
+  expect(f.mem.calls.filter(c => c.path === "/api/memory/save")).toHaveLength(savesBefore);
+  const requestsBefore = f.pushes.filter(p => p.t === "event" && p.e?.env?.body?.startsWith("Checkpoint request: your native context")).length;
+  f.reading(10); await Bun.sleep(1100); f.reading(90); await until(() => pressure(f.cwd).length === 2);
+  expect(f.pushes.filter(p => p.t === "event" && p.e?.env?.body?.startsWith("Checkpoint request: your native context"))).toHaveLength(requestsBefore);
+  expect(f.mem.calls.filter(c => c.path === "/api/memory/save")).toHaveLength(savesBefore);
 }, 20_000);
