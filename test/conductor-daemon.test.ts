@@ -9,6 +9,7 @@ import { CONDUCTOR_TOOL_NAMES } from "../src/hub/hub-tools.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { HUB, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { readEvents } from "../src/hub/events.ts";
+import { Board } from "../src/hub/board.ts";
 
 const cleanup: Array<() => unknown> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -121,6 +122,54 @@ test("existing conductor task mutations get one ids-only conduct audit; task lis
   expect(events()).toHaveLength(1);
 });
 
+test("public task history screens private done/review notes and profile while console keeps the original", async () => {
+  const f = await fixture();
+  const board = new Board(join(f.dir, "hub.db"));
+  let id: number;
+  try {
+    const task = board.propose("claude", { title: "ordinary parser task", class: "implement" }); id = task.id;
+    board.update(id, "codex", "accepted", { state: "in_progress", owner: "codex", reviewer: "claude" });
+    board.update(id, "codex", "done", { state: "in_review" }, "PRIVATE-MARKER done summary");
+    board.update(id, "claude", "approved", { state: "approved" }, "PRIVATE-MARKER review note", {
+      profile: "PRIVATE-MARKER profile",
+      sweep: { kind: "idle-owner", activity: 1, step: 1, at: 1, unexpected: "PRIVATE-MARKER history extra" } as any,
+    });
+    for (let n = 0; n < 7; n++) board.update(id, "claude", "approved", {}, `public audit entry ${n}`);
+  } finally { board.close(); }
+  const raw = await f.console_.request({ t: "task", op: "task_show", args: { id } });
+  expect(raw.ok).toBe(true); expect(raw.text).toContain("PRIVATE-MARKER done summary"); expect(raw.text).toContain("PRIVATE-MARKER review note"); expect(raw.text).toContain("PRIVATE-MARKER profile"); expect(raw.text).toContain("PRIVATE-MARKER history extra");
+  const peer = await f.connect("unlisted");
+  for (const [client, op] of [[peer, "task_show"], [f.lead, "hub_task_show"]] as const) {
+    const shown = await client.request({ t: "task", op, args: { id } });
+    expect(shown.ok).toBe(true); expect(shown.text).not.toContain("PRIVATE-MARKER");
+    const view = JSON.parse(shown.text); expect(view.title).toBe("ordinary parser task"); expect(view.history).toHaveLength(JSON.parse(raw.text).history.length);
+    expect(view.history.find((h: any) => h.event === "done").note).toContain("withheld");
+    const review = view.history.find((h: any) => h.profile); expect(review.note).toContain("withheld"); expect(review.profile).toContain("withheld"); expect(review.sweep).not.toHaveProperty("unexpected");
+  }
+});
+
+test("peer route explain and quota reads work while quota mutations remain human-only", async () => {
+  const f = await fixture();
+  const peer = await f.connect("unlisted");
+  const created = await f.console_.request({ t: "task", op: "hub_task_propose", args: { title: "PRIVATE-MARKER routing task", class: "implement" } }); expect(created.ok).toBe(true);
+  const explained = await peer.request({ t: "task", op: "route_explain", args: { id: 1 } }); expect(explained.ok).toBe(true); expect(explained.text).not.toContain("PRIVATE-MARKER");
+  const read = await peer.request({ t: "budget" }); expect(read.ok).toBe(true); expect(read.budget).toEqual({});
+  expect((await peer.request({ t: "budget", set: { peer: "pi", used: 0.5 } })).ok).toBe(false);
+  expect((await peer.request({ t: "budget", resume: "pi" })).ok).toBe(false);
+});
+
+test("manual assignment persists a structured reason and production task changes include it in the feed", async () => {
+  const f = await fixture("claude", "all");
+  for (const name of ["claude", "codex", "pi"]) { const peer = new QuietPeer(name); f.daemon.bus.add(peer); await peer.start(); }
+  const notices: string[] = [];
+  const untap = f.daemon.bus.tap(event => { if (event.t === "envelope" && event.env.from === HUB && event.env.refs?.supervision) notices.push(event.env.body); }); cleanup.push(untap);
+  expect((await f.console_.request({ t: "task", op: "hub_task_propose", args: { title: "ordinary task", owner: "codex", class: "implement" } })).ok).toBe(true);
+  expect((await f.lead.request({ t: "task", op: "hub_task_assign", args: { id: 1, peer: "pi" } })).ok).toBe(true);
+  const shown = await f.console_.request({ t: "task", op: "task_show", args: { id: 1 } });
+  expect(JSON.parse(shown.text).history.at(-1)).toMatchObject({ event: "reassigned", by: "claude", reason: "manual", owner: "pi" });
+  expect(notices.some(body => body.includes("moved") && body.includes("reason manual"))).toBe(true);
+});
+
 test("startup refuses two conductors and new hello refreshes only roles/feed", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ahub-conductor-reload-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
@@ -153,6 +202,9 @@ test("permission console answer and expiry close the card with ids-only surface/
   const answered = readEvents(join(f.dir, "events.jsonl")).find(e => e.type === "permission" && e.event === "answered");
   expect(answered).toMatchObject({ type: "permission", id: card.id, surface: "console" });
   expect(answered).not.toHaveProperty("title"); expect(answered).not.toHaveProperty("body");
+  const log = readFileSync(join(f.dir, "hub.log"), "utf8");
+  expect(log).toContain(`permission ${card.id} from kimi answered option allow_once by console`);
+  expect(log).not.toContain(card.title);
   await f.console_.request({ t: "send", to: ["kimi"], body: "PERMISSION" });
   for (let n = 0; n < 200 && !pushes.some(p => p.t === "permission_closed" && p.reason === "expired"); n++) await Bun.sleep(5);
   expect(pushes.some(p => p.t === "permission_closed" && p.outcome === "cancelled" && p.reason === "expired")).toBe(true);

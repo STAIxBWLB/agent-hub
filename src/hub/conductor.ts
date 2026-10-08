@@ -1,6 +1,25 @@
 import { Database } from "bun:sqlite";
 import type { Task } from "./board.ts";
 import { CONDUCTOR_TOOL_NAMES } from "./hub-tools.ts";
+import type { HubEvent } from "./events.ts";
+import type { SupervisionFeed } from "./supervision.ts";
+import type { Budget } from "./budget.ts";
+
+/** The production ProgressObserver sink forwards structured verdicts, never its observations/reasoning. */
+export function conductorProgressSink(record: (event: HubEvent) => void, feed: Pick<SupervisionFeed, "milestone">): (event: HubEvent) => void {
+  return event => { record(event); if (event.type === "stuck") feed.milestone(event.task, "stuck", { reason: event.category }); };
+}
+
+export function publicPeerBudget(status: ReturnType<Budget["status"]>, nameable: (text: string) => boolean): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(status).map(([peer, value]) => [peer, {
+    windows: value.windows.map(window => ({ id: window.id, used: window.used, at: window.at, stale: window.stale,
+      ...(window.resetsAt === undefined ? {} : { resetsAt: window.resetsAt }),
+      ...(window.windowMins === undefined ? {} : { windowMins: window.windowMins }),
+      source: nameable(window.source) ? window.source : "[quota source withheld]",
+    })),
+    ...(value.paused ? { paused: { since: value.paused.since, resetsAt: value.paused.resetsAt, reason: "quota" } } : {}),
+  }]));
+}
 
 const PEER = /^[a-z][a-z0-9-]{0,31}$/;
 const peerId = (value: unknown): string => {
@@ -105,11 +124,11 @@ export function publicConductorStatus(input: ConductorStatusInput, now = Date.no
   };
 }
 
-/** publicView must be Tasks.publicView: this keeps its live routing-based PII policy authoritative. */
+/** publicView must use Tasks.publicView(task, true), including its screened history. */
 export function publicConductorTask(task: Task, publicView: (task: Task) => Record<string, unknown>): Record<string, unknown> {
   const view = publicView(task);
   if (view.title === "[pii]") return { id: task.id, title: "[pii]", detail: "[pii]", class: task.class, state: task.state, owner: task.owner, reviewer: task.reviewer, history: [] };
-  return { ...view, history: task.history.map((event) => ({ ...event })) };
+  return { ...view, history: Array.isArray(view.history) ? view.history : [] };
 }
 
 export interface ConductEvent {

@@ -1,10 +1,10 @@
-import type { HistoryEntry, Task } from "./board.ts";
+import type { HistoryEntry, Task, TaskMoveReason } from "./board.ts";
 import { sanitize, type Kind, type Priority } from "./envelope.ts";
 
 export type SupervisionScope = "own" | "all" | "off";
 export type SupervisionMilestone = "assigned" | "accepted" | "declined" | "done" | "review" | "approved" | "moved" | "escalated" | "stuck" | "sweep";
 /** Codes, never free-form notes or check output. */
-export type SupervisionReason = "manual" | "budget" | "offline" | "idle" | "rejections" | "repetition" | "false_progress" | "drift" | "desperation" | "capability_gap";
+export type SupervisionReason = TaskMoveReason | "repetition" | "false_progress" | "drift" | "desperation" | "capability_gap";
 export interface SupervisionFields {
   by?: string;
   owner?: string | null;
@@ -84,7 +84,7 @@ export class SupervisionFeed {
 
   /** Only structured history metadata is read; notes may contain private content. */
   taskChanged(task: Task, entry: HistoryEntry, metadata: SupervisionFields = {}): void {
-    const fields: SupervisionFields = { by: entry.by, owner: task.owner, ...metadata };
+    const fields: SupervisionFields = { by: entry.by, owner: task.owner, ...(entry.reason ? { reason: entry.reason } : {}), ...metadata };
     const event = entry.event;
     if (event === "done" || event === "check failed") {
       const latestCheck = task.history.findLast((h) => ["check passed", "check failed", "check interrupted", "done (checking)", "accepted", "reopened"].includes(h.event));

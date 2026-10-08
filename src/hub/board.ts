@@ -18,6 +18,8 @@ export type TaskPlan = Partial<Record<(typeof PLAN_KEYS)[number], string[]>>;
 /** Task outcomes older than this are pruned: demotion (issue #36) reads one week, seven half-lives. */
 export const OUTCOMES_KEPT_MS = 7 * 24 * 3_600_000;
 
+export const TASK_MOVE_REASONS = ["manual", "budget", "offline", "idle", "rejections", "declined", "inference_failed", "delivery_failed"] as const;
+export type TaskMoveReason = (typeof TASK_MOVE_REASONS)[number];
 export interface HistoryEntry {
   at: number;
   by: PeerId;
@@ -27,6 +29,8 @@ export interface HistoryEntry {
   owner?: PeerId | null;
   /** On a hand-over: the new owner's split profile then (#109); absent when it was unknown. */
   profile?: string;
+  /** Structured cause recorded at the operation source, never inferred from note text. */
+  reason?: TaskMoveReason;
   /** Persisted task-idle ladder; never counted as fresh task activity (#186). */
   sweep?: SweepRecord;
 }
@@ -122,14 +126,14 @@ export class Board {
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "refs" | "plan" | "rejections">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep"> = {}): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "refs" | "plan" | "rejections">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason"> = {}): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (patch.state && patch.state !== task.state && !MOVES[task.state].includes(patch.state)) {
       throw new Error(`task #${id} is ${task.state}: cannot move to ${patch.state}`);
     }
     const next = { ...task, ...patch, refs: { ...task.refs, ...patch.refs } };
-    const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}) }];
+    const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}) }];
     this.db
       .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, refs = ?, plan = ?, rejections = ?, history = ?, updated = ? WHERE id = ?")
       .run(next.state, next.owner, next.reviewer, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(history), Date.now(), id);

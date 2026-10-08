@@ -37,7 +37,7 @@ import { basename, isAbsolute } from "node:path";
 import { realPath } from "./project.ts";
 import type { BusEvent } from "./bus.ts";
 import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOLS } from "./hub-tools.ts";
-import { Conductor, ConductorHolds, conductorPeer, publicConductorTask, type ConductEvent } from "./conductor.ts";
+import { Conductor, ConductorHolds, conductorPeer, conductorProgressSink, publicConductorTask, publicPeerBudget, type ConductEvent } from "./conductor.ts";
 import { SupervisionFeed } from "./supervision.ts";
 import { drainCliAudits } from "../cli/identity-audit.ts";
 import { launcherPreview } from "../cli/preview.ts";
@@ -686,7 +686,7 @@ export async function startDaemon(opts: DaemonOptions) {
     tasks: () => board.list(),
     isPrivate: () => board.list().some(task => task.state !== "approved" && tasks.isPii(task)),
     inference: { escalate: (conversation, turn) => inference?.escalate(conversation, turn) ?? Promise.resolve(undefined) },
-    emit: event,
+    emit: conductorProgressSink(event, supervision),
     notify,
   });
   const observeProgress = (peer: PeerId, observation: ToolObservation | undefined, taskId?: string): void => {
@@ -1184,8 +1184,9 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (op === "task_show" && by !== USER) {
       const task = board.get(Number(a.id));
-      return JSON.stringify(task ? publicConductorTask(task, (t) => tasks.publicView(t)) : `no task #${a.id}`);
+      return JSON.stringify(task ? publicConductorTask(task, (t) => tasks.publicView(t, true)) : `no task #${a.id}`);
     }
+    if (op === "route_explain" && by !== USER) return tasks.publicExplain(a.id !== undefined ? Number(a.id) : { title: String(a.title ?? ""), class: a.class as TaskClass }).join("\n");
     if (by !== USER) throw new Error(`${op} is a console command`);
     switch (op) {
       case "task_show":
@@ -1660,7 +1661,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (task?.owner === e.peer && ["proposed", "in_progress", "changes_requested"].includes(task.state)) {
           const reason = tasks.isPii(task) ? "private delivery retries exhausted" : sanitize(e.reason ?? "delivery retries exhausted").replace(/\s+/g, " ").slice(0, 300);
           notify(`task ${tasks.publicTitle(task)}: undeliverable to ${e.peer}: ${reason}; escalating`);
-          void tasks.escalate(HUB, task.id, `Undeliverable to ${e.peer}: ${reason}`).catch(() => notify(`task ${tasks.publicTitle(task)} could not be escalated; inspect with ahub task show ${task.id}`));
+          void tasks.escalate(HUB, task.id, `Undeliverable to ${e.peer}: ${reason}`, "delivery_failed").catch(() => notify(`task ${tasks.publicTitle(task)} could not be escalated; inspect with ahub task show ${task.id}`));
         }
       }
     } else {
@@ -1733,7 +1734,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const latencyMs = Math.max(0, Date.now() - createdAt);
         const optionKind = option?.kind === "allow_once" || option?.kind === "allow_always" || option?.kind === "reject_once" || option?.kind === "reject_always" ? option.kind : undefined;
         event({ type: "permission", id, peer: req.peer, event: outcome, latencyMs, ...(option ? { surface } : {}), ...(optionKind ? { option: optionKind } : {}) });
-        notify(`permission ${id} ${outcome} by ${option ? surface : "hub"} (${latencyMs}ms)`);
+        notify(`permission ${id} from ${req.peer} ${outcome} option ${optionKind ?? "none"} by ${option ? surface : "hub"} (${latencyMs}ms)`);
         for (const c of consoles) if (c.data.tail) c.send(JSON.stringify({ t: "permission_closed", id, peer: req.peer, outcome: outcome === "expired" ? "cancelled" : outcome, ...(outcome === "expired" ? { reason: "expired" } : {}), latencyMs }));
         resolve(optionId);
         return true;
@@ -1997,7 +1998,7 @@ export async function startDaemon(opts: DaemonOptions) {
           for (const id of ids) {
             const task = board.get(Number(id));
             if (!task || task.owner !== "pi" || tasks.isPii(task) || !["proposed", "in_progress", "changes_requested"].includes(task.state)) continue;
-            try { await tasks.escalate(HUB, task.id, "Pi inference failed after accepting the turn. Prior tool effects may be partial or uncertain. Inspect the working tree and Pi session before continuing; do not blindly repeat writes or commands."); }
+            try { await tasks.escalate(HUB, task.id, "Pi inference failed after accepting the turn. Prior tool effects may be partial or uncertain. Inspect the working tree and Pi session before continuing; do not blindly repeat writes or commands.", "inference_failed"); }
             catch { notify(`Pi task #${task.id} could not be escalated; inspect it with ahub task show`); }
           }
           if (!ids.length) notify("Pi inference failed; inspect its session before retrying any effects");
@@ -2156,7 +2157,7 @@ export async function startDaemon(opts: DaemonOptions) {
         taskCounts: board.counts(), approvals: [...permissions.values()].map(p => ({ peer: p.peer, tool: p.tool, at: p.createdAt })),
       };
     },
-    task: id => board.get(id), publicView: task => tasks.publicView(task),
+    task: id => board.get(id), publicView: task => tasks.publicView(task, true),
     assign: (actor, id, peer) => tasks.assignTo(id, peer, actor), escalate: (actor, id) => tasks.escalate(actor, id),
     preview: peer => {
       // The operator wrapper runs the same planner again at launch, with runtime endpoints then resolved.
@@ -2659,7 +2660,10 @@ export async function startDaemon(opts: DaemonOptions) {
           .catch((e: Error) => reply({ t: "ask", ok: false, error: e.message }));
         return;
       case "budget":
-        if (c.role !== "console") return void reply({ t: "budget", ok: false, error: "budget is a console command" });
+        if (c.role !== "console") {
+          if (msg.resume !== undefined || msg.set !== undefined) return void reply({ t: "budget", ok: false, error: "budget mutations are console commands" });
+          return void reply({ t: "budget", ok: true, budget: publicPeerBudget(budget.status(), text => tasks.nameable(text)), gate: config.budget.gate });
+        }
         if (recoveryActive()) return void reply({ t: "budget", ok: false, error: "recovery is holding mutations" });
         if (msg.resume) {
           if (!budget.override(String(msg.resume))) return void reply({ t: "budget", ok: false, error: `${msg.resume} is not paused by the budget coordinator` });

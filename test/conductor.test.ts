@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Conductor, ConductorHolds, conductorPeer, conductorStart, publicConductorStatus, publicConductorTask, requireConductor, type ConductEvent, type ConductorHooks } from "../src/hub/conductor.ts";
+import { Conductor, ConductorHolds, conductorPeer, conductorProgressSink, conductorStart, publicConductorStatus, publicConductorTask, publicPeerBudget, requireConductor, type ConductEvent, type ConductorHooks } from "../src/hub/conductor.ts";
+import { ProgressObserver } from "../src/hub/progress.ts";
+import { SupervisionFeed, type SupervisionNotice } from "../src/hub/supervision.ts";
+import type { HubEvent } from "../src/hub/events.ts";
 import { CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, TASK_TOOL_NAMES } from "../src/hub/hub-tools.ts";
 import type { Task } from "../src/hub/board.ts";
 
@@ -70,7 +73,29 @@ test("task show delegates PII policy and removes all private history/refs", () =
   const result = publicConductorTask(task(), () => ({ title: "[pii]", detail: "[pii]" }));
   expect(JSON.stringify(result)).not.toContain("secret");
   expect(result.history).toEqual([]);
-  expect(publicConductorTask(task(), (t) => ({ ...t, history: [] })).history).toEqual(task().history);
+  expect(publicConductorTask(task(), (t) => ({ ...t, history: t.history })).history).toEqual(task().history);
+  expect(publicConductorTask(task(), (t) => ({ ...t, history: [] })).history).toEqual([]);
+});
+
+test("production progress sink forwards actual structured stuck verdicts to the supervision feed", async () => {
+  const current = { ...task(), title: "ordinary parser task", owner: "codex", history: [] };
+  const notices: SupervisionNotice[] = [], events: HubEvent[] = [];
+  const feed = new SupervisionFeed({ conductor: () => "claude", scope: () => "all", tasks: () => [current], publicTitle: t => `#${t.id} ${t.title}`, isPrivate: () => false, emit: notice => { notices.push(notice); } });
+  const observer = new ProgressObserver({ tasks: () => [current], isPrivate: () => false, inference: { escalate: async () => ({ escalate: true, category: "repetition", newEvidence: true, reason: "PRIVATE-REASON" }) }, emit: conductorProgressSink(event => events.push(event), feed), notify: () => {} });
+  for (const turn of ["one", "two", "three"]) {
+    observer.observe("codex", current.id, { name: "exec_command", command: "bun test", resultText: "AssertionError: PRIVATE-OUTPUT", isError: true, turn });
+    await Bun.sleep(0);
+  }
+  expect(events.some(event => event.type === "stuck")).toBe(true);
+  expect(notices.some(notice => notice.key.endsWith(":stuck") && notice.body.includes("reason repetition"))).toBe(true);
+  expect(JSON.stringify(notices)).not.toContain("PRIVATE-");
+});
+
+test("readonly peer budget projection keeps quota measurements and excludes private pause data", () => {
+  const projected = publicPeerBudget({ pi: { windows: [{ id: "5h", used: 0.25, at: 10, stale: false, source: "PRIVATE-SOURCE" }], paused: { since: 1, resetsAt: 200, reason: "PRIVATE-REASON", summary: "PRIVATE-SUMMARY", moved: ["PRIVATE-MOVED"] } as any } }, text => !text.includes("PRIVATE-"));
+  expect(JSON.stringify(projected)).not.toContain("PRIVATE-");
+  expect((projected.pi as any).windows[0].used).toBe(0.25);
+  expect((projected.pi as any).paused).toEqual({ since: 1, resetsAt: 200, reason: "quota" });
 });
 
 test("controller binds mutations to actor, public results and ids-only audit", async () => {
