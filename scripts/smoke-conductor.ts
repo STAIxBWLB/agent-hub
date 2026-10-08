@@ -1,6 +1,6 @@
 /** Real native TUI smoke for #194/#195, using Python's standard-library PTY.
  * Preparation: bun scripts/smoke-conductor.ts --config <non-secret-config.json> --root <scratch-directory> [--model <verified-account-model>]
- * Live, after resource admission: append --run. One fixture per Claude/Codex x off/own leg, executed serially.
+ * Live, after resource admission: append --run; add --operator-file-input for a background outer harness. One fixture per Claude/Codex x off/own leg, executed serially.
  * The operator's stdin is forwarded to the actual ahub console. Approvals are never automated.
  * For native onboarding, append JSON string lines to the named .input.jsonl file; each line is actual PTY input.
  * Keep terminal transcripts private; only summary/report metadata is suitable for sharing.
@@ -17,8 +17,9 @@ import { terminalText } from "../src/cli/console-state.ts";
 const flags = process.argv.slice(2);
 function option(name: string): string | undefined { const at = flags.indexOf(name); if (at < 0) return undefined; const value = flags[at + 1]; if (!value || value.startsWith("--")) throw new Error(`${name} needs a value`); return value; }
 const sourceConfig = option("--config"); const scratch = option("--root");
-if (!sourceConfig || !scratch) throw new Error("usage: bun scripts/smoke-conductor.ts --config <non-secret-config.json> --root <scratch-directory> [--model <verified-account-model>] [--run]");
+if (!sourceConfig || !scratch) throw new Error("usage: bun scripts/smoke-conductor.ts --config <non-secret-config.json> --root <scratch-directory> [--model <verified-account-model>] [--run] [--operator-file-input]");
 const model = option("--model"); const live = flags.includes("--run");
+const fileInput = flags.includes("--operator-file-input");
 const timeoutSeconds = Number(option("--timeout-s") ?? 600);
 if (!Number.isFinite(timeoutSeconds) || timeoutSeconds < 60 || timeoutSeconds > 1800) throw new Error("--timeout-s must be 60..1800");
 const selected = option("--peer"); if (selected && selected !== "claude" && selected !== "codex") throw new Error("--peer must be claude or codex");
@@ -41,6 +42,9 @@ inspectSecrets(baseConfig);
 const env: Record<string, string | undefined> = { ...process.env, TERM: "xterm-256color" };
 // These are this harness's children, representing the operator, not inherited agent shells.
 for (const key of ["AGENTHUB_PEER_ID", "AGENTHUB_MODE", "AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) delete env[key];
+// These private PTYs are not the caller's Orca terminal/worktree. Keep account
+// configuration, but do not claim that terminal's recovery or hook ownership.
+for (const key of Object.keys(env)) if (key.startsWith("ORCA_")) delete env[key];
 const ptyScript = join(runRoot, "native-pty.py");
 writeFileSync(ptyScript, String.raw`import os, pty, select, signal, struct, sys, termios, fcntl
 pid, master = pty.fork()
@@ -116,6 +120,8 @@ async function command(args: string[], cwd: string): Promise<string> {
   return out;
 }
 let interrupted = false;
+const interrupt = () => { interrupted = true; };
+process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
 async function until<T>(read: () => Promise<T | undefined>, label: string, seconds = timeoutSeconds): Promise<T> {
   const end = Date.now() + seconds * 1000;
   while (Date.now() < end) { if (interrupted) throw new Error("operator interrupted native smoke"); const result = await read(); if (result !== undefined) return result; await Bun.sleep(1000); }
@@ -129,10 +135,11 @@ for (const peer of ["claude", "codex"]) {
   catch { versions[peer] = "unavailable"; }
 }
 const manifest: any = { kind: "native-conductor-smoke", preparedAt: new Date().toISOString(), versions, requestedCodexModel: model ?? null,
-  providerVerification: "not established by model cache or preparation", approvalMode: "manual native console input", runRoot, live, legs: [] };
+  providerVerification: "not established by model cache or preparation", approvalMode: fileInput ? "manual chat-authorized file input to native console" : "manual native console stdin", operatorInputSource: fileInput ? "chat/file-input" : "foreground stdin", runRoot, live, legs: [] };
 function save() { writeFileSync(join(runRoot, "summary.json"), JSON.stringify(manifest, null, 2) + "\n", { mode: 0o600 }); }
 
-for (const peer of selected ? [selected] : ["claude", "codex"]) for (const feed of requestedFeed ? [requestedFeed] : ["off", "own"]) {
+legs: for (const peer of selected ? [selected] : ["claude", "codex"]) for (const feed of requestedFeed ? [requestedFeed] : ["off", "own"]) {
+  if (interrupted) break legs;
   const dir = join(runRoot, `${peer}-${feed}`); mkdirSync(join(dir, ".agenthub"), { recursive: true, mode: 0o700 });
   const config = { ...baseConfig, roles: { [peer]: ["conductor", "planner", "reviewer"], local: ["implementer"], pi: ["implementer"] },
     conductor: { feed, approval_wait_s: 5 }, pi: { ...baseConfig.pi, enabled: true, auto_start: false },
@@ -154,24 +161,30 @@ for (const peer of selected ? [selected] : ["claude", "codex"]) for (const feed 
   writeFileSync(mcp, JSON.stringify({ mcpServers: { "agent-hub": { command: "bun", args: [bundle], env: { AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: dir, AGENTHUB_PEER_ID: peer } } } }, null, 2) + "\n", { mode: 0o600 });
   const prompt = `You are the conductor/reviewer for a disposable native smoke. Start local and headless pi with hub_peer_start. Hold both with hub_peer_hold. Propose exactly two class implement tasks initially owned by local: task A must write alpha.txt containing exactly ALPHA then read it and call hub_task_done with the observed check; task B must write beta.txt containing exactly BETA then read it and call hub_task_done with the observed check. Give each task a precise path plan in refs/plan. Reassign task B to pi with hub_task_assign before releasing both holds. Do not implement these tasks yourself. Never answer any permission request: tell the person to answer in ahub console. As reviewer, inspect the resulting files with Read and approve with hub_review only after their actual content matches. ${feed === "off" ? "The supervision feed is off; return after delegation and wait for a user review prompt." : "The own supervision feed is on; handle milestones without polling loops and report once both tasks are approved."} Use no network or unrelated files.`;
   writeFileSync(join(dir, "conductor-prompt.txt"), prompt + "\n", { mode: 0o600 });
-  const leg: any = { peer, feed, fixture: dir, status: "prepared", nativeTui: true, consoleApprovals: "not observed", completedTasks: 0, conductorTurns: null, conductorTokens: null, supervisionTurns: null, supervisionTokens: null };
+  const leg: any = { peer, feed, fixture: dir, status: "prepared", nativeTuiTransport: "real PTY", nativeTuiLaunched: false, nativeConductorAttached: false, consolePtyLaunched: false, consoleApprovals: "not observed", completedTasks: 0, conductorTurns: null, conductorTokens: null, supervisionTurns: null, supervisionTokens: null, operatorInputSource: fileInput ? "chat/file-input" : "foreground stdin", terminalFiles: { conductor: join(runRoot, `${peer}-${feed}-tui.terminal.txt`), console: join(runRoot, `${peer}-${feed}-console.terminal.txt`) }, inputFiles: { conductor: join(runRoot, `${peer}-${feed}-tui.input.jsonl`), console: join(runRoot, `${peer}-${feed}-console.input.jsonl`) } };
   manifest.legs.push(leg); save();
   if (!live) continue;
-  if (!process.stdin.isTTY) { leg.status = "blocked"; leg.reason = "live smoke requires operator stdin for native console approvals"; save(); continue; }
+  if (!process.stdin.isTTY && !fileInput) { leg.status = "blocked"; leg.reason = "live smoke requires foreground operator stdin or explicit --operator-file-input for manual console approvals"; save(); continue; }
   const previousRaw = process.stdin.isRaw;
   let hub: ControlClient | undefined; let tui: NativePty | undefined; let consolePty: NativePty | undefined; let input: ((data: Buffer) => void) | undefined;
   try {
     if (peer === "codex" && !model) throw new Error("pass --model only after verifying it with the installed account/provider; cached slugs do not establish access");
     await command([process.execPath, entry, "--project", dir, "up", "--no-console"], dir);
+    if (interrupted) throw new Error("operator interrupted native smoke");
     hub = await ControlClient.connect(stateDir, { role: "console", projectRoot: dir });
     consolePty = nativePty([process.execPath, entry, "--project", dir, "console"], dir, `${peer}-${feed}-console`);
+    leg.consolePtyLaunched = true; leg.status = "running"; save();
     // Read the native terminal transcript separately. stdin keys go directly to the genuine console process.
-    input = data => { if (data.includes(3)) interrupted = true; consolePty?.input(data.toString()); };
-    process.stdin.setRawMode(true); process.stdin.on("data", input); process.stdin.resume();
-    console.log(`Native ${peer}/${feed}: operator keys go to ahub console. Terminal evidence: ${join(runRoot, `${peer}-${feed}-console.terminal.txt`)}`);
+    if (!fileInput) {
+      input = data => { if (data.includes(3)) interrupted = true; consolePty?.input(data.toString()); };
+      process.stdin.setRawMode(true); process.stdin.on("data", input); process.stdin.resume();
+    }
+    console.log(`Native ${peer}/${feed}: operator keys reach ahub console via ${fileInput ? "chat-authorized .input.jsonl" : "foreground stdin"}. Terminal evidence: ${join(runRoot, `${peer}-${feed}-console.terminal.txt`)}`);
     const args = peer === "claude" ? ["--mcp-config", mcp, "--strict-mcp-config", "--allowedTools", "mcp__agent-hub__*", "Read", "--ax-screen-reader", prompt] : ["--model", model!, prompt];
     tui = nativePty([process.execPath, entry, "--project", dir, peer, ...args], dir, `${peer}-${feed}-tui`);
+    leg.nativeTuiLaunched = true; save();
     await until(async () => { const s = (await hub!.request({ t: "status" }, 3000)).status; return s?.peers?.[peer]?.attached !== false && ["idle", "busy"].includes(s?.peers?.[peer]?.state) ? true : undefined; }, "native conductor attachment", 120);
+    leg.nativeConductorAttached = true; save();
     let reviewPrompted = false;
     const completed = await until(async () => {
       const reply = await hub!.request({ t: "task", op: "hub_task_list", args: {} }, 3000);
@@ -204,12 +217,16 @@ for (const peer of selected ? [selected] : ["claude", "codex"]) for (const feed 
   finally {
     if (input) { process.stdin.off("data", input); process.stdin.setRawMode(previousRaw); process.stdin.pause(); }
     // Only our PTY wrappers and the verified fixture daemon are stopped. No shared model/service shutdown.
-    try { await tui?.close(); await consolePty?.close(); } catch (error) { leg.teardownError = terminalText((error as Error).message); save(); throw error; }
+    const stops = await Promise.allSettled([tui?.close(), consolePty?.close()]);
+    const failures = stops.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failures.length) leg.teardownError = failures.map(result => terminalText(String(result.reason))).join("; ");
     hub?.close();
-    try { await command([process.execPath, entry, "--project", dir, "kill"], dir); } catch (error) { leg.teardownError = terminalText((error as Error).message); }
+    try { await command([process.execPath, entry, "--project", dir, "kill"], dir); } catch (error) { leg.teardownError = [leg.teardownError, terminalText((error as Error).message)].filter(Boolean).join("; "); }
     save();
   }
+  if (interrupted || leg.teardownError) break legs;
 }
 save();
+process.off("SIGINT", interrupt); process.off("SIGTERM", interrupt);
 console.log(JSON.stringify({ summary: join(runRoot, "summary.json"), live, legs: manifest.legs.map((leg: any) => ({ peer: leg.peer, feed: leg.feed, status: leg.status })) }));
 if (live && manifest.legs.some((leg: any) => leg.status !== "passed")) process.exitCode = 1;
