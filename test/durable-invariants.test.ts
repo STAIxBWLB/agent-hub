@@ -230,5 +230,5 @@ test("an uncertain native receipt retains needs_review instead of fabricating co
   try {
     expect(durable.list("claude")[0]?.state).toBe("needs_review");
     expect(bus.queueList("claude")[0]?.state).toBe("needs_review");
-  } finally { await bus.close(); }
+  } finally { bus.closeJournal(); }
 });
