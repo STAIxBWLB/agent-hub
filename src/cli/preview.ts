@@ -4,7 +4,7 @@ import { loadConfig } from "../hub/daemon.ts";
 import { childEnv } from "../hub/child-process.ts";
 import { relayModelIds } from "../models/relay.ts";
 import { buildPiLaunch } from "../pi/launch.ts";
-import { buildLaunch, buildKimiLaunch, type Launch } from "./launch.ts";
+import { buildLaunch, buildKimiLaunch, claudeObservationHooks, type Launch } from "./launch.ts";
 
 const REDACTED = "[redacted]";
 const UNRESOLVED = "[unresolved]";
@@ -37,7 +37,8 @@ export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi", raw: s
       try { original ??= JSON.parse(readFileSync(file, "utf8")).statusLine; } catch { /* optional */ }
     }
     // Build with original inputs so channel selection and owned-flag validation match normal launch.
-    launch = buildLaunch(tool, args, { unattended, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir, ...(original ? { original: { command: original.command ? REDACTED : "", ...(typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}), ...(typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {}) } } : {}) }, ...(config.coordination === "turn-free" ? { facts: { script: join(import.meta.dir, "facts-hook.ts"), stateDir } } : {}) });
+    const facts = claudeObservationHooks(config, { script: join(import.meta.dir, "facts-hook.ts"), stateDir });
+    launch = buildLaunch(tool, args, { unattended, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir, ...(original ? { original: { command: original.command ? REDACTED : "", ...(typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}), ...(typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {}) } } : {}) }, ...(facts ? { facts } : {}) });
     const passthrough = args.filter(arg => !["--unattended", "--safe", "--new"].includes(arg));
     launch.args = launch.args.slice(0, launch.args.length - passthrough.length).concat(passthrough.map(publicArg));
   } else if (tool === "codex") {
@@ -69,6 +70,11 @@ export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi", raw: s
     if (mode === "tui") envNames.push("AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR");
     unresolved.push({ field: "bridge/relay endpoints and owner credentials", reason: "assigned at runtime; preview does not bind a server or start a model" });
     if (!value("--session-id") && !value("--session-file")) unresolved.push({ field: "sessionId", reason: "new native session identity is not allocated by preview" });
+  }
+  if (tool === "claude" || tool === "codex") {
+    envNames.push("AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID");
+    unresolved.push({ field: "env.AGENTHUB_INSTANCE_ID", reason: tool === "claude" ? "injected when an existing daemon instance is read at launch; preview does not read runtime state" : "injected when a verified Orca terminal launch is recorded against the daemon; preview does not record it" });
+    unresolved.push({ field: "env.AGENTHUB_LAUNCH_ID", reason: "allocated only for a verified Orca terminal launch; preview does not query Orca, allocate identity or write launch records" });
   }
   return { tool, cmd: launch.cmd, args: launch.args, settings: tool === "claude" && launch.args.includes("--settings") ? launch.args[launch.args.indexOf("--settings") + 1] : undefined, envNames: [...new Set(envNames)].sort(), ...(launch.warning ? { warning: launch.warning } : {}), unresolved, redaction: "Arbitrary user arguments, settings, commands and configured executable overrides are redacted. Environment values are never displayed.", needs: ["Native executable, accounts and runtime readiness are not checked."] };
 }

@@ -16,7 +16,7 @@ import { OmniRoute } from "../omniroute/client.ts";
 import { MemoryClient } from "../memory/client.ts";
 import { init, planInit } from "./init.ts";
 import { launcherPreview } from "./preview.ts";
-import { buildLaunch, UNATTENDED_WARNING } from "./launch.ts";
+import { buildLaunch, claudeObservationHooks, UNATTENDED_WARNING } from "./launch.ts";
 import { nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
 import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
@@ -516,8 +516,8 @@ const commands: Record<string, () => Promise<void> | void> = {
         // no such file, or no status line in it
       }
     }
-    // A turn-free project (issue #108) gets the facts hook before and after every tool call, and at Stop.
-    const facts = projectConfig().coordination === "turn-free" ? { script: join(import.meta.dir, "facts-hook.ts"), stateDir } : undefined;
+    // Turn-free facts and opted-in task sweeps share native PreToolUse/PostToolUse/Stop observations.
+    const facts = claudeObservationHooks(projectConfig(), { script: join(import.meta.dir, "facts-hook.ts"), stateDir });
     const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir, ...(original ? { original } : {}) }, ...(facts ? { facts } : {}) });
     if (launch.warning) console.error(launch.warning);
     exec(launch.cmd, launch.args);

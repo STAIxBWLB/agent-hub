@@ -248,6 +248,8 @@ export interface DaemonOptions {
   onShutdownStart?: () => void;
   /** How often the daemon checks that its project root and state dir still exist. Tests shrink this. */
   orphanWatchMs?: number;
+  /** Deterministic task-sweep time; the production default is Date.now. */
+  taskSweepNow?: () => number;
 }
 
 interface Client {
@@ -931,7 +933,7 @@ export async function startDaemon(opts: DaemonOptions) {
   ];
   const taskSweep = taskSweepConfig(config.task_sweep);
   if (taskSweep.enabled) intervals.push(setInterval(() => {
-    void tasks.sweep().catch(() => notify("task idle sweep failed; inspect hub task history before manual action"));
+    void tasks.sweep(opts.taskSweepNow?.() ?? Date.now()).catch(() => notify("task idle sweep failed; inspect hub task history before manual action"));
   }, taskSweep.interval_s * 1000));
   for (const i of intervals) i.unref?.();
   startupCleanup.push(() => { for (const i of intervals) clearInterval(i); });

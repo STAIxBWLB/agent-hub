@@ -1270,6 +1270,14 @@ ladder records. Busy/paused/offline/native-active peers, unresolved dependencies
 completion checks, queued/in-flight/held deliveries, recovery/shutdown and live
 silent cohorts suppress the sweep. Human review reminders go to the console.
 
+The Claude launcher and preview share one native-observation hook selector.
+Turn-free coordination selects facts observations; an enabled task sweep also
+selects the existing PreToolUse/PostToolUse/Stop transport in advisory mode.
+Advisory observations update native turn evidence without enabling facts
+injection. A delivery receipt or task transition never counts as a native Stop.
+Explicit caller settings remain authoritative, with a diagnostic that the
+managed idle observation hooks are disabled for that session.
+
 Automatic reassignment remains off. Explicit `auto_reassign: true` enables only
 an owner handover to an available routed alternative through Tasks' existing
 assignment path; reviewer handovers remain suggestions. No failed-work outcome
@@ -1287,6 +1295,11 @@ ownership records. JSON contains argv/settings with arbitrary user-supplied
 values and custom executable overrides redacted, environment names only, and
 explicit reasons for unresolved native-assigned endpoints/session identities.
 A preview does not assert runtime, account or executable readiness.
+Claude/Codex previews report the conditional daemon/Orca launcher identity
+environment names and unresolved reasons without reading runtime identity,
+querying Orca, allocating a launch id or exposing values. Existing Pi launch
+behavior and its builder-derived environment preview remain unchanged.
+
 
 
 ## Native context telemetry and checkpoints (issue #185)

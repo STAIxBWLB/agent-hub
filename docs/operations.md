@@ -961,6 +961,15 @@ silent turn-free cohorts suppress the sweep. An offline owner remains governed
 by the existing `tasks.release_after_min` policy. Human reviews produce console
 notices. The sweep does not change route-explain output.
 
+For Claude, `ahub claude` installs the existing PreToolUse/PostToolUse/Stop
+observation hooks when the sweep is enabled, including in advisory projects.
+The hooks return no facts in advisory mode. A native Stop establishes an idle
+boundary; a subsequent PreToolUse marks activity. A delivery acknowledgement or
+task approval does not establish native idle. Restart the daemon and relaunch
+Claude after enabling the sweep so its session receives the hooks. A caller's
+`--settings` still wins: the launcher warns that native idle observation is off,
+and the sweep cannot verify that Claude session between turns.
+
 `auto_reassign: true` explicitly allows an available alternative owner selected
 under the existing routing, role and PII constraints to receive the task at step
 three. Review-pending work always produces only a reviewer suggestion. The
@@ -1037,6 +1046,13 @@ Use `ahub claude --print-command`, `ahub codex --dry-run`,
 `ahub pi --mode tui --print-command` to inspect launch JSON.
 Environment values and arbitrary supplied values are withheld. Native-assigned
 proxy/bridge endpoints and new session identity remain unresolved.
+Claude and Codex previews include conditional `AGENTHUB_INSTANCE_ID` and
+`AGENTHUB_LAUNCH_ID` environment names with unresolved reasons. Claude's existing
+daemon identity is read at launch; a launch identity is allocated only after
+verified Orca terminal readback. Codex identities are injected when that Orca
+launch record is made. Preview neither reads those runtime identities nor
+allocates them, and never displays their values. Pi's environment preview
+continues to describe its native builder output.
 These previews do not connect to the daemon, toggle permissions, record terminal
 ownership, bind servers or start agents, sidecars or models.
 

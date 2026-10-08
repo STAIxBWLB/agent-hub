@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { planInit, init } from "../src/cli/init.ts";
 import { launcherPreview } from "../src/cli/preview.ts";
-import { buildLaunch, buildKimiLaunch } from "../src/cli/launch.ts";
+import { buildLaunch, buildKimiLaunch, claudeObservationHooks } from "../src/cli/launch.ts";
 import { buildPiLaunch } from "../src/pi/launch.ts";
 
 function tree(dir: string): Record<string, string> {
@@ -97,3 +97,40 @@ test("CLI previews neither create state nor execute configured natives, and reda
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 120_000);
+
+
+test("advisory sweep preview shares actual native hook selection and reports conditional runtime env names safely", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-observation-preview-"));
+  const originalInstance = process.env.AGENTHUB_INSTANCE_ID;
+  const originalLaunch = process.env.AGENTHUB_LAUNCH_ID;
+  const canary = "identity-value-must-stay-private";
+  try {
+    process.env.AGENTHUB_INSTANCE_ID = canary;
+    process.env.AGENTHUB_LAUNCH_ID = canary;
+    mkdirSync(join(dir, ".agenthub"));
+    writeFileSync(join(dir, ".agenthub/config.json"), JSON.stringify({ coordination: "advisory", task_sweep: { enabled: true } }));
+    const stateDir = join(dir, ".agenthub/state");
+    const before = tree(dir);
+    const preview = launcherPreview("claude", [], dir, stateDir, false);
+    const facts = claudeObservationHooks({ coordination: "advisory", task_sweep: { enabled: true } }, { script: join(import.meta.dir, "../src/cli/facts-hook.ts"), stateDir });
+    const actual = buildLaunch("claude", [], { unattended: false, statusLine: { script: join(import.meta.dir, "../src/cli/statusline-tee.ts"), stateDir }, facts });
+    expect(JSON.parse(preview.settings!).hooks).toEqual(JSON.parse(actual.args[actual.args.indexOf("--settings") + 1]!).hooks);
+    const own = launcherPreview("claude", ["--settings", canary], dir, stateDir, false);
+    expect(own.warning).toContain("native idle observation hooks are off");
+    for (const [tool, args] of [["claude", []], ["codex", []]] as const) {
+      const value = launcherPreview(tool, [...args], dir, stateDir, false);
+      expect(value.envNames).toEqual(expect.arrayContaining(["AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID"]));
+      expect(value.unresolved).toEqual(expect.arrayContaining([expect.objectContaining({ field: "env.AGENTHUB_INSTANCE_ID" }), expect.objectContaining({ field: "env.AGENTHUB_LAUNCH_ID" })]));
+      expect(JSON.stringify(value)).not.toContain(canary);
+    }
+    delete process.env.AGENTHUB_INSTANCE_ID;
+    delete process.env.AGENTHUB_LAUNCH_ID;
+    expect(launcherPreview("claude", [], dir, stateDir, false).envNames).toContain("AGENTHUB_LAUNCH_ID");
+    expect(launcherPreview("pi", ["--mode", "tui"], dir, stateDir, false).envNames).not.toContain("AGENTHUB_INSTANCE_ID");
+    expect(tree(dir)).toEqual(before);
+  } finally {
+    if (originalInstance === undefined) delete process.env.AGENTHUB_INSTANCE_ID; else process.env.AGENTHUB_INSTANCE_ID = originalInstance;
+    if (originalLaunch === undefined) delete process.env.AGENTHUB_LAUNCH_ID; else process.env.AGENTHUB_LAUNCH_ID = originalLaunch;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
