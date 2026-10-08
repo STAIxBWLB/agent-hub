@@ -180,7 +180,11 @@ function scorePartial(leg: any, stateDir: string, peer: string, tasks?: any[]): 
 
 const resumeConductor = resumeFixture ? Object.entries(baseConfig.roles ?? {}).find(([, roles]) => Array.isArray(roles) && roles.includes("conductor"))?.[0] : undefined;
 if (resumeFixture && (!resumeConductor || (selected && selected !== resumeConductor) || (requestedFeed && requestedFeed !== baseConfig.conductor?.feed))) throw new Error("resume fixture role/feed must match its existing configuration");
-legs: for (const peer of resumeFixture ? [resumeConductor!] : selected ? [selected] : ["claude", "codex"]) for (const feed of resumeFixture ? [baseConfig.conductor?.feed ?? "own"] : requestedFeed ? [requestedFeed] : ["off", "own"]) {
+const peerRuns = resumeFixture ? [resumeConductor!] : selected ? [selected] : ["claude", "codex"];
+const feedRuns = resumeFixture ? [baseConfig.conductor?.feed ?? "own"] : requestedFeed ? [requestedFeed] : ["off", "own"];
+const requestedLegs = peerRuns.flatMap(peer => feedRuns.map(feed => ({ peer, feed })));
+manifest.requestedLegs = requestedLegs;
+legs: for (const { peer, feed } of requestedLegs) {
   if (interrupted) break legs;
   const dir = resumeFixture ?? join(runRoot, `${peer}-${feed}`);
   if (!resumeFixture) {
@@ -273,18 +277,26 @@ legs: for (const peer of resumeFixture ? [resumeConductor!] : selected ? [select
     leg.status = reassigned && reviewed && started && approvalConsole && leg.conductorTurns !== null && !leg.pendingQueue?.some((row: any) => row.state === "needs_review") ? "passed" : "incomplete";
   } catch (error) { scorePartial(leg, stateDir, peer); leg.status = "incomplete"; leg.reason = terminalText((error as Error).message).slice(0, 1000); }
   finally {
-    if (input) { process.stdin.off("data", input); process.stdin.setRawMode(previousRaw); process.stdin.pause(); }
+    if (input) {
+      try { process.stdin.off("data", input); process.stdin.setRawMode(previousRaw); process.stdin.pause(); }
+      catch (error) { leg.teardownError = terminalText((error as Error).message); }
+    }
     // Only our PTY wrappers and the verified fixture daemon are stopped. No shared model/service shutdown.
     const stops = await Promise.allSettled([tui?.close(), consolePty?.close()]);
     const failures = stops.filter((result): result is PromiseRejectedResult => result.status === "rejected");
-    if (failures.length) leg.teardownError = failures.map(result => terminalText(String(result.reason))).join("; ");
-    hub?.close();
+    if (failures.length) leg.teardownError = [leg.teardownError, ...failures.map(result => terminalText(String(result.reason)))].filter(Boolean).join("; ");
+    try { hub?.close(); } catch (error) { leg.teardownError = [leg.teardownError, terminalText((error as Error).message)].filter(Boolean).join("; "); }
     try { await command([process.execPath, entry, "--project", dir, "kill"], dir); } catch (error) { leg.teardownError = [leg.teardownError, terminalText((error as Error).message)].filter(Boolean).join("; "); }
+    if (leg.teardownError) leg.status = "incomplete";
     scorePartial(leg, stateDir, peer); save();
   }
   if (interrupted || leg.teardownError) break legs;
 }
+const skippedLegs = requestedLegs.filter(requested => !manifest.legs.some((leg: any) => leg.peer === requested.peer && leg.feed === requested.feed && leg.nativeTuiLaunched));
+const allRequestedLegsRan = skippedLegs.length === 0;
+const passed = live && !interrupted && allRequestedLegsRan && manifest.legs.length === requestedLegs.length && manifest.legs.every((leg: any) => leg.status === "passed" && !leg.teardownError);
+manifest.interrupted = interrupted; manifest.allRequestedLegsRan = allRequestedLegsRan; manifest.skippedLegs = skippedLegs; manifest.passed = passed;
 save();
 process.off("SIGINT", interrupt); process.off("SIGTERM", interrupt);
-console.log(JSON.stringify({ summary: join(runRoot, "summary.json"), live, legs: manifest.legs.map((leg: any) => ({ peer: leg.peer, feed: leg.feed, status: leg.status })) }));
-if (live && manifest.legs.some((leg: any) => leg.status !== "passed")) process.exitCode = 1;
+console.log(JSON.stringify({ summary: join(runRoot, "summary.json"), live, passed, interrupted, allRequestedLegsRan, skippedLegs, legs: manifest.legs.map((leg: any) => ({ peer: leg.peer, feed: leg.feed, status: leg.status, ...(leg.teardownError ? { teardownError: leg.teardownError } : {}) })) }));
+if (live && !passed) process.exitCode = 1;
