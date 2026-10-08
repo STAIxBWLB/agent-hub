@@ -55,6 +55,15 @@ export function statusLineSettings(tee: StatusLineTee): string {
 export interface FactsHook {
   script: string;
   stateDir: string;
+  /** The same hook transport can observe native turns without injecting facts. */
+  purpose?: "facts" | "idle" | "facts-and-idle";
+}
+
+/** Shared by actual launch and read-only preview; advisory facts remain disabled. */
+export function claudeObservationHooks(config: { coordination?: string; task_sweep?: { enabled: boolean } }, paths: Pick<FactsHook, "script" | "stateDir">): FactsHook | undefined {
+  const facts = config.coordination === "turn-free";
+  const idle = config.task_sweep?.enabled === true;
+  return facts || idle ? { ...paths, purpose: facts ? (idle ? "facts-and-idle" : "facts") : "idle" } : undefined;
 }
 
 /**
@@ -90,7 +99,8 @@ export function buildLaunch(
     const notes = [
       unattended ? UNATTENDED_WARNING : "",
       ctx.statusLine && own ? "note: you passed --settings, so the hub's status line tee is off and the budget coordinator cannot see Claude's quota (ahub budget set claude <0..1> still works)." : "",
-      ctx.facts && own ? "note: you passed --settings, so the hub's turn-free facts hooks are off for this session: Claude will not see the other agents' changes at its tool calls." : "",
+      ctx.facts && own && ctx.facts.purpose !== "idle" ? "note: you passed --settings, so the hub's turn-free facts hooks are off for this session: Claude will not see the other agents' changes at its tool calls." : "",
+      ctx.facts && own && (ctx.facts.purpose === "idle" || ctx.facts.purpose === "facts-and-idle") ? "note: you passed --settings, so native idle observation hooks are off for this session: task idle sweeps cannot verify Claude between turns." : "",
     ].filter(Boolean);
     return {
       cmd: "claude",
@@ -104,4 +114,11 @@ export function buildLaunch(
     args: ["--enable", "tui_app_server", "--remote", ctx.proxyUrl, ...(unattended ? ["--dangerously-bypass-approvals-and-sandbox"] : []), ...passthrough],
     ...warning,
   };
+}
+
+
+/** The daemon and preview use exactly the same ACP command insertion. */
+export function buildKimiLaunch(command: string[], model?: string): Launch {
+  const [cmd, ...args] = command;
+  return { cmd: cmd!, args: model ? ["--model", model, ...args] : args };
 }

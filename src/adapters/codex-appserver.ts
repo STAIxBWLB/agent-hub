@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { Server, ServerWebSocket } from "bun";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
+import { codexContext, type ContextReading } from "../hub/context-window.ts";
 import { childEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 
 export interface CodexOptions {
@@ -20,6 +21,7 @@ export interface CodexOptions {
   onUsage?: (rateLimits: unknown, hard: boolean) => void;
   /** Tokens the thread used since the previous update (see `tokenTotal` for how they are counted). */
   onTokens?: (added: number) => void;
+  onContext?: (reading: ContextReading) => void;
   /** The native id of each turn as it starts, after the peer turned busy (issue #33: `ahub undo --context`). */
   onTurn?: (turnId: string) => void;
   /**
@@ -62,6 +64,8 @@ export class CodexPeer extends BasePeer {
   /** Claimed as soon as a TUI WebSocket opens, before it can start a thread. */
   private claimedTui: Link | undefined;
   private threadId = "";
+  private contextEpoch = 0;
+  get sessionGeneration(): number { return this.contextEpoch; }
   /**
    * The thread's running token total at the last update, and whether the thread started here. Codex 0.156.1 also
    * sends `thread/tokenUsage/updated` for compaction (an estimate in `last`, `total` unchanged), a usage-limit refresh
@@ -344,6 +348,7 @@ export class CodexPeer extends BasePeer {
     clearInterval(this.usageTimer);
     this.link = undefined;
     this.threadId = "";
+    this.contextEpoch++;
     this.activeTurns.clear();
     for (const p of this.pending.values()) {
       if (p.deliveryId) this.delivery({ id: p.deliveryId, state: "needs_review", reason: "Codex TUI detached" });
@@ -396,6 +401,7 @@ export class CodexPeer extends BasePeer {
     this.freshThread = fresh;
     this.link = link;
     this.threadId = threadId;
+    this.contextEpoch++;
     this.activeTurns.clear();
     this.forgetTurn();
     this.opts.log?.(`[${this.id}] thread ${threadId}`);
@@ -440,6 +446,7 @@ export class CodexPeer extends BasePeer {
     }
     if (link !== this.link || params.threadId !== this.threadId) return;
     if (method === "thread/tokenUsage/updated") {
+      this.opts.onContext?.(codexContext(params.tokenUsage, this.threadId, Date.now()));
       const total = Number(params.tokenUsage?.total?.totalTokens);
       if (!Number.isFinite(total)) return;
       const added = this.tokenTotal === undefined ? (this.freshThread ? total : 0) : Math.max(0, total - this.tokenTotal);

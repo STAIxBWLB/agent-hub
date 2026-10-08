@@ -1,3 +1,4 @@
+import { buildKimiLaunch } from "../cli/launch.ts";
 import { ProgressObserver, normalizeCodexObservation, normalizeClaudeObservation } from "./progress.ts";
 import type { ToolObservation } from "../models/route/signals.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -7,6 +8,7 @@ import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
+import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
 import { stripUntrusted } from "./config-trust.ts";
 import { eventLog, readEvents, tokenDeltas } from "./events.ts";
 import { ExecutionBudget } from "./execution-budget.ts";
@@ -56,6 +58,8 @@ import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./li
 import { changedPaths, repoOf, snapshot, Turns, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 
+import { ContextWindows, DEFAULT_CONTEXT, claudeContext, type ContextConfig } from "./context-window.ts";
+
 export interface HubConfig {
   watchdog_ms: number;
   kimi_cmd: string[];
@@ -66,6 +70,7 @@ export interface HubConfig {
   memory: { enabled: boolean; worker_url?: string; inject_tokens: number; brief_items: number };
   roles: Record<string, string[]>;
   budget: BudgetConfig;
+  context: ContextConfig;
   inference: InferenceConfig;
   omniroute: OmniRouteConfig;
   pi: { enabled: boolean; auto_start: boolean; cmd: string[]; backend: "auto" | "dgx" | "mlx"; dgx_coding: string; dgx_fast: string; max_steps: number };
@@ -76,6 +81,8 @@ export interface HubConfig {
   approvals: { timeout_s: number; notify: boolean };
   /** An owner offline this long loses its open tasks back to routing; 0 turns it off (issue #6). */
   tasks: { release_after_min: number };
+  /** Between-turn task escalation, disabled unless explicitly enabled (#186). */
+  task_sweep: TaskSweepConfig;
   /** A command per task class run when the owner marks the task done, and its timeout (issue #7). */
   checks: { timeout_s: number; [cls: string]: string | number };
   /** A git tree at each turn boundary for `ahub turns` and `ahub undo`, the last `keep` per peer (issue #33). */
@@ -110,6 +117,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   memory: { enabled: true, inject_tokens: 2000, brief_items: 8 },
   roles: DEFAULT_ROLES,
   budget: DEFAULT_BUDGET,
+  context: DEFAULT_CONTEXT,
   inference: DEFAULT_INFERENCE,
   omniroute: DEFAULT_OMNIROUTE,
   pi: { enabled: false, auto_start: false, cmd: ["pi"], backend: "auto", dgx_coding: "coding", dgx_fast: "fast", max_steps: 30 },
@@ -118,6 +126,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   // Off here, so tests and a hub without a config file stay silent; a project's config defaults it on for macOS.
   approvals: { timeout_s: 120, notify: false },
   tasks: { release_after_min: 30 },
+  task_sweep: DEFAULT_TASK_SWEEP,
   checks: { timeout_s: 600 },
   // Off here like approvals.notify, so tests (whose cwd is this repository) write no objects; a project's config turns it on.
   snapshots: { enabled: false, keep: 20 },
@@ -136,7 +145,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = ["config.json", "config.local.json"] as const;
-const CONFIG_BLOCKS = ["memory", "roles", "budget", "inference", "omniroute", "local", "pi", "approvals", "tasks", "checks", "snapshots", "limits", "review", "recovery", "capabilities", "mlx"];
+const CONFIG_BLOCKS = ["memory", "roles", "budget", "context", "inference", "omniroute", "local", "pi", "approvals", "tasks", "task_sweep", "checks", "snapshots", "limits", "review", "recovery", "capabilities", "mlx"];
 
 export function loadConfig(cwd: string): HubConfig {
   const ignored: string[] = [];
@@ -181,6 +190,7 @@ export function loadConfig(cwd: string): HubConfig {
     memory: { ...DEFAULT_CONFIG.memory, ...file.memory },
     roles: { ...DEFAULT_CONFIG.roles, ...file.roles },
     budget: { ...DEFAULT_CONFIG.budget, wait_max_min: 30, ...file.budget }, // on with any project config (issue #36)
+    context: { ...DEFAULT_CONTEXT, ...file.context },
     inference: { ...DEFAULT_CONFIG.inference, ...file.inference },
     omniroute: { ...DEFAULT_CONFIG.omniroute, ...file.omniroute },
     local: { ...DEFAULT_CONFIG.local, ...file.local },
@@ -190,6 +200,7 @@ export function loadConfig(cwd: string): HubConfig {
       notify: typeof file.approvals?.notify === "boolean" ? file.approvals.notify : process.platform === "darwin",
     },
     tasks: { ...DEFAULT_CONFIG.tasks, ...file.tasks },
+    task_sweep: taskSweepConfig(file.task_sweep),
     checks: { ...DEFAULT_CONFIG.checks, ...file.checks },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
     limits: { ...PROJECT_LIMITS, ...file.limits }, // on with any project config (issue #38)
@@ -237,6 +248,8 @@ export interface DaemonOptions {
   onShutdownStart?: () => void;
   /** How often the daemon checks that its project root and state dir still exist. Tests shrink this. */
   orphanWatchMs?: number;
+  /** Deterministic task-sweep time; the production default is Date.now. */
+  taskSweepNow?: () => number;
 }
 
 interface Client {
@@ -250,11 +263,15 @@ type Sock = ServerWebSocket<Client>;
 /** A peer that lives in another process and attaches over the control WS (the Claude channel plugin). */
 class WsPeer extends BasePeer {
   private generation = crypto.randomUUID();
+  // Checkpoints become stale at hello/claim, before asynchronous recall finishes and attach changes delivery generation.
+  private claimGeneration = crypto.randomUUID();
+  get sessionGeneration(): string { return this.claimGeneration; }
   private delivered = new Set<string>();
   private sock: Sock | undefined;
   private claimed: Sock | undefined;
   /** Called at hello, before the async preface: the newest hello wins even if an older one's recall finishes last. */
   claim(sock: Sock): void {
+    this.claimGeneration = crypto.randomUUID();
     this.claimed = sock;
   }
   /** A hello that has not finished its preface yet. The peer reads as offline until then, and a session standing by
@@ -557,6 +574,8 @@ export async function startDaemon(opts: DaemonOptions) {
     triage: { classify: (title, detail) => inference?.triage(title, detail) ?? Promise.resolve(undefined), onCampus: () => onCampus() },
     quota: (): ReturnType<Budget["headroom"]> => budget.headroom(), // budget is built below; this runs at assignment time
     review: config.review,
+    sweep: taskSweepConfig(config.task_sweep),
+    sweepHeld: () => stopping || recoveryActive(),
     roles: config.roles,
     turnFree,
     capable: (peer) => capable.has(peer),
@@ -744,36 +763,61 @@ export async function startDaemon(opts: DaemonOptions) {
     if (turn) turnTasks.set(turn.id, [...new Set([...(turnTasks.get(turn.id) ?? []), t.id])]);
   };
   // ---- budget relay -------------------------------------------------------------------------------------------
-  const checkpointWaits = new Map<PeerId, (summary: string | undefined) => void>();
+  const checkpointWaits = new Map<PeerId, { reason: "quota" | "context"; requestId: string; session: string | undefined; valid: () => boolean; done: (summary: string | undefined) => void }>();
+  const contextSession = (peer: PeerId): string | undefined => {
+    const p = bus.peers.get(peer);
+    if (p instanceof WsPeer && p.claiming) return undefined;
+    if (peer === "claude") { const c = claudeSession(); return c.sessionId ? `${c.sessionId}:${c.launchId ?? ""}` : undefined; }
+    if (p instanceof CodexPeer) return p.thread || undefined;
+    if (p instanceof AcpPeer || p instanceof PiPeer) { const id = p.recoveryMetadata().sessionId; return typeof id === "string" ? id : undefined; }
+    return undefined;
+  };
+  const contextPii = (peer: PeerId) => board.list().some(t => t.state !== "approved" && (t.owner === peer || t.reviewer === peer) && tasks.isPii(t));
+  const requestCheckpoint = (peer: PeerId, reason: "quota" | "context"): Promise<string | undefined> => {
+    // One outstanding request per peer. A quota transition may proceed without a summary rather than steal a context waiter.
+    if (checkpointWaits.has(peer) || recoveryActive() || stopping) return Promise.resolve(undefined);
+    const owner = bus.peers.get(peer);
+    const state = bus.stateOf(peer);
+    const session = contextSession(peer);
+    const generation = owner instanceof WsPeer || owner instanceof CodexPeer ? owner.sessionGeneration : undefined;
+    if (!owner || (owner instanceof WsPeer && owner.claiming) || (state !== "idle" && state !== "busy") || (reason === "context" && (!session || turns.get(peer)?.private || contextPii(peer)))) return Promise.resolve(undefined);
+    const openWork = board.list().some((t) => (["proposed", "in_progress", "changes_requested", "in_review"].includes(t.state) && t.owner === peer) || (t.state === "in_review" && t.reviewer === peer));
+    if (!openWork && !bus.queued(peer) && !bus.hasInFlight(peer) && state !== "busy") {
+      if (reason === "quota") log(`budget ${peer}: no open work, no checkpoint`);
+      return Promise.resolve(undefined);
+    }
+    const requestId = randomUUID();
+    const body = reason === "quota"
+      ? "Checkpoint request: your quota window is almost used up and the hub is about to pause you. Finish the step you are on, write what you were doing, what is half done and what whoever continues must know to .agenthub/checkpoint.md, then call hub_checkpoint {summary} with the same text. Your open tasks will be handed to another peer; you will be resumed when the window resets."
+      : `Checkpoint request: your native context window is near the configured threshold. Finish the step you are on and call hub_checkpoint {summary, request_id: "${requestId}"} with what you were doing, what is half done and what a fresh session would need. This only saves a checkpoint; keep your tasks and session. The operator decides whether to continue or restart. Do not include private task text.`;
+    const ask = newEnvelope(HUB, body, { to: [peer], kind: "budget", priority: "important" });
+    return new Promise((resolve) => {
+      const valid = () => !stopping && !recoveryActive() && bus.peers.get(peer) === owner && (!(owner instanceof WsPeer || owner instanceof CodexPeer) || owner.sessionGeneration === generation) && ["idle", "busy"].includes(bus.stateOf(peer)) && contextSession(peer) === session;
+      const done = (summary: string | undefined) => {
+        clearTimeout(timer);
+        checkpointWaits.delete(peer);
+        if (summary === undefined) bus.withdraw(ask.id);
+        resolve(summary);
+      };
+      const timer = setTimeout(() => done(undefined), config.budget.checkpoint_timeout_s * 1000);
+      checkpointWaits.set(peer, { reason, requestId, session, valid, done });
+      bus.publish(ask);
+    });
+  };
+  const contexts = new ContextWindows(config.context, (peer, reading) => {
+    if (!["idle", "busy"].includes(bus.stateOf(peer)) || recoveryActive() || stopping) return false;
+    event({ type: "context_pressure", peer, source: reading.source, measuredAt: reading.measuredAt, used: reading.used!, window: reading.window });
+    notify(`context: ${peer} crossed ${Math.round(config.context.gate * 100)}% (${reading.source}, measured ${new Date(reading.measuredAt).toISOString()}); the operator controls session continuation`);
+    if (peer === "claude" || peer === "codex") void requestCheckpoint(peer, "context").catch(() => {});
+    return true;
+  });
   const PLATFORM: Record<PeerId, string> = { claude: "claude", codex: "codex", kimi: "kimi" };
   const budget = new Budget(join(opts.stateDir, "hub.db"), config.budget, {
     pause: (peer) => bus.pause(peer),
     resume: (peer) => {
       if (!manualPaused.has(peer)) bus.resume(peer);
     },
-    requestCheckpoint: (peer) => {
-      const state = bus.stateOf(peer);
-      if (state !== "idle" && state !== "busy") return Promise.resolve(undefined); // nobody there to answer
-      const openWork = board.list().some((t) => (["proposed", "in_progress", "changes_requested", "in_review"].includes(t.state) && t.owner === peer) || (t.state === "in_review" && t.reviewer === peer));
-      if (!openWork && !bus.queued(peer) && !bus.hasInFlight(peer) && state !== "busy") {
-        log(`budget ${peer}: no open work, no checkpoint`);
-        return Promise.resolve(undefined);
-      }
-      const ask =
-        newEnvelope(HUB, "Checkpoint request: your quota window is almost used up and the hub is about to pause you. Finish the step you are on, write what you were doing, what is half done and what whoever continues must know to .agenthub/checkpoint.md, then call hub_checkpoint {summary} with the same text. Your open tasks will be handed to another peer; you will be resumed when the window resets.", { to: [peer], kind: "budget", priority: "important" });
-      bus.publish(ask);
-      return new Promise((resolve) => {
-        const timer = setTimeout(() => done(undefined), config.budget.checkpoint_timeout_s * 1000);
-        const done = (summary: string | undefined) => {
-          clearTimeout(timer);
-          checkpointWaits.delete(peer);
-          // A busy peer may never have seen the request: left in its queue it would arrive after the resume, asking for a checkpoint of nothing.
-          if (summary === undefined) bus.withdraw(ask.id);
-          resolve(summary);
-        };
-        checkpointWaits.set(peer, done);
-      });
-    },
+    requestCheckpoint: (peer) => requestCheckpoint(peer, "quota"),
     platformContext: async (peer) => {
       const platform = PLATFORM[peer];
       if (!config.memory.enabled || !platform) return undefined;
@@ -844,7 +888,32 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   // Claude's numbers arrive through the status line tee `ahub claude` installs (src/cli/statusline-tee.ts).
   let claudeUsageSeen = 0;
+  let claudeContextSeen = "";
+  const contextTailSeen = new Map<PeerId, string>();
   const intervals = [
+    setInterval(() => {
+      for (const pending of checkpointWaits.values()) if (!pending.valid()) pending.done(undefined);
+      for (const peer of bus.knownPeers()) {
+        contexts.retry(peer, contextSession(peer));
+        const reading = contexts.view(peer, contextSession(peer), bus.peers.has(peer) && ["idle", "busy", "paused"].includes(bus.stateOf(peer)));
+        const stamp = JSON.stringify(reading);
+        if (contextTailSeen.get(peer) !== stamp) {
+          contextTailSeen.set(peer, stamp);
+          for (const c of consoles) if (c.data.tail) c.send(JSON.stringify({ t: "context", peer, reading }));
+        }
+      }
+      try {
+        const file = join(opts.stateDir, "claude-context.json");
+        const payload = readFileSync(file, "utf8");
+        if (payload === claudeContextSeen) return;
+        const c = JSON.parse(payload);
+        const session = claudeSession();
+        if (c.instanceId !== instanceId || !session.sessionId || c.sessionId !== session.sessionId || c.launchId !== session.launchId || !["idle", "busy", "paused"].includes(bus.stateOf("claude"))) return;
+        claudeContextSeen = payload;
+        const bound = contextSession("claude");
+        if (bound) contexts.report("claude", claudeContext(c.context, bound, c.at), bound);
+      } catch { /* absent or unreadable native telemetry is unknown */ }
+    }, 1000),
     setInterval(() => budget.tick(), 30_000),
     // A verified context path whose hooks stopped altogether has no boundary left to notice it at (issue #108).
     setInterval(() => { for (const peer of [...capable]) checkCapability(peer); }, 30_000),
@@ -862,6 +931,10 @@ export async function startDaemon(opts: DaemonOptions) {
       }
     }, 5_000),
   ];
+  const taskSweep = taskSweepConfig(config.task_sweep);
+  if (taskSweep.enabled) intervals.push(setInterval(() => {
+    void tasks.sweep(opts.taskSweepNow?.() ?? Date.now()).catch(() => notify("task idle sweep failed; inspect hub task history before manual action"));
+  }, taskSweep.interval_s * 1000));
   for (const i of intervals) i.unref?.();
   startupCleanup.push(() => { for (const i of intervals) clearInterval(i); });
 
@@ -960,8 +1033,24 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_checkpoint": {
         const summary = String(a.summary ?? "").trim();
         if (!summary) throw new Error("summary is required");
+        const pending = checkpointWaits.get(by);
+        if (!pending || !pending.valid()) { pending?.done(undefined); throw new Error("checkpoint request expired or its peer/session changed"); }
+        if (pending.reason === "context") {
+          if (a.request_id !== pending.requestId) throw new Error("context checkpoint request_id does not match");
+          if (piiTurn || turns.get(by)?.private || contextPii(by) || !tasks.nameable(summary)) { pending.done(undefined); throw new Error("private context checkpoints are not saved or shared"); }
+          // No broadcast, body-bearing notice or quota record. Memory's cloud observer is allowed only after the PII/session fences.
+          const file = join(opts.stateDir, `context-checkpoint-${by}.json`);
+          writeFileSync(`${file}.tmp`, JSON.stringify({ at: Date.now(), instanceId, session: pending.session, summary }), { mode: 0o600 });
+          chmodSync(`${file}.tmp`, 0o600);
+          renameSync(`${file}.tmp`, file);
+          pending.done(summary);
+          if (config.memory.enabled) await memory.save({ text: summary, title: `agent-hub ${by} context checkpoint`, project: opts.cwd, metadata: { peer: by, kind: "handover" } }).catch(() => undefined);
+          notify(`context: ${by} checkpoint saved locally; no tasks or session changed`);
+          return "context checkpoint saved locally; keep your tasks and session, the operator decides the next step";
+        }
+        if (a.request_id && a.request_id !== pending.requestId) throw new Error("checkpoint request_id does not match");
         budget.checkpointed(by, summary);
-        checkpointWaits.get(by)?.(summary);
+        pending.done(summary);
         return "checkpoint received; you will be paused now and resumed when your window resets";
       }
       case "hub_task_list":
@@ -1046,7 +1135,7 @@ export async function startDaemon(opts: DaemonOptions) {
       return true;
     });
   };
-  const claudeSession = (): { sessionId?: string; transcriptPath?: string } => {
+  const claudeSession = (): { sessionId?: string; transcriptPath?: string; launchId?: string } => {
     try {
       const value = JSON.parse(readFileSync(join(opts.stateDir, "claude-session.json"), "utf8"));
       if (value.instanceId !== instanceId) return {};
@@ -1056,6 +1145,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (current?.launchId && value.launchId !== current.launchId) return {};
       } catch { /* no managed terminal record: the instance fence is still enforced */ }
       return {
+        ...(typeof value.launchId === "string" ? { launchId: value.launchId } : {}),
         ...(typeof value.sessionId === "string" && value.sessionId ? { sessionId: value.sessionId } : {}),
         ...(typeof value.transcriptPath === "string" && value.transcriptPath ? { transcriptPath: value.transcriptPath } : {}),
       };
@@ -1176,7 +1266,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      bus.knownPeers().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); return [id, { state: bus.stateOf(id), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
+      bus.knownPeers().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
     ),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
     ...(modelRelay ? { models: modelRelay.status() } : {}),
@@ -1585,8 +1675,8 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (peer !== "local") await existing?.stop();
     if (peer === "kimi") {
-      const [bin, ...rest] = config.kimi_cmd;
-      const cmd = args.model ? [bin!, "--model", args.model, ...rest] : config.kimi_cmd;
+      const launch = buildKimiLaunch(config.kimi_cmd, args.model);
+      const cmd = [launch.cmd, ...launch.args];
       const kimi = new AcpPeer("kimi", {
         cmd,
         ...(args.model ? { launchModel: args.model } : {}),
@@ -1614,6 +1704,7 @@ export async function startDaemon(opts: DaemonOptions) {
       let codexSteering = false;
       const codex = new CodexPeer("codex", {
         onTokens: (added) => void addTokens("codex", added),
+        onContext: (reading) => contexts.report("codex", reading, contextSession("codex")),
         onTurn: (native) => {
           const open = turns.get("codex");
           if (open) turnLog?.native(open.id, native);
@@ -1912,6 +2003,8 @@ export async function startDaemon(opts: DaemonOptions) {
   }
 
   function uiSnapshot(after: number) {
+    const quota = budget.status();
+    const peers = [...new Set([...Object.keys(quota), ...bus.knownPeers()])];
     return {
       ok: true,
       projectId,
@@ -1922,7 +2015,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // Refs and history can themselves quote private text. The dashboard needs neither.
         return { id: task.id, title: view.title, detail: view.detail, class: task.class, state: task.state, owner: task.owner, reviewer: task.reviewer };
       }),
-      budget: budget.status(),
+      budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[id] ?? { windows: [] }), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
       permissions: [...permissions.values()].map(({ push }) => {
         const req = JSON.parse(push);
         // Local tool titles quote file contents and commands, including those of PII turns.
@@ -2282,6 +2375,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role !== "console" || c.tail) return;
         c.tail = bus.tap((e) => sock.send(JSON.stringify({ t: "event", e: redact(e) })));
         for (const p of permissions.values()) sock.send(p.push);
+        for (const peer of bus.knownPeers()) sock.send(JSON.stringify({ t: "context", peer, reading: contexts.view(peer, contextSession(peer), bus.peers.has(peer) && ["idle", "busy", "paused"].includes(bus.stateOf(peer))) }));
         return;
       case "ui":
         if (c.role !== "console") return void reply({ t: "ui", ok: false, error: "ui is a console command" });
@@ -2410,7 +2504,7 @@ export async function startDaemon(opts: DaemonOptions) {
     writeStatus();
     dashboard?.stop();
     for (const i of intervals) clearInterval(i);
-    for (const done of checkpointWaits.values()) done(undefined);
+    for (const pending of checkpointWaits.values()) pending.done(undefined);
     for (const p of permissions.values()) p.done(undefined);
     try {
       // A peer can still be inside memory recall or its native handshake when kill arrives.

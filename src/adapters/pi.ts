@@ -1,3 +1,4 @@
+import { buildPiLaunch } from "../pi/launch.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
@@ -35,14 +36,6 @@ type RpcMessage = { type?: string; id?: string | number; command?: string; succe
 type VerifiedEmptyResume = { sessionId: string };
 function ownerStillAlive(pid: number, signature: string | undefined): boolean { const current = processSignature(pid); if (current !== undefined) return current === signature; try { process.kill(pid, 0); return true; } catch { return false; } }
 
-const modelFor = (backend: PiOptions["backend"], models: PiModelDescriptor[]): string => {
-  const ids = models.map((m) => m.id);
-  const find = (needle: string) => ids.find((id) => id === needle) ?? needle;
-  if (backend === "mlx") return find("mlx/fast");
-  if (backend === "dgx") return find("dgx/coding");
-  if (ids.includes("hub/auto")) return "hub/auto";
-  return find(ids.find((id) => id === "dgx/coding") ? "dgx/coding" : ids.find((id) => id === "mlx/fast") ?? "dgx/coding");
-};
 
 export class PiPeer extends BasePeer {
   readonly hubNative = true;
@@ -274,14 +267,11 @@ export class PiPeer extends BasePeer {
     const extension = resolve(join(import.meta.dir, "../pi/extension.ts"));
     const inherited: NodeJS.ProcessEnv = {};
     for (const key of ["PATH", "HOME", "USER", "SHELL", "TMPDIR", "TERM", "TERM_PROGRAM", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "CODEX_HOME"]) if (process.env[key]) inherited[key] = process.env[key];
-    const env: NodeJS.ProcessEnv = { ...inherited, PI_CODING_AGENT_DIR: join(this.opts.stateDir, "pi"), AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${bridge.port}`, AGENTHUB_PI_BRIDGE_TOKEN: token, AGENTHUB_PI_OWNER_TOKEN: token, AGENTHUB_PI_RELAY_URL: this.opts.relay.url, AGENTHUB_PI_RELAY_TOKEN: this.opts.relay.token, AGENTHUB_PI_MODELS: JSON.stringify(this.opts.relay.models), AGENTHUB_PI_TOOLS: JSON.stringify(this.opts.tools), AGENTHUB_PI_MAX_STEPS: String(this.opts.maxSteps ?? 30) };
-    const args = [ ...(this.opts.mode === "headless" ? ["--mode", "rpc"] : []), "--provider", "agent-hub-local", "--model", this.opts.model ?? modelFor(this.opts.backend, this.opts.relay.models), "--models", this.opts.relay.models.map((model) => `agent-hub-local/${model.id}`).join(","), "--no-builtin-tools", "--no-skills", "--no-prompt-templates", "--no-extensions", "--extension", extension, ...(this.opts.preamble ? ["--append-system-prompt", this.opts.preamble] : []), "--session-dir", join(this.opts.stateDir, "pi-sessions")];
-    if (this.opts.sessionFile) args.push("--session", this.opts.sessionFile); else if (this.opts.sessionId) args.push("--session-id", this.opts.sessionId);
-    const command = this.opts.cmd ?? ["pi"];
-    this._tuiLaunch = { cmd: command[0]!, args: [...command.slice(1), ...args], env };
+    this._tuiLaunch = buildPiLaunch(this.opts, inherited, extension, bridge.port!, token);
+    const { cmd: bin, args, env } = this._tuiLaunch;
     if (this.opts.mode === "tui") { return; }
     // Its own process group, stopped as a whole (#115, as Codex's in #113).
-    this.proc = spawn(command[0]!, [...command.slice(1), ...args], { cwd: this.opts.cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
+    this.proc = spawn(bin, args, { cwd: this.opts.cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
     trackGroup(this.proc);
     this.proc.stdout.on("data", (chunk) => this.onOutput(String(chunk)));
     this.proc.stderr.on("data", (chunk) => this.opts.log?.(`[${this.id}] ${String(chunk).trimEnd()}`));

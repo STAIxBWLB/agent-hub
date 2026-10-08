@@ -62,9 +62,9 @@ test("manifest identity mismatch refuses before opening a socket", async () => {
   await expect(ControlClient.connect(stateDir, { role: "console", projectId: "wrong", projectRoot: ROOT }, 200)).rejects.toThrow(/does not match/);
 });
 
-test.each([9, 12])("a matching source protocol (%i) can be selected explicitly for upgrade preflight", async (source) => {
-  expect(PROTOCOL).toBe(13);
-  expect(RECOVERY_SOURCE_PROTOCOLS).toContain(source); // 12: the released 0.12.3 is a supported upgrade source (issue #108)
+test.each([9, 12, 13])("a matching source protocol (%i) can be selected explicitly for upgrade preflight", async (source) => {
+  expect(PROTOCOL).toBe(14);
+  expect(RECOVERY_SOURCE_PROTOCOLS).toContain(source); // Released protocol 12 and 13 remain authenticated upgrade sources on target 14 (#185).
   const stateDir = mkdtempSync(join(tmpdir(), "agent-hub-control-legacy-"));
   const srv = Bun.serve<{ }>( {
     hostname: "127.0.0.1",

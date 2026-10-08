@@ -4,12 +4,12 @@ Native multi-agent hub for one developer's machine: Claude Code, Codex, Kimi Cod
 hub-owned local-LLM worker collaborate as peers in independent project directories, with
 task-aware model routing (Switchyard) in front of a self-hosted gateway (OmniRoute).
 
-Status: 0.12.2, control protocol 11. Durable delivery records distinguish queued
+Status: 0.12.16, control protocol 14. Durable delivery records distinguish queued
 work from uncertain execution. The [smoke checklist](docs/smoke.md) records
 verified paths and remaining prerequisites.
 
 Read the [operations guide](docs/operations.md) for the daily workflow, queue
-reconciliation, and the staged protocol-9/10 to protocol-11 upgrade command.
+reconciliation, and the staged upgrade command for supported source protocols.
 Controlled recovery preserves work; uncertain effects are never automatically
 replayed and may require operator review.
 
@@ -28,7 +28,7 @@ cd <your project> && ahub init && ahub up && ahub tail
 Or install the same version from GitHub:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.0 && ahub setup
+bun add -g github:STAIxBWLB/agent-hub#v0.12.16 && ahub setup
 ```
 
 The installed commands remain `ahub` and `agent-hub`.
@@ -43,6 +43,19 @@ and agent sessions so both load the update.
 - [Design spec](docs/specs/2026-09-19-agent-hub-design.md): how it is built and why, with every amendment made along the way
 - [Smoke checklist](docs/smoke.md): the live checks, and what has and has not been verified against real agents
 - [Changelog](CHANGELOG.md), [Contributing](CONTRIBUTING.md)
+
+## What ahub changes on your machine
+
+`ahub init --dry-run --json` lists missing project defaults, the managed AGENTS.md
+block, legacy CLAUDE.md cleanup and gitignore updates before writing them.
+The preview does not register the project.
+
+`ahub claude|codex|kimi|pi --print-command` (also `--dry-run`) prints the native
+argv, Claude session settings and environment variable names without launching.
+It uses the normal command builders. Arbitrary user arguments, configured commands
+and settings are redacted; runtime-assigned endpoints and session identities are
+explicitly unresolved. It does not check executable or account readiness.
+See [Security notes](docs/security.md).
 
 ## Why not agent-bridge
 

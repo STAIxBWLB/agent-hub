@@ -103,8 +103,9 @@ test("control link: token file is 0600, wrong token and browser origins are refu
 
   const ws = new WebSocket(`ws://127.0.0.1:${daemon.port}`);
   const code = await new Promise<number>((resolve) => {
-    ws.onopen = () => ws.send(JSON.stringify({ t: "hello", token: "nope", role: "console" }));
+    ws.onopen = () => ws.send(JSON.stringify({ t: "hello", v: PROTOCOL, token: "nope", role: "console" }));
     ws.onclose = (ev) => resolve(ev.code);
+    ws.onmessage = () => { resolve(0); ws.close(); }; // a welcome with the wrong token must fail an assertion, not time out
   });
   expect(code).toBe(4401);
 });

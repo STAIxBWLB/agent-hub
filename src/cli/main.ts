@@ -14,8 +14,9 @@ import { openManager, startManager, stopManager } from "../hub/manager.ts";
 import type { BusEvent } from "../hub/bus.ts";
 import { OmniRoute } from "../omniroute/client.ts";
 import { MemoryClient } from "../memory/client.ts";
-import { init } from "./init.ts";
-import { buildLaunch, UNATTENDED_WARNING } from "./launch.ts";
+import { init, planInit } from "./init.ts";
+import { launcherPreview } from "./preview.ts";
+import { buildLaunch, claudeObservationHooks, UNATTENDED_WARNING } from "./launch.ts";
 import { nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
 import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
@@ -29,7 +30,8 @@ import { recordTerminalLaunch } from "./terminal-recovery.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
 import { setupOllamaModel } from "./models-setup.ts";
 
-import { backendLine, peerLine, type BackendRow, type PeerRow } from "./status-lines.ts";
+import { unknownContext } from "../hub/context-window.ts";
+import { backendLine, contextLine, peerLine, type BackendRow, type PeerRow } from "./status-lines.ts";
 import { parseSince, readEvents } from "../hub/events.ts";
 import { formatReport, summarize } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
@@ -53,15 +55,15 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub ui --all [--no-open]      open the unified project dashboard
   ahub ui --all --stop           stop only the dashboard manager
   ahub setup [--yes]            install or update the Claude Code channel plugin from this package, then run doctor
-  ahub init                     write .agenthub/config.json and the AGENTS.md marker block (drops a legacy CLAUDE.md block)
+  ahub init [--dry-run --json]   preview or write .agenthub/config.json and the AGENTS.md marker block (drops a legacy CLAUDE.md block)
   ahub up [--unattended]        start the daemon for this directory
   ahub upgrade --to <version> [--dry-run] [--yes]   review and upgrade running projects
   ahub restart [--dry-run] [--yes]                 recover this project's runtime
   ahub recovery status|resume|abort <operation-id> inspect, resume or cancel a preflight
-  ahub claude [args...]         launch Claude Code with the hub channel   [--unattended]
-  ahub codex [args...]          start the Codex adapter and attach the TUI [--unattended]
-  ahub kimi [--model <alias>]   start Kimi headless under ACP
-  ahub pi [--mode headless|tui] [--backend auto|dgx|mlx] [--session-id <id>] [--session-file <path>]  start Pi
+  ahub claude [--print-command] [args...]         launch Claude Code with the hub channel   [--unattended]
+  ahub codex [--print-command] [args...]          start the Codex adapter and attach the TUI [--unattended]
+  ahub kimi [--print-command] [--model <alias>]   start Kimi headless under ACP
+  ahub pi [--print-command] [--mode headless|tui] [--backend auto|dgx|mlx] [--session-id <id>] [--session-file <path>]  start Pi
   ahub models setup|status|start|stop  prepare or inspect local Ollama MLX (legacy stop is explicit)
   ahub local [--route <id> | --model <id>]
                                start the hub-native worker on the self-hosted models (routing.toml)
@@ -469,6 +471,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   init: () => {
+    if (args.includes("--dry-run")) {
+      const plan = planInit(cwd);
+      return console.log(args.includes("--json") ? JSON.stringify(plan, null, 2) : plan.map(change => `${change.action} ${change.path}: ${change.reason}${change.managedBlock ? ` (managed block: ${change.managedBlock})` : ""}`).join("\n") || "already up to date");
+    }
     assertLifecycleAvailable();
     const changed = init(cwd);
     registeredProject();
@@ -490,6 +496,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   claude: async () => {
+    if (args.includes("--print-command") || args.includes("--dry-run")) {
+      try { return console.log(JSON.stringify(launcherPreview("claude", args, cwd, stateDir, unattendedEnv), null, 2)); }
+      catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
+    }
     assertLifecycleAvailable();
     const control = readControl(stateDir);
     if (control?.instanceId) {
@@ -506,14 +516,18 @@ const commands: Record<string, () => Promise<void> | void> = {
         // no such file, or no status line in it
       }
     }
-    // A turn-free project (issue #108) gets the facts hook before and after every tool call, and at Stop.
-    const facts = projectConfig().coordination === "turn-free" ? { script: join(import.meta.dir, "facts-hook.ts"), stateDir } : undefined;
+    // Turn-free facts and opted-in task sweeps share native PreToolUse/PostToolUse/Stop observations.
+    const facts = claudeObservationHooks(projectConfig(), { script: join(import.meta.dir, "facts-hook.ts"), stateDir });
     const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir, ...(original ? { original } : {}) }, ...(facts ? { facts } : {}) });
     if (launch.warning) console.error(launch.warning);
     exec(launch.cmd, launch.args);
   },
 
   codex: async () => {
+    if (args.includes("--print-command") || args.includes("--dry-run")) {
+      try { return console.log(JSON.stringify(launcherPreview("codex", args, cwd, stateDir, unattendedEnv), null, 2)); }
+      catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
+    }
     assertLifecycleAvailable();
     const launch0 = buildLaunch("codex", args, { unattended: unattendedEnv, proxyUrl: "pending" }); // refuse bad flags before starting anything
     const hub = await connect();
@@ -528,6 +542,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   kimi: async () => {
+    if (args.includes("--print-command") || args.includes("--dry-run")) {
+      try { return console.log(JSON.stringify(launcherPreview("kimi", args, cwd, stateDir, unattendedEnv), null, 2)); }
+      catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
+    }
     const i = args.indexOf("--model");
     const model = i === -1 ? undefined : args[i + 1] ?? fail("--model needs an alias");
     const hub = await connect();
@@ -538,6 +556,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   pi: async () => {
+    if (args.includes("--print-command") || args.includes("--dry-run")) {
+      try { return console.log(JSON.stringify(launcherPreview("pi", args, cwd, stateDir, unattendedEnv), null, 2)); }
+      catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
+    }
     const options = piFlags();
     const hub = await connect();
     const res = await hub.request({ t: "start", peer: "pi", args: options, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
@@ -642,6 +664,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const hub = await connect();
     hub.onPush = (msg) => {
       if (msg.t === "event") console.log(render(msg.e));
+      else if (msg.t === "context") console.log(`  ${msg.peer}: ${contextLine(msg.reading)}`);
       else if (msg.t === "notice") console.log(`  * ${msg.line}`);
       else if (msg.t === "permission") {
         const options = msg.options.map((o: any) => `${o.optionId} (${o.name})`).join(", ");
@@ -775,7 +798,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (status.deliveryError) console.log(`  delivery storage: ${status.deliveryError}; dispatch is stopped`);
     for (const line of (status as { crash?: string[] }).crash ?? []) console.log(`  crash recovery: ${line}`);
     const peers = Object.entries(status.peers as Record<string, PeerRow>);
-    for (const [id, p] of peers) console.log(peerLine(id, p));
+    for (const [id, p] of peers) console.log(peerLine(id, { ...p, context: p.context ?? unknownContext() }));
     const models = (status as any).models?.backends as BackendRow[] | undefined;
     if (models?.length) for (const backend of models) console.log(backendLine(backend));
     if (status.switchyard) console.log(`  switchyard: ${status.switchyard}`);

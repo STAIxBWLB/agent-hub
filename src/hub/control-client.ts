@@ -6,10 +6,10 @@ export function stateDirFor(cwd: string): string {
   return projectContext(cwd).stateDir;
 }
 
-/** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages; 4 = budget messages and `hub_checkpoint`; 5 = `ask`; 6 = console-only `ui` session bootstrap; 8 = controlled recovery; 9 = Pi bridge metadata; 10 = durable delivery receipts; 11 = queue hold diagnostics; 12 = generation-bound channel settlement and execution budgets; 13 = turn-free facts (`facts` with tool, session and transcript binding, `silenced`) and per-recipient send results (issue #108). The plugin is installed apart from the daemon, so they can drift. */
-export const PROTOCOL = 13;
+/** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages; 4 = budget messages and `hub_checkpoint`; 5 = `ask`; 6 = console-only `ui` session bootstrap; 8 = controlled recovery; 9 = Pi bridge metadata; 10 = durable delivery receipts; 11 = queue hold diagnostics; 12 = generation-bound channel settlement and execution budgets; 13 = turn-free facts (`facts` with tool, session and transcript binding, `silenced`) and per-recipient send results (issue #108). 14 = native context-window status and session-bound context checkpoint request ids (issue #185). The plugin is installed apart from the daemon, so they can drift. */
+export const PROTOCOL = 14;
 /** Protocols a current coordinator may authenticate while upgrading a running source. */
-export const RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, PROTOCOL] as const;
+export const RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, PROTOCOL] as const;
 
 export interface Hello {
   /** `tools`: acts for `peer` (task tools, hub_send) without being a delivery target: the MCP server Kimi and Codex run. */

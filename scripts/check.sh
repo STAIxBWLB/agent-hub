@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+node scripts/check-docs.mjs
 bun install --frozen-lockfile >/dev/null
 bun x tsc --noEmit
 bun scripts/build.mjs --check

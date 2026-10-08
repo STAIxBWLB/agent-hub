@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.0
+bun add -g github:STAIxBWLB/agent-hub#v0.12.16
 ahub setup
 ```
 
@@ -58,7 +58,7 @@ ahub say @kimi "run the tests and report"          # one peer
 
 or set `OMNIROUTE_API_KEY`. Name the model in `.agenthub/routing.toml` (`[local] fixed_model`). Then `ahub local`. It works only inside the project, asks before it writes or runs anything (`ahub permit <id> allow`), and everything it executes is sandboxed.
 
-## The five commands of a working day
+## Commands of a working day
 
 | Command | What for |
 | --- | --- |

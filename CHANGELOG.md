@@ -4,6 +4,15 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.12.16
+
+- Record source-verification commits for current operating documents and agent notes; fail missing coverage, invalid stamps and README version drift, and report stale source scopes deterministically (#188).
+- Require six sequential guard checks to pass without mutation and fail their named assertion with a seeded regression. Reuse full Linux/macOS plus seeded CI only for an identical release tree (#187).
+- Add a default-off task-idle sweep with persisted escalation steps, real-activity anchors, PII-safe notices, hold/cohort suppression and explicitly opted-in owner reassignment (#186).
+- Preview initialization changes and native launcher arguments through the same builders, without hub writes or native startup; redact arbitrary user values and identify unresolved runtime metadata (#189).
+- Show native Claude/Codex context-window readings with freshness and session identity. Optional pressure checkpoints do not pause quota, reassign work or replace sessions; unknown readings stay unknown and private summaries stay out of cloud memory (#185).
+- Advance the control protocol to 14 for context status metadata while retaining controlled recovery from supported earlier protocols.
+
 ## 0.12.15
 
 - Bind Pi tool-step ceiling diagnostics to the trusted producer's session and turn, retain the rejected pre-effect invocation count, and keep the first active failure cause frozen (#179).

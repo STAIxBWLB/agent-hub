@@ -1242,3 +1242,107 @@ Relay native-session counters and per-dispatch transport usage are separate
 measurements. Request usage and provider availability are optional metadata,
 bound to their own dispatch IDs; provider absence does not change model
 qualification. Primary and fallback dispatches have independent outcomes.
+
+
+## Task idle sweep (#186, 2026-10-09)
+
+`Tasks.sweep(now)` owns a deterministic, default-off between-turn sweep. It
+classifies proposed tasks with an owner as unaccepted assignments, in-progress
+tasks with an idle owner as idle-owner findings, and in-review tasks with a
+reviewer as review-pending findings. Separate minute thresholds and a ladder
+interval are configured through the strict `task_sweep` config block described
+in operations. The daemon ticks only an enabled sweep and clears its timer on
+shutdown. No control message shape changes.
+
+The activity identity is the last real history entry index, so simultaneous
+real events are distinct. Typed sweep entries persist finding kind, activity
+index, step and injected sweep time in the existing hub.db task history. They
+never reset activity or invalidate a pending completion check. Persisting a
+step precedes its notice: restart does not repeat the step, but a crash between
+write and publish can leave the attempted notice unpublished or uncertain.
+This is not an exactly-once delivery claim.
+
+The ladder sends one ordinary task reminder to the responsible peer, then
+notifies the console and available planner-role peers, then suggests an
+alternative from pure `assign()`. Every notice uses public task titles and
+numeric task refs only; PII text and task refs/plans are absent from notices and
+ladder records. Busy/paused/offline/native-active peers, unresolved dependencies,
+completion checks, queued/in-flight/held deliveries, recovery/shutdown and live
+silent cohorts suppress the sweep. Human review reminders go to the console.
+
+The Claude launcher and preview share one native-observation hook selector.
+Turn-free coordination selects facts observations; an enabled task sweep also
+selects the existing PreToolUse/PostToolUse/Stop transport in advisory mode.
+Advisory observations update native turn evidence without enabling facts
+injection. A delivery receipt or task transition never counts as a native Stop.
+Explicit caller settings remain authoritative, with a diagnostic that the
+managed idle observation hooks are disabled for that session.
+
+Automatic reassignment remains off. Explicit `auto_reassign: true` enables only
+an owner handover to an available routed alternative through Tasks' existing
+assignment path; reviewer handovers remain suggestions. No failed-work outcome
+is inferred from elapsed time. Existing route-explain behavior is unchanged,
+and offline-owner release and delivery-journal retries remain separate policies.
+
+## Initialization and launcher previews (issue #189)
+
+Initialization provides a read-only action/path/reason plan with managed-block
+insert/replace/remove metadata. Normal initialization applies the same planner.
+
+Claude/Codex/Kimi/Pi launcher previews share native command builders with actual
+launches. Preview exits before project registration, runtime setup or terminal
+ownership records. JSON contains argv/settings with arbitrary user-supplied
+values and custom executable overrides redacted, environment names only, and
+explicit reasons for unresolved native-assigned endpoints/session identities.
+A preview does not assert runtime, account or executable readiness.
+Claude/Codex previews report the conditional daemon/Orca launcher identity
+environment names and unresolved reasons without reading runtime identity,
+querying Orca, allocating a launch id or exposing values. Existing Pi launch
+behavior and its builder-derived environment preview remain unchanged.
+
+
+
+## Native context telemetry and checkpoints (issue #185)
+
+Context occupancy is separate from quota and accumulated billable session usage.
+Claude reports `context_window.used_percentage` and `context_window_size` from
+its status-line payload. A valid `current_usage` counter tuple is required;
+null, malformed or missing current usage is unknown, including immediately
+after compaction. Its input occupancy excludes output and sums input tokens,
+cache creation and cache reads, matching the [official status-line schema](https://code.claude.com/docs/en/statusline).
+Codex reports `tokenUsage.last.totalTokens / tokenUsage.modelContextWindow` in
+`thread/tokenUsage/updated`. The [native protocol](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/typescript/v2/ThreadTokenUsage.ts)
+and [native TUI](https://github.com/openai/codex/blob/main/codex-rs/tui/src/token_usage.rs)
+distinguish the last active context from the accumulated `total`; the displayed
+raw occupancy does not apply the TUI's baseline-adjusted remaining percentage.
+Pi's RPC state exposes no measured native counter. Its extension context API
+returns an estimate, so Pi and unsupported peers remain unknown here.
+
+Each reading records source and measurement time. Claude's status-line file is
+bound to the daemon instance, managed launcher and native session; Codex's
+notification is fenced by its owning link and native thread. Stale, invalid,
+disconnected or replaced-session readings expose unknown occupancy, never zero.
+`context.gate` defaults to 0 (off); `context.stale_min` defaults to 30.
+A valid above-gate reading emits one metadata-only `context_pressure` event
+and one crossing notice. Invalid or stale readings do not rearm a crossing;
+a valid below-gate reading or a new native session does. A crossing held by pause or recovery remains unlatched and is reconsidered after release using only a still-fresh, current-session reading; no new native sample is required.
+
+Context and quota checkpoints share the same request/wait path. Only one
+request per peer may wait at a time. Context responses must carry the supplied
+`request_id` and match the attached peer and native session. Timeout,
+disconnection, recovery hold, shutdown and session replacement invalidate the
+request. Context requests leave quota records, task assignments, pause state,
+native compaction settings and session ownership unchanged.
+
+A valid non-private context response is saved in the state directory as a
+0600 `context-checkpoint-<peer>.json` note. With memory enabled, its text is
+also saved as a handover note only after the active-turn, task PII and text
+pattern checks. It is never broadcast to peers or quoted in logs/events.
+Private turns and all non-approved PII tasks associated with the peer as owner or reviewer, including tasks already in review, block requests and completion. The current routing PII policy is rechecked at both boundaries. The operator chooses
+whether to continue the native session or restart; this change provides no
+automatic session replacement. Status, tail and dashboard expose readings with
+source, measurement time and freshness beside quota information.
+
+The control contract is protocol 14. Recovery sources 9 through 13 remain
+supported; protocol 13 identifies releases 0.12.4 through 0.12.15, while
+0.12.16 uses protocol 14.

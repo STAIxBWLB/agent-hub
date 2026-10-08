@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "documents": {
+    "README.md": {
+      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "paths": [
+        "package.json",
+        "src/",
+        "templates/",
+        "plugins/agent-hub/.claude-plugin/plugin.json"
+      ]
+    },
+    "docs/security.md": {
+      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "paths": [
+        "src/",
+        "templates/"
+      ]
+    },
+    "docs/operations.md": {
+      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "paths": [
+        "package.json",
+        "src/",
+        "templates/",
+        "scripts/overlaps.ts",
+        "scripts/check-docs.mjs",
+        "scripts/seeded-check.ts",
+        "scripts/seeds.json",
+        ".github/workflows/check.yml",
+        "scripts/ci-gates.mjs",
+        "scripts/ci-reuse.mjs",
+        ".github/workflows/release.yml"
+      ]
+    },
+    "docs/quickstart.md": {
+      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "paths": [
+        "package.json",
+        "src/",
+        "templates/"
+      ]
+    },
+    "docs/agent-notes/adapters.md": {
+      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "paths": [
+        "src/adapters/",
+        "src/pi/",
+        "src/hub/peers.ts",
+        "src/hub/child-process.ts",
+        "src/hub/lifecycle.ts",
+        "src/memory/capture.ts",
+        "scripts/benchmarks/teardown.ts",
+        "src/hub/daemon.ts"
+      ]
+    },
+    "docs/agent-notes/benchmarks.md": {
+      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "paths": [
+        "scripts/benchmarks/",
+        "test/benchmarks/",
+        "src/pi/",
+        "src/adapters/acp.ts",
+        "src/adapters/pi.ts",
+        "src/models/relay.ts",
+        "src/local/"
+      ]
+    },
+    "docs/agent-notes/budget.md": {
+      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "paths": [
+        "src/hub/budget.ts",
+        "src/cli/statusline-tee.ts",
+        "src/hub/bus.ts",
+        "src/hub/delivery-journal.ts",
+        "src/hub/restart.ts",
+        "src/hub/context-window.ts",
+        "src/hub/daemon.ts"
+      ]
+    },
+    "docs/agent-notes/bus.md": {
+      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "paths": [
+        "src/hub/bus.ts",
+        "src/hub/envelope.ts",
+        "src/hub/limits.ts",
+        "src/hub/delivery-journal.ts",
+        "src/hub/inference.ts",
+        "src/hub/daemon.ts"
+      ]
+    },
+    "docs/agent-notes/daemon.md": {
+      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "paths": [
+        "src/hub/daemon.ts",
+        "src/hub/control-client.ts",
+        "src/adapters/claude-channel.ts",
+        "src/hub/restart.ts",
+        "src/hub/recovery-store.ts",
+        "src/hub/snapshots.ts",
+        "src/hub/manager.ts",
+        "src/hub/lifecycle.ts",
+        "src/hub/crash.ts",
+        "src/cli/setup.ts",
+        "src/cli/upgrade*.ts",
+        "src/cli/terminal-recovery.ts",
+        "src/cli/recovery-package.ts",
+        "src/cli/facts-hook.ts",
+        "src/pi/process-signature.ts",
+        "src/hub/context-window.ts"
+      ]
+    },
+    "docs/agent-notes/local-worker.md": {
+      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "paths": [
+        "src/adapters/local-worker.ts",
+        "src/local/",
+        "src/memory/capture.ts",
+        "src/hub/facts.ts"
+      ]
+    },
+    "docs/agent-notes/models.md": {
+      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "paths": [
+        "src/models/",
+        "src/hub/inference.ts",
+        "src/omniroute/",
+        "src/switchyard/"
+      ]
+    },
+    "docs/agent-notes/tasks.md": {
+      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "paths": [
+        "src/hub/tasks.ts",
+        "src/hub/board.ts",
+        "src/hub/routing.ts",
+        "src/hub/hub-tools.ts",
+        "src/hub/task-sweep.ts",
+        "src/cli/launch.ts",
+        "src/cli/main.ts",
+        "src/cli/preview.ts"
+      ]
+    },
+    "docs/agent-notes/tests.md": {
+      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "paths": [
+        "test/",
+        "scripts/check.sh",
+        "scripts/hang-watch.sh",
+        "scripts/seeded-check.ts",
+        "scripts/seeds.json",
+        "scripts/ci-gates.mjs",
+        "scripts/ci-reuse.mjs",
+        ".github/workflows/check.yml",
+        ".github/workflows/release.yml"
+      ]
+    }
+  }
+}

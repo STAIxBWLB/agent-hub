@@ -385,3 +385,14 @@ test("a start that fails after the app-server is up reports its own error and le
   const native = Number(readFileSync(pidFile, "utf8"));
   expect(processTable()!.some((r) => r.pid === native)).toBe(false);
 }, 20_000);
+
+test("Codex reports active context separately from accumulated usage, including compaction with no new billable tokens", async () => {
+  const readings: import("../src/hub/context-window.ts").ContextReading[] = [], tokens: number[] = [];
+  const { peer, tui, seen, said } = await setup(5, undefined, { onContext: r => readings.push(r), onTokens: n => tokens.push(n) });
+  await until(() => seen.some(m => m.id === 1));
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} })); await until(() => peer.state === "idle");
+  await peer.deliver([newEnvelope("kimi", "COMPACT")]); await until(() => said.length === 1 && readings.length >= 2);
+  expect(readings.map(r => r.tokens)).toEqual([100, 4000]); expect(readings.every(r => r.sessionId === "th1")).toBe(true);
+  expect(readings.every(r => r.used === null && r.window === null)).toBe(true); // native fake has no model window, never guess one
+  expect(tokens).toEqual([100]);
+});

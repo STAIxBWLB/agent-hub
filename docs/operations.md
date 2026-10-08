@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.7 and control protocol 13. Live verification
+This guide describes ahub 0.12.16 and control protocol 14. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Install and start
@@ -27,7 +27,7 @@ what the hub runs, which files it sends as credentials, where task text goes,
 or how far the local worker's sandbox reaches (`kimi_cmd`, `codex_bin`,
 `pi.cmd`, `checks`, `mlx.bin`, `mlx.runtimeDir`, `mlx.modelPath`, `omniroute.urls`,
 `omniroute.access_hosts`, the `omniroute` key files, `memory.worker_url`,
-`local.read_allow`, `local.bash_network`, `local.network_allow`, `local.sandbox`) are machine-local:
+`local.read_allow`, `local.bash_network`, `local.network_allow`) are machine-local:
 they apply only from a file git confirms nobody committed. Put them in
 `.agenthub/config.local.json` (`ahub init` adds it to `.gitignore`), which is
 read after `config.json`; outside a git repository they keep their defaults, and
@@ -647,21 +647,21 @@ Rows without a live process are stale registrations; forget them with
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3) or 13 (0.12.4 through 0.12.10) and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15) or 14 (0.12.16), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.10 ahub upgrade --to 0.12.10 --dry-run
-bunx --package @staix/agent-hub@0.12.10 ahub upgrade --to 0.12.10 --yes
+bunx --package @staix/agent-hub@0.12.16 ahub upgrade --to 0.12.16 --dry-run
+bunx --package @staix/agent-hub@0.12.16 ahub upgrade --to 0.12.16 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.10 (protocol 13) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -688,19 +688,19 @@ The coordinator verifies and retains the exact target package, preserves its
 own source, and promotes the global CLI only after restored projects pass
 readback.
 
-Once the installed CLI is 0.12.0, review the current project or all registered
+Once the installed CLI matches the target release, review the current project or all registered
 projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.2 --dry-run
+ahub upgrade --to 0.12.16 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.2 --yes
+ahub upgrade --to 0.12.16 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>
@@ -924,3 +924,172 @@ the capability is absent. It never rewrites these settings. Explicit
 `--backend mlx`, `--model mlx/fast`, and recorded MLX recovery launches are
 refused before any local startup. Re-enable MLX or explicitly migrate the
 recorded launch before recovery.
+
+## Task idle sweep
+
+The between-turn task sweep (#186) is disabled by default. Set `task_sweep` in
+`.agenthub/config.json` (or its machine-local override) to enable it:
+
+```json
+{
+  "task_sweep": {
+    "enabled": true,
+    "interval_s": 300,
+    "unaccepted_min": 60,
+    "idle_min": 120,
+    "review_min": 120,
+    "ladder_min": 30,
+    "auto_reassign": false
+  }
+}
+```
+
+Booleans must be actual booleans. Each time setting must be a finite number of
+at least 1; timeouts are bounded to the platform timer limit. Each threshold
+measures time since the last real task history event. A ladder record does not
+refresh that activity; a new event resets the ladder even at the same timestamp.
+
+The first overdue sweep sends the assigned owner or reviewer one normal task
+reminder. After `ladder_min`, the next sweep notifies the console and available
+planner-role peers. After another interval it reports a reassignment suggestion
+from the ordinary routing function. At most one step runs per task per sweep.
+PII notices contain only the public task stub, never its text, refs or plan.
+
+Busy, paused, offline or native-active peers, queued/in-flight deliveries and
+queue holds, unresolved dependencies, completion checks, recovery/shutdown and
+silent turn-free cohorts suppress the sweep. An offline owner remains governed
+by the existing `tasks.release_after_min` policy. Human reviews produce console
+notices. The sweep does not change route-explain output.
+
+For Claude, `ahub claude` installs the existing PreToolUse/PostToolUse/Stop
+observation hooks when the sweep is enabled, including in advisory projects.
+The hooks return no facts in advisory mode. A native Stop establishes an idle
+boundary; a subsequent PreToolUse marks activity. A delivery acknowledgement or
+task approval does not establish native idle. Restart the daemon and relaunch
+Claude after enabling the sweep so its session receives the hooks. A caller's
+`--settings` still wins: the launcher warns that native idle observation is off,
+and the sweep cannot verify that Claude session between turns.
+
+`auto_reassign: true` explicitly allows an available alternative owner selected
+under the existing routing, role and PII constraints to receive the task at step
+three. Review-pending work always produces only a reviewer suggestion. The
+sweep records no failed-work outcome and never weakens routing constraints.
+
+Each ladder step is persisted in task history before publishing. A restart
+therefore does not repeat it. A crash after the history write can leave its
+notice unpublished or uncertain; the history records an attempted step, not a
+receipt. Inspect `ahub task show <id>` and the delivery journal before acting;
+durable-delivery retries remain the journal's responsibility.
+
+## Documentation source verification
+
+`docs/verified.json` maps README, the current security, operations and quickstart
+pages, and every agent note to a full source commit and explicit covered paths.
+A stamp records a human check of the cited paths, symbols, numeric limits and
+operational commands. It does not certify live deployment or prove prose
+correctness automatically. Specs, changelogs and the smoke ledger retain their
+own dated evidence and are outside this manifest.
+
+`node scripts/check-docs.mjs` also runs in `scripts/check.sh`. Missing manifest
+coverage, unresolved or nonancestor commits, removed source paths and a README
+status version different from `package.json` fail the gate. Source commits since
+a stamp and uncommitted covered changes produce sorted stale notices without
+failing it. Counts are commits touching any covered path, rather than file or
+line counts; an unrelated commit leaves the document fresh. Git history must
+include the stamped ancestors (CI checks out full history).
+
+During release preparation, source review precedes restamping. Review each stale
+page against its covered source, correct drift, and use the full SHA of the
+reviewed source commit as `verifiedAgainst`. Record any deferred page and its
+specific unverified claims in the release verification report before tagging.
+Do not advance a stamp solely to clear a notice. Source stamps can name an
+ancestor: the manifest-only follow-up commit need not hash or stamp itself.
+
+## Seeded guard verification
+
+`bun scripts/seeded-check.ts` runs six guard pairs sequentially: header quoting,
+Origin refusal, control-token authentication, the hop cap, PII public views and
+uncertain-delivery receipts. Each named test first passes on current tracked
+checkout bytes, then must fail an assertion with the corresponding guard weakened.
+Seed rot (anything other than one exact replacement), a surviving seed and an
+invalid detection have distinct errors. Compiler, setup, unrelated-test and timeout
+failures never count as detection.
+
+Each seed has a private temporary checkout without Git metadata, state, output
+directories or user untracked files. Installed dependency packages are linked,
+never copied or installed by the runner. Child tests use private home, temp and
+registry directories and a scrubbed environment. The normal 20-second test timeout,
+60-second hang watchdog and current-invocation process ledger/leak scan apply to
+both legs. Successful fixtures are removed; a failed pair prints its preserved
+fixture location with test and leak evidence for inspection.
+
+The required Linux CI job `seeded guards` follows the ordinary checks; it does not
+repeat on macOS or run recursively inside `bun test`. The runner reports every
+pair's elapsed seconds and the total runtime. Runtime measurement remains pending
+until that gate executes; a green ordinary check alone does not prove these pairs.
+
+The full CI gate tests the PR head tree on Linux and macOS, followed by the
+sequential seeded-guard job. Main and release jobs reuse only a successful full
+PR or push check with the identical Git tree and all three successful jobs. An absent or
+unreadable result runs the main gate again and refuses release. A manual
+`prepare_bundle` dispatch builds reviewable plugin assets without publishing;
+it is never accepted as full-gate evidence.
+
+## Preview initialization and native launch
+
+Run `ahub init --dry-run --json` for action/path/reason metadata, including a
+managed-block summary. The real init applies the same plan and preserves user text
+and legacy symlink/hardlink safeguards. Preview creates no files or registration.
+
+Use `ahub claude --print-command`, `ahub codex --dry-run`,
+`ahub kimi --model <alias> --print-command`, or
+`ahub pi --mode tui --print-command` to inspect launch JSON.
+Environment values and arbitrary supplied values are withheld. Native-assigned
+proxy/bridge endpoints and new session identity remain unresolved.
+Claude and Codex previews include conditional `AGENTHUB_INSTANCE_ID` and
+`AGENTHUB_LAUNCH_ID` environment names with unresolved reasons. Claude's existing
+daemon identity is read at launch; a launch identity is allocated only after
+verified Orca terminal readback. Codex identities are injected when that Orca
+launch record is made. Preview neither reads those runtime identities nor
+allocates them, and never displays their values. Pi's environment preview
+continues to describe its native builder output.
+These previews do not connect to the daemon, toggle permissions, record terminal
+ownership, bind servers or start agents, sidecars or models.
+
+
+## Native context readings and optional checkpoints
+
+`ahub status`, `ahub tail` and the dashboard show native context occupancy,
+source and measurement freshness. Claude readings come from the status-line
+tee installed by `ahub claude`; Codex readings come from its current thread's
+native token-usage updates. Pi and other unsupported surfaces show unknown.
+A stale or disconnected reading is unknown, not 0%. Codex's accumulated session
+usage is never used as context occupancy.
+
+Context-triggered checkpoints are disabled by default. To enable them, add
+this to `.agenthub/config.json` and restart the daemon deliberately:
+
+```json
+{"context":{"gate":0.85,"stale_min":30}}
+```
+
+`gate` is a fraction between 0 and 1; 0 disables checkpoint requests.
+`stale_min` must be positive. A reading at or above the threshold records a metadata-only
+event and console notice, then asks an attached Claude/Codex with active work
+for a checkpoint when no checkpoint request is already outstanding. The request
+supplies a `request_id`; include that id with
+`hub_checkpoint {summary, request_id}`. Repeated high readings do not repeat
+it until a fresh below-threshold reading or new session rearms the crossing.
+
+The resulting non-private note is saved in the state directory as
+`context-checkpoint-<peer>.json`, mode 0600; saving to shared memory is attempted
+when memory is enabled. Its body is never broadcast. A private turn, an open PII
+task held by the peer, or PII-pattern text prevents persistence and sharing.
+Requests are bound to the current peer, native session and transport generation.
+A new connection claim invalidates the old request before asynchronous recall or
+attachment, even with an unchanged native session id. Requests also expire after
+`budget.checkpoint_timeout_s` (90 seconds by default).
+Quota pause and task handoff are separate; a context checkpoint neither pauses
+nor hands work over. Continue normally or deliberately restart into a fresh
+session with your chosen checkpoint as preface. No automatic restart or native
+compaction override is performed.
