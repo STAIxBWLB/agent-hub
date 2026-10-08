@@ -261,12 +261,15 @@ type Sock = ServerWebSocket<Client>;
 /** A peer that lives in another process and attaches over the control WS (the Claude channel plugin). */
 class WsPeer extends BasePeer {
   private generation = crypto.randomUUID();
-  get sessionGeneration(): string { return this.generation; }
+  // Checkpoints become stale at hello/claim, before asynchronous recall finishes and attach changes delivery generation.
+  private claimGeneration = crypto.randomUUID();
+  get sessionGeneration(): string { return this.claimGeneration; }
   private delivered = new Set<string>();
   private sock: Sock | undefined;
   private claimed: Sock | undefined;
   /** Called at hello, before the async preface: the newest hello wins even if an older one's recall finishes last. */
   claim(sock: Sock): void {
+    this.claimGeneration = crypto.randomUUID();
     this.claimed = sock;
   }
   /** A hello that has not finished its preface yet. The peer reads as offline until then, and a session standing by
@@ -761,6 +764,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const checkpointWaits = new Map<PeerId, { reason: "quota" | "context"; requestId: string; session: string | undefined; valid: () => boolean; done: (summary: string | undefined) => void }>();
   const contextSession = (peer: PeerId): string | undefined => {
     const p = bus.peers.get(peer);
+    if (p instanceof WsPeer && p.claiming) return undefined;
     if (peer === "claude") { const c = claudeSession(); return c.sessionId ? `${c.sessionId}:${c.launchId ?? ""}` : undefined; }
     if (p instanceof CodexPeer) return p.thread || undefined;
     if (p instanceof AcpPeer || p instanceof PiPeer) { const id = p.recoveryMetadata().sessionId; return typeof id === "string" ? id : undefined; }
@@ -773,7 +777,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const state = bus.stateOf(peer);
     const session = contextSession(peer);
     const generation = owner instanceof WsPeer || owner instanceof CodexPeer ? owner.sessionGeneration : undefined;
-    if (!owner || (state !== "idle" && state !== "busy") || (reason === "context" && (!session || turns.get(peer)?.private || holdsPii(peer)))) return Promise.resolve(undefined);
+    if (!owner || (owner instanceof WsPeer && owner.claiming) || (state !== "idle" && state !== "busy") || (reason === "context" && (!session || turns.get(peer)?.private || holdsPii(peer)))) return Promise.resolve(undefined);
     const openWork = board.list().some((t) => (["proposed", "in_progress", "changes_requested", "in_review"].includes(t.state) && t.owner === peer) || (t.state === "in_review" && t.reviewer === peer));
     if (!openWork && !bus.queued(peer) && !bus.hasInFlight(peer) && state !== "busy") return Promise.resolve(undefined);
     const requestId = randomUUID();
