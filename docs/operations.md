@@ -925,6 +925,53 @@ the capability is absent. It never rewrites these settings. Explicit
 refused before any local startup. Re-enable MLX or explicitly migrate the
 recorded launch before recovery.
 
+## Task idle sweep
+
+The between-turn task sweep (#186) is disabled by default. Set `task_sweep` in
+`.agenthub/config.json` (or its machine-local override) to enable it:
+
+```json
+{
+  "task_sweep": {
+    "enabled": true,
+    "interval_s": 300,
+    "unaccepted_min": 60,
+    "idle_min": 120,
+    "review_min": 120,
+    "ladder_min": 30,
+    "auto_reassign": false
+  }
+}
+```
+
+Booleans must be actual booleans. Each time setting must be a finite number of
+at least 1; timeouts are bounded to the platform timer limit. Each threshold
+measures time since the last real task history event. A ladder record does not
+refresh that activity; a new event resets the ladder even at the same timestamp.
+
+The first overdue sweep sends the assigned owner or reviewer one normal task
+reminder. After `ladder_min`, the next sweep notifies the console and available
+planner-role peers. After another interval it reports a reassignment suggestion
+from the ordinary routing function. At most one step runs per task per sweep.
+PII notices contain only the public task stub, never its text, refs or plan.
+
+Busy, paused, offline or native-active peers, queued/in-flight deliveries and
+queue holds, unresolved dependencies, completion checks, recovery/shutdown and
+silent turn-free cohorts suppress the sweep. An offline owner remains governed
+by the existing `tasks.release_after_min` policy. Human reviews produce console
+notices. The sweep does not change route-explain output.
+
+`auto_reassign: true` explicitly allows an available alternative owner selected
+under the existing routing, role and PII constraints to receive the task at step
+three. Review-pending work always produces only a reviewer suggestion. The
+sweep records no failed-work outcome and never weakens routing constraints.
+
+Each ladder step is persisted in task history before publishing. A restart
+therefore does not repeat it. A crash after the history write can leave its
+notice unpublished or uncertain; the history records an attempted step, not a
+receipt. Inspect `ahub task show <id>` and the delivery journal before acting;
+durable-delivery retries remain the journal's responsibility.
+
 ## Documentation source verification
 
 `docs/verified.json` maps README, the current security, operations and quickstart

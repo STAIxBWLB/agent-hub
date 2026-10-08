@@ -8,6 +8,7 @@ import { assign, detectSignals, LOCAL, PI, predictSplit, type Assignment, type R
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 import { realPath } from "./project.ts";
+import { nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 
 export interface TasksDeps {
   board: Board;
@@ -68,6 +69,9 @@ export interface TasksDeps {
   recordSplit?: (task: number, prediction: SplitPrediction, where: "routing" | "cohort") => void;
   /** A cohort formed, changed or was lifted (issue #107), for the record: the benchmark's treatment check reads it. */
   recordCohort?: (cohort: { id: number; event: "formed" | "joined" | "lifted"; silent: boolean; tasks: number[]; owners: PeerId[] }) => void;
+  sweep?: TaskSweepConfig;
+  /** Shutdown or coordinator work holds task sweeps too. */
+  sweepHeld?: () => boolean;
 }
 
 const ESCALATE_AFTER = 2;
@@ -80,7 +84,7 @@ const DEMOTE_AT = 1.5;
 const CONTRADICTION_WINDOW_MS = 7 * 86_400_000;
 const OPEN: Task["state"][] = ["proposed", "in_progress", "changes_requested"];
 /** Board events that leave a task where its completion check found it; any other event means it moved on meanwhile. */
-const QUIET_EVENTS = new Set(["answer", "reviewer changed"]);
+const QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep"]);
 
 /** A project path as one spelling (#67): no leading `./`, no repeated or trailing `/`; the root is `.`. */
 export const normPath = (p: string) => p.replace(/^(\.\/)+/, "").replace(/\/{2,}/g, "/").replace(/\/+$/, "") || ".";
@@ -134,8 +138,11 @@ const planText = (plan: TaskPlan = {}) => PLAN_KEYS.filter((k) => plan[k]?.lengt
 export class Tasks {
   /** Turn-free cohorts (issue #107): who works without messages, and who integrates. */
   readonly cohorts: Cohorts;
+  private readonly sweepConfig: TaskSweepConfig;
+  private sweeping = false;
 
   constructor(private readonly d: TasksDeps) {
+    this.sweepConfig = taskSweepConfig(d.sweep);
     this.cohorts = new Cohorts({
       silence: (owners) => this.turnFree() && owners.every((p) => p !== USER && p !== HUB && (this.d.capable?.(p) ?? false)),
       idle: (peer) => this.d.idle?.(peer) ?? false,
@@ -156,6 +163,55 @@ export class Tasks {
   }
 
   isPii = (task: Pick<Task, "signals">) => task.signals.includes("pii") && this.d.routing().constraints.pii === "local_only";
+
+  /** Task-owned, default-off between-turn ladder. Persist before sending so restart cannot repeat a step. */
+  async sweep(now = Date.now()): Promise<{ task: number; finding: SweepRecord }[]> {
+    const recorded: { task: number; finding: SweepRecord }[] = [];
+    if (!this.sweepConfig.enabled || this.sweeping || this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) return recorded;
+    this.sweeping = true;
+    try {
+      for (const task of this.d.board.list()) {
+        if (this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) break;
+        const finding = nextSweep(task, this.sweepConfig, now);
+        if (!finding || this.waitsFor(task).length || this.isChecking(task.id) || this.silentFor(task.id)) continue;
+        const responsible = finding.kind === "review-pending" ? task.reviewer! : task.owner!;
+        if (responsible !== USER && !this.sweepAvailable(responsible)) continue;
+        const title = this.publicTitle(task);
+        const message = `Task ${title}: ${finding.kind}, idle escalation ${finding.step}/3.`;
+        // Only identifiers, kind and step are kept in the ladder event. A crash after this write and before publish
+        // leaves the notice unpublished or uncertain; the durable-delivery journal owns any delivery retries.
+        this.d.board.update(task.id, HUB, "idle sweep", {}, undefined, { sweep: finding });
+        recorded.push({ task: task.id, finding });
+        if (finding.step === 1) {
+          this.sweepNotice(task, responsible, `${message} Check its current state with hub_task_list and accept, complete or review your assigned work.`);
+        } else if (finding.step === 2) {
+          this.d.notify(message);
+          for (const [peer, roles] of Object.entries(this.d.roles ?? {})) {
+            if (peer !== responsible && roles.includes("planner") && this.sweepAvailable(peer)) this.sweepNotice(task, peer, `${message} The assigned ${finding.kind === "review-pending" ? "reviewer" : "owner"} has not recorded fresh task activity; check the board before coordinating.`);
+          }
+        } else {
+          const reviewer = finding.kind === "review-pending";
+          const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), responsible], waitsFor: this.waitsFor(task), ...(reviewer ? { candidates: [], notReviewer: task.owner ?? undefined } : {}), ...this.weights(task.class) });
+          const candidate = reviewer ? a.reviewer : a.owner;
+          this.d.notify(`${message} ${reviewer ? "Reviewer" : "Owner"} reassignment suggestion: ${candidate ?? "no eligible peer"}.`);
+          if (!reviewer && candidate && this.sweepConfig.auto_reassign && this.sweepAvailable(candidate)) {
+            await this.assignOwner(this.d.board.get(task.id)!, HUB, { candidates: [candidate], exclude: [responsible], event: "reassigned", note: `idle sweep: ${finding.kind}; from ${responsible}` });
+          }
+        }
+      }
+    } finally { this.sweeping = false; }
+    return recorded;
+  }
+
+  private sweepAvailable(peer: PeerId): boolean {
+    const bus = this.d.bus;
+    return bus.stateOf(peer) === "idle" && (this.d.idle?.(peer) ?? true) && !this.d.held?.()[peer] && !bus.queueSummary(peer).heldBy && !bus.queued(peer) && !bus.hasInFlight(peer);
+  }
+
+  private sweepNotice(task: Task, peer: PeerId, body: string): void {
+    if (peer === USER) this.d.notify(body);
+    else this.d.bus.publish(newEnvelope(HUB, body, { to: [peer], kind: "task", refs: { task: String(task.id) } }));
+  }
 
   configureExecutionBudget = (config: ExecutionBudgetConfig): ExecutionBudgetStatus | undefined => {
     if (!this.d.executionBudget) return undefined;

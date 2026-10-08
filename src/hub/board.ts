@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import type { PeerId } from "./envelope.ts";
+import type { SweepRecord } from "./task-sweep.ts";
 
 export const CLASSES = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] as const;
 export type TaskClass = (typeof CLASSES)[number];
@@ -26,6 +27,8 @@ export interface HistoryEntry {
   owner?: PeerId | null;
   /** On a hand-over: the new owner's split profile then (#109); absent when it was unknown. */
   profile?: string;
+  /** Persisted task-idle ladder; never counted as fresh task activity (#186). */
+  sweep?: SweepRecord;
 }
 export interface Task {
   id: number;
@@ -119,14 +122,14 @@ export class Board {
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "refs" | "plan" | "rejections">>, note?: string, extra: Pick<HistoryEntry, "profile"> = {}): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "refs" | "plan" | "rejections">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep"> = {}): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (patch.state && patch.state !== task.state && !MOVES[task.state].includes(patch.state)) {
       throw new Error(`task #${id} is ${task.state}: cannot move to ${patch.state}`);
     }
     const next = { ...task, ...patch, refs: { ...task.refs, ...patch.refs } };
-    const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}) }];
+    const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}) }];
     this.db
       .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, refs = ?, plan = ?, rejections = ?, history = ?, updated = ? WHERE id = ?")
       .run(next.state, next.owner, next.reviewer, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(history), Date.now(), id);

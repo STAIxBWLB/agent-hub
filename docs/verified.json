@@ -128,7 +128,8 @@
         "src/hub/tasks.ts",
         "src/hub/board.ts",
         "src/hub/routing.ts",
-        "src/hub/hub-tools.ts"
+        "src/hub/hub-tools.ts",
+        "src/hub/task-sweep.ts"
       ]
     },
     "docs/agent-notes/tests.md": {

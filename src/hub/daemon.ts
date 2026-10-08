@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
+import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
 import { stripUntrusted } from "./config-trust.ts";
 import { eventLog, readEvents, tokenDeltas } from "./events.ts";
 import { ExecutionBudget } from "./execution-budget.ts";
@@ -76,6 +77,8 @@ export interface HubConfig {
   approvals: { timeout_s: number; notify: boolean };
   /** An owner offline this long loses its open tasks back to routing; 0 turns it off (issue #6). */
   tasks: { release_after_min: number };
+  /** Between-turn task escalation, disabled unless explicitly enabled (#186). */
+  task_sweep: TaskSweepConfig;
   /** A command per task class run when the owner marks the task done, and its timeout (issue #7). */
   checks: { timeout_s: number; [cls: string]: string | number };
   /** A git tree at each turn boundary for `ahub turns` and `ahub undo`, the last `keep` per peer (issue #33). */
@@ -118,6 +121,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   // Off here, so tests and a hub without a config file stay silent; a project's config defaults it on for macOS.
   approvals: { timeout_s: 120, notify: false },
   tasks: { release_after_min: 30 },
+  task_sweep: DEFAULT_TASK_SWEEP,
   checks: { timeout_s: 600 },
   // Off here like approvals.notify, so tests (whose cwd is this repository) write no objects; a project's config turns it on.
   snapshots: { enabled: false, keep: 20 },
@@ -136,7 +140,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = ["config.json", "config.local.json"] as const;
-const CONFIG_BLOCKS = ["memory", "roles", "budget", "inference", "omniroute", "local", "pi", "approvals", "tasks", "checks", "snapshots", "limits", "review", "recovery", "capabilities", "mlx"];
+const CONFIG_BLOCKS = ["memory", "roles", "budget", "inference", "omniroute", "local", "pi", "approvals", "tasks", "task_sweep", "checks", "snapshots", "limits", "review", "recovery", "capabilities", "mlx"];
 
 export function loadConfig(cwd: string): HubConfig {
   const ignored: string[] = [];
@@ -190,6 +194,7 @@ export function loadConfig(cwd: string): HubConfig {
       notify: typeof file.approvals?.notify === "boolean" ? file.approvals.notify : process.platform === "darwin",
     },
     tasks: { ...DEFAULT_CONFIG.tasks, ...file.tasks },
+    task_sweep: taskSweepConfig(file.task_sweep),
     checks: { ...DEFAULT_CONFIG.checks, ...file.checks },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
     limits: { ...PROJECT_LIMITS, ...file.limits }, // on with any project config (issue #38)
@@ -557,6 +562,8 @@ export async function startDaemon(opts: DaemonOptions) {
     triage: { classify: (title, detail) => inference?.triage(title, detail) ?? Promise.resolve(undefined), onCampus: () => onCampus() },
     quota: (): ReturnType<Budget["headroom"]> => budget.headroom(), // budget is built below; this runs at assignment time
     review: config.review,
+    sweep: taskSweepConfig(config.task_sweep),
+    sweepHeld: () => stopping || recoveryActive(),
     roles: config.roles,
     turnFree,
     capable: (peer) => capable.has(peer),
@@ -862,6 +869,10 @@ export async function startDaemon(opts: DaemonOptions) {
       }
     }, 5_000),
   ];
+  const taskSweep = taskSweepConfig(config.task_sweep);
+  if (taskSweep.enabled) intervals.push(setInterval(() => {
+    void tasks.sweep().catch(() => notify("task idle sweep failed; inspect hub task history before manual action"));
+  }, taskSweep.interval_s * 1000));
   for (const i of intervals) i.unref?.();
   startupCleanup.push(() => { for (const i of intervals) clearInterval(i); });
 

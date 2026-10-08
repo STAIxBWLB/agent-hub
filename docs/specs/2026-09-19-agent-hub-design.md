@@ -1242,3 +1242,36 @@ Relay native-session counters and per-dispatch transport usage are separate
 measurements. Request usage and provider availability are optional metadata,
 bound to their own dispatch IDs; provider absence does not change model
 qualification. Primary and fallback dispatches have independent outcomes.
+
+
+## Task idle sweep (#186, 2026-10-09)
+
+`Tasks.sweep(now)` owns a deterministic, default-off between-turn sweep. It
+classifies proposed tasks with an owner as unaccepted assignments, in-progress
+tasks with an idle owner as idle-owner findings, and in-review tasks with a
+reviewer as review-pending findings. Separate minute thresholds and a ladder
+interval are configured through the strict `task_sweep` config block described
+in operations. The daemon ticks only an enabled sweep and clears its timer on
+shutdown. No control message shape changes.
+
+The activity identity is the last real history entry index, so simultaneous
+real events are distinct. Typed sweep entries persist finding kind, activity
+index, step and injected sweep time in the existing hub.db task history. They
+never reset activity or invalidate a pending completion check. Persisting a
+step precedes its notice: restart does not repeat the step, but a crash between
+write and publish can leave the attempted notice unpublished or uncertain.
+This is not an exactly-once delivery claim.
+
+The ladder sends one ordinary task reminder to the responsible peer, then
+notifies the console and available planner-role peers, then suggests an
+alternative from pure `assign()`. Every notice uses public task titles and
+numeric task refs only; PII text and task refs/plans are absent from notices and
+ladder records. Busy/paused/offline/native-active peers, unresolved dependencies,
+completion checks, queued/in-flight/held deliveries, recovery/shutdown and live
+silent cohorts suppress the sweep. Human review reminders go to the console.
+
+Automatic reassignment remains off. Explicit `auto_reassign: true` enables only
+an owner handover to an available routed alternative through Tasks' existing
+assignment path; reviewer handovers remain suggestions. No failed-work outcome
+is inferred from elapsed time. Existing route-explain behavior is unchanged,
+and offline-owner release and delivery-journal retries remain separate policies.
