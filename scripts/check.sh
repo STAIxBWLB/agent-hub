@@ -40,7 +40,9 @@ trap 'exit 143' TERM
 # local hangs under load; the macOS CI hang of 0.12.5 matches them). Bun 1.4.2 still starts the next test there (#121,
 # checked directly); the spin was not reproduced on demand on either version, so the timeout and the watchdog stay.
 # A run that hangs anyway is sampled and stopped long before the CI job limit; a normal run takes about two minutes.
-bun test --timeout 20000 &
+# Human CLI fixtures must not inherit the coding agent running this gate. Clear the
+# runner's OS environment before Bun starts; identity tests set their own child markers.
+env -u AGENTHUB_PEER_ID -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID bun test --timeout 20000 &
 test_pid=$!
 scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-600}" &
 watch_pid=$!
