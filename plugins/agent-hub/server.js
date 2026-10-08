@@ -15291,8 +15291,8 @@ function projectContext(cwd, env = process.env) {
 function stateDirFor(cwd) {
   return projectContext(cwd).stateDir;
 }
-var PROTOCOL = 13;
-var RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, PROTOCOL];
+var PROTOCOL = 14;
+var RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, PROTOCOL];
 function readControl(stateDir) {
   try {
     const status = JSON.parse(readFileSync2(join2(stateDir, "status.json"), "utf8"));
@@ -15403,7 +15403,7 @@ class ControlClient {
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
-  version: "0.12.15",
+  version: "0.12.16",
   description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
   license: "MIT",
   type: "module",
@@ -15499,7 +15499,7 @@ var TASK_TOOLS = [
   tool("hub_task_done", "Mark your task finished. It goes to its reviewer with your summary and refs. When the project configures a check for its class, the hub runs it first and the result comes as a task message: a failed check keeps the task with you.", { id, summary: { type: "string", description: "what changed, why, and the check you ran with its result" }, refs }, ["id", "summary"]),
   tool("hub_task_list", "The task board. PII tasks show as [pii].", { state: { type: "string", enum: ["proposed", "in_progress", "in_review", "approved", "changes_requested"] }, ready: { type: "boolean", description: "only proposed tasks with nothing left to wait for" } }),
   tool("hub_review", "Give your verdict on a task you were asked to review: map the changed signatures and call sites to the task's plan or detail, read the check result, and list what is unmet. Two changes_requested in a row move the task to another peer.", { id, verdict: { type: "string", enum: ["approved", "changes_requested"] }, note: str, unmet: { type: "array", items: str, description: "each requirement of the plan or detail that the change does not meet" } }, ["id", "verdict"]),
-  tool("hub_checkpoint", "Answer a checkpoint request from the hub (your quota window is nearly used up): what you were doing, what is half done, what whoever continues must know. Write the same to .agenthub/checkpoint.md first if you can.", { summary: str }, ["summary"]),
+  tool("hub_checkpoint", "Answer a checkpoint request from the hub (quota or context window pressure): what you were doing, what is half done, what whoever continues must know. Write the same to .agenthub/checkpoint.md first if you can.", { summary: str, request_id: { type: "string", description: "The request id supplied by a context checkpoint request; required for context checkpoints" } }, ["summary"]),
   tool("hub_remember", "Save a decision, finding, contract or fail to the memory all agents share (claude-mem); the other agents also get it with their next message. A fail is an approach you tried that does not work, and why: the most useful note, it stops the others spending their quota on it. Do not retry what a fail note rules out without new evidence. Conclusions worth recalling, not chatter.", { text: str, title: str, kind: { type: "string", enum: [...NOTE_KINDS] }, task: id }, ["text"])
 ];
 var TASK_TOOL_NAMES = new Set(TASK_TOOLS.map((t) => t.name));

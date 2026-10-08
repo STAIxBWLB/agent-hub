@@ -27,7 +27,10 @@
         "scripts/check-docs.mjs",
         "scripts/seeded-check.ts",
         "scripts/seeds.json",
-        ".github/workflows/check.yml"
+        ".github/workflows/check.yml",
+        "scripts/ci-gates.mjs",
+        "scripts/ci-reuse.mjs",
+        ".github/workflows/release.yml"
       ]
     },
     "docs/quickstart.md": {
@@ -141,7 +144,11 @@
         "scripts/check.sh",
         "scripts/hang-watch.sh",
         "scripts/seeded-check.ts",
-        "scripts/seeds.json"
+        "scripts/seeds.json",
+        "scripts/ci-gates.mjs",
+        "scripts/ci-reuse.mjs",
+        ".github/workflows/check.yml",
+        ".github/workflows/release.yml"
       ]
     }
   }
