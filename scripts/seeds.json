@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "seeds": [
+    {
+      "id": "header-quoting",
+      "file": "src/hub/envelope.ts",
+      "search": "return body.replace(/^(?=\\s*(\\[agent-hub\\b|--- from ))/gim, \"> \");",
+      "replacement": "return body;",
+      "testFile": "test/bus.test.ts",
+      "testName": "a body cannot forge the hub's item headers"
+    },
+    {
+      "id": "origin-refusal",
+      "file": "src/hub/daemon.ts",
+      "search": "if (req.headers.has(\"origin\")) return new Response(\"forbidden\", { status: 403 });",
+      "replacement": "if (false) return new Response(\"forbidden\", { status: 403 });",
+      "testFile": "test/daemon.test.ts",
+      "testName": "control link: token file is 0600, wrong token and browser origins are refused"
+    },
+    {
+      "id": "control-token",
+      "file": "src/hub/daemon.ts",
+      "search": "if (msg.t !== \"hello\" || msg.token !== token) return sock.close(4401, \"bad token\");",
+      "replacement": "if (msg.t !== \"hello\") return sock.close(4401, \"bad token\");",
+      "testFile": "test/daemon.test.ts",
+      "testName": "control link: token file is 0600, wrong token and browser origins are refused"
+    },
+    {
+      "id": "hop-cap",
+      "file": "src/hub/envelope.ts",
+      "search": "export const MAX_HOP = 3;",
+      "replacement": "export const MAX_HOP = 100;",
+      "testFile": "test/bus.test.ts",
+      "testName": "duplicate ids are delivered once, hop > 3 is dropped but still visible to taps"
+    },
+    {
+      "id": "pii-public-view",
+      "file": "src/hub/tasks.ts",
+      "search": "return this.isPii(task) ? { ...rest, refs: {}, plan: {}, title: \"[pii]\", detail: \"[pii]\" } : { ...rest, title, detail, history: history.slice(-5) };",
+      "replacement": "return { ...rest, title, detail, history: history.slice(-5) };",
+      "testFile": "test/tasks.test.ts",
+      "testName": "a PII task stays on-prem: local only, private envelopes, console review, redacted views, nothing to claude-mem"
+    },
+    {
+      "id": "uncertain-receipt",
+      "file": "src/hub/bus.ts",
+      "search": "const state: JournalDeliveryState = receipt.state === \"accepted\" ? \"accepted\" : receipt.state === \"completed\" ? \"completed\" : receipt.state === \"failed_safe\" ? \"failed\" : \"needs_review\";",
+      "replacement": "const state: JournalDeliveryState = receipt.state === \"accepted\" ? \"accepted\" : receipt.state === \"completed\" ? \"completed\" : receipt.state === \"failed_safe\" ? \"failed\" : \"completed\";",
+      "testFile": "test/durable-invariants.test.ts",
+      "testName": "an uncertain native receipt retains needs_review instead of fabricating completion"
+    }
+  ]
+}

@@ -948,3 +948,33 @@ reviewed source commit as `verifiedAgainst`. Record any deferred page and its
 specific unverified claims in the release verification report before tagging.
 Do not advance a stamp solely to clear a notice. Source stamps can name an
 ancestor: the manifest-only follow-up commit need not hash or stamp itself.
+
+## Seeded guard verification
+
+`bun scripts/seeded-check.ts` runs six guard pairs sequentially: header quoting,
+Origin refusal, control-token authentication, the hop cap, PII public views and
+uncertain-delivery receipts. Each named test first passes on current tracked
+checkout bytes, then must fail an assertion with the corresponding guard weakened.
+Seed rot (anything other than one exact replacement), a surviving seed and an
+invalid detection have distinct errors. Compiler, setup, unrelated-test and timeout
+failures never count as detection.
+
+Each seed has a private temporary checkout without Git metadata, state, output
+directories or user untracked files. Installed dependency packages are linked,
+never copied or installed by the runner. Child tests use private home, temp and
+registry directories and a scrubbed environment. The normal 20-second test timeout,
+60-second hang watchdog and current-invocation process ledger/leak scan apply to
+both legs. Successful fixtures are removed; a failed pair prints its preserved
+fixture location with test and leak evidence for inspection.
+
+The required Linux CI job `seeded guards` follows the ordinary checks; it does not
+repeat on macOS or run recursively inside `bun test`. The runner reports every
+pair's elapsed seconds and the total runtime. Runtime measurement remains pending
+until that gate executes; a green ordinary check alone does not prove these pairs.
+
+The full CI gate tests the PR head tree on Linux and macOS, followed by the
+sequential seeded-guard job. Main and release jobs reuse only a successful full
+check with the identical Git tree and all three successful jobs. An absent or
+unreadable result runs the main gate again and refuses release. A manual
+`prepare_bundle` dispatch builds reviewable plugin assets without publishing;
+it is never accepted as full-gate evidence.

@@ -24,7 +24,10 @@
         "src/",
         "templates/",
         "scripts/overlaps.ts",
-        "scripts/check-docs.mjs"
+        "scripts/check-docs.mjs",
+        "scripts/seeded-check.ts",
+        "scripts/seeds.json",
+        ".github/workflows/check.yml"
       ]
     },
     "docs/quickstart.md": {
@@ -133,7 +136,9 @@
       "paths": [
         "test/",
         "scripts/check.sh",
-        "scripts/hang-watch.sh"
+        "scripts/hang-watch.sh",
+        "scripts/seeded-check.ts",
+        "scripts/seeds.json"
       ]
     }
   }

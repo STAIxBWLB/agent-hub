@@ -6,6 +6,11 @@ on:
 
 permissions:
   contents: read
+  actions: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   gate:
@@ -19,13 +24,12 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.2
       - name: The tag has to match package.json
         run: test "v$(jq -r .version package.json)" = "$GITHUB_REF_NAME"
-      - name: Gate
-        run: scripts/check.sh
+      - name: Verify the successful full gate for the identical release tree
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci-reuse.mjs --require
 
   # Only this job can mint the npm publish credential (OIDC) or write the release.
   publish:

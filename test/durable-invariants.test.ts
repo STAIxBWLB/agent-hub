@@ -215,3 +215,20 @@ test("a stale notice behind a needs_review delivery waits for the operator and l
   expect(calls).toBe(1);
   durable.close();
 });
+
+
+test("an uncertain native receipt retains needs_review instead of fabricating completion", async () => {
+  const { bus, durable } = setupBus();
+  let receiptRecorded = false;
+  const peer = new FakePeer("claude", async (_envs, id) => {
+    peer.onDelivery?.({ id: id!, state: "needs_review", reason: "native outcome unknown" });
+    receiptRecorded = true;
+  });
+  bus.add(peer);
+  bus.publish(newEnvelope("user", "uncertain", { to: ["claude"], priority: "important" }));
+  await waitFor(() => receiptRecorded, "the native receipt callback");
+  try {
+    expect(durable.list("claude")[0]?.state).toBe("needs_review");
+    expect(bus.queueList("claude")[0]?.state).toBe("needs_review");
+  } finally { await bus.close(); }
+});
