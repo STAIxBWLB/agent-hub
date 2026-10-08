@@ -324,6 +324,11 @@ function sseResponse(response: Response, release: () => void, onModel?: (model: 
 
 const copyRecord = (record: RelayRequestRecord): RelayRequestRecord => ({ ...record, ...(record.requestUsage ? { requestUsage: { ...record.requestUsage } } : {}), ...(record.toolSurface ? { toolSurface: { ...record.toolSurface, names: [...record.toolSurface.names] } } : {}) });
 
+/** Pure advertised alias list, also used by no-start launch previews. */
+export function relayModelIds(options: Pick<ModelRelayOptions, "enableHubAuto" | "mlx" | "mlxAlias" | "allowedDGXmodels">): string[] {
+  return [...new Set([...(options.enableHubAuto ? ["hub/auto"] : []), ...(options.mlx ? [options.mlxAlias ?? "mlx/fast"] : []), ...Object.keys(options.allowedDGXmodels)])];
+}
+
 export async function startModelRelay(options: ModelRelayOptions): Promise<ModelRelay> {
   const host = options.host ?? "127.0.0.1";
   assertLoopback(host);
@@ -331,7 +336,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
   const mlxAlias = options.mlxAlias ?? "mlx/fast";
   const dgxMaxInputTokens = options.dgxMaxInputTokens ?? 262_144;
   const defaultBackend = options.defaultBackend ?? (options.mlx ? { kind: "mlx", alias: mlxAlias } : { kind: "dgx", alias: "dgx/coding" });
-  const models = [...new Set([...(options.enableHubAuto ? ["hub/auto"] : []), ...(options.mlx ? [mlxAlias] : []), ...Object.keys(options.allowedDGXmodels)])];
+  const models = relayModelIds(options);
   const autoRoute = options.enableHubAuto ? new AutoRouteSelector(options, defaultBackend, mlxAlias, estimateInputTokens) : undefined;
   let mlx: MlxHandle | undefined;
   let mlxStarting: Promise<MlxHandle> | undefined;

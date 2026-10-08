@@ -44,6 +44,19 @@ and agent sessions so both load the update.
 - [Smoke checklist](docs/smoke.md): the live checks, and what has and has not been verified against real agents
 - [Changelog](CHANGELOG.md), [Contributing](CONTRIBUTING.md)
 
+## What ahub changes on your machine
+
+`ahub init --dry-run --json` lists missing project defaults, the managed AGENTS.md
+block, legacy CLAUDE.md cleanup and gitignore updates before writing them.
+The preview does not register the project.
+
+`ahub claude|codex|kimi|pi --print-command` (also `--dry-run`) prints the native
+argv, Claude session settings and environment variable names without launching.
+It uses the normal command builders. Arbitrary user arguments, configured commands
+and settings are redacted; runtime-assigned endpoints and session identities are
+explicitly unresolved. It does not check executable or account readiness.
+See [Security notes](docs/security.md).
+
 ## Why not agent-bridge
 
 [raysonmeng/agent-bridge](https://github.com/raysonmeng/agent-bridge) proves the

@@ -1,3 +1,4 @@
+import { buildKimiLaunch } from "../cli/launch.ts";
 import { ProgressObserver, normalizeCodexObservation, normalizeClaudeObservation } from "./progress.ts";
 import type { ToolObservation } from "../models/route/signals.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -1596,8 +1597,8 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (peer !== "local") await existing?.stop();
     if (peer === "kimi") {
-      const [bin, ...rest] = config.kimi_cmd;
-      const cmd = args.model ? [bin!, "--model", args.model, ...rest] : config.kimi_cmd;
+      const launch = buildKimiLaunch(config.kimi_cmd, args.model);
+      const cmd = [launch.cmd, ...launch.args];
       const kimi = new AcpPeer("kimi", {
         cmd,
         ...(args.model ? { launchModel: args.model } : {}),

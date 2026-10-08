@@ -1275,3 +1275,15 @@ an owner handover to an available routed alternative through Tasks' existing
 assignment path; reviewer handovers remain suggestions. No failed-work outcome
 is inferred from elapsed time. Existing route-explain behavior is unchanged,
 and offline-owner release and delivery-journal retries remain separate policies.
+
+## Initialization and launcher previews (issue #189)
+
+Initialization provides a read-only action/path/reason plan with managed-block
+insert/replace/remove metadata. Normal initialization applies the same planner.
+
+Claude/Codex/Kimi/Pi launcher previews share native command builders with actual
+launches. Preview exits before project registration, runtime setup or terminal
+ownership records. JSON contains argv/settings with arbitrary user-supplied
+values and custom executable overrides redacted, environment names only, and
+explicit reasons for unresolved native-assigned endpoints/session identities.
+A preview does not assert runtime, account or executable readiness.

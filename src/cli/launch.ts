@@ -105,3 +105,10 @@ export function buildLaunch(
     ...warning,
   };
 }
+
+
+/** The daemon and preview use exactly the same ACP command insertion. */
+export function buildKimiLaunch(command: string[], model?: string): Launch {
+  const [cmd, ...args] = command;
+  return { cmd: cmd!, args: model ? ["--model", model, ...args] : args };
+}

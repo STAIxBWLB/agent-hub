@@ -1025,3 +1025,17 @@ check with the identical Git tree and all three successful jobs. An absent or
 unreadable result runs the main gate again and refuses release. A manual
 `prepare_bundle` dispatch builds reviewable plugin assets without publishing;
 it is never accepted as full-gate evidence.
+
+## Preview initialization and native launch
+
+Run `ahub init --dry-run --json` for action/path/reason metadata, including a
+managed-block summary. The real init applies the same plan and preserves user text
+and legacy symlink/hardlink safeguards. Preview creates no files or registration.
+
+Use `ahub claude --print-command`, `ahub codex --dry-run`,
+`ahub kimi --model <alias> --print-command`, or
+`ahub pi --mode tui --print-command` to inspect launch JSON.
+Environment values and arbitrary supplied values are withheld. Native-assigned
+proxy/bridge endpoints and new session identity remain unresolved.
+These previews do not connect to the daemon, toggle permissions, record terminal
+ownership, bind servers or start agents, sidecars or models.

@@ -14,7 +14,8 @@ import { openManager, startManager, stopManager } from "../hub/manager.ts";
 import type { BusEvent } from "../hub/bus.ts";
 import { OmniRoute } from "../omniroute/client.ts";
 import { MemoryClient } from "../memory/client.ts";
-import { init } from "./init.ts";
+import { init, planInit } from "./init.ts";
+import { launcherPreview } from "./preview.ts";
 import { buildLaunch, UNATTENDED_WARNING } from "./launch.ts";
 import { nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
 import { CLASSES } from "../hub/board.ts";
@@ -53,15 +54,15 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub ui --all [--no-open]      open the unified project dashboard
   ahub ui --all --stop           stop only the dashboard manager
   ahub setup [--yes]            install or update the Claude Code channel plugin from this package, then run doctor
-  ahub init                     write .agenthub/config.json and the AGENTS.md marker block (drops a legacy CLAUDE.md block)
+  ahub init [--dry-run --json]   preview or write .agenthub/config.json and the AGENTS.md marker block (drops a legacy CLAUDE.md block)
   ahub up [--unattended]        start the daemon for this directory
   ahub upgrade --to <version> [--dry-run] [--yes]   review and upgrade running projects
   ahub restart [--dry-run] [--yes]                 recover this project's runtime
   ahub recovery status|resume|abort <operation-id> inspect, resume or cancel a preflight
-  ahub claude [args...]         launch Claude Code with the hub channel   [--unattended]
-  ahub codex [args...]          start the Codex adapter and attach the TUI [--unattended]
-  ahub kimi [--model <alias>]   start Kimi headless under ACP
-  ahub pi [--mode headless|tui] [--backend auto|dgx|mlx] [--session-id <id>] [--session-file <path>]  start Pi
+  ahub claude [--print-command] [args...]         launch Claude Code with the hub channel   [--unattended]
+  ahub codex [--print-command] [args...]          start the Codex adapter and attach the TUI [--unattended]
+  ahub kimi [--print-command] [--model <alias>]   start Kimi headless under ACP
+  ahub pi [--print-command] [--mode headless|tui] [--backend auto|dgx|mlx] [--session-id <id>] [--session-file <path>]  start Pi
   ahub models setup|status|start|stop  prepare or inspect local Ollama MLX (legacy stop is explicit)
   ahub local [--route <id> | --model <id>]
                                start the hub-native worker on the self-hosted models (routing.toml)
@@ -469,6 +470,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   init: () => {
+    if (args.includes("--dry-run")) {
+      const plan = planInit(cwd);
+      return console.log(args.includes("--json") ? JSON.stringify(plan, null, 2) : plan.map(change => `${change.action} ${change.path}: ${change.reason}${change.managedBlock ? ` (managed block: ${change.managedBlock})` : ""}`).join("\n") || "already up to date");
+    }
     assertLifecycleAvailable();
     const changed = init(cwd);
     registeredProject();
@@ -490,6 +495,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   claude: async () => {
+    if (args.includes("--print-command") || args.includes("--dry-run")) {
+      try { return console.log(JSON.stringify(launcherPreview("claude", args, cwd, stateDir, unattendedEnv), null, 2)); }
+      catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
+    }
     assertLifecycleAvailable();
     const control = readControl(stateDir);
     if (control?.instanceId) {
@@ -514,6 +523,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   codex: async () => {
+    if (args.includes("--print-command") || args.includes("--dry-run")) {
+      try { return console.log(JSON.stringify(launcherPreview("codex", args, cwd, stateDir, unattendedEnv), null, 2)); }
+      catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
+    }
     assertLifecycleAvailable();
     const launch0 = buildLaunch("codex", args, { unattended: unattendedEnv, proxyUrl: "pending" }); // refuse bad flags before starting anything
     const hub = await connect();
@@ -528,6 +541,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   kimi: async () => {
+    if (args.includes("--print-command") || args.includes("--dry-run")) {
+      try { return console.log(JSON.stringify(launcherPreview("kimi", args, cwd, stateDir, unattendedEnv), null, 2)); }
+      catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
+    }
     const i = args.indexOf("--model");
     const model = i === -1 ? undefined : args[i + 1] ?? fail("--model needs an alias");
     const hub = await connect();
@@ -538,6 +555,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   pi: async () => {
+    if (args.includes("--print-command") || args.includes("--dry-run")) {
+      try { return console.log(JSON.stringify(launcherPreview("pi", args, cwd, stateDir, unattendedEnv), null, 2)); }
+      catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
+    }
     const options = piFlags();
     const hub = await connect();
     const res = await hub.request({ t: "start", peer: "pi", args: options, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
