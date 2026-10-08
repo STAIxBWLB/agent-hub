@@ -2,6 +2,46 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## Operator console and conductor candidate (#190, #191, #193-#195)
+
+Candidate 0.12.17, protocol 15, observed on 2026-10-09 KST:
+
+- The actual Codex 0.146.0 TUI, selecting `gpt-5.5`, started the real local and
+  headless Pi peers in a disposable git project. It proposed exactly two tasks
+  owned by local, reassigned the second to Pi, and placed and released its own
+  holds. Real CLI calls retained the `codex` actor; a queue-inspection command
+  was refused as human-only. A separate native MCP `hub_status` call completed
+  under workspace-write with an independent daemon action audit.
+- The person authorized `alpha.txt = ALPHA` and `beta.txt = BETA` in chat, and
+  the operator forwarded separate selection and confirmation keys to the actual
+  console PTY. The daemon recorded allow-once answers from the console. The
+  original ten-minute harness deadline included human waiting and interrupted
+  Beta's additional read check. After independently checking the written bytes,
+  the operator reconciled that stopped delivery; Pi then performed its own
+  read/check and `hub_task_done`. Codex independently inspected both files and
+  approved both tasks. No board state or task completion was fabricated.
+- The cumulative feed-off baseline, including interruption and continuation,
+  contains six logical Codex turns and 49 measured native token increments
+  totalling 1,979,016 tokens. These are whole-turn counters, including cached
+  input, and are not a causal estimate of feed overhead. Local's recorded
+  gateway usage totals 39,982 tokens; Pi's native increments total 154,930.
+- An actual open console in stream mode, 120x40, with two pending approval
+  cards and no input, used 0.07 CPU seconds over 40.018 wall seconds (0.175% of
+  one CPU), measured from the console process's cumulative `ps` CPU time.
+- The actual Claude 2.1.295 TUI attached through the candidate channel, but
+  its account reached the five-hour session limit before delegation. The native
+  UI reported reset at 09:10 KST, and the daemon kept its quota pause. Claude
+  task completion, both feed-on repetitions, remaining vendor probes and panel
+  CPU measurement are still pending; attachment alone does not establish them.
+
+The native harness uses actual Python PTYs. Its explicit operator-file-input
+mode forwards chat-authorized keys and avoids the outer resource runner's
+background-terminal job control. Fixture children discard inherited Orca
+terminal ownership so a disposable PTY cannot claim the caller's worktree.
+Original and continuation captures remain separate. No approval is generated
+automatically by the harness. The source evidence and bounded native shell/MCP
+observations are in [the identity T0 ledger](verification/2026-10-09-agent-shell-t0.md).
+
 ## Approval race live reproduction and candidate verification (#98)
 
 Measured on 2026-10-02 KST with installed 0.12.1 and the correction candidate,

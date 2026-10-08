@@ -1724,7 +1724,7 @@ export async function startDaemon(opts: DaemonOptions) {
         notify(`permission ${id} from ${req.peer} was not answered within ${Math.round(timeoutMs / 1000)}s and was cancelled`);
         done(undefined, undefined, "expired");
       }, timeoutMs);
-      const done = (optionId: string | undefined, surface: "console" | "dashboard" | "terminal" = "terminal", reason: "expired" | "cancelled" = "cancelled"): boolean => {
+      const done = (optionId: string | undefined, surface?: "console" | "dashboard" | "terminal", reason: "expired" | "cancelled" = "cancelled"): boolean => {
         if (!permissions.has(id)) return false;
         const option = optionId === undefined ? undefined : req.options.find(o => o.optionId === optionId);
         if (optionId !== undefined && (!option || Date.now() >= expiresAt)) return false;
@@ -1733,8 +1733,8 @@ export async function startDaemon(opts: DaemonOptions) {
         const outcome = option ? "answered" : reason;
         const latencyMs = Math.max(0, Date.now() - createdAt);
         const optionKind = option?.kind === "allow_once" || option?.kind === "allow_always" || option?.kind === "reject_once" || option?.kind === "reject_always" ? option.kind : undefined;
-        event({ type: "permission", id, peer: req.peer, event: outcome, latencyMs, ...(option ? { surface } : {}), ...(optionKind ? { option: optionKind } : {}) });
-        notify(`permission ${id} from ${req.peer} ${outcome} option ${optionKind ?? "none"} by ${option ? surface : "hub"} (${latencyMs}ms)`);
+        event({ type: "permission", id, peer: req.peer, event: outcome, latencyMs, ...(surface ? { surface } : {}), ...(optionKind ? { option: optionKind } : {}) });
+        notify(`permission ${id} from ${req.peer} ${outcome} option ${optionKind ?? "none"} by ${surface ?? "hub"} (${latencyMs}ms)`);
         for (const c of consoles) if (c.data.tail) c.send(JSON.stringify({ t: "permission_closed", id, peer: req.peer, outcome: outcome === "expired" ? "cancelled" : outcome, ...(outcome === "expired" ? { reason: "expired" } : {}), latencyMs }));
         resolve(optionId);
         return true;

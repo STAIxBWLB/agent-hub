@@ -1,4 +1,6 @@
 /** Real native TUI smoke for #194/#195, using Python's standard-library PTY.
+ * Continuation: bun scripts/smoke-conductor.ts --resume-fixture <existing-fixture> --model <verified-account-model> --operator-file-input --run
+ * Continuation preserves the existing configuration, tasks and journal, with no new tasks or writes.
  * Preparation: bun scripts/smoke-conductor.ts --config <non-secret-config.json> --root <scratch-directory> [--model <verified-account-model>]
  * Live, after resource admission: append --run; add --operator-file-input for a background outer harness. One fixture per Claude/Codex x off/own leg, executed serially.
  * The operator's stdin is forwarded to the actual ahub console. Approvals are never automated.
@@ -6,28 +8,30 @@
  * Keep terminal transcripts private; only summary/report metadata is suitable for sharing.
  * This script records incomplete legs honestly and leaves private evidence for investigation.
  */
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ControlClient, stateDirFor } from "../src/hub/control-client.ts";
-import { readEvents } from "../src/hub/events.ts";
-import { summarize } from "../src/hub/report.ts";
+import { readEvents, type StampedEvent } from "../src/hub/events.ts";
+import { summarize, type Report } from "../src/hub/report.ts";
 import { terminalText } from "../src/cli/console-state.ts";
 
 const flags = process.argv.slice(2);
 function option(name: string): string | undefined { const at = flags.indexOf(name); if (at < 0) return undefined; const value = flags[at + 1]; if (!value || value.startsWith("--")) throw new Error(`${name} needs a value`); return value; }
-const sourceConfig = option("--config"); const scratch = option("--root");
+const resumeFixture = option("--resume-fixture") ? resolve(option("--resume-fixture")!) : undefined;
+const sourceConfig = resumeFixture ? join(resumeFixture, ".agenthub", "config.json") : option("--config");
+const scratch = option("--root") ?? (resumeFixture ? dirname(resumeFixture) : undefined);
 if (!sourceConfig || !scratch) throw new Error("usage: bun scripts/smoke-conductor.ts --config <non-secret-config.json> --root <scratch-directory> [--model <verified-account-model>] [--run] [--operator-file-input]");
 const model = option("--model"); const live = flags.includes("--run");
 const fileInput = flags.includes("--operator-file-input");
-const timeoutSeconds = Number(option("--timeout-s") ?? 600);
+const timeoutSeconds = Number(option("--timeout-s") ?? 1800);
 if (!Number.isFinite(timeoutSeconds) || timeoutSeconds < 60 || timeoutSeconds > 1800) throw new Error("--timeout-s must be 60..1800");
 const selected = option("--peer"); if (selected && selected !== "claude" && selected !== "codex") throw new Error("--peer must be claude or codex");
 const requestedFeed = option("--feed"); if (requestedFeed && requestedFeed !== "off" && requestedFeed !== "own") throw new Error("--feed must be off or own");
 const entry = fileURLToPath(new URL("../src/cli/main.js", import.meta.url));
 const bundle = fileURLToPath(new URL("../plugins/agent-hub/server.js", import.meta.url));
 const fixtureRoot = resolve(scratch); mkdirSync(fixtureRoot, { recursive: true, mode: 0o700 });
-const runRoot = mkdtempSync(join(fixtureRoot, "native-conductor-")); chmodSync(runRoot, 0o700);
+const runRoot = mkdtempSync(join(fixtureRoot, resumeFixture ? "native-conductor-continuation-" : "native-conductor-")); chmodSync(runRoot, 0o700);
 const baseConfig = JSON.parse(readFileSync(resolve(sourceConfig), "utf8"));
 if (!baseConfig || typeof baseConfig !== "object" || Array.isArray(baseConfig)) throw new Error("config must be an object");
 // The caller supplies routing/account settings, never auth material. Reject common literal secret fields.
@@ -85,9 +89,9 @@ interface NativePty {
   input(text: string): void; close(): Promise<void>; pid: number;
 }
 function nativePty(argv: string[], cwd: string, name: string): NativePty {
-  const outputPath = join(dirname(cwd), `${name}.terminal.txt`);
+  const outputPath = join(runRoot, `${name}.terminal.txt`);
   writeFileSync(outputPath, "", { mode: 0o600 });
-  const inputPath = join(dirname(cwd), `${name}.input.jsonl`); writeFileSync(inputPath, "", { mode: 0o600 });
+  const inputPath = join(runRoot, `${name}.input.jsonl`); writeFileSync(inputPath, "", { mode: 0o600 });
   let inputOffset = 0;
   const child = Bun.spawn(["python3", ptyScript, ...argv], { cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const pump = async (source: ReadableStream<Uint8Array>) => {
@@ -135,12 +139,52 @@ for (const peer of ["claude", "codex"]) {
   catch { versions[peer] = "unavailable"; }
 }
 const manifest: any = { kind: "native-conductor-smoke", preparedAt: new Date().toISOString(), versions, requestedCodexModel: model ?? null,
-  providerVerification: "not established by model cache or preparation", approvalMode: fileInput ? "manual chat-authorized file input to native console" : "manual native console stdin", operatorInputSource: fileInput ? "chat/file-input" : "foreground stdin", runRoot, live, legs: [] };
+  providerVerification: "not established by model cache or preparation", approvalMode: fileInput ? "manual chat-authorized file input to native console" : "manual native console stdin", operatorInputSource: fileInput ? "chat/file-input" : "foreground stdin", resumeFixture: resumeFixture ?? null, originalSummary: resumeFixture ? join(dirname(resumeFixture), "summary.json") : null, timeoutSeconds, runRoot, live, legs: [] };
 function save() { writeFileSync(join(runRoot, "summary.json"), JSON.stringify(manifest, null, 2) + "\n", { mode: 0o600 }); }
+/** Select one canonical measured source, never add rich usage to native counter increments. */
+function measuredTokens(events: StampedEvent[], report: Report, peer: string) {
+  const usage = report.usage.peers[peer];
+  const increments = events.filter((event): event is Extract<StampedEvent, { type: "tokens" }> => event.type === "tokens" && event.peer === peer);
+  const valid = increments.filter(event => Number.isSafeInteger(event.n) && event.n >= 0);
+  const coverage = { nativeIncrementRecords: valid.length, invalidNativeIncrementRecords: increments.length - valid.length };
+  if (usage && usage.records > 0 && usage.totalRecords === usage.records && usage.withoutUsage === 0) {
+    return { tokens: usage.totalTokens, tokenSource: "rich-usage-total", ...coverage };
+  }
+  const total = report.peers[peer]?.tokens;
+  if (valid.length > 0 && valid.length === increments.length && typeof total === "number" && Number.isSafeInteger(total) && total >= 0) {
+    return { tokens: total, tokenSource: "native-token-increments", ...coverage };
+  }
+  return { tokens: null, tokenSource: null, ...coverage };
+}
+function scorePartial(leg: any, stateDir: string, peer: string, tasks?: any[]): void {
+  const events = readEvents(join(stateDir, "events.jsonl")); const report = summarize(events);
+  if (tasks) { leg.observedTasks = tasks.map(task => ({ id: task.id, owner: task.owner, reviewer: task.reviewer, state: task.state })); leg.completedTasks = tasks.filter(task => task.state === "approved").length; }
+  else {
+    const latest = new Map<number, string>();
+    for (const event of events) if (event.type === "task") latest.set(event.id, event.state);
+    leg.completedTasks = [...latest.values()].filter(state => state === "approved").length;
+  }
+  const approvals = events.filter(event => event.type === "permission" && event.event === "answered" && event.surface === "console");
+  leg.consoleApprovals = approvals.length ? "observed in daemon audit" : "not established"; leg.consoleApprovalCount = approvals.length;
+  leg.conductorTurns = report.peers[peer]?.turns ?? null;
+  const usage = report.usage.peers[peer]; const measured = measuredTokens(events, report, peer);
+  leg.conductorTokens = measured.tokens; leg.tokenSource = measured.tokenSource; leg.nativeIncrementRecords = measured.nativeIncrementRecords; leg.invalidNativeIncrementRecords = measured.invalidNativeIncrementRecords;
+  leg.ownerUsage = Object.fromEntries(["local", "pi"].map(p => [p, { turns: report.peers[p]?.turns ?? null, ...measuredTokens(events, report, p) }]));
+  leg.tokenCoverage = usage ? { records: usage.records, knownTotalRecords: usage.totalRecords, recordsWithUsage: usage.withUsage, recordsWithoutUsage: usage.withoutUsage } : null;
+  leg.supervisionTurns = report.supervision[peer]?.turns ?? null; leg.supervisionTokens = report.supervision[peer]?.tokens ?? null;
+  leg.turnsPerCompletedTask = leg.completedTasks && leg.conductorTurns !== null ? leg.conductorTurns / leg.completedTasks : null;
+  leg.tokensPerCompletedTask = leg.completedTasks && leg.conductorTokens !== null ? leg.conductorTokens / leg.completedTasks : null;
+  writeFileSync(join(runRoot, `${peer}-${leg.feed}-report.json`), JSON.stringify(report, null, 2) + "\n", { mode: 0o600 });
+}
 
-legs: for (const peer of selected ? [selected] : ["claude", "codex"]) for (const feed of requestedFeed ? [requestedFeed] : ["off", "own"]) {
+
+const resumeConductor = resumeFixture ? Object.entries(baseConfig.roles ?? {}).find(([, roles]) => Array.isArray(roles) && roles.includes("conductor"))?.[0] : undefined;
+if (resumeFixture && (!resumeConductor || (selected && selected !== resumeConductor) || (requestedFeed && requestedFeed !== baseConfig.conductor?.feed))) throw new Error("resume fixture role/feed must match its existing configuration");
+legs: for (const peer of resumeFixture ? [resumeConductor!] : selected ? [selected] : ["claude", "codex"]) for (const feed of resumeFixture ? [baseConfig.conductor?.feed ?? "own"] : requestedFeed ? [requestedFeed] : ["off", "own"]) {
   if (interrupted) break legs;
-  const dir = join(runRoot, `${peer}-${feed}`); mkdirSync(join(dir, ".agenthub"), { recursive: true, mode: 0o700 });
+  const dir = resumeFixture ?? join(runRoot, `${peer}-${feed}`);
+  if (!resumeFixture) {
+    mkdirSync(join(dir, ".agenthub"), { recursive: true, mode: 0o700 });
   const config = { ...baseConfig, roles: { [peer]: ["conductor", "planner", "reviewer"], local: ["implementer"], pi: ["implementer"] },
     conductor: { feed, approval_wait_s: 5 }, pi: { ...baseConfig.pi, enabled: true, auto_start: false },
     memory: { ...baseConfig.memory, enabled: false }, task_sweep: { ...baseConfig.task_sweep, enabled: true, unaccepted_min: 60, idle_min: 60, review_min: 60 }, inference: { ...baseConfig.inference, enabled: false },
@@ -156,11 +200,15 @@ legs: for (const peer of selected ? [selected] : ["claude", "codex"]) for (const
   await command(["git", "add", "AGENTS.md", "words.ts"], dir);
   await command(["git", "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "chore: initialize disposable smoke fixture"], dir);
   if ((await command(["git", "remote"], dir)).trim()) throw new Error("smoke fixture unexpectedly has a remote");
+  } else {
+    if (!existsSync(join(dir, ".git")) || !existsSync(join(dir, "beta.txt"))) throw new Error("resume requires the existing git fixture and beta.txt");
+    if ((await command(["git", "remote"], dir)).trim()) throw new Error("resume fixture must have no remotes");
+  }
   const stateDir = stateDirFor(dir);
   const mcp = join(dir, ".agenthub", "candidate-mcp.json");
-  writeFileSync(mcp, JSON.stringify({ mcpServers: { "agent-hub": { command: "bun", args: [bundle], env: { AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: dir, AGENTHUB_PEER_ID: peer } } } }, null, 2) + "\n", { mode: 0o600 });
-  const prompt = `You are the conductor/reviewer for a disposable native smoke. Start local and headless pi with hub_peer_start. Hold both with hub_peer_hold. Propose exactly two class implement tasks initially owned by local: task A must write alpha.txt containing exactly ALPHA then read it and call hub_task_done with the observed check; task B must write beta.txt containing exactly BETA then read it and call hub_task_done with the observed check. Give each task a precise path plan in refs/plan. Reassign task B to pi with hub_task_assign before releasing both holds. Do not implement these tasks yourself. Never answer any permission request: tell the person to answer in ahub console. As reviewer, inspect the resulting files with Read and approve with hub_review only after their actual content matches. ${feed === "off" ? "The supervision feed is off; return after delegation and wait for a user review prompt." : "The own supervision feed is on; handle milestones without polling loops and report once both tasks are approved."} Use no network or unrelated files.`;
-  writeFileSync(join(dir, "conductor-prompt.txt"), prompt + "\n", { mode: 0o600 });
+  if (!resumeFixture) writeFileSync(mcp, JSON.stringify({ mcpServers: { "agent-hub": { command: "bun", args: [bundle], env: { AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: dir, AGENTHUB_PEER_ID: peer } } } }, null, 2) + "\n", { mode: 0o600 });
+  const prompt = resumeFixture ? `Continue the existing disposable native smoke, do not start a new round. Task #1 is already approved: leave its state and alpha.txt unchanged. Existing task #2 is in_progress, owner pi, reviewer ${peer}; beta.txt already contains BETA. Use hub_status and hub_task_show for task #2. Start headless pi with hub_peer_start if detached. If its queue has a needs_review hold, tell the person to inspect ahub queue show and decide ahub queue resolve; never resolve, retry, discard, or bypass the hold yourself. Once Pi is available, send only Pi a precise read-only continuation request: read existing beta.txt, verify exactly the 4 bytes BETA without writing any file, and call hub_task_done id 2 with the actual observed check (do not accept an already in_progress task). Do not create new tasks, write any files, reassign owners, or restart local. When native Pi marks task #2 done, independently inspect beta.txt and approve task #2 with hub_review only after its bytes match. Start every final response with [FYI]; never broadcast task instructions or answer approvals.` : `You are the conductor/reviewer for a disposable native smoke. Start local and headless pi with hub_peer_start. Do not hold peers before assigning: paused peers are unavailable to routing. Propose exactly two class implement tasks initially owned by local: task A must write alpha.txt containing exactly ALPHA then read it and call hub_task_done with the observed check; task B must write beta.txt containing exactly BETA then read it and call hub_task_done with the observed check. Give each task a precise path plan in refs/plan. Verify both returned owners are local; if assignment is unavailable, report it without creating duplicates. Reassign task B to pi with hub_task_assign while task A waits for human approval. After successful assignment, place and release your own holds on both peers to check the hold tools. Do not implement these tasks yourself. Never answer any permission request: tell the person to answer in ahub console. As reviewer, inspect the resulting files with Read and approve with hub_review only after their actual content matches. ${feed === "off" ? "The supervision feed is off; return after delegation and wait for a user review prompt." : "The own supervision feed is on; handle milestones without polling loops and report once both tasks are approved."} Create no additional tasks and never broadcast task instructions to owners. Start every final response with [FYI] so it stays in the console instead of causing duplicate owner turns. Use no network or unrelated files.`;
+  writeFileSync(join(runRoot, `${peer}-${feed}-conductor-prompt.txt`), prompt + "\n", { mode: 0o600 });
   const leg: any = { peer, feed, fixture: dir, status: "prepared", nativeTuiTransport: "real PTY", nativeTuiLaunched: false, nativeConductorAttached: false, consolePtyLaunched: false, consoleApprovals: "not observed", completedTasks: 0, conductorTurns: null, conductorTokens: null, supervisionTurns: null, supervisionTokens: null, operatorInputSource: fileInput ? "chat/file-input" : "foreground stdin", terminalFiles: { conductor: join(runRoot, `${peer}-${feed}-tui.terminal.txt`), console: join(runRoot, `${peer}-${feed}-console.terminal.txt`) }, inputFiles: { conductor: join(runRoot, `${peer}-${feed}-tui.input.jsonl`), console: join(runRoot, `${peer}-${feed}-console.input.jsonl`) } };
   manifest.legs.push(leg); save();
   if (!live) continue;
@@ -185,11 +233,20 @@ legs: for (const peer of selected ? [selected] : ["claude", "codex"]) for (const
     leg.nativeTuiLaunched = true; save();
     await until(async () => { const s = (await hub!.request({ t: "status" }, 3000)).status; return s?.peers?.[peer]?.attached !== false && ["idle", "busy"].includes(s?.peers?.[peer]?.state) ? true : undefined; }, "native conductor attachment", 120);
     leg.nativeConductorAttached = true; save();
+    if (resumeFixture) {
+      const listed = await hub.request({ t: "task", op: "hub_task_list", args: {} }, 3000);
+      const existing = listed.ok ? JSON.parse(listed.text) : [];
+      if (existing.length !== 2 || !existing.some((task: any) => task.id === 1 && task.state === "approved") || !existing.some((task: any) => task.id === 2 && task.owner === "pi")) throw new Error("resume fixture does not match the existing two-task contract");
+    }
     let reviewPrompted = false;
     const completed = await until(async () => {
       const reply = await hub!.request({ t: "task", op: "hub_task_list", args: {} }, 3000);
       if (!reply.ok) return undefined;
       const tasks: any[] = JSON.parse(reply.text);
+      scorePartial(leg, stateDir, peer, tasks);
+      const queued = await hub!.request({ t: "queue", op: "list" }, 3000);
+      if (queued.ok) leg.pendingQueue = queued.deliveries.filter((row: any) => row.state === "needs_review" || row.state === "queued").map((row: any) => ({ id: row.id, peer: row.peer, state: row.state, revision: row.revision, reason: row.reason ?? null }));
+      save();
       if (feed === "off" && !reviewPrompted && tasks.length === 2 && tasks.every(t => ["in_review", "approved"].includes(t.state))) {
         reviewPrompted = true; tui!.input("Inspect alpha.txt and beta.txt using Read, then review both tasks with hub_review. Only approve actual matching contents.\r");
       }
@@ -206,14 +263,15 @@ legs: for (const peer of selected ? [selected] : ["claude", "codex"]) for (const
     leg.completedTasks = completed.length; leg.reassigned = reassigned; leg.reviewed = reviewed; leg.startedBothWorkers = started;
     leg.consoleApprovals = approvalConsole ? "observed in daemon audit" : "not established";
     leg.conductorTurns = report.peers[peer]?.turns ?? null;
-    const usage = report.usage.peers[peer]; leg.conductorTokens = usage?.totalRecords ? usage.totalTokens : null;
+    const measured = measuredTokens(events, report, peer);
+    leg.conductorTokens = measured.tokens; leg.tokenSource = measured.tokenSource; leg.nativeIncrementRecords = measured.nativeIncrementRecords; leg.invalidNativeIncrementRecords = measured.invalidNativeIncrementRecords;
     leg.supervisionTurns = report.supervision[peer]?.turns ?? null; leg.supervisionTokens = report.supervision[peer]?.tokens ?? null;
     leg.turnsPerCompletedTask = leg.conductorTurns === null ? null : leg.conductorTurns / completed.length;
     leg.tokensPerCompletedTask = leg.conductorTokens === null ? null : leg.conductorTokens / completed.length;
-    leg.ownerUsage = Object.fromEntries(["local", "pi"].map(p => [p, { turns: report.peers[p]?.turns ?? null, tokens: report.usage.peers[p]?.totalRecords ? report.usage.peers[p]!.totalTokens : null }]));
+    leg.ownerUsage = Object.fromEntries(["local", "pi"].map(p => [p, { turns: report.peers[p]?.turns ?? null, ...measuredTokens(events, report, p) }]));
     writeFileSync(join(runRoot, `${peer}-${feed}-report.json`), JSON.stringify(report, null, 2) + "\n", { mode: 0o600 });
-    leg.status = reassigned && reviewed && started && approvalConsole && leg.conductorTurns !== null ? "passed" : "incomplete";
-  } catch (error) { leg.status = "incomplete"; leg.reason = terminalText((error as Error).message).slice(0, 1000); }
+    leg.status = reassigned && reviewed && started && approvalConsole && leg.conductorTurns !== null && !leg.pendingQueue?.some((row: any) => row.state === "needs_review") ? "passed" : "incomplete";
+  } catch (error) { scorePartial(leg, stateDir, peer); leg.status = "incomplete"; leg.reason = terminalText((error as Error).message).slice(0, 1000); }
   finally {
     if (input) { process.stdin.off("data", input); process.stdin.setRawMode(previousRaw); process.stdin.pause(); }
     // Only our PTY wrappers and the verified fixture daemon are stopped. No shared model/service shutdown.
@@ -222,7 +280,7 @@ legs: for (const peer of selected ? [selected] : ["claude", "codex"]) for (const
     if (failures.length) leg.teardownError = failures.map(result => terminalText(String(result.reason))).join("; ");
     hub?.close();
     try { await command([process.execPath, entry, "--project", dir, "kill"], dir); } catch (error) { leg.teardownError = [leg.teardownError, terminalText((error as Error).message)].filter(Boolean).join("; "); }
-    save();
+    scorePartial(leg, stateDir, peer); save();
   }
   if (interrupted || leg.teardownError) break legs;
 }

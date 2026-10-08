@@ -54,6 +54,12 @@ endpoints are available. `hub_peer_hold` and `hub_peer_release`
 manage only holds placed by that conductor. Assignment also requires `assign`
 when the conductor has an explicit capabilities list.
 
+Check the returned owner and task state after assignment. Routing skips paused
+peers, so assign work before placing a delivery hold. Hand work out through the
+board and report to the person with `hub_send` addressed to `user`, or a `[FYI]`
+final response in the native TUI. Broadcasting implementation instructions can
+cause an otherwise unassigned owner to claim duplicate work.
+
 The person answers approvals in the console, resolves `needs_review` deliveries
 with `ahub queue resolve`, and handles budget overrides and hub lifecycle.
 Running these commands from an agent shell is refused; the CLI retains the

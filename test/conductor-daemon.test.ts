@@ -206,6 +206,15 @@ test("permission console answer and expiry close the card with ids-only surface/
   expect(log).toContain(`permission ${card.id} from kimi answered option allow_once by console`);
   expect(log).not.toContain(card.title);
   await f.console_.request({ t: "send", to: ["kimi"], body: "PERMISSION" });
+  for (let n = 0; n < 100 && pushes.filter(p => p.t === "permission").length < 2; n++) await Bun.sleep(5);
+  const denied = pushes.filter(p => p.t === "permission")[1]; expect(denied).toBeDefined();
+  expect((await f.console_.request({ t: "permit", id: denied.id, surface: "console" })).ok).toBe(true);
+  const cancelled = readEvents(join(f.dir, "events.jsonl")).find(e => e.type === "permission" && e.id === denied.id && e.event === "cancelled");
+  expect(cancelled).toMatchObject({ surface: "console" }); expect((cancelled as any).latencyMs).toBeGreaterThanOrEqual(0);
+  expect(readFileSync(join(f.dir, "hub.log"), "utf8")).toContain(`permission ${denied.id} from kimi cancelled option none by console`);
+  await f.console_.request({ t: "send", to: ["kimi"], body: "PERMISSION" });
   for (let n = 0; n < 200 && !pushes.some(p => p.t === "permission_closed" && p.reason === "expired"); n++) await Bun.sleep(5);
   expect(pushes.some(p => p.t === "permission_closed" && p.outcome === "cancelled" && p.reason === "expired")).toBe(true);
+  const expired = readEvents(join(f.dir, "events.jsonl")).find(e => e.type === "permission" && e.event === "expired");
+  expect(expired).not.toHaveProperty("surface"); expect((expired as any).latencyMs).toBeGreaterThanOrEqual(0);
 }, 20_000);
