@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.7 and control protocol 13. Live verification
+This guide describes ahub 0.12.15 and control protocol 13. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Install and start
@@ -27,7 +27,7 @@ what the hub runs, which files it sends as credentials, where task text goes,
 or how far the local worker's sandbox reaches (`kimi_cmd`, `codex_bin`,
 `pi.cmd`, `checks`, `mlx.bin`, `mlx.runtimeDir`, `mlx.modelPath`, `omniroute.urls`,
 `omniroute.access_hosts`, the `omniroute` key files, `memory.worker_url`,
-`local.read_allow`, `local.bash_network`, `local.network_allow`, `local.sandbox`) are machine-local:
+`local.read_allow`, `local.bash_network`, `local.network_allow`) are machine-local:
 they apply only from a file git confirms nobody committed. Put them in
 `.agenthub/config.local.json` (`ahub init` adds it to `.gitignore`), which is
 read after `config.json`; outside a git repository they keep their defaults, and
@@ -647,21 +647,21 @@ Rows without a live process are stale registrations; forget them with
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3) or 13 (0.12.4 through 0.12.10) and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3) or 13 (0.12.4 through 0.12.15) and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.10 ahub upgrade --to 0.12.10 --dry-run
-bunx --package @staix/agent-hub@0.12.10 ahub upgrade --to 0.12.10 --yes
+bunx --package @staix/agent-hub@0.12.15 ahub upgrade --to 0.12.15 --dry-run
+bunx --package @staix/agent-hub@0.12.15 ahub upgrade --to 0.12.15 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.10 (protocol 13) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -688,19 +688,19 @@ The coordinator verifies and retains the exact target package, preserves its
 own source, and promotes the global CLI only after restored projects pass
 readback.
 
-Once the installed CLI is 0.12.0, review the current project or all registered
+Once the installed CLI matches the target release, review the current project or all registered
 projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.2 --dry-run
+ahub upgrade --to 0.12.15 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.2 --yes
+ahub upgrade --to 0.12.15 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>
@@ -924,3 +924,27 @@ the capability is absent. It never rewrites these settings. Explicit
 `--backend mlx`, `--model mlx/fast`, and recorded MLX recovery launches are
 refused before any local startup. Re-enable MLX or explicitly migrate the
 recorded launch before recovery.
+
+## Documentation source verification
+
+`docs/verified.json` maps README, the current security, operations and quickstart
+pages, and every agent note to a full source commit and explicit covered paths.
+A stamp records a human check of the cited paths, symbols, numeric limits and
+operational commands. It does not certify live deployment or prove prose
+correctness automatically. Specs, changelogs and the smoke ledger retain their
+own dated evidence and are outside this manifest.
+
+`node scripts/check-docs.mjs` also runs in `scripts/check.sh`. Missing manifest
+coverage, unresolved or nonancestor commits, removed source paths and a README
+status version different from `package.json` fail the gate. Source commits since
+a stamp and uncommitted covered changes produce sorted stale notices without
+failing it. Counts are commits touching any covered path, rather than file or
+line counts; an unrelated commit leaves the document fresh. Git history must
+include the stamped ancestors (CI checks out full history).
+
+During release preparation, source review precedes restamping. Review each stale
+page against its covered source, correct drift, and use the full SHA of the
+reviewed source commit as `verifiedAgainst`. Record any deferred page and its
+specific unverified claims in the release verification report before tagging.
+Do not advance a stamp solely to clear a notice. Source stamps can name an
+ancestor: the manifest-only follow-up commit need not hash or stamp itself.

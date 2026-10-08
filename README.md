@@ -4,12 +4,12 @@ Native multi-agent hub for one developer's machine: Claude Code, Codex, Kimi Cod
 hub-owned local-LLM worker collaborate as peers in independent project directories, with
 task-aware model routing (Switchyard) in front of a self-hosted gateway (OmniRoute).
 
-Status: 0.12.2, control protocol 11. Durable delivery records distinguish queued
+Status: 0.12.15, control protocol 13. Durable delivery records distinguish queued
 work from uncertain execution. The [smoke checklist](docs/smoke.md) records
 verified paths and remaining prerequisites.
 
 Read the [operations guide](docs/operations.md) for the daily workflow, queue
-reconciliation, and the staged protocol-9/10 to protocol-11 upgrade command.
+reconciliation, and the staged upgrade command for supported source protocols.
 Controlled recovery preserves work; uncertain effects are never automatically
 replayed and may require operator review.
 
@@ -28,7 +28,7 @@ cd <your project> && ahub init && ahub up && ahub tail
 Or install the same version from GitHub:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.0 && ahub setup
+bun add -g github:STAIxBWLB/agent-hub#v0.12.15 && ahub setup
 ```
 
 The installed commands remain `ahub` and `agent-hub`.
