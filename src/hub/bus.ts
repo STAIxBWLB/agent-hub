@@ -82,6 +82,8 @@ function resolveTo(to: PeerId[], originals: Envelope[] | undefined): PeerId[] {
 
 const SEEN_CAP = 2048;
 const MAX_ATTEMPTS = 3;
+// ponytail: one digest carries at most ten originals; larger supervision windows split into bounded deliveries.
+// Revisit this ceiling after measuring native supervision cost, rather than bypassing the delivery limit.
 const DIGEST_MAX = 10;
 const NOTES_KEPT = 10;
 
@@ -100,6 +102,8 @@ export class Bus {
   private readonly manualPaused = new Set<PeerId>();
   private readonly timers = new Map<PeerId, ReturnType<typeof setTimeout>>();
   private readonly draining = new Set<PeerId>();
+  /** Still pending while an asynchronous condensation runs; never includes native dispatches. */
+  private readonly preparing = new Map<PeerId, Envelope[]>();
   private readonly seen = new Map<string, Envelope>();
   private readonly taps = new Set<(e: BusEvent) => void>();
   private readonly withdrawn = new Set<string>();
@@ -119,6 +123,10 @@ export class Bus {
    * and is never corrected once the queue empties (measured: status.json kept `queued 4` on an empty queue).
    */
   onQueues?: () => void;
+  /** Actual transport admission, using originals even when a digest was condensed. Never an enqueue metric. */
+  onDelivered?: (peer: PeerId, originals: Envelope[]) => void;
+  /** Synchronous native failure observation, before queue callbacks can finish turn metrics. */
+  onDeliveryFailed?: (peer: PeerId) => void;
   private recoveryHeld = false;
   private steering = 0;
   private condensing = 0;
@@ -389,7 +397,9 @@ export class Bus {
     const id = receipt.id;
     const before = this.journal.get(id);
     const state: JournalDeliveryState = receipt.state === "accepted" ? "accepted" : receipt.state === "completed" ? "completed" : receipt.state === "failed_safe" ? "failed" : "needs_review";
+    if (state === "failed" || state === "needs_review") this.deliveryFailed(peer);
     this.journal.transition(id, state, receipt.reason);
+    if (before?.state === "dispatching" && (state === "accepted" || state === "completed")) this.delivered(peer, before.originals);
     if (state === "failed") {
       if (before) this.failed(peer, before.originals, before.originals.some((e) => e.private) ? "private delivery failed" : receipt.reason);
     }
@@ -525,7 +535,8 @@ export class Bus {
         this.activeDeliveries.set(deliveryId, id);
         if (this.journal) this.durableHandoff(id, deliveryId, [env], [env]);
         const steerResult = this.journal ? peer.steer([env], deliveryId) : peer.steer([env]);
-        steerResult.then(() => {}).catch(() => {
+        steerResult.then(() => { this.delivered(id, [env]); }).catch(() => {
+          this.deliveryFailed(id);
           if (this.journal) this.journal.transition(deliveryId, "needs_review", "adapter steering outcome is uncertain");
           this.activeDeliveries.delete(deliveryId);
           if (!this.journal) this.enqueue(id, env, true);
@@ -570,8 +581,7 @@ export class Bus {
    * dropped if the refused steer tries to queue it later.
    */
   withdraw(envelopeId: string): boolean {
-    this.withdrawn.add(envelopeId);
-    if (this.withdrawn.size > 256) this.withdrawn.delete(this.withdrawn.values().next().value as string);
+    this.markWithdrawn(envelopeId);
     let removed = false;
     for (const queue of this.queues.values()) {
       const i = queue.findIndex((e) => e.id === envelopeId);
@@ -580,6 +590,49 @@ export class Bus {
     if (removed) this.onQueues?.();
     this.persist();
     return removed;
+  }
+
+  /** Revoke pending feed copies only; accepted/dispatching journal records and native turns are untouched. */
+  revokeSupervision(peer: PeerId): number {
+    const queue = this.queues.get(peer);
+    if (!queue && !this.preparing.has(peer)) return 0;
+    let removed = 0;
+    const discarded = new Set<string>();
+    for (let i = (queue?.length ?? 0) - 1; i >= 0; i--) {
+      const env = queue![i]!;
+      if (env.from !== HUB || !env.refs?.supervision) continue;
+      queue!.splice(i, 1);
+      removed++;
+      discarded.add(env.id);
+      this.markWithdrawn(env.id);
+      this.discardQueued(peer, env, "supervision role or feed revoked");
+    }
+    for (const env of this.preparing.get(peer) ?? []) {
+      if (env.from !== HUB || !env.refs?.supervision || discarded.has(env.id)) continue;
+      this.markWithdrawn(env.id);
+      this.discardQueued(peer, env, "supervision role or feed revoked during preparation");
+      removed++;
+    }
+    if (removed) { this.persist(); this.onQueues?.(); }
+    return removed;
+  }
+
+  private discardQueued(peer: PeerId, env: Envelope, reason: string): void {
+    if (this.journal) this.pendingOutcomes.push({ id: crypto.randomUUID(), peer, state: "discarded", createdAt: Date.now(), originals: [env], out: [], reason });
+    this.emit({ t: "stale", env, peer, reason });
+  }
+
+  private delivered(peer: PeerId, originals: Envelope[]): void {
+    try { this.onDelivered?.(peer, originals); } catch { /* observation must never affect delivery settlement */ }
+  }
+
+  private deliveryFailed(peer: PeerId): void {
+    try { this.onDeliveryFailed?.(peer); } catch { /* observation must never affect delivery settlement */ }
+  }
+
+  private markWithdrawn(id: string): void {
+    this.withdrawn.add(id);
+    if (this.withdrawn.size > 256) this.withdrawn.delete(this.withdrawn.values().next().value as string);
   }
 
   queued(id: PeerId): number {
@@ -599,8 +652,23 @@ export class Bus {
     if (this.withdrawn.has(env.id)) return;
     const queue = this.queues.get(id) ?? [];
     this.queues.set(id, queue);
-    if (front) queue.unshift(env);
-    else queue.push(env);
+    const key = env.from === HUB && env.refs?.supervision ? env.refs.supervisionKey : undefined;
+    const replace = !front && key ? queue.findIndex((old) => old.from === HUB && old.refs?.supervision && old.refs.supervisionKey === key && !this.attempts.has(`${id}:${old.id}`)) : -1;
+    const preparing = !front && key ? this.preparing.get(id)?.find((old) => old.from === HUB && old.refs?.supervision && old.refs.supervisionKey === key && !this.attempts.has(`${id}:${old.id}`) && !this.withdrawn.has(old.id)) : undefined;
+    let queuedEnv = preparing ? { ...env, ts: Math.min(preparing.ts, env.ts) } : env;
+    if (replace >= 0) {
+      const old = queue[replace]!;
+      // Keep the first milestone's deadline, so continuous updates cannot create another batching window.
+      queuedEnv = { ...queuedEnv, ts: Math.min(old.ts, queuedEnv.ts) };
+      queue[replace] = queuedEnv;
+      this.markWithdrawn(old.id);
+      this.discardQueued(id, old, "superseded supervision milestone");
+    } else if (front) queue.unshift(queuedEnv);
+    else queue.push(queuedEnv);
+    if (preparing && !this.withdrawn.has(preparing.id)) {
+      this.markWithdrawn(preparing.id);
+      this.discardQueued(id, preparing, "superseded supervision milestone during preparation");
+    }
     if (queue.length > this.opts.queueCap) {
       const victim = queue.findIndex((e) => e.priority !== "important");
       const [lost] = queue.splice(victim === -1 ? 0 : victim, 1);
@@ -614,7 +682,8 @@ export class Bus {
 
   /** 0 = deliver now; otherwise how long the oldest envelope still has to wait for company. */
   private wait(queue: Envelope[]): number {
-    if (queue.length >= this.opts.batchMax || queue.some((e) => e.priority === "important")) return 0;
+    const supervisionOnly = queue.every((e) => e.from === HUB && e.refs?.supervision && e.priority === "status");
+    if ((!supervisionOnly && queue.length >= this.opts.batchMax) || queue.some((e) => e.priority === "important")) return 0;
     return Math.max(0, queue[0]!.ts + this.opts.batchMs - Date.now());
   }
 
@@ -656,6 +725,7 @@ export class Bus {
         // may checkpoint during that wait; it must not checkpoint the batch out of existence.
         if (!this.journal) this.prefaces.delete(id);
         const batch = this.take(id, queue, !this.journal);
+        this.preparing.set(id, batch);
         const delivery = preface ? [preface, ...batch] : batch;
         const mayCondense = this.opts.condense && !delivery.some((e) => e.priority === "important");
         this.condensing += mayCondense ? 1 : 0;
@@ -679,11 +749,12 @@ export class Bus {
         for (const e of out) if (!this.seen.has(e.id)) this.seen.set(e.id, e);
         while (this.seen.size > SEEN_CAP) this.seen.delete(this.seen.keys().next().value as string);
         this.lastDelivery.set(id, { out, originals: delivery });
+        this.preparing.delete(id); // from here on the transport/journal owns settlement
         const deliveryId = crypto.randomUUID();
         if (this.journal) { this.durableHandoff(id, deliveryId, delivery, out); this.activeDeliveries.set(deliveryId, id); }
         try {
           if (this.journal) await peer.deliver(out, deliveryId);
-          else await peer.deliver(out);
+          else { await peer.deliver(out); this.delivered(id, delivery); }
         } catch {
           if (this.journal) this.uncertain(id, deliveryId, "adapter delivery outcome is uncertain");
           else this.failed(id, delivery);
@@ -691,11 +762,11 @@ export class Bus {
         }
       }
     } catch { this.storageError = "delivery journal unavailable"; }
-    finally { this.draining.delete(id); this.onQueues?.(); }
+    finally { this.preparing.delete(id); this.draining.delete(id); this.onQueues?.(); }
   }
 
   private isRelevant(id: PeerId, env: Envelope): boolean {
-    return this.opts.relevant?.(id, env) ?? true;
+    return !this.withdrawn.has(env.id) && (this.opts.relevant?.(id, env) ?? true);
   }
 
   /**
@@ -704,7 +775,7 @@ export class Bus {
    * this recipient's copy goes: the other queues keep theirs, and no other delivery record changes.
    */
   private dropIrrelevant(id: PeerId, queue: Envelope[]): boolean {
-    if (!this.opts.relevant) return false;
+    if (!this.opts.relevant && !this.withdrawn.size) return false;
     let dropped = false;
     for (let i = queue.length - 1; i >= 0; i--) {
       const env = queue[i]!;
@@ -757,6 +828,7 @@ export class Bus {
   }
 
   private failed(id: PeerId, envs: Envelope[], reason = "delivery failed without an error detail"): void {
+    if (!this.journal) this.deliveryFailed(id);
     this.lastFailure.set(id, reason.replace(/\s+/g, " ").slice(0, 300));
     if (envs.some((env) => !(env.from === HUB && env.kind === "presence") && (this.attempts.get(`${id}:${env.id}`) ?? 0) + 1 >= MAX_ATTEMPTS)) {
       this.failureStreak.set(id, (this.failureStreak.get(id) ?? 0) + 1);

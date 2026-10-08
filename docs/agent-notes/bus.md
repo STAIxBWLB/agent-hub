@@ -1,5 +1,7 @@
 # Bus, digests and replies
 
+- Supervision replaces only pending, never attempted or accepted, envelopes with the same stable key. Preserve the first batch deadline and existing digest/queue ceilings; role/feed revocation withdraws pending notices only. Count supervision from actual transport admission followed by a successful native turn completion, never from enqueue or failure-to-idle.
+
 Scope: delivery, digests and condensation, reply addressing, priority and limits. Read before editing `src/hub/bus.ts`, `src/hub/envelope.ts`, `src/hub/limits.ts`, `src/hub/delivery-journal.ts`, `src/hub/inference.ts` (digest condensation), or how an adapter addresses a reply or sets its priority.
 
 - A failed digest is retried one envelope at a time, so a poison envelope cannot take its neighbours down with it.

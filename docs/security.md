@@ -28,6 +28,30 @@ agent-hub connects agents that can each run commands. This page says what the hu
 - **Network-level proof for PII.** The hub proves at its own boundaries (tests search every output) that PII text does not leave; packet-level verification of your gateway path is an operations check.
 - **Other operating systems' sandboxes.** Only macOS seatbelt is implemented.
 
+## Agent CLI identity and conductor authority
+
+Inside an agent session, `ahub` identifies the caller from `AGENTHUB_PEER_ID`,
+or the native Claude/Codex shell marker when the hub marker is absent. It connects
+as that peer in tools mode. Messages and task changes retain that actor;
+`say` defaults to status priority and important messages still require the peer's
+capability. Conflicting or malformed markers fail closed. There is no `--as-user`.
+Human-only operations are refused before connecting, including permission answers,
+queue resolution, budget overrides, lifecycle and recovery operations, and `ask`.
+The operator uses a plain terminal or `ahub console`. A Claude `!` command that
+inherits the agent markers follows the same rule.
+
+This is an honest default against accidental impersonation and injected commands.
+It does not make the token inaccessible to an agent with unrestricted project
+shell access. The existing OS sandbox and loopback authentication boundaries apply.
+
+Steering tools require an explicit `conductor` role, independent of default-allow
+capabilities. Only one peer may hold that role. A conductor may inspect public
+state, assign or escalate work, start supported headless peers and place its own
+delivery holds. It cannot answer approvals, resolve durable deliveries, override
+budget pauses or release a human hold. Pending approval summaries exclude titles;
+PII tasks remain public stubs. Conduct events contain ids only. Supervision feeds
+use structured reasons and never carry check output or approval bodies.
+
 ## Reporting
 
 Please report vulnerabilities privately through GitHub's "Report a vulnerability" on this repository rather than in a public issue.

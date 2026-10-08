@@ -1346,3 +1346,60 @@ source, measurement time and freshness beside quota information.
 The control contract is protocol 14. Recovery sources 9 through 13 remain
 supported; protocol 13 identifies releases 0.12.4 through 0.12.15, while
 0.12.16 uses protocol 14.
+
+## Operator console and conductor (issues #190, #191, #193, #194, #195)
+
+`ahub console` owns one authenticated console connection. It shares tail's
+renderer, renders a DECSTBM stream and footer, and provides optional alternate
+screen panels. `up` opens it only with terminal input and output, unless
+`--no-console` is given. Tail remains a plain stream. Console commands use an
+allowlisted argv with stdin closed; lifecycle and native launches are excluded.
+Allow options require confirmation and never interpret nonempty input as an
+approval. Deny is direct. Pending requests include expiry and are withdrawn by
+`permission_closed` on any answer or cancellation. Answer audits have no title.
+Panels expose Peers, Approvals, Tasks, Queue and Events with bounded polling and
+Unicode cell widths, fall back below 80x24, and restore terminal state on exit.
+
+Agent shell CLI calls connect as the detected peer in tools mode. Hub launches
+set `AGENTHUB_PEER_ID`; the pinned installed Codex shell injects
+`CODEX_THREAD_ID` after environment filtering, and Claude uses `CLAUDECODE`.
+Malformed or conflicting markers fail closed. Console-only commands are denied
+before connecting, with no as-user escape. Refusals enter a bounded ids-only
+local audit spool which a running daemon consumes; this preserves the no-connect
+rule while making refusals visible on the console and in the log. A stopped
+daemon cannot show a live notice; it consumes remaining records on startup.
+This does not establish a security boundary against an unrestricted shell
+which can read the token. Native source evidence and live probe results remain
+separate in the smoke ledger.
+
+Exactly one explicit conductor role may be configured. Default-allow
+capabilities do not grant it; role authority is checked on each operation and
+refreshed on a subsequent connection. Shared MCP tools provide public status,
+public task history, actor-preserving assign/escalate, headless local/Kimi/Pi
+start, and conductor-owned persistent holds. TUI starts return launch commands.
+Assign/escalate need `assign` if the peer has a capabilities entry. Approval
+answers, durable queue resolution, budget overrides and lifecycle remain human
+operations. A conductor cannot release human or budget holds. Audit events are
+ids-only and report counts their actions.
+
+The conductor feed defaults to own tasks, also supports all and off, and uses
+the existing bus digest window. Repeated queued task/kind milestones replace
+the earlier pending notice; accepted or in-flight deliveries are preserved.
+Structured milestones carry public titles or PII stubs, never raw history
+notes or check output. Only aged approval summaries and needs-review delivery
+ids are important. Role/feed revocation withdraws pending feed notices. A
+completed task set produces one round notice until a new task joins; subsequent
+rounds count only newly joined tasks. Pure status supervision queues wait for
+the existing digest deadline rather than flushing at the ordinary batch-count
+threshold. Mixed traffic retains the ordinary admission behavior. The existing
+10-original digest ceiling and 200-entry queue ceiling still bound admission;
+larger windows may require multiple bounded deliveries.
+
+Supervision cost counts completed native turns that received feed notices,
+with whole-turn token readings when available. Other work may share a turn;
+these readings are not per-notice token attribution. Missing measurements are
+unknown. Native TUI conductor, sandbox and feed-on smoke results must be recorded
+as observed outcomes, separately from unit/fake protocol tests.
+
+These additions use control protocol 15. Supported recovery sources include
+protocol 14 (0.12.16) alongside the previous source protocols.

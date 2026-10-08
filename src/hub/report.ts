@@ -11,6 +11,8 @@ export interface Report {
   conflicts: number;
   tasks: Record<string, number>;
   quota: { readings: number; hard: number };
+  conduct: Record<string, Record<string, number>>;
+  supervision: Record<string, { turns: number | null; tokens: number | null; measuredTokens: number | null; knownTokenTurns: number; unknownTokenTurns: number }>;
 }
 
 export interface UsageCoverage {
@@ -83,16 +85,37 @@ function formatUsage(usage: Report["usage"]): string[] {
 
 /** The numbers `ahub report` prints, from `events.jsonl` alone (issue #40). */
 export function summarize(events: StampedEvent[]): Report {
-  const r: Report = { peers: {}, usage: { peers: {}, totals: { inputTokens: 0, inputRecords: 0, outputTokens: 0, outputRecords: 0, cacheReadTokens: 0, cacheReadRecords: 0, cacheWriteTokens: 0, cacheWriteRecords: 0, totalTokens: 0, totalRecords: 0 }, unknownPeers: [], completeCoverage: true }, messages: { total: 0, dropped: {}, overflow: 0, undeliverable: 0, perTask: 0 }, overlaps: { warnings: 0, pairs: 0 }, conflicts: 0, tasks: {}, quota: { readings: 0, hard: 0 } };
+  const r: Report = { peers: {}, conduct: {}, supervision: {}, usage: { peers: {}, totals: { inputTokens: 0, inputRecords: 0, outputTokens: 0, outputRecords: 0, cacheReadTokens: 0, cacheReadRecords: 0, cacheWriteTokens: 0, cacheWriteRecords: 0, totalTokens: 0, totalRecords: 0 }, unknownPeers: [], completeCoverage: true }, messages: { total: 0, dropped: {}, overflow: 0, undeliverable: 0, perTask: 0 }, overlaps: { warnings: 0, pairs: 0 }, conflicts: 0, tasks: {}, quota: { readings: 0, hard: 0 } };
+  const supervisor = (id: string) => (r.supervision[id] ??= { turns: null, tokens: null, measuredTokens: null, knownTokenTurns: 0, unknownTokenTurns: 0 });
   const peer = (id: string) => (r.peers[id] ??= { turns: 0, busyMinutes: 0, tokens: 0 });
   const usagePeer = (id: string) => (r.usage.peers[id] ??= emptyUsage());
   const pairs = new Set<string>();
   const taskMessages = new Map<string, number>();
   const seenUsage = new Set<string>();
+  const seenSupervision = new Set<string>();
   for (const e of events) {
     r.from ??= e.at;
     r.to = e.at;
     switch (e.type) {
+      case "conduct": {
+        const actions = r.conduct[e.peer] ??= {};
+        actions[e.action] = (actions[e.action] ?? 0) + 1;
+        supervisor(e.peer);
+        break;
+      }
+      case "supervision_turn": {
+        const key = `${e.peer}\0${e.turn}`;
+        if (seenSupervision.has(key)) break;
+        seenSupervision.add(key);
+        const s = supervisor(e.peer);
+        s.turns = (s.turns ?? 0) + 1;
+        if (typeof e.tokens === "number" && Number.isSafeInteger(e.tokens) && e.tokens >= 0) {
+          s.measuredTokens = (s.measuredTokens ?? 0) + e.tokens;
+          s.tokens = s.unknownTokenTurns ? null : s.measuredTokens;
+          s.knownTokenTurns++;
+        } else { s.unknownTokenTurns++; s.tokens = null; }
+        break;
+      }
       case "envelope":
         r.messages.total++;
         if (e.dropped) r.messages.dropped[e.dropped] = (r.messages.dropped[e.dropped] ?? 0) + 1;
@@ -150,6 +173,15 @@ export function formatReport(r: Report): string[] {
   const lines = [`period: ${r.from ?? "-"} .. ${r.to ?? "-"}`];
   for (const [id, p] of Object.entries(r.peers).sort(([a], [b]) => a.localeCompare(b))) lines.push(`peer ${id}: ${p.turns} turn${p.turns === 1 ? "" : "s"}, ${p.busyMinutes} busy minutes, ${p.tokens ? `${p.tokens} tokens` : id === "pi" ? "tokens not reported" : "- tokens"}`);
   if (Object.keys(r.usage.peers).length) lines.push(...formatUsage(r.usage));
+  for (const [id, s] of Object.entries(r.supervision).sort(([a], [b]) => a.localeCompare(b))) {
+    const turns = s.turns === null ? "turns unknown" : `${s.turns} completed native turns`;
+    const tokens = s.tokens === null ? "tokens unknown" : `${s.tokens} tokens`;
+    const measured = s.measuredTokens === null ? "measured subset unknown" : `${s.measuredTokens} measured tokens (${s.knownTokenTurns} known turns)`;
+    lines.push(`supervision ${id}: ${turns}; ${tokens}; ${measured}; ${s.unknownTokenTurns} completed turns with unknown tokens; whole native turns containing supervision, including other work; estimated price unknown; measured spend unknown`);
+  }
+  for (const [id, actions] of Object.entries(r.conduct).sort(([a], [b]) => a.localeCompare(b))) {
+    lines.push(`conductor ${id}: ${Object.entries(actions).sort(([a], [b]) => a.localeCompare(b)).map(([action, n]) => `${action} ${n}`).join(", ")}`);
+  }
   const dropped = Object.entries(r.messages.dropped).map(([k, n]) => `${n} ${k}`).join(", ");
   lines.push(`messages: ${r.messages.total} (dropped: ${dropped || "none"}; overflow ${r.messages.overflow}; undeliverable ${r.messages.undeliverable}); ${r.messages.perTask} per task that had any`);
   lines.push(`overlap warnings: ${r.overlaps.warnings}, task pairs: ${r.overlaps.pairs}; edit conflicts: ${r.conflicts}`);

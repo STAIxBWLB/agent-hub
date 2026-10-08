@@ -1,7 +1,15 @@
 // Launchers inject only the flags the hub owns and refuse user-supplied duplicates.
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { peerChildEnv } from "../hub/child-process.ts";
 export const CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub";
+
+/** Launch identity belongs to the native child, never to the agent that invoked the wrapper. */
+export function nativeLaunchEnv(tool: "claude" | "codex" | "pi", source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = peerChildEnv(tool, source);
+  delete env.AGENTHUB_UNATTENDED;
+  return env;
+}
 
 /** A scoped candidate MCP server can be selected without promoting the installed plugin. */
 function claudeChannel(userArgs: string[]): string {

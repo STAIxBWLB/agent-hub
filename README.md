@@ -4,7 +4,7 @@ Native multi-agent hub for one developer's machine: Claude Code, Codex, Kimi Cod
 hub-owned local-LLM worker collaborate as peers in independent project directories, with
 task-aware model routing (Switchyard) in front of a self-hosted gateway (OmniRoute).
 
-Status: 0.12.16, control protocol 14. Durable delivery records distinguish queued
+Status: 0.12.17, control protocol 15. Durable delivery records distinguish queued
 work from uncertain execution. The [smoke checklist](docs/smoke.md) records
 verified paths and remaining prerequisites.
 
@@ -22,13 +22,13 @@ Install from npm:
 
 ```bash
 bun add -g @staix/agent-hub && ahub setup
-cd <your project> && ahub init && ahub up && ahub tail
+cd <your project> && ahub init && ahub up
 ```
 
 Or install the same version from GitHub:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.16 && ahub setup
+bun add -g github:STAIxBWLB/agent-hub#v0.12.17 && ahub setup
 ```
 
 The installed commands remain `ahub` and `agent-hub`.
@@ -100,7 +100,7 @@ only. `--backend dgx` or `--backend mlx` explicitly pins a Pi session's backend.
 Pi connects to an authenticated relay with model aliases `dgx/coding`,
 `dgx/fast`, and `mlx/fast`; upstream gateway credentials stay in the hub.
 Its managed tools use the existing path guards, shell sandbox and terminal
-approval flow. Keep `ahub tail` open to approve write/edit/shell operations.
+approval flow. Keep `ahub console` open to approve write/edit/shell operations.
 Tool-call receipts survive daemon restart; an interrupted operation with an
 unknown outcome must be reconciled before repeating it. Cancelling a Pi turn
 does not automatically hand its task to a cloud peer.

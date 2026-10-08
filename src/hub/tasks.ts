@@ -1213,9 +1213,9 @@ export class Tasks {
     return this.d.board.get(next.id)!;
   }
 
-  /** Console only. */
-  async assignTo(id: unknown, peer: PeerId): Promise<Task> {
-    return this.assignOwner(this.need(id, true), USER, { candidates: [peer], event: "reassigned" });
+  /** Caller authority is checked by the daemon; keep the real actor in task history. */
+  async assignTo(id: unknown, peer: PeerId, by: PeerId = USER): Promise<Task> {
+    return this.assignOwner(this.need(id, true), by, { candidates: [peer], event: "reassigned" });
   }
 
   /**

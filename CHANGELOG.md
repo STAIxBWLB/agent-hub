@@ -4,6 +4,14 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.12.17
+
+- Add an operator console with confirmed approvals, bounded status polling and optional peer, approval, task, queue and event panels; open it from interactive `up` and preserve the tail renderer (#190, #191).
+- Identify agent shell CLI calls as their peer, refuse human-only commands before connecting and record ids-only audit notices without an as-user bypass (#193).
+- Grant steering tools only to one explicit conductor role, preserve the actor on task changes and keep conductor holds separate from human, budget and recovery holds (#194).
+- Batch public task milestones and human-action reminders through the existing digest window, replace repeated pending notices and report completed native supervision turns with unknown usage preserved (#195).
+- Advance the control protocol to 15 for approval lifecycle and supervision metadata, retaining controlled recovery from supported previous sources.
+
 ## 0.12.16
 
 - Record source-verification commits for current operating documents and agent notes; fail missing coverage, invalid stamps and README version drift, and report stale source scopes deterministically (#188).

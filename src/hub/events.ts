@@ -25,6 +25,11 @@ export type HubEvent =
   | { type: "turn_start"; peer: string; turn: string }
   | { type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number }
   | { type: "native_turn_end"; peer: string }
+  | { type: "conduct"; peer: string; action: string; task?: number; target?: string }
+  | { type: "agent_cli"; peer: string; command: string; refused: boolean }
+  | { type: "permission"; id: string; peer: string; event: "requested" | "answered" | "expired" | "cancelled"; latencyMs?: number; surface?: "console" | "dashboard" | "terminal"; option?: "allow_once" | "allow_always" | "reject_once" | "reject_always" }
+  /** Completed native turns that received supervision, not feed enqueues or inferred costs. */
+  | { type: "supervision_turn"; peer: string; turn: string; tokens?: number; ms?: number }
   | { type: "hook_stats"; peer: string; n: number; startupMs: number; hubMs: number; maxStartupMs: number }
   | { type: "cohort"; id: number; event: "formed" | "joined" | "lifted"; silent: boolean; tasks: number[]; owners: string[] }
   | { type: "tokens"; peer: string; n: number }
