@@ -885,6 +885,64 @@ so a restarted hub never launches beside a survivor. A hub whose project root
 or state directory was deleted stops itself within about 10 seconds; the
 dashboard manager does the same when its home directory vanishes.
 
+## Resetting a project's hub
+
+`ahub reset` returns a project's hub to a clean state. Without `--yes` it is a
+dry run: it lists what it would settle, clear, archive and keep, by delivery
+id, peer name and count, never task or message text, and changes nothing.
+With `--yes` it first stops a running hub the way `ahub kill` does, then acts.
+
+```bash
+ahub reset              # dry run, runtime scope
+ahub reset --yes        # runtime reset
+ahub reset --all        # dry run, full reset
+ahub reset --all --yes  # full reset
+```
+
+The runtime reset (the default):
+
+- discards every `queued` and `needs_review` delivery with reason `reset`
+  through the delivery journal, one `resolution_history` entry each. Work
+  that was dispatching or accepted when the hub stopped is held as
+  `needs_review` first, so it is discarded too;
+- clears manual peer holds (`ahub pause`), budget pauses and conductor holds;
+- drops the agent session resume pointers `sessions.json`,
+  `claude-session.json` and `claude-context.json`, so the next launch starts
+  new agent sessions. Pi transcripts under `pi-sessions/` stay;
+- keeps the board (tasks, reviews, outcomes, turns, touches), `hub.log`,
+  `events.jsonl` and `cli-audit/`, recovery records, execution budgets,
+  configuration and files the hub does not own.
+
+The full reset (`--all`) moves the whole state directory, unchanged, to
+`.agenthub/archive/state-<UTC time>/` (mode 0700) and starts an empty state
+directory holding only `project.json`, so the project keeps its id and
+registration; the next `ahub up` starts with an empty board and queue.
+`.agenthub/config.json`, `config.local.json` and `routing.toml` live outside
+the state directory and are not touched. The archive keeps the task text,
+PII included, so it stays in the project: the reset writes
+`.agenthub/archive/.gitignore` (`*`) so git ignores it. Nothing deletes or
+prunes archives; removing one is a manual act.
+
+To restore an archive, stop the hub, move the new state directory aside and
+move the archive back:
+
+```bash
+ahub kill
+mv .agenthub/state .agenthub/state-after-reset
+mv .agenthub/archive/state-<UTC time> .agenthub/state
+ahub up
+```
+
+Only a person runs `ahub reset`: an agent shell is refused before anything
+happens, as for `kill`, `restart` and `upgrade`. It is refused, with nothing
+changed, while an upgrade or recovery operation is open (the machine's
+recovery lock, or a running hub that reports an unreleased recovery), when a
+running hub has no registration matching this project and state directory, and
+when the hub's ownership cannot be verified, as `ahub kill` refuses it.
+It never touches claude-mem: notes saved with `hub_remember` are shared memory,
+not hub state. Claude Code sessions attached to the hub lose their hub session;
+relaunch them with `ahub claude`.
+
 ## Orphaned daemons
 
 Daemons from before those guards, or daemons whose project directory was

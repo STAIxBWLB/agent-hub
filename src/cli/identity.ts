@@ -41,7 +41,7 @@ export function classifyPeerCommand(command: string, args: readonly string[]): P
 
 /** No argument text is included: notices and refusal logs must not copy task text or credentials. */
 export function cliCommandLabel(command: string, args: readonly string[]): string {
-  if (!["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "claude", "codex", "kimi", "pi", "local", "models", "say", "queue", "tail", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "status", "logs", "export", "report", "facts", "check-path", "turns", "undo", "kill", "doctor"].includes(command)) return "unknown";
+  if (!["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "claude", "codex", "kimi", "pi", "local", "models", "say", "queue", "tail", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "status", "logs", "export", "report", "facts", "check-path", "turns", "undo", "kill", "reset", "doctor"].includes(command)) return "unknown";
   if (["task", "queue", "budget", "route", "recovery", "models", "projects"].includes(command)) {
     const sub = args[0];
     if (sub && ["propose", "show", "assign", "escalate", "list", "resolve", "resume", "set", "execution", "explain", "status", "abort", "setup", "start", "stop", "remove"].includes(sub)) return `${command} ${sub}`;

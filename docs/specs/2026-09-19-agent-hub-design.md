@@ -1757,3 +1757,35 @@ task list polling does not. `hub_status` stays conductor-only.
   proposer as the actor with reason `manual` (on the `reassigned` or `reserved`
   entry), and writes no conduct audit event; during a PII turn it is refused
   like the conductor's.
+## Amendment: ahub reset (issue #214)
+
+`ahub reset [--all] [--yes]` returns a project's hub to a clean state. It is
+human-only (the CLI identity gate refuses it from an agent shell) and a dry run
+unless `--yes`: the dry run reads `hub.db` read-only and prints delivery ids,
+peer names and counts per category, never task or message text. With `--yes`
+it stops a running hub through `stopProject`, the path `ahub kill` takes, then
+acts on the stopped state directory.
+
+- Refusals, each before anything changes: the machine's recovery lock is held
+  (`assertLifecycleAvailable`); no registration matches this root and state
+  directory; the hub's ownership is not verified (any inspection state other
+  than stopped, running or stopping); a running hub reports a recovery
+  operation whose phase is not `released`.
+- Runtime scope (default): the CLI opens the journal as a new instance, which
+  turns the stopped run's dispatching and accepted rows into `needs_review`,
+  and settles every `queued` and `needs_review` entry of `Bus.queueList`,
+  including queue entries without a row, with `resolveDelivery(..., "discard",
+  "reset")`: one `resolution_history` entry each. It clears manual holds
+  through the bus, deletes the `budget_pauses` and `conductor_holds` rows and
+  removes `sessions.json`, `claude-session.json` and `claude-context.json`.
+  The board, turns and touches, execution budgets, logs, `events.jsonl`,
+  `cli-audit/`, recovery records, `pi-sessions/` and configuration stay.
+- Full scope (`--all`): the state directory is renamed, unchanged, to
+  `<root>/.agenthub/archive/state-<YYYYMMDDTHHMMSSZ>/` (0700); an existing
+  target refuses the move. The archive directory gets a `.gitignore` of `*`
+  because `hub.db` holds task text, PII included. A new 0700 state directory
+  holds only a copy of `project.json`; the project id is the hash of its root,
+  so the registration and id are unchanged. Archives are never pruned.
+- Output says that claude-mem is not touched and that attached Claude Code
+  sessions must be relaunched with `ahub claude`. The control protocol is
+  unchanged: reset never talks to a running hub except to inspect and stop it.

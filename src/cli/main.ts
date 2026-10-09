@@ -42,6 +42,7 @@ import { runConsole } from "./console.ts";
 import { resolveColor } from "./console-state.ts";
 import { renderHelp } from "./help.ts";
 import { renderTailEvent } from "./tail-render.ts";
+import { archiveState, planReset, resetLines, resetRuntime } from "./reset.ts";
 
 /** `--since 7d|24h|<iso>` for export and report; everything when absent. */
 const since = (): number => {
@@ -106,6 +107,14 @@ function registeredProject(): Project {
   try { return registry.register(cwd, stateDir); }
   finally { registry.close(); }
 }
+
+/** The registration of exactly this root and state directory, the only one kill and reset act on; never registers. */
+function matchingProject(): Project | undefined {
+  const registry = new Registry();
+  try { return registry.list().find((p) => p.root === cwd && p.stateDir === stateDir); }
+  finally { registry.close(); }
+}
+const hubManifest = () => !!readControl(stateDir) || existsSync(join(stateDir, "hub.pid"));
 
 async function healthy(): Promise<boolean> {
   let hub: ControlClient | undefined;
@@ -899,16 +908,50 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   kill: async () => {
-    const registry = new Registry();
-    let project: Project | undefined;
-    try { project = registry.list().find((p) => p.root === cwd && p.stateDir === stateDir); }
-    finally { registry.close(); }
+    const project = matchingProject();
     if (!project) {
-      if (!readControl(stateDir) && !existsSync(join(stateDir, "hub.pid"))) return console.log("hub is not running");
+      if (!hubManifest()) return console.log("hub is not running");
       fail("hub has no matching registration; use its matching CLI to stop it before upgrading");
     }
     await stopProject(project);
     console.log("hub stopped");
+  },
+
+  reset: async () => {
+    if (args.some((a) => !["--all", "--yes"].includes(a))) fail("usage: ahub reset [--all] [--yes]");
+    const all = args.includes("--all");
+    assertLifecycleAvailable();
+    const project = matchingProject() ?? fail(hubManifest() ? "hub has no matching registration; use its matching CLI to stop it; nothing was changed" : "no registration matches this project and state directory; nothing was changed");
+    if (!existsSync(stateDir)) return console.log("no state directory; nothing to reset");
+    const live = await inspectProject(project);
+    if (!["stopped", "running", "stopping"].includes(live.state)) fail(`${live.error ?? `hub is ${live.state}`}; nothing was changed`);
+    const recovery = live.status?.recovery as { operationId?: string; phase?: string } | undefined;
+    if (recovery?.operationId && recovery.phase !== "released") fail(`recovery operation ${recovery.operationId} is open in this hub; nothing was changed`);
+    const plan = planReset(stateDir, project.id);
+    const kept = "kept: the board, logs and audit, recovery records, execution budgets, configuration and pi-sessions/";
+    const memory = "claude-mem is not touched: notes saved with hub_remember stay in shared memory";
+    if (!args.includes("--yes")) {
+      console.log(`ahub reset${all ? " --all" : ""}, dry run: the hub is ${live.state}${live.state === "stopped" ? "" : "; --yes stops it first, as ahub kill does"}`);
+      if (all) {
+        console.log(`  move ${stateDir} (${plan.entries} entries) to ${join(cwd, ".agenthub", "archive")}/state-<UTC time>/ (0700), then start an empty state directory holding only project.json; project ${project.id} keeps its id and registration`);
+        console.log("  archived as they are:");
+      } else console.log('  settle as discard with reason "reset", clear and drop:');
+      for (const line of resetLines(plan)) console.log(`    ${line}`);
+      console.log(`  ${all ? ".agenthub/config.json, config.local.json and routing.toml are outside the state directory and stay" : kept}`);
+      console.log(`  ${memory}`);
+      return console.log("nothing was changed; add --yes to apply");
+    }
+    await stopProject(project);
+    if (live.state !== "stopped") console.log("hub stopped");
+    if (all) console.log(`moved the state directory to ${archiveState(cwd, stateDir)}; the new one holds only project.json (to restore: ahub kill, move the new state directory aside, then move the archive back to ${stateDir})`);
+    else {
+      const { settled, plan: found } = resetRuntime(stateDir, project);
+      console.log(`settled ${settled.length} deliveries as discard with reason "reset"`);
+      for (const line of resetLines(found).slice(1)) console.log(`cleared ${line}`);
+      console.log(kept);
+    }
+    console.log(memory);
+    console.log("Claude Code sessions attached to this hub lost their hub session: relaunch them with ahub claude");
   },
 
   doctor: async () => {

@@ -2,6 +2,27 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## ahub reset on a scratch project (#214)
+
+Not yet run. A person runs it in a terminal, on a scratch project only, never
+on a project whose hub state matters:
+
+1. `ahub init`, `ahub up`, attach Claude with `ahub claude` and one headless
+   peer; queue work for an offline peer with `ahub say @<peer> ...` and
+   `ahub pause <peer>`; propose one task.
+2. `ahub reset`: the listing shows ids and counts only and `hub.db`,
+   `hub.db-wal` and the other state files keep their checksums.
+3. `ahub reset --yes`: the hub stops first; `ahub up` then shows no queued or
+   needs_review delivery (`ahub queue list`), no hold or pause, and the same
+   board; Claude asks to be relaunched with `ahub claude`.
+4. `ahub reset --all --yes`: `.agenthub/archive/state-<UTC time>/` is 0700 and
+   git-ignored, the state directory holds only `project.json`, and `ahub up`
+   starts with the same project id, an empty board and an empty queue.
+5. Restore the archive as `docs/operations.md` describes and check the board
+   from step 1 is back.
+
+Record the version, the commands, each result and anything that differed.
+
 ## Operator console and conductor candidate (#190, #191, #193-#195)
 
 Candidate 0.12.17, protocol 15, observed on 2026-10-09 KST. The final Claude
