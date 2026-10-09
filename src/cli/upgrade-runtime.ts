@@ -423,6 +423,9 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
               delete progress.fresh[original.peer];
               if (!Object.keys(progress.fresh).length) delete progress.fresh;
             }
+            // Any other accepted session needs the target to waive the saved id, or release would wait for it forever;
+            // a launch writes the waiver first, but this branch must not rely on that.
+            if (attached !== original.sessionId) waiveRecoveryPeers(planned.project.stateDir, op.id, { [original.peer]: progress.fresh?.[original.peer] ? "fresh-session" : fresh() ? "fresh-start" : "zero-turn" });
             progress.terminals[key] = await revalidateTerminal(planned, progress, { ...original, sessionId: attached }, false); save();
             continue;
           }

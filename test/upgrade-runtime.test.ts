@@ -427,6 +427,16 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
     await driver.restore(planned, progress, op, "native", () => {});
     expect(progress.terminals["restored:codex"]).toMatchObject({ sessionId: "thread-T" });
     expect(progress.fresh).toBeUndefined();
+    // A chosen new session found attached when a pending launch is settled is accepted with its waiver written here,
+    // not only by the launch that normally writes it first.
+    progress.terminals["restored:codex"] = "pending";
+    progress.fresh = { codex: { lost: "thread-T", reason: "chosen", at: 1 } };
+    replacement.sessionId = "thread-other"; attachedThread = "thread-other";
+    rmSync(join(stateDir, "recovery-waivers.json"), { force: true });
+    await driver.restore(planned, progress, op, "native", () => {});
+    expect(progress.terminals["restored:codex"]).toMatchObject({ sessionId: "thread-other" });
+    expect(readRecoveryWaivers(stateDir, "op-215")).toEqual({ codex: "fresh-session" });
+    delete progress.fresh; rmSync(join(stateDir, "recovery-waivers.json"), { force: true });
     progress.terminals["restored:codex"] = "failed"; replacement.sessionId = "thread-new"; attachedThread = undefined;
     record(false);
 
