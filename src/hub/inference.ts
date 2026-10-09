@@ -184,7 +184,8 @@ export interface PiiScreenDeps {
   timeoutMs?: number;
 }
 
-const SCREEN_TIMEOUT_MS = 15_000;
+/** With triage (8 s) and a brief (2 x 2 s), a proposal answers within 20 s, under the plugin's 30 s control timeout. */
+const SCREEN_TIMEOUT_MS = 8_000;
 /**
  * The longest text the screen reads: with its prompt it fits an 8k on-device context at one token per character,
  * the worst case for Korean and digits.
@@ -229,11 +230,15 @@ export async function screenPii(text: string, d: PiiScreenDeps): Promise<PiiVerd
   if (text.length > SCREEN_MAX_CHARS) return verdict({ label: "unknown", miss: "too long" });
   const messages: ChatMessage[] = [{ role: "system", content: SCREEN_PROMPT }, { role: "user", content: text }];
   const abort = new AbortController();
+  let campus: Promise<boolean> | undefined;
+  const onCampus = () => (campus ??= d.onCampus().catch(() => false));
   const ask = async (): Promise<Omit<PiiVerdict, "ms">> => {
     const device = await d.device?.().catch(() => undefined);
-    if (device) {
-      // Its own generation slot, acquired under the same deadline: a busy model makes the verdict unknown, not late.
-      const release = await device.acquire(abort.signal);
+    // A generation slot of its own. All taken (Pi generating, another screen) sends the screen to the campus gateway;
+    // off campus it waits for one under the same deadline, and a slot still taken then makes the verdict unknown.
+    let release = device ? await device.acquire(abort.signal, 0).catch(() => undefined) : undefined;
+    if (device && !release && !(await onCampus())) release = await device.acquire(abort.signal);
+    if (device && release) {
       try {
         const res = await fetch(`${device.url.replace(/\/$/, "")}/chat/completions`, {
           method: "POST",
@@ -249,7 +254,7 @@ export async function screenPii(text: string, d: PiiScreenDeps): Promise<PiiVerd
         release();
       }
     }
-    if (!(await d.onCampus().catch(() => false))) return { label: "unknown", miss: "off campus" };
+    if (!(await onCampus())) return { label: "unknown", miss: "off campus" };
     const res = await d.omni.chat({ model: d.fixedModel(), messages, max_tokens: 32 }, { signal: abort.signal, onCampusOnly: true });
     return parseScreen(res.message.content);
   };

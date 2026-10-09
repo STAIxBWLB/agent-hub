@@ -40,14 +40,14 @@ const NAME = "Minji Seo";
 const TEMPLATE = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8");
 
 /** A Tasks rig; `screen: "local"` writes a routing.toml with the screen on. */
-async function rig(screen: "off" | "local", screener?: (text: string) => Promise<PiiVerdict>) {
+async function rig(screen: "off" | "local", screener?: (text: string) => Promise<PiiVerdict>, peerIds = ["claude", "codex", "kimi", "local"]) {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-pii-screen-"));
   if (screen === "local") {
     mkdirSync(join(dir, ".agenthub"));
     writeFileSync(join(dir, ".agenthub", "routing.toml"), TEMPLATE.replace('pii_screen = "off"', 'pii_screen = "local"'));
   }
   const bus = new Bus({ batchMs: 0 });
-  const peers = Object.fromEntries(["claude", "codex", "kimi", "local"].map((id) => [id, new FakePeer(id)]));
+  const peers = Object.fromEntries(peerIds.map((id) => [id, new FakePeer(id)]));
   for (const p of Object.values(peers)) {
     bus.add(p);
     await p.start();
@@ -280,4 +280,105 @@ test("AC4 fixtures: synthetic, both languages, ids unique, categories closed, no
   ];
   const s = score(fixture, [{ label: "pii", category: "name", ms: 10 }, { label: "unknown", miss: "timeout", ms: 30 }, { label: "pii", category: "other", ms: 20 }, { label: "clear", ms: 40 }]);
   expect(s).toMatchObject({ recall: 0.5, handledRecall: 1, precision: 0.5, unknownRate: 0.25, held: 0.5, categoryAgreement: 1, missed: ["b (unknown: timeout)"], notCleared: ["c (pii)"], latency: { p50: 30, p95: 40, max: 40 } });
+});
+
+test("a task left PII by an unknown verdict, still proposed and unowned, is screened again on the release timer; a task local took keeps its path", async () => {
+  let verdict: PiiVerdict = { label: "unknown", miss: "timeout", ms: 8000 };
+  const r = await rig("local", async () => verdict, ["claude", "codex", "kimi"]); // no local: nobody can take a PII task
+  const t = await r.tasks.propose("claude", { title: "fix the parser", class: "implement" });
+  expect(t).toMatchObject({ owner: null, signals: ["pii"] });
+  await r.tasks.rescreen(); // still unknown: only the record changes
+  expect(r.board.get(t.id)!.history.filter((h) => h.event === "screened")).toHaveLength(1);
+  verdict = { label: "clear", ms: 5 };
+  await r.tasks.rescreen();
+  await tick();
+  const lifted = r.board.get(t.id)!;
+  expect(lifted).toMatchObject({ owner: "codex", signals: [] }); // routed as usual through the class peers
+  expect(lifted.history.filter((h) => h.event === "screened").map((h) => h.note)).toEqual(["pii: unknown, timeout", "clear, screened again"]);
+  expect(r.peers.codex!.got.at(-1)).toMatchObject({ kind: "task", refs: { task: String(t.id) } });
+  expect(r.peers.codex!.got.at(-1)!.private).toBeUndefined();
+  expect(r.notices).toContain(`task #${t.id} fix the parser: the PII screen cleared it on a second look; it is routed as usual`);
+  expect(r.records.filter((x) => x.task === t.id).map((x) => `${x.label}:${x.source}`)).toEqual(["pii:unknown", "pii:unknown", "clear:screen"]);
+
+  // A pii verdict on the second look settles it; another unknown is asked at most RESCREEN_MAX times in a hub run.
+  verdict = { label: "unknown", miss: "off campus", ms: 1 };
+  const settled = await r.tasks.propose("claude", { title: "fix the lexer", class: "implement" });
+  verdict = { label: "pii", category: "name", ms: 4 };
+  await r.tasks.rescreen();
+  expect(r.board.get(settled.id)!.history.at(-1)).toMatchObject({ event: "screened", note: "pii: screen, name" });
+  verdict = { label: "unknown", miss: "off campus", ms: 1 };
+  const stuck = await r.tasks.propose("claude", { title: "fix the printer", class: "implement" });
+  const calls = r.screened.length;
+  for (let i = 0; i < 15; i++) await r.tasks.rescreen();
+  expect(r.screened.length - calls).toBe(10);
+  expect(r.board.get(stuck.id)).toMatchObject({ owner: null, signals: ["pii"] });
+
+  // With local attached the unknown task is local's at once, and nothing screens it again.
+  const withLocal = await rig("local", async () => ({ label: "unknown", miss: "timeout", ms: 8000 }));
+  const taken = await withLocal.tasks.propose("claude", { title: "fix the parser", class: "implement" });
+  expect(taken.owner).toBe("local");
+  const before = withLocal.screened.length;
+  await withLocal.tasks.rescreen();
+  expect(withLocal.screened).toHaveLength(before);
+});
+
+test("checks run before the screen; an escalation's own reason is not screened; a budget hand-off is screened once; a pattern match is recorded without a call", async () => {
+  const r = await rig("local", byName);
+  const t = await r.tasks.propose("claude", { title: "follow-up list", class: "implement", owner: "codex" });
+  const calls = r.screened.length;
+  await expect(r.tasks.done("kimi", t.id, `told ${NAME}`)).rejects.toThrow(/only its owner/);
+  await expect(r.tasks.review("claude", t.id, "approved", `ask ${NAME}`)).rejects.toThrow(/cannot move to approved/);
+  await expect(r.tasks.review("claude", t.id, "fine", `ask ${NAME}`)).rejects.toThrow(/verdict must be/);
+  expect(r.screened).toHaveLength(calls);
+
+  // The hub's escalation reason reaches the next owner whatever a screen would say of it.
+  const next = await r.tasks.escalate("user", t.id, `rejected work that mentions ${NAME}`);
+  expect(r.screened).toHaveLength(calls);
+  expect(r.peers[next.owner!]!.got.at(-1)!.body).toContain(`Handoff from the previous owner:\nrejected work that mentions ${NAME}`);
+
+  // One hand-off, two moved tasks: one screen call, both get the stub.
+  const a = await r.tasks.propose("claude", { title: "task a", class: "implement", owner: "kimi" });
+  const b = await r.tasks.propose("claude", { title: "task b", class: "implement", owner: "kimi" });
+  const handoffCalls = r.screened.length;
+  r.bus.pause("kimi");
+  const moved = await r.tasks.reassignForPause("kimi", `halfway; ${NAME} wants csv`);
+  await tick();
+  expect(r.screened.length - handoffCalls).toBe(1);
+  for (const m of moved.filter((x) => x.id === a.id || x.id === b.id)) expect(r.peers[m.to!]!.got.find((e) => e.refs?.task === String(m.id))!.body).toContain("[handoff withheld: the PII screen did not clear it");
+
+  // Free text that matches a pattern is withheld by the #69 check, recorded as a regex verdict, and costs no call.
+  const plain = await r.tasks.propose("claude", { title: "plain", class: "implement", owner: "codex" });
+  const regexCalls = r.screened.length;
+  await r.tasks.done("codex", plain.id, "updated the record of 900101-1234567");
+  expect(r.screened).toHaveLength(regexCalls);
+  expect(r.records.at(-1)).toEqual({ task: plain.id, item: "summary", label: "pii", source: "regex" });
+});
+
+test("a busy on-device slot sends the screen to the campus gateway; off campus it waits for the slot within the deadline", async () => {
+  const on = gateway(() => ({ content: "pii phone" }));
+  const device = startFakeModelServer({ script: () => ({ content: "clear" }) });
+  cleanup.push(device.stop);
+  const asks: string[] = [];
+  let busyFor = Infinity;
+  const handle = { url: device.url, model: "agenthub-fast", acquire: async (signal?: AbortSignal, waitMs?: number) => {
+    asks.push(waitMs === 0 ? "try" : "wait");
+    if (waitMs === 0 && busyFor > 0) throw new Error("MLX generation is busy");
+    if (waitMs !== 0) await Bun.sleep(busyFor);
+    if (signal?.aborted) throw new Error("cancelled");
+    return () => {};
+  } };
+  expect(await screenPii("call Jane", { omni: on.omni, onCampus: () => on.omni.onCampus(), fixedModel: () => "m", device: async () => handle })).toMatchObject({ label: "pii", category: "phone" });
+  expect(asks).toEqual(["try"]); // no wait: the gateway on campus answered
+  expect(device.requests).toHaveLength(0);
+
+  const off = gateway(() => ({ content: "clear" }), true);
+  const offDeps = { omni: off.omni, onCampus: () => off.omni.onCampus(), fixedModel: () => "m", device: async () => handle };
+  asks.length = 0;
+  busyFor = 30;
+  expect(await screenPii("fix the parser", offDeps)).toMatchObject({ label: "clear" });
+  expect(asks).toEqual(["try", "wait"]);
+  expect(device.requests).toHaveLength(1);
+  busyFor = 1000; // still taken at the deadline: no verdict
+  expect(await screenPii("fix the parser", { ...offDeps, timeoutMs: 80 })).toMatchObject({ label: "unknown", miss: "timeout" });
+  expect(off.model.requests).toHaveLength(0);
 });

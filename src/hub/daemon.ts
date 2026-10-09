@@ -1519,6 +1519,7 @@ export async function startDaemon(opts: DaemonOptions) {
     releasing = true;
     try {
       await tasks.releaseReady(); // #34: dependents a stop cut off between an approval and their assignment
+      await tasks.rescreen().catch((e: Error) => log(`PII re-screen failed: ${e.message}`)); // #198: no verdict yet, nobody has it
       if (limit > 0) await releaseOwners(limit);
     } finally {
       releasing = false;
