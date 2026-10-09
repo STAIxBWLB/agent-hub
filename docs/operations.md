@@ -1233,7 +1233,12 @@ next actions").
   <id>` instead of offering it. A hub that never answers (its pid is alive,
   nothing replies): take the `pid` from that project's
   `.agenthub/state/status.json`, check with `ps -p <pid> -o command=` that it
-  is that project's hub daemon, end it by hand, then run `status` again. A
+  is that project's hub daemon, end it by hand, then run `status` again. If
+  that pid now belongs to another process (reused after a reboot), move the
+  stale `status.json` aside instead, then run `status` again; likewise when
+  `next` says `wait: runner <pid>` and that pid is not an `ahub recovery-run`
+  process, move the operation's `~/.agenthub/recovery/<id>.json.runner.db`
+  aside, then run `status` again. A
   project whose directory is
   gone is only recorded (`ahub doctor --orphans` lists a hub left running
   there). It records its decision before it acts. It releases a source hold of
@@ -1257,6 +1262,8 @@ next actions").
   `next` or the error prints: the operation's own coordinator, or the release
   you are running when that coordinator predates these commands (its `resume`
   still runs the old runner, and `next` says what that runner cannot do).
+  `--fresh-session` never applies to such an operation: its runner never
+  records a restoration as `failed`.
   `--fresh-session` is not offered when the target release cannot read recovery
   waivers, since it could never release a new session; `status` says so in
   `freshSession`. A runner record that cannot be read shows as `unknown`, and

@@ -389,7 +389,7 @@ An attached session is the target's report of that peer online with a thread
 
 | Receipt | Live evidence | Resume | Other actions | Next action text |
 | --- | --- | --- | --- | --- |
-| project `pending` or `prepared`, no effects | roster changed | blocks | abort where `abortRefusal` allows it, dispose | `a new plan can be made once this operation is cancelled or ended` |
+| project `pending` or `prepared`, no effects | roster changed | blocks | abort where `abortRefusal` allows it, dispose | `end that <peer> session` or `restore <peer>'s original session` `before resuming, or end this operation: a new plan can be made once it is cancelled or ended` |
 | project `prepared`, hold ours | roster as planned | roster checked again, then close and commit | abort if no effects | none (it proceeds) |
 | project `prepared`, hold ours | roster changed, effects | blocks, hold kept | dispose | `end that <peer> session` (joined after the plan, or its terminal was closed) or `restore <peer>'s original session`, `then <c> recovery resume <id>` |
 | project `prepared`, hold lapsed (same source instance) | roster as planned | re-prepare, check roster, close, commit | abort if no effects | none |
@@ -412,7 +412,7 @@ An attached session is the target's report of that peer online with a thread
 | disposition recorded, first act not finished | any | refused | abort refused; stop-and-archive where `disposeRefusal` allows it | as the disposition row below |
 | `closed:<peer>` `pending` | Orca still lists the terminal | blocks | dispose | `close Orca terminal <handle> (the login shell it runs in) by hand, then <c> recovery resume <id>` |
 | `closed:<peer>` done | peer attached again | blocks | dispose | `end that <peer> session, then <c> recovery resume <id>` |
-| `restored:<peer>` `pending` or `failed` | session attached with the planned id (or an accepted new one: fresh choice, planned fresh start, zero-turn Claude) | recorded as restored | none | none |
+| `restored:<peer>` `pending` or `failed` | session attached with the planned id (or an accepted new one: fresh choice, planned fresh start, zero-turn Claude) | recorded as restored | none: `--fresh-session` is neither offered nor accepted while the inspection shows the planned session attached; when it cannot tell (not inspected, target unreadable), the `failed` receipt alone decides, and a chosen fresh session whose original then attaches is cleared on resume while its audit entry stays | none |
 | `restored:<peer>` `pending` or `failed` | another session attached | blocks | dispose | `end that <peer> session and close its terminal, then <c> recovery resume <id>` |
 | `restored:<peer>` `pending` or `failed` | no session, recorded launcher live or unknown | blocks | dispose | `wait until it attaches, or end it and close terminal <handle>, then <c> recovery resume <id>` |
 | `restored:<peer>` `pending` | no session, launcher gone or never recorded | receipted `failed`, blocks | fresh session (Codex, Claude), dispose | the failed-restoration choices below |

@@ -177,7 +177,7 @@ export function nextActions(receipt: RecoveryOperation, runner?: number | "unkno
   const unsettled = disposeRefusal(op, live);
   const stop = unsettled ? `wait until ${unsettled.project}'s hub settles, then ${recoveryCommand(op, "status")}` : recoveryCommand(op, "dispose", STOP);
   if (op.disposition) return [unsettled ? stop : `rerun ${stop}`];
-  const failed = [...new Set(op.projects.flatMap((p) => failedPeers(op, p)))];
+  const failed = [...new Set(op.projects.flatMap((p) => failedPeers(op, p, live)))];
   const old = !!op.sourceRoot && !coordinatorCurrent(op.sourceRoot);
   const abortable = !abortRefusal(op, live);
   const stuck = resumeBlocked(op, live);
@@ -211,10 +211,18 @@ export async function liveProjects(op: RecoveryOperation, inspect: (project: Pro
  * resumes its recorded session), not one already chosen, and not a planned fresh start (nothing to lose; resume
  * launches it new again).
  */
-function failedPeers(op: RecoveryOperation, progress: ProjectProgress): string[] {
+function failedPeers(op: RecoveryOperation, progress: ProjectProgress, live: Record<string, Inspection | undefined> = {}): string[] {
   const planned = op.plan.projects.find((p) => p.project.id === progress.id);
   return Object.entries(progress.terminals).filter(([key, value]) => key.startsWith("restored:") && value === "failed").map(([key]) => key.slice("restored:".length))
-    .filter((peer) => peer !== "pi" && !progress.fresh?.[peer] && !planned?.freshStart?.includes(peer));
+    .filter((peer) => peer !== "pi" && !progress.fresh?.[peer] && !planned?.freshStart?.includes(peer) && !plannedAttached(op, progress, peer, live));
+}
+
+/** #215: the inspection shows the planned session attached for `peer`, so resume records it as restored: nothing is lost. */
+function plannedAttached(op: RecoveryOperation, progress: ProjectProgress, peer: string, live: Record<string, Inspection | undefined>): boolean {
+  const state = live[progress.id];
+  const binding = (op.plan.projects.find((p) => p.project.id === progress.id)?.terminals as { peer: string; sessionId: string }[] | undefined)?.find((t) => t.peer === peer);
+  const current = state?.state === "running" ? state.peers.find((p) => p.id === peer && p.state !== "offline") : undefined;
+  return !!binding && (peer === "codex" ? current?.threadId : current?.sessionId) === binding.sessionId;
 }
 
 /** Registry reads for planning must not create a registry or run migrations. */
@@ -322,7 +330,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     const fix = extra || closed(changed.id) ? `end that ${changed.id} session` : `restore ${changed.id}'s original session`;
     if (hasEffects(op)) throw new Error(`${planned.project.id}: ${changed.id} changed while this operation has recorded effects, so a new plan cannot replace it; ${fix} before resuming`);
     // The lock this operation holds refuses a new upgrade until the operation is cancelled or ended.
-    throw new Error(`${planned.project.id}: source conversation or active peer membership changed; a new plan can be made once this operation is cancelled or ended`);
+    throw new Error(`${planned.project.id}: source conversation or active peer membership changed (${changed.id}); ${fix} before resuming, or end this operation: a new plan can be made once it is cancelled or ended`);
   };
   // Prepare, or after an expired lease re-prepare, the planned source and wait until it is quiet.
   const prepareSource = async (planned: PlannedProject, progress: ProjectProgress, again = false) => {
@@ -549,9 +557,12 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
       if (stuck) throw new Error(`--fresh-session cannot help: ${stuck}, so resume could never launch the new session; ${next}`);
       const peer = choice.fresh;
       // Per project: a planned fresh start has nothing to lose, so only the other failed projects take the choice.
-      const failed = op.projects.filter((p) => failedPeers(op, p).includes(peer));
+      const failed = op.projects.filter((p) => failedPeers(op, p, live).includes(peer));
       if (!failed.length && op.projects.some((p) => p.terminals[`restored:${peer}`] === "failed" && op.plan.projects.find((planned) => planned.project.id === p.id)?.freshStart?.includes(peer))) {
         throw new Error(`${peer}: its plan already restarts it as a new session (no rollout and no turn, nothing to lose), so there is no conversation to record as lost; ${next}`);
+      }
+      if (!failed.length && op.projects.some((p) => p.terminals[`restored:${peer}`] === "failed" && plannedAttached(op, p, peer, live))) {
+        throw new Error(`${peer}: its planned session is attached again, so nothing was lost; resume records it as restored; ${next}`);
       }
       if (!failed.length) throw new Error(`${peer}: no failed restoration of it is open to a fresh session (none failed, or one is already chosen); --fresh-session applies only then (${recoveryCommand(op, "status")})`);
       for (const progress of failed) {

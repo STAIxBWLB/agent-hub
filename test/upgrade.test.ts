@@ -513,7 +513,7 @@ test("a changed roster after an expired hold with no effects names abort, and ab
   writeOperation(f.operation.id, f.operation, f.home);
   f.states.get("alpha")!.peers = [{ id: "codex", state: "idle", threadId: "t1" }, { id: "kimi", state: "idle" }];
   const blocked = await runRecovery(f.operation.id, f.driver, f.home);
-  expect(blocked.error).toBe(`alpha: source conversation or active peer membership changed; a new plan can be made once this operation is cancelled or ended; next actions: ${C} resume ${f.operation.id} | ${C} abort ${f.operation.id} | ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
+  expect(blocked.error).toBe(`alpha: source conversation or active peer membership changed (kimi); end that kimi session before resuming, or end this operation: a new plan can be made once it is cancelled or ended; next actions: ${C} resume ${f.operation.id} | ${C} abort ${f.operation.id} | ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
   expect(publicOperation(blocked, undefined, { alpha: f.states.get("alpha")!, beta: f.states.get("beta")! }).next).toContain(`${C} abort ${f.operation.id}`);
   delete f.states.get("alpha")!.recovery; // the re-prepared hold lapses again before the operator acts
   await abortRecovery(f.operation.id, f.driver, f.home);
@@ -1000,4 +1000,18 @@ test("a failing staging probe is retried, and never run again once the target wa
   expect(done.phase).toBe("completed");
   expect(done.final).toBeUndefined();
   expect(probes).toBe(before);
+});
+
+// #215 review: a failed receipt whose planned session is attached again lost nothing: resume records it as restored, so
+// --fresh-session is neither offered nor accepted (it would audit a loss that never happened). Without an inspection
+// that shows it, the receipt alone decides, as before.
+test("--fresh-session is neither offered nor accepted while the planned session is attached again", async () => {
+  const f = failedRestore();
+  f.states.get("alpha")!.peers = [{ id: "codex", state: "idle", threadId: "t1" }];
+  const op = readOperation<RecoveryOperation>(f.operation.id, f.home);
+  const live = await liveProjects(op, f.driver.inspect);
+  expect(nextActions(op, undefined, live).some((line) => line.includes("--fresh-session"))).toBe(false);
+  expect(nextActions(op).some((line) => line.includes("--fresh-session codex"))).toBe(true); // not inspected: the receipt decides
+  await expect(disposeRecovery(f.operation.id, { fresh: "codex" }, "lost", f.driver, f.home)).rejects.toThrow("codex: its planned session is attached again, so nothing was lost");
+  expect(readOperation<RecoveryOperation>(f.operation.id, f.home).audit).toBeUndefined();
 });
