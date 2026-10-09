@@ -1653,17 +1653,22 @@ task list polling does not. `hub_status` stays conductor-only.
   peers. PII, capability limits (`local_allowed`, Pi's context limit),
   exclusions, failing peers and offline or paused peers all pass it over, so a
   PII task still goes to `local` or nobody.
-- Lasting exclusions: a decline records the owner it was declined for in its
-  history entry's `from` (also when the console declines for that owner), and
-  an escalation records the owner it took the task from the same way.
-  `excluded()` reads both (older decline rows name only the decliner), so those
-  peers stay out of every later reroute and of `route explain`: the reservation
-  never hands the task back to them. An owner released as gone, moved by the
-  idle sweep or relayed for its budget is excluded only from that move's own
-  reroute: none of these is a refusal, so a later reroute may give it the task
-  again from its reservation. A person's explicit assign (`ahub task assign`,
-  the dashboard) is not blocked by lasting exclusions; the conductor's and a
-  proposer's assigns are.
+- Lasting exclusions are refusals only: a decline records the owner it was
+  declined for in its history entry's `from` (also when the console declines
+  for that owner), and an escalation with reason `rejections` (a reviewer's
+  repeated changes_requested) or `manual` (by hand) records the owner it took
+  the task from the same way. `excluded()` reads both (older decline rows name
+  only the decliner), so those peers stay out of every later reroute and of
+  `route explain`: the reservation never hands the task back to them. The
+  hub's own escalations after a failed delivery or inference
+  (`delivery_failed`, `inference_failed`), and an owner released as gone, moved
+  by the idle sweep or relayed for its budget, exclude that owner only from
+  that move's own reroute: none of these is a refusal, so a later reroute may
+  give it the task again from its reservation. A person's explicit assign
+  (`ahub task assign`, the dashboard) is not blocked by lasting exclusions and
+  clears an agent's reservation, so a later reroute does not hand the task to
+  the agent's choice; the conductor's and a proposer's assigns respect the
+  exclusions and keep the reservation.
 - A named candidate list (console or conductor assign, escalation, budget
   relay, the idle sweep's auto-reassignment of its suggestion) replaces the
   reservation; the idle sweep's step-3 suggestion itself is an `assign()`
@@ -1675,23 +1680,30 @@ task list polling does not. `hub_status` stays conductor-only.
 - Passing over a reservation is a console and hub.log notice naming the
   reserved peer and the reason, from assignment and from the idle sweep's
   suggestion alike, and the assignment's history note keeps it, appended to a
-  note the caller gave (a gone owner's release). The reserved peer is not
+  note the caller gave (a gone owner's release). Only news is said: nothing
+  when the reserved peer is the owner the task moves away from (its decline,
+  escalation, release or idle sweep), and nothing once it refused the task for
+  good (the decline or escalation said that). The reserved peer is not
   messaged.
-- `Tasks.assignTo` on a task that waits records a `reserved` event and changes
-  the reserved owner instead of the silent no-op it was; this applies to the
-  console, the conductor and a proposer alike. The release timer treats a
-  `reserved` last event like `blocked`.
+- `Tasks.assignTo` on a task that waits records a `reserved` event with reason
+  `manual` and changes the reserved owner instead of the silent no-op it was;
+  this applies to the console, the conductor and a proposer alike. The release
+  timer treats a `reserved` last event like `blocked`.
 - `hub_task_assign` stays a conductor tool, and the task's proposer (the `by`
-  of its first history entry) may call it while the task is `proposed`, that
-  is, nobody has accepted it. Handing it to another peer needs `assign` when
-  the proposer has a capabilities entry; redirecting to itself does not. The
-  proposer path is refused while the last owner or reservation change of the
-  task (`assigned`, `reassigned`, `escalated`, `unassigned`, `reserved`) that
-  the hub did not make itself was made by the console user: a person's assign
-  or reservation stands until the conductor or the console moves it, also
-  after the hub carried it out or passed it over. The id is taken as
-  `Tasks.need()` takes it, a whole number or a digit string. Any other
-  non-conductor peer, and the proposer once the task was accepted or a person
-  moved it, get the conductor-role error. A proposer's redirect goes through
-  `Tasks`, keeps the proposer as the actor with reason `manual`, and writes no
-  conduct audit event; during a PII turn it is refused like the conductor's.
+  of its first history entry) may call it while the task is `proposed` and its
+  history has no `accepted` entry: a decline or a release puts a task that was
+  worked on back in `proposed`, and that task is no longer the proposer's to
+  redirect. Handing it to another peer needs `assign` when the proposer has a
+  capabilities entry; redirecting to itself does not. The conductor needs
+  `assign` for any assign when it has a capabilities entry. The proposer path
+  is refused while the last owner or reservation change of the task
+  (`assigned`, `reassigned`, `escalated`, `unassigned`, `reserved`) that the
+  hub did not make itself was made by the console user: a person's assign or
+  reservation stands until the conductor or the console moves it, also after
+  the hub carried it out or passed it over. The id is taken as `Tasks.need()`
+  takes it, a whole number or a digit string. Any other non-conductor peer, and
+  the proposer once the task was accepted or a person moved it, get the
+  conductor-role error. A proposer's redirect goes through `Tasks`, keeps the
+  proposer as the actor with reason `manual` (on the `reassigned` or `reserved`
+  entry), and writes no conduct audit event; during a PII turn it is refused
+  like the conductor's.

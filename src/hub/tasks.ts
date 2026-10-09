@@ -689,9 +689,13 @@ export class Tasks {
    */
   private excluded = (task: Task) => task.history.flatMap((h) => (h.event === "declined" ? [h.from ?? h.by] : h.event === "escalated" && h.from ? [h.from] : []));
 
-  /** Says on the console and hub.log that routing passed over the reserved owner (#207); returns the history note's suffix. */
+  /**
+   * Says on the console and hub.log that routing passed over the reserved owner (#207); returns the history note's suffix.
+   * Only news is said: not when the reserved owner is the one the task moves away from, nor once it refused the task for
+   * good (its decline or escalation said that).
+   */
   private passedOver(task: Task, a: Assignment): string {
-    if (!a.unreserved) return "";
+    if (!a.unreserved || task.reserved === task.owner || this.excluded(task).includes(task.reserved!)) return "";
     this.d.notify(`task ${this.publicTitle(task)}: its reserved owner ${task.reserved} is passed over (${a.unreserved}); routing proceeds`);
     return `; reserved owner ${task.reserved} passed over: ${a.unreserved}`;
   }
@@ -711,7 +715,7 @@ export class Tasks {
     if (hold) this.d.notify(`task ${this.publicTitle(task)}: ${a.owner}'s queue is held (${hold}); the task arrives once the hold is resolved`);
   }
 
-  /** `override`: a person's explicit assign, which past declines and escalations do not block (#207). */
+  /** `override`: a person's explicit assign, which past refusals do not block and which drops an agent's reservation (#207). */
   private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; claim?: boolean; override?: boolean } = {}): Promise<Task> {
     const waits = this.waitsFor(task);
     const a = assign(task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class) });
@@ -731,7 +735,10 @@ export class Tasks {
       return task;
     }
     const profile = this.d.splitProfile?.(a.owner);
-    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}) }, `${opts.note ?? `to ${a.owner}`}${passed}`, { ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(opts.event === "escalated" && task.owner ? { from: task.owner } : {}) });
+    // A person's explicit assign replaces an agent's reservation (#207). Only a refusal keeps the owner it moves away from
+    // out for good: a reviewer's rejections or an escalation by hand, never the hub's own move after a failed delivery.
+    const lasting = opts.event === "escalated" && task.owner && (opts.reason === "rejections" || opts.reason === "manual");
+    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}), ...(opts.override && task.reserved ? { reserved: null } : {}) }, `${opts.note ?? `to ${a.owner}`}${passed}`, { ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}) });
     // What calibration reads (issue #109): routing chose the first owner (no single named candidate, no claim; not an
     // escalation, relay or reassignment of work already begun), and the work overlaps another owner's task not started
     // yet. For the record only. Work routed back to its proposer is left out, as its observations are (by === owner).
@@ -1248,7 +1255,7 @@ export class Tasks {
     const task = this.need(id, true);
     // Work that waits is handed to nobody yet (issue #207): the peer becomes its reserved owner instead.
     if (!this.waitsFor(task).length) return this.assignOwner(task, by, { candidates: [peer], event: "reassigned", reason: "manual", override: by === USER });
-    const next = this.d.board.update(task.id, by, "reserved", { reserved: peer }, `for ${peer}`);
+    const next = this.d.board.update(task.id, by, "reserved", { reserved: peer }, `for ${peer}`, { reason: "manual" });
     this.d.notify(`task ${this.publicTitle(next)} reserved for ${peer} by ${by}; it is offered to ${peer} first once what it waits for is approved`);
     return next;
   }

@@ -195,6 +195,9 @@ test("the proposer redirects its own unaccepted task without the role; other pee
   expect((await shown(1)).history.at(-1)).toMatchObject({ event: "reassigned", by: "claude", reason: "manual", owner: "kimi" });
   expect((await op(kimi, "hub_task_accept", { id: 1 })).ok).toBe(true);
   expect((await op(planner, "hub_task_assign", { id: 1, peer: "pi" })).ok).toBe(false); // accepted: the conductor's now
+  expect((await op(kimi, "hub_task_decline", { id: 1 })).ok).toBe(true);
+  expect(await shown(1)).toMatchObject({ state: "proposed", owner: "pi" }); // back in proposed after work began
+  expect((await op(planner, "hub_task_assign", { id: 1, peer: "kimi" })).ok).toBe(false); // still: it was accepted once
   // A waiting task: the owner named with after is reserved, and its proposer redirects the reservation.
   expect((await op(planner, "hub_task_propose", { title: "second", class: "implement", owner: "pi", after: [1] })).ok).toBe(true);
   expect(await shown(2)).toMatchObject({ owner: null, reserved: "pi" });

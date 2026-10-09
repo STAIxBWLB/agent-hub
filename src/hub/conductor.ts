@@ -175,11 +175,13 @@ export class Conductor {
       const task = id === undefined ? undefined : this.hooks.task(id);
       // A task's current owner and reviewer read its public view without the role (#208); nobody else does.
       if (task && tool === "hub_task_show" && (task.owner === actor || task.reviewer === actor)) return publicConductorTask(task, this.hooks.publicView);
-      // Its proposer (the first history entry) redirects it while nobody accepted it (#207); work that waits gets a reserved
-      // owner. Never over the person: a console assign or reservation stands until the conductor or the console moves it,
-      // also once the hub carried it out (the hub's own moves are not decisions).
+      // Its proposer (the first history entry) redirects it while nobody ever accepted it (#207: a decline or a release puts
+      // worked tasks back in proposed); work that waits gets a reserved owner. Never over the person: a console assign or
+      // reservation stands until the conductor or the console moves it, also once the hub carried it out (the hub's own
+      // moves are not decisions).
       const moved = task?.history.findLast((h) => h.by !== HUB && (OWNERSHIP_EVENTS.has(h.event) || h.event === "reserved"));
-      if (task && tool === "hub_task_assign" && task.history[0]?.by === actor && task.state === "proposed" && moved?.by !== USER) {
+      const accepted = task?.history.some((h) => h.event === "accepted");
+      if (task && tool === "hub_task_assign" && task.history[0]?.by === actor && task.state === "proposed" && !accepted && moved?.by !== USER) {
         const peer = peerId(args.peer);
         if (peer !== actor) requireAssign(actor, this.hooks.capabilities());
         await this.hooks.assign(actor, task.id, peer);

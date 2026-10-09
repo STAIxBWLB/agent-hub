@@ -912,10 +912,22 @@ test("a decline keeps the owner it was declined for out of every later reroute, 
   const moved = await tasks.decline(USER, c.id, "not this one");
   expect(moved).toMatchObject({ owner: "local", reserved: "codex" });
   expect(moved.history.findLast((h) => h.event === "declined")).toMatchObject({ by: USER, from: "codex" });
-  expect(notices).toContain(`task #${c.id} client: its reserved owner codex is passed over (excluded (declined or replaced)); routing proceeds`);
   // explain and assignment agree, and the next reroute does not hand it back either
   expect(tasks.explain(c.id)).toContain("reserved owner codex: not honored, excluded (declined or replaced); routing proceeds");
   expect(await tasks.decline("local", c.id)).toMatchObject({ owner: "kimi", reserved: "codex" });
+  // the decline said it: no "passed over" notice for the peer that refused, then or on the later reroute
+  expect(notices.filter((l) => l.includes("passed over"))).toEqual([]);
+});
+
+test("only a refusal keeps an escalated-from owner out: the hub's move after a failed delivery does not", async () => {
+  const { tasks, board } = await setup();
+  const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+  const c = await tasks.propose("claude", { title: "client", class: "implement", owner: "codex", after: [a.id] });
+  await approve(tasks, board, a.id);
+  const moved = await tasks.escalate(HUB, c.id, "Undeliverable to codex: app-server restarting", "delivery_failed");
+  expect(moved.owner).toBe("kimi");
+  expect(moved.history.findLast((h) => h.event === "escalated")!.from).toBeUndefined();
+  expect(await tasks.decline("kimi", c.id)).toMatchObject({ owner: "codex" }); // the reservation is honored again
 });
 
 test("an owner the task was escalated away from stays out of later reroutes", async () => {
@@ -946,7 +958,17 @@ test("a person's explicit assign is not blocked by past declines; the conductor'
   expect(await tasks.assignTo(c.id, "codex")).toMatchObject({ owner: "codex" });
 });
 
-test("an owner released as gone is passed over for that release only; the history note keeps the release's own note", async () => {
+test("a person's assign of a ready task drops the agent's reservation; the conductor's keeps it", async () => {
+  const { tasks, board } = await setup();
+  const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+  const c = await tasks.propose("claude", { title: "client", class: "implement", owner: "codex", after: [a.id] });
+  await approve(tasks, board, a.id);
+  expect(await tasks.assignTo(c.id, "local", "claude")).toMatchObject({ owner: "local", reserved: "codex" });
+  expect(await tasks.assignTo(c.id, "kimi")).toMatchObject({ owner: "kimi", reserved: null });
+  expect(await tasks.decline("kimi", c.id)).toMatchObject({ owner: "local" }); // routing, not back to codex
+});
+
+test("an owner released as gone is passed over for that release only; a release's own note keeps a passed-over reservation", async () => {
   const { tasks, board, peers } = await setup();
   const a = await tasks.propose("claude", { title: "schema", class: "implement" });
   const c = await tasks.propose("claude", { title: "client", class: "implement", owner: "codex", after: [a.id] });
@@ -955,23 +977,41 @@ test("an owner released as gone is passed over for that release only; the histor
   peers.codex!.set("offline");
   await tasks.releaseFromGone("codex", 30);
   expect(board.get(c.id)!.owner).toBe("local");
-  expect(board.get(c.id)!.history.at(-1)!.note).toBe("owner codex offline for 30 min; reserved owner codex passed over: excluded (declined or replaced)");
+  expect(board.get(c.id)!.history.at(-1)!.note).toBe("owner codex offline for 30 min"); // its own owner's release is no news
   // being offline is no refusal: back online, a later reroute honors the reservation again
   peers.codex!.set("idle");
   expect(await tasks.decline("local", c.id)).toMatchObject({ owner: "codex" });
+  // another owner's release while the reserved owner is away: the release's note keeps it
+  tasks.accept("codex", c.id);
+  await tasks.decline("codex", c.id); // to local; codex refused it now
+  const other = await tasks.propose("claude", { title: "other", class: "implement", owner: "kimi", after: [c.id] });
+  board.update(c.id, "local", "accepted", { state: "in_progress" });
+  board.update(c.id, "local", "done", { state: "in_review" });
+  board.update(c.id, "claude", "approved", { state: "approved" });
+  peers.kimi!.set("offline");
+  await tasks.releaseReady(); // kimi is away: other goes to local
+  expect(board.get(other.id)!.owner).toBe("local");
+  tasks.accept("local", other.id);
+  peers.local!.set("offline");
+  await tasks.releaseFromGone("local", 30);
+  expect(board.get(other.id)!.history.at(-1)!.note).toBe("owner local offline for 30 min; reserved owner kimi passed over: offline");
 });
 
 test("the idle sweep's owner suggestion says when it passes over the reservation", async () => {
   const base = await setup();
   const notices: string[] = [];
   const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (l) => notices.push(l), sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, unaccepted_min: 1, ladder_min: 1 } });
-  const made = base.board.propose("claude", { title: "client", class: "implement", reserved: "codex" });
-  const task = base.board.update(made.id, HUB, "assigned", { owner: "codex", reviewer: "claude" });
+  // Its own reservation, honored: the idle owner being skipped is no news.
+  const mine = base.board.update(base.board.propose("claude", { title: "mine", class: "implement", reserved: "codex" }).id, HUB, "assigned", { owner: "codex", reviewer: "claude" });
+  // Reserved for kimi, who is away: the suggestion passes it over and says so. (Another owner: one notice per peer a sweep.)
+  const made = base.board.propose("claude", { title: "client", class: "implement", reserved: "kimi" });
+  const task = base.board.update(made.id, HUB, "assigned", { owner: "local", reviewer: "claude" });
+  base.peers.kimi!.set("offline");
   const at = task.history.at(-1)!.at + 60_000;
   for (let step = 0; step < 3; step++) await tasks.sweep(at + step * 60_000);
-  expect(notices.at(-2)).toBe(`task #${task.id} client: its reserved owner codex is passed over (excluded (declined or replaced)); routing proceeds`);
-  expect(notices.at(-1)).toContain("Owner reassignment suggestion: local");
-  expect(base.board.get(task.id)!.owner).toBe("codex"); // a suggestion only
+  expect(notices.filter((l) => l.includes("passed over"))).toEqual([`task #${task.id} client: its reserved owner kimi is passed over (offline); routing proceeds`]);
+  expect(notices.filter((l) => l.includes("reassignment suggestion")).map((l) => l.split(": ").at(-1))).toEqual(["local.", "codex."]);
+  expect([base.board.get(mine.id)!.owner, base.board.get(task.id)!.owner]).toEqual(["codex", "local"]); // suggestions only
 });
 
 test("assigning a waiting task reserves it for that peer, and the release sweep offers it to them", async () => {
@@ -979,7 +1019,7 @@ test("assigning a waiting task reserves it for that peer, and the release sweep 
   const a = await tasks.propose("claude", { title: "schema", class: "implement" });
   const c = await tasks.propose("claude", { title: "client", class: "implement", owner: "codex", after: [a.id] });
   await expect(tasks.assignTo(c.id, "kimi", "claude")).resolves.toMatchObject({ owner: null, reserved: "kimi" });
-  expect(board.get(c.id)!.history.at(-1)).toMatchObject({ by: "claude", event: "reserved", note: "for kimi" });
+  expect(board.get(c.id)!.history.at(-1)).toMatchObject({ by: "claude", event: "reserved", note: "for kimi", reason: "manual" });
   board.update(a.id, "local", "accepted", { state: "in_progress" });
   board.update(a.id, "local", "done", { state: "in_review" });
   board.update(a.id, "claude", "approved", { state: "approved" }); // saved, then the hub stopped
