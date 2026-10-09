@@ -139,10 +139,49 @@ test("conductor native hooks preserve explicit caller settings and report missin
   const hooks = claudeObservationHooks({ coordination: "advisory", roles: { claude: ["conductor"] }, task_sweep: { enabled: false } }, paths)!;
   expect(hooks.observeNative).toBe(true);
   const own = buildLaunch("claude", ["--settings", "{}"], { unattended: false, statusLine: { script: "/candidate/tee.ts", stateDir: paths.stateDir }, facts: hooks });
-  expect(own.args.filter(arg => arg === "--settings")).toHaveLength(1); expect(own.warning).toContain("conductor native session/turn hooks are off");
+  expect(own.args.filter(arg => arg === "--settings")).toHaveLength(1); expect(own.warning).toContain("native session/turn observation hooks are off");
   const report = summarize([{ v: 1, at: "2026-10-09T00:00:00.000Z", type: "state", peer: "claude", state: "idle" }]);
   expect(report.peers.claude?.turns).toBeNull(); expect(formatReport(report).join("\n")).toContain("turns unknown");
 });
+
+test("ordinary facts and idle opt-ins observe a managed pure-text turn without any tool Pre hook", async () => {
+  for (const [coordination, idle] of [["turn-free", false], ["advisory", true]] as const) {
+    const dir = mkdtempSync(join(tmpdir(), "ahub-ordinary-hooks-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+    mkdirSync(join(dir, ".agenthub"));
+    writeFileSync(join(dir, ".agenthub/config.json"), JSON.stringify({ coordination, roles: { claude: ["planner", "reviewer"] }, memory: { enabled: false }, inference: { enabled: false }, mlx: { enabled: false }, task_sweep: { enabled: idle } }));
+    const configDir = join(dir, "claude-config"), projects = join(configDir, "projects", "fixture"); mkdirSync(projects, { recursive: true });
+    const previous = process.env.CLAUDE_CONFIG_DIR; process.env.CLAUDE_CONFIG_DIR = configDir;
+    cleanup.push(() => { if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = previous; });
+    const stateDir = stateDirFor(dir);
+    const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0 }); cleanup.push(() => daemon.stop());
+    const native = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" }); cleanup.push(() => native.close());
+    for (let n = 0; n < 100 && daemon.bus.stateOf("claude") !== "idle"; n++) await Bun.sleep(5);
+    const instanceId = JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).instanceId;
+    const launchId = crypto.randomUUID(), sessionId = "ordinary-session", transcript = join(projects, `${sessionId}.jsonl`); writeFileSync(transcript, "");
+    writeFileSync(join(stateDir, "claude-launch.json"), JSON.stringify({ instanceId, launchId }));
+    const paths = { script: join(import.meta.dir, "../src/cli/facts-hook.ts"), stateDir };
+    const observed = claudeObservationHooks({ coordination, task_sweep: { enabled: idle }, roles: { claude: ["planner", "reviewer"] } }, paths)!;
+    expect(observed.observeNative).toBe(true);
+    const launch = buildLaunch("claude", [], { unattended: false, statusLine: { script: join(import.meta.dir, "../src/cli/statusline-tee.ts"), stateDir }, facts: observed });
+    const settings = JSON.parse(launch.args[launch.args.indexOf("--settings") + 1]!);
+    for (const kind of ["SessionStart", "UserPromptSubmit", "Stop"]) expect(settings.hooks[kind]).toBeDefined();
+    const hook = async (kind: string) => {
+      const child = Bun.spawn(["/bin/sh", "-c", settings.hooks[kind][0].hooks[0].command], { cwd: dir,
+        env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, AGENTHUB_PEER_ID: "claude", AGENTHUB_INSTANCE_ID: instanceId, AGENTHUB_LAUNCH_ID: launchId },
+        stdin: Buffer.from(JSON.stringify({ hook_event_name: kind, session_id: sessionId, transcript_path: transcript })), stdout: "pipe", stderr: "pipe" });
+      expect(await new Response(child.stdout).text()).toBe(""); await new Response(child.stderr).text(); expect(await child.exited).toBe(0);
+    };
+    await hook("SessionStart"); await hook("UserPromptSubmit"); expect(daemon.bus.stateOf("claude")).toBe("busy");
+    await hook("Stop"); expect(daemon.bus.stateOf("claude")).toBe("busy"); // ACK releases the pure-text producer, not the strict completion fence
+    appendFileSync(transcript, JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id: "ordinary-text-final", stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: "text", text: "completed" }] } }) + "\n");
+    for (let n = 0; n < 400 && daemon.bus.stateOf("claude") !== "idle"; n++) await Bun.sleep(5);
+    expect(daemon.bus.stateOf("claude")).toBe("idle");
+    const events = readEvents(join(stateDir, "events.jsonl"));
+    expect(events.filter(event => event.type === "native_turn_end" && event.peer === "claude")).toHaveLength(1);
+    expect(summarize(events).peers.claude).toMatchObject({ turns: 1, turnSource: "native-stop", tokens: 2 });
+    expect(events.filter(event => event.type === "fact")).toHaveLength(0); // no fabricated tool observation/fact injection
+  }
+}, 20_000);
 
 test("Claude report uses unique native Stops over logical ends and labels legacy logical counts", () => {
   const at = "2026-10-09T00:00:00.000Z";

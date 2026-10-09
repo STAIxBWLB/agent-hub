@@ -65,7 +65,7 @@ export interface FactsHook {
   stateDir: string;
   /** The same hook transport can observe native turns without injecting facts. */
   purpose?: "facts" | "idle" | "facts-and-idle";
-  /** Observe conductor native sessions/turns even when facts and idle sweeps are disabled. */
+  /** Observe native sessions/turns for every enabled facts, idle or conductor hook configuration. */
   observeNative?: boolean;
 }
 
@@ -73,7 +73,7 @@ export interface FactsHook {
 export function claudeObservationHooks(config: { coordination?: string; task_sweep?: { enabled: boolean }; roles?: Record<string, string[]> }, paths: Pick<FactsHook, "script" | "stateDir">): FactsHook | undefined {
   const facts = config.coordination === "turn-free";
   const idle = config.task_sweep?.enabled === true;
-  const observeNative = config.roles?.claude?.includes("conductor") === true;
+  const observeNative = facts || idle || config.roles?.claude?.includes("conductor") === true;
   return facts || idle || observeNative ? { ...paths, purpose: facts ? (idle ? "facts-and-idle" : "facts") : "idle", ...(observeNative ? { observeNative: true } : {}) } : undefined;
 }
 
@@ -113,7 +113,7 @@ export function buildLaunch(
       ctx.statusLine && own ? "note: you passed --settings, so the hub's status line tee is off and the budget coordinator cannot see Claude's quota (ahub budget set claude <0..1> still works)." : "",
       ctx.facts && own && ctx.facts.purpose !== "idle" ? "note: you passed --settings, so the hub's turn-free facts hooks are off for this session: Claude will not see the other agents' changes at its tool calls." : "",
       ctx.facts && own && (ctx.facts.purpose === "idle" || ctx.facts.purpose === "facts-and-idle") ? "note: you passed --settings, so native idle observation hooks are off for this session: task idle sweeps cannot verify Claude between turns." : "",
-      ctx.facts?.observeNative && own ? "note: you passed --settings, so conductor native session/turn hooks are off: completed turns and supervision tokens may be unavailable." : "",
+      ctx.facts?.observeNative && own ? "note: you passed --settings, so native session/turn observation hooks are off: completed turns and supervision tokens may be unavailable." : "",
     ].filter(Boolean);
     return {
       cmd: "claude",

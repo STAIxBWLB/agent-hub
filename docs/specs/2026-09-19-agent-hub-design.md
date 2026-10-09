@@ -1401,8 +1401,10 @@ these readings are not per-notice token attribution. Missing measurements are
 unknown. Native TUI conductor, sandbox and feed-on smoke results must be recorded
 as observed outcomes, separately from unit/fake protocol tests.
 
-Claude conductor launches install native observation hooks even when facts
-injection and task-idle sweeps are disabled. SessionStart registers the native
+Managed Claude launches with turn-free facts, task-idle sweeps or a conductor
+role install native observation hooks. A conductor receives them even when facts
+injection and task-idle sweeps are disabled; ordinary non-opt-in launches remain
+unchanged. SessionStart registers the native
 session and UserPromptSubmit starts observation; PreToolUse keeps a tool turn
 active and Stop closes it. Explicit caller settings remain authoritative and
 produce a warning when they replace these hooks. An ordinary terminal records a
