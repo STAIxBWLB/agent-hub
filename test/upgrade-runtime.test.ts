@@ -662,3 +662,32 @@ test("a target that cannot be read blocks settling and creating, and keeps every
     rmSync(temp, { recursive: true, force: true });
   }
 });
+
+// #215 review: a corrupt or half-written launcher record is unknown evidence, never "never recorded".
+test("an unreadable launcher record keeps a pending restoration pending and creates nothing", async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-records-unreadable-")));
+  const stateDir = join(temp, "state");
+  mkdirSync(stateDir);
+  const server = fakeHub(temp, stateDir, "i-target", () => ({ operationId: "op-215", phase: "restored", ready: true, peers: {} }));
+  writeFileSync(join(stateDir, "terminal-recovery.json"), "[{\"peer\": \"claude\""); // mid-write or corrupt
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: {} };
+  const planned: PlannedProject = {
+    project: { id: "p-215", root: temp, stateDir, instanceId: "i-target", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: "claude", state: "idle", sessionId: "S" }], blockers: [] },
+    terminals: [{ peer: "claude", handle: "term-claude", incarnationId: "inc", worktreeId: "wt", projectRoot: temp, sessionId: "S", launch, launchMetadata: launch }], blockers: [],
+  };
+  const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "peers-restored", terminals: { "closed:claude": true, "restored:claude": "pending" } };
+  const op = { id: "op-215", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
+  const calls: string[][] = [];
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "home");
+  try {
+    await expect(makeRecoveryDriver(async (argv) => { calls.push(argv); return { code: 0, stdout: "", stderr: "" }; }).restore(planned, progress, op, "claude", () => {}))
+      .rejects.toThrow("whether a claude session or launcher is live cannot be told (the launcher records (terminal-recovery.json) cannot be read); nothing was recorded or created");
+    expect(progress.terminals["restored:claude"]).toBe("pending");
+    expect(calls).toEqual([]);
+  } finally {
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+    server.stop(true); rmSync(temp, { recursive: true, force: true });
+  }
+});

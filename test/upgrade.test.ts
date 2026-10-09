@@ -468,7 +468,8 @@ test("a stop-and-archive that fails partway records what it did, keeps the lock 
   expect(recoveryLock(f.home)).toBe(f.operation.id);
   await expect(disposeRecovery(f.operation.id, { fresh: "codex" }, "no", f.driver, f.home)).rejects.toThrow("stop-and-archive of this operation is partway");
   const calls = f.calls.length;
-  expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toContain("stop-and-archive of this operation is partway");
+  // Resume refuses an operation being abandoned and keeps the stop-and-archive's own cause.
+  expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toContain("stop-and-archive stopped partway and keeps the lock: a committed recovery cannot be aborted");
   expect(f.calls).toHaveLength(calls);
 
   f.driver.abort = abort;
@@ -511,7 +512,7 @@ test("a changed roster after an expired hold with no effects names abort, and ab
   f.states.get("alpha")!.peers = [{ id: "codex", state: "idle", threadId: "t1" }, { id: "kimi", state: "idle" }];
   const blocked = await runRecovery(f.operation.id, f.driver, f.home);
   expect(blocked.error).toBe(`source conversation or active peer membership changed; next action: ${C} abort ${f.operation.id}, then make a new plan`);
-  expect(publicOperation(blocked).next).toContain(`${C} abort ${f.operation.id}`);
+  expect(publicOperation(blocked, undefined, { alpha: f.states.get("alpha")!, beta: f.states.get("beta")! }).next).toContain(`${C} abort ${f.operation.id}`);
   delete f.states.get("alpha")!.recovery; // the re-prepared hold lapses again before the operator acts
   await abortRecovery(f.operation.id, f.driver, f.home);
   expect((readOperation(f.operation.id, f.home) as { phase: string }).phase).toBe("cancelled");
@@ -586,7 +587,12 @@ test("abort cancels around a replaced source but not one that may have committed
   const f = fixture();
   f.operation.projects[0]!.phase = "prepared";
   writeOperation(f.operation.id, f.operation, f.home);
-  expect(publicOperation(readOperation(f.operation.id, f.home)).next).toContain(`${C} abort ${f.operation.id}`);
+  expect(publicOperation(readOperation(f.operation.id, f.home), undefined, { alpha: f.states.get("alpha")!, beta: f.states.get("beta")! }).next).toContain(`${C} abort ${f.operation.id}`);
+  // Not inspected, or unreadable: whether this operation's hold still stands is uncertain, so abort is neither offered
+  // nor accepted (status reads the sources; its failed reads count as uncertain too).
+  expect(publicOperation(readOperation(f.operation.id, f.home)).next).not.toContain(`${C} abort ${f.operation.id}`);
+  f.states.get("alpha")!.state = "unavailable";
+  await expect(abortRecovery(f.operation.id, f.driver, f.home)).rejects.toThrow("alpha: the source reads as unavailable, so whether this operation's hold still stands is uncertain");
   f.states.set("alpha", { state: "running", instanceId: "replacement", version: "0.5.0", protocol: 9, peers: [], blockers: [], recovery: { operationId: "11111111-1111-1111-1111-111111111111", phase: "prepared", ready: true } });
   await abortRecovery(f.operation.id, f.driver, f.home);
   expect((readOperation(f.operation.id, f.home) as { phase: string }).phase).toBe("cancelled");
@@ -617,9 +623,10 @@ test("abort cancels around a replaced source but not one that may have committed
   const committing = fixture();
   committing.operation.projects[0]!.phase = "prepared";
   Object.assign(committing.operation, { step: "commit:alpha" }); // stopped before the request, e.g. a terminal not idle
-  expect(publicOperation(committing.operation).next).toContain(`${C} abort ${committing.operation.id}`);
+  const sources = { alpha: committing.states.get("alpha")!, beta: committing.states.get("beta")! };
+  expect(publicOperation(committing.operation, undefined, sources).next).toContain(`${C} abort ${committing.operation.id}`);
   committing.operation.projects[0]!.commitSent = true; // the commit request may have been sent
-  expect(publicOperation(committing.operation).next).not.toContain(`${C} abort ${committing.operation.id}`);
+  expect(publicOperation(committing.operation, undefined, sources).next).not.toContain(`${C} abort ${committing.operation.id}`);
 });
 
 // #215 review: a coordinator from before #215 lacks dispose and refuses abort and resume on a lapsed hold (the #215
@@ -671,7 +678,7 @@ test("stop-and-archive records its disposition before acting, and abort refuses 
   await expect(disposeRecovery(f.operation.id, { stop: true }, "give up", f.driver, f.home)).rejects.toThrow("crashed mid-stop");
   expect(recorded).toMatchObject({ choice: "stop-and-archive", projects: {} });
   await expect(abortRecovery(f.operation.id, f.driver, f.home)).rejects.toThrow("stop-and-archive of this operation is partway");
-  expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toContain("stop-and-archive of this operation is partway");
+  expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toContain("stop-and-archive stopped partway and keeps the lock: crashed mid-stop");
   expect(recoveryLock(f.home)).toBe(f.operation.id);
 });
 

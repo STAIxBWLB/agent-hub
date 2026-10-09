@@ -99,8 +99,11 @@ export function abortRefusal(op: RecoveryOperation, live: Record<string, Inspect
     if (progress.commitSent) return `${progress.id}: its commit request may have been sent`;
     if (state?.recovery?.operationId === op.id && state.recovery.phase !== "released" &&
         (state.instanceId !== planned.source.instanceId || !["preparing", "prepared"].includes(state.recovery.phase ?? ""))) return `${progress.id}: recovery has progressed`;
-    if (progress.phase === "prepared" && !recorded && state?.state !== "running") {
-      return `${progress.id}: the source is ${state?.state ?? "not inspected"} and may have committed (this operation's coordinator does not record a sent commit)`;
+    // A #215 coordinator's prepared source that stopped was never asked to commit; one that cannot be read (unavailable,
+    // stopping, not inspected) may still hold this operation's hold. An older coordinator records no sent commit.
+    if (progress.phase === "prepared" && state?.state !== "running" && (!recorded || state?.state !== "stopped")) {
+      return recorded ? `${progress.id}: the source reads as ${state?.state ?? "not inspected"}, so whether this operation's hold still stands is uncertain`
+        : `${progress.id}: the source is ${state?.state ?? "not inspected"} and may have committed (this operation's coordinator does not record a sent commit)`;
     }
   }
   return undefined;
@@ -264,7 +267,12 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     }
   };
   try {
-    if (op.disposition) throw new Error(`a stop-and-archive of this operation is partway; next action: rerun ${recoveryCommand(op, "dispose", STOP)} once its runtimes have settled`);
+    if (op.disposition) {
+      // The stop-and-archive in progress keeps its own cause; resume never runs an operation being abandoned.
+      op.error ??= `a stop-and-archive of this operation is partway; next action: rerun ${recoveryCommand(op, "dispose", STOP)} once its runtimes have settled`;
+      op.phase = "blocked"; save();
+      return op;
+    }
     op.phase = "running"; delete op.error; save();
     step("stage");
     const target = await driver.stage(op);

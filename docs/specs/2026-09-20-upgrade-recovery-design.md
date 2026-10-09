@@ -337,8 +337,12 @@ unknown Claude launcher blocks: whether the attached session is managed cannot
 be told.
 Restore reads this evidence in one place: the target's report, which counts only
 when the target runs as the expected instance, then the recorded launcher. A
-target that does not, or a launcher that cannot be read, is unknown and blocks
-without changing a receipt. Abort and `next` decide with one predicate
+target that does not, a launcher that cannot be read, or a launcher record file
+that cannot be read or parsed is unknown and blocks without changing a receipt;
+the record file is written atomically (temp + rename). A truncated Orca
+inventory never shows a terminal as gone. While a stop-and-archive is recorded,
+`resume` is refused by the running release, whichever coordinator started the
+operation, and the runner keeps the disposition's own error. Abort and `next` decide with one predicate
 (`abortRefusal`); `status` reads the sources when abort could apply.
 An attached session is the target's report of that peer online with a thread
 (Codex) or session (Claude, Pi) id.
@@ -352,7 +356,8 @@ An attached session is the target's report of that peer online with a thread
 | project `prepared`, hold lapsed | roster changed | as the two rows above | as above | as above |
 | project `prepared` | source replaced or held by another operation | blocks, nothing touched | abort if no effects (cancels and leaves that daemon or hold alone), dispose | `<c> recovery status <id>` and stop-and-archive |
 | project `prepared` with `commitSent` (a per-project receipt flag written right before the commit request; `step` is rewritten on every resume and is not evidence) | any (the commit may have been sent) | continues from the commit | dispose; abort is neither offered nor accepted | `<c> recovery resume <id>` |
-| project `prepared`, no `commitSent`, operation of a #215 coordinator | source not running (crashed) | prepares again when it runs | abort if no effects (no commit was ever requested), dispose | `<c> recovery abort <id>` |
+| project `prepared`, no `commitSent`, operation of a #215 coordinator | source stopped (crashed) | prepares again when it runs | abort if no effects (no commit was ever requested), dispose | `<c> recovery abort <id>` |
+| project `prepared` | source unavailable, stopping or not inspected | as above when it reads again | dispose; abort neither offered nor accepted (its hold may still stand) | `<c> recovery status <id>` once it answers |
 | project `prepared`, operation of an older coordinator (no `commitSent` written) | source not running, or not inspected | as its own runner does | dispose; abort neither offered nor accepted (it may have committed) | `<c> recovery status <id>` |
 | disposition recorded, first act not finished | any | refused | abort refused, stop-and-archive only | as the disposition row below |
 | `closed:<peer>` `pending` | Orca still lists the terminal | blocks | dispose | `close Orca terminal <handle> (the login shell it runs in) by hand, then <c> recovery resume <id>` |

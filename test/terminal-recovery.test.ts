@@ -6,6 +6,7 @@ import {
   inspectTerminals,
   recordTerminalLaunch,
   createTerminal,
+  launcherOf,
   closeTerminal,
   restoreTerminal,
   shellQuote,
@@ -319,13 +320,13 @@ test("a restoration launcher that exits is recognized by its own record within o
   // What `ahub codex` writes in the new terminal before it execs codex.
   const record = (launcherPid: number) => writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify([{ peer: "codex", projectRoot: root, stateDir, instanceId: "i-target", launcherPid,
     launcherSignature: "launcher-start", launchId: "launch-new", handle: "term-new", incarnationId: "inc-new", worktreeId, env: {} }]));
-  type Scenario = { identity?: string; gone?: boolean; listed?: boolean; idleAfter?: number; state?: string };
+  type Scenario = { identity?: string; gone?: boolean; listed?: boolean; truncated?: boolean; idleAfter?: number; state?: string };
   const scenario = (opts: Scenario) => {
     let idleWaits = 0;
     const commands = fake((argv) => {
       if (argv[1] === "create") return { result: { terminal: { handle: "term-new", incarnationId: "inc-new", worktreeId } } };
       if (argv[1] === "show") return opts.gone ? { status: 1, stdout: JSON.stringify({ ok: false, error: { code: "terminal_handle_stale" } }) } : { result: { terminal: replacement } };
-      if (argv[1] === "list") return { result: { terminals: opts.listed ? [terminal({ handle: "term-renamed", incarnationId: "inc-new" })] : [] } };
+      if (argv[1] === "list") return { result: { terminals: opts.listed ? [terminal({ handle: "term-renamed", incarnationId: "inc-new" })] : [], ...(opts.truncated ? { truncated: true } : {}) } };
       if (argv[1] === "wait") return idleWaits++ < (opts.idleAfter ?? Infinity) ? waitTimedOut : { result: { wait: { satisfied: true } } };
       throw new Error("unexpected command");
     });
@@ -354,6 +355,13 @@ test("a restoration launcher that exits is recognized by its own record within o
     const gone = await createTerminal(binding, scenario({ gone: true, state: emptyState }).options);
     expect(gone.blockers[0]).toMatchObject({ code: "launcher-exited", message: expect.stringContaining("lost its terminal") });
     expect((await createTerminal(binding, scenario({ gone: true, listed: true, state: emptyState }).options)).blockers[0]?.code).toBe("terminal-gone");
+    // A truncated inventory cannot show the terminal is no longer listed.
+    expect((await createTerminal(binding, scenario({ gone: true, truncated: true, state: emptyState }).options)).blockers[0]?.code).toBe("terminal-gone");
+    // An unreadable launcher record says nothing: never "exited".
+    writeFileSync(join(stateDir, "terminal-recovery.json"), "{ half a write");
+    expect((await createTerminal(binding, scenario({}).options, 50)).blockers[0]?.code).toBe("terminal-unready");
+    expect(await launcherOf("codex", root, { stateDir, instanceId: "i-target" })).toEqual({ state: "unknown" });
+    record(ended);
 
     // A live launcher whose TUI needs more than one slice: each timeout reads as "not yet", never as a failure.
     const slow = scenario({ identity: "launcher-start", idleAfter: 2 });

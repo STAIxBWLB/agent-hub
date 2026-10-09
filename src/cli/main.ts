@@ -392,6 +392,8 @@ const commands: Record<string, () => Promise<void> | void> = {
       console.log("upgrade abandoned, not completed; the recovery lock is released. A project whose target ran starts again with that version's CLI.");
     }
     else if (["completed", "cancelled"].includes(operation.phase)) console.log(`recovery is already ${operation.phase}`);
+    // #215: an operation being abandoned is never resumed, whichever coordinator started it (an older one would).
+    else if (operation.disposition) fail(`a stop-and-archive of this operation is partway; nothing was resumed; next action: rerun ${recoveryCommand(operation, "dispose", "--stop-and-archive --reason <text>")} once its runtimes have settled`);
     else if (runner === "unknown") console.log(`whether a runner holds this operation could not be read; nothing was started; ${recoveryCommand(operation, "status")}`);
     else if (runner) console.log(`runner ${runner} is still working on this operation; ${recoveryCommand(operation, "status")}`);
     else spawnRecovery(operation);

@@ -170,10 +170,10 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
         if (recorded?.state === "unknown") {
           // An unreadable launcher is never gone (#215): whether the session is managed cannot be told.
           delete peer.sessionId;
-          blockers.push(`claude: the launcher recorded in terminal ${recorded.record.handle} cannot be read, so whether the attached session is managed is unknown; manual-required; next action: make that process readable (or end it and close the terminal), then make a new plan`);
+          blockers.push(`claude: ${recorded.record ? `the launcher recorded in terminal ${recorded.record.handle}` : "the launcher record (terminal-recovery.json)"} cannot be read, so whether the attached session is managed is unknown; manual-required; next action: make it readable (or end that session and close its terminal), then make a new plan`);
           continue;
         }
-        const launcher = recorded?.state === "live" ? recorded.record : undefined;
+        const launcher = recorded?.state === "live" ? recorded.record! : undefined;
         if (!launcher) {
           delete peer.sessionId;
           if (source.protocol === PROTOCOL) reconnectOnly.push("claude");
@@ -300,8 +300,11 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
     const session = peer === "codex" ? attached?.threadId : attached?.sessionId;
     if (session) return { state: "live", session };
     const launch = await launcherOf(peer, planned.project.root, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId });
-    if (launch?.state === "live") return { state: "live", handle: launch.record.handle };
-    if (launch?.state === "unknown") return { state: "unknown", why: `its launcher in terminal ${launch.record.handle} cannot be read`, handle: launch.record.handle };
+    if (launch?.state === "live") return { state: "live", handle: launch.record!.handle };
+    if (launch?.state === "unknown") {
+      return launch.record ? { state: "unknown", why: `its launcher in terminal ${launch.record.handle} cannot be read`, handle: launch.record.handle }
+        : { state: "unknown", why: "the launcher records (terminal-recovery.json) cannot be read" };
+    }
     return { state: "gone" };
   };
   // Reconnect-only (#206) and fresh sessions (#215) need a target hub that reads recovery-waivers.json.

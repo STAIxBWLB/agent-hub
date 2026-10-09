@@ -181,3 +181,24 @@ test("ahub codex records a recovery launch before the hub start, and an ordinary
     expect(records().map((row) => [row.peer, row.handle])).toEqual([["codex", "term-x"]]);
   } finally { rmSync(temp, { recursive: true, force: true }); }
 });
+
+// #215 review: an older coordinator resumes anything not finished; the running release refuses to resume an operation
+// whose stop-and-archive is partway, whatever coordinator started it.
+test("resume refuses an operation whose stop-and-archive is partway", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "ahub-disposed-cli-"));
+  mkdirSync(join(temp, "project"));
+  const root = realpathSync(join(temp, "project")), home = join(temp, "home");
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("ORCA_") || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete env[key];
+  env.AGENTHUB_HOME = home;
+  const id = "00000000-0000-4000-8000-000000000217";
+  writeOperation(id, { schema: 1, id, phase: "blocked", step: "disposed", sourceRoot: "/releases/source-older", plan: { version: "0.12.19", projects: [] }, projects: [], updatedAt: 1,
+    disposition: { choice: "stop-and-archive", at: 1, projects: {} } }, home);
+  try {
+    const p = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", root, "recovery", "resume", id], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
+    const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    expect({ code, out }).toEqual({ code: 1, out: "" });
+    expect(err).toContain("a stop-and-archive of this operation is partway; nothing was resumed; next action: rerun");
+    expect(err).toContain("recovery dispose 00000000-0000-4000-8000-000000000217 --stop-and-archive --reason <text>");
+  } finally { rmSync(temp, { recursive: true, force: true }); }
+});

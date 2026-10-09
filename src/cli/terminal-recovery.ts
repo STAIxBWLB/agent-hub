@@ -1,8 +1,9 @@
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { processSignature } from "../pi/process-signature.ts";
+import { atomicPrivateJSON } from "../hub/recovery-store.ts";
 
 /** The only terminal commands used by this adapter. Keep this list in sync with Orca's public CLI. */
 export type OrcaTerminalCommand = "list" | "show" | "wait" | "close" | "create";
@@ -262,21 +263,27 @@ function recordPath(stateDir: string): string {
 }
 
 function readLaunchRecords(stateDir: string): RecordedTerminalLaunch[] {
+  const rows = launchRecords(stateDir);
+  return rows === "unreadable" ? [] : rows;
+}
+/** #215: "unreadable" (a corrupt or unreadable file) says nothing about launchers, so it must never read as "none". */
+function launchRecords(stateDir: string): RecordedTerminalLaunch[] | "unreadable" {
   if (!stateDir || !existsSync(recordPath(stateDir))) return [];
   try {
     const value: unknown = JSON.parse(readFileSync(recordPath(stateDir), "utf8"));
-    return Array.isArray(value) ? value.filter((item): item is RecordedTerminalLaunch => {
+    if (!Array.isArray(value)) return "unreadable";
+    return value.filter((item): item is RecordedTerminalLaunch => {
       const row = object(item);
       return typeof row.peer === "string" && typeof row.projectRoot === "string" && typeof row.instanceId === "string" && typeof row.handle === "string" && typeof row.incarnationId === "string" && typeof row.worktreeId === "string" && typeof row.launcherPid === "number" && typeof row.launcherSignature === "string" && row.launcherSignature.length > 0 && typeof row.launchId === "string" && row.launchId.length > 0;
-    }) : [];
-  } catch {
-    return [];
+    });
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? [] : "unreadable";
   }
 }
 
 function writeLaunchRecords(stateDir: string, rows: RecordedTerminalLaunch[]): void {
   mkdirSync(stateDir, { recursive: true });
-  writeFileSync(recordPath(stateDir), `${JSON.stringify(rows)}\n`, { mode: 0o600 });
+  atomicPrivateJSON(recordPath(stateDir), rows); // temp + rename: a reader never sees half a file
 }
 
 async function launcherMatches(row: RecordedTerminalLaunch, identity: ProcessIdentity): Promise<boolean> {
@@ -304,10 +311,12 @@ async function liveRecords(stateDir: string, projectRoot: string, instanceId: st
 }
 
 /** #215: the launcher recorded for `peer` on this instance (one row per peer and instance) and its state; managed means live. */
-export async function launcherOf(peer: TerminalPeer, projectRoot: string, options?: TerminalRecoveryOptions): Promise<{ record: RecordedTerminalLaunch; state: LauncherState } | undefined> {
+export async function launcherOf(peer: TerminalPeer, projectRoot: string, options?: TerminalRecoveryOptions): Promise<{ record?: RecordedTerminalLaunch; state: LauncherState } | undefined> {
   const config = normalizeOptions(options);
   if (!config.stateDir || !config.instanceId) return undefined;
-  const record = readLaunchRecords(config.stateDir).find((row) => row.peer === peer && row.projectRoot === projectRoot && row.instanceId === config.instanceId);
+  const rows = launchRecords(config.stateDir);
+  if (rows === "unreadable") return { state: "unknown" };
+  const record = rows.find((row) => row.peer === peer && row.projectRoot === projectRoot && row.instanceId === config.instanceId);
   return record ? { record, state: await launcherState(record, config.processIdentity) } : undefined;
 }
 
@@ -610,6 +619,7 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
     let replacement: TerminalBinding = { ...binding, handle: createdHandle, incarnationId: nestedString(created, ["incarnationId"])!, worktreeId, launch: binding.launch, launchMetadata: binding.launch };
     // The launch record `ahub <peer>` writes in the new terminal: live, gone (all recorded launchers), or neither.
     const launches = async () => {
+      if (launchRecords(config.stateDir) === "unreadable") return { live: undefined, gone: false, mayRun: true }; // unknown, never gone
       const possible = readLaunchRecords(config.stateDir).filter((item) => item.instanceId === config.instanceId && item.peer === binding.peer && item.projectRoot === binding.projectRoot && item.handle === createdHandle && item.worktreeId === replacement.worktreeId && item.incarnationId === replacement.incarnationId);
       const states = await Promise.all(possible.map(async (item) => ({ item, state: await launcherState(item, config.processIdentity) })));
       return { live: states.find((entry) => entry.state === "live")?.item, gone: states.length > 0 && states.every((entry) => entry.state === "gone"), mayRun: states.some((entry) => entry.state !== "gone") };
@@ -628,7 +638,9 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
         const launch = await launches();
         if (launch.gone) return exited("exited");
         if (launch.mayRun) break;
-        const listed = listTerminals(await run(config.runner, ["terminal", "list", "--json"])).some((terminal) => terminal.incarnationId === replacement.incarnationId);
+        const inventory = await run(config.runner, ["terminal", "list", "--json"]);
+        // A truncated inventory cannot show that the terminal is no longer listed.
+        const listed = responseResult(inventory).truncated === true || listTerminals(inventory).some((terminal) => terminal.incarnationId === replacement.incarnationId);
         if (!listed) return exited("lost its terminal");
         break;
       }
