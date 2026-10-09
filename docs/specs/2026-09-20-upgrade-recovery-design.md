@@ -332,7 +332,8 @@ An attached session is the target's report of that peer online with a thread
 | project `prepared`, hold lapsed (same source instance) | roster as planned | re-prepare, check roster, close, commit | abort if no effects | none |
 | project `prepared`, hold lapsed | roster changed | as the two rows above | as above | as above |
 | project `prepared` | source replaced or held by another operation | blocks, nothing touched | abort if no effects (cancels and leaves that daemon or hold alone), dispose | `<c> recovery status <id>` and stop-and-archive |
-| project `prepared`, receipt step `commit:<project>` | source stopping or stopped (the commit may have been sent) | continues from the commit | dispose | `<c> recovery resume <id>` (abort refuses: the source may have committed) |
+| project `prepared`, receipt step `committing:<project>` (set right before the commit request) | source stopping or stopped (the commit may have been sent) | continues from the commit | dispose | `<c> recovery resume <id>` (abort refuses: the source may have committed) |
+| disposition recorded, first act not finished | any | refused | abort refused, stop-and-archive only | as the disposition row below |
 | `closed:<peer>` `pending` | Orca still lists the terminal | blocks | dispose | `close Orca terminal <handle> (the login shell it runs in) by hand, then <c> recovery resume <id>` |
 | `closed:<peer>` done | peer attached again | blocks | dispose | `end that <peer> session, then <c> recovery resume <id>` |
 | `restored:<peer>` `pending` or `failed` | session attached with the planned id (or an accepted new one: fresh choice, planned fresh start, zero-turn Claude) | recorded as restored | none | none |
@@ -351,7 +352,13 @@ The failed-restoration choices are `<c> recovery dispose <id> --fresh-session
 <peer> --reason <text>` (Codex or Claude; records the lost session and resumes;
 if the original session attaches after all, the recorded loss is cleared) and
 stop-and-archive. When the operation's own coordinator predates `dispose`, `<c>`
-for dispose names the running release instead.
+for dispose names the running release instead, and stop-and-archive stops a
+target that speaks an older control protocol at that protocol (a `kill` fenced
+by its instance), then waits for its manifest and registry claim as the
+lifecycle stop does. The disposition and its audit are written before the first
+act. A recovery launch of `ahub codex` records its launcher before the hub's
+`start` round trip; an ordinary launch records it after, so a refused start never
+replaces the record of a Codex already running.
 
 A Codex thread with no rollout is not blocked at the plan only when the hub saw
 Codex start it (`native_thread` with `fresh`, logged by the adapter when it

@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ControlClient, PROTOCOL, RECOVERY_SOURCE_PROTOCOLS, readControl } from "../hub/control-client.ts";
-import { inspectProject, stopProject } from "../hub/lifecycle.ts";
+import { awaitStopped, inspectProject } from "../hub/lifecycle.ts";
 import type { Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
 import { packageDigest, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
@@ -342,7 +342,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         const transcript = binding.peer === "codex" ? codexTranscript(binding) : "found";
         if (transcript === "unknown") throw new Error(`${unresumable(binding)}; no terminal was closed; next action: make that store readable, then ${recoveryCommand(op, "resume")}`);
         if (transcript === "missing" && !planned.freshStart?.includes("codex")) {
-          throw new Error(`${unresumable(binding)}; no terminal was closed; next action: ${recoveryCommand(op, "dispose", "--stop-and-archive --reason <text>")} releases the source with its sessions still open, or end that Codex session, close its Orca terminal ${binding.handle} and ${recoveryCommand(op, "resume")}; resume then stops at restoring codex, where ${recoveryCommand(op, "dispose", "--fresh-session codex --reason <text>")} is the explicit way to continue without its conversation`);
+          throw new Error(`${unresumable(binding)}; no terminal was closed; next action: ${recoveryCommand(op, "dispose", "--stop-and-archive --reason <text>")} releases the source hold (sessions this operation has not closed stay open; those it closed stay closed), or end that Codex session, close its Orca terminal ${binding.handle} and ${recoveryCommand(op, "resume")}; resume then stops at restoring codex, where ${recoveryCommand(op, "dispose", "--fresh-session codex --reason <text>")} is the explicit way to continue without its conversation`);
         }
         const idle = await waitForIdle(binding, 600_000, terminalOptions(run));
         if (!idle.satisfied) throw new Error(`${binding.peer}: terminal is not verified idle; source retained`);
@@ -497,12 +497,13 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
     },
     stopAndArchive: async (project, op, instance) => {
       if (instance) {
-        // The lifecycle lock admits only this operation; stopProject verifies the instance and waits until the
-        // manifest and the registry claim are gone.
-        const previous = process.env.AGENTHUB_RECOVERY_OPERATION;
-        process.env.AGENTHUB_RECOVERY_OPERATION = op.id;
-        try { await stopProject(project, instance); }
-        finally { if (previous === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION; else process.env.AGENTHUB_RECOVERY_OPERATION = previous; }
+        // #215: a target an older coordinator started speaks its own protocol, which the lifecycle stop's inspection
+        // refuses. Ask it to stop at that protocol, fenced by its instance (the daemon refuses another), then wait as
+        // the lifecycle stop does until its manifest and registry claim are gone.
+        const sourceProtocol = readControl(project.stateDir)?.protocol;
+        const protocol = sourceProtocol !== undefined && RECOVERY_SOURCE_PROTOCOLS.includes(sourceProtocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]) ? sourceProtocol : PROTOCOL;
+        await rpc(project, { t: "kill", instanceId: instance }, protocol);
+        await awaitStopped(project, instance);
       }
       abandonRestartSnapshot(project.stateDir, op.id);
     },

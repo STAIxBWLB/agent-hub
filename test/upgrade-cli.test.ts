@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
@@ -144,4 +144,39 @@ test("resume declines while a runner holds the operation", async () => {
     expect(await cli(["recovery", "resume", id])).toEqual({ code: 0, out: `runner ${process.pid} is still working on this operation; bun /preserved/coordinator/src/cli/main.js recovery status ${id}\n` });
     expect(JSON.parse((await cli(["recovery", "status", id])).out)).toMatchObject({ runner: { state: "running", pid: process.pid } });
   } finally { release(); rmSync(temp, { recursive: true, force: true }); }
+});
+
+// #215 review: a recovery launch of `ahub codex` records its launcher before the hub round trip, so the coordinator
+// never takes a launcher still starting for one that never ran; an ordinary launch records only after the hub accepted.
+test("ahub codex records a recovery launch before the hub start, and an ordinary one only after it", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "ahub-codex-record-"));
+  mkdirSync(join(temp, "project"));
+  const root = realpathSync(join(temp, "project")), home = join(temp, "home"), stateDir = join(root, ".agenthub", "state");
+  mkdirSync(stateDir, { recursive: true });
+  // A hub manifest whose port nothing listens on: the start round trip fails after the launcher could have recorded.
+  const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("ok") });
+  const deadPort = probe.port; probe.stop(true);
+  writeFileSync(join(stateDir, "control-token"), "token\n");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: deadPort, protocol: 16, projectId: "p", instanceId: "i-codex", cwd: root }));
+  const orca = join(temp, "orca");
+  writeFileSync(orca, `#!${process.execPath}\nconsole.log(JSON.stringify({ ok: true, result: { terminal: { handle: "term-x", worktreePath: ${JSON.stringify(root)}, worktreeId: "wt", incarnationId: "inc-x" } } }));\n`);
+  chmodSync(orca, 0o755);
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("ORCA_") || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete env[key];
+  Object.assign(env, { AGENTHUB_HOME: home, ORCA_CLI_COMMAND: orca, ORCA_TERMINAL_HANDLE: "term-x", ORCA_WORKTREE_ID: "wt" });
+  const codex = async (extra: Record<string, string>) => {
+    const p = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", root, "codex"], { cwd: root, env: { ...env, ...extra }, stdout: "pipe", stderr: "pipe" });
+    const [code] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    return code;
+  };
+  const records = () => { try { return JSON.parse(readFileSync(join(stateDir, "terminal-recovery.json"), "utf8")) as { peer: string; handle: string }[]; } catch { return []; } };
+  const id = "00000000-0000-4000-8000-000000000216";
+  try {
+    expect(await codex({})).toBe(1);
+    expect(records()).toEqual([]); // ordinary: the refused start recorded nothing
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "recovery.lock"), JSON.stringify({ operationId: id }));
+    expect(await codex({ AGENTHUB_RECOVERY_OPERATION: id })).toBe(1);
+    expect(records().map((row) => [row.peer, row.handle])).toEqual([["codex", "term-x"]]);
+  } finally { rmSync(temp, { recursive: true, force: true }); }
 });

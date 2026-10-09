@@ -201,6 +201,11 @@ export async function stopProject(project: Project, expectedInstance?: string): 
     const result = await client.request({ t: "kill", instanceId }, 3000);
     if (!result.ok) throw new Error(result.error ?? "hub did not acknowledge shutdown");
   } finally { client.close(); }
+  await awaitStopped(project, instanceId);
+}
+
+/** After a verified stop request: wait until that instance's manifest and registry claim are gone. */
+export async function awaitStopped(project: Project, instanceId: string): Promise<void> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     const current = readControl(project.stateDir);

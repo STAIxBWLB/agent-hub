@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -521,4 +522,47 @@ test("a planned fresh Codex start is refused while its session store cannot be r
     expect(progress.terminals).toEqual({ "closed:codex": true });
     expect(calls).toEqual([]);
   } finally { chmodSync(sessions, 0o700); server.stop(true); rmSync(temp, { recursive: true, force: true }); }
+});
+
+// #215 review: an operation from an older coordinator (the 0.12.19 incident) has a target on that release's protocol,
+// which the lifecycle stop's inspection refuses; stop-and-archive must stop it at its own protocol, fenced by instance.
+test("stop-and-archive stops a legacy-protocol target at its own protocol, fenced by its instance", async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-legacy-target-")));
+  const stateDir = join(temp, "state");
+  mkdirSync(stateDir);
+  const legacy = PROTOCOL - 1;
+  const hellos: number[] = [], kills: unknown[] = [];
+  const server = Bun.serve<any>({
+    hostname: "127.0.0.1", port: 0,
+    fetch(request, srv) { return srv.upgrade(request) ? undefined : new Response("no"); },
+    websocket: { message(ws, data) {
+      const msg = JSON.parse(String(data));
+      if (msg.t === "hello") { hellos.push(msg.v); ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p-legacy", instanceId: "i-legacy", cwd: temp, protocol: legacy })); return; }
+      if (msg.t !== "kill") { ws.send(JSON.stringify({ rid: msg.rid, ok: false, error: "unexpected" })); return; }
+      kills.push(msg.instanceId);
+      if (msg.instanceId !== "i-legacy") { ws.send(JSON.stringify({ rid: msg.rid, ok: false, error: "hub restarted; refresh before stopping" })); return; }
+      ws.send(JSON.stringify({ rid: msg.rid, t: "stopping", ok: true, instanceId: "i-legacy" }));
+      setTimeout(() => rmSync(join(stateDir, "status.json"), { force: true }), 20); // the manifest goes once it stopped
+    } },
+  });
+  writeFileSync(join(stateDir, "control-token"), "legacy-token\n");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: server.port, protocol: legacy, projectId: "p-legacy", instanceId: "i-legacy", cwd: temp }));
+  writeFileSync(join(stateDir, "restart.json"), JSON.stringify({ operationId: "op-legacy" }));
+  const project = { id: "p-legacy", root: temp, stateDir, instanceId: null, pid: null, basePort: 4600 } as any;
+  const op = { id: "op-legacy", sourceRoot: "/releases/source-older", plan: { version: "0.12.19" } } as RecoveryOperation;
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "home"); // the registry-claim wait reads this home's registry only
+  try {
+    const driver = makeRecoveryDriver(async () => ({ code: 0, stdout: "", stderr: "" }));
+    await expect(driver.stopAndArchive(project, op, "i-replaced")).rejects.toThrow("hub restarted; refresh before stopping");
+    expect(readFileSync(join(stateDir, "status.json"), "utf8")).toContain("i-legacy"); // not stopped, not archived
+    await driver.stopAndArchive(project, op, "i-legacy");
+    expect(hellos.every((v) => v === legacy)).toBe(true);
+    expect(kills).toEqual(["i-replaced", "i-legacy"]);
+    expect(() => readFileSync(join(stateDir, "status.json"))).toThrow();
+    expect(JSON.parse(readFileSync(join(stateDir, `restart.abandoned.${createHash("sha256").update("op-legacy").digest("hex")}.json`), "utf8")).operationId).toBe("op-legacy");
+  } finally {
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+    server.stop(true); rmSync(temp, { recursive: true, force: true });
+  }
 });

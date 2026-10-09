@@ -595,9 +595,11 @@ test("abort cancels around a replaced source but not one that may have committed
   expect(f.calls).toEqual([]); // the replacement and the other operation's hold were left alone
 
   const committing = fixture();
-  Object.assign(committing.operation, { step: "commit:alpha" });
   committing.operation.projects[0]!.phase = "prepared";
+  Object.assign(committing.operation, { step: "committing:alpha" }); // the commit request may have been sent
   expect(publicOperation(committing.operation).next).not.toContain(`${C} abort ${committing.operation.id}`);
+  Object.assign(committing.operation, { step: "commit:alpha" }); // stopped before it, e.g. a terminal not idle
+  expect(publicOperation(committing.operation).next).toContain(`${C} abort ${committing.operation.id}`);
 });
 
 // #215 review: an operation an older coordinator started is resumed by it, but disposed of by a release that has dispose.
@@ -605,4 +607,16 @@ test("next actions name a release that has dispose when the operation's own coor
   const op = { id: "00000000-0000-4000-8000-000000000001", sourceRoot: "/releases/source-older" };
   expect(recoveryCommand(op, "resume")).toBe(`bun /releases/source-older/src/cli/main.js recovery resume ${op.id}`);
   expect(recoveryCommand(op, "dispose", "--stop-and-archive --reason <text>")).toBe(`${C} dispose ${op.id} --stop-and-archive --reason <text>`);
+});
+
+// #215 review: the disposition is on record before its first act, and abort defers to it.
+test("stop-and-archive records its disposition before acting, and abort refuses while it is unfinished", async () => {
+  const f = failedRestore();
+  let recorded: unknown;
+  f.driver.stopAndArchive = async () => { recorded = (readOperation(f.operation.id, f.home) as { disposition?: unknown }).disposition; throw new Error("crashed mid-stop"); };
+  await expect(disposeRecovery(f.operation.id, { stop: true }, "give up", f.driver, f.home)).rejects.toThrow("crashed mid-stop");
+  expect(recorded).toMatchObject({ choice: "stop-and-archive", projects: {} });
+  await expect(abortRecovery(f.operation.id, f.driver, f.home)).rejects.toThrow("stop-and-archive of this operation is partway");
+  expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toContain("stop-and-archive of this operation is partway");
+  expect(recoveryLock(f.home)).toBe(f.operation.id);
 });

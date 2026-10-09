@@ -91,7 +91,7 @@ function hasDispose(sourceRoot: string): boolean {
 /** Effects anywhere in the operation: a project past `prepared` or any terminal receipt. Abort needs none. */
 export const hasEffects = (op: RecoveryOperation) => op.projects.some((p) => !["pending", "prepared"].includes(p.phase) || Object.keys(p.terminals).length > 0);
 /** Abort is offered only where the receipt shows it can succeed: no effects, and no commit that may have been sent. */
-const abortable = (op: RecoveryOperation) => !hasEffects(op) && !op.projects.some((p) => p.phase === "prepared" && op.step === `commit:${p.id}`);
+const abortable = (op: RecoveryOperation) => !hasEffects(op) && !op.projects.some((p) => p.phase === "prepared" && op.step === `committing:${p.id}`);
 
 /** Registry reads for planning must not create a registry or run migrations. */
 export function registeredProjects(home = hubHome()): Project[] {
@@ -257,6 +257,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
             sourceRoster(live, planned, progress, true);
           }
           await driver.closeTerminals(planned, progress, op, save);
+          step(`committing:${project.id}`); // from here the source may have committed (status and abort tell this apart)
           await driver.commit(project, id, planned.source.instanceId!);
           const deadline = driver.now() + 30_000;
           do {
@@ -358,6 +359,7 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
       if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
       return;
     }
+    if (op.disposition) throw new Error(`a stop-and-archive of this operation is partway; next action: rerun ${recoveryCommand(op, "dispose", STOP)} once its runtimes have settled`);
     if (hasEffects(op)) {
       throw new Error(`operation has stopped runtimes or uncertain terminal effects; resume it instead (${recoveryCommand(op, "resume")}), or end it with ${recoveryCommand(op, "dispose", STOP)}`);
     }
@@ -439,6 +441,8 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
     // Each outcome is recorded as it happens, so a disposition that stops partway stays true and resume refuses it.
     const disposition = (op.disposition ??= { choice: "stop-and-archive", at, projects: {} });
     (op.audit ??= []).push({ at, action: "stop-and-archive", reason, projects: acts.map((a) => a.planned.project.id) });
+    // Recorded before the first act: a crash inside a stop leaves a disposition that resume refuses to override.
+    op.updatedAt = driver.now(); writeOperation(id, op, home);
     try {
       for (const { planned, live, act } of acts) {
         if (act.startsWith("source hold")) await driver.abort(planned.project, id, planned.source.instanceId!);

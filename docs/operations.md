@@ -1198,8 +1198,10 @@ next actions").
   abandons the operation. It checks every project first and refuses while a
   runtime is starting, stopping or unreachable; a project whose directory is
   gone is only recorded (`ahub doctor --orphans` lists a hub left running
-  there). It releases a source hold of its own (that hub keeps running), stops
-  a target hub it started and has not released, moves that operation's
+  there). It records its decision before it acts. It releases a source hold of
+  its own (that hub keeps running), stops a target hub it started and has not
+  released (one an older coordinator started is stopped at that release's
+  control protocol), moves that operation's
   `restart.json` aside as `restart.abandoned.<hash>.json` and leaves any other
   hub running; only then is the operation recorded `cancelled` and the lock
   released. If it fails partway it keeps the lock, records what it did, and
