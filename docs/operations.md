@@ -6,7 +6,10 @@ results and remaining prerequisites are recorded separately in [the smoke ledger
 ## Command help
 
 `ahub help`, `ahub --help` and `ahub -h` print the commands grouped by section;
-`ahub help <command>` prints only that command's entries. An unknown command
+`ahub help <command>` prints only that command's entries, and so does
+`ahub <command> -h` (or `--help`) when the flag is the only argument; anywhere else
+it is an ordinary argument, and `ahub claude` and `ahub codex` pass it on to the
+agent. An unknown command
 prints `unknown command "<name>"; run ahub help` and exits non-zero. Usages start
 at two spaces and descriptions at one fixed column, wrapped at word boundaries to
 the terminal width, read as at least 80 and at most 100 columns.

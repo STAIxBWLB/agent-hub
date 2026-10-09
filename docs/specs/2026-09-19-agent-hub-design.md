@@ -1379,7 +1379,7 @@ Plain `renderConsole` remains available, while `renderConsoleLines` exposes
 semantic spans. Geometry is computed from sanitized plain Unicode text before
 painting. Wrapping breaks at whitespace and splits only a word longer than a whole
 line; a wrapped line's continuations start four columns deeper than
-its source line (capped at half the width), so wrapped peer text in the stream
+its source line; a source indent and a continuation indent are both capped at half the width, so wrapped peer text in the stream
 never starts at a column where hub-written lines start (#212). `paint` sanitizes every span, inserts only fixed palette SGR sequences
 and resets each styled span. Interactive exits, signals, disconnect and errors
 retain the console restoration sequence. No new dependencies, protocol changes,

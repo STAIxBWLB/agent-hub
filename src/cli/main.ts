@@ -60,9 +60,10 @@ if (argv[0] === "--project") {
   if (!selector || selector.startsWith("--")) fail("--project needs a path or project ID");
 }
 const [given = "help", ...rest] = argv;
-// `ahub <command> -h` asks for that command's help instead of running it; only claude and codex pass their arguments on.
+// `ahub <command> -h` alone asks for that command's help instead of running it. Elsewhere `-h` may be message text
+// (`ahub say try ls -h`), and claude and codex pass their arguments on to the agent.
 const asksHelp = (a: string | undefined) => a === "--help" || a === "-h";
-const cmd = asksHelp(given) || (given !== "claude" && given !== "codex" && rest.some(asksHelp)) ? "help" : given;
+const cmd = asksHelp(given) || (given !== "claude" && given !== "codex" && rest.length === 1 && asksHelp(rest[0])) ? "help" : given;
 const args = cmd === "help" && given !== "help" && !asksHelp(given) ? [given] : rest;
 let selected: { root: string; stateDir: string };
 try {

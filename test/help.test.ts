@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HELP, helpCommands, renderHelp } from "../src/cli/help.ts";
@@ -11,6 +11,7 @@ const SGR = /\x1b\[[0-9;]*m/g;
 const CLI = join(import.meta.dir, "../src/cli/main.ts");
 const MARKERS = ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "NO_COLOR"];
 const root = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-help-")));
+afterAll(() => rmSync(root, { recursive: true, force: true }));
 /** The CLI as a person runs it: no agent markers, a hub home of its own; stdout is a pipe unless `tty` (then 120 columns). */
 async function cli(args: string[], env: Record<string, string> = {}, tty = false) {
   const wrapper = join(root, `cli-${crypto.randomUUID()}.ts`);
@@ -86,6 +87,10 @@ describe("ahub help (#212)", () => {
     for (const [command, flag] of [["kill", "--help"], ["say", "-h"], ["remember", "-h"], ["up", "--help"]]) {
       expect(await cli([command!, flag!])).toEqual({ code: 0, stdout: `${renderHelp(80, false, command)}\n`, stderr: "" });
     }
+    // Inside other arguments it is text: say goes on to send it (here it fails for want of a hub, not with help).
+    const said = await cli(["say", "@codex", "try", "ls", "-h", "first"]);
+    expect(said.code).not.toBe(0);
+    expect(said.stdout).toBe("");
   }, 20_000);
 
   test("color only on a terminal whose TERM is not dumb and NO_COLOR is empty", async () => {
