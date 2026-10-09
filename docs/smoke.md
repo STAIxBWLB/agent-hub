@@ -59,6 +59,13 @@ remains quota-blocked, as recorded below.
   purchase, provider/configuration change or model retry was performed; owned
   processes were stopped after 3.142 seconds.
 
+The user explicitly approved release 0.12.17 with only the Kimi native new-tool
+and ordinary-role refusal T0 evidence deferred on 2026-10-09. That native
+prerequisite remains unverified; the quota rejection is not a tool pass. This
+decision does not defer the other native/source gates or authorize a purchase,
+credentials, provider/configuration change or account retry. The same isolated
+read-only Kimi probe remains required before its native coverage is marked verified.
+
 Earlier captures remain part of the evidence:
 
 - Codex feed-off included an interrupted original and read-only continuation:

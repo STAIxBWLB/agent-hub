@@ -112,9 +112,10 @@
   remains unknown; no purchase, credential/configuration change or model retry
   was attempted. Owned native processes and the fixture daemon were stopped.
 
-## Remaining bounded live probe
+## Release disposition and remaining bounded live probe
 
-- Kimi ACP MCP: after native provider access is available, request the read-only task list and one conductor status refusal in an isolated ordinary-peer session. Verify actual native tool events/results and the daemon reply. The existing quota failure proves neither new-tool access nor refusal behavior; it requires an explicit deferral decision if the release proceeds without that live proof.
+- On 2026-10-09 the user explicitly approved release 0.12.17 with only the Kimi native new-tool and ordinary-role refusal T0 evidence deferred. Kimi coverage remains unverified. This decision defers no other source/native gate and authorizes no purchase, credentials, provider/configuration change, account retry or authority relaxation.
+- Kimi ACP MCP: after native provider access is available under an authorized account, request the same read-only task list/status and ordinary-role refusal probes in isolated sessions. Verify actual native tool events/results and the daemon reply before marking this prerequisite verified. The existing quota failure proves neither new-tool access nor refusal behavior.
 
 ## Verification limits
 

@@ -1452,3 +1452,16 @@ matching opaque native completion event, an idle peer and settled delivery rows.
 
 These additions use control protocol 15. Supported recovery sources include
 protocol 14 (0.12.16) alongside the previous source protocols.
+
+For release 0.12.17 only, the user explicitly accepted deferral of real Kimi ACP
+new-tool invocation and ordinary-role refusal T0 evidence on 2026-10-09. The
+managed OAuth account rejected its prompt with HTTP 403 for the weekly quota
+before any tool event; reset time is unknown and no configured native alternative
+was found. This prerequisite remains unverified. Actual Claude/Codex conductor
+workflows, Claude shell/channel observations, shared MCP/fake-adapter authority
+checks, real Kimi ACP initialization/session creation and full source gates are
+separately qualified. The deferral authorizes no purchase, credentials,
+provider/configuration change, account retry or authority relaxation. Once quota
+is available under an authorized account, the same isolated read-only status-tool
+and ordinary-role refusal probe must record a native tool event and daemon result
+before this Kimi prerequisite can be marked verified.

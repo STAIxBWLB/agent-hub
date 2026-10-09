@@ -79,6 +79,8 @@ hooks enabled to measure completion and supervision usage. Passing your own
 `--settings` takes precedence and produces a warning when it replaces that
 observation. The launcher records its private session identity in ordinary
 terminals too; this does not grant terminal-recovery authority.
+Ordinary Claude sessions with turn-free facts or task-idle sweeps enabled get the
+same session/start observation. Other ordinary launches remain non-opt-in.
 
 `ahub report` records conductor actions and completed native turns containing
 supervision. Tokens describe the whole measured turn, which may also contain
