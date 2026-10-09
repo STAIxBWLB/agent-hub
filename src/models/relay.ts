@@ -166,6 +166,8 @@ export interface ModelRelayOptions {
   onCooldown?: (event: RelayCooldownEvent) => void;
   /** Cooldown clock; tests inject one. */
   now?: () => number;
+  /** How long a dispatch waits for a busy MLX slot before it gives up and falls back (default 120 s); tests shorten it. */
+  slotWaitMs?: number;
   allowedDGXmodels: Record<string, string>;
   /** Trusted physical model expectations by backend alias. Gateway identifiers can include a provider
    *  prefix or route name that differs from the model reported by generation. Omission preserves the
@@ -216,11 +218,13 @@ export class BackendCooldowns {
     return undefined;
   }
 
+  /** A failure during a cooldown (a request already in flight, or a cooling alias tried as a fallback) neither counts nor extends it. */
   failed(alias: string): void {
+    if (this.cooling(alias)) return;
     const entry = this.entries.get(alias) ?? { failures: 0 };
     this.entries.set(alias, entry);
     entry.failures++;
-    if (entry.failures < COOLDOWN_FAILURES || this.cooling(alias)) return;
+    if (entry.failures < COOLDOWN_FAILURES) return;
     const ms = Math.min(COOLDOWN_CAP_MS, COOLDOWN_MS * 2 ** (entry.failures - COOLDOWN_FAILURES));
     entry.until = this.now() + ms;
     this.notify({ alias, event: "start", failures: entry.failures, ms });
@@ -395,7 +399,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
   const models = relayModelIds(options);
   const efficientWaitMs = options.efficientWaitMs ?? 500;
   const cooldowns = new BackendCooldowns(options.now, (event) => { try { options.onCooldown?.(event); } catch { /* observation cannot fail routing */ } });
-  const autoRoute = options.enableHubAuto ? new AutoRouteSelector({ ...options, dgxMaxInputTokens, cooling: (alias) => !!cooldowns.cooling(alias) }, defaultBackend, mlxAlias, estimateInputTokens) : undefined;
+  const autoRoute = options.enableHubAuto ? new AutoRouteSelector({ ...options, dgxMaxInputTokens }, defaultBackend, mlxAlias, estimateInputTokens) : undefined;
   let mlx: MlxHandle | undefined;
   let mlxStarting: Promise<MlxHandle> | undefined;
   const states = new Map<string, RelayBackendStatus>();
@@ -495,7 +499,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       if (options.mlx?.provider === "ollama" && options.mlxModel && options.mlxModel !== handle.model) throw new Error("Ollama model override does not match the validated model");
       model = options.mlxModel ?? handle.model;
       if (signal.aborted) throw new Error("request was cancelled before MLX generation started");
-      release = slot ?? await handle.acquire(signal);
+      release = slot ?? await handle.acquire(signal, options.slotWaitMs);
     } else {
       base = (await options.omni.base()) ?? (() => { throw new Error("DGX gateway is unavailable"); })();
       model = options.allowedDGXmodels[backend.alias]!;
@@ -593,43 +597,48 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
         activeRequests.delete(record);
         return Response.json({ error: error instanceof Error ? error.message : "backend unavailable" }, { status: 400 });
       }
+      const own = backend;
+      // A refused request still records the decision, unmoved; a dispatched one records it after the ordering step.
+      const emitRoute = () => { if (auto) try { options.onRoute?.(auto.route); } catch { /* observation cannot fail routing */ } };
       const inputTokens = estimateInputTokens(body.messages, body.tools);
-      // #199: a cooling MLX goes straight to its fallback; a busy MLX slot moves a movable hub/auto request to dgx/fast,
-      // unless its last dispatch failed, and a failed move falls back to MLX with the usual wait. Both stay in the
-      // efficient tier. Before this relay first started MLX, its startup decides as before.
-      const move = (alias: string, source: "load" | "cooldown"): ModelBackend => { auto?.moved(alias, source); return { kind: "dgx", alias }; };
-      let slot: (() => void) | undefined;
-      let loadMoved = false;
-      if (backend.kind === "mlx" && options.fallbackDGXAlias && cooldowns.cooling(aliasOf(backend, mlxAlias))) backend = move(options.fallbackDGXAlias, "cooldown");
-      else if (auto?.movable && backend.kind === "mlx" && mlx && "dgx/fast" in options.allowedDGXmodels && inputTokens <= dgxMaxInputTokens && !cooldowns.failing("dgx/fast")) {
-        try {
-          const held = await mlx.acquire(controller.signal, efficientWaitMs);
-          let holding = true;
-          slot = () => { if (holding) { holding = false; held(); } };
-        } catch (error) {
-          // Anything but a busy slot: the dispatch acquires again and records it.
-          if (error instanceof MlxBusyError) { backend = move("dgx/fast", "load"); loadMoved = true; }
-        }
-      }
-      if (auto) try { options.onRoute?.(auto.route); } catch { /* observation cannot fail routing */ }
-      const inputBudget = backend.kind === "mlx" ? (options.mlx?.maxInputTokens ?? (options.mlx?.provider === "ollama" ? 6000 : 16_000)) : dgxMaxInputTokens;
-      const ollama = backend.kind === "mlx" && options.mlx?.provider === "ollama";
+      const inputBudget = own.kind === "mlx" ? (options.mlx?.maxInputTokens ?? (options.mlx?.provider === "ollama" ? 6000 : 16_000)) : dgxMaxInputTokens;
+      const ollama = own.kind === "mlx" && options.mlx?.provider === "ollama";
       const contextWindow = ollama ? (options.mlx?.contextWindow ?? 8192) : undefined;
       const configuredMaxTokens = ollama ? (options.mlx?.maxTokens ?? 2048) : undefined;
       const requestedMaxTokens = body.max_tokens === undefined ? configuredMaxTokens : body.max_tokens;
       if (ollama && (!Number.isInteger(requestedMaxTokens) || (requestedMaxTokens as number) < 1 || (requestedMaxTokens as number) > configuredMaxTokens! || inputTokens + (requestedMaxTokens as number) > contextWindow!)) {
-        slot?.();
+        emitRoute();
         record.cleanup();
         activeRequests.delete(record);
         return Response.json({ error: "input and max_tokens exceed the Ollama context budget" }, { status: 400 });
       }
       if (inputTokens > inputBudget) {
-        slot?.();
+        emitRoute();
         record.cleanup();
         activeRequests.delete(record);
         return Response.json({ error: "input exceeds the model context budget" }, { status: 400 });
       }
-      const fallback: ModelBackend | undefined = loadMoved ? { kind: "mlx", alias: mlxAlias } : backend.kind === "mlx" && options.fallbackDGXAlias ? { kind: "dgx", alias: options.fallbackDGXAlias } : undefined;
+      // #199: one ordering step. The candidates are the route's own backend and, for MLX, its DGX fallback, exactly as
+      // before; a cooldown, an enforced pin or a busy MLX slot only reorders them, so a move never removes the backend a
+      // request would have been served by. A move goes only to a fallback whose last dispatch did not fail.
+      const candidates: ModelBackend[] = [own, ...(own.kind === "mlx" && options.fallbackDGXAlias ? [{ kind: "dgx", alias: options.fallbackDGXAlias } as ModelBackend] : [])];
+      const second = candidates[1];
+      const swap = (source?: "load" | "cooldown") => { candidates.reverse(); auto?.moved(aliasOf(candidates[0]!, mlxAlias), source); };
+      let slot: (() => void) | undefined;
+      if (second && !cooldowns.failing(aliasOf(second, mlxAlias))) {
+        if (cooldowns.cooling(aliasOf(own, mlxAlias))) swap("cooldown");
+        else if (auto?.prefer === aliasOf(second, mlxAlias)) swap();
+        else if (auto?.movable && mlx) {
+          try {
+            const held = await mlx.acquire(controller.signal, efficientWaitMs);
+            let holding = true;
+            slot = () => { if (holding) { holding = false; held(); } };
+          } catch (error) {
+            if (error instanceof MlxBusyError) swap("load"); // anything else: the dispatch acquires again and records it
+          }
+        }
+      }
+      emitRoute();
       const dispatchGroupId = randomUUID();
       let primaryDispatchId: string | undefined;
       const dispatch = async (selected: ModelBackend, body: RelayRequest, slot?: () => void) => {
@@ -653,7 +662,8 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
           slot?.();
           journalEntry.record.failureClass ??= controller.signal.aborted ? "cancelled" : error instanceof ExecutionAdmissionError ? "admission" : "startup";
           const failure = journalEntry.record.failureClass;
-          if (!controller.signal.aborted && !journalEntry.budgetCut && !(error instanceof ExecutionAdmissionError) && (failure === "transport" || failure === "startup")) {
+          // A busy MLX slot is load, never a failure; neither is a cancelled request, an admission refusal or a budget cut.
+          if (!controller.signal.aborted && !journalEntry.budgetCut && !(error instanceof ExecutionAdmissionError) && !(error instanceof MlxBusyError) && (failure === "transport" || failure === "startup")) {
             // A DGX alias can fail before it has a status row (gateway or key unavailable); a cooldown must still show.
             if (!states.has(journalEntry.record.alias)) setState(selected, { state: "error", lastError: error instanceof Error ? error.message.slice(0, 160) : "backend unavailable" });
             cooldowns.failed(journalEntry.record.alias);
@@ -673,26 +683,20 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
         const onUsage = journalEntry.usage;
         return { result, release, journalEntry, onUsage };
       };
-      try {
-        const { result, release, journalEntry, onUsage } = await dispatch(backend, body, slot);
-        return sseResponse(result.response, release, result.onModel, (cancel) => { record.cancel = cancel; }, journalEntry.close, onUsage);
-      } catch (error) {
-        record.closeRecord?.(controller.signal.aborted ? "cancelled" : "failed");
-        if (!fallback || controller.signal.aborted || error instanceof ExecutionAdmissionError) {
-          record.cleanup();
-          activeRequests.delete(record);
-          return Response.json({ error: error instanceof Error ? error.message : "backend unavailable" }, { status: 502 });
-        }
+      let lastError: unknown;
+      for (const [i, candidate] of candidates.entries()) {
         try {
-          const { result, release, journalEntry, onUsage } = await dispatch(fallback, { ...body, model: fallback.alias });
+          const { result, release, journalEntry, onUsage } = await dispatch(candidate, i ? { ...body, model: aliasOf(candidate, mlxAlias) } : body, i ? undefined : slot);
           return sseResponse(result.response, release, result.onModel, (cancel) => { record.cancel = cancel; }, journalEntry.close, onUsage);
-        } catch (fallbackError) {
+        } catch (error) {
           record.closeRecord?.(controller.signal.aborted ? "cancelled" : "failed");
-          record.cleanup();
-          activeRequests.delete(record);
-          return Response.json({ error: fallbackError instanceof Error ? fallbackError.message : "fallback unavailable" }, { status: 502 });
+          lastError = error;
+          if (controller.signal.aborted || error instanceof ExecutionAdmissionError) break;
         }
       }
+      record.cleanup();
+      activeRequests.delete(record);
+      return Response.json({ error: lastError instanceof Error ? lastError.message : "backend unavailable" }, { status: 502 });
     },
   });
   const url = `http://${host}:${server.port}/v1`;

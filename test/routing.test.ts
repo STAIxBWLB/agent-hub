@@ -43,6 +43,7 @@ test("#197 stay_switch defaults to shadow and rejects unknown modes and bounds",
   expect(routing.pi.efficient_wait_ms).toBe(500); // #199
   expect(loadRouting(write("[pi]\nefficient_wait_ms = 0")).pi.efficient_wait_ms).toBe(0);
   expect(() => loadRouting(write("[pi]\nefficient_wait_ms = -1"))).toThrow(/efficient_wait_ms/);
+  expect(() => loadRouting(write("[pi]\nefficient_wait_ms = 120000"))).toThrow(/efficient_wait_ms/); // the dispatch's own slot wait gives up at 120 s
 });
 
 // issue #36: quota that resets soonest is used first; demoted peers go behind the rest.

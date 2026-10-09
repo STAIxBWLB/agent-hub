@@ -59,7 +59,8 @@ export function loadRouting(cwd: string): Routing {
   }
   const pi = { dgx_max_context_tokens: 262_144, mlx_max_context_tokens: 16_000, efficient_wait_ms: 500, ...(raw as any).pi };
   if (!(Number.isSafeInteger(pi.dgx_max_context_tokens) && pi.dgx_max_context_tokens > 0) || !(Number.isSafeInteger(pi.mlx_max_context_tokens) && pi.mlx_max_context_tokens > 0)) throw new Error("routing.toml: [pi] context limits must be positive integers");
-  if (!(Number.isSafeInteger(pi.efficient_wait_ms) && pi.efficient_wait_ms >= 0)) throw new Error("routing.toml: [pi] efficient_wait_ms must be a non-negative integer");
+  // A dispatch gives up on a busy MLX slot after 120 s; a longer load wait would never move anything.
+  if (!(Number.isSafeInteger(pi.efficient_wait_ms) && pi.efficient_wait_ms >= 0 && pi.efficient_wait_ms < 120_000)) throw new Error("routing.toml: [pi] efficient_wait_ms must be an integer from 0 to 119999");
   const { stay_switch, max_switch_prefill_tokens } = { ...DEFAULT_STAY_SWITCH, ...(raw as any) };
   // Written after a table header, a top-level key lands in that table and would be ignored without a word.
   const misplaced = (table: unknown, path: string): string | undefined => !table || typeof table !== "object" || Array.isArray(table) ? undefined

@@ -4,13 +4,17 @@ import { extractToolSignals, turnKind } from "./signals.ts";
 import { selectStage, stayOrSwitch, type StageState, type SwitchTrace, type Tier } from "./stage.ts";
 import { SessionState } from "./state.ts";
 
-type RelaySelectorOptions = Pick<ModelRelayOptions, "mlx" | "selectBackend" | "routeSessionKey" | "allowedDGXmodels" | "staySwitch"> & { dgxMaxInputTokens: number; cooling: (alias: string) => boolean };
+type RelaySelectorOptions = Pick<ModelRelayOptions, "mlx" | "selectBackend" | "routeSessionKey" | "allowedDGXmodels" | "staySwitch"> & { dgxMaxInputTokens: number };
 type RouteSource = "override" | "dimensions" | "hold" | "classifier" | "default" | "load" | "cooldown";
-export type RelayRouteEvent = { route: "hub/auto"; tier: string; source: RouteSource; score: number; ms: number } & Partial<SwitchTrace>;
+/** `stateless`: the request carried no session key, so the planner saw a new session on every call. */
+export type RelayRouteEvent = { route: "hub/auto"; tier: string; source: RouteSource; score: number; ms: number; stateless?: boolean } & Partial<SwitchTrace>;
 type EstimateInputTokens = (messages: RelayRequest["messages"], tools?: unknown[]) => number;
 type AutoState = { stage: StageState; pin?: { tier: Tier; alias: string } };
-/** A `hub/auto` decision. The relay may still move it to another backend of the same tier (#199), only through `moved`. */
-export interface AutoChoice { backend: ModelBackend; route: RelayRouteEvent; movable: boolean; moved: (alias: string, source: "load" | "cooldown") => void }
+/**
+ * A `hub/auto` decision (#199). `backend` is the stage backend; the relay only reorders it with its fallback, trying
+ * `prefer` (an enforced tool loop's pinned backend) first when that is the fallback, and reports a reorder through `moved`.
+ */
+export interface AutoChoice { backend: ModelBackend; route: RelayRouteEvent; movable: boolean; prefer?: string; moved: (alias: string, source?: "load" | "cooldown") => void }
 
 /** Stage selection for the relay's virtual `hub/auto` model. */
 export class AutoRouteSelector {
@@ -38,6 +42,7 @@ export class AutoRouteSelector {
     let trace: SwitchTrace | undefined;
     let next: AutoState | undefined;
     let movable = true;
+    let prefer: string | undefined;
     try {
       const conversation = normalizeConversation(body);
       const decision = selectStage(extractToolSignals(conversation), { mode: "efficient_first", confidenceThreshold: 0.5, capableHoldTurns: 2 }, prior?.stage ?? { capableHoldTurnsRemaining: 0 });
@@ -50,8 +55,8 @@ export class AutoRouteSelector {
       source = this.sourceOf(decision.source);
       // Enforced, a tool loop that keeps its tier keeps its backend too: a move inside the tier costs the same prefill (#199).
       movable = !(trace.staySwitch === "enforce" && trace.turnType === "tool_result" && trace.plan === "stay" && trace.reason !== "new_pin");
-      const kept = !movable && prior?.pin ? this.keep(prior.pin.alias, staged.tier, body, inputTokens) : undefined;
-      const stagedBackend = kept ?? this.stageBackend(staged.tier, body, inputTokens);
+      if (!movable) prefer = prior?.pin?.alias;
+      const stagedBackend = this.stageBackend(staged.tier, body, inputTokens);
       if (stagedBackend) backend = stagedBackend;
       else source = "default";
     } catch {
@@ -70,19 +75,12 @@ export class AutoRouteSelector {
 
     if (next?.pin) next.pin.alias = this.aliasOf(backend);
     if (sessionKey && next) this.states.set(sessionKey, next);
-    const route: RelayRouteEvent = { route: "hub/auto", tier: this.aliasOf(backend), source, score, ms: Math.max(0, performance.now() - started), ...trace };
-    return { backend, route, movable, moved: (alias, moveSource) => {
+    const route: RelayRouteEvent = { route: "hub/auto", tier: this.aliasOf(backend), source, score, ms: Math.max(0, performance.now() - started), ...trace, ...(sessionKey ? {} : { stateless: true }) };
+    return { backend, route, movable, ...(prefer ? { prefer } : {}), moved: (alias, moveSource) => {
       route.tier = alias;
-      route.source = moveSource;
+      if (moveSource) route.source = moveSource;
       if (next?.pin) next.pin.alias = alias;
     } };
-  }
-
-  /** The session's pinned backend, while it still serves this tier, fits and is not cooling down. */
-  private keep(alias: string, tier: Tier, body: RelayRequest, inputTokens: number): ModelBackend | undefined {
-    if (this.options.cooling(alias)) return undefined;
-    if (alias === this.mlxAlias) return tier === "efficient" && this.options.mlx && this.mlxFitsBudget(body, inputTokens) ? { kind: "mlx", alias } : undefined;
-    return alias in this.options.allowedDGXmodels && (alias === "dgx/coding") === (tier === "capable") && inputTokens <= this.options.dgxMaxInputTokens ? { kind: "dgx", alias } : undefined;
   }
 
   private stageBackend(tier: "capable" | "efficient", body: RelayRequest, input: number): ModelBackend | undefined {

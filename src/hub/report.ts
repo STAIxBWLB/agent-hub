@@ -21,6 +21,8 @@ export interface RouteSwitches {
   decisions: number;
   /** Pins the planner started; 0 while stay_switch is off, when session boundaries are not recorded. */
   sessions: number;
+  /** Decisions made without a session key: each looks like a new session, so sessions are unknown. */
+  stateless: number;
   switches: number;
   toolLoopSwitches: number;
   planned: number;
@@ -186,10 +188,11 @@ export function summarize(events: StampedEvent[]): Report {
         // ponytail: consecutive decisions of one peer and route are taken as one session between pins; that holds while each
         // peer runs one session at a time (Pi, and local outside PII turns). An opaque session ordinal is the upgrade path.
         const key = `${e.peer} ${e.route}`;
-        const s = (r.routes[key] ??= { decisions: 0, sessions: 0, switches: 0, toolLoopSwitches: 0, planned: 0, plannedInToolLoops: 0, modes: [] });
+        const s = (r.routes[key] ??= { decisions: 0, sessions: 0, stateless: 0, switches: 0, toolLoopSwitches: 0, planned: 0, plannedInToolLoops: 0, modes: [] });
         s.decisions++;
         if (e.staySwitch && !s.modes.includes(e.staySwitch)) s.modes.push(e.staySwitch);
-        if (e.reason === "new_pin") s.sessions++;
+        if (e.stateless) s.stateless++;
+        if (e.reason === "new_pin" && !e.stateless) s.sessions++;
         else if (lastTier.has(key) && lastTier.get(key) !== e.tier) {
           s.switches++;
           if (e.turnType === "tool_result") s.toolLoopSwitches++;
@@ -239,7 +242,8 @@ export function formatReport(r: Report): string[] {
   lines.push(`task events: ${tasks || "none"}`);
   lines.push(`quota readings: ${r.quota.readings} (${r.quota.hard} hard limits)`);
   for (const [key, s] of Object.entries(r.routes).sort(([a], [b]) => a.localeCompare(b))) {
-    const sessions = s.sessions ? `${s.sessions} session${s.sessions === 1 ? "" : "s"}, ${(s.switches / s.sessions).toFixed(1)} model changes per session` : "sessions unknown (stay_switch off)";
+    const sessions = s.stateless ? `sessions unknown (${s.stateless} decision${s.stateless === 1 ? "" : "s"} without a session key)`
+      : s.sessions ? `${s.sessions} session${s.sessions === 1 ? "" : "s"}, ${(s.switches / s.sessions).toFixed(1)} model changes per session` : "sessions unknown (stay_switch off)";
     const planner = s.modes.length ? `; planner (${s.modes.join(", ")}): ${s.planned} switches, ${s.plannedInToolLoops} inside tool loops` : "";
     lines.push(`route ${key}: ${s.decisions} decisions, ${sessions}; ${s.switches} model change${s.switches === 1 ? "" : "s"}, ${s.toolLoopSwitches} inside tool loops${planner}`);
   }
