@@ -1999,8 +1999,8 @@ export async function startDaemon(opts: DaemonOptions) {
       return { ok: true };
     }
     if (peer === "codex") {
-      if ((args.unattended || opts.unattended) && permissionMode(peer) !== "ask") return { ok: false, error: "Codex started --unattended cannot take a permission mode; restart without --unattended" };
-      if (args.unattended || opts.unattended) unattendedPeers.add(peer); else unattendedPeers.delete(peer);
+      if (args.unattended && permissionMode(peer) !== "ask") return { ok: false, error: "Codex started --unattended cannot take a permission mode; restart without --unattended" };
+      if (args.unattended) unattendedPeers.add(peer); else unattendedPeers.delete(peer);
       let codexSteering = false;
       const codex = new CodexPeer("codex", {
         permissionMode: permissionMode("codex"),
@@ -2617,7 +2617,7 @@ export async function startDaemon(opts: DaemonOptions) {
     try {
       const row = JSON.parse(readFileSync(join(opts.stateDir, "claude-launch.json"), "utf8"));
       if (row.instanceId !== instanceId || row.permissionHook !== true || typeof row.launchId !== "string" || !row.launchId) return undefined;
-      return { launchId: row.launchId, unattended: row.unattended === true || !!opts.unattended };
+      return { launchId: row.launchId, unattended: row.unattended === true };
     } catch { return undefined; }
   }
   async function changePermission(peer: unknown, mode: unknown, confirmed: unknown): Promise<Record<string, unknown>> {
@@ -2635,7 +2635,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (launch.unattended) return { ok: false, error: "Claude started --unattended already skips prompts; restart without --unattended" };
     } else if (owner instanceof CodexPeer) {
       if (!owner.proxyAttached) return { ok: false, error: "Codex TUI is not behind the hub proxy; reconnect with ahub codex" };
-      if (unattendedPeers.has(peer) || opts.unattended) return { ok: false, error: "Codex started --unattended already skips prompts; restart without --unattended" };
+      if (unattendedPeers.has(peer)) return { ok: false, error: "Codex started --unattended already skips prompts; restart without --unattended" };
     }
     const from = permissionMode(peer);
     try {

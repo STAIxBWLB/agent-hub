@@ -18,10 +18,11 @@ import { startFakeModelServer } from "./fakes/model-server.ts";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 const until = async (check: () => boolean) => { for (let i = 0; i < 300 && !check(); i++) await Bun.sleep(10); expect(check()).toBe(true); };
-async function fixture(config: Partial<HubConfig> = {}, state?: { cwd: string; stateDir: string }, native: { codexAppPort?: number } = {}) {
+async function fixture(config: Partial<HubConfig> = {}, state?: { cwd: string; stateDir: string }, native: { codexAppPort?: number; unattended?: boolean } = {}) {
   const cwd = state?.cwd ?? mkdtempSync(join(tmpdir(), "ahub-permission-"));
   const stateDir = state?.stateDir ?? join(cwd, "state");
   const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: native.codexAppPort ?? 0, codexProxyPort: 0, switchyardPort: 0,
+    unattended: native.unattended,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, kimi_cmd: [process.execPath, join(import.meta.dir, "fakes/acp-server.ts")], memory: { ...DEFAULT_CONFIG.memory, enabled: false }, ...config } });
   cleanup.push(() => daemon.stop());
   const client = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => client.close());
@@ -78,8 +79,8 @@ test("only console requests change modes: tool, conductor and agent-message path
   expect((await rig.mode("kimi", "auto")).error).toContain("mode must be");
 });
 
-test("Claude mode needs the current managed hook and refuses unattended launches", async () => {
-  const rig = await fixture();
+test("Claude mode needs the current managed hook and refuses only an unattended native launch", async () => {
+  const rig = await fixture({}, undefined, { unattended: true });
   const channel = await ControlClient.connect(rig.stateDir, { role: "peer", peer: "claude" }); cleanup.push(() => channel.close());
   await until(() => rig.daemon.bus.peers.get("claude")?.state === "idle");
   expect((await rig.mode("claude", "never-ask", true)).error).toContain("permission hook");
@@ -128,8 +129,8 @@ test("Pi mode grants edits once, keeps shell on the console, and ask restores th
 });
 
 
-test("Codex console mode requires its adopted proxy and applies to the next hub task", async () => {
-  const rig = await fixture();
+test("Codex console mode uses its TUI policy even under an unattended broker", async () => {
+  const rig = await fixture({}, undefined, { unattended: true });
   const app = startFakeAppServer(); cleanup.push(app.stop);
   const codex = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: app.url, cwd: rig.cwd });
   rig.daemon.bus.add(codex);
