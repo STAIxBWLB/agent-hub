@@ -80,14 +80,20 @@ export interface RecoveryOperation {
  * `ahub` may still be the older release, so next actions and errors never name it bare.
  */
 export function recoveryCommand(op: { id: string; sourceRoot?: string }, action: "status" | "resume" | "abort" | "dispose", flags = ""): string {
-  // An operation started by an older coordinator is resumed by it, but only a release with dispose can dispose of it.
-  const entry = !op.sourceRoot ? undefined : action === "dispose" && !hasDispose(op.sourceRoot) ? join(import.meta.dir, "main.js") : join(op.sourceRoot, "src/cli/main.js");
+  // A coordinator from before #215 lacks dispose, refuses abort and resume on a lapsed hold, and shows no next actions:
+  // name the running release, which does all of that in-process (resume still runs the operation's own runner).
+  const entry = !op.sourceRoot ? undefined : current(op.sourceRoot) ? join(op.sourceRoot, "src/cli/main.js") : join(import.meta.dir, "main.js");
   const cli = !entry ? "ahub" : /^[\w./@+-]+$/.test(entry) ? `bun ${entry}` : `bun '${entry.replace(/'/g, `'\\''`)}'`;
   return `${cli} recovery ${action} ${op.id}${flags ? ` ${flags}` : ""}`;
 }
 const STOP = "--stop-and-archive --reason <text>";
-function hasDispose(sourceRoot: string): boolean {
+/** Whether a coordinator has the #215 recovery commands (dispose, re-preparation, next actions). */
+function current(sourceRoot: string): boolean {
   try { return readFileSync(join(sourceRoot, "src/cli/upgrade.ts"), "utf8").includes("export async function disposeRecovery"); } catch { return false; }
+}
+/** Whether the staged target reads recovery waivers: a fresh session cannot be released without them. */
+export function targetReadsWaivers(op: { targetRoot?: string }): boolean {
+  try { return !!op.targetRoot && readFileSync(join(op.targetRoot, "src/hub/restart.ts"), "utf8").includes("export function readRecoveryWaivers"); } catch { return false; }
 }
 
 /** Effects anywhere in the operation: a project past `prepared` or any terminal receipt. Abort needs none. */
@@ -100,15 +106,19 @@ const abortable = (op: RecoveryOperation) => !hasEffects(op) && !op.projects.som
  * abort where it can succeed, a fresh session for a failed Codex or Claude restoration, and stop-and-archive last.
  * `status` and every error that names choices use this one list.
  */
-export function nextActions(op: RecoveryOperation, runnerPid?: number): string[] {
+export function nextActions(op: RecoveryOperation, runner?: number | "unknown"): string[] {
   if (op.phase === "completed" || op.phase === "cancelled") return [];
-  if (runnerPid) return [`wait: runner ${runnerPid} is working; ${recoveryCommand(op, "status")}`];
+  if (runner === "unknown") return [`${recoveryCommand(op, "status")} again: whether a runner holds the operation could not be read`];
+  if (runner) return [`wait: runner ${runner} is working; ${recoveryCommand(op, "status")}`];
   if (op.disposition) return [`rerun ${recoveryCommand(op, "dispose", STOP)} once its runtimes have settled`];
   const failed = [...new Set(op.projects.flatMap((p) => Object.entries(p.terminals).filter(([key, value]) => key.startsWith("restored:") && key !== "restored:pi" && value === "failed" && !p.fresh?.[key.slice("restored:".length)]).map(([key]) => key.slice("restored:".length))))];
+  const waivers = targetReadsWaivers(op);
+  const old = !!op.sourceRoot && !current(op.sourceRoot);
   return [
-    `${recoveryCommand(op, "resume")}${op.error ? " (after the next action in error)" : ""}`,
+    `${recoveryCommand(op, "resume")}${op.error ? " (after the next action in error)" : ""}${old ? " (runs the coordinator that started this operation, which cannot re-prepare an expired hold: if it reports \"source is no longer prepared\", use abort or stop-and-archive)" : ""}`,
     ...(abortable(op) ? [recoveryCommand(op, "abort")] : []),
-    ...failed.map((peer) => recoveryCommand(op, "dispose", `--fresh-session ${peer} --reason <text>`)),
+    ...(waivers ? failed.map((peer) => recoveryCommand(op, "dispose", `--fresh-session ${peer} --reason <text>`)) : []),
+    ...(!waivers && failed.length ? [`(no --fresh-session: target ${op.plan.version} cannot read recovery waivers, so it could not release a new session)`] : []),
     recoveryCommand(op, "dispose", STOP),
   ];
 }
@@ -347,11 +357,11 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
 }
 
 /** Receipts and runner state only (#215): ids, phases and effects, never task or message text. */
-export function publicOperation(op: RecoveryOperation, runnerPid?: number) {
+export function publicOperation(op: RecoveryOperation, runnerPid?: number | "unknown") {
   const effect = (value: unknown) => value === "pending" || value === "failed" ? value : "done";
   const next = nextActions(op, runnerPid);
   return { id: op.id, phase: op.phase, step: op.step, version: op.plan.version, updatedAt: op.updatedAt,
-    runner: runnerPid ? { state: "running", pid: runnerPid } : { state: "none" },
+    runner: runnerPid === "unknown" ? { state: "unknown" } : runnerPid ? { state: "running", pid: runnerPid } : { state: "none" },
     ...(op.phase === "running" && !runnerPid ? { stale: "the receipt says running but no runner holds the operation: its last runner stopped mid-step" } : {}),
     projects: op.projects.map((p) => ({ id: p.id, phase: p.phase, ...(Object.keys(p.terminals).length ? { effects: Object.fromEntries(Object.entries(p.terminals).map(([key, value]) => [key, effect(value)])) } : {}),
       ...(p.fresh ? { lostContinuity: Object.fromEntries(Object.entries(p.fresh).map(([peer, f]) => [peer, f.lost])) } : {}) })),
@@ -421,6 +431,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
       // `ahub pi` sends no fresh flag, and a restored hub refills a Pi start from its recorded resume (daemon startPeer).
       if (choice.fresh === "pi") throw new Error(`pi: --fresh-session is not supported: a restored hub resumes Pi's recorded session, so a fresh one cannot be guaranteed; next action: ${recoveryCommand(op, "dispose", STOP)}`);
       if (op.disposition) throw new Error(`a stop-and-archive of this operation is partway; next action: rerun ${recoveryCommand(op, "dispose", STOP)} once its runtimes have settled`);
+      if (!targetReadsWaivers(op)) throw new Error(`--fresh-session is not available: target ${op.plan.version} cannot read recovery waivers, so it could not release a new session; next action: ${recoveryCommand(op, "dispose", STOP)}`);
       const peer = choice.fresh;
       const failed = op.projects.filter((p) => p.terminals[`restored:${peer}`] === "failed");
       if (!failed.length) throw new Error(`${peer}: no restoration of it failed in this operation; --fresh-session applies only then (${recoveryCommand(op, "status")})`);

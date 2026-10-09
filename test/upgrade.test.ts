@@ -2,8 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { abortRecovery, createOperation, disposeRecovery, planFingerprint, publicOperation, recoveryCommand, registeredProjects, runRecovery, type Inspection, type RecoveryDriver, type UpgradePlan } from "../src/cli/upgrade.ts";
-import { acquireRecoveryLock, claimRunner, readOperation, recoveryLock, releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
+import { abortRecovery, createOperation, disposeRecovery, nextActions, planFingerprint, publicOperation, recoveryCommand, registeredProjects, runRecovery, type Inspection, type RecoveryDriver, type UpgradePlan } from "../src/cli/upgrade.ts";
+import { acquireRecoveryLock, claimRunner, readOperation, recoveryLock, recoveryRunner, releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
 import { exactVersion, packageDigest, registryRelease } from "../src/cli/recovery-package.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 import { makeRecoveryDriver, PACKAGE_ROOT } from "../src/cli/upgrade-runtime.ts";
@@ -26,7 +26,7 @@ function fixture(kind: "restart" | "upgrade" = "upgrade") {
   const operation = createOperation(plan, PACKAGE_ROOT, home);
   let clock = 0;
   const driver: RecoveryDriver = {
-    stage: async () => { calls.push("stage"); return { root: "/target", digest: "target-digest" }; },
+    stage: async () => { calls.push("stage"); return { root: PACKAGE_ROOT, digest: "target-digest" }; }, // a target that reads recovery waivers
     inspect: async (p) => structuredClone(states.get(p.id)!),
     prepare: async (p, id) => { calls.push(`prepare:${p.id}`); states.get(p.id)!.recovery = { operationId: id, ready: true, phase: "prepared" }; },
     abort: async (p) => { calls.push(`abort:${p.id}`); delete states.get(p.id)!.recovery; },
@@ -369,7 +369,7 @@ function failedRestore() {
   const { fingerprint: _ignored, ...body } = f.plan;
   f.plan.fingerprint = planFingerprint(body);
   Object.assign(f.operation.projects[0]!, { phase: "started", instanceId: "new-alpha", terminals: { "closed:codex": true, "restored:codex": "failed" } });
-  f.operation.phase = "blocked";
+  Object.assign(f.operation, { phase: "blocked", targetRoot: PACKAGE_ROOT });
   f.states.set("alpha", { state: "running", instanceId: "new-alpha", version: "0.5.0", protocol: 10, peers: [], blockers: [], recovery: { operationId: f.operation.id, phase: "restored", ready: true } });
   writeOperation(f.operation.id, f.operation, f.home);
   return f;
@@ -602,11 +602,44 @@ test("abort cancels around a replaced source but not one that may have committed
   expect(publicOperation(committing.operation).next).not.toContain(`${C} abort ${committing.operation.id}`);
 });
 
-// #215 review: an operation an older coordinator started is resumed by it, but disposed of by a release that has dispose.
-test("next actions name a release that has dispose when the operation's own coordinator lacks it", () => {
-  const op = { id: "00000000-0000-4000-8000-000000000001", sourceRoot: "/releases/source-older" };
-  expect(recoveryCommand(op, "resume")).toBe(`bun /releases/source-older/src/cli/main.js recovery resume ${op.id}`);
-  expect(recoveryCommand(op, "dispose", "--stop-and-archive --reason <text>")).toBe(`${C} dispose ${op.id} --stop-and-archive --reason <text>`);
+// #215 review: a coordinator from before #215 lacks dispose and refuses abort and resume on a lapsed hold (the #215
+// loop): its operations are driven by the running release, and resume says what its own runner cannot do.
+test("an operation from a coordinator without dispose is driven by the running release", async () => {
+  const f = failedRestore();
+  f.operation.sourceRoot = "/releases/source-older";
+  for (const action of ["status", "resume", "abort"] as const) expect(recoveryCommand(f.operation, action)).toBe(`${C} ${action} ${f.operation.id}`);
+  expect(recoveryCommand(f.operation, "dispose", "--stop-and-archive --reason <text>")).toBe(`${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
+  expect(nextActions(f.operation)[0]).toBe(`${C} resume ${f.operation.id} (runs the coordinator that started this operation, which cannot re-prepare an expired hold: if it reports "source is no longer prepared", use abort or stop-and-archive)`);
+  // The abort named is this release's, which cancels a prepared source whose hold lapsed.
+  const lapsed = fixture();
+  lapsed.operation.sourceRoot = "/releases/source-older";
+  lapsed.operation.projects[0]!.phase = "prepared";
+  writeOperation(lapsed.operation.id, lapsed.operation, lapsed.home);
+  expect(nextActions(readOperation(lapsed.operation.id, lapsed.home))).toContain(`${C} abort ${lapsed.operation.id}`);
+  await abortRecovery(lapsed.operation.id, lapsed.driver, lapsed.home);
+  expect((readOperation(lapsed.operation.id, lapsed.home) as { phase: string }).phase).toBe("cancelled");
+});
+
+// #215 review: a same-protocol downgrade target cannot read waivers, so a fresh session could never be released.
+test("--fresh-session is neither offered nor accepted when the target cannot read recovery waivers", async () => {
+  const f = failedRestore();
+  f.operation.targetRoot = "/releases/target-without-waivers";
+  writeOperation(f.operation.id, f.operation, f.home);
+  const next = nextActions(readOperation(f.operation.id, f.home));
+  expect(next.some((line) => line.includes("--fresh-session codex"))).toBe(false);
+  expect(next).toContain("(no --fresh-session: target 0.5.0 cannot read recovery waivers, so it could not release a new session)");
+  await expect(disposeRecovery(f.operation.id, { fresh: "codex" }, "lost", f.driver, f.home)).rejects.toThrow("--fresh-session is not available: target 0.5.0 cannot read recovery waivers");
+});
+
+// #215 review: a runner record that cannot be read is unknown, never "no runner" (and never a stale receipt).
+test("an unreadable runner record reads as unknown in status and blocks nothing else", () => {
+  const f = fixture();
+  writeFileSync(`${join(f.home, "recovery", f.operation.id)}.json.runner.db`, "not a database");
+  expect(recoveryRunner(f.operation.id, f.home)).toBe("unknown");
+  f.operation.phase = "running";
+  const status = publicOperation(f.operation, recoveryRunner(f.operation.id, f.home));
+  expect(status).toMatchObject({ runner: { state: "unknown" }, next: [`${C} status ${f.operation.id} again: whether a runner holds the operation could not be read`] });
+  expect(status.stale).toBeUndefined();
 });
 
 // #215 review: the disposition is on record before its first act, and abort defers to it.

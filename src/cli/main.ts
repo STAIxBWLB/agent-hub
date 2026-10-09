@@ -386,6 +386,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       console.log("upgrade abandoned, not completed; the recovery lock is released. A project whose target ran starts again with that version's CLI.");
     }
     else if (["completed", "cancelled"].includes(operation.phase)) console.log(`recovery is already ${operation.phase}`);
+    else if (runner === "unknown") console.log(`whether a runner holds this operation could not be read; nothing was started; ${recoveryCommand(operation, "status")}`);
     else if (runner) console.log(`runner ${runner} is still working on this operation; ${recoveryCommand(operation, "status")}`);
     else spawnRecovery(operation);
   },

@@ -349,7 +349,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         const transcript = binding.peer === "codex" ? codexTranscript(binding) : "found";
         if (transcript === "unknown") throw new Error(`${unresumable(binding)}; no terminal was closed; next action: make that store readable, then ${recoveryCommand(op, "resume")}`);
         if (transcript === "missing" && !planned.freshStart?.includes("codex")) {
-          throw new Error(`${unresumable(binding)}; no terminal was closed; next action: ${recoveryCommand(op, "dispose", "--stop-and-archive --reason <text>")} releases the source hold (sessions this operation has not closed stay open; those it closed stay closed), or end that Codex session, close its Orca terminal ${binding.handle} and ${recoveryCommand(op, "resume")}; resume then stops at restoring codex, where ${recoveryCommand(op, "dispose", "--fresh-session codex --reason <text>")} is the explicit way to continue without its conversation`);
+          throw new Error(`${unresumable(binding)}; no terminal was closed. To continue without its conversation, end that Codex session and close its Orca terminal ${binding.handle}, then resume: it stops at restoring codex, where --fresh-session codex becomes a choice. Stop-and-archive releases the source hold (sessions this operation has not closed stay open; those it closed stay closed). Next actions: ${nextActions(op).join(" | ")}`);
         }
         const idle = await waitForIdle(binding, 600_000, terminalOptions(run));
         if (!idle.satisfied) throw new Error(`${binding.peer}: terminal is not verified idle; source retained`);
@@ -446,7 +446,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
             progress.terminals[key] = "failed"; save();
             throw notRestored(`its launcher no longer runs and no ${original.peer} session attached`);
           }
-          delete progress.terminals[key]; save(); // failed, nothing live: launch again below
+          // failed, nothing live: launched again below; the receipt stays `failed` until `pending` replaces it, so a
+          // refusal on the way keeps the failed-restoration choices
         }
         if (transcript() === "unknown") throw new Error(`${unresumable(original)}; no terminal was created; next action: make that store readable, then ${resume}`);
         if (transcript() === "missing" && !fresh()) {
@@ -456,7 +457,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         // Never create beside a live launch.
         const running = await launcher();
         if (attachedSession(await inspectRecovery(planned.project)) || (running && running.state !== "gone")) { // read now, not at restore start
-          throw new Error(`${original.peer}: a ${original.peer} launch is live on the target although this operation recorded none${running ? ` (terminal ${running.record.handle})` : ""}; no terminal was created; next action: end that ${original.peer} launch and close its terminal, then ${resume}`);
+          throw new Error(`${original.peer}: a ${original.peer} session or launcher is live on the target${running ? ` (terminal ${running.record.handle})` : ""}; no terminal was created; next action: wait until it attaches, or end it and close its terminal, then ${resume}`);
         }
         if (fresh()) {
           if (!(await waiversSupported(op.targetRoot!))) throw new Error(`${original.peer}: target ${op.plan.version} predates recovery waivers, so it cannot accept a new session; next action: ${recoveryCommand(op, "dispose", "--stop-and-archive --reason <text>")}`);
@@ -476,7 +477,10 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           progress.terminals[key] = "failed"; save();
           throw notRestored(exited.message);
         }
-        if (restored.manualRequired || !restored.newBinding) throw new Error(`${original.peer}: original session restoration needs manual verification`);
+        if (restored.manualRequired || !restored.newBinding) {
+          const handle = restored.binding?.handle ?? restored.blockers[0]?.handle;
+          throw new Error(`${original.peer}: original session restoration needs manual verification${restored.blockers[0] ? ` (${restored.blockers[0].message})` : ""}; next action: wait until it attaches, or end that launch and close its terminal${handle ? ` ${handle}` : ""}, then ${resume}`);
+        }
         // The daemon's id is authoritative: a fresh session is recorded under the id it reports once attached.
         progress.terminals[key] = fresh() ? { ...restored.newBinding, sessionId: await attachedId(planned, original.peer, op) } : restored.newBinding; save();
       }

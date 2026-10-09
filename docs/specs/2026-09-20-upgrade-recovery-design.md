@@ -309,7 +309,11 @@ the runner (refusing while one is alive) and append to the receipt's audit:
 #### Receipts, evidence and next actions
 
 Resume, abort, dispose, the `next` list of `status` and every error follow this
-table; `status` and every error that lists choices build them with one function
+table. A `failed` receipt stays `failed` until the relaunch replaces it with
+`pending`, so a refusal on the way (an unreadable store, a launch found live, a
+target without waivers) keeps its choices. `--fresh-session` is neither offered
+nor accepted when the target cannot read recovery waivers. A runner record that
+cannot be read shows as `unknown` in `status`, never as no runner; `status` and every error that lists choices build them with one function
 (`nextActions`), in this order: resume (which also launches a failed peer
 again), abort where it can succeed, a fresh session for each failed Codex or
 Claude restoration, stop-and-archive. Errors about a changed source name abort
@@ -358,8 +362,11 @@ An attached session is the target's report of that peer online with a thread
 The failed-restoration choices are `<c> recovery dispose <id> --fresh-session
 <peer> --reason <text>` (Codex or Claude; records the lost session and resumes;
 if the original session attaches after all, the recorded loss is cleared) and
-stop-and-archive. When the operation's own coordinator predates `dispose`, `<c>`
-for dispose names the running release instead, and stop-and-archive stops a
+stop-and-archive. When the operation's own coordinator predates these commands
+(it has no `dispose`, refuses abort and resume on a lapsed hold and prints no
+`next`), `<c>` names the running release for every action: abort, status and
+dispose run in that process, while resume still runs the operation's own runner
+and its `next` entry says what that runner cannot do. Stop-and-archive stops a
 target that speaks an older control protocol at that protocol (a `kill` fenced
 by its instance), then waits for its manifest and registry claim as the
 lifecycle stop does. The disposition and its audit are written before the first

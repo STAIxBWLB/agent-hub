@@ -1216,8 +1216,12 @@ next actions").
   database. The global CLI was not promoted.
 - Both choices are for a person in a terminal; an agent shell is refused, and
   the reason is kept in the operation's audit. Run each with the command
-  `next` or the error prints: the operation's own coordinator, or, for
-  `dispose` when that coordinator predates it, the release you are running.
+  `next` or the error prints: the operation's own coordinator, or the release
+  you are running when that coordinator predates these commands (its `resume`
+  still runs the old runner, and `next` says what that runner cannot do).
+  `--fresh-session` is not offered when the target release cannot read recovery
+  waivers, since it could never release a new session. A runner record that
+  cannot be read shows as `unknown`.
 
 ### After an unplanned stop
 

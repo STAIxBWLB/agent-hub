@@ -63,8 +63,11 @@ export function assertLifecycleAvailable(): void {
   }
 }
 
-/** The pid of the runner that holds the operation now, read without claiming it (#215 status). */
-export function recoveryRunner(id: string, home = hubHome()): number | undefined {
+/**
+ * The pid of the runner that holds the operation now, read without claiming it (#215 status): undefined when none does,
+ * "unknown" when the record cannot be read (unreadable, or still locked after the busy timeout), never "none" then.
+ */
+export function recoveryRunner(id: string, home = hubHome()): number | "unknown" | undefined {
   const path = `${operationPath(id, home)}.runner.db`;
   if (!existsSync(path)) return undefined;
   let db: Database | undefined;
@@ -72,10 +75,11 @@ export function recoveryRunner(id: string, home = hubHome()): number | undefined
     db = new Database(path, { readonly: true });
     db.run("PRAGMA busy_timeout = 3000"); // a claim in progress must not read as no runner
     const row = db.query("SELECT pid FROM runner WHERE slot = 1").get() as { pid: number } | null;
-    if (!row || !Number.isSafeInteger(row.pid) || row.pid < 1) return undefined;
+    if (!row) return undefined;
+    if (!Number.isSafeInteger(row.pid) || row.pid < 1) return "unknown";
     try { process.kill(row.pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return undefined; }
     return row.pid;
-  } catch { return undefined; } finally { db?.close(); } // unreadable: claimRunner reports it when an action claims
+  } catch { return "unknown"; } finally { db?.close(); }
 }
 
 /** An exclusive runner claim. Never steal a live or uncertain owner on resume. */

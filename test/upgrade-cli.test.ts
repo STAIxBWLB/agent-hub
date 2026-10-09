@@ -140,8 +140,9 @@ test("resume declines while a runner holds the operation", async () => {
     return { code, out };
   };
   try {
-    // Named by the operation's own coordinator: mid-upgrade the global ahub may be the older release (#215).
-    expect(await cli(["recovery", "resume", id])).toEqual({ code: 0, out: `runner ${process.pid} is still working on this operation; bun /preserved/coordinator/src/cli/main.js recovery status ${id}\n` });
+    // Never the bare global ahub, which may be the older release mid-upgrade (#215); a coordinator without the #215
+    // commands (as this one, which does not exist) is replaced by the running release.
+    expect(await cli(["recovery", "resume", id])).toEqual({ code: 0, out: `runner ${process.pid} is still working on this operation; bun ${join(import.meta.dir, "../src/cli/main.js")} recovery status ${id}\n` });
     expect(JSON.parse((await cli(["recovery", "status", id])).out)).toMatchObject({ runner: { state: "running", pid: process.pid } });
   } finally { release(); rmSync(temp, { recursive: true, force: true }); }
 });
