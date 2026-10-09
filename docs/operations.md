@@ -1130,24 +1130,28 @@ cannot hold the conversation is never chosen; no route summarizes or trims the h
 Pi exposes `hub/auto` for stage routing when available. Fixed `dgx/coding`, `dgx/fast`
 and `mlx/fast` aliases still pin the backend. Automatic MLX selection admits the complete
 input, tool schemas and requested output within the configured context window.
-A request bound for MLX has two candidates, MLX and its `dgx/fast` fallback, and load or
-cooldowns only change their order, never remove one (#199). `dgx/fast` goes first when MLX
-is cooling down (route event `source: "cooldown"`), when an enforced tool loop is pinned to
-it, or when the MLX slot is still busy after `[pi] efficient_wait_ms` (`source: "load"`;
-default 500, below 120000; 0 tries once; read when the hub first starts Pi, like
-`dgx_max_context_tokens`, so a change takes a hub restart). It never goes first while it is
-cooling down, or while its own last dispatch failed in any way, an error status included,
-until it succeeds or 30 s pass (`ahub status`: `last dispatch failed, no load moves until ...`).
-A load move or pin is only an optimization: the moved attempt gets 15 s to its response
-headers and is then abandoned, and none happens while the request runs under an execution
-budget (it could spend the model call or the time MLX needs). If the moved attempt
-fails, MLX serves the request with the usual slot wait. Enforced, a load move happens only at
-a user turn. After three consecutive transport or startup failures outside a cooldown (a
-failure more than 10 min after the last counted one starts the count over), a relay alias cools down for 30 s, doubling up to
+A `hub/auto` request bound for MLX has two candidates, MLX and its `dgx/fast` fallback; load
+and cooldowns only change their order, never remove one (#199). A fixed alias (`mlx/fast`,
+`pi_backend = "mlx"`) keeps its backend first as before. `dgx/fast` goes first when MLX is
+cooling down (route event `source: "cooldown"`). Load moves are opt-in until they are
+measured: with `[pi] efficient_wait_ms` set (0 to 119999; 0 tries once; read when the hub
+first starts Pi, like `dgx_max_context_tokens`, so a change takes a hub restart), a request
+whose MLX slot is still busy after that wait goes to `dgx/fast` first (`source: "load"`), and
+so does an enforced tool loop pinned to it; without it nothing moves for load. `dgx/fast`
+never goes first while it is cooling down, or while its own last dispatch failed in any way,
+an error status or a failed stream included, until it succeeds or 30 s pass (`ahub status`:
+`last dispatch failed, no load moves until ...`). No load move or pin happens while the request
+runs under an execution budget, and enforced, a load move happens only at a user turn. A moved
+attempt gets 15 s to its response headers after the gateway lookup (OmniRoute's own probe,
+up to two 4 s rounds when no gateway is cached) and is then abandoned for MLX, which serves
+with the usual slot wait. The bound ends with the headers: a stream that stalls or fails
+after them is not retried on MLX, and a failed one marks `dgx/fast` failing. After three
+consecutive transport or startup failures outside a cooldown (a failure more than 10 min after
+the last counted one starts the count over), a relay alias cools down for 30 s, doubling up to
 5 min. A busy MLX slot and timeouts cut short by an execution budget never count; any HTTP
 answer, a success or an error status, proves the transport works and ends the streak and the
-cooldown. `ahub status` shows `cooling down until ...` on the backend
-line and `events.jsonl` records `cooldown` events.
+cooldown. `ahub status` shows `cooling down until ...` on the backend line and `events.jsonl`
+records `cooldown` events.
 Progress judgements suggest reassignment; they never change task ownership.
 
 ## Disable local MLX while keeping remote auto routing

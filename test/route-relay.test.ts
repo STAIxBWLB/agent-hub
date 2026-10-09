@@ -720,3 +720,68 @@ test("#199 review: a failure long after the last counted one starts a new streak
   expect(cooldowns.cooling("dgx/fast")).toEqual({ until: clock + 30_000, failures: 3 });
   expect(events.filter((e) => e.event === "start").map((e) => e.ms)).toEqual([30_000, 30_000]);
 });
+
+test("#199 review: load moves are opt-in: without efficient_wait_ms a busy slot waits for MLX and an enforced pin is not preferred", async () => {
+  const local = ollama({ ready: true });
+  let hits = 0;
+  const events: RouteEvent[] = [];
+  const relay = await startModelRelay({ omni: omni(gateway(() => { hits++; })), allowedDGXmodels: { "dgx/fast": "fast", "dgx/coding": "coding" }, enableHubAuto: true, token: "opt-in",
+    mlx: local.mlx, fallbackDGXAlias: "dgx/fast", routeSessionKey: (request) => request.session_key as string,
+    staySwitch: () => ({ stay_switch: "enforce", max_switch_prefill_tokens: 32_000 }), onRoute: (event) => events.push(event as RouteEvent) });
+  cleanup.push(relay.close);
+  await route(relay, short());
+  await routeBusy(relay, local.runtimeDir, events, short());
+  expect(events.map((e) => `${e.tier} ${e.source}`)).toEqual(["mlx/fast default", "mlx/fast default"]);
+  expect(hits).toBe(0);
+});
+
+test("#199 review: a fixed mlx/fast request keeps main's order while MLX cools down", async () => {
+  const state: { ready: boolean; status?: number } = { ready: false };
+  const local = ollama(state);
+  const relay = await startModelRelay({ omni: omni(gateway()), allowedDGXmodels: { "dgx/fast": "fast" }, token: "fixed-cool", mlx: local.mlx, fallbackDGXAlias: "dgx/fast" });
+  cleanup.push(relay.close);
+  for (let i = 0; i < 3; i++) expect(await post(relay, "mlx/fast")).toBe(200); // MLX fails to start, dgx/fast serves
+  expect(relay.status().backends.find((b) => b.alias === "mlx/fast")?.coolingUntil).toBeString();
+  state.ready = true;
+  expect(await post(relay, "mlx/fast")).toBe(200);
+  expect(relay.requests().at(-1)).toMatchObject({ alias: "mlx/fast", outcome: "completed" }); // tried first, as before #199
+});
+
+test("#199 review: a moved stream that fails after its headers marks the fallback failing, so the next busy request waits for MLX", async () => {
+  const local = ollama({ ready: true });
+  let hits = 0;
+  const broken = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => { hits++; return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+    controller.enqueue(new TextEncoder().encode(": queued\n\n"));
+    setTimeout(() => controller.error(new Error("upstream reset")), 10);
+  } }), { headers: { "content-type": "text/event-stream" } }); } });
+  cleanup.push(() => broken.stop(true));
+  const events: RouteEvent[] = [];
+  const relay = await startModelRelay({ omni: omni(`http://127.0.0.1:${broken.port}/v1`), allowedDGXmodels: { "dgx/fast": "fast", "dgx/coding": "coding" }, enableHubAuto: true, token: "mid-stream",
+    mlx: local.mlx, fallbackDGXAlias: "dgx/fast", efficientWaitMs: 20, onRoute: (event) => events.push(event as RouteEvent) });
+  cleanup.push(relay.close);
+  await route(relay, short());
+  const held = await acquireGeneration(local.runtimeDir, 1);
+  const response = await fetch(`${relay.url}/chat/completions`, { method: "POST", headers: { authorization: `Bearer ${relay.token}`, "content-type": "application/json" }, body: JSON.stringify(short()) });
+  expect(response.status).toBe(200); // the moved attempt's headers came: no fallback is possible after this
+  await response.text().catch(() => "");
+  held();
+  for (let i = 0; i < 100 && !relay.status().backends.find((b) => b.alias === "dgx/fast")?.failingUntil; i++) await Bun.sleep(5);
+  expect(relay.status().backends.find((b) => b.alias === "dgx/fast")?.failingUntil).toBeString();
+  await routeBusy(relay, local.runtimeDir, events, short());
+  expect(events.map((e) => `${e.tier} ${e.source}`)).toEqual(["mlx/fast default", "dgx/fast load", "mlx/fast default"]);
+  expect(hits).toBe(1);
+});
+
+test("#199 review: an Ollama check that fails during the load probe is reported once, not repeated by the dispatch", async () => {
+  const state: { ready: boolean; status?: number } = { ready: true };
+  const local = ollama(state);
+  const relay = await startModelRelay({ omni: omni(gateway()), allowedDGXmodels: { "dgx/fast": "fast", "dgx/coding": "coding" }, enableHubAuto: true, token: "one-inspect",
+    mlx: local.mlx, fallbackDGXAlias: "dgx/fast", efficientWaitMs: 20 });
+  cleanup.push(relay.close);
+  await route(relay, short());
+  state.ready = false;
+  const tags = local.counts.tags;
+  await route(relay, short()); // the probe gets the slot, Ollama's check fails; MLX fails once and dgx/fast serves
+  expect(local.counts.tags - tags).toBe(1);
+  expect(relay.requests().slice(-2).map((r) => `${r.alias} ${r.outcome}`)).toEqual(["mlx/fast failed", "dgx/fast completed"]);
+});

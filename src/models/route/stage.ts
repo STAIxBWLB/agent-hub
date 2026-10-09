@@ -19,7 +19,8 @@ export interface HandoffNoteConfig {
   onlyOnWrongSignalEscalation?: boolean;
 }
 export interface StageOptions { mode?:PickerMode; confidenceThreshold?:number; capableHoldTurns?:number; handoffNotes?:HandoffNoteConfig }
-export interface StageDecision { tier:Tier|undefined; defaultTier:Tier; source:DecisionSource; probability:number; confidence:number; score:number; dimensions:CodingAgentDimensions; note?:string; state:StageState }
+/** `hardOverride` (#197, not ported): pickTier's override predicate holds, even when a capable hold answered first. */
+export interface StageDecision { tier:Tier|undefined; defaultTier:Tier; source:DecisionSource; probability:number; confidence:number; score:number; dimensions:CodingAgentDimensions; note?:string; state:StageState; hardOverride:boolean }
 
 const STALL_MIN_TURN_DEPTH=8;
 const SCORE_GAIN=5;
@@ -46,9 +47,14 @@ export function scoreSignal(signal:ToolSignals):ScoreResult {
   return {score,confidence:Math.abs(score)};
 }
 
+/** Compaction, critical severity or a repeated failure: capable whatever the scores say. */
+export function hardOverride(signal:ToolSignals):boolean {
+  return signal.compacted||signal.severity>=SEVERITY_CRITICAL||signal.repeatedFailure;
+}
+
 export function pickTier(signal:ToolSignals, mode:PickerMode='efficient_first', confidenceThreshold=0.5):PickOutcome {
   const defaultTier:Tier=mode==='capable_first'?'capable':'efficient';
-  if(signal.compacted||signal.severity>=SEVERITY_CRITICAL||signal.repeatedFailure)
+  if(hardOverride(signal))
     return {kind:'resolved',tier:'capable',source:'override',probability:0.5,confidence:1};
   const scored=scoreSignal(signal); const probability=(scored.score+1)/2; const half=confidenceThreshold/2;
   if(probability>0.5+half||probability<0.5-half)
@@ -89,6 +95,7 @@ export function selectStage(signal:ToolSignals, options:StageOptions={}, state:S
     dimensions,
     ...(note === undefined ? {} : { note }),
     state: { capableHoldTurnsRemaining: remaining },
+    hardOverride: hardOverride(signal),
   };
 }
 
@@ -115,7 +122,7 @@ export interface SwitchTrace { turnType: TurnKind; prefillTokens: number; staySw
  * de-escalation that makes the efficient backend prefill more than the bound stays. A tier whose backend cannot hold the
  * conversation is never chosen: nothing here summarizes or trims the history to make a switch fit.
  */
-export function planSwitch(pin: Tier | undefined, fresh: Pick<StageDecision, 'tier' | 'defaultTier' | 'source'>, turn: TurnKind, cost: SwitchCost): SwitchPlan {
+export function planSwitch(pin: Tier | undefined, fresh: Pick<StageDecision, 'tier' | 'defaultTier' | 'source'> & { hardOverride?: boolean }, turn: TurnKind, cost: SwitchCost): SwitchPlan {
   const wanted = fresh.tier ?? fresh.defaultTier, other: Tier = wanted === 'capable' ? 'efficient' : 'capable';
   const want = cost.fits(wanted) || !cost.fits(other) ? wanted : other;
   const plan = (tier: Tier, reason: SwitchReason): SwitchPlan => ({ plan: pin === undefined || pin === tier ? 'stay' : 'switch', tier, reason });
@@ -123,7 +130,8 @@ export function planSwitch(pin: Tier | undefined, fresh: Pick<StageDecision, 'ti
   if (turn === 'compaction') return plan(want, 'compaction');
   if (want !== wanted || !cost.fits(pin)) return plan(want, 'context_fit');
   if (want === pin) return plan(pin, 'same_tier');
-  if (fresh.source === 'override') return plan(want, 'override');
+  // A hold answers before pickTier's overrides, so the override is read on its own: it escalates even during a hold.
+  if (fresh.source === 'override' || fresh.hardOverride) return plan(want, 'override');
   if (turn === 'tool_result') return plan(pin, 'tool_loop');
   if (want === 'efficient' && cost.inputTokens > cost.maxSwitchPrefillTokens) return plan(pin, 'prefill_bound');
   return plan(want, 'user_turn');

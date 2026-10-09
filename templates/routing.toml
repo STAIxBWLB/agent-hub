@@ -61,7 +61,7 @@ budget_paused = "skip_peer"
 [pi]
 dgx_max_context_tokens = 262144
 mlx_max_context_tokens = 16000
-efficient_wait_ms = 500       # hub/auto: a busy MLX slot past this moves the request to dgx/fast (#199)
+# efficient_wait_ms = 500     # opt-in (#199): hub/auto moves to dgx/fast once a busy MLX slot is still busy after this; unmeasured, so off by default
 
 [classes.plan]
 peers = ["claude", "codex"]

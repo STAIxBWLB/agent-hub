@@ -41,7 +41,7 @@ test("#197 stay_switch defaults to shadow and rejects unknown modes and bounds",
   expect(() => loadRouting(write('[pi]\nstay_switch = "enforce"'))).toThrow(/pi\.stay_switch is inside a table/);
   expect(() => loadRouting(write("[classes.implement]\nmax_switch_prefill_tokens = 9"))).toThrow(/classes\.implement\.max_switch_prefill_tokens is inside a table/);
   expect(loadRouting(write("[pi]\nconstructor = 1\ntoString = 2")).stay_switch).toBe("shadow"); // inherited names are not the keys
-  expect(routing.pi.efficient_wait_ms).toBe(500); // #199
+  expect(routing.pi.efficient_wait_ms).toBeUndefined(); // #199: load moves are opt-in
   expect(loadRouting(write("[pi]\nefficient_wait_ms = 0")).pi.efficient_wait_ms).toBe(0);
   expect(() => loadRouting(write("[pi]\nefficient_wait_ms = -1"))).toThrow(/efficient_wait_ms/);
   expect(() => loadRouting(write("[pi]\nefficient_wait_ms = 120000"))).toThrow(/efficient_wait_ms/); // the dispatch's own slot wait gives up at 120 s

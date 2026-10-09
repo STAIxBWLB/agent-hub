@@ -122,3 +122,16 @@ test("turnKind reads what a call answers from its last message", () => {
   expect(kind([{ role: "user", content: "fix it" }, { role: "assistant", content: "", tool_calls: [{ id: "a", function: { name: "bash", arguments: "{}" } }] }, { role: "tool", tool_call_id: "a", content: "ok" }])).toBe("tool_result");
   expect(kind([{ role: "user", content: "This session is being continued from a previous conversation." }])).toBe("compaction");
 });
+
+test("#197 review: a hard override during a stage hold still plans an immediate escalation", () => {
+  const dims = { ...neutral(), severity: 0.7 };
+  const escalated = selectStage(dims, { confidenceThreshold: 0.4 });
+  expect(escalated).toMatchObject({ tier: "capable", source: "dimensions", hardOverride: false });
+  // Enforced, the dimension escalation waits inside the tool loop: the pin stays efficient while the hold runs.
+  expect(planSwitch("efficient", escalated, "tool_result", cost())).toMatchObject({ plan: "stay", reason: "tool_loop" });
+  const repeated = selectStage({ ...neutral(), repeatedFailure: true }, { confidenceThreshold: 0.4 }, escalated.state);
+  expect(repeated).toMatchObject({ tier: "capable", source: "capable_hold", hardOverride: true });
+  expect(planSwitch("efficient", repeated, "tool_result", cost())).toEqual({ plan: "switch", tier: "capable", reason: "override" });
+  const held = selectStage(neutral(), { confidenceThreshold: 0.4 }, escalated.state);
+  expect(planSwitch("efficient", held, "tool_result", cost())).toMatchObject({ plan: "stay", reason: "tool_loop" });
+});

@@ -33,8 +33,8 @@ export interface Routing {
   classes: Partial<Record<TaskClass, ClassPolicy>>;
   signals: { pii_patterns: string[]; long_context_tokens: number };
   constraints: { pii: "local_only" | "off"; long_context: "skip_local" | "off"; budget_paused: "skip_peer" | "off" };
-  /** `efficient_wait_ms`: how long a hub/auto request waits for a busy MLX slot before it moves to dgx/fast (#199). */
-  pi: { dgx_max_context_tokens: number; mlx_max_context_tokens: number; efficient_wait_ms: number };
+  /** `efficient_wait_ms`, opt-in (#199): how long a hub/auto request waits for a busy MLX slot before it moves to dgx/fast; absent, nothing moves for load. */
+  pi: { dgx_max_context_tokens: number; mlx_max_context_tokens: number; efficient_wait_ms?: number };
 }
 
 const TEMPLATE = join(import.meta.dir, "..", "..", "templates", "routing.toml");
@@ -57,10 +57,10 @@ export function loadRouting(cwd: string): Routing {
   for (const [name, policy] of Object.entries(classes)) {
     if (policy?.pi_backend !== undefined && policy.pi_backend !== "dgx" && policy.pi_backend !== "mlx") throw new Error(`routing.toml: [classes.${name}] pi_backend must be "dgx" or "mlx"`);
   }
-  const pi = { dgx_max_context_tokens: 262_144, mlx_max_context_tokens: 16_000, efficient_wait_ms: 500, ...(raw as any).pi };
+  const pi = { dgx_max_context_tokens: 262_144, mlx_max_context_tokens: 16_000, ...(raw as any).pi };
   if (!(Number.isSafeInteger(pi.dgx_max_context_tokens) && pi.dgx_max_context_tokens > 0) || !(Number.isSafeInteger(pi.mlx_max_context_tokens) && pi.mlx_max_context_tokens > 0)) throw new Error("routing.toml: [pi] context limits must be positive integers");
   // A dispatch gives up on a busy MLX slot after 120 s; a longer load wait would never move anything.
-  if (!(Number.isSafeInteger(pi.efficient_wait_ms) && pi.efficient_wait_ms >= 0 && pi.efficient_wait_ms < 120_000)) throw new Error("routing.toml: [pi] efficient_wait_ms must be an integer from 0 to 119999");
+  if (pi.efficient_wait_ms !== undefined && !(Number.isSafeInteger(pi.efficient_wait_ms) && pi.efficient_wait_ms >= 0 && pi.efficient_wait_ms < 120_000)) throw new Error("routing.toml: [pi] efficient_wait_ms must be an integer from 0 to 119999");
   const { stay_switch, max_switch_prefill_tokens } = { ...DEFAULT_STAY_SWITCH, ...(raw as any) };
   // Written after a table header, a top-level key lands in that table and would be ignored without a word.
   const misplaced = (table: unknown, path: string): string | undefined => !table || typeof table !== "object" || Array.isArray(table) ? undefined
