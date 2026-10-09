@@ -538,16 +538,21 @@ export class Tasks {
   private readonly rescreens = new Map<number, number>();
 
   /**
-   * A task whose screen gave no verdict waits as a PII task (#198). While it is still proposed and has no owner, nothing
-   * private was sent anywhere, so the daemon's release timer asks again here: one task per call (the timer runs one at a
-   * time), at most RESCREEN_MAX times each in a hub run. `clear` lifts the pii signal and routes the task as usual (a
-   * named owner is not remembered: routing goes through the class peers), `pii` settles it, another unknown changes only
-   * the record. A task an owner took (`local`) keeps its PII path.
+   * A task whose screen gave no verdict waits as a PII task (#198). While it is proposed and no peer ever owned it,
+   * nothing private was sent anywhere, so the daemon's release timer asks again here: one task per call (the timer runs
+   * one at a time), the least tried first, at most RESCREEN_MAX times each in a hub run; text too long for the screen
+   * never clears. `clear` lifts the pii signal and routes the task as usual (a named owner is not remembered, a reserved
+   * one is offered first as always), `pii` settles it, another unknown changes only the record. A task an owner took
+   * (`local`), even one declined back since, keeps its PII path: its notes, summary and decline reason are not screened.
    */
   async rescreen(): Promise<void> {
     if (!this.screenOn()) return;
-    const waiting = (t: Task) => t.state === "proposed" && !t.owner && t.signals.includes("pii") && !![...t.history].reverse().find((h) => h.event === "screened")?.note?.startsWith("pii: unknown");
-    const task = this.d.board.list("proposed").find((t) => waiting(t) && (this.rescreens.get(t.id) ?? 0) < RESCREEN_MAX);
+    const waiting = (t: Task) => {
+      const last = [...t.history].reverse().find((h) => h.event === "screened")?.note ?? "";
+      return t.state === "proposed" && !t.owner && !t.history.some((h) => h.owner) && t.signals.includes("pii") && last.startsWith("pii: unknown") && last !== "pii: unknown, too long";
+    };
+    const tries = (t: Task) => this.rescreens.get(t.id) ?? 0;
+    const task = this.d.board.list("proposed").filter((t) => waiting(t) && tries(t) < RESCREEN_MAX).sort((a, b) => tries(a) - tries(b))[0];
     if (!task) return;
     this.rescreens.set(task.id, (this.rescreens.get(task.id) ?? 0) + 1);
     const text = screenText(task);

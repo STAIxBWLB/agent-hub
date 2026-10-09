@@ -255,7 +255,7 @@ export async function screenPii(text: string, d: PiiScreenDeps): Promise<PiiVerd
       }
     }
     if (!(await onCampus())) return { label: "unknown", miss: "off campus" };
-    const res = await d.omni.chat({ model: d.fixedModel(), messages, max_tokens: 32 }, { signal: abort.signal, onCampusOnly: true });
+    const res = await d.omni.chat({ model: d.fixedModel(), messages, max_tokens: 32, temperature: 0, reasoning_effort: "none" }, { signal: abort.signal, onCampusOnly: true });
     return parseScreen(res.message.content);
   };
   let timer: ReturnType<typeof setTimeout> | undefined;

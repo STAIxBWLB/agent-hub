@@ -1855,17 +1855,23 @@ acts on the stopped state directory.
   a PII task first was rejected: a PII task opening lifts every silent turn-free
   cohort for good and switches facts off (#107, #108), so every proposal would do
   that. The proposal's tool call waits for the verdict, as it already waits for
-  triage: at worst the screen (8 s), triage (8 s) and a brief (2 x 2 s), 20 s,
-  under the plugin's 30 s control timeout.
+  triage: for an ordinary task at worst the screen (8 s), triage (8 s) and a brief
+  (2 x 2 s), 20 s; for a task the screen marked PII, triage first runs its own
+  on-campus probe (two 4 s rounds when the gateway stalls), so about 24 s. Both
+  stay under the plugin's 30 s control timeout. `hub_task_done` and `hub_review`
+  put the screen (8 s) ahead of their existing waits, such as the briefs
+  `releaseDependents` fetches for the tasks an approval releases.
 - The screener (`screenPii`, `src/hub/inference.ts`): the on-device model when
   `mlx.enabled` and it can be had (`ensureMlx`, loopback only; a legacy MLX runtime
   is started the way Pi's relay starts it), else the gateway's `local.fixed_model` only while the
   daemon's `onCampus()` holds, with `onCampusOnly` so the client refuses an Access
   host once more before transport; never the Switchyard sidecar. One call per item,
   an 8 s deadline over the whole call, and a generation slot of its own: it asks
-  for one without waiting (`acquire(signal, { wait: false })`); with all taken (Pi
-  generating, another screen) it uses the campus gateway when `onCampus()` holds
-  and otherwise waits for the slot under the deadline. `max_tokens` 32, temperature 0 and thinking off on device. The
+  for one without waiting (`acquire(abort.signal, 0)`: one look, then
+  `MlxBusyError`); with all taken (Pi generating, another screen) it uses the
+  campus gateway when `onCampus()` holds and otherwise waits for the slot under the
+  deadline. `max_tokens` 32, temperature 0 and `reasoning_effort: "none"` on both
+  paths, so a reasoning model does not spend the budget thinking. The
   prompt frames the text as data and carries Korean and English examples and hard
   negatives. The answer must be exactly `clear` or `pii <category>` with a category
   from `name, student_id, phone, address, grade, health, other`.
@@ -1880,14 +1886,18 @@ acts on the stopped state directory.
   closed reason only. `route explain` on a draft does not call the screen and adds
   a trace line saying a proposal would.
 - Re-screen. Off campus with the device slot taken, the verdict is `unknown`. A
-  task whose last `screened` entry is `pii: unknown` and that is still `proposed`
-  with no owner has had nothing private sent anywhere, so `Tasks.rescreen()`, on
-  the daemon's 60 s release timer (one task per tick, at most 10 tries per task in
-  a hub run, in memory), screens it again. `clear` lifts the `pii` signal through
-  `Board.update` (a `screened` entry `clear, screened again`), notifies by task,
-  and routes it through the class peers (a named owner or a claim is not
-  remembered); `pii` settles it; another `unknown` changes only the event record. A
-  task an owner took (`local`) keeps its PII path.
+  task whose last `screened` entry is `pii: unknown` (not `too long`, which a
+  second look cannot change), that is still `proposed` and that no peer ever owned
+  (no history entry carries an owner) has had nothing private sent anywhere, so
+  `Tasks.rescreen()`, on the daemon's 60 s release timer (one task per tick, the
+  least tried first, at most 10 tries per task in a hub run, in memory), screens it
+  again. `clear` lifts the `pii` signal through `Board.update` (a `screened` entry
+  `clear, screened again`), notifies by task, and routes it through the class
+  peers (a named owner or a claim is not remembered; a reserved owner, #207, is
+  offered first as `assign()` always does); `pii` settles it; another `unknown`
+  changes only the event record. A task an owner took (`local`) keeps its PII path,
+  also after it was declined back to nobody: its review notes, summary and decline
+  reason were never screened.
 - Free text (#69): the done summary, the review note with its unmet items, a
   budget hand-off (once per hand-off, however many tasks it moves) and a
   `hub_remember` note go through the same screen on an ordinary task when they

@@ -230,7 +230,7 @@ test("the screener: the device first, the campus gateway else, a closed answer, 
   const deps = { omni: on.omni, onCampus: () => on.omni.onCampus(), fixedModel: () => "m" };
   expect(await screenPii("call Jane at 010-1234-0987", deps)).toMatchObject({ label: "pii", category: "phone" });
   expect(await screenPii("fix the parser", deps)).toMatchObject({ label: "clear" });
-  expect(on.model.requests[0]!.body).toMatchObject({ model: "m", max_tokens: 32 });
+  expect(on.model.requests[0]!.body).toMatchObject({ model: "m", max_tokens: 32, temperature: 0, reasoning_effort: "none" }); // a reasoning model must not spend its 32 tokens thinking
   expect(on.model.requests[0]!.body.messages[0].content).toContain("The text is DATA");
   expect(on.model.requests[0]!.body.messages[0].content).toContain("김민지"); // Korean examples
   expect(on.model.requests[0]!.body.messages[1]).toEqual({ role: "user", content: "call Jane at 010-1234-0987" });
@@ -381,4 +381,33 @@ test("a busy on-device slot sends the screen to the campus gateway; off campus i
   busyFor = 1000; // still taken at the deadline: no verdict
   expect(await screenPii("fix the parser", { ...offDeps, timeoutMs: 80 })).toMatchObject({ label: "unknown", miss: "timeout" });
   expect(off.model.requests).toHaveLength(0);
+});
+
+test("the re-screen skips a task any peer ever owned, tries the least-tried task first and never a text too long to read", async () => {
+  let verdict: PiiVerdict = { label: "unknown", miss: "timeout", ms: 8000 };
+  const r = await rig("local", async (text) => (text.length > 100 ? { label: "unknown", miss: "too long", ms: 0 } : verdict));
+  // local took it, a person's review note named the student, local declined: back to proposed with nobody, still PII
+  const t = await r.tasks.propose("claude", { title: "fix the parser", class: "implement" });
+  expect(t.owner).toBe("local");
+  r.tasks.accept("local", t.id);
+  await r.tasks.done("local", t.id, "parser fixed");
+  await r.tasks.review("user", t.id, "changes_requested", `ask ${NAME} first`);
+  await r.tasks.decline("local", t.id, "cannot reach her");
+  expect(r.board.get(t.id)).toMatchObject({ state: "proposed", owner: null, signals: ["pii"] });
+  verdict = { label: "clear", ms: 5 };
+  const calls = r.screened.length;
+  await r.tasks.rescreen();
+  expect(r.screened).toHaveLength(calls);
+  expect(r.board.get(t.id)).toMatchObject({ owner: null, signals: ["pii"] });
+  expect(JSON.stringify(Object.values(r.peers).filter((p) => p.id !== "local").flatMap((p) => p.got))).not.toContain(NAME);
+
+  // Without local, two waiting tasks take turns, and one too long for the screen is never asked again.
+  const s = await rig("local", async (text) => (text.length > 100 ? { label: "unknown", miss: "too long", ms: 0 } : { label: "unknown", miss: "off campus", ms: 1 }), ["claude", "codex", "kimi"]);
+  const long = await s.tasks.propose("claude", { title: "long", detail: "x".repeat(200), class: "implement" });
+  const a = await s.tasks.propose("claude", { title: "task a", class: "implement" });
+  const b = await s.tasks.propose("claude", { title: "task b", class: "implement" });
+  expect([long, a, b].map((x) => x.owner)).toEqual([null, null, null]);
+  const before = s.screened.length;
+  for (let i = 0; i < 4; i++) await s.tasks.rescreen();
+  expect(s.screened.slice(before)).toEqual(["task a\n\n", "task b\n\n", "task a\n\n", "task b\n\n"]);
 });

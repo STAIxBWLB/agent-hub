@@ -1,5 +1,5 @@
 {
-  "about": "Synthetic calibration set for the PII screen (issue #198). Every name, number, account and address is invented for this file; none comes from real records, and account, passport and resident numbers have impossible lengths or dates so they cannot match a real one. Positives name or number a person with information about them; hard negatives look personal (roles, placeholders, field names, identifiers, ports, codes) but identify nobody. Read by scripts/pii-screen-eval.ts; never by the hermetic tests.",
+  "about": "Synthetic calibration set for the PII screen (issue #198). Every name, number, account and address is invented for this file; none comes from real records, and account, passport and resident numbers have impossible lengths or dates so they cannot match a real one. Positives name or number a person with information about them; hard negatives look personal (roles, placeholders, field names, identifiers, ports, codes) but identify nobody. Read by scripts/pii-screen-eval.ts, which sends it to a model; test/pii-screen.test.ts checks its shape and never sends it to one.",
   "items": [
     { "id": "p01", "lang": "ko", "pii": true, "category": "name", "text": "이도윤 교수님 연구실 출입 권한 추가 요청 처리" },
     { "id": "p02", "lang": "ko", "pii": true, "category": "student_id", "text": "학번 2022105537 학생의 수강신청 오류 확인" },
