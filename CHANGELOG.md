@@ -4,7 +4,10 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.12.19
+
 - Pi's write, edit, bash and git write approvals offer `Always allow <tool> until Pi restarts`: later calls of that tool by the running Pi skip the prompt, still under the path guard and sandbox. The grant is in memory only, logged by tool name, and the dashboard can still only deny (#209).
+- Control protocol stays 15 and events schema stays 1; a running 0.12.18 hub upgrades with the 0.12.19 coordinator.
 
 ## 0.12.18
 
