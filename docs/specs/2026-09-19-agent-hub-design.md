@@ -281,8 +281,9 @@ peer. Peer ids claimed over the control WS must not be `user` or a hub-managed a
 - PII (amended in M4): a task matching `signals.pii_patterns` is owned by `local` or by
   nobody; its envelopes are `private` (console tail and `hub.log` print a stub), lists show
   `[pii]` to everyone but `local` inside a PII turn; `ahub task show` is the one place
-  the console reads it. The reviewer is the console user; `local` answers such a turn to the console only, keeps it out
-  of its history, refuses it when the only gateway is off campus (Cloudflare Access), and
+  the console reads it. The reviewer is the console user; `local` answers such a turn
+  to the console only, keeps it out of its history, refuses it when the only gateway
+  is off campus (Cloudflare Access), and
   nothing reaches claude-mem (no brief, no note, no capture), because claude-mem's observer is
   a cloud model (verified: `/api/health` reports `ai.provider: claude`).
 

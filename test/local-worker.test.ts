@@ -570,3 +570,25 @@ test("daemon local board lists expose PII rows only in a PII turn, never ordinar
   expect(mem.calls.filter((c) => c.method === "POST")).toHaveLength(before);
   expect(JSON.stringify(mem.calls)).not.toContain(secret);
 });
+
+
+test("refused hub_send text is not captured while ordinary file tools still are", async () => {
+  const mem = startFakeMemWorker();
+  cleanup.push(mem.stop);
+  const secret = "refused patient 900101-1234567";
+  const ctx = await setup((body) => body.messages.at(-1)?.role === "tool"
+    ? { content: "finished" }
+    : { tool_calls: [toolCall("hub_send", { text: secret, to: ["claude"] }), toolCall("read", { path: "a.txt" })] },
+    { capture: new Capture(new MemoryClient(mem.url), { project: "p", cwd: "/p", skip: [] }) });
+  const deliver = ctx.peer.onMessage!;
+  ctx.peer.onMessage = (text, opts) => text === secret ? "rate limited: retry later" : deliver(text, opts);
+  ctx.bus.publish(newEnvelope("user", "work", { priority: "important" }));
+  await until(() => ctx.said.length === 1, "answer after refused send");
+  await ctx.peer.stop();
+  expect(ctx.model.requests.at(-1)!.body.messages.some((m: { role: string; content: string }) => m.role === "tool" && m.content === "not sent: rate limited: retry later")).toBe(true);
+  expect(ctx.said[0]!.body).toBe("finished");
+  const observations = mem.calls.filter((c) => c.path.endsWith("/observations"));
+  expect(observations).toHaveLength(1);
+  expect(observations[0]!.body).toMatchObject({ tool_name: "read" });
+  expect(JSON.stringify(mem.calls)).not.toContain(secret);
+});
