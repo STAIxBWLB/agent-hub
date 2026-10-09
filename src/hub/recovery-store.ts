@@ -82,7 +82,7 @@ export function coordinatorCurrent(sourceRoot: string): boolean {
   try { return readFileSync(join(sourceRoot, "src/cli/upgrade.ts"), "utf8").includes("export async function disposeRecovery"); } catch { return false; }
 }
 
-/** What a lifecycle command refused by the lock says: the operation's own status and resume commands. */
+/** What a lifecycle command refused by the lock says: the operation's own status command, which lists what to do next. */
 export function activeOperation(owner: string, home = hubHome()): string {
   let op: { id: string; sourceRoot?: string } = { id: owner };
   try { op = { id: owner, sourceRoot: readOperation<{ sourceRoot?: string }>(owner, home).sourceRoot }; } catch { /* no readable receipt: the bare commands are all there is */ }

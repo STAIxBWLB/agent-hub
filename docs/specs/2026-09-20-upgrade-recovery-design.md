@@ -319,10 +319,13 @@ target without waivers) keeps its choices. `--fresh-session` is neither offered
 nor accepted when the target cannot read recovery waivers. A runner record that
 cannot be read shows as `unknown` in `status`, never as no runner; `status` and every error that lists choices build them with one function
 (`nextActions`), in this order: resume (which also launches a failed peer
-again), abort where it can succeed, a fresh session for each failed Codex or
+again), unless it can never get past (a source replaced by another instance, or
+a prepared source of a #215 coordinator that stopped with no commit request),
+abort where it can succeed, a fresh session for each failed Codex or
 Claude restoration, stop-and-archive. An error gives only its own step (the
-last column below) and ends with that list (`next actions: ...`), so it names
-abort exactly when `abortRefusal` allows it, the same as `status`, and never
+last column below) and the runner ends it with that list (`next actions: ...`),
+read from the same sources as `status`, so it names abort exactly when
+`abortRefusal` allows it, the same as `status`, and never
 "make a new plan" alone: this operation's lock refuses a new one. `<c>` is the operation's own coordinator, printed in full as
 `bun <preserved source>/src/cli/main.js`: during an upgrade the global `ahub`
 may still be the older release, whose `recovery` lacks these commands.
@@ -349,7 +352,10 @@ target reads waivers is one check, used by staging, restore, `next` and dispose.
 inventory never shows a terminal as gone. While a stop-and-archive is recorded,
 `resume` is refused by the running release, whichever coordinator started the
 operation, and the runner keeps the disposition's own error. Abort and `next` decide with one predicate
-(`abortRefusal`); `status` reads the sources when abort could apply.
+(`abortRefusal`). `status`, abort and the runner's errors read the same live
+state: every source not yet stopped by the operation (all of them before any
+effect). A manifest whose pid no longer exists reads as stopped, whatever
+protocol it names; probing it would read unavailable forever.
 An attached session is the target's report of that peer online with a thread
 (Codex) or session (Claude, Pi) id.
 
@@ -377,7 +383,7 @@ An attached session is the target's report of that peer online with a thread
 | any, before close or create | Codex store unreadable | blocks, nothing closed or created | dispose | `make <store> readable, then <c> recovery resume <id>` |
 | `restored:<peer>` absent | the planned session attached | recorded as restored | none | none |
 | `restored:<peer>` absent | another session attached, or a recorded launcher live | blocks, no terminal created | dispose | `end that <peer> session and close its terminal` (or `wait until it attaches, or end it and close terminal <handle>`), `then <c> recovery resume <id>` |
-| any receipt being settled or launched | target hub not running as the expected instance (unavailable, stopped, another instance), or a launcher that cannot be read | blocks; no receipt changes, nothing created | dispose | `once the target answers` (or wait for / end the launcher), `<c> recovery resume <id>` |
+| any receipt being settled or launched | target hub not running as the expected instance (unavailable, stopped, another instance), or a launcher or launcher record file that cannot be read | blocks; no receipt changes, nothing created | dispose | `wait until the target answers` (or wait for / end the launcher, or inspect the record file and move it aside), `then <c> recovery resume <id>` |
 | `fresh` recorded for a peer | none live | launches it without a resume id, records the new id | dispose | none |
 | disposition recorded, not finished | any | refused | stop-and-archive only | `rerun <c> recovery dispose <id> --stop-and-archive --reason <text> once its runtimes have settled` |
 | `completed` or `cancelled` | any | nothing to do | none | none |

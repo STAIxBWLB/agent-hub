@@ -2,11 +2,11 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { abortRecovery, abortRefusal, createOperation, disposeRecovery, nextActions, planFingerprint, publicOperation, recoveryCommand, registeredProjects, runRecovery, type Inspection, type RecoveryDriver, type UpgradePlan } from "../src/cli/upgrade.ts";
+import { abortRecovery, abortRefusal, createOperation, disposeRecovery, liveSources, nextActions, planFingerprint, publicOperation, recoveryCommand, registeredProjects, runRecovery, type Inspection, type RecoveryDriver, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { acquireRecoveryLock, activeOperation, claimRunner, readOperation, recoveryLock, recoveryRunner, releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
 import { exactVersion, packageDigest, registryRelease } from "../src/cli/recovery-package.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
-import { makeRecoveryDriver, PACKAGE_ROOT } from "../src/cli/upgrade-runtime.ts";
+import { inspectRecovery, makeRecoveryDriver, PACKAGE_ROOT } from "../src/cli/upgrade-runtime.ts";
 
 const homes: string[] = [];
 // The fixture preserves this package as its coordinator, which has every recovery command (#215).
@@ -707,13 +707,14 @@ test("a sent commit stays on record across a failing resume, so abort is never o
 });
 
 // #215 review: "make a new plan" is impossible while this operation holds the lock.
+// Resume can never get past a replaced source, so it is not offered either.
 test("a changed untouched source names abort, and stop-and-archive once another project has effects", async () => {
   const f = fixture();
   f.states.get("alpha")!.instanceId = "replacement";
-  expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toBe(`alpha: source runtime changed; next actions: ${C} resume ${f.operation.id} | ${C} abort ${f.operation.id} | ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
+  expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toBe(`alpha: source runtime changed; next actions: ${C} abort ${f.operation.id} | ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
   f.operation.projects[1]!.phase = "verified";
   writeOperation(f.operation.id, f.operation, f.home);
-  expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toBe(`alpha: source runtime changed; next actions: ${C} resume ${f.operation.id} | ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
+  expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toBe(`alpha: source runtime changed; next actions: ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
 });
 
 // #215 review: a planned fresh start has nothing to lose; a fresh-session choice would record a loss that is not one.
@@ -746,7 +747,8 @@ test("a stopped prepared source with no commit request stays prepared and names 
   f.states.set("alpha", { state: "stopped", peers: [], blockers: [] });
   const blocked = await runRecovery(f.operation.id, f.driver, f.home);
   expect(blocked.projects[0]!.phase).toBe("prepared");
-  expect(blocked.error).toContain(`alpha: the source stopped while prepared and no commit was requested, so there is nothing to restore; next actions: ${C} resume ${f.operation.id} | ${C} abort ${f.operation.id}`);
+  // Resume could never get past it, so it is not offered.
+  expect(blocked.error).toBe(`alpha: the source stopped while prepared and no commit was requested, so there is nothing to restore; next actions: ${C} abort ${f.operation.id} | ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
   expect(f.calls.some((call) => call.startsWith("start:") || call.startsWith("commit:"))).toBe(false);
   await abortRecovery(f.operation.id, f.driver, f.home);
   expect((readOperation(f.operation.id, f.home) as { phase: string }).phase).toBe("cancelled");
@@ -791,4 +793,47 @@ test("--fresh-session is decided per project: a planned fresh start elsewhere do
   const op = await disposeRecovery(f.operation.id, { fresh: "codex" }, "beta's thread is gone", f.driver, f.home);
   expect(op.projects[0]!.fresh).toBeUndefined();
   expect(op.projects[1]!.fresh?.codex).toMatchObject({ lost: "t-beta" });
+});
+
+// #215 review: with no effects abort can apply, so the runner's error reads every source as status does. Alpha is
+// prepared (its hold may stand), beta was replaced: reading beta alone would leave out the abort status offers.
+test("a runner error with no effects reads every source, so its choices are status's", async () => {
+  const f = fixture();
+  f.operation.projects[0]!.phase = "prepared";
+  writeOperation(f.operation.id, f.operation, f.home);
+  f.states.get("beta")!.instanceId = "replacement";
+  const result = await runRecovery(f.operation.id, f.driver, f.home);
+  const status = publicOperation(result, undefined, await liveSources(result, f.driver.inspect)).next;
+  expect(status).toEqual([`${C} abort ${f.operation.id}`, `${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`]); // no resume past a replaced source
+  expect(result.error).toBe(`beta: source runtime changed; next actions: ${status.join(" | ")}`);
+});
+
+// #215 review: a crashed daemon's manifest stays on disk. Read by the real inspection it is stopped, not unavailable
+// forever, so the stopped-with-no-commit row is reachable: abort cancels it, and with effects stop-and-archive ends it.
+test("a crashed prepared source read by the real inspection can be aborted or stopped and archived", async () => {
+  const crash = (f: ReturnType<typeof fixture>) => {
+    const root = mkdtempSync(join(tmpdir(), "ahub-crashed-source-")); homes.push(root);
+    writeFileSync(join(root, "control-token"), "token\n");
+    writeFileSync(join(root, "status.json"), JSON.stringify({ controlPort: 1, protocol: PROTOCOL, projectId: "alpha", instanceId: "old-alpha", cwd: root, pid: Bun.spawnSync(["true"]).pid }));
+    const fake = f.driver.inspect;
+    f.driver.inspect = (p) => p.id === "alpha" ? inspectRecovery({ ...p, root, stateDir: root }) : fake(p);
+  };
+  const f = fixture();
+  crash(f);
+  f.operation.projects[0]!.phase = "prepared";
+  writeOperation(f.operation.id, f.operation, f.home);
+  const blocked = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(blocked.error).toBe(`alpha: the source stopped while prepared and no commit was requested, so there is nothing to restore; next actions: ${C} abort ${f.operation.id} | ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
+  await abortRecovery(f.operation.id, f.driver, f.home);
+  expect((readOperation(f.operation.id, f.home) as { phase: string }).phase).toBe("cancelled");
+  expect(recoveryLock(f.home)).toBeUndefined();
+
+  const g = fixture();
+  crash(g);
+  Object.assign(g.operation.projects[0]!, { phase: "prepared", terminals: { "closed:claude": true } });
+  writeOperation(g.operation.id, g.operation, g.home);
+  const op = await disposeRecovery(g.operation.id, { stop: true }, "source crashed", g.driver, g.home);
+  expect(op.phase).toBe("cancelled");
+  expect(op.disposition?.projects.alpha).toBe("stopped");
+  expect(recoveryLock(g.home)).toBeUndefined();
 });

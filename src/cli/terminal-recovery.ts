@@ -268,7 +268,7 @@ function defaultRunner(executable: string): CommandRunner {
 
 const RECORD_FILE = "terminal-recovery.json";
 
-function recordPath(stateDir: string): string {
+export function recordPath(stateDir: string): string {
   return join(stateDir, RECORD_FILE);
 }
 

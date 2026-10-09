@@ -1143,7 +1143,11 @@ the operation now (`running` with its pid, or `none`; `stale` marks a receipt
 that says running with no runner behind it); each project's phase and effect
 receipts (`closed:<peer>`, `restored:<peer>` as `done`, `pending` or `failed`);
 whether the shared plugin and the global CLI were installed; and `next`, the
-commands that apply now. It shows no task or message text. `resume` does not
+commands that apply now, read from every source the operation has not stopped
+yet (every error of `resume` ends with the same list). `resume` is left out
+when it can never get past: a source replaced by another instance, or a
+prepared source that stopped before any commit request. It shows no task or
+message text. `resume` does not
 start a second runner while one is alive. Every `next` entry and error names the
 operation's own coordinator, `bun <preserved source>/src/cli/main.js recovery
 ...`: in the middle of an upgrade the global `ahub` may still be the older
@@ -1204,8 +1208,9 @@ next actions").
   and no second terminal is opened while one may run. A target hub that cannot
   be read counts as unknown, never as "nothing attached", and so does a launcher
   record file that cannot be read: `resume` then stops without changing any
-  receipt. `resume` is refused while a stop-and-archive is partway. A lifecycle command refused by the lock names
-  the operation's own `status` and `resume` commands.
+  receipt; when the record file is what cannot be read, inspect it and move it
+  aside, then `resume`. `resume` is refused while a stop-and-archive is partway. A lifecycle command refused by the lock names
+  the operation's own `status` command, which lists what to do next.
 - `ahub recovery dispose <operation-id> --fresh-session <peer> --reason <text>`
   applies to a Codex or Claude peer whose restoration failed (Pi is refused: a
   restored hub resumes Pi's recorded session). It records the lost session or

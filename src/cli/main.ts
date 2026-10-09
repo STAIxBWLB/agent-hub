@@ -24,7 +24,7 @@ import { freeText } from "./free-text.ts";
 import { createInterface } from "node:readline/promises";
 import { activeOperation, assertLifecycleAvailable, readOperation, recoveryLock, recoveryRunner } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
-import { abortRecovery, createOperation, disposeRecovery, hasEffects, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
+import { abortRecovery, createOperation, disposeRecovery, liveSources, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
 import { makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { recordTerminalLaunch } from "./terminal-recovery.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
@@ -373,10 +373,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     const operation = readOperation<RecoveryOperation>(id);
     const runner = recoveryRunner(id);
     if (action === "status") {
-      // #215: abort is offered by abort's own predicate, which needs the sources' live state when it could apply.
-      const quiet = !runner && !operation.disposition && !hasEffects(operation) && !["completed", "cancelled"].includes(operation.phase);
-      const driver = makeRecoveryDriver();
-      const live = quiet ? Object.fromEntries(await Promise.all(operation.plan.projects.map(async (p) => [p.project.id, await driver.inspect(p.project).catch(() => undefined)] as const))) : {};
+      // #215: abort and resume are offered by what the open sources show, read as the runner's errors read them.
+      const live = runner ? {} : await liveSources(operation, makeRecoveryDriver().inspect);
       console.log(JSON.stringify(publicOperation(operation, runner, live), null, 2));
     }
     else if (action === "abort") { await abortRecovery(id, makeRecoveryDriver()); console.log("preflight cancelled; no committed transition was rolled back"); }
