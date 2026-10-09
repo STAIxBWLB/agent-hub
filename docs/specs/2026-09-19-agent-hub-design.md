@@ -1956,3 +1956,19 @@ acts on the stopped state directory.
   before any measurement: the model itself labels at least 90% of the positives
   `pii` (an unknown verdict counts as a miss). The report goes to
   `docs/verification/`; the script exits 1 under the bound.
+
+## Amendment: research records (issue #247)
+
+- Opt-in per project (`research.enabled`, off by default). When a task is approved, the daemon builds its record from
+  the project's `events.jsonl` with the same function `ahub research backfill` uses (`taskRecords` in
+  `src/hub/research.ts`), so live and backfilled records agree, and appends it to the machine-wide store
+  `~/.agenthub/research/<sha256(project id)[0:16]>.jsonl`. Records hold ids, states, counts, tokens and times only,
+  because the events do; schema and fields: [research](../research.md).
+- The board has no terminal state but `approved`, so records are written at approval only; a task approved again
+  gets a newer revision, and a person's later verdict (`ahub task label`, including `abandoned`) is a separate label
+  record. Measures (success, first pass, rework, check failures, tokens and wall time per task) are derived when
+  reported, never stored.
+- Recording never blocks or fails the task flow: the writer runs after the board event, and a failure is one
+  hub.log line per run. ponytail: it reads the whole events file at each approval; an incremental per-task index
+  if that file grows large.
+- Agents may read the measures and export; backfill and labels are a person's (identity gate).

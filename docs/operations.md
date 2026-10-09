@@ -520,6 +520,20 @@ turn, otherwise the peer's only `in_progress` task. Everything else is reported 
 unattributed, and records from before 0.12.18 as a separate bucket; neither is
 redistributed (rules: [events](events.md#per-task-usage-reports)).
 
+## Research records
+
+With `"research": { "enabled": true }` in `.agenthub/config.json` (off by default), the hub keeps one record per
+approved task in `~/.agenthub/research/`, shared by every project that opts in: outcome, review rounds, rework, failed
+checks, tokens and time per peer and model, never task or message text ([schema](research.md)).
+
+```bash
+ahub research --since 30d          # success, first-pass, rework and check-failure rates; tokens and wall time per task
+ahub research --all --json         # every opted-in project on this machine
+ahub research export --format csv  # the records, for your own analysis
+ahub research backfill             # build this project's records once from events.jsonl
+ahub task label 12 reverted        # a later verdict (ok, regressed, reverted, incomplete, wrong, abandoned)
+```
+
 ## Turns and undo
 
 In a git work tree the hub snapshots the project's tracked and unignored files (the
