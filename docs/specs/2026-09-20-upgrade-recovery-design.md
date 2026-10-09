@@ -191,3 +191,79 @@ The channel's hello carries no launch id, so a plain `claude` that took the peer
 from a live managed session is classified as managed. Telling them apart needs the
 launch id at hello, which is a protocol change and is not claimed here. A live
 upgrade with an unmanaged session attached has not been run.
+
+### Partial operations (#215)
+
+Amended 2026-10-09, before implementation.
+
+Expired preparation. The source hold lapses after ten minutes. When a project is
+still `prepared` (terminal effects may already be recorded) and its hold is gone,
+resume re-prepares the same source instead of reporting "source is no longer
+prepared". The running daemon must be the planned source instance: a replaced
+daemon or a source held by another operation is refused, with nothing prepared,
+closed or stopped. The coordinator prepares again under the same operation id,
+waits for readiness within the preparation bound (on timeout it aborts only its
+own hold) and checks the roster again. A peer whose terminal this operation
+already closed must stay detached; every other peer must keep its planned
+conversation. Effect receipts are never reset, so no terminal is closed twice,
+and the exclusive runner claim and instance fencing are unchanged. The
+re-prepared source records a closed peer as offline, so the target daemon does
+not require that peer itself; the coordinator still requires every originally
+attached peer back before release. A roster change while effects are recorded
+names the peer and the choices below instead of asking for a new plan.
+
+Native resume viability. A Codex thread counts as resumable only when a rollout
+file naming it exists under `sessions/` of the store its restoration uses (the
+launcher's captured `CODEX_HOME`, else `~/.codex`); an app-server thread id
+alone proves nothing. The plan blocks a Codex peer without one, the coordinator
+checks again before closing its terminal (closing nothing when it fails) and
+before creating the replacement. A replacement launcher is awaited in 5-second
+slices of Orca's `tui-idle` wait; between slices `terminal wait --for exit`
+is asked, so a launcher that exited is recognized within one slice instead of
+after the 10-minute readiness bound. Such a launch, or a thread found not
+resumable before the launch, is receipted `restored:<peer>` = `failed` and never
+counts as restored. Claude's zero-turn rule is unchanged; Pi resume viability is
+not checked.
+
+Failed restoration. The operation blocks naming the peer, its session or thread
+id and the choices. `resume` launches a failed peer again once its cause is
+fixed; a thread that is still not resumable fails again with the same choices.
+
+Status. `ahub recovery status <id>` reports the receipt (phase, step, update
+time, error); whether a runner process holds the operation now (`runner.state`
+`running` with its pid, or `none`); `stale` when the receipt says `running` but
+no runner holds it; each project's phase and effect receipts (`closed:<peer>`,
+`restored:<peer>` as `done`, `pending` or `failed`); whether the shared plugin
+and the global CLI were installed; any lost continuity and disposition; and
+`next`, the commands that apply now. It never contains task or message text.
+`resume` does not start a second runner while one is alive.
+
+Disposition. Two human-only choices, each with a required `--reason`, run from
+an ordinary terminal (agent shells are refused by the CLI identity gate), claim
+the runner (refusing while one is alive) and append to the receipt's audit:
+
+- `ahub recovery dispose <id> --fresh-session <peer> --reason <text>` applies
+  only to a peer whose restoration is receipted `failed`. Per affected project
+  it records the lost session or thread id (`fresh`) and schedules `resume`,
+  which writes an operation-fenced waiver so the restored daemon accepts a new
+  session for that peer, launches the peer without a resume id in a new
+  terminal, records the id the daemon then reports, and verifies everything
+  else as before. The operation may then complete; its status keeps the lost
+  continuity.
+- `ahub recovery dispose <id> --stop-and-archive --reason <text>` abandons the
+  operation. It inspects every project before acting; a runtime that is neither
+  running nor stopped refuses the whole disposition. A source this operation
+  holds and has not committed gets its hold aborted and keeps running. A target
+  this operation started and has not released is stopped through the lifecycle
+  stop, which verifies its instance and waits until its manifest and registry
+  claim are gone, and is then inspected again. A daemon this operation does not
+  own, or one already released, is left running. A stopped project's committed
+  snapshot of this operation moves to `restart.abandoned.<hash>.json`, which is
+  never replayed, so an ordinary `up` works again. Only then is the operation
+  recorded `cancelled` with its disposition (per-project outcome, plugin and CLI
+  state) and the lock released. It is never recorded as completed, the global
+  CLI is not promoted, and terminals it closed stay closed. A project whose
+  target ran is started again with the target's CLI. The archived reset proposed
+  in #214 can follow: no lock or replayable snapshot is left in its way.
+- `abort` stays the escape for a preflight without effects; its refusal names
+  the disposition.
