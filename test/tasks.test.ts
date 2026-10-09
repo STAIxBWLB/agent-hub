@@ -902,6 +902,17 @@ test("a reserved owner that is offline or paused is passed over with a notice; a
   }
 });
 
+test("a decline never hands a reserved task straight back to the owner it was declined for, the console's included", async () => {
+  const { tasks, board, notices } = await setup();
+  const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+  const c = await tasks.propose("claude", { title: "client", class: "implement", owner: "codex", after: [a.id] });
+  await approve(tasks, board, a.id);
+  expect(board.get(c.id)!.owner).toBe("codex");
+  const moved = await tasks.decline(USER, c.id, "not this one");
+  expect(moved).toMatchObject({ owner: "local", reserved: "codex" });
+  expect(notices).toContain(`task #${c.id} client: its reserved owner codex is passed over (excluded (declined or replaced)); routing proceeds`);
+});
+
 test("assigning a waiting task reserves it for that peer, and the release sweep offers it to them", async () => {
   const { tasks, board, peers } = await setup();
   const a = await tasks.propose("claude", { title: "schema", class: "implement" });

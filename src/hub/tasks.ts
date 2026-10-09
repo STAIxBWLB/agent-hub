@@ -909,7 +909,8 @@ export class Tasks {
     this.mine(task, by, "owner");
     const back = this.d.board.update(task.id, by, "declined", task.state === "in_progress" ? { state: "proposed" } : {}, reason);
     this.d.notify(`task ${this.publicTitle(back)} declined by ${by}${reason && !this.isPii(back) ? `: ${reason}` : ""}`);
-    return this.assignOwner(back, HUB, { event: "reassigned", reason: "declined", clearOnFail: true });
+    // The owner it is declined for is out too, also when the console declines for it: no route (a reservation, #207) hands it straight back.
+    return this.assignOwner(back, HUB, { event: "reassigned", reason: "declined", clearOnFail: true, exclude: task.owner ? [task.owner] : [] });
   }
 
   /** Tasks whose check is queued or running, and the owner it was started for. */
