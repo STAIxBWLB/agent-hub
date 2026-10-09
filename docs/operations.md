@@ -14,8 +14,8 @@ the terminal width, read as at least 80 and at most 100 columns.
 Help uses the console palette: section headings bold cyan, `ahub <command>` words
 cyan, arguments and descriptions the terminal's default foreground. It has no
 `--color` flag: color is on only when standard output is a terminal, `TERM` is
-not `dumb` and `NO_COLOR` is empty or absent. Pipes and redirects get the same
-text without escape sequences.
+not `dumb` and `NO_COLOR` is empty or absent. Pipes and redirects get plain text
+without escape sequences, laid out for 80 columns.
 
 ## Operator console and panels
 

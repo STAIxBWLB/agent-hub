@@ -992,7 +992,7 @@ async function runConductorCommand(): Promise<void> {
   }
   console.log(await taskOp(op, input));
 }
-const run = identity.role === "tools" && commandAccess === "conductor" ? runConductorCommand : commands[cmd] ?? (() => fail(`unknown command "${cmd}"; run ahub help`));
+const run = identity.role === "tools" && commandAccess === "conductor" ? runConductorCommand : (Object.hasOwn(commands, cmd) ? commands[cmd] : undefined) ?? (() => fail(`unknown command "${cmd}"; run ahub help`));
 try {
   await run();
 } catch (e) {

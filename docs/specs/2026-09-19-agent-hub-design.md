@@ -1377,7 +1377,10 @@ checks even for redirected stream output, without enabling panels or raw mode;
 never disables styling. Invalid values fail with usage text before connection.
 Plain `renderConsole` remains available, while `renderConsoleLines` exposes
 semantic spans. Geometry is computed from sanitized plain Unicode text before
-painting. `paint` sanitizes every span, inserts only fixed palette SGR sequences
+painting. Wrapping breaks at whitespace and splits only a word longer than the
+rest of the line; a wrapped line's continuations start four columns deeper than
+its source line (capped at half the width), so wrapped peer text in the stream
+never starts at a column where hub-written lines start (#212). `paint` sanitizes every span, inserts only fixed palette SGR sequences
 and resets each styled span. Interactive exits, signals, disconnect and errors
 retain the console restoration sequence. No new dependencies, protocol changes,
 polling or redraw triggers are added. Tail, logs and machine-readable output
