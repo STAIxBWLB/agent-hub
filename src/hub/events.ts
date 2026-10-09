@@ -27,6 +27,7 @@ export type HubEvent =
   | { type: "split"; task: number; where?: "routing" | "cohort"; verdict: "split" | "single" | "unknown"; single?: string; splitS?: number; singleS?: number; reason?: string; trace?: string[] }
   | { type: "state"; peer: string; state: string }
   | { type: "turn_start"; peer: string; turn: string }
+  | { type: "native_thread"; peer: string; thread: string; fresh: boolean }
   | ({ type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number } & Partial<TaskAttribution>)
   | { type: "native_turn_end"; peer: string; id?: string }
   | { type: "conduct"; peer: string; action: string; task?: number; target?: string }

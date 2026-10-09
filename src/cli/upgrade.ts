@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
-import { acquireRecoveryLock, claimRunner, readOperation, recoveryLock, releaseRecoveryLock, writeOperation } from "../hub/recovery-store.ts";
+import { acquireRecoveryLock, claimRunner, coordinatorCurrent, readOperation, recoveryCommand, recoveryLock, releaseRecoveryLock, writeOperation } from "../hub/recovery-store.ts";
 
 export interface RecoveryPeer {
   id: string;
@@ -22,12 +22,18 @@ export interface Inspection {
   peers: RecoveryPeer[];
   recovery?: { operationId?: string; phase?: string; ready?: boolean };
   blockers: string[];
+  /** #215: for a stopped runtime, the operation whose committed restart snapshot its state dir holds (unreleased). */
+  snapshot?: string;
 }
 export interface PlannedProject {
   project: Project;
   source: Inspection;
   terminals: unknown[];
   blockers: string[];
+  /** Unmanaged sessions (#206): their plugin reattaches to the new daemon; no terminal is closed or relaunched and no session id is compared. */
+  reconnectOnly?: string[];
+  /** #215: Codex threads with no rollout and no turn the hub recorded; they restart as a new session, nothing to lose. */
+  freshStart?: string[];
 }
 export interface UpgradePlan {
   schema: 1;
@@ -46,6 +52,10 @@ export interface ProjectProgress {
   instanceId?: string;
   terminals: Record<string, unknown>;
   releaseRequested?: boolean;
+  /** #215: peers the operator moved to a fresh session, with the session or thread id whose continuity is lost. */
+  fresh?: Record<string, { lost: string; reason: string; at: number }>;
+  /** #215: set before the commit request is sent; from then on the source may have committed (abort is not offered). */
+  commitSent?: boolean;
 }
 export interface RecoveryOperation {
   schema: 1;
@@ -62,6 +72,157 @@ export interface RecoveryOperation {
   pluginInstalled?: boolean;
   globalInstalled?: boolean;
   error?: string;
+  /** #215: every human disposition, in order. Operator reasons only; never task or message text. */
+  audit?: { at: number; action: "fresh-session" | "stop-and-archive"; reason: string; peer?: string; projects: string[] }[];
+  disposition?: { choice: "stop-and-archive"; at: number; projects: Record<string, string> };
+  /** #215: a refusal no resume can get past was recorded (FinalRefusal); `next` no longer offers resume. */
+  final?: boolean;
+}
+
+/** #215: a refusal that holds for every resume of the operation (its staged target or preserved source is fixed). */
+export class FinalRefusal extends Error {}
+
+export { recoveryCommand };
+const STOP = "--stop-and-archive --reason <text>";
+/**
+ * Whether the staged target reads recovery waivers: a fresh session cannot be released without them. The one waiver
+ * check (status, dispose, staging and restore all use it).
+ * ponytail: a text sniff of the target's restart.ts; a rename or re-export reads as "no waivers" (the safe side). Upgrade
+ * path: a capability list in package.json read here and by coordinatorCurrent.
+ */
+export function targetReadsWaivers(op: { targetRoot?: string }): boolean {
+  try { return !!op.targetRoot && readFileSync(join(op.targetRoot, "src/hub/restart.ts"), "utf8").includes("export function readRecoveryWaivers"); } catch { return false; }
+}
+
+/** Effects anywhere in the operation: a project past `prepared` or any terminal receipt. Abort needs none. */
+export const hasEffects = (op: RecoveryOperation) => op.projects.some((p) => !["pending", "prepared"].includes(p.phase) || Object.keys(p.terminals).length > 0);
+/**
+ * #215: why abort would refuse, or undefined when it can cancel. Abort and `next` both ask this, so `next` never
+ * offers an abort that refuses. `live` holds inspections of the operation's projects. A #215 coordinator writes
+ * `commitSent` before every commit request, so its receipt alone rules a commit in or out; an older one does not,
+ * and a prepared source of its operation that is not running (or was not inspected) may have committed.
+ */
+export function abortRefusal(op: RecoveryOperation, live: Record<string, Inspection | undefined> = {}): string | undefined {
+  if (op.disposition) return "a stop-and-archive of this operation is partway";
+  if (hasEffects(op)) return "operation has stopped runtimes or uncertain terminal effects";
+  const recorded = !op.sourceRoot || coordinatorCurrent(op.sourceRoot);
+  for (let i = 0; i < op.projects.length; i++) {
+    const progress = op.projects[i]!, planned = op.plan.projects[i]!, state = live[progress.id];
+    if (progress.commitSent) return `${progress.id}: its commit request may have been sent`;
+    if (state?.recovery?.operationId === op.id && state.recovery.phase !== "released" &&
+        (state.instanceId !== planned.source.instanceId || !["preparing", "prepared"].includes(state.recovery.phase ?? ""))) return `${progress.id}: recovery has progressed`;
+    // A #215 coordinator's prepared source that stopped was never asked to commit; one that cannot be read (unavailable,
+    // stopping, not inspected) may still hold this operation's hold. An older coordinator records no sent commit.
+    if (progress.phase === "prepared" && state?.state !== "running" && (!recorded || state?.state !== "stopped")) {
+      return recorded ? `${progress.id}: the source reads as ${state?.state ?? "not inspected"}, so whether this operation's hold still stands is uncertain`
+        : `${progress.id}: the source is ${state?.state ?? "not inspected"} and may have committed (this operation's coordinator does not record a sent commit)`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * #215: why resume can never get past what is live, or undefined. The runner's checks, mirrored (the invariant test in
+ * test/upgrade.test.ts holds the two together); `next` offers resume and --fresh-session only when this is undefined,
+ * and dispose accepts --fresh-session only then. Unavailable, starting or stopping is waited for.
+ */
+export function resumeBlocked(op: RecoveryOperation, live: Record<string, Inspection | undefined> = {}): string | undefined {
+  if (op.final) return "staging refused this operation's fixed target or preserved source";
+  const old = !!op.sourceRoot && !coordinatorCurrent(op.sourceRoot);
+  for (let i = 0; i < op.projects.length; i++) {
+    const p = op.projects[i]!, planned = op.plan.projects[i], state = live[p.id];
+    if (!state || !planned || p.phase === "verified") continue;
+    if (state.state === "missing") return `${p.id}: the project directory is missing`;
+    if (state.state === "incompatible") return `${p.id}: its hub speaks another control protocol`;
+    const source = p.phase === "pending" || p.phase === "prepared";
+    if (state.state === "running") {
+      const expected = source ? state.instanceId === planned.source.instanceId
+        : state.recovery?.operationId === op.id && (!p.instanceId || state.instanceId === p.instanceId) && state.version === op.plan.version;
+      if (!expected) return `${p.id}: its hub is not the one this operation expects`;
+      continue;
+    }
+    if (state.state !== "stopped") continue;
+    if (p.phase === "pending") return `${p.id}: the source stopped before it was prepared`;
+    if (p.phase === "prepared" && !p.commitSent && !old) return `${p.id}: the source stopped while prepared, with no commit request`;
+    // ponytail: a target that dies after it started is not restarted; that needs its peers relaunched against the new
+    // instance (CodexPeer is created only by start, launcher records are keyed by instance). Follow-up issue.
+    if (p.phase === "started" || p.phase === "peers-restored") return `${p.id}: the target stopped after it started; restarting it is not supported in this release`;
+    if (state.snapshot !== op.id) return `${p.id}: its hub stopped without this operation's restart snapshot`;
+  }
+  return undefined;
+}
+
+/**
+ * #215: why stop-and-archive would refuse, or undefined when it can act. Dispose and `next` both ask this, so `next`
+ * never offers a stop-and-archive that refuses. Every unverified project must read as running, stopped or missing:
+ * any other state (unavailable, starting, stopping, incompatible, not inspected) hides whether this operation owns it.
+ */
+export function disposeRefusal(op: RecoveryOperation, live: Record<string, Inspection | undefined> = {}): { project: string; reads: string } | undefined {
+  const unsettled = op.projects.find((p) => p.phase !== "verified" && !["running", "stopped", "missing"].includes(live[p.id]?.state ?? ""));
+  return unsettled ? { project: unsettled.id, reads: live[unsettled.id]?.state ?? "not inspected" } : undefined;
+}
+
+/**
+ * #215: what the person can do now, in the receipt table's order: resume (it also launches a failed peer again),
+ * abort where it can succeed, a fresh session for a failed Codex or Claude restoration, and stop-and-archive last.
+ * `status` and every error that names choices use this one list.
+ */
+export function nextActions(receipt: RecoveryOperation, runner?: number | "unknown", live: Record<string, Inspection | undefined> = {}): string[] {
+  // A receipt read without its project lists (never written so by a coordinator) still gets the general choices.
+  const op: RecoveryOperation = receipt.projects ? receipt : { ...receipt, projects: [], plan: { ...receipt.plan, projects: receipt.plan?.projects ?? [] } };
+  if (op.phase === "completed" || op.phase === "cancelled") return [];
+  // claimRunner refuses an owner it cannot read, so resume, abort and dispose are all refused until the record reads.
+  if (runner === "unknown") return [`${recoveryCommand(op, "status")} again: whether a runner holds the operation could not be read (resume, abort and dispose are refused until it can)`];
+  if (runner) return [`wait: runner ${runner} is working; ${recoveryCommand(op, "status")}`];
+  const unsettled = disposeRefusal(op, live);
+  const stop = unsettled ? `wait until ${unsettled.project}'s hub settles, then ${recoveryCommand(op, "status")}` : recoveryCommand(op, "dispose", STOP);
+  if (op.disposition) return [unsettled ? stop : `rerun ${stop}`];
+  const failed = [...new Set(op.projects.flatMap((p) => failedPeers(op, p, live)))];
+  const old = !!op.sourceRoot && !coordinatorCurrent(op.sourceRoot);
+  const abortable = !abortRefusal(op, live);
+  const stuck = resumeBlocked(op, live);
+  return [
+    ...(stuck ? [] : [`${recoveryCommand(op, "resume")}${op.error ? " (after the next action in error)" : ""}${old ? ` (runs the coordinator that started this operation, which cannot re-prepare an expired hold: if it reports "source is no longer prepared", use ${abortable ? "abort or " : ""}stop-and-archive)` : ""}`]),
+    ...(abortable ? [recoveryCommand(op, "abort")] : []),
+    ...(targetReadsWaivers(op) && !stuck ? failed.map((peer) => recoveryCommand(op, "dispose", `--fresh-session ${peer} --reason <text>`)) : []),
+    stop,
+  ];
+}
+
+/**
+ * "next actions: ..." from nextActions, with the inspections the caller holds. Every error that lists choices ends with
+ * it, after only its own peer-specific step ("end that codex session", "close Orca terminal <h>"), so no error offers
+ * an abort that abort refuses or leaves out one that would succeed.
+ */
+export const nextActionsText = (op: RecoveryOperation, live: Record<string, Inspection | undefined> = {}): string => `next actions: ${nextActions(op, undefined, live).join(" | ")}`;
+
+/**
+ * #215: what `next` reads, the same for status, abort and the runner's errors: every project not yet verified, its
+ * source or its target. An inspection that throws reads as not inspected, never as stopped.
+ */
+export async function liveProjects(op: RecoveryOperation, inspect: (project: Project) => Promise<Inspection>): Promise<Record<string, Inspection | undefined>> {
+  if (op.phase === "completed" || op.phase === "cancelled") return {};
+  const open = op.plan.projects.filter((_, i) => op.projects[i] && op.projects[i].phase !== "verified");
+  return Object.fromEntries(await Promise.all(open.map(async (p) => [p.project.id, await inspect(p.project).catch(() => undefined)] as const)));
+}
+
+/**
+ * Peers of a project whose restoration failed and for which a fresh session is a real choice: not Pi (a restored hub
+ * resumes its recorded session), not one already chosen, and not a planned fresh start (nothing to lose; resume
+ * launches it new again).
+ */
+function failedPeers(op: RecoveryOperation, progress: ProjectProgress, live: Record<string, Inspection | undefined> = {}): string[] {
+  const planned = op.plan.projects.find((p) => p.project.id === progress.id);
+  return Object.entries(progress.terminals).filter(([key, value]) => key.startsWith("restored:") && value === "failed").map(([key]) => key.slice("restored:".length))
+    .filter((peer) => peer !== "pi" && !progress.fresh?.[peer] && !planned?.freshStart?.includes(peer) && !plannedAttached(op, progress, peer, live));
+}
+
+/** #215: the inspection shows the planned session attached for `peer`, so resume records it as restored: nothing is lost. */
+function plannedAttached(op: RecoveryOperation, progress: ProjectProgress, peer: string, live: Record<string, Inspection | undefined>): boolean {
+  const state = live[progress.id];
+  const binding = (op.plan.projects.find((p) => p.project.id === progress.id)?.terminals as { peer: string; sessionId: string }[] | undefined)?.find((t) => t.peer === peer);
+  const current = state?.state === "running" ? state.peers.find((p) => p.id === peer && p.state !== "offline") : undefined;
+  return !!binding && (peer === "codex" ? current?.threadId : current?.sessionId) === binding.sessionId;
 }
 
 /** Registry reads for planning must not create a registry or run migrations. */
@@ -116,6 +277,8 @@ export interface RecoveryDriver {
   refreshManager?(op: RecoveryOperation): Promise<void>;
   release(project: Project, operation: string, instance: string): Promise<void>;
   verify(planned: PlannedProject, progress: ProjectProgress, op: RecoveryOperation): Promise<void>;
+  /** #215 stop-and-archive: stop this operation's unreleased target (when given) and archive its committed snapshot. */
+  stopAndArchive(project: Project, op: RecoveryOperation, targetInstance?: string): Promise<void>;
   sleep(ms: number): Promise<void>;
   now(): number;
 }
@@ -140,24 +303,67 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
   const save = () => { op.updatedAt = driver.now(); writeOperation(id, op, home); };
   const step = (value: string) => { op.step = value; save(); };
   const identity = (observed: Inspection, planned: PlannedProject, progress: ProjectProgress) => {
-    if (observed.state !== "running") throw new Error(`${planned.project.id}: runtime is ${observed.state}`);
-    if (progress.instanceId && observed.instanceId !== progress.instanceId) throw new Error("daemon instance changed; refusing to act on its replacement");
-    if (observed.recovery?.operationId !== id) throw new Error("daemon is not owned by this recovery operation");
-    if (observed.version !== op.plan.version) throw new Error("target daemon version mismatch");
+    if (observed.state === "stopped") throw new Error(progress.phase !== "stopped" ? `${planned.project.id}: the target stopped after it started (a crash or a reboot); restarting it is not supported in this release`
+      : `${planned.project.id}: the target is stopped${observed.snapshot === id ? "" : " and this operation's restart snapshot is gone, so nothing can start it"}`);
+    if (observed.state === "missing") throw new Error(`${planned.project.id}: the project directory is missing`);
+    if (observed.state !== "running") throw new Error(`${planned.project.id}: the target reads as ${observed.state}; wait until it answers`);
+    if (progress.instanceId && observed.instanceId !== progress.instanceId) throw new Error(`${planned.project.id}: daemon instance changed; refusing to act on its replacement`);
+    if (observed.recovery?.operationId !== id) throw new Error(`${planned.project.id}: daemon is not owned by this recovery operation`);
+    if (observed.version !== op.plan.version) throw new Error(`${planned.project.id}: target daemon version mismatch`);
   };
-  const sourceRoster = (live: Inspection, planned: PlannedProject) => {
+  const sourceRoster = (live: Inspection, planned: PlannedProject, progress: ProjectProgress, again = false) => {
+    // #215: a peer whose terminal this operation already closed must stay detached after a re-preparation, and a
+    // planned peer that detached since may pass it, as the daemon's readiness lets it (#21): closeTerminals then
+    // records its close only once Orca no longer lists the terminal.
+    const closed = (peer: string) => progress.terminals[`closed:${peer}`] === true;
     const expected = planned.source.peers.filter((p) => p.state !== "offline");
     const active = live.peers.filter((p) => p.state !== "offline");
-    if (active.length !== expected.length || expected.some((peer) => {
+    const extra = active.find((p) => !expected.some((peer) => peer.id === p.id));
+    const changed = extra ?? expected.find((peer) => {
       const current = active.find((p) => p.id === peer.id);
-      return !current || current.threadId !== peer.threadId || current.sessionId !== peer.sessionId;
-    })) throw new Error("source conversation or active peer membership changed; make a new plan");
+      if (closed(peer.id)) return !!current;
+      if (!current) return !again;
+      return !planned.reconnectOnly?.includes(peer.id) && (current.threadId !== peer.threadId || current.sessionId !== peer.sessionId);
+    });
+    if (!changed) return;
+    // A session that is not in the plan, or whose terminal this operation closed, has no original to restore.
+    const fix = extra || closed(changed.id) ? `end that ${changed.id} session` : `restore ${changed.id}'s original session`;
+    if (hasEffects(op)) throw new Error(`${planned.project.id}: ${changed.id} changed while this operation has recorded effects, so a new plan cannot replace it; ${fix} before resuming`);
+    // The lock this operation holds refuses a new upgrade until the operation is cancelled or ended.
+    throw new Error(`${planned.project.id}: source conversation or active peer membership changed (${changed.id}); ${fix} before resuming, or end this operation: a new plan can be made once it is cancelled or ended`);
+  };
+  // Prepare, or after an expired lease re-prepare, the planned source and wait until it is quiet.
+  const prepareSource = async (planned: PlannedProject, progress: ProjectProgress, again = false) => {
+    const project = planned.project, instance = planned.source.instanceId!;
+    await driver.prepare(project, id, instance);
+    const deadline = driver.now() + idleTimeoutMs;
+    for (;;) {
+      const live = await driver.inspect(project);
+      if (live.instanceId !== instance) throw new Error(`${project.id}: source daemon changed during preparation`);
+      if (live.recovery?.operationId !== id) {
+        const other = live.recovery?.phase !== "released" ? live.recovery?.operationId : undefined;
+        throw new Error(other ? `${project.id}: the source is held by another recovery operation ${other}; wait until that operation ends or its hold lapses`
+          : `${project.id}: the preparation expired before the source was quiet (resume prepares it again)`);
+      }
+      if (live.recovery.ready) return sourceRoster(live, planned, progress, again);
+      if (driver.now() >= deadline) {
+        await driver.abort(project, id, instance);
+        throw new Error(`${project.id}: active turns, approvals or completion checks did not finish; source runtime left running`);
+      }
+      await driver.sleep(250);
+    }
   };
   try {
+    if (op.disposition) {
+      // The stop-and-archive in progress keeps its own cause; resume never runs an operation being abandoned.
+      op.error ??= `a stop-and-archive of this operation is partway; ${nextActionsText(op, await liveProjects(op, driver.inspect))}`;
+      op.phase = "blocked"; save();
+      return op;
+    }
     op.phase = "running"; delete op.error; save();
     step("stage");
     const target = await driver.stage(op);
-    if (op.targetDigest && (target.root !== op.targetRoot || target.digest !== op.targetDigest)) throw new Error("staged target changed since operation started");
+    if (op.targetDigest && (target.root !== op.targetRoot || target.digest !== op.targetDigest)) throw new FinalRefusal("staged target changed since operation started");
     op.targetRoot = target.root; op.targetDigest = target.digest; save();
 
     // Check every untouched source before stopping even the first project.
@@ -165,47 +371,58 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       const progress = op.projects[i]!, planned = op.plan.projects[i]!;
       if (progress.phase !== "pending") continue;
       const live = await driver.inspect(planned.project);
+      if (!["running", "stopped", "missing"].includes(live.state)) throw new Error(`${planned.project.id}: the source reads as ${live.state}; wait until it answers`);
       if (live.state !== "running" || live.instanceId !== planned.source.instanceId || live.version !== planned.source.version) {
-        throw new Error(`${planned.project.id}: source runtime changed; make a new plan`);
+        throw new Error(`${planned.project.id}: source runtime changed`);
       }
-      sourceRoster(live, planned);
+      const other = live.recovery?.phase !== "released" ? live.recovery?.operationId : undefined;
+      if (other && other !== id) throw new Error(`${planned.project.id}: the source is held by another recovery operation ${other}; wait until that operation ends or its hold lapses`);
+      sourceRoster(live, planned, progress);
     }
     for (let i = 0; i < op.projects.length; i++) {
       const progress = op.projects[i]!, planned = op.plan.projects[i]!, project = planned.project;
       if (progress.phase === "verified" || progress.phase === "peers-restored") continue;
       if (progress.phase === "pending") {
         step(`prepare:${project.id}`);
-        await driver.prepare(project, id, planned.source.instanceId!);
-        const deadline = driver.now() + idleTimeoutMs;
-        for (;;) {
-          const live = await driver.inspect(project);
-          if (live.instanceId !== planned.source.instanceId) throw new Error("source daemon changed during preparation");
-          if (live.recovery?.operationId !== id) throw new Error("preparation expired or belongs to another operation");
-          if (live.recovery.ready) { sourceRoster(live, planned); break; }
-          if (driver.now() >= deadline) {
-            await driver.abort(project, id, planned.source.instanceId!);
-            throw new Error(`${project.id}: active turns, approvals or completion checks did not finish; source runtime left running`);
-          }
-          await driver.sleep(250);
-        }
+        await prepareSource(planned, progress);
         progress.phase = "prepared"; save();
       }
       if (progress.phase === "prepared") {
         step(`commit:${project.id}`);
         let live = await driver.inspect(project);
         if (live.state === "running" && live.instanceId === planned.source.instanceId) {
-          if (live.recovery?.operationId !== id || !live.recovery.ready) throw new Error("source is no longer prepared");
+          if (live.recovery?.operationId !== id || !live.recovery.ready) {
+            const other = live.recovery?.operationId;
+            if (other && other !== id && live.recovery?.phase !== "released") throw new Error(`${project.id}: the source is held by another recovery operation ${other}; nothing was prepared, closed or stopped, and ending this one leaves that hold alone; wait until that operation ends or its hold lapses`);
+            // #215: the hold lapsed (an expired lease) after this operation may have recorded terminal effects.
+            // Re-prepare the same verified source; the receipts stay, so no terminal is closed twice.
+            step(`reprepare:${project.id}`);
+            await prepareSource(planned, progress, true);
+            step(`commit:${project.id}`);
+          } else {
+            // #215: a hold of ours can predate a roster change, as after a resume whose roster check failed: check again.
+            sourceRoster(live, planned, progress, true);
+          }
           await driver.closeTerminals(planned, progress, op, save);
+          // Durable, unlike `step`: from here the source may have committed, which status and abort must not forget.
+          progress.commitSent = true; save();
           await driver.commit(project, id, planned.source.instanceId!);
           const deadline = driver.now() + 30_000;
           do {
             live = await driver.inspect(project);
             if (live.state === "stopped") break;
-            if (live.instanceId && live.instanceId !== planned.source.instanceId) throw new Error("another daemon started during shutdown");
+            if (live.instanceId && live.instanceId !== planned.source.instanceId) throw new Error(`${project.id}: another daemon started during shutdown`);
             await driver.sleep(100);
           } while (driver.now() < deadline);
+        } else if (live.state === "running") {
+          throw new Error(`${project.id}: the source daemon was replaced by instance ${live.instanceId ?? "unknown"}; refusing to prepare, close or stop it (ending this operation leaves that daemon running)`);
+        } else if (live.state === "stopped" && !progress.commitSent && (!op.sourceRoot || coordinatorCurrent(op.sourceRoot))) {
+          // #215: this coordinator records a commit request before sending it, so a stopped source with none crashed while
+          // prepared: no snapshot was committed and there is nothing to start from. The phase stays `prepared`.
+          throw new Error(`${project.id}: the source stopped while prepared and no commit was requested, so there is nothing to restore`);
         }
-        if (live.state !== "stopped") throw new Error("old shutdown is not verified; not starting a second daemon");
+        if (live.state === "missing") throw new Error(`${project.id}: the project directory is missing`);
+        if (live.state !== "stopped") throw new Error(`${project.id}: old shutdown is not verified (the source reads as ${live.state}); not starting a second daemon; check ${recoveryCommand(op, "status")} once it answers`);
         progress.phase = "stopped"; save();
       }
       if (progress.phase === "stopped") {
@@ -253,14 +470,26 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     }
     releaseRecoveryLock(id, home); op.phase = "completed"; step("completed");
   } catch (error) {
-    op.phase = "blocked"; op.error = error instanceof Error ? error.message : "recovery failed"; save();
+    // #215: every runner error ends with the choices status shows, read from every open source, never only this one.
+    if (error instanceof FinalRefusal) op.final = true;
+    const next = nextActionsText(op, await liveProjects(op, driver.inspect));
+    op.phase = "blocked"; op.error = `${error instanceof Error ? error.message : "recovery failed"}; ${next}`; save();
   } finally { releaseRunner(); }
   return op;
 }
 
-export function publicOperation(op: RecoveryOperation) {
+/** Receipts and runner state only (#215): ids, phases and effects, never task or message text. */
+export function publicOperation(op: RecoveryOperation, runnerPid?: number | "unknown", live: Record<string, Inspection | undefined> = {}) {
+  const effect = (value: unknown) => value === "pending" || value === "failed" ? value : "done";
+  const next = nextActions(op, runnerPid, live);
   return { id: op.id, phase: op.phase, step: op.step, version: op.plan.version, updatedAt: op.updatedAt,
-    projects: op.projects.map((p) => ({ id: p.id, phase: p.phase })), ...(op.error ? { error: op.error } : {}) };
+    runner: runnerPid === "unknown" ? { state: "unknown" } : runnerPid ? { state: "running", pid: runnerPid } : { state: "none" },
+    ...(op.phase === "running" && !runnerPid ? { stale: "the receipt says running but no runner holds the operation: its last runner stopped mid-step" } : {}),
+    projects: op.projects.map((p) => ({ id: p.id, phase: p.phase, ...(Object.keys(p.terminals).length ? { effects: Object.fromEntries(Object.entries(p.terminals).map(([key, value]) => [key, effect(value)])) } : {}),
+      ...(p.fresh ? { lostContinuity: Object.fromEntries(Object.entries(p.fresh).map(([peer, f]) => [peer, f.lost])) } : {}) })),
+    pluginInstalled: !!op.pluginInstalled, globalInstalled: !!op.globalInstalled,
+    ...(!targetReadsWaivers(op) && op.projects.some((p) => failedPeers(op, p).length) ? { freshSession: `not offered: target ${op.plan.version} cannot read recovery waivers, so it could not release a new session` } : {}),
+    ...(op.error ? { error: op.error } : {}), ...(op.disposition ? { disposition: op.disposition } : {}), ...(op.audit ? { audit: op.audit } : {}), next };
 }
 
 /** Escape a blocked preflight without abandoning a stopped runtime or an uncertain terminal mutation. */
@@ -278,21 +507,117 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
       if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
       return;
     }
-    if (op.projects.some((p) => !["pending", "prepared"].includes(p.phase) || Object.keys(p.terminals).length)) {
-      throw new Error("operation has stopped runtimes or uncertain terminal effects; resume it instead");
-    }
     const { fingerprint, ...body } = op.plan;
     if (fingerprint !== planFingerprint(body)) throw new Error("operation plan changed");
+    const live = await liveProjects(op, driver.inspect);
+    const refusal = abortRefusal(op, live);
+    if (refusal) throw new Error(`abort refused: ${refusal}; ${nextActionsText(op, live)}`);
+    // Only this operation's own uncommitted holds are aborted; a lapsed hold, a replacement daemon or another
+    // operation's hold is left alone, and a source that is not running had no commit sent (abortRefusal).
     for (const planned of op.plan.projects) {
-      const live = await driver.inspect(planned.project);
-      if (live.recovery?.operationId === id) {
-        if (live.instanceId !== planned.source.instanceId || !["preparing", "prepared"].includes(live.recovery.phase ?? "")) throw new Error("recovery has progressed; resume it instead");
-        await driver.abort(planned.project, id, planned.source.instanceId!);
-      } else if (op.projects.find((p) => p.id === planned.project.id)?.phase === "prepared") {
-        throw new Error("prepared source outcome is uncertain; resume it instead");
-      }
+      const state = live[planned.project.id];
+      if (state?.recovery?.operationId === id && state.recovery.phase !== "released") await driver.abort(planned.project, id, planned.source.instanceId!);
     }
     op.phase = "cancelled"; op.step = "cancelled"; op.updatedAt = driver.now();
     writeOperation(id, op, home); releaseRecoveryLock(id, home);
+  } finally { releaseRunner(); }
+}
+
+/**
+ * #215: the human-only ways out of an operation that cannot restore a native session. `fresh` records the lost
+ * conversation and leaves the operation to resume; `stop-and-archive` abandons it, and releases the lock only after
+ * every runtime this operation held or started is verified released or stopped.
+ */
+export async function disposeRecovery(id: string, choice: { fresh: string } | { stop: true }, reason: string, driver: RecoveryDriver, home = hubHome()): Promise<RecoveryOperation> {
+  let op = readOperation<RecoveryOperation>(id, home);
+  validateReceipt(id, op);
+  // A finished operation owns no lock: never take one only to refuse.
+  if (op.phase === "completed" || op.phase === "cancelled") throw new Error(`operation is already ${op.phase}`);
+  acquireRecoveryLock(id, home);
+  const releaseRunner = claimRunner(id, home);
+  try {
+    op = readOperation<RecoveryOperation>(id, home);
+    validateReceipt(id, op);
+    if (op.phase === "completed" || op.phase === "cancelled") {
+      // Another runner finished it while this one waited: leave no lock behind, as resume and abort do.
+      if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
+      throw new Error(`operation is already ${op.phase}`);
+    }
+    const at = driver.now();
+    // Read once, as status and the runner do: every choice and refusal below is decided on it.
+    const live = await liveProjects(op, driver.inspect);
+    const next = nextActionsText(op, live);
+    if ("fresh" in choice) {
+      // `ahub pi` sends no fresh flag, and a restored hub refills a Pi start from its recorded resume (daemon startPeer).
+      if (choice.fresh === "pi") throw new Error(`pi: --fresh-session is not supported: a restored hub resumes Pi's recorded session, so a fresh one cannot be guaranteed; ${next}`);
+      if (op.disposition) throw new Error(`a stop-and-archive of this operation is partway; ${next}`);
+      if (!targetReadsWaivers(op)) throw new Error(`--fresh-session is not available: target ${op.plan.version} cannot read recovery waivers, so it could not release a new session; ${next}`);
+      // The new session is launched by resume, so it helps only where resume can get past what is live.
+      const stuck = resumeBlocked(op, live);
+      if (stuck) throw new Error(`--fresh-session cannot help: ${stuck}, so resume could never launch the new session; ${next}`);
+      const peer = choice.fresh;
+      // Per project: a planned fresh start has nothing to lose, so only the other failed projects take the choice.
+      const failed = op.projects.filter((p) => failedPeers(op, p, live).includes(peer));
+      if (!failed.length && op.projects.some((p) => p.terminals[`restored:${peer}`] === "failed" && op.plan.projects.find((planned) => planned.project.id === p.id)?.freshStart?.includes(peer))) {
+        throw new Error(`${peer}: its plan already restarts it as a new session (no rollout and no turn, nothing to lose), so there is no conversation to record as lost; ${next}`);
+      }
+      if (!failed.length && op.projects.some((p) => p.terminals[`restored:${peer}`] === "failed" && plannedAttached(op, p, peer, live))) {
+        throw new Error(`${peer}: its planned session is attached again, so nothing was lost; resume records it as restored; ${next}`);
+      }
+      if (!failed.length) throw new Error(`${peer}: no failed restoration of it is open to a fresh session (none failed, or one is already chosen); --fresh-session applies only then (${recoveryCommand(op, "status")})`);
+      for (const progress of failed) {
+        const binding = (op.plan.projects.find((p) => p.project.id === progress.id)!.terminals as { peer: string; sessionId: string }[]).find((t) => t.peer === peer)!;
+        (progress.fresh ??= {})[peer] = { lost: binding.sessionId, reason, at };
+      }
+      (op.audit ??= []).push({ at, action: "fresh-session", reason, peer, projects: failed.map((p) => p.id) });
+      op.updatedAt = at; writeOperation(id, op, home);
+      return op;
+    }
+    // Every project is inspected before acting on any, as the runner does before its first stop.
+    const unsettled = disposeRefusal(op, live);
+    if (unsettled) throw new Error(`${unsettled.project}: its hub reads as ${unsettled.reads}, so whether this operation owns it cannot be verified; nothing was stopped or released; ${next}`);
+    const acts: { planned: PlannedProject; live?: Inspection; act: string }[] = [];
+    for (let i = 0; i < op.projects.length; i++) {
+      const progress = op.projects[i]!, planned = op.plan.projects[i]!;
+      const state = progress.phase === "verified" ? undefined : live[planned.project.id]!;
+      const ours = state?.state === "running" && state.recovery?.operationId === id && state.recovery.phase !== "released";
+      // A target is known by its operation fence, not only by the receipt: `up` may have failed, or the first
+      // identity read thrown, after the target started and before its instance was recorded.
+      const target = ours && state.instanceId !== planned.source.instanceId && state.recovery?.phase === "restored";
+      const act = !state ? "released earlier; left running"
+        : state.state === "stopped" ? "stopped"
+        : state.state === "missing" ? "project directory is missing; nothing was stopped or archived (ahub doctor --orphans lists a hub left running there)"
+        : ours && state.instanceId === planned.source.instanceId && ["pending", "prepared"].includes(progress.phase) ? "source hold released; source left running"
+        : target ? "target stopped"
+        : state.instanceId === planned.source.instanceId && ["pending", "prepared"].includes(progress.phase)
+          ? `source left running (${state.recovery?.operationId && state.recovery.phase !== "released" ? `held by another operation, ${state.recovery.operationId}` : progress.phase === "prepared" ? "its hold had lapsed" : "never prepared"})`
+        : `left running: instance ${state.instanceId ?? "unknown"} is not held by this operation`;
+      acts.push({ planned, ...(state ? { live: state } : {}), act });
+    }
+    // Each outcome is recorded as it happens, so a disposition that stops partway stays true and resume refuses it.
+    const disposition = (op.disposition ??= { choice: "stop-and-archive", at, projects: {} });
+    (op.audit ??= []).push({ at, action: "stop-and-archive", reason, projects: acts.map((a) => a.planned.project.id) });
+    // Recorded before the first act: a crash inside a stop leaves a disposition that resume refuses to override.
+    op.updatedAt = driver.now(); writeOperation(id, op, home);
+    try {
+      for (const { planned, live, act } of acts) {
+        if (act.startsWith("source hold")) await driver.abort(planned.project, id, planned.source.instanceId!);
+        else if (act === "stopped" || act === "target stopped") {
+          await driver.stopAndArchive(planned.project, op, act === "target stopped" ? live!.instanceId : undefined);
+          if ((await driver.inspect(planned.project)).state !== "stopped") throw new Error(`${planned.project.id}: shutdown of instance ${live!.instanceId ?? "unknown"} is not verified`);
+        }
+        disposition.projects[planned.project.id] ??= act;
+        op.updatedAt = driver.now(); writeOperation(id, op, home);
+      }
+    } catch (error) {
+      op.phase = "blocked"; op.updatedAt = driver.now();
+      op.error = `stop-and-archive stopped partway and keeps the lock: ${error instanceof Error ? error.message : "disposition failed"} (a committed source stops by itself); ${nextActionsText(op, await liveProjects(op, driver.inspect))}`;
+      writeOperation(id, op, home);
+      throw error;
+    }
+    delete op.error;
+    op.phase = "cancelled"; op.step = "disposed: stop-and-archive (abandoned, not completed)"; op.updatedAt = driver.now();
+    writeOperation(id, op, home); releaseRecoveryLock(id, home);
+    return op;
   } finally { releaseRunner(); }
 }

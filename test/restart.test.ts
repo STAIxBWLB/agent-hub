@@ -9,7 +9,7 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { newEnvelope, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
-import { readRestartSnapshot, releasedRestartPath, writeRestartSnapshot, type RestartSnapshot } from "../src/hub/restart.ts";
+import { abandonRestartSnapshot, readRestartSnapshot, releasedRestartPath, waiveRecoveryPeers, writeRestartSnapshot, type RestartSnapshot } from "../src/hub/restart.ts";
 
 class HeldPeer extends BasePeer {
   readonly deliveries: Envelope[][] = [];
@@ -383,4 +383,57 @@ test("a restored zero-turn Claude session may reattach fresh only while no trans
       if (previousClaudeConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = previousClaudeConfig;
     }
   }
+});
+
+// #206: an unmanaged Claude reconnects to the target with no session record there, so it can never show the saved
+// id. Only the coordinator's waiver for this very operation lets readiness accept it; it still has to reattach.
+test("a restored daemon waives a saved session id only for peers its own operation waived", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "agenthub-recovery-waiver-"));
+  writeRestartSnapshot(stateDir, {
+    schemaVersion: 1, projectRoot: stateDir, projectId: "project-waiver", sourceInstanceId: "old", operationId: "op-waiver", committedAt: Date.now(),
+    bus: { schemaVersion: 1, queues: {}, prefaces: {}, seen: [], attempts: {}, withdrawn: [] },
+    manualPaused: [],
+    peers: [{ id: "claude", state: "idle", queueIds: [], sessionId: "s-stale", sessionPersisted: true }],
+  });
+  const previousRecovery = process.env.AGENTHUB_RECOVERY_OPERATION;
+  process.env.AGENTHUB_RECOVERY_OPERATION = "op-waiver";
+  let daemon: Awaited<ReturnType<typeof startDaemon>>;
+  try {
+    daemon = await startDaemon({ cwd: stateDir, stateDir, projectId: "project-waiver", instanceId: "instance-waiver", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+      config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } });
+  } finally {
+    if (previousRecovery === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION; else process.env.AGENTHUB_RECOVERY_OPERATION = previousRecovery;
+  }
+  const console_ = await ControlClient.connect(stateDir, { role: "console" });
+  const ready = async () => (await console_.request({ t: "recovery", op: "inspect", expectedInstanceId: "instance-waiver" })).recovery.ready;
+  try {
+    const peer = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" });
+    await Bun.sleep(20);
+    expect(await ready()).toBe(false);
+    waiveRecoveryPeers(stateDir, "op-other", { claude: "reconnect-only" });
+    expect(await ready()).toBe(false);
+    waiveRecoveryPeers(stateDir, "op-waiver", { claude: "reconnect-only" });
+    expect(await ready()).toBe(true);
+    expect(statSync(join(stateDir, "recovery-waivers.json")).mode & 0o777).toBe(0o600);
+    peer.close();
+  } finally {
+    console_.close();
+    await daemon.stop();
+  }
+});
+
+// #215 stop-and-archive: only this operation's committed snapshot moves aside, privately, so an ordinary start works again.
+test("an abandoned operation's snapshot is archived and another operation's is left alone", () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "agenthub-abandon-"));
+  writeRestartSnapshot(stateDir, {
+    schemaVersion: 1, projectRoot: "/project", projectId: "project-1", sourceInstanceId: "instance-1", operationId: "op-a", committedAt: Date.now(),
+    bus: { schemaVersion: 1, queues: {}, prefaces: {}, seen: [], attempts: {}, withdrawn: [] }, manualPaused: [], peers: [],
+  });
+  abandonRestartSnapshot(stateDir, "op-b");
+  expect(readRestartSnapshot(stateDir, { projectRoot: "/project", projectId: "project-1", operationId: "op-a" })).toBeDefined();
+  abandonRestartSnapshot(stateDir, "op-a");
+  expect(readRestartSnapshot(stateDir, { projectRoot: "/project", projectId: "project-1" })).toBeUndefined();
+  const archived = join(stateDir, `restart.abandoned.${createHash("sha256").update("op-a").digest("hex")}.json`);
+  expect(JSON.parse(readFileSync(archived, "utf8")).operationId).toBe("op-a");
+  expect(statSync(archived).mode & 0o777).toBe(0o600);
 });

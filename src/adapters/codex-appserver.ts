@@ -24,6 +24,8 @@ export interface CodexOptions {
   onContext?: (reading: ContextReading) => void;
   /** The native id of each turn as it starts, after the peer turned busy (issue #33: `ahub undo --context`). */
   onTurn?: (turnId: string) => void;
+  /** Each thread the TUI starts (`fresh`) or resumes, as it is adopted (#215: which turns belong to which thread). */
+  onThread?: (threadId: string, fresh: boolean) => void;
   /**
    * Each completed `fileChange`, `commandExecution`, `mcpToolCall` and `userMessage` item, for turn-free facts (issue
    * #108): the first three are boundaries, a `userMessage` is the readback of a steered fact. Codex emits
@@ -406,6 +408,7 @@ export class CodexPeer extends BasePeer {
     this.activeTurns.clear();
     this.forgetTurn();
     this.opts.log?.(`[${this.id}] thread ${threadId}`);
+    this.opts.onThread?.(threadId, fresh);
     this.setState("idle");
     this.readUsage();
     clearInterval(this.usageTimer);

@@ -22,9 +22,9 @@ import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
 import { freeText } from "./free-text.ts";
 import { createInterface } from "node:readline/promises";
-import { assertLifecycleAvailable, readOperation, recoveryLock } from "../hub/recovery-store.ts";
+import { activeOperation, assertLifecycleAvailable, readOperation, recoveryLock, recoveryRunner } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
-import { abortRecovery, createOperation, publicOperation, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
+import { abortRecovery, createOperation, disposeRecovery, liveProjects, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
 import { makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { recordTerminalLaunch } from "./terminal-recovery.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
@@ -119,7 +119,7 @@ const hubManifest = () => !!readControl(stateDir) || existsSync(join(stateDir, "
  *  AGENTHUB_RECOVERY_OPERATION says (assertLifecycleAvailable lets that operation's own processes through). */
 function resetLockFree(): void {
   const owner = recoveryLock();
-  if (owner) throw new Error(`recovery operation ${owner} is active; use ahub recovery status|resume ${owner}; nothing was changed`);
+  if (owner) throw new Error(`${activeOperation(owner)}; nothing was changed`);
 }
 /** A manifest whose daemon is alive or uncertain, by inspectProject's rule; a crashed daemon's leftovers do not count. */
 function liveManifest(): boolean {
@@ -328,9 +328,10 @@ function spawnRecovery(operation: RecoveryOperation): void {
   const child = spawn(process.execPath, [join(operation.sourceRoot, "src/cli/main.js"), "recovery-run", operation.id], {
     cwd, detached: true, stdio: "ignore", env: { ...process.env, AGENTHUB_RECOVERY_OPERATION: operation.id },
   });
-  child.on("error", () => console.error(`runner launch failed; use ahub recovery resume ${operation.id}`));
+  child.on("error", () => console.error(`runner launch failed; use ${recoveryCommand(operation, "resume")}`));
   child.unref();
-  console.log(`Recovery operation ${operation.id} scheduled.\nahub recovery status ${operation.id}`);
+  // #215: the operation's own coordinator, which has every recovery command; the global ahub may be older mid-upgrade.
+  console.log(`Recovery operation ${operation.id} scheduled.\n${recoveryCommand(operation, "status")}`);
 }
 
 async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
@@ -340,8 +341,13 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   if (kind === "upgrade" && selector) fail("upgrade changes the shared package/plugin; omit --project to review all affected running projects");
   const plan = await makeUpgradePlan(kind, one["--to"] ?? VERSION, kind === "restart" ? cwd : undefined);
   console.log(JSON.stringify(plan, null, 2));
+  // #206: name every blocker and reconnect-only session on stderr, not only inside the JSON above.
+  for (const p of plan.projects) for (const peer of p.reconnectOnly ?? []) console.error(`ahub: ${p.project.id}: ${peer} is reconnect-only (unmanaged session): its plugin reattaches to the new hub; no terminal is closed or relaunched`);
+  for (const p of plan.projects) for (const peer of p.freshStart ?? []) console.error(`ahub: ${p.project.id}: ${peer} restarts as a new session: its thread has no rollout and the hub recorded no turn on it, so nothing is lost`);
+  const blockers = [...plan.blockers, ...plan.projects.flatMap((p) => p.blockers.map((b) => `${p.project.id}: ${b}`))];
+  for (const blocker of blockers) console.error(`ahub: blocker: ${blocker}`);
   if (args.includes("--dry-run")) return;
-  if (plan.blockers.length || plan.projects.some((p) => p.blockers.length)) fail("plan has blockers; no runtime was changed");
+  if (blockers.length) fail("plan has blockers; no runtime was changed");
   assertLifecycleAvailable();
   if (!args.includes("--yes")) {
     if (!process.stdin.isTTY) fail("review --dry-run and use --yes in non-interactive sessions");
@@ -361,12 +367,33 @@ const commands: Record<string, () => Promise<void> | void> = {
   upgrade: () => upgrade("upgrade"),
   restart: () => upgrade("restart"),
   recovery: async () => {
-    const [action, id] = args;
-    if (args.length !== 2 || !id || !["status", "resume", "abort"].includes(action ?? "")) fail("usage: ahub recovery status|resume|abort <operation-id>");
+    const [action, id, ...rest] = args;
+    const usage = "usage: ahub recovery status|resume|abort <operation-id> | ahub recovery dispose <operation-id> --fresh-session <peer>|--stop-and-archive --reason <text>";
+    if (!id || !["status", "resume", "abort", "dispose"].includes(action ?? "") || (action !== "dispose" && rest.length)) fail(usage);
     const operation = readOperation<RecoveryOperation>(id);
-    if (action === "status") console.log(JSON.stringify(publicOperation(operation), null, 2));
+    const runner = recoveryRunner(id);
+    if (action === "status") {
+      // #215: abort and resume are offered by what the open sources show, read as the runner's errors read them.
+      const live = runner ? {} : await liveProjects(operation, makeRecoveryDriver().inspect);
+      console.log(JSON.stringify(publicOperation(operation, runner, live), null, 2));
+    }
     else if (action === "abort") { await abortRecovery(id, makeRecoveryDriver()); console.log("preflight cancelled; no committed transition was rolled back"); }
+    else if (action === "dispose") {
+      // #215: human-only (the identity gate refuses agent shells); the reason is kept in the operation's audit.
+      const { one, rest: flags } = takeFlags(rest, ["--fresh-session", "--reason"], []);
+      const stop = flags.length === 1 && flags[0] === "--stop-and-archive";
+      const reason = one["--reason"]?.trim() ?? "";
+      if (!reason || reason.length > 500 || (flags.length && !stop) || stop === !!one["--fresh-session"]) fail(usage);
+      const result = await disposeRecovery(id, stop ? { stop: true } : { fresh: one["--fresh-session"]! }, reason, makeRecoveryDriver());
+      if (!stop) { console.log(`${one["--fresh-session"]}: a fresh session is accepted and the lost one is recorded; resuming`); return spawnRecovery(result); }
+      console.log(JSON.stringify(publicOperation(result), null, 2));
+      console.log(`${result.plan.kind} abandoned, not completed; the recovery lock is released. A project whose target ran starts again with that version's CLI.`);
+    }
     else if (["completed", "cancelled"].includes(operation.phase)) console.log(`recovery is already ${operation.phase}`);
+    // #215: an operation being abandoned is never resumed, whichever coordinator started it (an older one would).
+    else if (operation.disposition) fail(`a stop-and-archive of this operation is partway; nothing was resumed; ${nextActionsText(operation, await liveProjects(operation, makeRecoveryDriver().inspect))}`);
+    else if (runner === "unknown") console.log(`whether a runner holds this operation could not be read; nothing was started; ${recoveryCommand(operation, "status")}`);
+    else if (runner) console.log(`runner ${runner} is still working on this operation; ${recoveryCommand(operation, "status")}`);
     else spawnRecovery(operation);
   },
   "recovery-run": async () => {
@@ -527,12 +554,18 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     assertLifecycleAvailable();
     const launch0 = buildLaunch("codex", args, { unattended: unattendedEnv, proxyUrl: "pending" }); // refuse bad flags before starting anything
+    // #215: a launch by a recovery operation records itself before the hub round trip, so the coordinator never takes
+    // a launcher still starting for one that never ran. An ordinary launch records only once the hub accepted it: a
+    // refused start must not replace the record of a Codex already running here (one row per peer and instance).
+    const recovering = !!process.env.AGENTHUB_RECOVERY_OPERATION && process.env.AGENTHUB_RECOVERY_OPERATION === recoveryLock(); // not an id a restored session inherited
+    const before = readControl(stateDir);
+    if (recovering && before?.instanceId) await recordTerminalLaunch("codex", cwd, stateDir, before.instanceId);
     const hub = await connect();
     const res = await hub.request({ t: "start", peer: "codex", operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
     hub.close();
     if (!res.ok) fail(res.error);
     const control = readControl(stateDir);
-    if (control?.instanceId) await recordTerminalLaunch("codex", cwd, stateDir, control.instanceId);
+    if (!recovering && control?.instanceId) await recordTerminalLaunch("codex", cwd, stateDir, control.instanceId);
     const launch = buildLaunch("codex", args, { unattended: unattendedEnv, proxyUrl: res.proxyUrl, codexBin: projectConfig().codex_bin });
     if (launch0.warning) console.error(launch0.warning);
     exec(launch.cmd, launch.args, "codex");
@@ -558,6 +591,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
     }
     const options = piFlags();
+    // #215: as for Codex, a TUI launch by the recovery operation holding the lock records itself before the hub round
+    // trip, so a resume in that window never reads it as gone; an ordinary launch records only after the hub accepted it.
+    const recovering = options.mode === "tui" && !!process.env.AGENTHUB_RECOVERY_OPERATION && process.env.AGENTHUB_RECOVERY_OPERATION === recoveryLock();
+    const before = readControl(stateDir);
+    if (recovering && before?.instanceId) await recordTerminalLaunch("pi", cwd, stateDir, before.instanceId);
     const hub = await connect();
     const res = await hub.request({ t: "start", peer: "pi", args: options, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
     hub.close();
@@ -569,7 +607,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       delete launchEnv.AGENTHUB_RECOVERY_OPERATION;
       delete launchEnv.AGENTHUB_UNATTENDED;
       const control = readControl(stateDir);
-      if (control?.instanceId) await recordTerminalLaunch("pi", cwd, stateDir, control.instanceId);
+      if (!recovering && control?.instanceId) await recordTerminalLaunch("pi", cwd, stateDir, control.instanceId);
       return execWithEnv(launch.cmd, launch.args, launchEnv);
     }
     console.log(res.already ? "pi is already attached" : 'pi attached (headless). Talk to it with: ahub say @pi "..."');

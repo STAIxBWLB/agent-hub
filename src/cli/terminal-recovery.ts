@@ -1,8 +1,9 @@
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { processSignature } from "../pi/process-signature.ts";
+import { atomicPrivateJSON } from "../hub/recovery-store.ts";
 
 /** The only terminal commands used by this adapter. Keep this list in sync with Orca's public CLI. */
 export type OrcaTerminalCommand = "list" | "show" | "wait" | "close" | "create";
@@ -63,7 +64,9 @@ export interface RecoveryBlocker {
     | "ambiguous-terminal"
     | "terminal-unready"
     | "command-error"
-    | "ambiguous-create";
+    | "ambiguous-create"
+    | "launcher-exited"
+    | "terminal-gone";
   message: string;
   peer?: TerminalPeer;
   handle?: string;
@@ -146,6 +149,8 @@ export interface RecordedTerminalLaunch {
 
 const MAX_WAIT_MS = 10 * 60 * 1000;
 const MAX_COMMAND_MS = 30_000;
+/** #215: a replacement's readiness is awaited in slices this long, checking between them whether its launcher still runs. */
+const EXIT_SLICE_MS = 5_000;
 const ALLOWED_ENV = ["CODEX_HOME", "CLAUDE_CONFIG_DIR"] as const;
 type AllowedEnvName = (typeof ALLOWED_ENV)[number];
 
@@ -176,13 +181,27 @@ function errorText(result: CommandResult): string {
   return stderr || `exit status ${commandStatus(result)}`;
 }
 
+/** Orca's structured error code, from the JSON it prints on stdout or stderr. */
+function errorCode(result: CommandResult): unknown {
+  const fromStdout = object(object(decoded(result)).error).code;
+  if (fromStdout !== undefined) return fromStdout;
+  try { return object(object(JSON.parse(bytes(result.stderr))).error).code; } catch { return undefined; }
+}
+
 function runnerFailure(argv: readonly string[], result: CommandResult): RecoveryBlocker {
   return { code: "command-error", message: `Orca ${argv.slice(0, 2).join(" ")} failed: ${errorText(result)}` };
 }
 
 async function run(runner: CommandRunner, argv: readonly string[]): Promise<unknown> {
   const result = await runner(argv);
-  if (commandStatus(result) !== 0) throw new OrcaCommandError(runnerFailure(argv, result));
+  if (commandStatus(result) !== 0) {
+    // Orca 1.4.223 answers a handle whose terminal was removed with `{"ok":false,"error":{"code":"terminal_handle_stale"}}`.
+    if (errorCode(result) === "terminal_handle_stale") {
+      const handle = argv.includes("--terminal") ? argv[argv.indexOf("--terminal") + 1] : undefined;
+      throw new OrcaCommandError({ code: "terminal-gone", message: `the Orca terminal${handle ? ` ${handle}` : ""} no longer exists` });
+    }
+    throw new OrcaCommandError(runnerFailure(argv, result));
+  }
   const value = decoded(result);
   const root = object(value);
   const payload = responseResult(value);
@@ -249,42 +268,59 @@ function defaultRunner(executable: string): CommandRunner {
 
 const RECORD_FILE = "terminal-recovery.json";
 
-function recordPath(stateDir: string): string {
+export function recordPath(stateDir: string): string {
   return join(stateDir, RECORD_FILE);
 }
 
-function readLaunchRecords(stateDir: string): RecordedTerminalLaunch[] {
+/** #215: "unreadable" (a corrupt or unreadable file) says nothing about launchers, so it must never read as "none". */
+function launchRecords(stateDir: string): RecordedTerminalLaunch[] | "unreadable" {
   if (!stateDir || !existsSync(recordPath(stateDir))) return [];
   try {
     const value: unknown = JSON.parse(readFileSync(recordPath(stateDir), "utf8"));
-    return Array.isArray(value) ? value.filter((item): item is RecordedTerminalLaunch => {
+    if (!Array.isArray(value)) return "unreadable";
+    return value.filter((item): item is RecordedTerminalLaunch => {
       const row = object(item);
       return typeof row.peer === "string" && typeof row.projectRoot === "string" && typeof row.instanceId === "string" && typeof row.handle === "string" && typeof row.incarnationId === "string" && typeof row.worktreeId === "string" && typeof row.launcherPid === "number" && typeof row.launcherSignature === "string" && row.launcherSignature.length > 0 && typeof row.launchId === "string" && row.launchId.length > 0;
-    }) : [];
-  } catch {
-    return [];
+    });
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? [] : "unreadable";
   }
 }
 
 function writeLaunchRecords(stateDir: string, rows: RecordedTerminalLaunch[]): void {
   mkdirSync(stateDir, { recursive: true });
-  writeFileSync(recordPath(stateDir), `${JSON.stringify(rows)}\n`, { mode: 0o600 });
+  atomicPrivateJSON(recordPath(stateDir), rows); // temp + rename: a reader never sees half a file
 }
 
-async function launcherMatches(row: RecordedTerminalLaunch, identity: ProcessIdentity): Promise<boolean> {
-  try {
-    const signature = await identity(row.launcherPid);
-    return typeof signature === "string" && signature.length > 0 && signature === row.launcherSignature;
-  } catch {
-    return false;
-  }
+/**
+ * #215: live when the recorded process signature matches; gone when the pid no longer exists (ESRCH) or another
+ * process holds it now; unknown when the pid exists but its identity cannot be read. Unknown is never gone.
+ */
+export type LauncherState = "live" | "gone" | "unknown";
+async function launcherState(row: RecordedTerminalLaunch, identity: ProcessIdentity): Promise<LauncherState> {
+  let signature: string | undefined;
+  try { signature = await identity(row.launcherPid); } catch { /* unreadable: decided by the pid probe below */ }
+  if (typeof signature === "string" && signature.length > 0) return signature === row.launcherSignature ? "live" : "gone";
+  try { process.kill(row.launcherPid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return "gone"; }
+  return "unknown";
 }
 
-async function liveRecords(stateDir: string, projectRoot: string, instanceId: string, identity: ProcessIdentity): Promise<RecordedTerminalLaunch[]> {
-  if (!stateDir || !instanceId) return [];
-  const candidates = readLaunchRecords(stateDir).filter((item) => item.projectRoot === projectRoot && item.instanceId === instanceId);
-  const checks = await Promise.all(candidates.map(async (item) => await launcherMatches(item, identity) ? item : undefined));
-  return checks.filter((item): item is RecordedTerminalLaunch => item !== undefined);
+/** This instance's launch records whose launcher is live, and those whose launcher cannot be identified (never gone). */
+async function recordsByState(rows: RecordedTerminalLaunch[], projectRoot: string, instanceId: string, identity: ProcessIdentity): Promise<{ live: RecordedTerminalLaunch[]; unknown: RecordedTerminalLaunch[] }> {
+  if (!instanceId) return { live: [], unknown: [] };
+  const candidates = rows.filter((item) => item.projectRoot === projectRoot && item.instanceId === instanceId);
+  const states = await Promise.all(candidates.map((item) => launcherState(item, identity)));
+  return { live: candidates.filter((_, i) => states[i] === "live"), unknown: candidates.filter((_, i) => states[i] === "unknown") };
+}
+
+/** #215: the launcher recorded for `peer` on this instance (one row per peer and instance) and its state; managed means live. */
+export async function launcherOf(peer: TerminalPeer, projectRoot: string, options?: TerminalRecoveryOptions): Promise<{ record?: RecordedTerminalLaunch; state: LauncherState } | undefined> {
+  const config = normalizeOptions(options);
+  if (!config.stateDir || !config.instanceId) return undefined;
+  const rows = launchRecords(config.stateDir);
+  if (rows === "unreadable") return { state: "unknown" };
+  const record = rows.find((row) => row.peer === peer && row.projectRoot === projectRoot && row.instanceId === config.instanceId);
+  return record ? { record, state: await launcherState(record, config.processIdentity) } : undefined;
 }
 
 /**
@@ -311,7 +347,13 @@ export async function recordTerminalLaunch(peer: TerminalPeer, projectRoot: stri
   process.env.AGENTHUB_LAUNCH_ID = launchId;
   process.env.AGENTHUB_INSTANCE_ID = instanceId;
   const row: RecordedTerminalLaunch = { peer, projectRoot, stateDir, instanceId, launcherPid: process.pid, launcherSignature, launchId, handle, incarnationId, worktreeId: actualWorktree, env: allowedEnv({ env: process.env }) };
-  const rows = readLaunchRecords(stateDir).filter((item) => !(item.peer === peer && item.instanceId === instanceId));
+  const existing = launchRecords(stateDir);
+  // #215: rewriting an unreadable file would replace every other launcher's record with this one, and recovery would
+  // then read those launchers as gone.
+  if (existing === "unreadable") {
+    throw new OrcaCommandError(blocker("command-error", `${recordPath(stateDir)} cannot be read, so recording this launch would erase every other launcher's record; next action: inspect that file and move it aside (recovery then treats sessions it recorded as unmanaged), then launch again`, peer, handle));
+  }
+  const rows = existing.filter((item) => !(item.peer === peer && item.instanceId === instanceId));
   rows.push(row);
   writeLaunchRecords(stateDir, rows);
   return row;
@@ -401,6 +443,8 @@ function blocker(code: RecoveryBlocker["code"], message: string, peer?: Terminal
     code === "ambiguous-terminal" ? "close or identify the duplicate terminal, then resume recovery" :
     code === "ambiguous-create" ? "inspect the existing terminal and attach the original session before resuming" :
     code === "terminal-unready" ? "finish or cancel the active terminal turn, then resume recovery" :
+    code === "launcher-exited" ? "the session was not restored; the coordinator's error names the choices" :
+    code === "terminal-gone" ? "the terminal was closed; inspect the project's terminals in Orca before resuming recovery" :
     "inspect the named terminal and resume recovery after the identity is verified";
   return { code, message, ...(peer ? { peer } : {}), ...(handle ? { handle, terminalReference: handle } : {}), nextAction };
 }
@@ -429,12 +473,16 @@ async function showBinding(binding: TerminalBinding, options: Required<TerminalR
  */
 export async function inspectTerminals(projectRoot: string, sessions: Partial<Record<TerminalPeer, string | SessionRef>>, options?: CommandRunner | TerminalRecoveryOptions): Promise<TerminalInspection> {
   const config = normalizeOptions(options);
-  const records = await liveRecords(config.stateDir, projectRoot, config.instanceId, config.processIdentity);
   const blockers: RecoveryBlocker[] = [];
   const bindings: TerminalBinding[] = [];
   const byPeer: Partial<Record<TerminalPeer, TerminalBinding>> = {};
   const requested = (Object.entries(sessions) as [TerminalPeer, string | SessionRef | undefined][]).map(([peer, value]) => [peer, typeof value === "string" ? { sessionId: value } : value] as const).filter((entry): entry is [TerminalPeer, SessionRef] => !!entry[1]?.sessionId);
   if (!requested.length) return { bindings, byPeer, blockers, manualRequired: false };
+  // #215: without the records a terminal could be bound from Orca metadata alone, losing the launch's captured
+  // CODEX_HOME or CLAUDE_CONFIG_DIR: an unreadable file blocks the binding, never reads as "no records".
+  const rows = launchRecords(config.stateDir);
+  if (rows === "unreadable") return { bindings, byPeer, blockers: [blocker("command-error", `${recordPath(config.stateDir)} cannot be read, so no terminal can be bound to its launch; inspect or move it aside, then plan or resume again`)], manualRequired: true };
+  const { live: records, unknown } = await recordsByState(rows, projectRoot, config.instanceId, config.processIdentity);
 
   let listed: Record<string, unknown>[];
   try {
@@ -446,6 +494,12 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
 
   for (const [peer, ref] of requested) {
     const sessionId = ref.sessionId;
+    // #215: a launcher whose identity cannot be read may be this peer's: binding from Orca metadata would lose its launch.
+    const unread = unknown.find((item) => item.peer === peer);
+    if (unread) {
+      blockers.push(blocker("ownership-unknown", `the ${peer} launcher recorded for terminal ${unread.handle} (pid ${unread.launcherPid}) cannot be identified, so no terminal can be bound to its launch; wait until it exits or end it, then plan or resume again`, peer, unread.handle));
+      continue;
+    }
     const candidates = listed.filter((terminal) => rootMatches(terminal.worktreePath ?? terminal.projectRoot, projectRoot));
     const peerCandidates: Record<string, unknown>[] = [];
     for (const listedTerminal of candidates) {
@@ -500,16 +554,25 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
   return { bindings, byPeer, blockers, manualRequired: blockers.length > 0 };
 }
 
+/**
+ * One bounded Orca wait. Orca 1.4.223 answers a wait that timed out with exit 1 and `{"ok":false,"error":{"code":"timeout"}}`:
+ * that is "not satisfied", not a failure. Any other failure still throws.
+ */
+async function waitSatisfied(runner: CommandRunner, handle: string, timeoutMs: number): Promise<boolean> {
+  const argv = ["terminal", "wait", "--terminal", handle, "--for", "tui-idle", "--timeout-ms", String(timeoutMs), "--json"];
+  const result = await runner(argv);
+  if (commandStatus(result) !== 0 && errorCode(result) === "timeout") return false;
+  const root = responseResult(await run(async () => result, argv));
+  return root.satisfied === true || object(root.wait).satisfied === true;
+}
+
 /** Wait only on the captured terminal and only for Orca's supported TUI-idle condition. */
 export async function waitForIdle(binding: TerminalBinding, timeoutMs: number, options?: CommandRunner | TerminalRecoveryOptions): Promise<IdleResult> {
   const config = normalizeOptions(options);
   const timeout = Number.isFinite(timeoutMs) && timeoutMs >= 0 ? Math.min(Math.floor(timeoutMs), MAX_WAIT_MS) : 0;
   try {
     await showBinding(binding, config);
-    const value = await run(config.runner, ["terminal", "wait", "--terminal", binding.handle, "--for", "tui-idle", "--timeout-ms", String(timeout), "--json"]);
-    const root = responseResult(value);
-    const wait = object(root.wait);
-    const satisfied = root.satisfied === true || wait.satisfied === true;
+    const satisfied = await waitSatisfied(config.runner, binding.handle, timeout);
     const blockers = satisfied ? [] : [blocker("terminal-unready", `terminal ${binding.handle} did not become idle before the bounded wait`, binding.peer, binding.handle)];
     return { satisfied, manualRequired: !satisfied, blockers };
   } catch (error) {
@@ -548,9 +611,13 @@ export async function closeTerminal(binding: TerminalBinding, timeoutMs = 600_00
   }
 }
 
-/** Create a replacement in the captured worktree, then prove TUI readiness and session mapping. */
-export async function createTerminal(binding: TerminalBinding, options?: CommandRunner | TerminalRecoveryOptions, timeoutMs = 600_000): Promise<TerminalCreateResult> {
+/**
+ * Create a replacement in the captured worktree, then prove TUI readiness and session mapping. `anySession` maps a
+ * fresh session the operator chose (#215): the terminal must still be this launch's, under any new session id.
+ */
+export async function createTerminal(binding: TerminalBinding, options?: CommandRunner | TerminalRecoveryOptions, timeoutMs = 600_000, anySession = false): Promise<TerminalCreateResult> {
   const config = normalizeOptions(options);
+  let made: string | undefined; // a later failure must still report the terminal it created
   try {
     const worktreeSelector = binding.worktreeId.startsWith("id:") ? binding.worktreeId : `id:${binding.worktreeId}`;
     // The coordinator journals a pending creation before this call and reconciles
@@ -558,6 +625,7 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
     const value = await run(config.runner, ["terminal", "create", "--worktree", worktreeSelector, "--command", binding.launch.command, "--title", `${binding.peer} recovery`, "--json"]);
     let created = terminalObject(value);
     const createdHandle = nestedString(created, ["handle"]);
+    made = createdHandle;
     if (!createdHandle) return { created: false, ready: false, manualRequired: true, blockers: [blocker("ambiguous-create", "Orca create returned no terminal handle", binding.peer)] };
     const incarnationId = nestedString(created, ["incarnationId"]);
     const worktreeId = nestedString(created, ["worktreeId"]) ?? binding.worktreeId;
@@ -566,20 +634,56 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
       if (listed.length !== 1) return { created: false, ready: false, manualRequired: true, blockers: [blocker("ambiguous-create", `created terminal ${createdHandle} lacks stable identity`, binding.peer, createdHandle)] };
       created = listed[0]!;
     }
-    const replacement: TerminalBinding = { ...binding, handle: createdHandle, incarnationId: nestedString(created, ["incarnationId"])!, worktreeId, launch: binding.launch, launchMetadata: binding.launch };
-    const idle = await waitForIdle(replacement, timeoutMs, config);
+    let replacement: TerminalBinding = { ...binding, handle: createdHandle, incarnationId: nestedString(created, ["incarnationId"])!, worktreeId, launch: binding.launch, launchMetadata: binding.launch };
+    // The launch record `ahub <peer>` writes in the new terminal: live, gone (all recorded launchers), or neither.
+    const launches = async () => {
+      const rows = launchRecords(config.stateDir);
+      if (rows === "unreadable") return { live: undefined, gone: false, mayRun: true }; // unknown, never gone
+      const possible = rows.filter((item) => item.instanceId === config.instanceId && item.peer === binding.peer && item.projectRoot === binding.projectRoot && item.handle === createdHandle && item.worktreeId === replacement.worktreeId && item.incarnationId === replacement.incarnationId);
+      const states = await Promise.all(possible.map(async (item) => ({ item, state: await launcherState(item, config.processIdentity) })));
+      return { live: states.find((entry) => entry.state === "live")?.item, gone: states.length > 0 && states.every((entry) => entry.state === "gone"), mayRun: states.some((entry) => entry.state !== "gone") };
+    };
+    // #215: Orca types the command into a login shell that outlives it, so the terminal never exits with the launcher.
+    // Readiness is awaited in slices, and between them the launcher's own record says whether it still runs: one that
+    // recorded itself and is gone failed. A stale handle is gone only when Orca no longer lists the terminal's
+    // incarnation and no recorded launcher may still run. One that never recorded itself is left to the readiness
+    // bound and to the coordinator's reconciliation of its pending receipt.
+    const exited = (why: string) => ({ created: true, ready: false, manualRequired: true, blockers: [blocker("launcher-exited", `the ${binding.peer} restoration launcher in terminal ${createdHandle} ${why} before its TUI was ready`, binding.peer, createdHandle)] });
+    const deadline = Date.now() + Math.min(timeoutMs, MAX_WAIT_MS);
+    const slice = () => Math.max(1, Math.min(EXIT_SLICE_MS, deadline - Date.now())); // Orca refuses --timeout-ms 0
+    let idle = await waitForIdle(replacement, slice(), config);
+    for (;;) {
+      if (idle.blockers[0]?.code === "terminal-gone") {
+        const launch = await launches();
+        if (launch.gone) return exited("exited");
+        if (launch.mayRun) break;
+        const inventory = await run(config.runner, ["terminal", "list", "--json"]);
+        // A truncated inventory cannot show that the terminal is no longer listed.
+        const listed = responseResult(inventory).truncated === true || listTerminals(inventory).some((terminal) => terminal.incarnationId === replacement.incarnationId);
+        if (!listed) return exited("lost its terminal");
+        break;
+      }
+      if (idle.satisfied || idle.blockers[0]?.code !== "terminal-unready") break;
+      if ((await launches()).gone) return exited("exited");
+      if (Date.now() >= deadline) break;
+      idle = await waitForIdle(replacement, slice(), config);
+    }
     if (!idle.satisfied) return { created: true, ready: false, manualRequired: true, blockers: idle.blockers };
+    // An idle terminal may be the login shell the launcher returned to.
+    const launch = await launches();
+    if (launch.gone) return exited("exited");
     const shown = await showBinding(replacement, config);
     const identity = identityFrom(shown);
     const session = sessionFrom(shown);
-    const possibleRecords = readLaunchRecords(config.stateDir).filter((item) => item.instanceId === config.instanceId && item.peer === binding.peer && item.projectRoot === binding.projectRoot && item.handle === createdHandle && item.worktreeId === replacement.worktreeId && item.incarnationId === replacement.incarnationId);
-    const recorded = (await Promise.all(possibleRecords.map(async (item) => await launcherMatches(item, config.processIdentity) ? item : undefined))).find((item): item is RecordedTerminalLaunch => item !== undefined);
-    if ((identity !== binding.peer || session !== binding.sessionId) && !(recorded && (identity === undefined || identity === binding.peer) && (session === undefined || session === binding.sessionId))) {
+    const recorded = launch.live;
+    const same = (value: string | undefined) => anySession || value === binding.sessionId;
+    if ((identity !== binding.peer || !same(session)) && !(recorded && (identity === undefined || identity === binding.peer) && (session === undefined || same(session)))) {
       return { created: true, ready: true, manualRequired: true, blockers: [blocker("ambiguous-create", `created terminal ${createdHandle} cannot be mapped to the original ${binding.peer} session`, binding.peer, createdHandle)] };
     }
+    if (anySession && session) replacement = { ...replacement, sessionId: session };
     return { created: true, ready: true, manualRequired: false, binding: replacement, newBinding: replacement, blockers: [] };
   } catch (error) {
-    return { created: false, ready: false, manualRequired: true, blockers: [error instanceof OrcaCommandError ? error.blocker : blocker("command-error", String(error), binding.peer, binding.handle)] };
+    return { created: made !== undefined, ready: false, manualRequired: true, blockers: [error instanceof OrcaCommandError ? error.blocker : blocker("command-error", String(error), binding.peer, made ?? binding.handle)] };
   }
 }
 

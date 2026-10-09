@@ -163,3 +163,290 @@ The target coordinator accepts authenticated protocol 9, 10 and 11 sources, then
 uses protocol 11 after startup. Older supported managers are refreshed onto the
 current implementation. The real 0.6.4/protocol-9 transition and the 0.12.0/protocol-10
 development-hub transition are recorded in `docs/smoke.md`.
+
+### Unmanaged Claude sessions (#206)
+
+Amended 2026-10-09. An attached Claude session is managed when a live `ahub claude`
+launcher is recorded for the running daemon instance (`terminal-recovery.json`, its
+launcher identity checked with the shared `processSignature`) and the session record
+(`claude-session.json`) was written by that launch. Managed sessions are closed and
+resumed in a new terminal as before.
+
+Any other attached Claude session is unmanaged: a plain `claude`, an `ahub claude`
+outside Orca, or one whose launcher has ended. Its session record cannot be bound to
+the attached session, so the plan drops the id (no output names it) and lists the
+peer under `reconnectOnly`: no terminal is inspected, closed or relaunched, and the
+source roster check compares its membership only. Before starting the target the
+coordinator writes an operation-fenced waiver (`recovery-waivers.json`, mode 0600),
+so the restored daemon does not require the saved session id for that peer; release
+still requires it to reattach, which the coordinator waits for up to 90 seconds
+(three times the plugin's longest reconnect backoff). Reconnect-only requires the
+source control protocol to equal the target's; otherwise the plan names a blocker
+whose next action is to end the session or relaunch it with `ahub claude` in Orca.
+A live launcher whose record was written by another launch is a blocker, never a
+target. Refused `upgrade --yes` and `restart --yes`, and every dry-run, print each
+blocker on stderr before the final line.
+
+The channel's hello carries no launch id, so a plain `claude` that took the peer id
+from a live managed session is classified as managed. Telling them apart needs the
+launch id at hello, which is a protocol change and is not claimed here. A live
+upgrade with an unmanaged session attached has not been run.
+
+### Partial operations (#215)
+
+Amended 2026-10-09, before implementation.
+
+Expired preparation. The source hold lapses after ten minutes. When a project is
+still `prepared` (terminal effects may already be recorded) and its hold is gone,
+resume re-prepares the same source instead of reporting "source is no longer
+prepared". The running daemon must be the planned source instance: a replaced
+daemon or a source held by another operation is refused, with nothing prepared,
+closed or stopped. The coordinator prepares again under the same operation id,
+waits for readiness within the preparation bound (on timeout it aborts only its
+own hold) and checks the roster again. A peer whose terminal this operation
+already closed must stay detached; every other peer must keep its planned
+conversation. Effect receipts are never reset, so no terminal is closed twice,
+and the exclusive runner claim and instance fencing are unchanged. The
+re-prepared source records a closed peer as offline, so the target daemon does
+not require that peer itself; the coordinator still requires every originally
+attached peer back before release. A roster change while effects are recorded
+names the peer and the choices below instead of asking for a new plan.
+
+Native resume viability. A Codex thread counts as resumable only when a rollout
+file naming it exists under `sessions/` of the store its restoration uses (the
+launcher's captured `CODEX_HOME`, else `~/.codex`); an app-server thread id
+alone proves nothing. The plan blocks a Codex peer without one, the coordinator
+checks again before closing its terminal (closing nothing when it fails) and
+before creating the replacement.
+
+Launcher failure. Orca's `terminal create --command` types the command into a
+login shell, which outlives it, so the terminal never exits with the launcher
+and its exit is no evidence. The evidence is the hub's own: `ahub codex`,
+`ahub claude` and `ahub pi --mode tui` record their launcher (pid and process
+signature) in `terminal-recovery.json` for the terminal they run in, before
+they start the native agent. A replacement is awaited in 5-second slices of
+Orca's `tui-idle` wait (Orca 1.4.223 answers a timed-out wait with exit 1 and
+`{"ok":false,"error":{"code":"timeout"}}`, which counts as not yet). Between
+slices, and once the terminal reads idle (an idle terminal may be the shell the
+launcher returned to), a recorded launcher that is gone means the launch failed,
+recognized within one slice. A launcher whose identity cannot be read is unknown
+and is waited for, never taken as gone. A handle Orca reports
+`terminal_handle_stale` means the terminal is gone only when no recorded
+launcher may still run and Orca no longer lists the terminal's incarnation;
+otherwise the create stays uncertain. A launcher that died before recording
+itself is not distinguished from a slow one, and whether Orca reports the bare
+login shell as TUI-idle is not verified: if it does, the create stops at once as
+not mappable to the session; if not, after the 10-minute readiness bound. Either
+way it blocks as needing manual verification with the receipt `pending`, and the
+next resume, finding no live launcher and no attached session, records `failed`. Resume settles a `pending` or `failed` receipt by what is live
+(the table below): an attached planned (or accepted) session is the
+restoration, a launcher that may run is waited for, and only nothing live makes
+it `failed` or, for `failed`, launches again. No terminal is created while a
+recorded launcher for the peer may run on the target or its session is attached.
+A launch that failed, or a thread found not resumable before the launch, is
+receipted `restored:<peer>` = `failed` and never counts as restored. A Codex
+store that cannot be read (other than missing) is unknown and blocks the plan,
+the close and the create rather than counting as not resumable. Claude's
+zero-turn rule is unchanged; Pi resume viability is not checked.
+
+Failed restoration. The operation blocks naming the peer, its session or thread
+id and the choices. `resume` launches a failed peer again once its cause is
+fixed; a thread that is still not resumable fails again with the same choices.
+
+Status. `ahub recovery status <id>` reports the receipt (phase, step, update
+time, error); whether a runner process holds the operation now (`runner.state`
+`running` with its pid, or `none`); `stale` when the receipt says `running` but
+no runner holds it; each project's phase and effect receipts (`closed:<peer>`,
+`restored:<peer>` as `done`, `pending` or `failed`); whether the shared plugin
+and the global CLI were installed; any lost continuity and disposition; and
+`next`, the commands that apply now. It never contains task or message text.
+`resume` does not start a second runner while one is alive.
+
+Disposition. Two human-only choices, each with a required `--reason`, run from
+an ordinary terminal (agent shells are refused by the CLI identity gate), claim
+the runner (refusing while one is alive) and append to the receipt's audit:
+
+- `ahub recovery dispose <id> --fresh-session <peer> --reason <text>` applies
+  only to a Codex or Claude peer whose restoration is receipted `failed`; Pi is
+  refused, because a restored hub refills a Pi start from its recorded resume.
+  Like reconnect-only (#206), it needs a target that reads
+  `recovery-waivers.json`: staging refuses a target without it when a
+  reconnect-only session is planned, and the fresh launch is refused on one. Per affected project
+  it records the lost session or thread id (`fresh`) and schedules `resume`,
+  which writes an operation-fenced waiver so the restored daemon accepts a new
+  session for that peer, launches the peer without a resume id in a new
+  terminal, records the id the daemon then reports, and verifies everything
+  else as before. The operation may then complete; its status keeps the lost
+  continuity.
+- `ahub recovery dispose <id> --stop-and-archive --reason <text>` abandons the
+  operation. It inspects every project before acting. Every unverified project
+  must read as running, stopped or missing (`disposeRefusal`): any other reading
+  (unavailable, starting, stopping, incompatible, or an inspection that failed)
+  refuses the whole disposition, and a project whose directory is gone is
+  recorded as such (nothing to stop or archive). A
+  source this operation holds and has not committed gets its hold aborted and
+  keeps running. A target this operation started and has not released (a
+  running daemon in phase `restored` under this operation id, other than the
+  source, whether or not the receipt recorded its instance) is stopped by its
+  live instance through the lifecycle stop, which verifies the instance and
+  waits until its manifest and registry claim are gone, and is then inspected
+  again. A daemon this operation does not own, or one already released, is left
+  running. Each project's outcome is recorded as it happens; a disposition that
+  stops partway keeps the lock, and resume and `--fresh-session` then refuse
+  until `--stop-and-archive` is run again and finishes. A stopped project's committed
+  snapshot of this operation moves to `restart.abandoned.<hash>.json`, which is
+  never replayed, so an ordinary `up` works again. Queued envelopes are not
+  delivered from that file; a hub with a delivery journal (protocol 10 and
+  later) reloads the queues it persisted in `hub.db` on its next start.
+  Replacement terminals the operation created stay open, attached to nothing
+  until a hub runs again. Only then is the operation
+  recorded `cancelled` with its disposition (per-project outcome, plugin and CLI
+  state) and the lock released. It is never recorded as completed, the global
+  CLI is not promoted, and terminals it closed stay closed. A project whose
+  target ran is started again with the target's CLI. The archived reset proposed
+  in #214 can follow: no lock or replayable snapshot is left in its way.
+- `abort` stays the escape for a preflight without effects; its refusal names
+  the disposition. It also cancels a prepared project whose source still runs as
+  the same instance after its hold lapsed, which was never committed. A roster
+  change found while no effects are recorded offers `abort` exactly when
+  `abortRefusal` allows it (this operation's lock refuses a new upgrade until it
+  is cancelled).
+
+#### Receipts, evidence and next actions
+
+Resume, abort, dispose, the `next` list of `status` and every error follow this
+table. A `failed` receipt stays `failed` until the relaunch replaces it with
+`pending`, so a refusal on the way (an unreadable store, a launch found live, a
+target without waivers) keeps its choices. `--fresh-session` is neither offered
+nor accepted when the target cannot read recovery waivers; `status` then says
+why in its own `freshSession` field, since `next` holds commands only. A runner
+record that cannot be read shows as `unknown` in `status`, never as no runner;
+while it reads so, resume, abort and dispose are all refused (the runner claim
+cannot tell its owner), so `next` names only `status` again. Otherwise `status` and every error that lists choices build them with one function
+(`nextActions`), in this order: resume (which also launches a failed peer
+again), unless it can never get past what is live (`resumeBlocked`): a
+recorded final refusal (staging refused the fixed target or preserved source), a
+missing project directory, a hub that speaks another control protocol, a
+runtime other than the one the receipt expects (a replaced source; a target not
+fenced to this operation, another instance or another version), a stopped
+pending source, a prepared source of a #215 coordinator that stopped with no
+commit request, a target that stopped after it started (restarting it is not
+supported in this release: its peers would have to be relaunched against the
+new instance), or any other stopped runtime without this operation's unreleased
+restart snapshot to start from (unavailable, starting or stopping is waited
+for). Then abort where `abortRefusal` allows it; a fresh session for each failed
+Codex or Claude restoration, only where resume is offered (resume launches the
+new session, and dispose refuses `--fresh-session` on the same predicate); and
+last stop-and-archive where `disposeRefusal` allows it, or else `wait until
+<project>'s hub settles, then <c> recovery status <id>`. `test/upgrade.test.ts`
+holds `next` to the commands with a fake driver for one project with no peers:
+ten receipt states (pending, prepared, prepared with a sent commit, prepared by
+an older coordinator, prepared with a closed terminal, stopped, started, started
+with a failed Codex restoration, peers restored, a partway stop-and-archive)
+crossed with ten live states (as planned, replaced, held by another operation,
+crashed, crashed with the snapshot kept, unavailable, starting, stopping,
+incompatible, missing); the older coordinator's operation is run there by the
+current runner, and its fakes never fail start, restore or verify (terminals,
+Orca and peers are covered by their own tests, not by this one). Abort, stop-and-archive and `--fresh-session codex` are offered
+exactly when the command accepts them on a twin fixture, and where resume is
+offered it makes progress or its error names a step a person takes first. An error gives only its own step (the
+last column below) and the runner ends it with that list (`next actions: ...`),
+read from the same sources as `status`, so it names abort exactly when
+`abortRefusal` allows it, the same as `status`, and never
+"make a new plan" alone: this operation's lock refuses a new one. `<c>` is the operation's own coordinator, printed in full as
+`bun <preserved source>/src/cli/main.js`: during an upgrade the global `ahub`
+may still be the older release, whose `recovery` lacks these commands.
+"Effects" means any project past `prepared` or any terminal receipt in the whole
+operation. Stop-and-archive (`<c> recovery dispose <id> --stop-and-archive
+--reason <text>`) is offered, as the last `next` entry, exactly when
+`disposeRefusal` allows it; the rows give what else applies.
+
+A recorded launcher is the `terminal-recovery.json` row for that peer on the
+target instance. It is live when its process signature matches, gone when the
+pid no longer exists (ESRCH) or now belongs to another process, and unknown when
+the pid exists but its identity cannot be read. Unknown is never treated as gone. At planning, an
+unknown Claude launcher blocks: whether the attached session is managed cannot
+be told.
+Restore reads this evidence in one place: the target's report, which counts only
+when the target runs as the expected instance, then the recorded launcher. A
+target that does not, a launcher that cannot be read, or a launcher record file
+that cannot be read or parsed is unknown and blocks without changing a receipt;
+the record file is written atomically (temp + rename), and a launch is not recorded
+over a record file that cannot be read (that would erase the other launchers'
+records). `ahub codex` and `ahub pi --mode tui` launched by the operation that
+holds the lock record themselves before the hub's start round trip. Whether a
+target reads waivers is one check, used by staging, restore, `next` and dispose. A truncated Orca
+inventory never shows a terminal as gone. While a stop-and-archive is recorded,
+`resume` is refused by the running release, whichever coordinator started the
+operation, and the runner keeps the disposition's own error. Abort and `next` decide with one predicate
+(`abortRefusal`). `status`, abort and the runner's errors read the same live
+state: every project not yet verified, its source or its target. A manifest
+whose pid no longer exists reads as stopped, whatever protocol it names; probing
+it would read unavailable forever. A stopped runtime also reports whose
+unreleased restart snapshot its state directory holds.
+An attached session is the target's report of that peer online with a thread
+(Codex) or session (Claude, Pi) id.
+
+| Receipt | Live evidence | Resume | Other actions | Next action text |
+| --- | --- | --- | --- | --- |
+| project `pending` or `prepared`, no effects | roster changed | blocks | abort where `abortRefusal` allows it, dispose | `end that <peer> session` or `restore <peer>'s original session` `before resuming, or end this operation: a new plan can be made once it is cancelled or ended` |
+| project `prepared`, hold ours | roster as planned | roster checked again, then close and commit | abort if no effects | none (it proceeds) |
+| project `prepared`, hold ours | roster changed, effects | blocks, hold kept | dispose | `end that <peer> session` (joined after the plan, or its terminal was closed) or `restore <peer>'s original session`, `then <c> recovery resume <id>` |
+| project `prepared`, hold lapsed (same source instance) | roster as planned | re-prepare, check roster, close, commit | abort if no effects | none |
+| project `prepared`, hold lapsed | roster changed | as the two rows above | as above | as above |
+| project `pending` | source replaced, stopped or missing | blocks, nothing touched; not offered | abort if no effects, dispose | `source runtime changed` |
+| project `pending` or `prepared` | source unavailable, starting or stopping | blocks until it answers | abort as `abortRefusal` decides; stop-and-archive refused until it reads | `wait until it answers` |
+| project `prepared` | source replaced | blocks, nothing touched; not offered | abort if no effects (cancels and leaves that daemon alone), dispose | stop-and-archive |
+| project `pending` or `prepared` | source held by another operation | blocks, nothing touched, until that operation ends | abort if no effects (leaves that hold alone), dispose | `wait until that operation ends or its hold lapses` |
+| any project not verified | project directory missing | blocks; not offered | abort as `abortRefusal` decides, dispose | `the project directory is missing` |
+| any project not verified | hub speaks another control protocol (incompatible) | blocks; not offered | abort as `abortRefusal` decides; stop-and-archive refused | `wait until <project>'s hub settles` (end it by hand: operations guide) |
+| project `prepared` with `commitSent` (a per-project receipt flag written right before the commit request; `step` is rewritten on every resume and is not evidence) | any (the commit may have been sent) | continues from the commit; a stopped source starts the target only from this operation's snapshot, so without it resume is not offered | dispose; abort is neither offered nor accepted | `<c> recovery resume <id>` |
+| project `prepared`, no `commitSent`, operation of a #215 coordinator | source stopped (crashed before any commit request) | blocks; the phase stays `prepared` (nothing was committed, so there is nothing to start from); not offered | abort if no effects, dispose | `<c> recovery abort <id>` without effects, else stop-and-archive (the lock refuses starting that hub by hand) |
+| project `prepared` | source unavailable, starting, stopping or not inspected | as above when it reads again | none: abort (its hold may still stand) and stop-and-archive are refused until it reads | `<c> recovery status <id>` once it answers |
+| project `prepared`, operation of an older coordinator (no `commitSent` written) | source not running, or not inspected | as its own runner does | dispose once it reads running, stopped or missing; abort neither offered nor accepted (it may have committed) | `<c> recovery status <id>` |
+| project `started` or `peers-restored` | target stopped (a crash or reboot after it started), with or without its snapshot | blocks; not offered: restarting it is not supported in this release | dispose; no fresh session | `the target stopped after it started; restarting it is not supported in this release` |
+| project `stopped` | target stopped without this operation's snapshot (never committed) | blocks; not offered | dispose | `the target is stopped and this operation's restart snapshot is gone` |
+| project `stopped`, `started` or `peers-restored` | target running unfenced, as another instance or another version | blocks; not offered | dispose | `daemon is not owned by this recovery operation` (or `daemon instance changed`, `target daemon version mismatch`) |
+| any, at staging | preserved source or staged target changed, or (first staging of these bytes only) target protocol or recovery waivers refused | blocks; recorded as `final`, so resume is never offered again | abort if no effects, dispose | the refusal |
+| any, at staging | the protocol probe did not answer (killed, exit 1) before the first staging | blocks, not final | dispose; abort if no effects | `resume again once it can run`; once staged, the checks are not run again |
+| disposition recorded, first act not finished | any | refused | abort refused; stop-and-archive where `disposeRefusal` allows it | as the disposition row below |
+| `closed:<peer>` `pending` | Orca still lists the terminal | blocks | dispose | `close Orca terminal <handle> (the login shell it runs in) by hand, then <c> recovery resume <id>` |
+| `closed:<peer>` done | peer attached again | blocks | dispose | `end that <peer> session, then <c> recovery resume <id>` |
+| `restored:<peer>` `pending` or `failed` | session attached with the planned id (or an accepted new one: fresh choice, planned fresh start, zero-turn Claude) | recorded as restored | none: `--fresh-session` is neither offered nor accepted while the inspection shows the planned session attached; when it cannot tell (not inspected, target unreadable), the `failed` receipt alone decides, and a chosen fresh session whose original then attaches is cleared on resume while its audit entry stays | none |
+| `restored:<peer>` `pending` or `failed` | another session attached | blocks | dispose | `end that <peer> session and close its terminal, then <c> recovery resume <id>` |
+| `restored:<peer>` `pending` or `failed` | no session, recorded launcher live or unknown | blocks | dispose | `wait until it attaches, or end it and close terminal <handle>, then <c> recovery resume <id>` |
+| `restored:<peer>` `pending` | no session, launcher gone or never recorded | receipted `failed`, blocks | fresh session (Codex, Claude), dispose | the failed-restoration choices below |
+| `restored:<peer>` `failed` | no session, launcher gone or never recorded | launches again (fresh if chosen) | fresh session (Codex, Claude), dispose | the failed-restoration choices below |
+| `restored:codex` absent | rollout missing | receipted `failed`, blocks, no terminal created | fresh session, dispose | the failed-restoration choices below |
+| any, before close or create | Codex store unreadable | blocks, nothing closed or created | dispose | `make <store> readable, then <c> recovery resume <id>` |
+| `restored:<peer>` absent | the planned session attached | recorded as restored | none | none |
+| `restored:<peer>` absent | another session attached, or a recorded launcher live | blocks, no terminal created | dispose | `end that <peer> session and close its terminal` (or `wait until it attaches, or end it and close terminal <handle>`), `then <c> recovery resume <id>` |
+| any receipt being settled or launched | target hub not running as the expected instance (unavailable, starting or stopping; a stopped or other target is settled by the rows above), or a launcher or launcher record file that cannot be read | blocks; no receipt changes, nothing created | dispose once the target reads running or stopped | `wait until the target answers` (or wait for / end the launcher, or inspect the record file and move it aside), `then <c> recovery resume <id>` |
+| `fresh` recorded for a peer | none live | launches it without a resume id, records the new id | dispose | none |
+| disposition recorded, not finished | any | refused | stop-and-archive only | `rerun <c> recovery dispose <id> --stop-and-archive --reason <text>` where `disposeRefusal` allows it, else `wait until <project>'s hub settles, then <c> recovery status <id>` |
+| `completed` or `cancelled` | any | nothing to do | none | none |
+
+The failed-restoration choices are `<c> recovery dispose <id> --fresh-session
+<peer> --reason <text>` (Codex or Claude; records the lost session and resumes;
+if the original session attaches after all, the recorded loss is cleared) and
+stop-and-archive. When the operation's own coordinator predates these commands
+(it has no `dispose`, refuses abort and resume on a lapsed hold and prints no
+`next`), `<c>` names the running release for every action: abort, status and
+dispose run in that process, while resume still runs the operation's own runner
+and its `next` entry says what that runner cannot do. Stop-and-archive stops a
+target that speaks an older control protocol at that protocol (a `kill` fenced
+by its instance), then waits for its manifest and registry claim as the
+lifecycle stop does. The disposition and its audit are written before the first
+act. A recovery launch of `ahub codex` records its launcher before the hub's
+`start` round trip; an ordinary launch records it after, so a refused start never
+replaces the record of a Codex already running.
+
+A Codex thread with no rollout is not blocked at the plan only when the hub saw
+Codex start it (`native_thread` with `fresh`, logged by the adapter when it
+adopts a thread) and logged no Codex `turn_start` while it was the adopted
+thread (Codex writes the rollout with the first message). The plan then lists
+it under `freshStart`, says so, and it restarts as a new session with nothing to
+lose. Detaching forgets nothing; a thread whose start the log does not show
+(resumed, an older hub, a pruned log) is unsure and stays a plan blocker, as
+does one with turns. A planned fresh start still needs the store to show the
+rollout missing: an unreadable store blocks the close and the create.

@@ -58,9 +58,57 @@ export function releaseRecoveryLock(id: string, home = hubHome()): void {
 /** Used by CLI and manager lifecycle paths. A detached operation carries its own ID. */
 export function assertLifecycleAvailable(): void {
   const owner = recoveryLock();
-  if (owner && process.env.AGENTHUB_RECOVERY_OPERATION !== owner) {
-    throw new Error(`recovery operation ${owner} is active; use ahub recovery status|resume ${owner}`);
-  }
+  if (owner && process.env.AGENTHUB_RECOVERY_OPERATION !== owner) throw new Error(activeOperation(owner));
+}
+
+/**
+ * #215: the command line of an operation's own coordinator, which has every recovery command. Mid-upgrade the global
+ * `ahub` may still be the older release, so next actions and errors never name it bare. A coordinator from before #215
+ * lacks dispose, refuses abort and resume on a lapsed hold and shows no next actions: then the running release is
+ * named, which does all of that in-process (its resume still runs the operation's own runner).
+ */
+export function recoveryCommand(op: { id: string; sourceRoot?: string }, action: "status" | "resume" | "abort" | "dispose", flags = ""): string {
+  const entry = !op.sourceRoot ? undefined : coordinatorCurrent(op.sourceRoot) ? join(op.sourceRoot, "src/cli/main.js") : join(import.meta.dir, "../cli/main.js");
+  const cli = !entry ? "ahub" : /^[\w./@+-]+$/.test(entry) ? `bun ${entry}` : `bun '${entry.replace(/'/g, `'\\''`)}'`;
+  return `${cli} recovery ${action} ${op.id}${flags ? ` ${flags}` : ""}`;
+}
+
+/**
+ * Whether a coordinator has the #215 recovery commands (dispose, re-preparation, next actions).
+ * ponytail: a text sniff of its upgrade.ts; a rename or re-export reads as an older coordinator (the running release is
+ * then named, which is safe). Upgrade path: a capability list in package.json, shared with targetReadsWaivers.
+ */
+export function coordinatorCurrent(sourceRoot: string): boolean {
+  try { return readFileSync(join(sourceRoot, "src/cli/upgrade.ts"), "utf8").includes("export async function disposeRecovery"); } catch { return false; }
+}
+
+/** What a lifecycle command refused by the lock says: the operation's own status command, which lists what to do next. */
+export function activeOperation(owner: string, home = hubHome()): string {
+  let op: { id: string; sourceRoot?: string } = { id: owner };
+  try { op = { id: owner, sourceRoot: readOperation<{ sourceRoot?: string }>(owner, home).sourceRoot }; } catch { /* no readable receipt: the bare commands are all there is */ }
+  // The choices depend on the operation's state (a partway stop-and-archive refuses resume): status lists them.
+  return `recovery operation ${owner} is active; ${recoveryCommand(op, "status")} lists what to do next`;
+}
+
+/**
+ * The pid of the runner that holds the operation now, read without claiming it (#215 status): undefined when none does,
+ * "unknown" when the record cannot be read (unreadable, or still locked after the busy timeout), never "none" then.
+ */
+export function recoveryRunner(id: string, home = hubHome()): number | "unknown" | undefined {
+  const path = `${operationPath(id, home)}.runner.db`;
+  if (!existsSync(path)) return undefined;
+  let db: Database | undefined;
+  try {
+    db = new Database(path, { readonly: true });
+    db.run("PRAGMA busy_timeout = 3000"); // a claim in progress must not read as no runner
+    // A crash between creating the file and its table leaves no runner; claimRunner creates the table and claims.
+    if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runner'").get()) return undefined;
+    const row = db.query("SELECT pid FROM runner WHERE slot = 1").get() as { pid: number } | null;
+    if (!row) return undefined;
+    if (!Number.isSafeInteger(row.pid) || row.pid < 1) return "unknown";
+    try { process.kill(row.pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return undefined; }
+    return row.pid;
+  } catch { return "unknown"; } finally { db?.close(); }
 }
 
 /** An exclusive runner claim. Never steal a live or uncertain owner on resume. */

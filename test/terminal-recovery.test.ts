@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   inspectTerminals,
   recordTerminalLaunch,
   createTerminal,
+  launcherOf,
   closeTerminal,
   restoreTerminal,
   shellQuote,
@@ -17,6 +18,8 @@ import {
 const root = "/tmp/project with 'quote";
 const worktreeId = "repo::/tmp/project with 'quote";
 const session = "session-1";
+/** What Orca 1.4.223 answers for a wait that timed out (#215 review): exit 1, not `satisfied: false`. */
+const waitTimedOut = { status: 1, stdout: JSON.stringify({ ok: false, error: { code: "timeout" } }) };
 
 function terminal(overrides: Record<string, unknown> = {}) {
   return {
@@ -104,7 +107,7 @@ test("an unsatisfied bounded wait never closes the captured terminal", async () 
   };
   const { calls, runner } = fake((argv) => {
     if (argv[1] === "show") return { result: { terminal: terminal() } };
-    if (argv[1] === "wait") return { result: { satisfied: false } };
+    if (argv[1] === "wait") return waitTimedOut;
     throw new Error(`unexpected ${argv.join(" ")}`);
   });
   const idle = await waitForIdle(binding, 99_999_999, runner);
@@ -172,6 +175,11 @@ test("recorded launch is private, allowlisted, and authenticates Orca metadata w
     const reusedPid = await inspectTerminals(root, { codex: session }, { runner, stateDir, instanceId: "instance-1", processIdentity: () => "different-process-start" });
     expect(reusedPid.manualRequired).toBe(true);
     expect(reusedPid.blockers.some((item) => item.code === "ownership-unknown")).toBe(true);
+    // #215 review: a live pid whose identity cannot be read may still be this launch; binding from Orca metadata alone
+    // would drop its CODEX_HOME, so it blocks like an unreadable record file.
+    const unidentified = await inspectTerminals(root, { codex: session }, { runner, stateDir, instanceId: "instance-1", processIdentity: () => undefined });
+    expect(unidentified).toMatchObject({ manualRequired: true, bindings: [] });
+    expect(unidentified.blockers[0]?.message).toContain("cannot be identified, so no terminal can be bound to its launch");
   } finally {
     if (previous.handle === undefined) delete process.env.ORCA_TERMINAL_HANDLE; else process.env.ORCA_TERMINAL_HANDLE = previous.handle;
     if (previous.worktree === undefined) delete process.env.ORCA_WORKTREE_ID; else process.env.ORCA_WORKTREE_ID = previous.worktree;
@@ -302,4 +310,126 @@ test("the default launcher signature is stable across the reading invocation's t
     await recorder.exited;
     rmSync(stateDir, { recursive: true, force: true });
   }
+});
+
+// #215: `codex resume <id>` that finds no saved session exits, but Orca typed the command into a login shell that
+// outlives it: the terminal never exits and never reads TUI-idle. Only the launcher's own record says it is gone.
+// Orca answers every wait that times out with exit 1 and error code "timeout", and a removed terminal's handle as stale.
+test("a restoration launcher that exits is recognized by its own record within one wait slice; a slow live one is still awaited", async () => {
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js codex resume session-1", argv: [], env: {} };
+  const binding: TerminalBinding = { peer: "codex", handle: "term-old", incarnationId: "inc-old", worktreeId, projectRoot: root, sessionId: session, launch, launchMetadata: launch };
+  const replacement = terminal({ handle: "term-new", incarnationId: "inc-new" });
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-launcher-exit-"));
+  const emptyState = mkdtempSync(join(tmpdir(), "ahub-launcher-none-"));
+  const ended = Bun.spawnSync(["true"]).pid; // a launcher pid that no longer exists (ESRCH)
+  // What `ahub codex` writes in the new terminal before it execs codex.
+  const record = (launcherPid: number) => writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify([{ peer: "codex", projectRoot: root, stateDir, instanceId: "i-target", launcherPid,
+    launcherSignature: "launcher-start", launchId: "launch-new", handle: "term-new", incarnationId: "inc-new", worktreeId, env: {} }]));
+  type Scenario = { identity?: string; gone?: boolean; staleOnStderr?: boolean; listed?: boolean; truncated?: boolean; idleAfter?: number; state?: string };
+  const scenario = (opts: Scenario) => {
+    let idleWaits = 0;
+    const commands = fake((argv) => {
+      if (argv[1] === "create") return { result: { terminal: { handle: "term-new", incarnationId: "inc-new", worktreeId } } };
+      if (argv[1] === "show") return opts.staleOnStderr ? { status: 1, stderr: JSON.stringify({ ok: false, error: { code: "terminal_handle_stale" } }) }
+        : opts.gone ? { status: 1, stdout: JSON.stringify({ ok: false, error: { code: "terminal_handle_stale" } }) } : { result: { terminal: replacement } };
+      if (argv[1] === "list") return { result: { terminals: opts.listed ? [terminal({ handle: "term-renamed", incarnationId: "inc-new" })] : [], ...(opts.truncated ? { truncated: true } : {}) } };
+      if (argv[1] === "wait") return idleWaits++ < (opts.idleAfter ?? Infinity) ? waitTimedOut : { result: { wait: { satisfied: true } } };
+      throw new Error("unexpected command");
+    });
+    return { ...commands, options: { runner: commands.runner, stateDir: opts.state ?? stateDir, instanceId: "i-target", processIdentity: () => opts.identity } };
+  };
+  try {
+    record(ended);
+    const exited = scenario({});
+    const started = Date.now();
+    const result = await createTerminal(binding, exited.options);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(result).toMatchObject({ created: true, ready: false, manualRequired: true });
+    expect(result.newBinding).toBeUndefined();
+    expect(result.blockers[0]?.code).toBe("launcher-exited");
+    expect(exited.calls.filter((argv) => argv[1] === "wait").map((argv) => argv[argv.indexOf("--timeout-ms") + 1])).toEqual(["5000"]);
+    expect(exited.calls.some((argv) => argv.includes("exit"))).toBe(false); // terminal exit is never the evidence
+
+    // The shell the launcher returned to may read idle: a dead launcher still means it exited.
+    expect((await createTerminal(binding, scenario({ idleAfter: 0 }).options)).blockers[0]?.code).toBe("launcher-exited");
+
+    // A pid that exists but whose identity cannot be read is unknown, never exited: left to the bound.
+    record(process.pid);
+    expect((await createTerminal(binding, scenario({}).options, 50)).blockers[0]?.code).toBe("terminal-unready");
+
+    // A stale handle with no launcher recorded: gone only when Orca no longer lists the terminal's incarnation.
+    const gone = await createTerminal(binding, scenario({ gone: true, state: emptyState }).options);
+    expect(gone.blockers[0]).toMatchObject({ code: "launcher-exited", message: expect.stringContaining("lost its terminal") });
+    expect((await createTerminal(binding, scenario({ gone: true, listed: true, state: emptyState }).options)).blockers[0]?.code).toBe("terminal-gone");
+    // The stale answer counts on stderr too.
+    expect((await createTerminal(binding, scenario({ staleOnStderr: true, state: emptyState }).options)).blockers[0]?.message).toContain("lost its terminal");
+    // A truncated inventory cannot show the terminal is no longer listed.
+    expect((await createTerminal(binding, scenario({ gone: true, truncated: true, state: emptyState }).options)).blockers[0]?.code).toBe("terminal-gone");
+    // An unreadable launcher record says nothing: never "exited".
+    writeFileSync(join(stateDir, "terminal-recovery.json"), "{ half a write");
+    expect((await createTerminal(binding, scenario({}).options, 50)).blockers[0]?.code).toBe("terminal-unready");
+    expect(await launcherOf("codex", root, { stateDir, instanceId: "i-target" })).toEqual({ state: "unknown" });
+    record(ended);
+
+    // A live launcher whose TUI needs more than one slice: each timeout reads as "not yet", never as a failure.
+    const slow = scenario({ identity: "launcher-start", idleAfter: 2 });
+    const ready = await createTerminal(binding, slow.options);
+    expect(ready.manualRequired).toBe(false);
+    expect(ready.newBinding?.handle).toBe("term-new");
+    expect(slow.calls.filter((argv) => argv[1] === "wait")).toHaveLength(3);
+
+    // No record yet (the launcher died before recording itself, or is slow): left to the bound, not called failed.
+    expect((await createTerminal(binding, scenario({ state: emptyState }).options, 50)).blockers[0]?.code).toBe("terminal-unready");
+  } finally { for (const dir of [stateDir, emptyState]) rmSync(dir, { recursive: true, force: true }); }
+});
+
+// #215: a fresh session the operator chose maps to the replacement under its new id; without the choice it is refused.
+test("a fresh-session replacement maps under any session id only when chosen", async () => {
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js codex", argv: [], env: {} };
+  const binding: TerminalBinding = { peer: "codex", handle: "term-old", incarnationId: "inc-old", worktreeId, projectRoot: root, sessionId: session, launch, launchMetadata: launch };
+  const replacement = terminal({ handle: "term-new", incarnationId: "inc-new", sessionId: "thread-new" });
+  const { runner } = fake((argv) => {
+    if (argv[1] === "create") return { result: { terminal: { handle: "term-new", incarnationId: "inc-new", worktreeId } } };
+    if (argv[1] === "show") return { result: { terminal: replacement } };
+    if (argv[1] === "wait") return { result: { satisfied: true } };
+    throw new Error("unexpected command");
+  });
+  expect((await createTerminal(binding, runner, 1000)).manualRequired).toBe(true);
+  const fresh = await createTerminal(binding, runner, 1000, true);
+  expect(fresh.manualRequired).toBe(false);
+  expect(fresh.newBinding?.sessionId).toBe("thread-new");
+});
+
+// #215 review: recording over an unreadable file would erase every other launcher's record.
+test("a launch is not recorded over an unreadable record file", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-record-unreadable-"));
+  const previous = { handle: process.env.ORCA_TERMINAL_HANDLE, worktree: process.env.ORCA_WORKTREE_ID, launchId: process.env.AGENTHUB_LAUNCH_ID, instance: process.env.AGENTHUB_INSTANCE_ID };
+  process.env.ORCA_TERMINAL_HANDLE = "term-recorded";
+  process.env.ORCA_WORKTREE_ID = worktreeId;
+  const shown = terminal({ handle: "term-recorded", agentIdentity: undefined, sessionId: undefined });
+  const runner = async (argv: readonly string[]) => argv[1] === "show" ? { result: { terminal: shown } } : { result: {} };
+  try {
+    writeFileSync(join(stateDir, "terminal-recovery.json"), "[{ half a write");
+    await expect(recordTerminalLaunch("codex", root, stateDir, "instance-1", runner)).rejects.toThrow("cannot be read, so recording this launch would erase every other launcher's record");
+    expect(readFileSync(join(stateDir, "terminal-recovery.json"), "utf8")).toBe("[{ half a write");
+  } finally {
+    for (const [key, value] of [["ORCA_TERMINAL_HANDLE", previous.handle], ["ORCA_WORKTREE_ID", previous.worktree], ["AGENTHUB_LAUNCH_ID", previous.launchId], ["AGENTHUB_INSTANCE_ID", previous.instance]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// #215 review: without readable launch records a terminal would be bound from Orca metadata alone (no captured
+// CODEX_HOME), so planning and revalidation block instead.
+test("an unreadable record file blocks binding a terminal", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-inspect-unreadable-"));
+  try {
+    writeFileSync(join(stateDir, "terminal-recovery.json"), "not json");
+    const { calls, runner } = fake(() => ({ result: { terminals: [terminal()] } }));
+    const inspected = await inspectTerminals(root, { codex: session }, { runner, stateDir, instanceId: "i" });
+    expect(inspected).toMatchObject({ manualRequired: true, bindings: [] });
+    expect(inspected.blockers[0]?.message).toContain("cannot be read, so no terminal can be bound to its launch");
+    expect(calls).toEqual([]);
+  } finally { rmSync(stateDir, { recursive: true, force: true }); }
 });

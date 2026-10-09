@@ -1057,6 +1057,8 @@ ahub upgrade --to 0.12.19 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>
+ahub recovery dispose <operation-id> --fresh-session <peer> --reason <text>
+ahub recovery dispose <operation-id> --stop-and-archive --reason <text>
 ```
 
 The coordinator commits only once the source is quiet: no turn running, no
@@ -1112,12 +1114,160 @@ Kimi and local sessions may start fresh with preserved routing and task context.
 A Claude session that never persisted a transcript (zero turns) also starts fresh:
 there is nothing to resume, so the upgrade accepts the new session id; a session
 with a transcript must come back with its original id.
+A Claude session that `ahub claude` did not launch in a recorded Orca terminal
+(a plain `claude`, or one whose launcher has ended) is planned as
+reconnect-only: the plan lists it under `reconnectOnly`, and the command prints
+`<project>: claude is reconnect-only` on stderr. Nothing in its terminal is
+closed or relaunched, a `claude-session.json` left by an earlier launch is never
+used as its target, and the plan does not show that record's id. Its plugin
+reconnects to the new hub by itself (the coordinator waits up to 90 seconds) and
+keeps the plugin version it started with until that Claude session restarts.
+The target release must read recovery waivers; staging refuses one that does
+not, before any runtime changes. Across a control-protocol change it cannot
+reconnect; the plan then names a
+blocker: end the session, or relaunch it with `ahub claude` in Orca, and make a
+new plan. A refused `--yes`, and every dry-run, prints each blocker on its own
+`ahub: blocker:` line before the final one.
 Previously stopped projects stay stopped; only the reviewed running projects
 are upgraded.
 
 Do not run an upgrade with an incompatible active protocol, an unverified
 terminal binding, or an unresolved operation lock. Dry-run performs no package,
 plugin, daemon, or terminal mutation.
+
+### A partial operation
+
+`ahub recovery status <operation-id>` reads the receipt without changing it:
+its phase, step and error; `runner`, which says whether a runner process holds
+the operation now (`running` with its pid, or `none`; `stale` marks a receipt
+that says running with no runner behind it); each project's phase and effect
+receipts (`closed:<peer>`, `restored:<peer>` as `done`, `pending` or `failed`);
+whether the shared plugin and the global CLI were installed; and `next`, the
+commands that apply now, read from every source the operation has not stopped
+yet (every error of `resume` ends with the same list). `resume` is left out
+when it can never get past: a source replaced by another instance, or a
+prepared source that stopped before any commit request. It shows no task or
+message text. `resume` does not
+start a second runner while one is alive. Every `next` entry and error names the
+operation's own coordinator, `bun <preserved source>/src/cli/main.js recovery
+...`: in the middle of an upgrade the global `ahub` may still be the older
+release, whose `recovery` lacks these commands. Copy that command line. When
+an older coordinator started the operation, `dispose` is named from the running
+release, which has it. What
+each receipt allows, given what is live, is tabulated in the recovery spec
+(`docs/specs/2026-09-20-upgrade-recovery-design.md`, "Receipts, evidence and
+next actions").
+
+- The source hold lapses after 10 minutes. A later `resume` prepares the same
+  source again and checks its peers again, keeping the receipts, so no terminal
+  is closed twice. It refuses, naming the next step, when the source daemon was
+  replaced, when another operation holds it, or when a peer changed: a peer whose
+  terminal the operation closed must stay closed, a session that joined since
+  must end, every other one must keep its conversation. With nothing closed yet,
+  `abort` cancels the operation (also once its hold has lapsed, or when another
+  daemon or operation holds the source, which it leaves alone) so a new plan
+  can be made, also after a source crashed before any commit was requested
+  (`resume` then stops, as there is nothing to start from, and names abort, or
+  stop-and-archive once anything was done); it
+  refuses while a prepared source cannot be read (its hold may still stand),
+  once a commit request may have been sent (or, for an operation from
+  an older coordinator, which records no such thing, while a prepared source is
+  not running), and once any project has effects the way out is
+  stop-and-archive. `next` offers abort only where abort would succeed, and
+  `resume` (and `--fresh-session`, which resume carries out) only where it can
+  get past what is live: not past a replaced or missing source, a source that
+  crashed before any commit request, a refusal at staging (the target release
+  or the preserved source can never change back), a hub of another control
+  protocol, a target that stopped after it started, or a stopped hub without
+  the operation's restart snapshot.
+  A second `resume` while its own hold still stands checks the peers again
+  before it closes anything.
+- When a target hub dies after it started (a crash or a reboot), restarting it
+  from its snapshot is not supported in this release (its peers would have to
+  be relaunched against the new hub): `resume` is not offered and the way out
+  is stop-and-archive.
+- A Codex conversation comes back only when a rollout file naming its thread
+  exists under `sessions/` of the store the restored terminal uses (the
+  recorded `CODEX_HOME`, else `~/.codex`). Codex writes that file with the
+  first message, so a thread the hub saw Codex start, with no turn on it since,
+  is listed under `freshStart` and restarts as a new session, with nothing to
+  lose; the command says so. A thread with turns, or one whose start the hub's
+  log does not show (it was resumed, or the hub is older), blocks the plan when
+  it has no rollout, and so does a store that cannot be read (unknown, not
+  missing). The coordinator checks again before closing the terminal and before
+  creating the new one. To continue without such a conversation, end that Codex
+  session and close its Orca terminal, then `resume`; it stops at restoring
+  Codex, where `--fresh-session codex` below is the way on.
+- A restored terminal runs its launch in a login shell, so the coordinator
+  watches the launcher, not the terminal: once `ahub codex`, `ahub claude` or
+  `ahub pi` has recorded itself there and its process is gone, or Orca no longer
+  lists that terminal at all, the restoration failed (found within one 5-second
+  wait). A launcher whose process cannot be read counts as running, never as
+  gone. One that dies before recording itself leaves no record to read, and
+  what happens next depends on whether Orca reports the bare login shell it
+  returned to as TUI-idle, which is not verified. If it does, the coordinator
+  stops at once with "original session restoration needs manual verification"
+  (the terminal cannot be mapped to the session). If it does not, it stops with
+  the same error after the 10-minute wait. Either way the receipt stays
+  `pending`; close that terminal in Orca (or wait, if the session may still
+  attach), then `resume`: with no live launcher and no attached session it
+  records `restored:<peer>` `failed` and lists the failed-restoration choices.
+  A `failed` receipt never counts as restored.
+  `resume` settles a `pending` or `failed` receipt by what is live: the planned
+  session attached is the restoration, a launcher still running is waited for,
+  and no second terminal is opened while one may run. A target hub that cannot
+  be read counts as unknown, never as "nothing attached", and so does a launcher
+  record file that cannot be read: `resume` then stops without changing any
+  receipt; when the record file is what cannot be read, inspect it and move it
+  aside, then `resume`. `resume` is refused while a stop-and-archive is partway. A lifecycle command refused by the lock names
+  the operation's own `status` command, which lists what to do next.
+- `ahub recovery dispose <operation-id> --fresh-session <peer> --reason <text>`
+  applies to a Codex or Claude peer whose restoration failed (Pi is refused: a
+  restored hub resumes Pi's recorded session). It records the lost session or
+  thread id (status shows it under `lostContinuity`) and resumes: the peer
+  starts without its old conversation, and the rest is verified as usual.
+- `ahub recovery dispose <operation-id> --stop-and-archive --reason <text>`
+  abandons the operation. It checks every project first and refuses while a
+  hub is unreachable, starting, stopping or of another control protocol; `next`
+  then says `wait until <project>'s hub settles, then ... recovery status
+  <id>` instead of offering it. A hub that never answers (its pid is alive,
+  nothing replies): take the `pid` from that project's
+  `.agenthub/state/status.json`, check with `ps -p <pid> -o command=` that it
+  is that project's hub daemon, end it by hand, then run `status` again. If
+  that pid now belongs to another process (reused after a reboot), move the
+  stale `status.json` aside instead, then run `status` again; likewise when
+  `next` says `wait: runner <pid>` and that pid is not an `ahub recovery-run`
+  process, move the operation's `~/.agenthub/recovery/<id>.json.runner.db`
+  aside, then run `status` again. A
+  project whose directory is
+  gone is only recorded (`ahub doctor --orphans` lists a hub left running
+  there). It records its decision before it acts. It releases a source hold of
+  its own (that hub keeps running), stops a target hub it started and has not
+  released (one an older coordinator started is stopped at that release's
+  control protocol), moves that operation's
+  `restart.json` aside as `restart.abandoned.<hash>.json` and leaves any other
+  hub running; only then is the operation recorded `cancelled` and the lock
+  released. If it fails partway it keeps the lock, records what it did, and
+  `resume` refuses until you run it again. Queued messages are not delivered
+  from the archived file; a 0.7.0 or later hub reloads the queues it kept in
+  `hub.db` when it starts again. Terminals it closed stay closed: start those
+  sessions again by hand. Replacement terminals it opened stay open but have
+  no hub: Claude's plugin reconnects once a hub runs, Codex needs `ahub codex`
+  again.
+  Start a project whose target ran with that release's CLI (`bunx --package
+  @staix/agent-hub@<version> ahub up`), since it may have changed the task
+  database. The global CLI was not promoted.
+- Both choices are for a person in a terminal; an agent shell is refused, and
+  the reason is kept in the operation's audit. Run each with the command
+  `next` or the error prints: the operation's own coordinator, or the release
+  you are running when that coordinator predates these commands (its `resume`
+  still runs the old runner, and `next` says what that runner cannot do).
+  `--fresh-session` never applies to such an operation: its runner never
+  records a restoration as `failed`.
+  `--fresh-session` is not offered when the target release cannot read recovery
+  waivers, since it could never release a new session; `status` says so in
+  `freshSession`. A runner record that cannot be read shows as `unknown`, and
+  `resume`, `abort` and `dispose` are refused until it can be read.
 
 ### After an unplanned stop
 

@@ -396,3 +396,14 @@ test("Codex reports active context separately from accumulated usage, including 
   expect(readings.every(r => r.used === null && r.window === null)).toBe(true); // native fake has no model window, never guess one
   expect(tokens).toEqual([100]);
 });
+
+// #215: the planner tells which turns belong to which thread from these adoptions (a started thread vs a resumed one).
+test("each adopted thread is reported with whether the TUI started or resumed it", async () => {
+  const threads: [string, boolean][] = [];
+  const { peer, tui } = await setup(undefined, undefined, { onThread: (thread, fresh) => threads.push([thread, fresh]) });
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => peer.state === "idle");
+  tui.send(JSON.stringify({ id: 3, method: "thread/resume", params: { threadId: "th-old" } }));
+  await until(() => threads.length === 2);
+  expect(threads).toEqual([["th1", true], ["th-old", false]]);
+});

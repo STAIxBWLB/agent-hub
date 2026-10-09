@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
+import { claimRunner, writeOperation } from "../src/hub/recovery-store.ts";
 
 test("installed-layout detached restart completes in an isolated project and preserves its task board", async () => {
   const temp = mkdtempSync(join(tmpdir(), "ahub-recovery-cli-"));
@@ -86,3 +87,123 @@ test("installed-layout detached restart completes in an isolated project and pre
     if (stuck.length) throw new Error(`hub daemon(s) survived SIGTERM and SIGKILL: ${stuck.join(", ")}`);
   }
 }, 30_000);
+
+// #206 AC3: a refused --yes names each blocker on stderr, not only its last line.
+test("a refused restart lists every blocker before its final line", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "ahub-refused-cli-"));
+  mkdirSync(join(temp, "project"));
+  const root = realpathSync(join(temp, "project"));
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("ORCA_") || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete env[key];
+  env.AGENTHUB_HOME = join(temp, "home");
+  const cli = async (args: string[]) => {
+    const p = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", root, ...args], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
+    const [code, , err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    return { code, err: err.trim().split("\n") };
+  };
+  try {
+    expect(await cli(["restart", "--dry-run"])).toEqual({ code: 0, err: ["ahub: blocker: no running registered projects in scope"] });
+    expect(await cli(["restart", "--yes"])).toEqual({ code: 1, err: ["ahub: blocker: no running registered projects in scope", "ahub: plan has blockers; no runtime was changed"] });
+  } finally { rmSync(temp, { recursive: true, force: true }); }
+});
+
+// #215 AC4: the disposition is a person's decision; an agent shell is refused before any receipt is read.
+test("an agent shell cannot dispose of a recovery operation", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "ahub-dispose-cli-"));
+  mkdirSync(join(temp, "project"));
+  const root = realpathSync(join(temp, "project"));
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("ORCA_") || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete env[key];
+  Object.assign(env, { AGENTHUB_HOME: join(temp, "home"), CLAUDECODE: "1" });
+  try {
+    const p = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", root, "recovery", "dispose", "00000000-0000-4000-8000-000000000000", "--stop-and-archive", "--reason", "test"],
+      { cwd: root, env, stdout: "pipe", stderr: "pipe" });
+    const [code, , err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    expect({ code, err: err.trim() }).toEqual({ code: 1, err: "ahub: claude cannot run ahub recovery dispose; the person runs it in ahub console or a terminal" });
+  } finally { rmSync(temp, { recursive: true, force: true }); }
+});
+
+// #215: resume does not start a second runner while one holds the operation; status names it.
+test("resume declines while a runner holds the operation", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "ahub-runner-cli-"));
+  mkdirSync(join(temp, "project"));
+  const root = realpathSync(join(temp, "project")), home = join(temp, "home");
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("ORCA_") || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete env[key];
+  env.AGENTHUB_HOME = home;
+  const id = "00000000-0000-4000-8000-000000000215";
+  writeOperation(id, { schema: 1, id, phase: "running", step: "restore:p", sourceRoot: "/preserved/coordinator", plan: { version: "0.0.0" }, projects: [], updatedAt: 1 }, home);
+  const release = claimRunner(id, home);
+  const cli = async (args: string[]) => {
+    const p = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", root, ...args], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
+    const [code, out] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    return { code, out };
+  };
+  try {
+    // Never the bare global ahub, which may be the older release mid-upgrade (#215); a coordinator without the #215
+    // commands (as this one, which does not exist) is replaced by the running release.
+    expect(await cli(["recovery", "resume", id])).toEqual({ code: 0, out: `runner ${process.pid} is still working on this operation; bun ${join(import.meta.dir, "../src/cli/main.js")} recovery status ${id}\n` });
+    expect(JSON.parse((await cli(["recovery", "status", id])).out)).toMatchObject({ runner: { state: "running", pid: process.pid } });
+  } finally { release(); rmSync(temp, { recursive: true, force: true }); }
+});
+
+// #215 review: a recovery launch of `ahub codex` records its launcher before the hub round trip, so the coordinator
+// never takes a launcher still starting for one that never ran; an ordinary launch records only after the hub accepted.
+test("ahub codex records a recovery launch before the hub start, and an ordinary one only after it", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "ahub-codex-record-"));
+  mkdirSync(join(temp, "project"));
+  const root = realpathSync(join(temp, "project")), home = join(temp, "home"), stateDir = join(root, ".agenthub", "state");
+  mkdirSync(stateDir, { recursive: true });
+  // A hub manifest whose port nothing listens on: the start round trip fails after the launcher could have recorded.
+  const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("ok") });
+  const deadPort = probe.port; probe.stop(true);
+  writeFileSync(join(stateDir, "control-token"), "token\n");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: deadPort, protocol: 16, projectId: "p", instanceId: "i-codex", cwd: root }));
+  const orca = join(temp, "orca");
+  writeFileSync(orca, `#!${process.execPath}\nconsole.log(JSON.stringify({ ok: true, result: { terminal: { handle: "term-x", worktreePath: ${JSON.stringify(root)}, worktreeId: "wt", incarnationId: "inc-x" } } }));\n`);
+  chmodSync(orca, 0o755);
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("ORCA_") || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete env[key];
+  Object.assign(env, { AGENTHUB_HOME: home, ORCA_CLI_COMMAND: orca, ORCA_TERMINAL_HANDLE: "term-x", ORCA_WORKTREE_ID: "wt" });
+  const codex = async (extra: Record<string, string>) => {
+    const p = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", root, "codex"], { cwd: root, env: { ...env, ...extra }, stdout: "pipe", stderr: "pipe" });
+    const [code] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    return code;
+  };
+  const records = () => { try { return JSON.parse(readFileSync(join(stateDir, "terminal-recovery.json"), "utf8")) as { peer: string; handle: string }[]; } catch { return []; } };
+  const id = "00000000-0000-4000-8000-000000000216";
+  try {
+    expect(await codex({})).toBe(1);
+    expect(records()).toEqual([]); // ordinary: the refused start recorded nothing
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "recovery.lock"), JSON.stringify({ operationId: id }));
+    expect(await codex({ AGENTHUB_RECOVERY_OPERATION: id })).toBe(1);
+    expect(records().map((row) => [row.peer, row.handle])).toEqual([["codex", "term-x"]]);
+    // A Pi TUI launch by the same operation records itself before the hub round trip too.
+    const pi = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", root, "pi", "--mode", "tui"], { cwd: root, env: { ...env, AGENTHUB_RECOVERY_OPERATION: id }, stdout: "pipe", stderr: "pipe" });
+    const [piCode] = await Promise.all([pi.exited, new Response(pi.stdout).text(), new Response(pi.stderr).text()]);
+    expect(piCode).toBe(1);
+    expect(records().map((row) => [row.peer, row.handle])).toEqual([["codex", "term-x"], ["pi", "term-x"]]);
+  } finally { rmSync(temp, { recursive: true, force: true }); }
+});
+
+// #215 review: an older coordinator resumes anything not finished; the running release refuses to resume an operation
+// whose stop-and-archive is partway, whatever coordinator started it.
+test("resume refuses an operation whose stop-and-archive is partway", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "ahub-disposed-cli-"));
+  mkdirSync(join(temp, "project"));
+  const root = realpathSync(join(temp, "project")), home = join(temp, "home");
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("ORCA_") || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete env[key];
+  env.AGENTHUB_HOME = home;
+  const id = "00000000-0000-4000-8000-000000000217";
+  writeOperation(id, { schema: 1, id, phase: "blocked", step: "disposed", sourceRoot: "/releases/source-older", plan: { version: "0.12.19", projects: [] }, projects: [], updatedAt: 1,
+    disposition: { choice: "stop-and-archive", at: 1, projects: {} } }, home);
+  try {
+    const p = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", root, "recovery", "resume", id], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
+    const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    expect({ code, out }).toEqual({ code: 1, out: "" });
+    expect(err).toContain("a stop-and-archive of this operation is partway; nothing was resumed; next actions: rerun");
+    expect(err).toContain("recovery dispose 00000000-0000-4000-8000-000000000217 --stop-and-archive --reason <text>");
+  } finally { rmSync(temp, { recursive: true, force: true }); }
+});
