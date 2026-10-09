@@ -389,7 +389,8 @@ one line with its next message, the plan included, at no turn of its own. When a
 task is done (after its check passes, when one is configured), the owners of
 open tasks on the same paths or symbols get a message with the changed files,
 the plan's signatures and the first line of the summary, each left out when it
-matches a PII pattern; nobody else does. PII
+matches a PII pattern (the summary also when `signals.pii_screen = "local"` did
+not clear it); nobody else does. PII
 tasks are left out on both sides.
 
 A task can wait for others: `hub_task_propose` takes `after: [ids]` (`ahub task
