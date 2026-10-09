@@ -80,9 +80,11 @@ Arrow keys or j/k move, Enter opens a detail of labeled fields (relative times,
 never JSON), Escape returns, and `?` shows the keys grouped by panel; in the
 stream, `?` prints that table and `v` prints the selected request as its push
 showed it. The footer's last line lists only the keys that act in the current
-mode, panel and state. A notice, such as a refused command, a request error or
-the size refusal, shows in the failure tone on the footer's second line until
-the next key or for about ten seconds. `:` enters a command; its output lines
+mode, panel and state. A notice shows on the footer's second line until the next
+key or for about ten seconds: errors and refusals (a refused command, a request
+error, the size refusal) in the failure tone, notices that only inform (a closed
+or missing selection) in the attention tone. With a detail open, `p`, `r` and `a`
+act on the item the detail shows. `:` enters a command; its output lines
 start at column 4, as message bodies do. Assignment, delivery resolution and
 allow decisions require confirmation; delivery resolution requires a reason. Tasks use the same public redaction as the board. Panels need at least
 80 columns by 24 rows; smaller terminals stay in stream mode. Task and queue

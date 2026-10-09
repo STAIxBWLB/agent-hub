@@ -4,7 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { ControlClient } from "../hub/control-client.ts";
 import { contextLine } from "./status-lines.ts";
 import { renderTailEvent } from "./tail-render.ts";
-import { initialConsoleState, keyTable, paint, panelRows, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, terminalText, wrap } from "./console-state.ts";
+import { approvalFrom, initialConsoleState, keyTable, notify, paint, panelRows, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, terminalText, wrap } from "./console-state.ts";
 import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
 
@@ -74,7 +74,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   const removers: (() => void)[] = []; const timers: ReturnType<typeof setInterval>[] = [];
   let resolveDone: () => void = () => {}; const done = new Promise<void>(resolve => { resolveDone = resolve; });
   let pendingStream: ConsoleEvent[] = []; let droppedStream = 0;
-  const notice = (text: string) => { state.notice = text; state.noticeAt = Date.now(); };
+  const notice = (text: string) => notify(state, text, Date.now());
   const safeWrite = (text: string) => terminal.write(paint([{ text }], color));
   const streamLines = (event: ConsoleEvent) => terminalText(event.text).split("\n").flatMap((text, index) => wrap(text, columns).map(line => [{ text: line, ...(index === 0 && event.tone ? { tone: event.tone } : {}) }]));
   const writeStream = (event: ConsoleEvent) => {
@@ -196,12 +196,13 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       else if (msg.t === "context") stream({ text: `  ${msg.peer}: ${contextLine(msg.reading, at => new Date(at).toLocaleTimeString())}`, peer: msg.peer, kind: "context" });
       else if (msg.t === "notice") stream({ text: `  * ${msg.line}`, kind: "notice" });
       else if (msg.t === "permission") {
-        stream({ text: permissionText(msg), peer: msg.peer, kind: "permission", tone: "attention" });
+        const request = approvalFrom(msg);
+        stream({ text: permissionText(request), peer: request.peer, kind: "permission", tone: "attention" });
         // Only the first request is selected on arrival: once a selection has ended, a request that arrives as the person
         // reacts must not take its place, so from then on only [ ], j or k select.
-        if (typeof msg.expiresAt === "number" && msg.expiresAt > Date.now() && !state.approvals.some(a => a.id === msg.id)) {
-          state.approvals.push(msg);
-          if (!state.autoSelected) { state.approvalId = msg.id; state.autoSelected = true; }
+        if (request.expiresAt > Date.now() && !state.approvals.some(a => a.id === request.id)) {
+          state.approvals.push(request);
+          if (!state.autoSelected) { state.approvalId = request.id; state.autoSelected = true; }
         }
       } else if (msg.t === "permission_closed") {
         state.approvals = state.approvals.filter(a => a.id !== msg.id); state = pruneApprovals(state, Date.now());
@@ -217,7 +218,9 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       terminal.raw(true);
       removers.push(terminal.onData(text => {
         // A pasted chunk can only edit text, never approve, confirm or run commands. Bracketed-paste delimiters are stripped.
+        // Under the modal key table it does nothing at all.
         if (Array.from(text).length > 1 && !["\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"].includes(text)) {
+          if (state.help && state.mode === "panels") return;
           state.confirm = undefined; state.optionChoice = undefined; state.editing = true;
           state.input += terminalText(text.replace(/\x1b\[20[01]~/g, "")).replace(/\n/g, " "); draw();
         } else handle(text);

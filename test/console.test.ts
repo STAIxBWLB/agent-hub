@@ -628,6 +628,55 @@ describe("console layout (#213)", () => {
     for (const key of ["a", "d", "v"]) expect(reduceConsole(s, key, NOW).effects).toEqual([]);
     expect(reduceConsole(s, "a", NOW).state.optionChoice ?? reduceConsole(s, "a", NOW).state.confirm).toBeUndefined();
   });
+  test("a malformed pushed request cannot throw on a draw or stop the console", async () => {
+    const f = fixture(); const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
+    f.client.onPush({ t: "permission", id: "bad", peer: "pi", title: 7, expiresAt: Date.now() + 10_000,
+      options: [{ optionId: "x", name: "Odd", kind: 1 }, null, { optionId: "ok", name: null, kind: "allow_once" }] });
+    f.client.onPush({ t: "permission", id: "bare", peer: "pi", title: "no options", expiresAt: Date.now() + 10_000 });
+    f.input("\t"); f.input("2"); f.output.length = 0; f.input("\r");
+    const out = f.output.join("");
+    expect(out).not.toContain("Console error");
+    expect(out).toContain("title    7");
+    expect(out).toContain('a allow  ""'); // the one allow option, its null name shown as an empty quoted name
+    f.input("q"); await running;
+    expect(f.output.join("")).not.toContain("Console error");
+  });
+  test("with a detail open, prefill keys act on the item it shows, not on what a refresh moved under the selection", () => {
+    const s = state(true); s.panel = 3;
+    s.tasks = [3, 9].map(id => ({ id, title: `task ${id}`, state: "proposed", class: "implement" }));
+    s.detail = { id: 3, title: "task 3" }; // as the show reply sets it
+    s.tasks.reverse(); // a refresh reorders: #9 now sits at the selected index
+    expect(reduceConsole(s, "a", NOW).state.input).toBe("task assign 3 ");
+    expect(reduceConsole(s, "r", NOW).state.input).toBe("review 3 ");
+    s.detail = "task_show failed"; // a message names no item
+    expect(reduceConsole(s, "a", NOW).state.editing).toBe(false);
+    s.detail = undefined; expect(reduceConsole(s, "a", NOW).state.input).toBe("task assign 9 "); // without a detail, the row shown
+    const peers = state(true); peers.peers = { kimi: { state: "idle" }, pi: { state: "idle" } };
+    const opened = reduceConsole(peers, "\r", NOW).state;
+    opened.peers = { pi: { state: "idle" }, kimi: { state: "idle" } };
+    expect(reduceConsole(opened, "p", NOW).state.input).toBe("pause kimi");
+  });
+  test("nothing typed or pasted under the key table reaches the command line", async () => {
+    const s = state(true); s.help = true; s.editing = true; s.input = "status";
+    const typed = reduceConsole(s, "\r", NOW);
+    expect([typed.effects, typed.state.input]).toEqual([[], "status"]);
+    const f = fixture(); let spawned = 0;
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, panels: true, color: false, runCommand: () => { spawned++; return () => {}; } });
+    f.input("?"); f.output.length = 0; f.input("status");
+    expect(f.output.join("")).not.toContain(": status"); // the paste was dropped, not kept for later
+    f.input("\r"); f.input("\x1b"); f.input("\r");
+    expect(spawned).toBe(0);
+    f.input("q"); await running;
+  });
+  test("errors and refusals take the failure tone; informing notices take attention", () => {
+    const tone = (s: any) => renderConsoleLines(s, 80, 24, NOW).at(-2)!.at(-1)!;
+    let s = state(); s.editing = true; s.input = "kill";
+    expect(tone(reduceConsole(s, "\r", NOW).state)).toEqual({ text: "use another shell for this command", tone: "failure" });
+    s = state(); s.approvalId = undefined;
+    expect(tone(reduceConsole(s, "d", NOW).state)).toEqual({ text: "no request selected; [ ] selects one", tone: "attention" });
+    s = state(); s.approvals = [];
+    expect(tone(pruneApprovals(s, NOW))).toEqual({ text: "request first closed", tone: "attention" });
+  });
   test("the key table is modal: only ?, Esc and q act under it", () => {
     let s = state(true); s.panel = 2; s.peers = { pi: { state: "idle" } };
     s.approvals.push({ ...s.approvals[0]!, id: "second" });
