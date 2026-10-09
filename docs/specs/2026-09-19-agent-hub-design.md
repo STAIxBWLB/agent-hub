@@ -1378,7 +1378,8 @@ bold), numbers bold default foreground (1), task references magenta underlined
 (4;35), and other issue references underlined default foreground (4). No token
 SGR equals a state or peer SGR. Green/yellow/red remain states/approvals/failures,
 cyan remains navigation. Case-insensitive `task #N`, `Task #N`, `[task #N]` and
-`[review #N]` identify task references. Ordinary words keep default foreground;
+`[review #N]` identify task references; unbracketed prose `review #N` remains an
+issue reference. Ordinary words keep default foreground;
 there is no hashing or user theme.
 Only hub-written peer slots, state words and structural markers receive their
 semantic tones; title words and markers cannot choose them. Numeric tokens have
@@ -1387,8 +1388,9 @@ lack typed reference ranges: the task/review prefix heuristic is bounded by a
 `ponytail:` comment; other `#N` tokens use the issue tone until structured notice
 spans classify assign/which references. Header text crosses `terminalText` and tab-to-space normalization before
 tokenization. Wrapped spans retain the source classification. After a projection
-miss, structural tones remain but token projection stops for that line and all
-later continuations. Bodies and every
+miss on the first physical header, only structural tones remain. A missed
+continuation and all later continuations are fully plain. Projection advances
+a span index through the source once, keeping long permission titles bounded. Bodies and every
 command-output line stay plain. Denial requests and observed expiry/cancellation
 are red; an answered remote closure lacks option-kind metadata and is not
 guessed to be a denial.

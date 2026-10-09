@@ -115,8 +115,8 @@ Offline peers, primary titles, action details and message body lines keep the
 terminal's default foreground. Labels and prompts remain readable without
 color. Stream styling applies only to meaningful tokens in the first line: peer names,
 `task`, numbers and references. Ordinary words keep the default foreground.
-Task/review prefixes identify task references case-insensitively; other `#N`
-tokens are issue references. Legacy assign/which notices lack typed reference
+Task prefixes and bracketed `[review #N]` identify task references
+case-insensitively; prose `review #N` and other `#N` tokens are issue references. Legacy assign/which notices lack typed reference
 ranges and use the issue tone until structured spans identify them. The dated
 #239 palette reserves green/yellow/red for states, cyan for navigation and
 blue/cyan for Claude/Codex. Tokens use plain magenta, underlining and bold default
@@ -124,8 +124,10 @@ foreground; no token SGR equals a state or peer SGR. The `task` keyword is never
 bold. Only hub-written peer slots are colored, not title words or decline reasons.
 State words and structural markers retain their event tone. Numeric-looking
 identifiers stay plain. Tabs become spaces before tokenization and wrapping.
-A projection miss preserves structural tones and disables token projection for
-that line and every following continuation. Bodies and command output stay plain. A local denial is shown as requested, not
+A projection miss on the first physical header keeps only structural tones.
+A missed continuation and every following continuation are fully plain; their
+text cannot supply structural tones. Projection carries its span index forward
+instead of rescanning earlier spans for every line. Bodies and command output stay plain. A local denial is shown as requested, not
 as a confirmed receipt; a remote answered closure has no option-kind metadata
 and is not guessed to be a denial. A fixed palette is applied after terminal
 control sanitization. Width, clipping, wrapping and cursor placement use plain

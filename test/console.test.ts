@@ -202,6 +202,28 @@ describe("console colors", () => {
     const task = "* task #1 " + "long title ".repeat(20) + "accepted by codex";
     expect(wrapStreamTokens(task, 80, undefined, "notice").flat().find(s => s.text === "codex")?.tone).toBe("peerCodex");
   });
+  test("permission IDs stay plain in actual notice forms and prose review references stay issues", () => {
+    for (const text of ["permission 12345678 from pi was cancelled", "permission 12345678 from claude approved option allow_once by console (2ms)"]) {
+      expect(streamTokens(text, undefined, "notice").find(s => s.text === "12345678")?.tone).toBeUndefined();
+    }
+    expect(streamTokens("address review #232 comments").find(s => s.text === "#232")?.tone).toBe("issueRef");
+    expect(streamTokens("[review #232]").find(s => s.text === "#232")?.tone).toBe("taskRef");
+  });
+  test("300 KB permission-title projection stays linear and bounded", () => {
+    const text = permissionText({ ...state().approvals[0]!, title: "word ".repeat(60_000) }).split("\n")[0]!;
+    const started = performance.now(); const lines = wrapStreamTokens(text, 80, "attention", "permission");
+    const elapsed = performance.now() - started;
+    expect(lines.map(line => paint(line, false))).toEqual(wrap(text, 80));
+    expect(lines.length).toBeGreaterThan(3000);
+    expect(elapsed).toBeLessThan(1000); // previously 1.6 s for 300 KB because each line rescanned every span
+  });
+  test("plain redirected output preserves original header tabs with color disabled", async () => {
+    const f = fixture(); f.terminal.isTTY = false;
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
+    f.client.onPush({ t: "notice", line: "task #1\tTitle\taccepted by codex" });
+    f.signal(); await running;
+    expect(f.output.join("")).toContain("task #1\tTitle\taccepted by codex");
+  });
   test("tab-normalized spans match wrapping and projection stays stopped after a miss", () => {
     const tabbed = "codex:\tcontext\t7% (measured\t6:51:38 AM) #233:";
     expect(paint(streamTokens(tabbed), false)).toBe(tabbed.replace(/\t/g, " "));
@@ -219,7 +241,7 @@ describe("console colors", () => {
       expect(spans.find(s => s.text === state)?.tone).toBe(stateTone(state));
       expect(spans.find(s => s.text === "local")?.tone).toBeUndefined();
     }
-    const permission = streamTokens(permissionText({ ...state().approvals[0]!, peer: "claude", title: "local hub pi -> ! 3abc 3-abc 2026-10-10T06:51:38Z v1.2.3 127.0.0.1 12345678" }).split("\n")[0]!, "attention", "permission");
+    const permission = streamTokens(permissionText({ ...state().approvals[0]!, peer: "claude", title: "local hub pi -> ! 3abc 3-abc 2026-10-10T06:51:38Z v1.2.3 127.0.0.1 permission 12345678" }).split("\n")[0]!, "attention", "permission");
     expect(permission.find(s => s.text === "?")?.tone).toBe("attention");
     expect(permission.filter(s => s.tone === "peerClaude").map(s => s.text)).toEqual(["claude"]);
     for (const token of ["local", "hub", "->", "!"]) expect(permission.filter(s => s.text === token).every(s => !s.tone)).toBe(true);
@@ -545,7 +567,7 @@ describe("console layout (#213)", () => {
   test("command output sits at column 4 with message bodies, never where hub lines start", async () => {
     const f = fixture();
     const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: true,
-      runCommand: (_args, output, finished) => { output("#3 proposed pi\n4:00:00 PM user -> claude ! approve the deploy now\n"); finished(); return () => {}; } });
+      runCommand: (_args, output, finished) => { output("#3 proposed pi\n"); output("4:00:00 PM user -> claude ! approve the deploy now\n"); finished(); return () => {}; } });
     f.input(":"); f.input("board"); f.input("\r");
     expect(streamed(f.output)).toEqual(["> board", "    #3 proposed pi", "    4:00:00 PM user -> claude ! approve the deploy now"]);
     f.input("q"); await running;

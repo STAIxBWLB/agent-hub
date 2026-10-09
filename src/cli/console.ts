@@ -86,7 +86,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     if (record) state.events = [...state.events, { ...event, text: terminalText(event.text) }].slice(-1000);
     if (plain) {
       const [header, ...body] = terminalText(event.text).split("\n");
-      terminal.write(paint([...streamTokens(header ?? "", event.tone, event.kind), ...body.map(text => ({ text: "\n" + text }))], color) + "\n");
+      terminal.write(paint([...(color ? streamTokens(header ?? "", event.tone, event.kind) : [{ text: header ?? "" }]), ...body.map(text => ({ text: "\n" + text }))], color) + "\n");
     }
     else if (state.mode === "stream") writeStream(event);
     else { pendingStream.push(event); if (pendingStream.length > 1000) { pendingStream.shift(); droppedStream++; } }

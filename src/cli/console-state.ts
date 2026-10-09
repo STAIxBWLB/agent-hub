@@ -73,7 +73,11 @@ export function streamTokens(value: string, eventTone?: Tone, kind?: string): Sp
   const markerAt = marker ? marker[0].length - 1 : -1;
   const state = kind === "state" ? text.match(/ is ([A-Za-z_]+)$/) : undefined;
   const stateAt = state ? state.index! + 4 : -1;
-  const out: Span[] = []; let end = 0;
+  const permissionIds = new Set<number>();
+  for (const match of text.matchAll(/\b(?:permission|request|permit) ([0-9]{8})(?=\b)/g)) permissionIds.add(match.index + match[0].length - 8);
+  const taskKeyword = text.match(/^\s*\*?\s*\[?\s*(task)\b/i);
+  const taskKeywordAt = taskKeyword ? taskKeyword[0].length - taskKeyword[1]!.length : -1;
+  const out: Span[] = []; let end = 0; let previousToken = ""; let previousStart = -1;
   for (const match of text.matchAll(/(?<![\p{L}\p{N}_#-])#[0-9]+(?![\p{L}\p{N}_-])|(?<![\p{L}\p{N}_#.:-])(?:[0-9]+(?::[0-9]+)+(?: AM| PM)?|[0-9]+(?:\.[0-9]+)?(?:%|ms|s|m|h)?)(?![\p{L}\p{N}_%-]|[.:][\p{L}\p{N}])|[A-Za-z_][A-Za-z_0-9-]*|->|[.?*!]/gu)) {
     const token = match[0]; const start = match.index;
     const gap = text.slice(end, start);
@@ -81,13 +85,17 @@ export function streamTokens(value: string, eventTone?: Tone, kind?: string): Sp
     let tone: Tone | undefined;
     // ponytail: legacy notices have no typed reference ranges. Classify task/review prefixes textually;
     // assign/which #N remains an issue reference until notices carry structured reference spans.
-    if (token.startsWith("#")) tone = /\b(?:task|review)\s*$/i.test(text.slice(0, start)) ? "taskRef" : "issueRef";
-    else if (token.toLowerCase() === "task" && /^\s*\*?\s*\[?\s*$/.test(text.slice(0, start))) tone = "taskKeyword";
-    else if (/^[0-9]/.test(token) && !(/^[0-9]{8}$/.test(token) && kind === "permission")) tone = "number";
+    if (token.startsWith("#")) {
+      const task = previousToken.toLowerCase() === "task" && /^\s*$/.test(gap);
+      const review = previousToken.toLowerCase() === "review" && /^\s*$/.test(gap) && text[previousStart - 1] === "[" && text[start + token.length] === "]";
+      tone = task || review ? "taskRef" : "issueRef";
+    }
+    else if (start === taskKeywordAt) tone = "taskKeyword";
+    else if (/^[0-9]/.test(token) && !permissionIds.has(start)) tone = "number";
     else if (peerSlots.has(start) && Object.hasOwn(peers, token)) tone = peers[token];
     else if (start === markerAt || start === stateAt || (route && token === "->" && start < route[0].length)) tone = eventTone;
     out.push({ text: token, ...(tone ? { tone } : {}) });
-    end = start + token.length;
+    previousToken = token; previousStart = start; end = start + token.length;
   }
   if (end < text.length) out.push({ text: text.slice(end) });
   return out;
@@ -96,7 +104,7 @@ export function streamTokens(value: string, eventTone?: Tone, kind?: string): Sp
 export function wrapStreamTokens(value: string, columns: number, tone?: Tone, kind?: string): Span[][] {
   const spans = streamTokens(value, tone, kind);
   const text = spans.map(s => s.text).join("");
-  let cursor = 0; let projecting = true;
+  let cursor = 0; let projecting = true; let spanIndex = 0; let spanAt = 0;
   return wrap(text, columns).map((line, index) => {
     const content = line.trimStart();
     const start = projecting ? text.indexOf(content, cursor) : -1;
@@ -107,11 +115,14 @@ export function wrapStreamTokens(value: string, columns: number, tone?: Tone, ki
     }
     const end = start + content.length; cursor = end;
     const out: Span[] = [{ text: line.slice(0, line.length - content.length) }];
-    let at = 0;
-    for (const span of spans) {
-      const next = at + span.text.length;
-      if (next > start && at < end) out.push({ ...span, text: span.text.slice(Math.max(0, start - at), Math.min(span.text.length, end - at)) });
-      at = next;
+    while (spanIndex < spans.length && spanAt + spans[spanIndex]!.text.length <= start) {
+      spanAt += spans[spanIndex++]!.text.length;
+    }
+    while (spanIndex < spans.length && spanAt < end) {
+      const span = spans[spanIndex]!; const next = spanAt + span.text.length;
+      out.push({ ...span, text: span.text.slice(Math.max(0, start - spanAt), Math.min(span.text.length, end - spanAt)) });
+      if (next > end) break;
+      spanAt = next; spanIndex++;
     }
     return out;
   });
