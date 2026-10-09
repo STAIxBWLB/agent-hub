@@ -74,27 +74,33 @@ export function fit(value: unknown, columns: number): string {
   return result + marker;
 }
 /**
- * Every line wrapped from a source line starts at that line's indent (at most half the width), so wrapped
- * untrusted text never reaches a column its source did not, such as a header's column 0. Breaks fall at
- * whitespace, which they drop; only a word longer than the rest of the line is split. A tab counts as one space.
+ * A source line keeps its indent and its continuations hang `hang` columns deeper (both at most half the width),
+ * so wrapped untrusted text never starts where its source line, or a hub line at that indent, starts. Breaks fall
+ * at whitespace, which they drop; only a word longer than the rest of the line is split. A tab counts as one space.
+ * Lines come out sanitized: a width counts the `> ` that sanitize() puts before a line starting like a hub header.
  */
-export function wrap(value: unknown, columns: number): string[] {
+export function wrap(value: unknown, columns: number, hang = 4): string[] {
   const lines: string[] = [];
+  const half = Math.floor(columns / 2);
+  const width = (text: string) => Bun.stringWidth(sanitize(text));
   for (const part of terminalText(value).replace(/\t/g, " ").split("\n")) {
     const indent = /^\s*/.exec(part)![0];
-    const pad = " ".repeat(Math.min(Bun.stringWidth(indent), Math.floor(columns / 2)));
+    const lead = Math.min(Bun.stringWidth(indent), half);
+    const pad = " ".repeat(Math.min(lead + hang, half));
     const first = lines.length;
-    let line = pad;
+    let start = " ".repeat(lead);
+    let line = start;
+    const push = () => { lines.push(sanitize(line.trimEnd())); line = start = pad; };
     for (const token of part.slice(indent.length).match(/\s+|\S+/g) ?? []) {
-      if (Bun.stringWidth(line + token) <= columns) { line += token; continue; }
-      if (line !== pad) { lines.push(line.trimEnd()); line = pad; }
+      if (width(line + token) <= columns) { line += token; continue; }
+      if (line !== start) push();
       if (/^\s/.test(token)) continue;
       for (const char of token) {
-        if (line !== pad && Bun.stringWidth(line + char) > columns) { lines.push(line); line = pad; }
+        if (line !== start && width(line + char) > columns) push();
         line += char;
       }
     }
-    if (line !== pad || lines.length === first) lines.push(line.trimEnd());
+    if (line !== start || lines.length === first) lines.push(sanitize(line.trimEnd()));
   }
   return lines;
 }

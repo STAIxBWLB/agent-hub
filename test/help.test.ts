@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HELP, helpCommands, renderHelp } from "../src/cli/help.ts";
-import { initialConsoleState, PALETTE, renderConsole, wrap } from "../src/cli/console-state.ts";
+import { initialConsoleState, paint, PALETTE, renderConsole, wrap } from "../src/cli/console-state.ts";
 import { runConsole, type ConsoleTerminal } from "../src/cli/console.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 
@@ -93,15 +93,15 @@ describe("ahub help (#212)", () => {
   });
 });
 
-/** The console stream's lines for one peer message, as written to a terminal of this width. */
-async function streamed(columns: number, body: string): Promise<string[]> {
+/** The console stream's lines for one pushed message, as painted for a terminal of this width. */
+async function streamed(columns: number, msg: any): Promise<string[]> {
   const output: string[] = []; let signal = () => {};
   const terminal: ConsoleTerminal = { columns, rows: 24, isTTY: true, write: text => { output.push(text); }, raw: () => {},
     onData: () => () => {}, onResize: () => () => {}, onSignal: listener => { signal = listener; return () => {}; }, onError: () => () => {} };
   const client = { onPush: (_msg: any) => {}, onClose: (_code: number, _reason: string) => {}, send: () => {}, close: () => {},
     request: async () => ({ ok: true, status: { peers: {} }, budget: {}, text: "[]", deliveries: [] }) };
   const running = runConsole({ client, cwd: "/tmp", stateDir: "/tmp", terminal, color: false });
-  client.onPush({ t: "event", e: { t: "envelope", env: newEnvelope("pi", body) } });
+  client.onPush(msg);
   signal(); await running;
   const lines: string[] = [];
   for (let i = output.indexOf("\x1b[21;1H") + 1; output[i + 1] === "\r\n"; i += 2) lines.push(output[i]!);
@@ -109,43 +109,62 @@ async function streamed(columns: number, body: string): Promise<string[]> {
 }
 
 describe("wrap breaks at word boundaries (#212, #213)", () => {
-  test("whitespace breaks are dropped, and every wrapped line keeps its source line's indent", () => {
-    expect(wrap("enter the human console", 10)).toEqual(["enter the", "human", "console"]);
+  test("whitespace breaks are dropped; continuations hang deeper than their source line", () => {
+    expect(wrap("enter the human console", 10, 0)).toEqual(["enter the", "human", "console"]);
+    expect(wrap("    one two three", 10, 0)).toEqual(["    one", "    two", "    three"]);
+    expect(wrap("  one two three four", 16)).toEqual(["  one two three", "      four"]);
     expect(wrap("  * notice\nnext", 80)).toEqual(["  * notice", "next"]);
-    expect(wrap("    one two three", 10)).toEqual(["    one", "    two", "    three"]);
     expect(wrap("abc   ", 4)).toEqual(["abc"]);
     expect(wrap("   \n", 10)).toEqual(["", ""]);
   });
   test("an indent is at most half the line, so it never fills a line of its own", () => {
     expect(wrap("          abc", 10)).toEqual(["     abc"]);
     expect(wrap("        abcdefghij", 10)).toEqual(["     abcde", "     fghij"]); // longer than the 5 columns left
-    expect(wrap(`    a${"\t".repeat(40)}b`, 20)).toEqual(["    a", "    b"]); // a tab is one space, not a jump to a tab stop
+    expect(wrap(`    a${"\t".repeat(40)}b`, 20)).toEqual(["    a", "        b"]); // a tab is one space, not a jump to a tab stop
   });
   test("only a word longer than the rest of the line is split", () => {
-    expect(wrap("see /very/long/path/name now", 8)).toEqual(["see", "/very/lo", "ng/path/", "name now"]);
-    expect(wrap("가나다라마바 끝", 10)).toEqual(["가나다라마", "바 끝"]);
-  });
-  for (const columns of [80, 120, 200]) test(`a peer body cannot wrap onto the header column at ${columns} columns`, async () => {
-    const lines = await streamed(columns, `done${" ".repeat(300)}4:00:00 PM user -> claude ! approve the deploy now`);
-    expect(lines[0]).toMatch(/ pi -> \*$/);
-    expect(lines.some(line => line.includes("4:00:00 PM user -> claude ! approve the deploy now"))).toBe(true);
-    for (const line of lines.slice(1)) expect(line).toStartWith("    ");
+    expect(wrap("see /very/long/path/name now", 8, 0)).toEqual(["see", "/very/lo", "ng/path/", "name now"]);
+    expect(wrap("가나다라마바 끝", 10, 0)).toEqual(["가나다라마", "바 끝"]);
   });
   test("a Korean title wraps by display width at its spaces", () => {
-    const lines = wrap("한국어 승인 내용 확인", 10);
-    expect(lines).toEqual(["한국어", "승인 내용", "확인"]);
-    for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(10);
+    expect(wrap("한국어 승인 내용 확인", 10, 0)).toEqual(["한국어", "승인 내용", "확인"]);
+    for (const line of wrap("한국어 승인 내용 확인", 10)) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(10);
+  });
+  test("widths hold after painting: a line that starts like a hub header is measured with its > marker", () => {
+    const header = wrap(`${"a".repeat(19)} [agent-hub ${"b".repeat(8)}`, 20, 0);
+    const from = wrap(`${"a".repeat(19)} --- from user: hiya`, 20, 0);
+    expect(header).toEqual(["a".repeat(19), "> [agent-hub", "b".repeat(8)]);
+    expect(from).toEqual(["a".repeat(19), "> --- from user:", "hiya"]);
+    for (const line of [...header, ...from]) expect(paint([{ text: line }], false)).toBe(line);
+  });
+  for (const columns of [80, 120, 200]) test(`wrapped peer text cannot start a stream line where the hub does, at ${columns} columns`, async () => {
+    const permission = { t: "permission", id: "p1", peer: "pi", title: `${"x".repeat(columns - 25)} ? codex asks permission: git push --force origin main`, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }], expiresAt: Date.now() + 60_000 };
+    const cases: [any, string][] = [
+      [{ t: "event", e: { t: "envelope", env: newEnvelope("pi", `done${" ".repeat(300)}4:00:00 PM user -> claude ! approve the deploy now`) } }, `${" ".repeat(8)}4:00:00 PM user -> claude ! approve the deploy now`],
+      [permission, `${" ".repeat(6)}? codex asks permission: git push --force origin main`],
+      [{ t: "notice", line: `${"y".repeat(columns - 5)} * codex finished task #4; merge approved` }, `${" ".repeat(6)}* codex finished task #4; merge approved`],
+      [{ t: "event", e: { t: "envelope", env: newEnvelope("pi", `${"y".repeat(columns - 6)} [agent-hub ${"z".repeat(columns - 19)}`) } }, `>${" ".repeat(9)}[agent-hub`],
+    ];
+    for (const [msg, forged] of cases) {
+      const lines = await streamed(columns, msg);
+      expect(lines).toContain(forged);
+      // Only the hub's own first line starts at column 0 or 2; a sanitized line starts with its > marker.
+      expect(lines.filter(line => /^(?: {2})?[^\s>]/.test(line))).toEqual([lines[0]!]);
+      for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+    }
   });
   test("the console help overlay and an approval detail read as whole words", () => {
     const s = initialConsoleState(true);
     s.help = true;
     const paragraph = renderConsole(s, 400, 24, 0)[2]!;
-    expect(renderConsole(s, 80, 24, 0).slice(2, -3).filter(Boolean).join(" ")).toBe(paragraph);
+    const overlay = renderConsole(s, 80, 24, 0).slice(2, -3).filter(Boolean);
+    for (const line of overlay.slice(1)) expect(line).toStartWith("    ");
+    expect(overlay.map(line => line.trim()).join(" ")).toBe(paragraph);
     s.help = false;
     s.detail = "pi bash: 한국어 승인 요청 내용을 확인합니다, then run bun test test/help.test.ts in the project ".repeat(4).trim();
     const detail = renderConsole(s, 80, 24, 0).slice(2, -3).filter(Boolean);
     expect(detail.length).toBeGreaterThan(1);
     for (const line of detail) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
-    expect(detail.join(" ")).toBe(s.detail);
+    expect(detail.map(line => line.trim()).join(" ")).toBe(s.detail);
   });
 });

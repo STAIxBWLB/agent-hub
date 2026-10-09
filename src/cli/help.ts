@@ -26,7 +26,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub restart [--dry-run] [--yes]", "recover this project's runtime"],
     ["ahub upgrade --to <version> [--dry-run] [--yes]", "review and upgrade running projects"],
     ["ahub recovery status|resume|abort <operation-id>", "inspect, resume or cancel a preflight"],
-    ["ahub daemon [--unattended]", "internal: the detached hub process that ahub up starts"],
+    ["ahub daemon [--unattended]", "internal: the detached hub process that ahub up or the dashboard manager starts"],
     ["ahub recovery-run <operation-id>", "internal: the detached runner of an upgrade, restart or recovery resume"],
   ]],
   ["Agents", [
@@ -98,7 +98,7 @@ const DESCRIPTION = 34;
 export function renderHelp(columns: number, color: boolean, command?: string): string {
   const width = Math.min(100, Math.max(80, columns || 80));
   const entries = command === undefined ? HELP : HELP.filter(entry => helpCommands(entry).includes(command));
-  const lines: Span[][] = command === undefined ? wrap(`agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one project directory`, width).map(text => [{ text }]) : [];
+  const lines: Span[][] = command === undefined ? wrap(`agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one project directory`, width, 0).map(text => [{ text }]) : [];
   let section = "";
   for (const entry of entries) {
     if (entry.section !== section) {
@@ -107,8 +107,8 @@ export function renderHelp(columns: number, color: boolean, command?: string): s
       section = entry.section;
     }
     const prefix = COMMAND.exec(entry.usage)?.[0] ?? "";
-    const usage = wrap(entry.usage, width - 4);
-    const description = wrap(entry.description, width - DESCRIPTION);
+    const usage = wrap(entry.usage, width - 4, 0);
+    const description = wrap(entry.description, width - DESCRIPTION, 0);
     const first: Span[] = [{ text: "  " }, { text: prefix, tone: "info" }, { text: usage[0]!.slice(prefix.length) }];
     if (usage.length === 1 && 2 + Bun.stringWidth(usage[0]!) + 2 <= DESCRIPTION) first.push({ text: " ".repeat(DESCRIPTION - 2 - Bun.stringWidth(usage[0]!)) + description.shift() });
     lines.push(first, ...usage.slice(1).map(text => [{ text: `    ${text}` }]), ...description.map(text => [{ text: " ".repeat(DESCRIPTION) + text }]));
