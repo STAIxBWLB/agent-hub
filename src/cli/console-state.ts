@@ -73,15 +73,34 @@ export function fit(value: unknown, columns: number): string {
   for (const char of text) { if (Bun.stringWidth(result + char) > columns - marker.length) break; result += char; }
   return result + marker;
 }
-export function wrap(value: unknown, columns: number): string[] {
+/**
+ * A source line keeps its indent and its continuations hang `hang` columns deeper, both capped at half the width, so
+ * below that cap wrapped untrusted text never starts where its source line, or a hub line at that indent, starts. Breaks fall
+ * at whitespace, which they drop; only a word longer than a whole line is split. A tab counts as one space.
+ * Lines come out sanitized: a width counts the `> ` that sanitize() puts before a line starting like a hub header.
+ */
+export function wrap(value: unknown, columns: number, hang = 4): string[] {
   const lines: string[] = [];
-  for (const part of terminalText(value).split("\n")) {
-    let line = "";
-    for (const char of part) {
-      if (Bun.stringWidth(line + char) > columns) { lines.push(line); line = ""; }
-      line += char;
+  const half = Math.floor(columns / 2);
+  const width = (text: string) => Bun.stringWidth(sanitize(text));
+  for (const part of terminalText(value).replace(/\t/g, " ").split("\n")) {
+    const indent = /^\s*/.exec(part)![0];
+    const lead = Math.min(Bun.stringWidth(indent), half);
+    const pad = " ".repeat(Math.min(lead + hang, half));
+    const first = lines.length;
+    let start = " ".repeat(lead);
+    let line = start;
+    const push = () => { lines.push(sanitize(line.trimEnd())); line = start = pad; };
+    for (const token of part.slice(indent.length).match(/\s+|\S+/g) ?? []) {
+      if (width(line + token) <= columns) { line += token; continue; }
+      if (line !== start) push();
+      if (/^\s/.test(token)) continue;
+      for (const char of token) {
+        if (line !== start && width(line + char) > columns) push();
+        line += char;
+      }
     }
-    lines.push(line);
+    if (line !== start || lines.length === first) lines.push(sanitize(line.trimEnd()));
   }
   return lines;
 }

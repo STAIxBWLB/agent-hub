@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- `ahub help` groups the commands into sections, starts every description at one column and wraps at word boundaries to the terminal width (80 to 100 columns), colored with the console palette only on a terminal without `TERM=dumb` or `NO_COLOR`. `--help`, `-h` and `help <command>` work, and `ahub <command> -h` (or `--help`) given as the only argument prints that command's help instead of running it, except for claude and codex, which pass it to the agent; an unknown command prints a one-line hint instead of the full list. The console shares the word-aware wrapping, which also covers the wrapping item of #213: the help overlay, approval titles, details and stream lines break at word boundaries. A continuation line starts four columns deeper than its source line (at most half the width), so wrapped peer text in the console stream never starts at column 0 or 2, where headers and event lines start; a wrapped line that starts like a hub header keeps its `> ` marker, now counted in its width (#212).
+
 ## 0.12.19
 
 - Pi's write, edit, bash and git write approvals offer `Always allow <tool> until Pi restarts`: later calls of that tool by the running Pi skip the prompt, still under the path guard and sandbox. The grant is in memory only, logged by tool name, and the dashboard can still only deny (#209).

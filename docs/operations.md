@@ -3,6 +3,23 @@
 This guide describes ahub 0.12.19 and control protocol 15. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
+## Command help
+
+`ahub help`, `ahub --help` and `ahub -h` print the commands grouped by section;
+`ahub help <command>` prints only that command's entries, and so does
+`ahub <command> -h` (or `--help`) when the flag is the only argument; anywhere else
+it is an ordinary argument, and `ahub claude` and `ahub codex` pass it on to the
+agent. An unknown command
+prints `unknown command "<name>"; run ahub help` and exits non-zero. Usages start
+at two spaces and descriptions at one fixed column, wrapped at word boundaries to
+the terminal width, read as at least 80 and at most 100 columns.
+
+Help uses the console palette: section headings bold cyan, `ahub <command>` words
+cyan, arguments and descriptions the terminal's default foreground. It has no
+`--color` flag: color is on only when standard output is a terminal, `TERM` is
+not `dumb` and `NO_COLOR` is empty or absent. Pipes and redirects get plain text
+without escape sequences, laid out for 80 columns.
+
 ## Operator console and panels
 
 `ahub console` combines the existing tail stream with peer, quota, approval-age

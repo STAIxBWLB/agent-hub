@@ -1,0 +1,117 @@
+import { VERSION } from "../version.ts";
+import { paint, wrap, type Span } from "./console-state.ts";
+
+/** One usage form of `ahub help`: the usage starts with `ahub <command>`, alternatives joined by `|`. */
+export interface HelpEntry { section: string; usage: string; description: string }
+
+const SECTIONS: [string, [usage: string, description: string][]][] = [
+  ["Projects", [
+    ["ahub --project <path|id> <command>", "select a repository or worktree explicitly"],
+    ["ahub projects [--json]", "list registered projects and live status"],
+    ["ahub projects remove <id>", "forget a stopped registration (keeps project files)"],
+    ["ahub setup [--yes]", "install or update the Claude Code channel plugin from this package, then run doctor"],
+    ["ahub init [--dry-run --json]", "preview or write .agenthub/config.json and the AGENTS.md marker block (drops a legacy CLAUDE.md block)"],
+    ["ahub help [command]", "this help, or one command's entries; also --help and -h"],
+    ["ahub version | --version", "print the installed version"],
+  ]],
+  ["Daemon and runtime", [
+    ["ahub up [--unattended] [--no-console]", "start the daemon; interactive terminals enter console"],
+    ["ahub console [--panels] [--color=auto|always|never]", "enter the human console, leaving the daemon running on exit"],
+    ["ahub status", "the hub, its peers, model backends and task counts"],
+    ["ahub status --all", "show every registered project"],
+    ["ahub logs [-f]", "the last 100 lines of hub.log; -f shows the last 10 and follows it"],
+    ["ahub doctor", "check the tools, daemon, plugin, gateway, models and memory worker this project uses"],
+    ["ahub doctor --orphans [--kill]", "list registrations whose project root is gone; --kill stops their daemons (SIGTERM, then SIGKILL) only after the process identity checks out"],
+    ["ahub kill", "stop this project's hub"],
+    ["ahub restart [--dry-run] [--yes]", "recover this project's runtime"],
+    ["ahub upgrade --to <version> [--dry-run] [--yes]", "review and upgrade running projects"],
+    ["ahub recovery status|resume|abort <operation-id>", "inspect, resume or cancel a preflight"],
+    ["ahub daemon [--unattended]", "internal: the detached hub process that ahub up or the dashboard manager starts"],
+    ["ahub recovery-run <operation-id>", "internal: the detached runner of an upgrade, restart or recovery resume"],
+  ]],
+  ["Agents", [
+    ["ahub claude [--print-command] [--unattended] [args...]", "launch Claude Code with the hub channel"],
+    ["ahub codex [--print-command] [--unattended] [args...]", "start the Codex adapter and attach the TUI"],
+    ["ahub kimi [--print-command] [--model <alias>]", "start Kimi headless under ACP"],
+    ["ahub pi [--print-command] [--mode headless|tui] [--backend auto|dgx|mlx] [--session-id <id>] [--session-file <path>]", "start Pi"],
+    ["ahub local [--route <id> | --model <id>]", "start the hub-native worker on the self-hosted models (routing.toml)"],
+    ["ahub models setup|status|start|stop", "prepare or inspect local Ollama MLX (legacy stop is explicit)"],
+  ]],
+  ["Messages and approvals", [
+    ["ahub say [@peer ...] <text>", "send as the console user (no @peer = broadcast); delivered at once, start the text with [STATUS] to let it batch or [FYI] for the record only"],
+    ["ahub tail", "live stream of messages, states and permission requests"],
+    ["ahub permit <id> <option>", "answer a permission request shown by tail (\"deny\" cancels)"],
+    ["ahub pause|resume <peer>", "hold a peer's deliveries in its queue / release them"],
+    ["ahub queue list [--peer <id>] [--json]", "inspect durable deliveries"],
+    ["ahub queue show <delivery-id>", "inspect one delivery and revision"],
+    ["ahub queue resolve <delivery-id> --action completed|retry|discard --reason <text>", "release a delivery held as needs_review: mark it completed, retry it or discard it"],
+  ]],
+  ["Tasks and review", [
+    ["ahub board [state | --ready]", "the task board; --ready: proposed tasks with nothing left to wait for"],
+    ["ahub task propose [--class <c> | <class>] <title...> [--owner <peer>] [--path <p>]... [--after <id>]... [--urgent] [--detail <text>]", "put a task on the board; a first word that names a class is taken as the class"],
+    ["ahub task show|escalate <id>", "full task with history (PII text included) / hand it to the next peer in escalate_to"],
+    ["ahub task assign <id> <peer>", "give a task to a peer yourself"],
+    ["ahub review <id> approved|changes_requested [note...] [--unmet <item>]...", "give a review verdict on a task"],
+    ["ahub route explain <id>", "why a task went where it went"],
+    ["ahub route explain --class <c> <title...>", "what would happen to such a task now"],
+    ["ahub ask [--remember] <question...>", "answer from the task board, shared memory and this run's log, with the ids it rests on"],
+    ["ahub remember <text...>", "save a note to the memory all agents share"],
+  ]],
+  ["Budget", [
+    ["ahub budget", "quota windows per peer, and who is paused until when"],
+    ["ahub budget set <peer> <0..1> [--resets-in 30m] [--window 5h|week]", "feed a reading by hand (also: test the relay)"],
+    ["ahub budget resume <peer>", "override a budget pause; readings are ignored for that peer until the window resets"],
+    ["ahub budget execution configure <config.json> | status [id] | disable <id>", "opt-in limits on model calls, tool calls, time and tokens for pi and local"],
+  ]],
+  ["History and reports", [
+    ["ahub turns [peer] [--limit N]", "recent turns and the files each changed (a git work tree only)"],
+    ["ahub undo <turn> [--yes] [--context]", "put back the files a turn changed; refuses files changed since. Without --yes it only lists them; --context also drops a Codex turn from its conversation"],
+    ["ahub report [--since 7d|<iso>] [--by task] [--json]", "turns, tokens, messages, overlaps and task events per period"],
+    ["ahub export [--since 7d|<iso>]", "structured events (events.jsonl) as JSON lines; never message bodies"],
+    ["ahub check-path <file> [--peer <id>]", "other owners' open tasks that claim or changed a file"],
+  ]],
+  ["Hooks", [
+    ["ahub check-path --hook", "check-path as a Claude Code PreToolUse hook (templates/claude-hooks.json); never blocks"],
+    ["ahub facts --hook", "turn-free facts as a Claude Code PreToolUse, PostToolUse and Stop hook (issue #108); never blocks"],
+  ]],
+  ["Dashboard", [
+    ["ahub ui [--no-open]", "open the local dashboard (or print its one-time link)"],
+    ["ahub ui --all [--no-open]", "open the unified project dashboard"],
+    ["ahub ui --all --stop", "stop only the dashboard manager"],
+    ["ahub manager", "internal: the dashboard manager process that ahub ui --all starts"],
+  ]],
+];
+export const HELP: readonly HelpEntry[] = SECTIONS.flatMap(([section, rows]) => rows.map(([usage, description]) => ({ section, usage, description })));
+
+const COMMAND = /^ahub (-{0,2}[a-z][a-z-]*(?: ?\| ?-{0,2}[a-z][a-z-]*)*)/;
+/** The command words a usage documents: `ahub pause|resume <peer>` documents pause and resume. */
+export function helpCommands(entry: HelpEntry): string[] {
+  return COMMAND.exec(entry.usage)?.[1]!.split(/ ?\| ?/) ?? [];
+}
+
+const DESCRIPTION = 34;
+/**
+ * Usage at 2 spaces, description at one fixed column, wrapped at word boundaries to the terminal width
+ * (80 to 100 columns). A usage too long for that column puts its description on the next line.
+ * With a command, only its entries; an unknown command renders nothing.
+ */
+export function renderHelp(columns: number, color: boolean, command?: string): string {
+  const width = Math.min(100, Math.max(80, columns || 80));
+  const entries = command === undefined ? HELP : HELP.filter(entry => helpCommands(entry).includes(command));
+  const lines: Span[][] = command === undefined ? wrap(`agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one project directory`, width, 0).map(text => [{ text }]) : [];
+  let section = "";
+  for (const entry of entries) {
+    if (entry.section !== section) {
+      if (lines.length) lines.push([]);
+      lines.push([{ text: entry.section, tone: "strong" }]);
+      section = entry.section;
+    }
+    const prefix = COMMAND.exec(entry.usage)?.[0] ?? "";
+    const usage = wrap(entry.usage, width - 4, 0);
+    const description = wrap(entry.description, width - DESCRIPTION, 0);
+    const first: Span[] = [{ text: "  " }, { text: prefix, tone: "info" }, { text: usage[0]!.slice(prefix.length) }];
+    if (usage.length === 1 && 2 + Bun.stringWidth(usage[0]!) + 2 <= DESCRIPTION) first.push({ text: " ".repeat(DESCRIPTION - 2 - Bun.stringWidth(usage[0]!)) + description.shift() });
+    lines.push(first, ...usage.slice(1).map(text => [{ text: `    ${text}` }]), ...description.map(text => [{ text: " ".repeat(DESCRIPTION) + text }]));
+  }
+  return lines.map(line => paint(line, color)).join("\n");
+}
