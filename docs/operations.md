@@ -65,7 +65,13 @@ console user reads `user`. When a peer's status carries #205's optional
 `tools-only`. Below the Approvals table, a rule and the selected
 request: its title, its allow options numbered as `a` offers them, and `d deny`.
 A title too long for the panel is marked `(more)` in the label column; Enter
-shows it whole.
+shows it whole. `d deny` always shows; options that do not fit are counted on a
+`(more)` line. A new request is selected when none is, and `[` and `]` (or j/k
+in the panel) select another. `a`, `d` and `v` act on the selected request
+only: when it closes, the selection clears with a notice instead of moving to
+another request. Agent-written text below a field, and option names in prompts,
+are quoted unless they are a single word, so punctuation or a newline in them
+cannot imitate the console's own structure.
 
 Arrow keys or j/k move, Enter opens a detail of labeled fields (relative times,
 never JSON), Escape returns, and `?` shows the keys grouped by panel; in the

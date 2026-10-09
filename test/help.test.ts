@@ -180,7 +180,7 @@ describe("wrap breaks at word boundaries (#212, #213)", () => {
       expect(detail.map(line => line.replace(/^title/, "").trim()).join(value === title ? " " : "")).toBe(value);
     }
     s.detail = undefined; s.panel = 2;
-    s.approvals = [{ id: "p1", peer: "pi", title, expiresAt: 60_000, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] }];
+    s.approvals = [{ id: "p1", peer: "pi", title, expiresAt: 60_000, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] }]; s.approvalId = "p1";
     const panel = renderConsole(s, 80, 24, 0);
     const lines = panel.slice(panel.findIndex(line => line.startsWith("title ")), panel.findIndex(line => line.startsWith("a allow ")));
     expect(lines.length).toBeGreaterThan(1);

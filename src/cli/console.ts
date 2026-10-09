@@ -4,7 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { ControlClient } from "../hub/control-client.ts";
 import { contextLine } from "./status-lines.ts";
 import { renderTailEvent } from "./tail-render.ts";
-import { initialConsoleState, paint, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, terminalText, wrap } from "./console-state.ts";
+import { initialConsoleState, keyTable, paint, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, terminalText, wrap } from "./console-state.ts";
 import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
 
@@ -161,6 +161,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (!action.option) stream({ text: `  ! denial requested for permission ${action.id}`, kind: "permission", tone: "failure" });
       return;
     }
+    if (action.type === "keys") return stream({ text: keyTable(columns).map(line => paint(line, false)).join("\n"), kind: "console" }, false);
     if (action.type === "print") return stream({ text: action.text, kind: action.kind, ...(action.tone ? { tone: action.tone } : {}) }, false);
     if (action.type === "show") {
       const result = await client.request(action.panel === 3 ? { t: "task", op: "task_show", args: { id: action.id } } : { t: "queue", op: "show", id: action.id }, 3000);
@@ -194,7 +195,8 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       else if (msg.t === "notice") stream({ text: `  * ${msg.line}`, kind: "notice" });
       else if (msg.t === "permission") {
         stream({ text: permissionText(msg), peer: msg.peer, kind: "permission", tone: "attention" });
-        if (typeof msg.expiresAt === "number" && msg.expiresAt > Date.now() && !state.approvals.some(a => a.id === msg.id)) state.approvals.push(msg);
+        // A request is selected when it arrives and nothing is; a closed selection is never moved to another request.
+        if (typeof msg.expiresAt === "number" && msg.expiresAt > Date.now() && !state.approvals.some(a => a.id === msg.id)) { state.approvals.push(msg); state.approvalId ??= msg.id; }
       } else if (msg.t === "permission_closed") {
         state.approvals = state.approvals.filter(a => a.id !== msg.id); state = pruneApprovals(state, Date.now());
         if (msg.reason === "expired" || msg.outcome === "cancelled" || msg.outcome?.startsWith("reject")) stream({ text: `  ! ${msg.peer} permission ${msg.id} ${msg.reason ?? msg.outcome}`, peer: msg.peer, kind: "permission", tone: "failure" });

@@ -6,7 +6,9 @@ export interface Approval {
 }
 export interface ConsoleEvent { text: string; peer?: string; kind?: string; tone?: Tone }
 export interface ConsoleState {
-  mode: "stream" | "panels"; panel: number; selection: number; approvalIndex: number;
+  mode: "stream" | "panels"; panel: number; selection: number;
+  /** The selected request, by id: a, d and v act on it alone, and it is cleared, never moved, when the request closes. */
+  approvalId?: string; requestDetail?: boolean;
   input: string; editing: boolean; history: string[]; historyIndex: number;
   approvals: Approval[]; events: ConsoleEvent[]; peers: Record<string, any>; budget: Record<string, any>;
   tasks: any[]; queue: any[]; detail?: Detail; detailOffset: number; help: boolean; notice: string; noticeAt?: number;
@@ -17,9 +19,9 @@ export interface ConsoleState {
 /** A detail view: text as the stream shows it, or labeled fields. */
 export type Detail = string | Record<string, unknown>;
 export type ConsoleEffect = { type: "exit" } | { type: "permit"; id: string; option?: string } |
-  { type: "command"; args: string[] } | { type: "show"; panel: number; id: string } | { type: "print"; text: string; kind: string; tone?: Tone };
+  { type: "command"; args: string[] } | { type: "show"; panel: number; id: string } | { type: "print"; text: string; kind: string; tone?: Tone } | { type: "keys" };
 export function initialConsoleState(panels = false): ConsoleState {
-  return { mode: panels ? "panels" : "stream", panel: 1, selection: 0, approvalIndex: 0,
+  return { mode: panels ? "panels" : "stream", panel: 1, selection: 0,
     input: "", editing: false, history: [], historyIndex: 0, approvals: [], events: [], peers: {}, budget: {}, tasks: [], queue: [], detailOffset: 0, help: false, notice: "" };
 }
 /** Strip terminal controls before any daemon or child output reaches a terminal. Preserve printable Unicode. */
@@ -118,15 +120,24 @@ export function duration(ms: number): string {
 }
 /** A moment as `in 2h13m` or `12m ago`. */
 export const relative = (at: number, now: number) => at > now ? `in ${duration(at - now)}` : `${duration(now - at)} ago`;
+const WORD = /^[\p{L}\p{N}][\p{L}\p{N}_./:@#+-]*$/u;
+/**
+ * An agent-written string inside hub-built text (a detail below its field, an option name in a prompt): a plain word as
+ * it is, anything else JSON-quoted, so no `;`, `,`, `)`, quote or newline in it can end it and pass for hub structure.
+ */
+export const quoted = (text: unknown) => { const value = String(text ?? ""); return WORD.test(value) ? value : JSON.stringify(value); };
 const TIME_KEY = /^(?:at|created|updated|since|expires)$|At$/;
-/** A detail value as text, never JSON: times relative, shares as percent, objects as `key value` pairs, nested lists inline. */
-function detailText(value: unknown, key: string, now: number): string {
-  if (value === null || value === undefined || value === "") return "-";
+/**
+ * A detail value as text, never JSON: times relative, shares as percent, objects as `key value` pairs, nested lists
+ * inline. Only a field's own string value shows as written; every string below it goes through `quoted`.
+ */
+function detailText(value: unknown, key: string, now: number, nested = false): string {
+  if (value === null || value === undefined || (value === "" && !nested)) return "-";
   if (typeof value === "number" && TIME_KEY.test(key)) return relative(value, now);
   if (typeof value === "number" && key === "used") return `${Math.round(value * 100)}%`;
-  if (Array.isArray(value)) return value.map(item => item && typeof item === "object" && !Array.isArray(item) ? `(${detailText(item, key, now)})` : detailText(item, key, now)).join(", ") || "-";
-  if (typeof value === "object") return Object.entries(value).map(([k, v]) => `${k} ${detailText(v, k, now)}`).join("; ") || "-";
-  return String(value);
+  if (Array.isArray(value)) return value.map(item => item && typeof item === "object" && !Array.isArray(item) ? `(${detailText(item, key, now, true)})` : detailText(item, key, now, true)).join(", ") || "-";
+  if (typeof value === "object") return Object.entries(value).map(([k, v]) => `${k} ${detailText(v, k, now, true)}`).join("; ") || "-";
+  return nested ? quoted(value) : String(value);
 }
 /**
  * Labels at column 0, values one column past the longest label. A list puts the hub's `- ` before each item, and every
@@ -138,7 +149,7 @@ function fieldLines(fields: [string, unknown][], columns: number, now: number): 
   const width = columns - pad - 2;
   return fields.map(([label, value]) => {
     const list = Array.isArray(value) && value.length > 0;
-    const items = list ? (value as unknown[]).map(item => detailText(item, label, now)) : [detailText(value, label, now)];
+    const items = list ? (value as unknown[]).map(item => detailText(item, label, now, true)) : [detailText(value, label, now)];
     const lines = items.flatMap(item => (label === "a allow" ? [fit(item, width)] : wrap(item, width)).map((text, i) => (i ? "  " : list ? "- " : "") + text));
     return lines.map((text, i) => {
       const head = i ? "" : fit(label, pad - 2);
@@ -149,17 +160,15 @@ function fieldLines(fields: [string, unknown][], columns: number, now: number): 
 const detailLines = (detail: Detail, columns: number, now: number): Span[][] =>
   typeof detail === "string" ? wrap(detail, columns).map(text => [span(text)]) : fieldLines(Object.entries(detail), columns, now).flat();
 const allowOptions = (a: Approval) => a.options.filter(o => o.kind.startsWith("allow"));
-/** An agent-written option name or id on one line: its newlines show as ` | `. */
-const oneLine = (text: unknown) => String(text ?? "").replace(/\s*\n\s*/g, " | ");
-/** A request as labeled fields: allow options numbered as `a` offers them, then deny. */
+/** A request as labeled fields: allow options numbered as `a` offers them (`{ 2: name }`: the number is the hub's, the name quoted), then deny. */
 function approvalFields(a: Approval): [string, unknown][] {
   const allow = allowOptions(a);
   return [["request", a.id], ["peer", a.peer], ["expires", a.expiresAt], ["title", a.title],
-    ["a allow", allow.length > 1 ? allow.map((o, i) => `${i + 1} ${oneLine(o.name)}`) : allow[0] && oneLine(allow[0].name)], ["d deny", "at once, no confirmation"]];
+    ["a allow", allow.length > 1 ? allow.map((o, i) => ({ [i + 1]: o.name })) : allow[0] && quoted(allow[0].name)], ["d deny", "at once, no confirmation"]];
 }
 /** How the stream shows a permission request: hub text at columns 2 and 4, title lines framed at column 6. */
 export function permissionText(a: Pick<Approval, "id" | "peer" | "title" | "options">): string {
-  return `  ? ${a.peer} asks permission: ${String(a.title).replace(/\n/g, "\n      | ")}\n    answer with: ahub permit ${a.id} <${a.options.map(o => `${oneLine(o.optionId)} (${oneLine(o.name)})`).join(", ")}> | deny`;
+  return `  ? ${a.peer} asks permission: ${String(a.title).replace(/\n/g, "\n      | ")}\n    answer with: ahub permit ${a.id} <${a.options.map(o => `${quoted(o.optionId)} (${quoted(o.name)})`).join(", ")}> | deny`;
 }
 const KEYS: [string, string[]][] = [
   ["Everywhere", ["Tab stream/panels", "1-5 panel", ": command", "? keys", "Esc back", "q quit"]],
@@ -185,7 +194,9 @@ export function keyTable(columns: number): Span[][] {
 export function pruneApprovals(s: ConsoleState, now: number): ConsoleState {
   const approvals = s.approvals.filter(a => a.expiresAt > now);
   const live = (id: string) => approvals.some(a => a.id === id);
-  return { ...s, approvals, approvalIndex: Math.min(s.approvalIndex, Math.max(0, approvals.length - 1)),
+  const gone = s.approvalId !== undefined && !live(s.approvalId);
+  return { ...s, approvals,
+    ...(gone ? { approvalId: undefined, requestDetail: false, notice: `request ${s.approvalId} closed${approvals.length ? "; [ ] selects another" : ""}`, noticeAt: now } : {}),
     ...(s.confirm?.type === "permission" && !live(s.confirm.id) ? { confirm: undefined } : {}),
     ...(s.optionChoice && !live(s.optionChoice) ? { optionChoice: undefined } : {}) };
 }
@@ -220,12 +231,14 @@ export function panelRows(s: ConsoleState): any[] {
   if (s.panel === 4) return s.queue.filter(q => q.state === "needs_review" || q.state === "queued");
   return s.events.filter(e => (!s.peerFilter || e.peer === s.peerFilter) && (!s.kindFilter || e.kind === s.kindFilter));
 }
-/** The selected row: the Approvals panel selects the request that a, d and v act on. */
-const selection = (s: ConsoleState) => s.panel === 2 ? s.approvalIndex : s.selection;
+export const selectedApproval = (s: ConsoleState) => s.approvals.find(a => a.id === s.approvalId);
+/** The selected row: the Approvals panel's is the selected request (-1 when none is). */
+const selection = (s: ConsoleState) => s.panel === 2 ? s.approvals.findIndex(a => a.id === s.approvalId) : s.selection;
 export function reduceConsole(state: ConsoleState, key: string, now = Date.now()): { state: ConsoleState; effects: ConsoleEffect[] } {
-  let s = pruneApprovals({ ...state }, now); const effects: ConsoleEffect[] = [];
-  const done = () => { s.approvalIndex = Math.min(s.approvalIndex, Math.max(0, s.approvals.length - 1)); return { state: s, effects }; };
-  s.notice = ""; // a notice answers the key before this one
+  // A notice answers the key before this one; one that pruning raises now stays.
+  let s = pruneApprovals({ ...state, notice: "" }, now); const effects: ConsoleEffect[] = [];
+  const done = () => ({ state: s, effects });
+  const answered = (id: string) => { s.approvals = s.approvals.filter(a => a.id !== id); if (s.approvalId === id) { s.approvalId = undefined; s.requestDetail = false; } };
   if (key === "\x03") { effects.push({ type: "exit" }); return done(); }
   if (s.confirm) {
     const confirm = s.confirm; s.confirm = undefined;
@@ -233,7 +246,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       if (confirm.type === "command") effects.push({ type: "command", args: confirm.args });
       else if (s.approvals.some(a => a.id === confirm.id && a.options.some(o => o.optionId === confirm.option && o.kind.startsWith("allow")))) {
         effects.push({ type: "permit", id: confirm.id, option: confirm.option });
-        s.approvals = s.approvals.filter(a => a.id !== confirm.id);
+        answered(confirm.id);
       }
     }
     return done();
@@ -262,33 +275,38 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     return done();
   }
   if (key === "q") { effects.push({ type: "exit" }); return done(); }
-  if (key === "\t") { s.mode = s.mode === "panels" ? "stream" : "panels"; s.detail = undefined; return done(); }
+  if (key === "\t") { s.mode = s.mode === "panels" ? "stream" : "panels"; s.detail = undefined; s.requestDetail = false; return done(); }
   if (key === ":") { s.editing = true; return done(); }
-  if (s.mode === "panels" && /^[1-5]$/.test(key) && !s.optionChoice) { s.panel = Number(key); s.selection = 0; s.detail = undefined; return done(); }
+  if (s.mode === "panels" && /^[1-5]$/.test(key) && !s.optionChoice) { s.panel = Number(key); s.selection = 0; s.detail = undefined; s.requestDetail = false; return done(); }
   if (key === "?") {
-    if (s.mode === "stream") effects.push({ type: "print", text: keyTable(80).map(line => paint(line, false)).join("\n"), kind: "console" });
+    if (s.mode === "stream") effects.push({ type: "keys" });
     else s.help = !s.help;
     return done();
   }
-  if (key === "\x1b") { s.detail = undefined; s.help = false; s.optionChoice = undefined; return done(); }
+  if (key === "\x1b") { s.detail = undefined; s.requestDetail = false; s.help = false; s.optionChoice = undefined; return done(); }
   if (s.mode === "panels" && ["j", "k", "\x1b[A", "\x1b[B"].includes(key)) {
-    if (s.detail !== undefined) { s.detailOffset = Math.max(0, s.detailOffset + (["j", "\x1b[B"].includes(key) ? 1 : -1)); return done(); }
+    if (s.detail !== undefined || s.requestDetail) { s.detailOffset = Math.max(0, s.detailOffset + (["j", "\x1b[B"].includes(key) ? 1 : -1)); return done(); }
     s.selection = Math.max(0, Math.min(panelRows(s).length - 1, selection(s) + (["j", "\x1b[B"].includes(key) ? 1 : -1)));
-    if (s.panel === 2) s.approvalIndex = s.selection;
+    if (s.panel === 2) s.approvalId = s.approvals[s.selection]?.id;
     return done();
   }
   if (key === "[" || key === "]") {
-    s.approvalIndex = (s.approvalIndex + (key === "[" ? -1 : 1) + s.approvals.length) % Math.max(1, s.approvals.length); return done();
+    const i = s.approvals.findIndex(a => a.id === s.approvalId), n = s.approvals.length;
+    if (n) s.approvalId = s.approvals[i < 0 ? (key === "]" ? 0 : n - 1) : (i + (key === "[" ? -1 : 1) + n) % n]!.id;
+    return done();
   }
-  const approval = s.approvals[s.approvalIndex];
+  const approval = selectedApproval(s);
   if (s.optionChoice) {
     const a = s.approvals.find(a => a.id === s.optionChoice);
     const option = a && allowOptions(a)[Number(key) - 1];
     if (/^[1-9]$/.test(key) && a && option) { s.confirm = { type: "permission", id: a.id, peer: a.peer, option: option.optionId }; s.optionChoice = undefined; }
     return done();
   }
+  if (!approval && s.approvals.length && (s.mode === "stream" || s.panel === 2) && ["a", "d", "v"].includes(key)) {
+    s.notice = "no request selected; [ ] selects one"; s.noticeAt = now; return done();
+  }
   if (approval && (s.mode === "stream" || s.panel === 2)) {
-    if (key === "d") { effects.push({ type: "permit", id: approval.id }); s.approvals = s.approvals.filter(a => a.id !== approval.id); return done(); }
+    if (key === "d") { effects.push({ type: "permit", id: approval.id }); answered(approval.id); return done(); }
     if (key === "a") {
       const options = allowOptions(approval);
       if (options.length === 1) s.confirm = { type: "permission", id: approval.id, peer: approval.peer, option: options[0]!.optionId };
@@ -296,13 +314,14 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       return done();
     }
     if (key === "v" && s.mode === "stream") { effects.push({ type: "print", text: permissionText(approval), kind: "permission", tone: "attention" }); return done(); }
-    if (key === "v") { s.detail = Object.fromEntries(approvalFields(approval)); s.detailOffset = 0; return done(); }
+    if (key === "v") { s.requestDetail = true; s.detailOffset = 0; return done(); }
   }
   const row = panelRows(s)[selection(s)];
   if (s.mode === "panels" && row) {
     if (key === "\r" || key === "\n") {
       if (s.panel === 3 || s.panel === 4) effects.push({ type: "show", panel: s.panel, id: String(row.id) });
-      else { s.detail = s.panel === 2 ? Object.fromEntries(approvalFields(row)) : s.panel === 5 ? String(row.text) : { ...row }; s.detailOffset = 0; }
+      else if (s.panel === 2) { s.requestDetail = true; s.detailOffset = 0; } // the row is the selected request
+      else { s.detail = s.panel === 5 ? String(row.text) : { ...row }; s.detailOffset = 0; }
       return done();
     }
     const prefill = s.panel === 1 && key === "p" ? `pause ${row.id}` : s.panel === 1 && key === "r" ? `resume ${row.id}` :
@@ -375,14 +394,14 @@ function table(head: string[], rows: Span[][], columns: number): Span[][] {
 }
 /** The footer's key hint: only keys that act in this mode, panel and state. */
 function hint(s: ConsoleState): string {
-  const pending = s.approvals.length ? ["a allow", "d deny"] : [];
-  if (s.mode === "stream") return [...pending, ...(pending.length ? ["v view"] : []), ...(s.approvals.length > 1 ? ["[ ] select"] : []), "Tab panels", ": command", "? keys", "q quit"].join("  ");
+  const pending = selectedApproval(s) ? ["a allow", "d deny"] : [];
+  if (s.mode === "stream") return [...pending, ...(pending.length ? ["v view"] : []), ...(s.approvals.length > (pending.length ? 1 : 0) ? ["[ ] select"] : []), "Tab panels", ": command", "? keys", "q quit"].join("  ");
   if (s.help) return "? or Esc close  q quit";
   const approvals = s.panel === 2 ? pending : [];
-  if (s.detail !== undefined) return [...approvals, "j/k scroll", "Esc back", "? keys", "q quit"].join("  ");
-  const row = panelRows(s)[selection(s)];
+  if (s.detail !== undefined || s.requestDetail) return [...approvals, "j/k scroll", "Esc back", "? keys", "q quit"].join("  ");
+  const rows = panelRows(s); const row = rows[selection(s)];
   const context = !row ? [] : s.panel === 1 ? ["p pause", "r resume"] : s.panel === 3 ? ["a assign", "r review"] : s.panel === 4 ? ["r resolve"] : [];
-  return [...approvals, ...context, ...(s.panel === 5 ? ["f peer", "g kind"] : []), ...(row ? ["j/k move", "Enter view"] : []), "? keys", ": command", "Tab stream", "q quit"].join("  ");
+  return [...approvals, ...context, ...(s.panel === 5 ? ["f peer", "g kind"] : []), ...(rows.length ? ["j/k move"] : []), ...(row ? ["Enter view"] : []), "? keys", ": command", "Tab stream", "q quit"].join("  ");
 }
 /** The project, then the tabs: the active one in brackets, pending approvals and held deliveries counted. */
 function header(s: ConsoleState, columns: number): Span[] {
@@ -396,13 +415,15 @@ function header(s: ConsoleState, columns: number): Span[] {
   }
   return fitLine([span(fit(s.project ?? "agent-hub", Math.max(0, columns - Bun.stringWidth(tabs.map(t => t.text).join("")))), "info"), ...tabs], columns);
 }
+/** The label column is the hub's own: a cut title or option list is marked `(more)` there; Enter shows it whole. */
+const more = (line: Span[], text?: string): Span[] => [span("(more)".padEnd(Bun.stringWidth(line[0]!.text)), "attention"), ...(text === undefined ? line.slice(1) : [span(text)])];
 export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, now = Date.now()): Span[][] {
-  const permission = s.approvals[s.approvalIndex];
+  const permission = selectedApproval(s);
   let prompt = s.editing ? `: ${s.input}` : hint(s);
-  if (s.confirm?.type === "permission") prompt = `allow ${s.confirm.option} for ${s.confirm.peer} (request ${s.confirm.id})? y/N`;
+  if (s.confirm?.type === "permission") prompt = `allow ${quoted(s.confirm.option)} for ${s.confirm.peer} (request ${s.confirm.id})? y/N`;
   if (s.confirm?.type === "command") prompt = `${s.confirm.args.join(" ")}? y/N`;
   const choice = s.optionChoice ? s.approvals.find(a => a.id === s.optionChoice) : undefined;
-  if (choice) prompt = `allow with: ${allowOptions(choice).map((o, i) => `${i + 1} ${oneLine(o.name)}`).join("  ")}  Esc cancel`;
+  if (choice) prompt = `allow with: ${allowOptions(choice).map((o, i) => `${i + 1} ${quoted(o.name)}`).join("  ")}  Esc cancel`;
   const summary: Span[] = [];
   for (const [id, p] of Object.entries(s.peers)) {
     if (summary.length) summary.push(span(" "));
@@ -415,6 +436,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   if (quotas) summary.push(span(` | ${quotas}`));
   const approvals = [span(plural(s.approvals.length, "approval"), s.approvals.length ? "attention" : undefined)];
   if (permission) approvals.push(span(` | ${permission.peer} ${permission.id}`, "attention"), span(` ${duration(permission.expiresAt - now)} left`, "muted"));
+  else if (s.approvals.length) approvals.push(span(" | none selected", "muted"));
   if (s.notice && now - (s.noticeAt ?? now) < NOTICE_MS) approvals.push(span(" | "), span(s.notice, "failure"));
   const footer = [fitLine(summary, columns), fitLine(approvals, columns), fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
   const rule = [span("-".repeat(Math.max(0, columns)), "muted")];
@@ -422,14 +444,18 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   const height = rows - 6; // header, rule, body, rule, three footer lines
   const lines: Span[][] = [];
   if (s.help) lines.push(...keyTable(columns));
-  else if (s.detail !== undefined) { const detail = detailLines(s.detail, columns, now); lines.push(...detail.slice(Math.min(s.detailOffset, Math.max(0, detail.length - height)))); }
+  else if (s.detail !== undefined || (s.requestDetail && permission)) {
+    const detail = s.detail !== undefined ? detailLines(s.detail, columns, now) : fieldLines(approvalFields(permission!), columns, now).flat();
+    lines.push(...detail.slice(Math.min(s.detailOffset, Math.max(0, detail.length - height))));
+  }
   else {
     const data = panelRows(s); const head = TABLES[s.panel]; const at = selection(s);
-    // Below the Approvals table: the selected request's title, then every allow option and deny, one line each. Rows give
-    // way so that they fit with at least one title line.
-    const [title = [], ...rest] = s.panel === 2 && permission ? fieldLines(approvalFields(permission).slice(3), columns, now) : [];
-    const tail = rest.flat();
-    // ponytail: more allow options than the panel has lines still push deny out of view; scroll the block if that happens
+    // Below the Approvals table: the selected request's title, its allow options and deny, one line each. Deny always
+    // shows; options that do not fit are counted, rows give way to the rest, and the title gets what is left.
+    const [title = [], allow = [], deny = []] = s.panel === 2 && permission ? fieldLines(approvalFields(permission).slice(3), columns, now) : [];
+    const fits = Math.max(1, height - 5); // table header, one row, rule, one title line, deny
+    if (allow.length > fits) allow.splice(fits - 1, Infinity, more(allow[0]!, `${plural(allow.length - fits + 1, "more option")}: Enter shows them all`));
+    const tail = [...allow, ...deny];
     const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : height - 1); const start = Math.max(0, at - capacity + 1);
     const rowsOf = head ? table(head, data.map((row, i) => cells(s, row, i === at, now)), columns) : undefined;
     lines.push(fitLine([span("  "), ...(rowsOf?.[0] ?? [span(`peer ${s.peerFilter ?? "all"}  kind ${s.kindFilter ?? "all"}`, "info")])], columns));
@@ -440,11 +466,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     if (!data.length) lines.push([span("  (empty)")]);
     if (title.length) {
       const room = Math.max(1, height - lines.length - 1 - tail.length);
-      if (title.length > room) { // the label column is the hub's own: mark a cut title there, Enter shows it whole
-        title.length = room;
-        const [label, ...value] = title[room - 1]!;
-        title[room - 1] = [span("(more)".padEnd(Bun.stringWidth(label!.text)), "attention"), ...value];
-      }
+      if (title.length > room) { title.length = room; title[room - 1] = more(title[room - 1]!); }
       lines.push(rule, ...title, ...tail);
     }
   }
