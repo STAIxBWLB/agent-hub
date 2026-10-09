@@ -5,6 +5,7 @@ import type { BusSnapshot } from "./bus.ts";
 import type { PeerId, PeerState } from "./envelope.ts";
 import { MAX_HOP } from "./envelope.ts";
 import { validateJournalSnapshot } from "./delivery-journal.ts";
+import { atomicPrivateJSON } from "./recovery-store.ts";
 
 export const RESTART_SCHEMA_VERSION = 1;
 
@@ -94,6 +95,22 @@ export function writeRestartSnapshot(stateDir: string, snapshot: RestartSnapshot
 export function removeRestartSnapshot(stateDir: string): void {
   try { unlinkSync(restartPath(stateDir)); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+}
+
+/**
+ * Peers whose saved native session id the restored daemon does not require back, each with the coordinator's
+ * reason (#206 reconnect-only). Fenced by operation: a file left by another operation waives nothing.
+ */
+export function readRecoveryWaivers(stateDir: string, operationId: string): Record<string, string> {
+  try {
+    const value = JSON.parse(readFileSync(join(stateDir, "recovery-waivers.json"), "utf8"));
+    if (value?.operationId !== operationId || !value.peers || typeof value.peers !== "object") return {};
+    return Object.fromEntries(Object.entries(value.peers).filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0));
+  } catch { return {}; }
+}
+
+export function waiveRecoveryPeers(stateDir: string, operationId: string, peers: Record<string, string>): void {
+  atomicPrivateJSON(join(stateDir, "recovery-waivers.json"), { operationId, peers: { ...readRecoveryWaivers(stateDir, operationId), ...peers } });
 }
 
 /** Preserve an uncertain release outcome for manual reconciliation without making it authoritative on startup. */

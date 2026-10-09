@@ -293,3 +293,19 @@ test("protocol-9 source recovery stages only the current protocol target", async
   expect(f.operation.plan.projects[0]?.source.protocol).toBe(9);
   expect(f.operation.plan.projects[0]?.source.protocol).not.toBe(10);
 });
+
+// #206: the plan drops an unmanaged Claude's session id, while the source daemon may still report a stale record.
+test("a reconnect-only Claude passes the source roster check without the session id the plan dropped", async () => {
+  for (const reconnectOnly of [true, false]) {
+    const f = fixture();
+    f.plan.projects[0]!.source.peers = [{ id: "claude", state: "idle" }];
+    if (reconnectOnly) f.plan.projects[0]!.reconnectOnly = ["claude"];
+    f.states.get("alpha")!.peers = [{ id: "claude", state: "idle", sessionId: "stale-record" }];
+    const { fingerprint: _ignored, ...body } = f.plan;
+    f.plan.fingerprint = planFingerprint(body);
+    writeOperation(f.operation.id, f.operation, f.home);
+    const result = await runRecovery(f.operation.id, f.driver, f.home);
+    if (reconnectOnly) expect(result.phase).toBe("completed");
+    else expect(result.error).toContain("source conversation or active peer membership changed");
+  }
+});

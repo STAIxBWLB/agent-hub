@@ -163,3 +163,31 @@ The target coordinator accepts authenticated protocol 9, 10 and 11 sources, then
 uses protocol 11 after startup. Older supported managers are refreshed onto the
 current implementation. The real 0.6.4/protocol-9 transition and the 0.12.0/protocol-10
 development-hub transition are recorded in `docs/smoke.md`.
+
+### Unmanaged Claude sessions (#206)
+
+Amended 2026-10-09. An attached Claude session is managed when a live `ahub claude`
+launcher is recorded for the running daemon instance (`terminal-recovery.json`, its
+launcher identity checked with the shared `processSignature`) and the session record
+(`claude-session.json`) was written by that launch. Managed sessions are closed and
+resumed in a new terminal as before.
+
+Any other attached Claude session is unmanaged: a plain `claude`, an `ahub claude`
+outside Orca, or one whose launcher has ended. Its session record cannot be bound to
+the attached session, so the plan drops the id (no output names it) and lists the
+peer under `reconnectOnly`: no terminal is inspected, closed or relaunched, and the
+source roster check compares its membership only. Before starting the target the
+coordinator writes an operation-fenced waiver (`recovery-waivers.json`, mode 0600),
+so the restored daemon does not require the saved session id for that peer; release
+still requires it to reattach, which the coordinator waits for up to 90 seconds
+(three times the plugin's longest reconnect backoff). Reconnect-only requires the
+source control protocol to equal the target's; otherwise the plan names a blocker
+whose next action is to end the session or relaunch it with `ahub claude` in Orca.
+A live launcher whose record was written by another launch is a blocker, never a
+target. Refused `upgrade --yes` and `restart --yes`, and every dry-run, print each
+blocker on stderr before the final line.
+
+The channel's hello carries no launch id, so a plain `claude` that took the peer id
+from a live managed session is classified as managed. Telling them apart needs the
+launch id at hello, which is a protocol change and is not claimed here. A live
+upgrade with an unmanaged session attached has not been run.

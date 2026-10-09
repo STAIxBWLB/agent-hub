@@ -86,3 +86,22 @@ test("installed-layout detached restart completes in an isolated project and pre
     if (stuck.length) throw new Error(`hub daemon(s) survived SIGTERM and SIGKILL: ${stuck.join(", ")}`);
   }
 }, 30_000);
+
+// #206 AC3: a refused --yes names each blocker on stderr, not only its last line.
+test("a refused restart lists every blocker before its final line", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "ahub-refused-cli-"));
+  mkdirSync(join(temp, "project"));
+  const root = realpathSync(join(temp, "project"));
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("ORCA_") || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete env[key];
+  env.AGENTHUB_HOME = join(temp, "home");
+  const cli = async (args: string[]) => {
+    const p = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", root, ...args], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
+    const [code, , err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    return { code, err: err.trim().split("\n") };
+  };
+  try {
+    expect(await cli(["restart", "--dry-run"])).toEqual({ code: 0, err: ["ahub: blocker: no running registered projects in scope"] });
+    expect(await cli(["restart", "--yes"])).toEqual({ code: 1, err: ["ahub: blocker: no running registered projects in scope", "ahub: plan has blockers; no runtime was changed"] });
+  } finally { rmSync(temp, { recursive: true, force: true }); }
+});

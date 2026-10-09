@@ -61,7 +61,7 @@ import { crashPlan, lossNotice, readSessions, removeSessions, writeSessions, typ
 import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
 import { changedPaths, repoOf, snapshot, Turns, type TurnRecord } from "./snapshots.ts";
-import { archiveRestartSnapshot, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
+import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 
 import { ContextWindows, DEFAULT_CONTEXT, claudeContext, type ContextConfig } from "./context-window.ts";
 
@@ -1311,7 +1311,10 @@ export async function startDaemon(opts: DaemonOptions) {
       // online at the snapshot is still offline, so skipping the comparison cannot hide an
       // identity change - it only keeps a detach from wedging readiness forever.
       if (now.state === "offline") return true;
-      if (saved.threadId && saved.threadId !== now.threadId) return false;
+      // #206: the coordinator waived this peer's id on the target (an unmanaged Claude session reconnects with
+      // whatever its plugin carries and can never report the saved id here); it still has to reattach to release.
+      const waived = () => recoveryPhase === "restored" && !!readRecoveryWaivers(opts.stateDir, recoveryOperationId!)[saved.id];
+      if (saved.threadId && saved.threadId !== now.threadId && !waived()) return false;
       // Kimi/local rebuild a fresh worker with task context on the target; native
       // Claude and Pi sessions must keep their exact identities across restoration.
       const freshWorker = recoveryPhase === "restored" && (saved.id === "kimi" || saved.id === "local");
@@ -1320,7 +1323,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // restore gate accepted a fresh session and nothing it stood for is lost. Snapshots
         // written before this flag existed are re-derived from disk.
         const unpersistedClaude = saved.id === "claude" && (saved.sessionPersisted === false || (saved.sessionPersisted === undefined && !claudeTranscriptPersisted(saved.sessionId)));
-        if (!unpersistedClaude) return false;
+        if (!unpersistedClaude && !waived()) return false;
       }
       return true;
     });

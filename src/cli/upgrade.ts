@@ -28,6 +28,8 @@ export interface PlannedProject {
   source: Inspection;
   terminals: unknown[];
   blockers: string[];
+  /** Unmanaged sessions (#206): their plugin reattaches to the new daemon; no terminal is closed or relaunched and no session id is compared. */
+  reconnectOnly?: string[];
 }
 export interface UpgradePlan {
   schema: 1;
@@ -150,7 +152,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     const active = live.peers.filter((p) => p.state !== "offline");
     if (active.length !== expected.length || expected.some((peer) => {
       const current = active.find((p) => p.id === peer.id);
-      return !current || current.threadId !== peer.threadId || current.sessionId !== peer.sessionId;
+      return !current || (!planned.reconnectOnly?.includes(peer.id) && (current.threadId !== peer.threadId || current.sessionId !== peer.sessionId));
     })) throw new Error("source conversation or active peer membership changed; make a new plan");
   };
   try {

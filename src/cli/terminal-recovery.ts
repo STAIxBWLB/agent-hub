@@ -287,6 +287,12 @@ async function liveRecords(stateDir: string, projectRoot: string, instanceId: st
   return checks.filter((item): item is RecordedTerminalLaunch => item !== undefined);
 }
 
+/** The live launcher recorded for `peer` against this daemon instance, if any: what makes a native session managed (#206). */
+export async function recordedLauncher(peer: TerminalPeer, projectRoot: string, options?: TerminalRecoveryOptions): Promise<RecordedTerminalLaunch | undefined> {
+  const config = normalizeOptions(options);
+  return (await liveRecords(config.stateDir, projectRoot, config.instanceId, config.processIdentity)).find((row) => row.peer === peer);
+}
+
 /**
  * Capture the Orca terminal handed to an ahub launcher. This is the authenticated
  * identity source for legacy Orca payloads that omit agent/session metadata.

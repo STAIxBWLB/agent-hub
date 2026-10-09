@@ -7,9 +7,13 @@ import { inspectProject } from "../hub/lifecycle.ts";
 import type { Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
 import { packageDigest, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
-import { inspectTerminals, closeTerminal, createTerminal, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
+import { inspectTerminals, closeTerminal, createTerminal, recordedLauncher, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
 import { planFingerprint, registeredProjects, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
 import { refreshManager } from "../hub/manager.ts";
+import { waiveRecoveryPeers } from "../hub/restart.ts";
+
+/** An unmanaged Claude's plugin retries with a backoff of at most 30 s; three of those bound the reconnect wait (#206). */
+const RECONNECT_WAIT_MS = 90_000;
 
 export const PACKAGE_ROOT = resolve(import.meta.dir, "../..");
 const orcaExecutable = () => process.env.ORCA_CLI_COMMAND || (process.env.ORCA_DEV_REPO_ROOT ? "orca-dev" : process.platform === "linux" && !process.env.ORCA_TERMINAL_HANDLE ? "orca-ide" : "orca");
@@ -117,8 +121,29 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
     if (!RECOVERY_SOURCE_PROTOCOLS.includes(source.protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]) || source.state !== "running") blockers.push("manual-bootstrap-required: an authenticated protocol-9, protocol-10, protocol-11, protocol-12, protocol-13, protocol-14, protocol-15 or protocol-16 source is required");
     if (source.recovery?.operationId && source.recovery.phase !== "released") blockers.push(`existing recovery operation ${source.recovery.operationId} must be resolved first`);
     const sessions: { codex?: string; claude?: string; pi?: SessionRef } = {};
+    const reconnectOnly: string[] = [];
     for (const peer of source.peers) {
       if (peer.state === "offline") continue;
+      if (peer.id === "claude") {
+        // #206: managed means a live `ahub claude` launcher recorded for this daemon and a session record written by
+        // that launch. Anything else cannot be bound to the attached session, so its record never becomes a target.
+        // ponytail: the channel's hello carries no launch id, so a plain `claude` that took the peer id from a live
+        // managed session reads as managed; send the launch id at hello (a protocol bump) if that case shows up.
+        const launcher = await recordedLauncher("claude", project.root, { ...terminalOptions(run), stateDir: project.stateDir, instanceId: source.instanceId });
+        if (!launcher) {
+          delete peer.sessionId;
+          if (source.protocol === PROTOCOL) reconnectOnly.push("claude");
+          else blockers.push(`claude: unmanaged session (no live ahub claude launcher recorded) runs a protocol-${source.protocol} plugin and cannot reconnect to a protocol-${PROTOCOL} hub; next action: end that Claude session, or relaunch it with ahub claude in an Orca terminal, then make a new plan`);
+          continue;
+        }
+        let record: { instanceId?: unknown; launchId?: unknown; sessionId?: unknown } | undefined;
+        try { record = JSON.parse(readFileSync(join(project.stateDir, "claude-session.json"), "utf8")); } catch { /* no record: the id check below reports it */ }
+        if (peer.sessionId && (record?.instanceId !== source.instanceId || record?.launchId !== launcher.launchId || record?.sessionId !== peer.sessionId)) {
+          delete peer.sessionId;
+          blockers.push(`claude: the recorded session was not written by the live launcher in terminal ${launcher.handle}; manual-required; next action: close any other Claude session in this project, send one message in that terminal, then make a new plan`);
+          continue;
+        }
+      }
       if (peer.id === "codex" || peer.id === "claude") {
         const session = peer.id === "codex" ? peer.threadId : peer.sessionId;
         if (!session) blockers.push(`${peer.id}: original conversation ID is unknown; manual-required; next action: reconnect the original native session and make a new recovery plan`);
@@ -132,7 +157,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
       ...terminalOptions(run), stateDir: project.stateDir, instanceId: source.instanceId,
     });
     blockers.push(...terminals.blockers.map((b) => `${b.message}${b.terminalReference ? ` (terminal ${b.terminalReference})` : ""}${b.nextAction ? `; next action: ${b.nextAction}` : ""}`));
-    body.projects.push({ project, source, terminals: terminals.bindings, blockers });
+    body.projects.push({ project, source, terminals: terminals.bindings, blockers, ...(reconnectOnly.length ? { reconnectOnly } : {}) });
   }
   if (!body.projects.length) body.blockers.push("no running registered projects in scope");
   return { ...body, fingerprint: planFingerprint(body) };
@@ -269,6 +294,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
       if (checkpoint.projectId !== p.id || checkpoint.projectRoot !== p.root || checkpoint.operationId !== op.id) {
         throw new Error("committed restart snapshot is missing or belongs to another operation");
       }
+      const reconnect = op.plan.projects.find((planned) => planned.project.id === p.id)?.reconnectOnly ?? [];
+      if (reconnect.length) waiveRecoveryPeers(p.stateDir, op.id, Object.fromEntries(reconnect.map((peer) => [peer, "reconnect-only"])));
       await command(op, ["up"], p);
     },
     restore: async (planned, progress, op, group, save) => {
@@ -324,6 +351,14 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         const restored = await createTerminal(binding, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId });
         if (restored.manualRequired || !restored.newBinding) throw new Error(`${original.peer}: original session restoration needs manual verification`);
         progress.terminals[key] = restored.newBinding; save();
+      }
+      if (group === "claude") for (const id of planned.reconnectOnly ?? []) {
+        // #206: nothing is launched for an unmanaged session; its plugin reconnects by itself, within a bound.
+        const deadline = now() + RECONNECT_WAIT_MS;
+        while (!(await inspectRecovery(planned.project)).peers.some((p) => p.id === id && p.state !== "offline")) {
+          if (now() >= deadline) throw new Error(`${id}: the unmanaged session did not reconnect within ${RECONNECT_WAIT_MS / 1000} s; next action: if that Claude session is still open, ahub recovery resume ${op.id}`);
+          await sleep(1000);
+        }
       }
     },
     installPlugin: async (op) => {

@@ -4,9 +4,64 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
-import { inspectRecovery, makeRecoveryDriver, restoredTerminalArgv } from "../src/cli/upgrade-runtime.ts";
+import { inspectRecovery, makeRecoveryDriver, makeUpgradePlan, restoredTerminalArgv } from "../src/cli/upgrade-runtime.ts";
 import { VERSION } from "../src/version.ts";
 import type { PlannedProject, ProjectProgress, RecoveryOperation } from "../src/cli/upgrade.ts";
+import { Registry } from "../src/hub/registry.ts";
+import { processSignature } from "../src/pi/process-signature.ts";
+
+// #206: a plain `claude` is attached while claude-session.json still holds the session an earlier, ended
+// `ahub claude` launch recorded, and the project terminal it runs in shows no agent identity.
+test("an unmanaged Claude with a stale session record is planned reconnect-only and the old session id is never named", async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-unmanaged-claude-")));
+  mkdirSync(join(temp, "project"));
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "home");
+  const registry = new Registry(join(temp, "home", "registry.db"));
+  const project = registry.register(join(temp, "project"));
+  registry.close();
+  const daemon = await startDaemon({ cwd: project.root, stateDir: project.stateDir, projectId: project.id, instanceId: "i-live", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [] } } });
+  const claude = await ControlClient.connect(project.stateDir, { role: "peer", peer: "claude" });
+  const ended = Bun.spawnSync(["true"]).pid; // the earlier launcher: its pid no longer runs
+  const record = (launchId: string, sessionId: string, launcherPid: number, launcherSignature: string, handle: string) => {
+    writeFileSync(join(project.stateDir, "claude-launch.json"), JSON.stringify({ instanceId: "i-live", launchId }));
+    writeFileSync(join(project.stateDir, "claude-session.json"), JSON.stringify({ at: 1, instanceId: "i-live", sessionId, launchId }));
+    writeFileSync(join(project.stateDir, "terminal-recovery.json"), JSON.stringify([{ peer: "claude", projectRoot: project.root, stateDir: project.stateDir, instanceId: "i-live",
+      launcherPid, launcherSignature, launchId, handle, incarnationId: `inc-${handle}`, worktreeId: "wt", env: {} }]));
+  };
+  const unmanagedTerminal = { handle: "term-plain", incarnationId: "inc-plain", worktreeId: "wt", worktreePath: project.root, connected: true };
+  const managedTerminal = { handle: "term-managed", incarnationId: "inc-term-managed", worktreeId: "wt", worktreePath: project.root, connected: true };
+  const calls: string[][] = [];
+  const run = async (argv: string[]) => {
+    calls.push(argv);
+    const result = argv[2] === "list" ? { terminals: [unmanagedTerminal, managedTerminal] } : { terminal: argv.includes("term-managed") ? managedTerminal : unmanagedTerminal };
+    return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
+  };
+  try {
+    record("launch-old", "a9ac5acc-stale", ended, "signature-of-ended-launcher", "term-old");
+    for (let n = 0; n < 100 && (await inspectRecovery(project)).peers.find((p) => p.id === "claude")?.state !== "idle"; n++) await Bun.sleep(10);
+    expect((await inspectRecovery(project)).peers.find((p) => p.id === "claude")?.sessionId).toBe("a9ac5acc-stale"); // the daemon still reports the stale record
+
+    const plan = await makeUpgradePlan("restart", VERSION, project.root, run);
+    expect(plan.projects[0]?.reconnectOnly).toEqual(["claude"]);
+    expect(plan.projects[0]?.blockers).toEqual([]);
+    expect(plan.projects[0]?.terminals).toEqual([]);
+    expect(JSON.stringify(plan)).not.toContain("a9ac5acc-stale");
+    expect(calls).toEqual([]); // no terminal was inspected, let alone chosen, for the unmanaged session
+
+    // The same daemon with a live recorded launcher whose launch wrote the record restores as before.
+    record("launch-live", "session-live", process.pid, processSignature(process.pid)!, "term-managed");
+    const managed = await makeUpgradePlan("restart", VERSION, project.root, run);
+    expect(managed.projects[0]?.reconnectOnly).toBeUndefined();
+    expect(managed.projects[0]?.blockers).toEqual([]);
+    expect((managed.projects[0]?.terminals as { handle: string; sessionId: string }[]).map((t) => [t.handle, t.sessionId])).toEqual([["term-managed", "session-live"]]);
+  } finally {
+    claude.close(); await daemon.stop();
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
 
 test("Pi terminal restoration builds a TUI command with the saved session selector", () => {
   const argv = restoredTerminalArgv("/target/src/cli/main.js", "/project", {

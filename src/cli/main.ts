@@ -340,8 +340,12 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   if (kind === "upgrade" && selector) fail("upgrade changes the shared package/plugin; omit --project to review all affected running projects");
   const plan = await makeUpgradePlan(kind, one["--to"] ?? VERSION, kind === "restart" ? cwd : undefined);
   console.log(JSON.stringify(plan, null, 2));
+  // #206: name every blocker and reconnect-only session on stderr, not only inside the JSON above.
+  for (const p of plan.projects) for (const peer of p.reconnectOnly ?? []) console.error(`ahub: ${p.project.id}: ${peer} is reconnect-only (unmanaged session): its plugin reattaches to the new hub; no terminal is closed or relaunched`);
+  const blockers = [...plan.blockers, ...plan.projects.flatMap((p) => p.blockers.map((b) => `${p.project.id}: ${b}`))];
+  for (const blocker of blockers) console.error(`ahub: blocker: ${blocker}`);
   if (args.includes("--dry-run")) return;
-  if (plan.blockers.length || plan.projects.some((p) => p.blockers.length)) fail("plan has blockers; no runtime was changed");
+  if (blockers.length) fail("plan has blockers; no runtime was changed");
   assertLifecycleAvailable();
   if (!args.includes("--yes")) {
     if (!process.stdin.isTTY) fail("review --dry-run and use --yes in non-interactive sessions");

@@ -1112,6 +1112,18 @@ Kimi and local sessions may start fresh with preserved routing and task context.
 A Claude session that never persisted a transcript (zero turns) also starts fresh:
 there is nothing to resume, so the upgrade accepts the new session id; a session
 with a transcript must come back with its original id.
+A Claude session that `ahub claude` did not launch in a recorded Orca terminal
+(a plain `claude`, or one whose launcher has ended) is planned as
+reconnect-only: the plan lists it under `reconnectOnly`, and the command prints
+`<project>: claude is reconnect-only` on stderr. Nothing in its terminal is
+closed or relaunched, a `claude-session.json` left by an earlier launch is never
+used as its target, and the plan does not show that record's id. Its plugin
+reconnects to the new hub by itself (the coordinator waits up to 90 seconds) and
+keeps the plugin version it started with until that Claude session restarts.
+Across a control-protocol change it cannot reconnect; the plan then names a
+blocker: end the session, or relaunch it with `ahub claude` in Orca, and make a
+new plan. A refused `--yes`, and every dry-run, prints each blocker on its own
+`ahub: blocker:` line before the final one.
 Previously stopped projects stay stopped; only the reviewed running projects
 are upgraded.
 
