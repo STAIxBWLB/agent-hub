@@ -1418,8 +1418,10 @@ until `[`, `]` or j/k select again, so a request that arrives as the person
 reacts is never acted on. Everything pending on a request belongs to the
 selected one, checked after every key and every prune: an option choice or
 confirmation for another request is dropped, an open detail follows the
-selection from its top, and the option prompt names the request. The key table
-is modal: only `?`, Escape and `q` act under it. Offline peers keep the default foreground, also
+selection from its top, and the option prompt names the request. `a`, `d` and
+`v` act only while the request list or its detail is shown, and a task or
+delivery detail that arrives after the person moved to another panel or row is
+dropped. The key table is modal: only `?`, Escape and `q` act under it. Offline peers keep the default foreground, also
 when selected, and a tab counts as one space when a line is cut. The footer
 hint lists only the keys valid in the mode, panel and state, and `?` shows a
 key table grouped by panel (in stream mode it is printed into the stream, as

@@ -316,10 +316,11 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     if (/^[1-9]$/.test(key) && a && option) { s.confirm = { type: "permission", id: a.id, peer: a.peer, option: option.optionId }; s.optionChoice = undefined; }
     return done();
   }
-  if (!approval && s.approvals.length && (s.mode === "stream" || s.panel === 2) && ["a", "d", "v"].includes(key)) {
+  const requestShown = s.mode === "stream" || (s.panel === 2 && s.detail === undefined);
+  if (!approval && s.approvals.length && requestShown && ["a", "d", "v"].includes(key)) {
     s.notice = "no request selected; [ ] selects one"; s.noticeAt = now; return done();
   }
-  if (approval && (s.mode === "stream" || s.panel === 2)) {
+  if (approval && requestShown) {
     if (key === "d") { effects.push({ type: "permit", id: approval.id }); answered(approval.id); return done(); }
     if (key === "a") {
       const options = allowOptions(approval);

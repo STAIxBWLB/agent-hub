@@ -608,6 +608,26 @@ describe("console layout (#213)", () => {
     expect(renderConsole(s, 80, 24, NOW).join("\n")).toContain('a allow  - 1 "2"\n         - 2 Once');
     expect(renderConsole(reduceConsole(s, "a", NOW).state, 80, 24, NOW).at(-1)).toBe('allow request first (pi) with: 1 "2"  2 Once  Esc cancel');
   });
+  test("a late task detail is dropped once the person has moved to another panel or row; a and d act only on a shown request", async () => {
+    const tasks = [1, 2].map(id => ({ id, title: `task ${id}`, state: "proposed", class: "implement", owner: "pi", created: Date.now() }));
+    for (const away of ["2", "j"]) {
+      const f = fixture(); let reply: (value: any) => void = () => {};
+      f.client.request = (msg: any): Promise<any> => msg.op === "task_show" ? new Promise(resolve => { reply = resolve; })
+        : Promise.resolve(msg.op === "hub_task_list" ? { ok: true, text: JSON.stringify(tasks) } : { ok: true, status: { peers: {} }, budget: {}, deliveries: [] });
+      const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, panels: true, color: false });
+      const settle = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
+      f.client.onPush({ t: "permission", ...state().approvals[0], expiresAt: Date.now() + 10_000 });
+      await settle(); f.input("3"); f.input("\r"); f.input(away);
+      reply({ ok: true, text: JSON.stringify({ ...tasks[0], detail: "LATE DETAIL" }) }); await settle();
+      f.output.length = 0; f.input("]"); // redraw
+      expect(f.output.join("")).not.toContain("LATE DETAIL");
+      expect(f.output.join("")).toMatch(away === "2" ? /ID +PEER +LEFT/ : /> #2 +proposed/);
+      f.input("q"); await running;
+    }
+    const s = state(true); s.panel = 2; s.detail = "not a request";
+    for (const key of ["a", "d", "v"]) expect(reduceConsole(s, key, NOW).effects).toEqual([]);
+    expect(reduceConsole(s, "a", NOW).state.optionChoice ?? reduceConsole(s, "a", NOW).state.confirm).toBeUndefined();
+  });
   test("the key table is modal: only ?, Esc and q act under it", () => {
     let s = state(true); s.panel = 2; s.peers = { pi: { state: "idle" } };
     s.approvals.push({ ...s.approvals[0]!, id: "second" });

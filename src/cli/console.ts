@@ -4,7 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { ControlClient } from "../hub/control-client.ts";
 import { contextLine } from "./status-lines.ts";
 import { renderTailEvent } from "./tail-render.ts";
-import { initialConsoleState, keyTable, paint, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, terminalText, wrap } from "./console-state.ts";
+import { initialConsoleState, keyTable, paint, panelRows, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, terminalText, wrap } from "./console-state.ts";
 import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
 
@@ -165,7 +165,9 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     if (action.type === "print") return stream({ text: action.text, kind: action.kind, ...(action.tone ? { tone: action.tone } : {}) }, false);
     if (action.type === "show") {
       const result = await client.request(action.panel === 3 ? { t: "task", op: "task_show", args: { id: action.id } } : { t: "queue", op: "show", id: action.id }, 3000);
-      if (!active) return;
+      // A late reply is for the panel and row it was asked for: once the person has moved on, it would show one item
+      // while the keys act on another, so it is dropped.
+      if (!active || state.mode !== "panels" || state.panel !== action.panel || state.help || state.detail !== undefined || String(panelRows(state)[state.selection]?.id) !== action.id) return;
       state.detailOffset = 0;
       state.detail = result.ok === false ? String(result.error) : action.panel === 3 ? labeled(String(result.text)) : result.delivery ?? "delivery not found";
       draw(); return;
