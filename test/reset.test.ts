@@ -150,6 +150,10 @@ test("AC2: a runtime reset discards every queued and needs_review delivery once,
     expect(rows(stateDir, "SELECT * FROM tasks")).toEqual(board);
     expect(["hub.log", "events.jsonl", "pi-sessions/s.jsonl", "project.json"].map((name) => readFileSync(join(stateDir, name), "utf8"))).toEqual(kept);
     for (const name of ["sessions.json", "claude-session.json", "claude-context.json"]) expect(existsSync(join(stateDir, name))).toBe(false);
+    // The registry claim the reset held while acting is released again.
+    const registry = new Registry(join(base, "home", "registry.db"));
+    expect(registry.get(project.id)?.instanceId).toBeNull();
+    registry.close();
     // A second reset finds nothing left and settles nothing twice.
     const again = await cli(root, ["reset", "--yes"]);
     expect(again.stdout).toContain("settled 0 deliveries");
@@ -234,5 +238,37 @@ test("AC4: an agent shell, an open recovery operation and an unmatched registrat
     for (const name of ["status.json", "control-token"]) rmSync(join(stateDir, name));
     expect(contents(stateDir)).toEqual(before);
     expect(existsSync(join(root, ".agenthub", "archive"))).toBe(false);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+}, 60_000);
+
+test("AC4: --all refuses a state directory outside <root>/.agenthub, and a stopped unregistered project is told how to register", async () => {
+  const { base, root, stateDir, project } = fixture();
+  const custom = join(base, "custom-state");
+  try {
+    mkdirSync(custom);
+    writeFileSync(join(custom, "project.json"), JSON.stringify({ root, projectId: project.id }));
+    writeFileSync(join(custom, "sessions.json"), "{}");
+    const registry = new Registry(join(base, "home", "registry.db"));
+    registry.register(root, custom);
+    registry.close();
+    const before = contents(custom);
+    for (const args of [["reset", "--all"], ["reset", "--all", "--yes"]]) {
+      const result = await cli(root, args, { AGENTHUB_STATE_DIR: custom });
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(`--all moves only ${stateDir}; this project's state is in ${custom}`);
+    }
+    expect(contents(custom)).toEqual(before);
+    expect(existsSync(join(root, ".agenthub", "archive"))).toBe(false);
+    // The runtime scope still works on such a state directory.
+    const runtime = await cli(root, ["reset", "--yes"], { AGENTHUB_STATE_DIR: custom });
+    expect(runtime.code, runtime.stderr).toBe(0);
+    expect(existsSync(join(custom, "sessions.json"))).toBe(false);
+
+    const again = new Registry(join(base, "home", "registry.db"));
+    again.remove(project.id);
+    again.close();
+    const unregistered = await cli(root, ["reset", "--yes"]);
+    expect(unregistered.code).toBe(1);
+    expect(unregistered.stderr).toContain("no registration matches this project and state directory; nothing was changed (ahub up registers it)");
   } finally { rmSync(base, { recursive: true, force: true }); }
 }, 60_000);

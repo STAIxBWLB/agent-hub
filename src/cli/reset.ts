@@ -96,19 +96,28 @@ export function resetRuntime(stateDir: string, project: Project): { settled: str
 }
 
 /**
- * Full reset: the state directory moves to `.agenthub/archive/state-<UTC time>/` (0700) and a new one starts with only
- * `project.json`, so the project id and registration stay. Nothing is deleted; moving the archive back restores it.
+ * Full reset, first step: the state directory moves to `.agenthub/archive/state-<UTC time>/` (0700). Nothing is
+ * deleted; moving the archive back restores it. Only the default `<root>/.agenthub/state` qualifies (the caller checks).
  */
 export function archiveState(root: string, stateDir: string, now = new Date()): string {
   const archive = join(root, ".agenthub", "archive");
   mkdirSync(archive, { recursive: true, mode: 0o700 });
   // hub.db holds task text, PII included: keep the archive out of git whatever the project's .gitignore says.
+  // The local worker's denylist (src/local/deny.ts) keeps it out of its tools, sandbox and memory capture.
   if (!existsSync(join(archive, ".gitignore"))) writeFileSync(join(archive, ".gitignore"), "*\n");
   const target = join(archive, `state-${now.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`);
   if (existsSync(target)) throw new Error(`${target} already exists; nothing was moved`);
   renameSync(stateDir, target);
   chmodSync(target, 0o700);
-  mkdirSync(stateDir, { mode: 0o700 });
-  if (existsSync(join(target, "project.json"))) copyFileSync(join(target, "project.json"), join(stateDir, "project.json"));
   return target;
+}
+
+/**
+ * Full reset, second step: a new state directory with only the archive's `project.json`, so the project id and
+ * registration stay. Something else may have created the directory meanwhile (the status line tee, 0755).
+ */
+export function startState(stateDir: string, archived: string): void {
+  mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  chmodSync(stateDir, 0o700);
+  if (existsSync(join(archived, "project.json"))) copyFileSync(join(archived, "project.json"), join(stateDir, "project.json"));
 }

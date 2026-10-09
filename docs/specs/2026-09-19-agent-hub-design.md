@@ -1768,9 +1768,20 @@ acts on the stopped state directory.
 
 - Refusals, each before anything changes: the machine's recovery lock is held
   (`assertLifecycleAvailable`); no registration matches this root and state
-  directory; the hub's ownership is not verified (any inspection state other
-  than stopped, running or stopping); a running hub reports a recovery
-  operation whose phase is not `released`.
+  directory, running or not (`ahub up` registers a stopped project); the hub's
+  ownership is not verified (any inspection state other than stopped, running
+  or stopping); a running hub reports a recovery operation whose phase is not
+  `released`; `--all` with a state directory other than the literal
+  `<root>/.agenthub/state` (an override or symlink elsewhere would cross file
+  systems or pull outside state into the tree).
+- Between stop and act: after `stopProject` the CLI takes the project's
+  registry claim (`Registry.claim` with its own pid), the claim a daemon must
+  hold to run, and checks that no manifest exists; either failing means a hub
+  started in between and nothing is reset. The claim is released when the
+  reset ends; a reset that dies leaves a dead pid, which the next claim takes
+  over. A failure after the stop says how far it got: the runtime steps are
+  idempotent and a rerun finishes them; `--all` prints the archive path as
+  soon as the rename happened.
 - Runtime scope (default): the CLI opens the journal as a new instance, which
   turns the stopped run's dispatching and accepted rows into `needs_review`,
   and settles every `queued` and `needs_review` entry of `Bus.queueList`,
@@ -1783,8 +1794,12 @@ acts on the stopped state directory.
 - Full scope (`--all`): the state directory is renamed, unchanged, to
   `<root>/.agenthub/archive/state-<YYYYMMDDTHHMMSSZ>/` (0700); an existing
   target refuses the move. The archive directory gets a `.gitignore` of `*`
-  because `hub.db` holds task text, PII included. A new 0700 state directory
-  holds only a copy of `project.json`; the project id is the hash of its root,
+  because `hub.db` holds task text, PII included, and `.agenthub/archive` is a
+  `DENY_SEGMENTS` entry (`src/local/deny.ts`), so the local worker's and Pi's
+  path guard, seatbelt profile and memory capture refuse it like
+  `.agenthub/state`. A new 0700 state directory (created with `recursive`, as
+  the status line tee may have re-created it) holds only a copy of
+  `project.json`; the project id is the hash of its root,
   so the registration and id are unchanged. Archives are never pruned.
 - Output says that claude-mem is not touched and that attached Claude Code
   sessions must be relaunched with `ahub claude`. The control protocol is

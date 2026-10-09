@@ -920,25 +920,42 @@ registration; the next `ahub up` starts with an empty board and queue.
 `.agenthub/config.json`, `config.local.json` and `routing.toml` live outside
 the state directory and are not touched. The archive keeps the task text,
 PII included, so it stays in the project: the reset writes
-`.agenthub/archive/.gitignore` (`*`) so git ignores it. Nothing deletes or
-prunes archives; removing one is a manual act.
+`.agenthub/archive/.gitignore` (`*`) so git ignores it, and the local
+worker's and Pi's denylist (file tools, sandbox, memory capture) covers
+`.agenthub/archive` as it covers `.agenthub/state`. Nothing deletes or prunes
+archives; removing one is a manual act.
 
-To restore an archive, stop the hub, move the new state directory aside and
-move the archive back:
+To restore an archive, stop the hub, move the current state directory into
+the archive too (where git and the local worker's denylist cover it), then move
+the archive back:
 
 ```bash
 ahub kill
-mv .agenthub/state .agenthub/state-after-reset
+mv .agenthub/state .agenthub/archive/state-$(date -u +%Y%m%dT%H%M%SZ)
 mv .agenthub/archive/state-<UTC time> .agenthub/state
 ahub up
 ```
 
 Only a person runs `ahub reset`: an agent shell is refused before anything
 happens, as for `kill`, `restart` and `upgrade`. It is refused, with nothing
-changed, while an upgrade or recovery operation is open (the machine's
-recovery lock, or a running hub that reports an unreleased recovery), when a
-running hub has no registration matching this project and state directory, and
-when the hub's ownership cannot be verified, as `ahub kill` refuses it.
+changed:
+
+- while an upgrade or recovery operation is open (the machine's recovery lock,
+  or a running hub that reports an unreleased recovery);
+- when no registration matches this project and state directory. A running
+  hub must then be stopped with its matching CLI; a stopped project is
+  registered again by `ahub up` (then `ahub reset --yes` stops it first);
+- when the hub's ownership cannot be verified, as `ahub kill` refuses it;
+- for `--all`, when the state directory is not `<root>/.agenthub/state`
+  (`AGENTHUB_STATE_DIR` or a symlink elsewhere): archive such a directory by
+  hand after `ahub kill`.
+
+After stopping the hub the reset holds the project's registry claim, the one a
+daemon takes to run, until it is done, so no hub starts under it; a hub that
+started in between makes it stop with nothing reset. If a step fails after the
+stop, the error says how far it got: rerun `ahub reset --yes` to finish a
+runtime reset (every step can run again); a full reset names the archive once
+the state directory has moved.
 It never touches claude-mem: notes saved with `hub_remember` are shared memory,
 not hub state. Claude Code sessions attached to the hub lose their hub session;
 relaunch them with `ahub claude`.

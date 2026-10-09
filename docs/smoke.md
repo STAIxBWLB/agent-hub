@@ -18,8 +18,9 @@ on a project whose hub state matters:
 4. `ahub reset --all --yes`: `.agenthub/archive/state-<UTC time>/` is 0700 and
    git-ignored, the state directory holds only `project.json`, and `ahub up`
    starts with the same project id, an empty board and an empty queue.
-5. Restore the archive as `docs/operations.md` describes and check the board
-   from step 1 is back.
+5. Restore the archive as `docs/operations.md` describes (the current state
+   directory goes into `.agenthub/archive/` too) and check the board from
+   step 1 is back.
 
 Record the version, the commands, each result and anything that differed.
 
