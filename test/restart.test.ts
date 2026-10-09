@@ -7,6 +7,7 @@ import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { newEnvelope, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { abandonRestartSnapshot, readRestartSnapshot, releasedRestartPath, waiveRecoveryPeers, writeRestartSnapshot, type RestartSnapshot } from "../src/hub/restart.ts";
@@ -22,6 +23,77 @@ class HeldPeer extends BasePeer {
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
+
+test("journal recovery preserves an offline peer's empty queue without reattachment", () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "agenthub-empty-recovery-"));
+  const journal = new DeliveryJournal({ file: join(stateDir, "hub.db"), projectRoot: stateDir, projectId: "p", instanceId: "i" });
+  cleanup.push(() => journal.close());
+  const source = new Bus({ journal, batchMs: 0 });
+  source.add(new HeldPeer("claude"));
+  source.add(new HeldPeer("kimi"));
+  const snapshot = source.snapshot();
+  expect(snapshot.journal?.revision).toBe(0);
+  expect(snapshot.journal?.bus.queues).toEqual({});
+  const target = new Bus({ journal, batchMs: 0 });
+  target.restore(snapshot, "op-empty");
+  expect(target.peers.size).toBe(0);
+  expect(target.snapshot().queues).toEqual({ claude: [], kimi: [] });
+  expect(journal.snapshot().bus.queues).toEqual({ claude: [], kimi: [] });
+});
+
+test("journal recovery keeps durable work authoritative over stale snapshot queues", () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "agenthub-authoritative-recovery-"));
+  const journal = new DeliveryJournal({ file: join(stateDir, "hub.db"), projectRoot: stateDir, projectId: "p", instanceId: "i" });
+  cleanup.push(() => journal.close());
+  const target = new Bus({ journal, batchMs: 0 });
+  const durable = newEnvelope("user", "durable work");
+  const stale = newEnvelope("user", "already removed");
+  const snapshot = target.snapshot();
+  snapshot.queues = { claude: [], codex: [stale], kimi: [] };
+  journal.persistBus({ ...target.snapshot(false), queues: { claude: [durable] } }, []);
+  const receipt = journal.createDelivery({ id: "uncertain", peer: "claude", state: "needs_review", createdAt: durable.ts, originals: [durable], out: [durable] });
+  target.restore(snapshot, "op-authoritative");
+  expect(target.queueIds("claude")).toEqual([durable.id]);
+  expect(target.snapshot().queues.codex).toBeUndefined();
+  expect(target.snapshot().queues.kimi).toEqual([]);
+  expect(journal.get("uncertain")).toEqual(receipt);
+});
+
+test("journal recovery releases a committed offline peer without reconnecting it", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "agenthub-offline-recovery-"));
+  const options = { cwd: process.cwd(), projectId: "p-offline", stateDir,
+    controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } };
+  const first = await startDaemon({ ...options, instanceId: "offline-source" });
+  cleanup.push(() => first.stop());
+  const one = await ControlClient.connect(stateDir, { role: "console" });
+  cleanup.push(() => one.close());
+  const peer = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" });
+  cleanup.push(() => peer.close());
+  await Bun.sleep(20);
+  peer.close();
+  for (let n = 0; n < 100 && first.bus.peers.get("claude")?.state !== "offline"; n++) await Bun.sleep(5);
+  expect(first.bus.peers.get("claude")?.state).toBe("offline");
+  expect((await one.request({ t: "recovery", op: "prepare", operationId: "op-offline", expectedInstanceId: "offline-source" })).recovery.phase).toBe("prepared");
+  expect((await one.request({ t: "recovery", op: "commit", operationId: "op-offline", expectedInstanceId: "offline-source" })).committed).toBe(true);
+  await first.stopped;
+  const previous = process.env.AGENTHUB_RECOVERY_OPERATION;
+  let second;
+  try {
+    process.env.AGENTHUB_RECOVERY_OPERATION = "op-offline";
+    second = await startDaemon({ ...options, instanceId: "offline-target" });
+  } finally {
+    if (previous === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION;
+    else process.env.AGENTHUB_RECOVERY_OPERATION = previous;
+  }
+  cleanup.push(() => second.stop());
+  const two = await ControlClient.connect(stateDir, { role: "console" });
+  cleanup.push(() => two.close());
+  const inspected = await two.request({ t: "recovery", op: "inspect", expectedInstanceId: "offline-target" });
+  expect(inspected.recovery.integrity.current).toEqual(inspected.recovery.integrity.expected);
+  expect(second.bus.peers.has("claude")).toBe(false);
+  expect((await two.request({ t: "recovery", op: "release", operationId: "op-offline", expectedInstanceId: "offline-target" })).released).toBe(true);
+});
 
 test("bus recovery snapshot preserves queue ids, hop parents, prefaces and retry state", async () => {
   const bus = new Bus({ batchMs: 0, retryMs: 10_000 });

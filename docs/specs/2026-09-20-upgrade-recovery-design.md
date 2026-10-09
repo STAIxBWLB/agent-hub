@@ -50,6 +50,9 @@ parents/hops, retries, dedupe state, prefaces, manual pauses and peer descriptor
 The existing task and budget databases remain authoritative. A mismatched or
 corrupt snapshot blocks startup. Snapshot restoration precedes peer attachment;
 release is idempotent and retires replayable snapshot state before delivery.
+Journal-backed restoration retains missing empty queue entries from the committed
+bus snapshot, including peers that remain offline. The journal stays authoritative
+for queued work and receipts; a non-empty snapshot queue is never replayed over it.
 Release atomically moves that snapshot to a private per-operation archive before
 lifting the hold. Archives retain evidence for an uncertain release and are never
 automatically replayed. Preparation freezes the peer roster; a new unplanned peer

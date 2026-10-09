@@ -295,7 +295,14 @@ export class Bus {
       if (current.revision === 0) {
         this.journal.importSnapshot(snapshot.journal ?? { schemaVersion: 1, revision: 1, instanceId: this.journal.instanceId, bus: snapshot, deliveries: [], manualPaused: snapshot.manualPaused ?? [] }, _operationId);
       }
+      const committedQueues = snapshot.queues;
       snapshot = this.journal.snapshot().bus;
+      // Offline peers need not reattach. Their empty queue keys still belong to the
+      // committed integrity view, even when no delivery ever persisted those keys (#234).
+      // The journal remains authoritative for work: never resurrect a non-empty queue.
+      for (const [id, queue] of Object.entries(committedQueues)) {
+        if (queue.length === 0 && !Object.hasOwn(snapshot.queues, id)) snapshot.queues[id] = [];
+      }
     }
     this.loadSnapshot(snapshot);
     this.persist();
