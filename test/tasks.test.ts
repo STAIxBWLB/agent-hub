@@ -2256,3 +2256,28 @@ for (const event of ["ready", "assigned"] as const) {
     expect(peers.codex!.got.filter((e) => e.kind === "task" && e.refs?.task === String(c.id))).toHaveLength(1);
   });
 }
+
+for (const read of [1, 4]) {
+  test(`dependent offer read ${read} failing after approval is reported and leaves the offer unused (#231)`, async () => {
+    const { tasks, board, peers, notices } = await setup(["claude", "codex"]);
+    const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+    const c = await tasks.propose("claude", { title: "client", class: "implement", after: [a.id] });
+    await tasks.done("codex", a.id, "done");
+    peers.codex!.set("offline"); // entry, ready update's two reads, then final owner check (no assignment write)
+    const get = board.get.bind(board);
+    let reads = 0;
+    board.get = (id: number) => {
+      if (id === c.id && ++reads === read) throw new Error(`injected offer read ${read} failure`);
+      return get(id);
+    };
+    try { await expect(tasks.review("claude", a.id, "approved")).resolves.toMatchObject({ state: "approved" }); }
+    finally { board.get = get; }
+    expect(reads).toBeGreaterThanOrEqual(read);
+    expect(notices.some((line) => line.includes(`task #${c.id} client`) && line.includes(`injected offer read ${read} failure`))).toBe(true);
+    expect(board.get(c.id)!.owner).toBeNull();
+    peers.codex!.set("idle");
+    await tasks.releaseReady(); await tick();
+    expect(board.get(c.id)!.owner).toBe("codex");
+    expect(peers.codex!.got.filter((e) => e.kind === "task" && e.refs?.task === String(c.id))).toHaveLength(1);
+  });
+}
