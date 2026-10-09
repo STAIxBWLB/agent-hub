@@ -720,6 +720,12 @@ export class Bus {
     return this.recoveryHeld || this.recoveryHeldPeers.has(id) || this.paused.has(id);
   }
 
+  /** What a peer was just handed stays resolvable for `reply_to`: moved to the newest end, the stored envelope kept. */
+  private remember(envs: Envelope[]): void {
+    for (const e of envs) { const kept = this.seen.get(e.id) ?? e; this.seen.delete(e.id); this.seen.set(e.id, kept); }
+    while (this.seen.size > SEEN_CAP) this.seen.delete(this.seen.keys().next().value as string);
+  }
+
   /** A push may go out now: nothing holds the queue, the peer is idle, and its session shows pushes (issue #205). */
   private deliverable(id: PeerId): boolean {
     return !this.held(id) && this.stateOf(id) === "idle" && !this.peers.get(id)?.pullOnly;
@@ -731,8 +737,10 @@ export class Bus {
    * `accepted` (issue #205). It is checkpointed like a push, so queued rows of the same envelopes (an operator retry)
    * are grouped into it, and registered for `reply_to` like a push. Undefined while held. A failed journal write puts
    * back only this peer's queue and preface (every pause stays) and stops the bus like any other journal failure.
-   * ponytail: recorded at hand-out, so a reply lost between hub and plugin loses that batch; take/confirm in two steps
-   * if that is ever observed.
+   * ponytail: recorded completed at hand-out, before anything shows the model saw it: a reply lost on the way, a tool
+   * call cancelled (Esc) or a plugin that dies loses the batch, and `ahub queue resolve --action retry` refuses a
+   * terminal row. The completed row keeps the envelopes (`ahub queue show <id>`) to resend by hand; take/confirm in two
+   * steps if loss is ever observed.
    */
   pull(id: PeerId): Envelope[] | undefined {
     if (this.storageError) throw new Error("delivery journal unavailable");
@@ -756,8 +764,8 @@ export class Bus {
       this.storageError = "delivery journal unavailable";
       throw error;
     }
-    for (const e of batch) if (!this.seen.has(e.id)) this.seen.set(e.id, e);
-    while (this.seen.size > SEEN_CAP) this.seen.delete(this.seen.keys().next().value as string);
+    this.remember(batch);
+    this.failureStreak.delete(id); this.lastFailure.delete(id); // read, as a completed push receipt clears them
     this.onQueues?.();
     return batch;
   }
@@ -799,8 +807,7 @@ export class Bus {
           for (const env of batch) queue.splice(queue.findIndex((item) => item.id === env.id), 1);
           this.prefaces.delete(id);
         }
-        for (const e of out) if (!this.seen.has(e.id)) this.seen.set(e.id, e);
-        while (this.seen.size > SEEN_CAP) this.seen.delete(this.seen.keys().next().value as string);
+        this.remember(out);
         this.lastDelivery.set(id, { out, originals: delivery });
         this.preparing.delete(id); // from here on the transport/journal owns settlement
         const deliveryId = crypto.randomUUID();

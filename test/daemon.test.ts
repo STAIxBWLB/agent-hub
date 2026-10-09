@@ -274,6 +274,23 @@ test("a standing-by ahub claude session takes the peer back from a session witho
   await until(() => flagged.channel.length === 1, "push to the channel session");
 }, 30_000);
 
+test("a needs_review receipt keeps the bridge's own reason, on one bounded line (#205)", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  const token = readFileSync(join(stateDir, "control-token"), "utf8").trim();
+  const ws = new WebSocket(`ws://127.0.0.1:${daemon.port}`);
+  cleanup.push(() => ws.close());
+  const pushes: any[] = [];
+  ws.onmessage = (ev) => pushes.push(JSON.parse(String(ev.data)));
+  await new Promise<void>((r) => (ws.onopen = () => (ws.send(JSON.stringify({ t: "hello", v: PROTOCOL, token, role: "peer", peer: "claude", channel: true, rid: 1 })), r())));
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "attach");
+  await console_.request({ t: "send", body: "x", to: ["claude"] });
+  await until(() => pushes.some((m) => m.t === "deliver"), "deliver");
+  const d = pushes.find((m) => m.t === "deliver");
+  ws.send(JSON.stringify({ t: "delivery_receipt", deliveryId: d.deliveryId, generation: d.generation, state: "needs_review", reason: "this session\ncannot show channel pushes", rid: 2 }));
+  await until(() => pushes.some((m) => m.rid === 2), "receipt reply");
+  expect(daemon.bus.queueList("claude").find((r) => r.state === "needs_review")?.reason).toBe("this session cannot show channel pushes");
+});
+
 test("claude and an ACP peer talk through the daemon in both directions", async () => {
   const { stateDir, daemon, console_ } = await hub();
   const { client, channel } = await fakeClaude(stateDir);

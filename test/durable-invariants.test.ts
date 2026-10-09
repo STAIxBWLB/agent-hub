@@ -110,6 +110,29 @@ test("what a pull hands over resolves as reply_to, a preface and an envelope tha
   expect(read.map((e) => bus.get(e.id)?.id)).toEqual(read.map((e) => e.id));
 });
 
+test("a pull moves what it hands over to the newest end of the seen cache, so an envelope near eviction stays resolvable (#205)", () => {
+  const bus = new Bus({ batchMs: 0 });
+  bus.add(Object.assign(new FakePeer("claude"), { pullOnly: true }));
+  const env = newEnvelope("user", "old question", { to: ["claude"] });
+  bus.publish(env);
+  for (let i = 0; i < 2000; i++) bus.publish(newEnvelope("user", `noise ${i}`, { to: ["nobody"] }));
+  expect(bus.get(env.id)).toBeDefined(); // cached, and now the oldest entry
+  bus.pull("claude");
+  for (let i = 0; i < 100; i++) bus.publish(newEnvelope("user", `later ${i}`, { to: ["nobody"] }));
+  expect(bus.get(env.id)?.id).toBe(env.id);
+});
+
+test("a read clears the peer's delivery failure streak, as a completed push does (#205)", async () => {
+  const bus = new Bus({ batchMs: 0, batchMax: 1, retryMs: 1 });
+  const peer = new FakePeer("claude", async () => { throw new Error("socket disappeared"); }); bus.add(peer);
+  for (let i = 0; i < 3; i++) bus.publish(newEnvelope("user", `lost ${i}`, { to: ["claude"] }));
+  await waitFor(() => !!bus.failingPeers().claude, "three exhausted deliveries");
+  Object.assign(peer, { pullOnly: true });
+  bus.publish(newEnvelope("user", "read", { to: ["claude"] }));
+  expect(bus.pull("claude")!.map((e) => e.body)).toEqual(["read"]);
+  expect(bus.failingPeers()).toEqual({});
+});
+
 test("a pull whose journal write fails keeps every pause, the queue and the preface, and stops the bus (#205)", () => {
   const { bus, durable } = setupBus();
   bus.add(Object.assign(new FakePeer("claude"), { pullOnly: true }));

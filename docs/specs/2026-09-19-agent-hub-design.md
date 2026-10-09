@@ -1547,7 +1547,10 @@ push `accepted` and show none of them.
 - Evidence: `ahub claude` passes the flag and, in the same launch, sets
   `AGENTHUB_CHANNEL=1` in Claude's environment (`nativeLaunchEnv`);
   `peerChildEnv` removes the marker from every other native child. The plugin's
-  MCP server inherits Claude Code's environment, as it already does for
+  MCP server inherits Claude Code's environment (a local check on 2026-10-09,
+  not a live smoke: a plain session's plugin server inherited a shell-only
+  `AGENTHUB_*` variable, and the plugin's `.mcp.json` sets no env), as it
+  already does for
   `AGENTHUB_STATE_DIR` and `AGENTHUB_PEER_ID`. Only the value `1` counts. With
   the marker the server keeps
   the push and settlement contract of "Live channel settlement" unchanged.
@@ -1569,9 +1572,14 @@ push `accepted` and show none of them.
     can show.
   - Limits: the marker is inherited by the session's own shell children, so a
     plain `claude` started inside an `ahub claude` session reads as
-    channel-capable (it also inherits the peer id and takes the peer over). A
-    session started with the flag by hand reads as tools-only and is pointed to
-    `ahub claude`.
+    channel-capable (it also inherits the peer id and takes the peer over); so
+    does `claude -p` run by a hook or script inside such a session, with its
+    state dir and peer id. The marker is per process while the flag names MCP
+    servers: `ahub claude --mcp-config <candidate>` without
+    `--strict-mcp-config` loads channels only for `server:agent-hub`, yet the
+    installed plugin server in the same process also sees
+    `AGENTHUB_CHANNEL=1`. A session started with the flag by hand reads as
+    tools-only and is pointed to `ahub claude`.
 - Tools-only attach: the server declares tools only, sends `channel: false` in
   its `peer` hello and lists `hub_inbox` but not `hub_delivery_done`. It never
   reports `accepted`: a `deliver` it is handed anyway goes back as a
@@ -1591,12 +1599,17 @@ push `accepted` and show none of them.
   a push, so queued journal rows of the same envelopes (an operator retry) are
   grouped into it, then marks it `completed`, reason `read through hub_inbox`,
   in the same transaction: the tool result that returns them is the readback,
-  so nothing waits in `accepted`. What it hands over is registered for
-  `reply_to` like a push. If that journal write fails, only this peer's queue
+  so nothing waits in `accepted`. What it hands over is registered (and moved
+  to the newest end of the cache) for `reply_to` like a push, and a read clears
+  the peer's failure streak as a completed push does. If that journal write fails, only this peer's queue
   and preface are put back (every pause stays) and the bus stops with
   `delivery journal unavailable`. A pull is not a native turn and is not
-  counted as supervision. A reply lost between the hub and the plugin after
-  that write loses its batch (a `ponytail:` ceiling in `Bus.pull`).
+  counted as supervision. The row is completed at hand-out, before anything
+  shows the model saw it: a reply lost on the way, a tool call cancelled with
+  Esc or a plugin that dies loses the batch (a `ponytail:` ceiling in
+  `Bus.pull`), and `ahub queue resolve --action retry` refuses a terminal row.
+  The completed row keeps the envelopes, so the operator reads them with `ahub
+  queue show <id>` and sends what matters again.
 - Who holds the peer: an `ahub claude` session takes it from a plain session
   as any newer hello does, a standing-by one included (its standby check does
   not wait for a holder that status reports `toolsOnly`); attach clears
