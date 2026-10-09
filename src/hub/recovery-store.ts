@@ -58,9 +58,31 @@ export function releaseRecoveryLock(id: string, home = hubHome()): void {
 /** Used by CLI and manager lifecycle paths. A detached operation carries its own ID. */
 export function assertLifecycleAvailable(): void {
   const owner = recoveryLock();
-  if (owner && process.env.AGENTHUB_RECOVERY_OPERATION !== owner) {
-    throw new Error(`recovery operation ${owner} is active; use ahub recovery status|resume ${owner}`);
-  }
+  if (owner && process.env.AGENTHUB_RECOVERY_OPERATION !== owner) throw new Error(activeOperation(owner));
+}
+
+/**
+ * #215: the command line of an operation's own coordinator, which has every recovery command. Mid-upgrade the global
+ * `ahub` may still be the older release, so next actions and errors never name it bare. A coordinator from before #215
+ * lacks dispose, refuses abort and resume on a lapsed hold and shows no next actions: then the running release is
+ * named, which does all of that in-process (its resume still runs the operation's own runner).
+ */
+export function recoveryCommand(op: { id: string; sourceRoot?: string }, action: "status" | "resume" | "abort" | "dispose", flags = ""): string {
+  const entry = !op.sourceRoot ? undefined : coordinatorCurrent(op.sourceRoot) ? join(op.sourceRoot, "src/cli/main.js") : join(import.meta.dir, "../cli/main.js");
+  const cli = !entry ? "ahub" : /^[\w./@+-]+$/.test(entry) ? `bun ${entry}` : `bun '${entry.replace(/'/g, `'\\''`)}'`;
+  return `${cli} recovery ${action} ${op.id}${flags ? ` ${flags}` : ""}`;
+}
+
+/** Whether a coordinator has the #215 recovery commands (dispose, re-preparation, next actions). */
+export function coordinatorCurrent(sourceRoot: string): boolean {
+  try { return readFileSync(join(sourceRoot, "src/cli/upgrade.ts"), "utf8").includes("export async function disposeRecovery"); } catch { return false; }
+}
+
+/** What a lifecycle command refused by the lock says: the operation's own status and resume commands. */
+export function activeOperation(owner: string, home = hubHome()): string {
+  let op: { id: string; sourceRoot?: string } = { id: owner };
+  try { op = { id: owner, sourceRoot: readOperation<{ sourceRoot?: string }>(owner, home).sourceRoot }; } catch { /* no readable receipt: the bare commands are all there is */ }
+  return `recovery operation ${owner} is active; use ${recoveryCommand(op, "status")} or ${recoveryCommand(op, "resume")}`;
 }
 
 /**

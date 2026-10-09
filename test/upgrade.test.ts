@@ -2,8 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { abortRecovery, createOperation, disposeRecovery, nextActions, planFingerprint, publicOperation, recoveryCommand, registeredProjects, runRecovery, type Inspection, type RecoveryDriver, type UpgradePlan } from "../src/cli/upgrade.ts";
-import { acquireRecoveryLock, claimRunner, readOperation, recoveryLock, recoveryRunner, releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
+import { abortRecovery, abortRefusal, createOperation, disposeRecovery, nextActions, planFingerprint, publicOperation, recoveryCommand, registeredProjects, runRecovery, type Inspection, type RecoveryDriver, type UpgradePlan } from "../src/cli/upgrade.ts";
+import { acquireRecoveryLock, activeOperation, claimRunner, readOperation, recoveryLock, recoveryRunner, releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
 import { exactVersion, packageDigest, registryRelease } from "../src/cli/recovery-package.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 import { makeRecoveryDriver, PACKAGE_ROOT } from "../src/cli/upgrade-runtime.ts";
@@ -382,7 +382,7 @@ test("a failed restoration offers both dispositions; fresh-session records the l
     `${C} dispose ${f.operation.id} --fresh-session codex --reason <text>`,
     `${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`,
   ]);
-  await expect(disposeRecovery(f.operation.id, { fresh: "claude" }, "wrong peer", f.driver, f.home)).rejects.toThrow("no restoration of it failed");
+  await expect(disposeRecovery(f.operation.id, { fresh: "claude" }, "wrong peer", f.driver, f.home)).rejects.toThrow("no failed restoration of it is open to a fresh session");
   const op = await disposeRecovery(f.operation.id, { fresh: "codex" }, "rollout missing from the store", f.driver, f.home);
   expect(op.projects[0]!.fresh?.codex).toMatchObject({ lost: "t1", reason: "rollout missing from the store" });
   expect(op.projects[0]!.terminals).toEqual({ "closed:codex": true, "restored:codex": "failed" }); // until resume launches the fresh session
@@ -587,12 +587,32 @@ test("abort cancels around a replaced source but not one that may have committed
   f.operation.projects[0]!.phase = "prepared";
   writeOperation(f.operation.id, f.operation, f.home);
   expect(publicOperation(readOperation(f.operation.id, f.home)).next).toContain(`${C} abort ${f.operation.id}`);
-  f.states.get("alpha")!.state = "stopped";
-  await expect(abortRecovery(f.operation.id, f.driver, f.home)).rejects.toThrow("alpha is stopped and may have committed");
   f.states.set("alpha", { state: "running", instanceId: "replacement", version: "0.5.0", protocol: 9, peers: [], blockers: [], recovery: { operationId: "11111111-1111-1111-1111-111111111111", phase: "prepared", ready: true } });
   await abortRecovery(f.operation.id, f.driver, f.home);
   expect((readOperation(f.operation.id, f.home) as { phase: string }).phase).toBe("cancelled");
   expect(f.calls).toEqual([]); // the replacement and the other operation's hold were left alone
+
+  // This coordinator writes commitSent before every commit request, so a crashed prepared source with none was never
+  // committed: abort, offered by the same predicate, cancels it.
+  const crashed = fixture();
+  crashed.operation.projects[0]!.phase = "prepared";
+  writeOperation(crashed.operation.id, crashed.operation, crashed.home);
+  crashed.states.get("alpha")!.state = "stopped";
+  expect(abortRefusal(readOperation(crashed.operation.id, crashed.home), { alpha: { state: "stopped", peers: [], blockers: [] } })).toBeUndefined();
+  await abortRecovery(crashed.operation.id, crashed.driver, crashed.home);
+  expect((readOperation(crashed.operation.id, crashed.home) as { phase: string }).phase).toBe("cancelled");
+
+  // An older coordinator writes no commitSent: its prepared source that is not running may have committed. Next does
+  // not offer abort then (the same predicate), and abort refuses.
+  const older = fixture();
+  older.operation.sourceRoot = "/releases/source-older";
+  older.operation.projects[0]!.phase = "prepared";
+  writeOperation(older.operation.id, older.operation, older.home);
+  older.states.get("alpha")!.state = "stopped";
+  const stopped = { alpha: { state: "stopped", peers: [], blockers: [] } };
+  expect(nextActions(readOperation(older.operation.id, older.home), undefined, stopped)).not.toContain(`${C} abort ${older.operation.id}`);
+  expect(nextActions(readOperation(older.operation.id, older.home))).not.toContain(`${C} abort ${older.operation.id}`); // not inspected
+  await expect(abortRecovery(older.operation.id, older.driver, older.home)).rejects.toThrow("alpha: the source is stopped and may have committed (this operation's coordinator does not record a sent commit)");
 
   const committing = fixture();
   committing.operation.projects[0]!.phase = "prepared";
@@ -615,7 +635,8 @@ test("an operation from a coordinator without dispose is driven by the running r
   lapsed.operation.sourceRoot = "/releases/source-older";
   lapsed.operation.projects[0]!.phase = "prepared";
   writeOperation(lapsed.operation.id, lapsed.operation, lapsed.home);
-  expect(nextActions(readOperation(lapsed.operation.id, lapsed.home))).toContain(`${C} abort ${lapsed.operation.id}`);
+  const running = { alpha: lapsed.states.get("alpha")!, beta: lapsed.states.get("beta")! };
+  expect(nextActions(readOperation(lapsed.operation.id, lapsed.home), undefined, running)).toContain(`${C} abort ${lapsed.operation.id}`);
   await abortRecovery(lapsed.operation.id, lapsed.driver, lapsed.home);
   expect((readOperation(lapsed.operation.id, lapsed.home) as { phase: string }).phase).toBe("cancelled");
 });
@@ -666,7 +687,7 @@ test("a sent commit stays on record across a failing resume, so abort is never o
   const second = await runRecovery(f.operation.id, f.driver, f.home);
   expect(second.step).toBe("stage");
   expect(publicOperation(second).next).not.toContain(`${C} abort ${f.operation.id}`);
-  await expect(abortRecovery(f.operation.id, f.driver, f.home)).rejects.toThrow("may have committed");
+  await expect(abortRecovery(f.operation.id, f.driver, f.home)).rejects.toThrow("abort refused: alpha: its commit request may have been sent");
 });
 
 // #215 review: "make a new plan" is impossible while this operation holds the lock.
@@ -677,4 +698,25 @@ test("a changed untouched source names abort, and stop-and-archive once another 
   f.operation.projects[1]!.phase = "verified";
   writeOperation(f.operation.id, f.operation, f.home);
   expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toBe(`alpha: source runtime changed; next action: ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
+});
+
+// #215 review: a planned fresh start has nothing to lose; a fresh-session choice would record a loss that is not one.
+test("a failed planned fresh start offers resume and stop-and-archive, and refuses --fresh-session", async () => {
+  const f = failedRestore();
+  f.plan.projects[0]!.freshStart = ["codex"];
+  const { fingerprint: _ignored, ...body } = f.plan;
+  f.plan.fingerprint = planFingerprint(body);
+  writeOperation(f.operation.id, f.operation, f.home);
+  expect(nextActions(readOperation(f.operation.id, f.home))).toEqual([`${C} resume ${f.operation.id}`, `${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`]);
+  await expect(disposeRecovery(f.operation.id, { fresh: "codex" }, "lost", f.driver, f.home)).rejects.toThrow("codex: its plan already restarts it as a new session");
+});
+
+test("stop-and-archive says when another operation holds a source, and lock refusals name the coordinator", async () => {
+  const f = expiredLease();
+  f.states.get("alpha")!.recovery = { operationId: "11111111-1111-1111-1111-111111111111", phase: "prepared", ready: true };
+  const op = await disposeRecovery(f.operation.id, { stop: true }, "give up", f.driver, f.home);
+  expect(op.disposition?.projects.alpha).toBe("source left running (held by another operation, 11111111-1111-1111-1111-111111111111)");
+
+  const g = fixture();
+  expect(activeOperation(g.operation.id, g.home)).toBe(`recovery operation ${g.operation.id} is active; use ${C} status ${g.operation.id} or ${C} resume ${g.operation.id}`);
 });

@@ -348,7 +348,7 @@ test("a Codex thread without a rollout in its launcher's store is refused before
     terminals: [{ peer: "codex", handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", projectRoot: temp, sessionId: "thread-T", launch, launchMetadata: launch }], blockers: [],
   };
   const progress: ProjectProgress = { id: "p-215", phase: "prepared", terminals: {} };
-  const op = { id: "op-215", sourceRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION }, projects: [progress] } as unknown as RecoveryOperation;
+  const op = { id: "op-215", sourceRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
   try {
     const driver = makeRecoveryDriver(run);
     await expect(driver.closeTerminals(planned, progress, op, () => {})).rejects.toThrow(`codex: thread thread-T has no resumable transcript under ${join(codexHome, "sessions")}; no terminal was closed`);
@@ -395,7 +395,7 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
     terminals: [{ peer: "codex", handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", projectRoot: temp, sessionId: "thread-T", launch, launchMetadata: launch }], blockers: [],
   };
   const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "started", terminals: { "closed:codex": true, "restored:codex": "pending" } };
-  const op = { id: "op-215", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION }, projects: [progress] } as unknown as RecoveryOperation;
+  const op = { id: "op-215", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
   const previousHome = process.env.AGENTHUB_HOME;
   process.env.AGENTHUB_HOME = join(temp, "home");
   try {
@@ -416,7 +416,7 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
 
     // A failed receipt is settled by what is live: a launcher still running is waited for, never doubled.
     record(true, "term-elsewhere");
-    await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow(`its launcher in terminal term-elsewhere is running but no codex session attached yet; next action: wait until it attaches, or end it and close terminal term-elsewhere, then ${COORD} resume op-215`);
+    await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow(`its launcher in terminal term-elsewhere is running but no codex session attached yet; no terminal was created; next action: wait until it attaches, or end it and close terminal term-elsewhere, then ${COORD} resume op-215`);
     expect(progress.terminals["restored:codex"]).toBe("failed");
     expect(calls.filter((argv) => argv[2] === "create")).toHaveLength(1);
     // ...and once the planned thread attached there, the failed receipt is the restoration.
@@ -528,7 +528,7 @@ test("a planned fresh Codex start is refused while its session store cannot be r
     terminals: [{ peer: "codex", handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", projectRoot: temp, sessionId: "thread-Z", launch, launchMetadata: launch }], blockers: [], freshStart: ["codex"],
   };
   const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "started", terminals: { "closed:codex": true } };
-  const op = { id: "op-215", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION }, projects: [progress] } as unknown as RecoveryOperation;
+  const op = { id: "op-215", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
   chmodSync(sessions, 0);
   try {
     await expect(makeRecoveryDriver(run).restore(planned, progress, op, "native", () => {})).rejects.toThrow(`the session store ${sessions} cannot be read, so whether thread thread-Z can resume is unknown; no terminal was created`);
@@ -604,7 +604,7 @@ test("a failed Pi restoration names resume and stop-and-archive, never --fresh-s
     terminals: [{ peer: "pi", handle: "term-pi", incarnationId: "inc-pi", worktreeId: "wt", projectRoot: temp, sessionId: "pi-1", launch, launchMetadata: launch }], blockers: [],
   };
   const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "started", terminals: { "closed:pi": true, "restored:pi": "pending" } };
-  const op = { id: "op-pi", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION }, projects: [progress] } as unknown as RecoveryOperation;
+  const op = { id: "op-pi", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
   const calls: string[][] = [];
   const previousHome = process.env.AGENTHUB_HOME;
   process.env.AGENTHUB_HOME = join(temp, "home");
@@ -621,10 +621,44 @@ test("a failed Pi restoration names resume and stop-and-archive, never --fresh-s
       terminals: [{ ...planned.terminals[0] as object, peer: "codex", handle: "term-codex", sessionId: "thread-T", launch: { ...launch, env: {} } } as never] };
     const codexProgress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "started", terminals: { "closed:codex": true }, fresh: { codex: { lost: "thread-T", reason: "test", at: 1 } } };
     inspections = 1;
-    await expect(driver.restore(codexPlanned, codexProgress, { ...op, projects: [codexProgress] } as RecoveryOperation, "native", () => {})).rejects.toThrow("a codex session or launcher is live on the target; no terminal was created; next action: wait until it attaches");
+    await expect(driver.restore(codexPlanned, codexProgress, { ...op, projects: [codexProgress] } as RecoveryOperation, "native", () => {})).rejects.toThrow("codex: session thread-late is attached instead of thread-T; no terminal was created; next action: end that codex session and close its terminal");
     expect(calls.some((argv) => argv.includes("create"))).toBe(false);
   } finally {
     if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
     server.stop(true); rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+// #215 review: an unreachable target is unknown evidence, never "nothing attached": no receipt is turned failed and no
+// terminal is created beside a session that may be live.
+test("a target that cannot be read blocks settling and creating, and keeps every receipt", async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-target-unknown-")));
+  const stateDir = join(temp, "state");
+  mkdirSync(stateDir);
+  const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("ok") });
+  const deadPort = probe.port; probe.stop(true);
+  writeFileSync(join(stateDir, "control-token"), "token\n");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: deadPort, protocol: PROTOCOL, projectId: "p-215", instanceId: "i-target", cwd: temp }));
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: {} };
+  const planned: PlannedProject = {
+    project: { id: "p-215", root: temp, stateDir, instanceId: "i-target", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: "claude", state: "idle", sessionId: "S" }], blockers: [] },
+    terminals: [{ peer: "claude", handle: "term-claude", incarnationId: "inc", worktreeId: "wt", projectRoot: temp, sessionId: "S", launch, launchMetadata: launch }], blockers: [],
+  };
+  const calls: string[][] = [];
+  const driver = makeRecoveryDriver(async (argv) => { calls.push(argv); return { code: 0, stdout: "function\n", stderr: "" }; });
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "home");
+  try {
+    for (const receipt of ["pending", "failed"] as const) {
+      const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "peers-restored", terminals: { "closed:claude": true, "restored:claude": receipt } };
+      const op = { id: "op-215", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
+      await expect(driver.restore(planned, progress, op, "claude", () => {})).rejects.toThrow("whether a claude session or launcher is live cannot be told (the target hub reads as unavailable); nothing was recorded or created");
+      expect(progress.terminals["restored:claude"]).toBe(receipt);
+    }
+    expect(calls.some((argv) => argv.includes("create"))).toBe(false);
+  } finally {
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+    rmSync(temp, { recursive: true, force: true });
   }
 });

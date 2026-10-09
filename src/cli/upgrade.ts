@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
-import { acquireRecoveryLock, claimRunner, readOperation, recoveryLock, releaseRecoveryLock, writeOperation } from "../hub/recovery-store.ts";
+import { acquireRecoveryLock, claimRunner, coordinatorCurrent, readOperation, recoveryCommand, recoveryLock, releaseRecoveryLock, writeOperation } from "../hub/recovery-store.ts";
 
 export interface RecoveryPeer {
   id: string;
@@ -75,22 +75,8 @@ export interface RecoveryOperation {
   disposition?: { choice: "stop-and-archive"; at: number; projects: Record<string, string> };
 }
 
-/**
- * #215: the command line of this operation's own coordinator, which has every recovery command. Mid-upgrade the global
- * `ahub` may still be the older release, so next actions and errors never name it bare.
- */
-export function recoveryCommand(op: { id: string; sourceRoot?: string }, action: "status" | "resume" | "abort" | "dispose", flags = ""): string {
-  // A coordinator from before #215 lacks dispose, refuses abort and resume on a lapsed hold, and shows no next actions:
-  // name the running release, which does all of that in-process (resume still runs the operation's own runner).
-  const entry = !op.sourceRoot ? undefined : current(op.sourceRoot) ? join(op.sourceRoot, "src/cli/main.js") : join(import.meta.dir, "main.js");
-  const cli = !entry ? "ahub" : /^[\w./@+-]+$/.test(entry) ? `bun ${entry}` : `bun '${entry.replace(/'/g, `'\\''`)}'`;
-  return `${cli} recovery ${action} ${op.id}${flags ? ` ${flags}` : ""}`;
-}
+export { recoveryCommand };
 const STOP = "--stop-and-archive --reason <text>";
-/** Whether a coordinator has the #215 recovery commands (dispose, re-preparation, next actions). */
-function current(sourceRoot: string): boolean {
-  try { return readFileSync(join(sourceRoot, "src/cli/upgrade.ts"), "utf8").includes("export async function disposeRecovery"); } catch { return false; }
-}
 /** Whether the staged target reads recovery waivers: a fresh session cannot be released without them. */
 export function targetReadsWaivers(op: { targetRoot?: string }): boolean {
   try { return !!op.targetRoot && readFileSync(join(op.targetRoot, "src/hub/restart.ts"), "utf8").includes("export function readRecoveryWaivers"); } catch { return false; }
@@ -98,29 +84,59 @@ export function targetReadsWaivers(op: { targetRoot?: string }): boolean {
 
 /** Effects anywhere in the operation: a project past `prepared` or any terminal receipt. Abort needs none. */
 export const hasEffects = (op: RecoveryOperation) => op.projects.some((p) => !["pending", "prepared"].includes(p.phase) || Object.keys(p.terminals).length > 0);
-/** Abort is offered only where the receipt shows it can succeed: no effects, and no commit that may have been sent. */
-const abortable = (op: RecoveryOperation) => !hasEffects(op) && !op.projects.some((p) => p.commitSent);
+/**
+ * #215: why abort would refuse, or undefined when it can cancel. Abort and `next` both ask this, so `next` never
+ * offers an abort that refuses. `live` holds inspections of the operation's projects. A #215 coordinator writes
+ * `commitSent` before every commit request, so its receipt alone rules a commit in or out; an older one does not,
+ * and a prepared source of its operation that is not running (or was not inspected) may have committed.
+ */
+export function abortRefusal(op: RecoveryOperation, live: Record<string, Inspection | undefined> = {}): string | undefined {
+  if (op.disposition) return "a stop-and-archive of this operation is partway";
+  if (hasEffects(op)) return "operation has stopped runtimes or uncertain terminal effects";
+  const recorded = !op.sourceRoot || coordinatorCurrent(op.sourceRoot);
+  for (let i = 0; i < op.projects.length; i++) {
+    const progress = op.projects[i]!, planned = op.plan.projects[i]!, state = live[progress.id];
+    if (progress.commitSent) return `${progress.id}: its commit request may have been sent`;
+    if (state?.recovery?.operationId === op.id && state.recovery.phase !== "released" &&
+        (state.instanceId !== planned.source.instanceId || !["preparing", "prepared"].includes(state.recovery.phase ?? ""))) return `${progress.id}: recovery has progressed`;
+    if (progress.phase === "prepared" && !recorded && state?.state !== "running") {
+      return `${progress.id}: the source is ${state?.state ?? "not inspected"} and may have committed (this operation's coordinator does not record a sent commit)`;
+    }
+  }
+  return undefined;
+}
 
 /**
  * #215: what the person can do now, in the receipt table's order: resume (it also launches a failed peer again),
  * abort where it can succeed, a fresh session for a failed Codex or Claude restoration, and stop-and-archive last.
  * `status` and every error that names choices use this one list.
  */
-export function nextActions(op: RecoveryOperation, runner?: number | "unknown"): string[] {
+export function nextActions(op: RecoveryOperation, runner?: number | "unknown", live: Record<string, Inspection | undefined> = {}): string[] {
   if (op.phase === "completed" || op.phase === "cancelled") return [];
   if (runner === "unknown") return [`${recoveryCommand(op, "status")} again: whether a runner holds the operation could not be read`];
   if (runner) return [`wait: runner ${runner} is working; ${recoveryCommand(op, "status")}`];
   if (op.disposition) return [`rerun ${recoveryCommand(op, "dispose", STOP)} once its runtimes have settled`];
-  const failed = [...new Set(op.projects.flatMap((p) => Object.entries(p.terminals).filter(([key, value]) => key.startsWith("restored:") && key !== "restored:pi" && value === "failed" && !p.fresh?.[key.slice("restored:".length)]).map(([key]) => key.slice("restored:".length))))];
+  const failed = [...new Set(op.projects.flatMap((p) => failedPeers(op, p)))];
   const waivers = targetReadsWaivers(op);
-  const old = !!op.sourceRoot && !current(op.sourceRoot);
+  const old = !!op.sourceRoot && !coordinatorCurrent(op.sourceRoot);
   return [
     `${recoveryCommand(op, "resume")}${op.error ? " (after the next action in error)" : ""}${old ? " (runs the coordinator that started this operation, which cannot re-prepare an expired hold: if it reports \"source is no longer prepared\", use abort or stop-and-archive)" : ""}`,
-    ...(abortable(op) ? [recoveryCommand(op, "abort")] : []),
+    ...(abortRefusal(op, live) ? [] : [recoveryCommand(op, "abort")]),
     ...(waivers ? failed.map((peer) => recoveryCommand(op, "dispose", `--fresh-session ${peer} --reason <text>`)) : []),
     ...(!waivers && failed.length ? [`(no --fresh-session: target ${op.plan.version} cannot read recovery waivers, so it could not release a new session)`] : []),
     recoveryCommand(op, "dispose", STOP),
   ];
+}
+
+/**
+ * Peers of a project whose restoration failed and for which a fresh session is a real choice: not Pi (a restored hub
+ * resumes its recorded session), not one already chosen, and not a planned fresh start (nothing to lose; resume
+ * launches it new again).
+ */
+function failedPeers(op: RecoveryOperation, progress: ProjectProgress): string[] {
+  const planned = op.plan.projects.find((p) => p.project.id === progress.id);
+  return Object.entries(progress.terminals).filter(([key, value]) => key.startsWith("restored:") && value === "failed").map(([key]) => key.slice("restored:".length))
+    .filter((peer) => peer !== "pi" && !progress.fresh?.[peer] && !planned?.freshStart?.includes(peer));
 }
 
 /** Registry reads for planning must not create a registry or run migrations. */
@@ -242,7 +258,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       if (live.recovery.ready) return sourceRoster(live, planned, progress, again);
       if (driver.now() >= deadline) {
         await driver.abort(project, id, instance);
-        throw new Error(`${project.id}: active turns, approvals or completion checks did not finish; source runtime left running`);
+        throw new Error(`${project.id}: active turns, approvals or completion checks did not finish; source runtime left running; next actions: ${nextActions(op).join(" | ")}`);
       }
       await driver.sleep(250);
     }
@@ -357,9 +373,9 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
 }
 
 /** Receipts and runner state only (#215): ids, phases and effects, never task or message text. */
-export function publicOperation(op: RecoveryOperation, runnerPid?: number | "unknown") {
+export function publicOperation(op: RecoveryOperation, runnerPid?: number | "unknown", live: Record<string, Inspection | undefined> = {}) {
   const effect = (value: unknown) => value === "pending" || value === "failed" ? value : "done";
-  const next = nextActions(op, runnerPid);
+  const next = nextActions(op, runnerPid, live);
   return { id: op.id, phase: op.phase, step: op.step, version: op.plan.version, updatedAt: op.updatedAt,
     runner: runnerPid === "unknown" ? { state: "unknown" } : runnerPid ? { state: "running", pid: runnerPid } : { state: "none" },
     ...(op.phase === "running" && !runnerPid ? { stale: "the receipt says running but no runner holds the operation: its last runner stopped mid-step" } : {}),
@@ -384,22 +400,16 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
       if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
       return;
     }
-    if (op.disposition) throw new Error(`a stop-and-archive of this operation is partway; next action: rerun ${recoveryCommand(op, "dispose", STOP)} once its runtimes have settled`);
-    if (hasEffects(op)) {
-      throw new Error(`operation has stopped runtimes or uncertain terminal effects; resume it instead (${recoveryCommand(op, "resume")}), or end it with ${recoveryCommand(op, "dispose", STOP)}`);
-    }
     const { fingerprint, ...body } = op.plan;
     if (fingerprint !== planFingerprint(body)) throw new Error("operation plan changed");
+    const live = op.disposition || hasEffects(op) ? {} : Object.fromEntries(await Promise.all(op.plan.projects.map(async (planned) => [planned.project.id, await driver.inspect(planned.project)] as const)));
+    const refusal = abortRefusal(op, live);
+    if (refusal) throw new Error(`abort refused: ${refusal}; next actions: ${nextActions(op, undefined, live).join(" | ")}`);
+    // Only this operation's own uncommitted holds are aborted; a lapsed hold, a replacement daemon or another
+    // operation's hold is left alone, and a source that is not running had no commit sent (abortRefusal).
     for (const planned of op.plan.projects) {
-      const live = await driver.inspect(planned.project);
-      if (live.recovery?.operationId === id && live.recovery.phase !== "released") {
-        if (live.instanceId !== planned.source.instanceId || !["preparing", "prepared"].includes(live.recovery.phase ?? "")) throw new Error(`recovery has progressed; resume it instead (${recoveryCommand(op, "resume")})`);
-        await driver.abort(planned.project, id, planned.source.instanceId!);
-      } else if (op.projects.find((p) => p.id === planned.project.id)?.phase === "prepared" && live.state !== "running") {
-        // #215: a source that is not running may have committed. A running one this operation does not hold (its hold
-        // lapsed, a replacement daemon, another operation's hold) was never committed by it and is left alone.
-        throw new Error(`prepared source outcome is uncertain: ${planned.project.id} is ${live.state} and may have committed; resume it instead (${recoveryCommand(op, "resume")})`);
-      }
+      const state = live[planned.project.id]!;
+      if (state.recovery?.operationId === id && state.recovery.phase !== "released") await driver.abort(planned.project, id, planned.source.instanceId!);
     }
     op.phase = "cancelled"; op.step = "cancelled"; op.updatedAt = driver.now();
     writeOperation(id, op, home); releaseRecoveryLock(id, home);
@@ -433,8 +443,11 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
       if (op.disposition) throw new Error(`a stop-and-archive of this operation is partway; next action: rerun ${recoveryCommand(op, "dispose", STOP)} once its runtimes have settled`);
       if (!targetReadsWaivers(op)) throw new Error(`--fresh-session is not available: target ${op.plan.version} cannot read recovery waivers, so it could not release a new session; next action: ${recoveryCommand(op, "dispose", STOP)}`);
       const peer = choice.fresh;
-      const failed = op.projects.filter((p) => p.terminals[`restored:${peer}`] === "failed");
-      if (!failed.length) throw new Error(`${peer}: no restoration of it failed in this operation; --fresh-session applies only then (${recoveryCommand(op, "status")})`);
+      if (op.projects.some((p) => p.terminals[`restored:${peer}`] === "failed" && op.plan.projects.find((planned) => planned.project.id === p.id)?.freshStart?.includes(peer))) {
+        throw new Error(`${peer}: its plan already restarts it as a new session (no rollout and no turn, nothing to lose), so there is no conversation to record as lost; next actions: ${nextActions(op).join(" | ")}`);
+      }
+      const failed = op.projects.filter((p) => failedPeers(op, p).includes(peer));
+      if (!failed.length) throw new Error(`${peer}: no failed restoration of it is open to a fresh session (none failed, or one is already chosen); --fresh-session applies only then (${recoveryCommand(op, "status")})`);
       for (const progress of failed) {
         const binding = (op.plan.projects.find((p) => p.project.id === progress.id)!.terminals as { peer: string; sessionId: string }[]).find((t) => t.peer === peer)!;
         (progress.fresh ??= {})[peer] = { lost: binding.sessionId, reason, at };
@@ -459,7 +472,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
         : ours && live.instanceId === planned.source.instanceId && ["pending", "prepared"].includes(progress.phase) ? "source hold released; source left running"
         : target ? "target stopped"
         : live.instanceId === planned.source.instanceId && ["pending", "prepared"].includes(progress.phase)
-          ? `source left running (${progress.phase === "prepared" ? "its hold had lapsed" : "never prepared"})`
+          ? `source left running (${live.recovery?.operationId && live.recovery.phase !== "released" ? `held by another operation, ${live.recovery.operationId}` : progress.phase === "prepared" ? "its hold had lapsed" : "never prepared"})`
         : `left running: instance ${live.instanceId ?? "unknown"} is not held by this operation`;
       if (!act) throw new Error(`${planned.project.id}: runtime is ${live!.state}, so its ownership cannot be verified; nothing was stopped or released; retry once it settles`);
       acts.push({ planned, ...(live ? { live } : {}), act });

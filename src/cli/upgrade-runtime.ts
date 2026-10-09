@@ -8,7 +8,7 @@ import type { Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
 import { packageDigest, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
 import { inspectTerminals, closeTerminal, createTerminal, launcherOf, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
-import { nextActions, planFingerprint, recoveryCommand, registeredProjects, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
+import { nextActions, planFingerprint, recoveryCommand, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
 import { readEvents } from "../hub/events.ts";
 import { refreshManager } from "../hub/manager.ts";
 import { abandonRestartSnapshot, waiveRecoveryPeers } from "../hub/restart.ts";
@@ -286,6 +286,24 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
     if (session !== saved.sessionId) throw new Error(`${saved.peer}: daemon session changed during terminal revalidation; manual-required`);
     return current;
   };
+  /**
+   * #215: what runs for a peer on the target, the one place restore reads it. Only a running target answering as the
+   * expected instance can report "gone"; an unreadable target or launcher is unknown and blocks, never gone.
+   */
+  const peerEvidence = async (planned: PlannedProject, progress: ProjectProgress, peer: TerminalBinding["peer"]):
+      Promise<{ state: "live"; session?: string; handle?: string } | { state: "gone" } | { state: "unknown"; why: string; handle?: string }> => {
+    const target = await inspectRecovery(planned.project);
+    if (target.state !== "running" || target.instanceId !== progress.instanceId) {
+      return { state: "unknown", why: `the target hub reads as ${target.state === "running" ? `instance ${target.instanceId}, not ${progress.instanceId}` : target.state}` };
+    }
+    const attached = target.peers.find((p) => p.id === peer && p.state !== "offline");
+    const session = peer === "codex" ? attached?.threadId : attached?.sessionId;
+    if (session) return { state: "live", session };
+    const launch = await launcherOf(peer, planned.project.root, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId });
+    if (launch?.state === "live") return { state: "live", handle: launch.record.handle };
+    if (launch?.state === "unknown") return { state: "unknown", why: `its launcher in terminal ${launch.record.handle} cannot be read`, handle: launch.record.handle };
+    return { state: "gone" };
+  };
   // Reconnect-only (#206) and fresh sessions (#215) need a target hub that reads recovery-waivers.json.
   const waiversSupported = async (root: string) => {
     const probe = await run([process.execPath, "-e", `import { readRecoveryWaivers } from ${JSON.stringify(join(root, "src/hub/restart.ts"))}; console.log(typeof readRecoveryWaivers)`]);
@@ -349,13 +367,13 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         const transcript = binding.peer === "codex" ? codexTranscript(binding) : "found";
         if (transcript === "unknown") throw new Error(`${unresumable(binding)}; no terminal was closed; next action: make that store readable, then ${recoveryCommand(op, "resume")}`);
         if (transcript === "missing" && !planned.freshStart?.includes("codex")) {
-          throw new Error(`${unresumable(binding)}; no terminal was closed. To continue without its conversation, end that Codex session and close its Orca terminal ${binding.handle}, then resume: it stops at restoring codex, where --fresh-session codex becomes a choice. Stop-and-archive releases the source hold (sessions this operation has not closed stay open; those it closed stay closed). Next actions: ${nextActions(op).join(" | ")}`);
+          throw new Error(`${unresumable(binding)}; no terminal was closed. To continue without its conversation, end that Codex session and close its Orca terminal ${binding.handle}, then resume: it stops at restoring codex, where ${targetReadsWaivers(op) ? "--fresh-session codex becomes a choice" : `only stop-and-archive remains (target ${op.plan.version} cannot read recovery waivers, so it could not release a new session)`}. Stop-and-archive releases the source hold (sessions this operation has not closed stay open; those it closed stay closed). Next actions: ${nextActions(op).join(" | ")}`);
         }
         const idle = await waitForIdle(binding, 600_000, terminalOptions(run));
-        if (!idle.satisfied) throw new Error(`${binding.peer}: terminal is not verified idle; source retained`);
+        if (!idle.satisfied) throw new Error(`${binding.peer}: terminal is not verified idle; source retained; finish or cancel its turn, then: ${nextActions(op).join(" | ")}`);
         const source = await inspectRecovery(planned.project);
         if (source.instanceId !== planned.source.instanceId || source.recovery?.operationId !== op.id || !source.recovery.ready) {
-          throw new Error("source preparation expired or changed while waiting for the terminal; no terminal was closed");
+          throw new Error(`source preparation expired or changed while waiting for the terminal; no terminal was closed; next actions: ${nextActions(op).join(" | ")}`);
         }        // Refresh the same prepared lease immediately before the terminal effect. Preserve
         // the original peer roster, including any terminal already closed in this operation.
         await control(planned.project, "prepare", op.id, planned.source.instanceId!);
@@ -400,18 +418,18 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         let read: ReturnType<typeof codexTranscript> | undefined;
         const transcript = () => original.peer !== "codex" || chosen ? "found" : (read ??= codexTranscript(original));
         const fresh = () => chosen || (!!planned.freshStart?.includes(original.peer) && transcript() === "missing");
-        // What runs for this peer on the target: an attached session, and the recorded launcher with its state.
-        const attachedSession = (inspection: Inspection) => {
-          const peer = inspection.peers.find((p) => p.id === original.peer && p.state !== "offline");
-          return original.peer === "codex" ? peer?.threadId : peer?.sessionId;
-        };
-        const launcher = () => launcherOf(original.peer, planned.project.root, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId });
         const resume = recoveryCommand(op, "resume");
         // The choices come from the same list as `status` (nextActions); resume comes first and launches a failed peer
         // again, which helps once its cause (a transient Orca create failure, a fixed store) is gone.
         const notRestored = (why: string) => new Error(fresh()
           ? `${original.peer}: ${why}; read that terminal in Orca for the launcher's error and fix its cause; next actions: ${nextActions(op).join(" | ")}`
           : `${original.peer}: ${why}; session ${original.sessionId} was not restored; resume launches it again once the cause is fixed; next actions: ${nextActions(op).join(" | ")}`);
+        // Anything live or unknown blocks a create and keeps the receipt: never decide on evidence that could not be read.
+        const blocked = (evidence: Exclude<Awaited<ReturnType<typeof peerEvidence>>, { state: "gone" }>) => new Error(evidence.state === "unknown"
+          ? `${original.peer}: whether a ${original.peer} session or launcher is live cannot be told (${evidence.why}); nothing was recorded or created; next action: ${evidence.handle ? `wait until it attaches, or end it and close terminal ${evidence.handle}, then ` : "once the target answers, "}${resume}`
+          : evidence.session
+            ? `${original.peer}: session ${evidence.session} is attached instead of ${original.sessionId}; no terminal was created; next action: end that ${original.peer} session and close its terminal, then ${resume}`
+            : `${original.peer}: its launcher in terminal ${evidence.handle} is running but no ${original.peer} session attached yet; no terminal was created; next action: wait until it attaches, or end it and close terminal ${evidence.handle}, then ${resume}`);
         const receipt = progress.terminals[key];
         if (receipt && receipt !== "pending" && receipt !== "failed") {
           progress.terminals[key] = await revalidateTerminal(planned, progress, receipt as TerminalBinding, true); save();
@@ -419,8 +437,9 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         }
         // #215: a pending or failed receipt is settled by what is live now (the receipt table in the recovery spec).
         if (receipt === "pending" || receipt === "failed") {
-          const attached = attachedSession(await inspectRecovery(planned.project));
-          if (attached) {
+          const evidence = await peerEvidence(planned, progress, original.peer);
+          if (evidence.state === "live" && evidence.session) {
+            const attached = evidence.session;
             // #21: a Claude session that never got a first turn has no transcript, so `claude --resume S` can never
             // succeed and accepting its fresh attach loses nothing. Otherwise only the planned id, or a new session
             // the operator or the plan accepted, counts as restored.
@@ -438,10 +457,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
             progress.terminals[key] = await revalidateTerminal(planned, progress, { ...original, sessionId: attached }, false); save();
             continue;
           }
-          const recorded = await launcher();
-          if (recorded && recorded.state !== "gone") {
-            throw new Error(`${original.peer}: its launcher in terminal ${recorded.record.handle} ${recorded.state === "live" ? "is running" : "cannot be read"} but no ${original.peer} session attached yet; next action: wait until it attaches, or end it and close terminal ${recorded.record.handle}, then ${resume}`);
-          }
+          if (evidence.state !== "gone") throw blocked(evidence);
           if (receipt === "pending") {
             progress.terminals[key] = "failed"; save();
             throw notRestored(`its launcher no longer runs and no ${original.peer} session attached`);
@@ -454,11 +470,14 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           progress.terminals[key] = "failed"; save();
           throw notRestored(unresumable(original).slice("codex: ".length));
         }
-        // Never create beside a live launch.
-        const running = await launcher();
-        if (attachedSession(await inspectRecovery(planned.project)) || (running && running.state !== "gone")) { // read now, not at restore start
-          throw new Error(`${original.peer}: a ${original.peer} session or launcher is live on the target${running ? ` (terminal ${running.record.handle})` : ""}; no terminal was created; next action: wait until it attaches, or end it and close its terminal, then ${resume}`);
+        // Never create beside a live launch, nor on evidence that could not be read: read now, not at restore start.
+        // The planned session already attached is the restoration (the table's row for it), not a reason to block.
+        const evidence = await peerEvidence(planned, progress, original.peer);
+        if (evidence.state === "live" && evidence.session === original.sessionId) {
+          progress.terminals[key] = await revalidateTerminal(planned, progress, original, false); save();
+          continue;
         }
+        if (evidence.state !== "gone") throw blocked(evidence);
         if (fresh()) {
           if (!(await waiversSupported(op.targetRoot!))) throw new Error(`${original.peer}: target ${op.plan.version} predates recovery waivers, so it cannot accept a new session; next action: ${recoveryCommand(op, "dispose", "--stop-and-archive --reason <text>")}`);
           // The restored daemon must accept the new session instead of the recorded one.

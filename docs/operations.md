@@ -1162,8 +1162,11 @@ next actions").
   must end, every other one must keep its conversation. With nothing closed yet,
   `abort` cancels the operation (also once its hold has lapsed, or when another
   daemon or operation holds the source, which it leaves alone) so a new plan
-  can be made; it refuses while a source may have committed, and once any
-  project has effects the way out is stop-and-archive.
+  can be made, also after a source crashed before any commit was requested; it
+  refuses once a commit request may have been sent (or, for an operation from
+  an older coordinator, which records no such thing, while a prepared source is
+  not running), and once any project has effects the way out is
+  stop-and-archive. `next` offers abort only where abort would succeed.
   A second `resume` while its own hold still stands checks the peers again
   before it closes anything.
 - A Codex conversation comes back only when a rollout file naming its thread
@@ -1195,7 +1198,10 @@ next actions").
   A `failed` receipt never counts as restored.
   `resume` settles a `pending` or `failed` receipt by what is live: the planned
   session attached is the restoration, a launcher still running is waited for,
-  and no second terminal is opened while one may run.
+  and no second terminal is opened while one may run. A target hub that cannot
+  be read counts as unknown, never as "nothing attached": `resume` then stops
+  without changing any receipt. A lifecycle command refused by the lock names
+  the operation's own `status` and `resume` commands.
 - `ahub recovery dispose <operation-id> --fresh-session <peer> --reason <text>`
   applies to a Codex or Claude peer whose restoration failed (Pi is refused: a
   restored hub resumes Pi's recorded session). It records the lost session or

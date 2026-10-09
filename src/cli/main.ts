@@ -22,9 +22,9 @@ import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
 import { freeText } from "./free-text.ts";
 import { createInterface } from "node:readline/promises";
-import { assertLifecycleAvailable, readOperation, recoveryLock, recoveryRunner } from "../hub/recovery-store.ts";
+import { activeOperation, assertLifecycleAvailable, readOperation, recoveryLock, recoveryRunner } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
-import { abortRecovery, createOperation, disposeRecovery, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
+import { abortRecovery, createOperation, disposeRecovery, hasEffects, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
 import { makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { recordTerminalLaunch } from "./terminal-recovery.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
@@ -119,7 +119,7 @@ const hubManifest = () => !!readControl(stateDir) || existsSync(join(stateDir, "
  *  AGENTHUB_RECOVERY_OPERATION says (assertLifecycleAvailable lets that operation's own processes through). */
 function resetLockFree(): void {
   const owner = recoveryLock();
-  if (owner) throw new Error(`recovery operation ${owner} is active; use ahub recovery status|resume ${owner}; nothing was changed`);
+  if (owner) throw new Error(`${activeOperation(owner)}; nothing was changed`);
 }
 /** A manifest whose daemon is alive or uncertain, by inspectProject's rule; a crashed daemon's leftovers do not count. */
 function liveManifest(): boolean {
@@ -372,7 +372,13 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (!id || !["status", "resume", "abort", "dispose"].includes(action ?? "") || (action !== "dispose" && rest.length)) fail(usage);
     const operation = readOperation<RecoveryOperation>(id);
     const runner = recoveryRunner(id);
-    if (action === "status") console.log(JSON.stringify(publicOperation(operation, runner), null, 2));
+    if (action === "status") {
+      // #215: abort is offered by abort's own predicate, which needs the sources' live state when it could apply.
+      const quiet = !runner && !operation.disposition && !hasEffects(operation) && !["completed", "cancelled"].includes(operation.phase);
+      const driver = makeRecoveryDriver();
+      const live = quiet ? Object.fromEntries(await Promise.all(operation.plan.projects.map(async (p) => [p.project.id, await driver.inspect(p.project).catch(() => undefined)] as const))) : {};
+      console.log(JSON.stringify(publicOperation(operation, runner, live), null, 2));
+    }
     else if (action === "abort") { await abortRecovery(id, makeRecoveryDriver()); console.log("preflight cancelled; no committed transition was rolled back"); }
     else if (action === "dispose") {
       // #215: human-only (the identity gate refuses agent shells); the reason is kept in the operation's audit.
