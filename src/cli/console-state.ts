@@ -261,8 +261,10 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
           span(b?.windows?.map((w: any) => `${w.id}:${Math.round(w.used * 100)}% reset:${w.resetsAt ?? "?"}`).join(" ") ?? "quota:?"), span(` model:${row.servedBy ?? row.requestedModel ?? "?"}`));
       } else if (s.panel === 2) line.push(span(`${row.id} ${row.peer}`, "attention"), span(` ${Math.max(0, Math.ceil((row.expiresAt - now) / 1000))}s`, "muted"), span(` ${row.title}`));
       else if (s.panel === 3) {
-        const at = row.history?.at(-1)?.at ?? row.updated ?? row.created;
-        line.push(span(`#${row.id}`, selected ? "strong" : "info"), span(" "), span(row.state, stateTone(row.state)), span(row.ready ? " ready" : "", "attention"),
+        const last = row.history?.at(-1);
+        const at = last?.at ?? row.updated ?? row.created;
+        const tone = last?.event === "check failed" || last?.event === "failed" ? "failure" : stateTone(row.state);
+        line.push(span(`#${row.id}`, selected ? "strong" : "info"), span(" "), span(row.state, tone), span(row.ready ? " ready" : "", "attention"),
           span(` ${row.owner ?? "-"} review:${row.reviewer ?? "-"} ${row.class} `), span(`age:${at ? Math.max(0, Math.floor((now - at) / 1000)) + "s" : "?"}`, "muted"), span(` ${row.title}`));
       } else if (s.panel === 4) line.push(span(row.id, selected ? "strong" : "info"), span(` ${row.peer} `), span(row.state, stateTone(row.state)), span(` rev:${row.revision} `), span(`age:${row.createdAt ? Math.max(0, Math.floor((now - row.createdAt) / 1000)) + "s" : "?"}`, "muted"));
       else { const [header, ...body] = String(row.text).split("\n"); line.push(span(header, row.tone)); if (body.length) line.push(span("\n" + body.join("\n"))); }

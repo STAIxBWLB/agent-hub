@@ -153,6 +153,9 @@ describe("console colors", () => {
     expect(eventTone({ t: "envelope", env, dropped: "hop" })).toBe("failure");
     expect(eventTone({ t: "overflow", env, peer: "pi" })).toBe("failure");
     expect(eventTone({ t: "undeliverable", env, peer: "pi" })).toBe("failure");
+    const s = state(true); s.panel = 3;
+    s.tasks = [{ id: 1, state: "in_progress", title: "retry the failed check", class: "implement", history: [{ event: "check failed", at: NOW }] }];
+    expect(renderConsoleLines(s, 80, 24, NOW)[2]!.some(span => span.text === "in_progress" && span.tone === "failure")).toBe(true);
   });
   for (const [columns, rows] of [[80, 24], [120, 40], [200, 60]]) {
     test(`painted and plain geometry match ${columns}x${rows} including long Korean text`, () => {
