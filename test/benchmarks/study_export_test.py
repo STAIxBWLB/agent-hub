@@ -442,6 +442,8 @@ class StudyExportTests(unittest.TestCase):
             root = self.study(Path(d))
             for artifact, change, reason in mutations:
                 with self.subTest(artifact=artifact, reason=reason):
+                    baseline = audit.terminal_coverage(root)
+                    self.assertTrue(baseline["available"], baseline)
                     path = root / artifact
                     original = path.read_bytes()
                     try:

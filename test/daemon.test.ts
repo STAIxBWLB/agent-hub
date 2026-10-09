@@ -583,7 +583,7 @@ test("the channel server exits when its host goes away and does not retry a hub 
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   let hellos = 0;
   const fake = Bun.serve({
-    port: 0,
+    hostname: "127.0.0.1", port: 0,
     fetch: (req, srv) => (srv.upgrade(req) ? undefined : new Response("no", { status: 400 })),
     websocket: { message: (ws) => (hellos++, ws.close(4426, "wire version mismatch")) },
   });
