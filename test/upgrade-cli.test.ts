@@ -203,7 +203,7 @@ test("resume refuses an operation whose stop-and-archive is partway", async () =
     const p = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", root, "recovery", "resume", id], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
     const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
     expect({ code, out }).toEqual({ code: 1, out: "" });
-    expect(err).toContain("a stop-and-archive of this operation is partway; nothing was resumed; next action: rerun");
+    expect(err).toContain("a stop-and-archive of this operation is partway; nothing was resumed; next actions: rerun");
     expect(err).toContain("recovery dispose 00000000-0000-4000-8000-000000000217 --stop-and-archive --reason <text>");
   } finally { rmSync(temp, { recursive: true, force: true }); }
 });

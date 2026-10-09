@@ -511,7 +511,7 @@ test("a changed roster after an expired hold with no effects names abort, and ab
   writeOperation(f.operation.id, f.operation, f.home);
   f.states.get("alpha")!.peers = [{ id: "codex", state: "idle", threadId: "t1" }, { id: "kimi", state: "idle" }];
   const blocked = await runRecovery(f.operation.id, f.driver, f.home);
-  expect(blocked.error).toBe(`source conversation or active peer membership changed; next action: ${C} abort ${f.operation.id}, then make a new plan`);
+  expect(blocked.error).toBe(`alpha: source conversation or active peer membership changed; a new plan can be made once this operation is cancelled or ended; next actions: ${C} resume ${f.operation.id} | ${C} abort ${f.operation.id} | ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
   expect(publicOperation(blocked, undefined, { alpha: f.states.get("alpha")!, beta: f.states.get("beta")! }).next).toContain(`${C} abort ${f.operation.id}`);
   delete f.states.get("alpha")!.recovery; // the re-prepared hold lapses again before the operator acts
   await abortRecovery(f.operation.id, f.driver, f.home);
@@ -524,7 +524,7 @@ test("a session that joined after the plan, with effects recorded, is to be ende
   const f = expiredLease();
   f.states.get("alpha")!.peers.push({ id: "kimi", state: "idle" });
   const result = await runRecovery(f.operation.id, f.driver, f.home);
-  expect(result.error).toContain(`kimi changed while this operation has recorded effects, so a new plan cannot replace it; next action: end that kimi session, then ${C} resume`);
+  expect(result.error).toContain(`kimi changed while this operation has recorded effects, so a new plan cannot replace it; end that kimi session before resuming; next actions: ${C} resume`);
 });
 
 test("staging refuses a target that cannot read recovery waivers when a reconnect-only session is planned", async () => {
@@ -568,7 +568,7 @@ test("a roster change in an untouched project names stop-and-archive, not abort,
   writeOperation(f.operation.id, f.operation, f.home);
   f.states.get("beta")!.peers = [{ id: "codex", state: "idle", threadId: "t2" }];
   const result = await runRecovery(f.operation.id, f.driver, f.home);
-  expect(result.error).toContain(`beta: codex changed while this operation has recorded effects, so a new plan cannot replace it; next action: restore codex's original session, then ${C} resume ${f.operation.id}; or ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
+  expect(result.error).toContain(`beta: codex changed while this operation has recorded effects, so a new plan cannot replace it; restore codex's original session before resuming; next actions: ${C} resume ${f.operation.id} | ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
   expect(result.error).not.toContain(" abort ");
   expect(publicOperation(result).next).not.toContain(`${C} abort ${f.operation.id}`);
 });
@@ -644,7 +644,8 @@ test("an operation from a coordinator without dispose is driven by the running r
   f.operation.sourceRoot = "/releases/source-older";
   for (const action of ["status", "resume", "abort"] as const) expect(recoveryCommand(f.operation, action)).toBe(`${C} ${action} ${f.operation.id}`);
   expect(recoveryCommand(f.operation, "dispose", "--stop-and-archive --reason <text>")).toBe(`${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
-  expect(nextActions(f.operation)[0]).toBe(`${C} resume ${f.operation.id} (runs the coordinator that started this operation, which cannot re-prepare an expired hold: if it reports "source is no longer prepared", use abort or stop-and-archive)`);
+  // This operation has effects, so its note names only what abort's predicate allows: stop-and-archive.
+  expect(nextActions(f.operation)[0]).toBe(`${C} resume ${f.operation.id} (runs the coordinator that started this operation, which cannot re-prepare an expired hold: if it reports "source is no longer prepared", use stop-and-archive)`);
   // The abort named is this release's, which cancels a prepared source whose hold lapsed.
   const lapsed = fixture();
   lapsed.operation.sourceRoot = "/releases/source-older";
@@ -709,10 +710,10 @@ test("a sent commit stays on record across a failing resume, so abort is never o
 test("a changed untouched source names abort, and stop-and-archive once another project has effects", async () => {
   const f = fixture();
   f.states.get("alpha")!.instanceId = "replacement";
-  expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toBe(`alpha: source runtime changed; next action: ${C} abort ${f.operation.id}, then make a new plan`);
+  expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toBe(`alpha: source runtime changed; next actions: ${C} resume ${f.operation.id} | ${C} abort ${f.operation.id} | ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
   f.operation.projects[1]!.phase = "verified";
   writeOperation(f.operation.id, f.operation, f.home);
-  expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toBe(`alpha: source runtime changed; next action: ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
+  expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toBe(`alpha: source runtime changed; next actions: ${C} resume ${f.operation.id} | ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
 });
 
 // #215 review: a planned fresh start has nothing to lose; a fresh-session choice would record a loss that is not one.
@@ -733,7 +734,7 @@ test("stop-and-archive says when another operation holds a source, and lock refu
   expect(op.disposition?.projects.alpha).toBe("source left running (held by another operation, 11111111-1111-1111-1111-111111111111)");
 
   const g = fixture();
-  expect(activeOperation(g.operation.id, g.home)).toBe(`recovery operation ${g.operation.id} is active; use ${C} status ${g.operation.id} or ${C} resume ${g.operation.id}`);
+  expect(activeOperation(g.operation.id, g.home)).toBe(`recovery operation ${g.operation.id} is active; ${C} status ${g.operation.id} lists what to do next`);
 });
 
 // #215 review: a #215 coordinator records a commit request first, so a prepared source found stopped without one crashed
@@ -759,4 +760,35 @@ test("a stopped prepared source with no commit request stays prepared and names 
   expect(withEffects.projects[0]!.phase).toBe("prepared");
   expect(withEffects.error).toContain(`${C} dispose ${g.operation.id} --stop-and-archive --reason <text>`);
   expect(withEffects.error).not.toContain(" abort ");
+});
+
+// #215 review: every error takes its choices from nextActions. Two projects: alpha may have committed (commitSent, no
+// effects yet), beta's source was replaced. Abort would refuse because of alpha, so beta's error must not offer it.
+test("an error lists only the choices abort's predicate allows, the same as status", async () => {
+  const f = fixture();
+  Object.assign(f.operation.projects[0]!, { phase: "prepared", commitSent: true });
+  writeOperation(f.operation.id, f.operation, f.home);
+  f.states.get("alpha")!.recovery = { operationId: f.operation.id, phase: "prepared", ready: true };
+  f.states.get("beta")!.instanceId = "replacement";
+  const result = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(result.error).toStartWith("beta: source runtime changed; next actions: ");
+  expect(result.error).not.toContain(`${C} abort`);
+  await expect(abortRecovery(f.operation.id, f.driver, f.home)).rejects.toThrow("alpha: its commit request may have been sent");
+  const status = publicOperation(result, undefined, { alpha: f.states.get("alpha")!, beta: f.states.get("beta")! }).next
+    .map((line) => line.replace(" (after the next action in error)", ""));
+  expect(result.error).toEndWith(`next actions: ${status.join(" | ")}`);
+});
+
+test("--fresh-session is decided per project: a planned fresh start elsewhere does not refuse it", async () => {
+  const f = failedRestore();
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: {} };
+  f.plan.projects[0]!.freshStart = ["codex"]; // alpha: nothing to lose
+  f.plan.projects[1]!.terminals = [{ peer: "codex", handle: "term-beta", incarnationId: "inc-b", worktreeId: "wt", projectRoot: "/beta", sessionId: "t-beta", launch, launchMetadata: launch }];
+  const { fingerprint: _ignored, ...body } = f.plan;
+  f.plan.fingerprint = planFingerprint(body);
+  Object.assign(f.operation.projects[1]!, { phase: "started", instanceId: "new-beta", terminals: { "closed:codex": true, "restored:codex": "failed" } });
+  writeOperation(f.operation.id, f.operation, f.home);
+  const op = await disposeRecovery(f.operation.id, { fresh: "codex" }, "beta's thread is gone", f.driver, f.home);
+  expect(op.projects[0]!.fresh).toBeUndefined();
+  expect(op.projects[1]!.fresh?.codex).toMatchObject({ lost: "t-beta" });
 });

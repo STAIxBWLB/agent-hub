@@ -320,12 +320,13 @@ test("a restoration launcher that exits is recognized by its own record within o
   // What `ahub codex` writes in the new terminal before it execs codex.
   const record = (launcherPid: number) => writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify([{ peer: "codex", projectRoot: root, stateDir, instanceId: "i-target", launcherPid,
     launcherSignature: "launcher-start", launchId: "launch-new", handle: "term-new", incarnationId: "inc-new", worktreeId, env: {} }]));
-  type Scenario = { identity?: string; gone?: boolean; listed?: boolean; truncated?: boolean; idleAfter?: number; state?: string };
+  type Scenario = { identity?: string; gone?: boolean; staleOnStderr?: boolean; listed?: boolean; truncated?: boolean; idleAfter?: number; state?: string };
   const scenario = (opts: Scenario) => {
     let idleWaits = 0;
     const commands = fake((argv) => {
       if (argv[1] === "create") return { result: { terminal: { handle: "term-new", incarnationId: "inc-new", worktreeId } } };
-      if (argv[1] === "show") return opts.gone ? { status: 1, stdout: JSON.stringify({ ok: false, error: { code: "terminal_handle_stale" } }) } : { result: { terminal: replacement } };
+      if (argv[1] === "show") return opts.staleOnStderr ? { status: 1, stderr: JSON.stringify({ ok: false, error: { code: "terminal_handle_stale" } }) }
+        : opts.gone ? { status: 1, stdout: JSON.stringify({ ok: false, error: { code: "terminal_handle_stale" } }) } : { result: { terminal: replacement } };
       if (argv[1] === "list") return { result: { terminals: opts.listed ? [terminal({ handle: "term-renamed", incarnationId: "inc-new" })] : [], ...(opts.truncated ? { truncated: true } : {}) } };
       if (argv[1] === "wait") return idleWaits++ < (opts.idleAfter ?? Infinity) ? waitTimedOut : { result: { wait: { satisfied: true } } };
       throw new Error("unexpected command");
@@ -355,6 +356,8 @@ test("a restoration launcher that exits is recognized by its own record within o
     const gone = await createTerminal(binding, scenario({ gone: true, state: emptyState }).options);
     expect(gone.blockers[0]).toMatchObject({ code: "launcher-exited", message: expect.stringContaining("lost its terminal") });
     expect((await createTerminal(binding, scenario({ gone: true, listed: true, state: emptyState }).options)).blockers[0]?.code).toBe("terminal-gone");
+    // The stale answer counts on stderr too.
+    expect((await createTerminal(binding, scenario({ staleOnStderr: true, state: emptyState }).options)).blockers[0]?.message).toContain("lost its terminal");
     // A truncated inventory cannot show the terminal is no longer listed.
     expect((await createTerminal(binding, scenario({ gone: true, truncated: true, state: emptyState }).options)).blockers[0]?.code).toBe("terminal-gone");
     // An unreadable launcher record says nothing: never "exited".
@@ -410,4 +413,18 @@ test("a launch is not recorded over an unreadable record file", async () => {
     }
     rmSync(stateDir, { recursive: true, force: true });
   }
+});
+
+// #215 review: without readable launch records a terminal would be bound from Orca metadata alone (no captured
+// CODEX_HOME), so planning and revalidation block instead.
+test("an unreadable record file blocks binding a terminal", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-inspect-unreadable-"));
+  try {
+    writeFileSync(join(stateDir, "terminal-recovery.json"), "not json");
+    const { calls, runner } = fake(() => ({ result: { terminals: [terminal()] } }));
+    const inspected = await inspectTerminals(root, { codex: session }, { runner, stateDir, instanceId: "i" });
+    expect(inspected).toMatchObject({ manualRequired: true, bindings: [] });
+    expect(inspected.blockers[0]?.message).toContain("cannot be read, so no terminal can be bound to its launch");
+    expect(calls).toEqual([]);
+  } finally { rmSync(stateDir, { recursive: true, force: true }); }
 });

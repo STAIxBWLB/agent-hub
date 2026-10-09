@@ -86,7 +86,8 @@ export function coordinatorCurrent(sourceRoot: string): boolean {
 export function activeOperation(owner: string, home = hubHome()): string {
   let op: { id: string; sourceRoot?: string } = { id: owner };
   try { op = { id: owner, sourceRoot: readOperation<{ sourceRoot?: string }>(owner, home).sourceRoot }; } catch { /* no readable receipt: the bare commands are all there is */ }
-  return `recovery operation ${owner} is active; use ${recoveryCommand(op, "status")} or ${recoveryCommand(op, "resume")}`;
+  // The choices depend on the operation's state (a partway stop-and-archive refuses resume): status lists them.
+  return `recovery operation ${owner} is active; ${recoveryCommand(op, "status")} lists what to do next`;
 }
 
 /**

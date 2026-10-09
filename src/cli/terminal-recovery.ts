@@ -181,6 +181,13 @@ function errorText(result: CommandResult): string {
   return stderr || `exit status ${commandStatus(result)}`;
 }
 
+/** Orca's structured error code, from the JSON it prints on stdout or stderr. */
+function errorCode(result: CommandResult): unknown {
+  const fromStdout = object(object(decoded(result)).error).code;
+  if (fromStdout !== undefined) return fromStdout;
+  try { return object(object(JSON.parse(bytes(result.stderr))).error).code; } catch { return undefined; }
+}
+
 function runnerFailure(argv: readonly string[], result: CommandResult): RecoveryBlocker {
   return { code: "command-error", message: `Orca ${argv.slice(0, 2).join(" ")} failed: ${errorText(result)}` };
 }
@@ -189,7 +196,10 @@ async function run(runner: CommandRunner, argv: readonly string[]): Promise<unkn
   const result = await runner(argv);
   if (commandStatus(result) !== 0) {
     // Orca 1.4.223 answers a handle whose terminal was removed with `{"ok":false,"error":{"code":"terminal_handle_stale"}}`.
-    if (object(object(decoded(result)).error).code === "terminal_handle_stale") throw new OrcaCommandError({ code: "terminal-gone", message: `Orca terminal ${argv[argv.indexOf("--terminal") + 1] ?? ""} no longer exists` });
+    if (errorCode(result) === "terminal_handle_stale") {
+      const handle = argv.includes("--terminal") ? argv[argv.indexOf("--terminal") + 1] : undefined;
+      throw new OrcaCommandError({ code: "terminal-gone", message: `the Orca terminal${handle ? ` ${handle}` : ""} no longer exists` });
+    }
     throw new OrcaCommandError(runnerFailure(argv, result));
   }
   const value = decoded(result);
@@ -262,10 +272,6 @@ function recordPath(stateDir: string): string {
   return join(stateDir, RECORD_FILE);
 }
 
-function readLaunchRecords(stateDir: string): RecordedTerminalLaunch[] {
-  const rows = launchRecords(stateDir);
-  return rows === "unreadable" ? [] : rows;
-}
 /** #215: "unreadable" (a corrupt or unreadable file) says nothing about launchers, so it must never read as "none". */
 function launchRecords(stateDir: string): RecordedTerminalLaunch[] | "unreadable" {
   if (!stateDir || !existsSync(recordPath(stateDir))) return [];
@@ -303,9 +309,9 @@ async function launcherState(row: RecordedTerminalLaunch, identity: ProcessIdent
   return "unknown";
 }
 
-async function liveRecords(stateDir: string, projectRoot: string, instanceId: string, identity: ProcessIdentity): Promise<RecordedTerminalLaunch[]> {
-  if (!stateDir || !instanceId) return [];
-  const candidates = readLaunchRecords(stateDir).filter((item) => item.projectRoot === projectRoot && item.instanceId === instanceId);
+async function liveRecords(rows: RecordedTerminalLaunch[], projectRoot: string, instanceId: string, identity: ProcessIdentity): Promise<RecordedTerminalLaunch[]> {
+  if (!instanceId) return [];
+  const candidates = rows.filter((item) => item.projectRoot === projectRoot && item.instanceId === instanceId);
   const checks = await Promise.all(candidates.map(async (item) => await launcherMatches(item, identity) ? item : undefined));
   return checks.filter((item): item is RecordedTerminalLaunch => item !== undefined);
 }
@@ -470,12 +476,16 @@ async function showBinding(binding: TerminalBinding, options: Required<TerminalR
  */
 export async function inspectTerminals(projectRoot: string, sessions: Partial<Record<TerminalPeer, string | SessionRef>>, options?: CommandRunner | TerminalRecoveryOptions): Promise<TerminalInspection> {
   const config = normalizeOptions(options);
-  const records = await liveRecords(config.stateDir, projectRoot, config.instanceId, config.processIdentity);
   const blockers: RecoveryBlocker[] = [];
   const bindings: TerminalBinding[] = [];
   const byPeer: Partial<Record<TerminalPeer, TerminalBinding>> = {};
   const requested = (Object.entries(sessions) as [TerminalPeer, string | SessionRef | undefined][]).map(([peer, value]) => [peer, typeof value === "string" ? { sessionId: value } : value] as const).filter((entry): entry is [TerminalPeer, SessionRef] => !!entry[1]?.sessionId);
   if (!requested.length) return { bindings, byPeer, blockers, manualRequired: false };
+  // #215: without the records a terminal could be bound from Orca metadata alone, losing the launch's captured
+  // CODEX_HOME or CLAUDE_CONFIG_DIR: an unreadable file blocks the binding, never reads as "no records".
+  const rows = launchRecords(config.stateDir);
+  if (rows === "unreadable") return { bindings, byPeer, blockers: [blocker("command-error", `${recordPath(config.stateDir)} cannot be read, so no terminal can be bound to its launch; inspect or move it aside, then plan or resume again`)], manualRequired: true };
+  const records = await liveRecords(rows, projectRoot, config.instanceId, config.processIdentity);
 
   let listed: Record<string, unknown>[];
   try {
@@ -548,8 +558,7 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
 async function waitSatisfied(runner: CommandRunner, handle: string, timeoutMs: number): Promise<boolean> {
   const argv = ["terminal", "wait", "--terminal", handle, "--for", "tui-idle", "--timeout-ms", String(timeoutMs), "--json"];
   const result = await runner(argv);
-  const timedOut = (text: string | Uint8Array | undefined) => { try { return object(object(JSON.parse(bytes(text))).error).code === "timeout"; } catch { return false; } };
-  if (commandStatus(result) !== 0 && (object(object(decoded(result)).error).code === "timeout" || timedOut(result.stderr))) return false;
+  if (commandStatus(result) !== 0 && errorCode(result) === "timeout") return false;
   const root = responseResult(await run(async () => result, argv));
   return root.satisfied === true || object(root.wait).satisfied === true;
 }
@@ -625,8 +634,9 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
     let replacement: TerminalBinding = { ...binding, handle: createdHandle, incarnationId: nestedString(created, ["incarnationId"])!, worktreeId, launch: binding.launch, launchMetadata: binding.launch };
     // The launch record `ahub <peer>` writes in the new terminal: live, gone (all recorded launchers), or neither.
     const launches = async () => {
-      if (launchRecords(config.stateDir) === "unreadable") return { live: undefined, gone: false, mayRun: true }; // unknown, never gone
-      const possible = readLaunchRecords(config.stateDir).filter((item) => item.instanceId === config.instanceId && item.peer === binding.peer && item.projectRoot === binding.projectRoot && item.handle === createdHandle && item.worktreeId === replacement.worktreeId && item.incarnationId === replacement.incarnationId);
+      const rows = launchRecords(config.stateDir);
+      if (rows === "unreadable") return { live: undefined, gone: false, mayRun: true }; // unknown, never gone
+      const possible = rows.filter((item) => item.instanceId === config.instanceId && item.peer === binding.peer && item.projectRoot === binding.projectRoot && item.handle === createdHandle && item.worktreeId === replacement.worktreeId && item.incarnationId === replacement.incarnationId);
       const states = await Promise.all(possible.map(async (item) => ({ item, state: await launcherState(item, config.processIdentity) })));
       return { live: states.find((entry) => entry.state === "live")?.item, gone: states.length > 0 && states.every((entry) => entry.state === "gone"), mayRun: states.some((entry) => entry.state !== "gone") };
     };

@@ -306,8 +306,9 @@ the runner (refusing while one is alive) and append to the receipt's audit:
 - `abort` stays the escape for a preflight without effects; its refusal names
   the disposition. It also cancels a prepared project whose source still runs as
   the same instance after its hold lapsed, which was never committed. A roster
-  change found while no effects are recorded names `abort` (this operation's lock
-  refuses a new upgrade until it is cancelled).
+  change found while no effects are recorded offers `abort` exactly when
+  `abortRefusal` allows it (this operation's lock refuses a new upgrade until it
+  is cancelled).
 
 #### Receipts, evidence and next actions
 
@@ -319,9 +320,10 @@ nor accepted when the target cannot read recovery waivers. A runner record that
 cannot be read shows as `unknown` in `status`, never as no runner; `status` and every error that lists choices build them with one function
 (`nextActions`), in this order: resume (which also launches a failed peer
 again), abort where it can succeed, a fresh session for each failed Codex or
-Claude restoration, stop-and-archive. Errors about a changed source name abort
-when nothing was done yet and stop-and-archive otherwise, never "make a new
-plan" alone: this operation's lock refuses a new one. `<c>` is the operation's own coordinator, printed in full as
+Claude restoration, stop-and-archive. An error gives only its own step (the
+last column below) and ends with that list (`next actions: ...`), so it names
+abort exactly when `abortRefusal` allows it, the same as `status`, and never
+"make a new plan" alone: this operation's lock refuses a new one. `<c>` is the operation's own coordinator, printed in full as
 `bun <preserved source>/src/cli/main.js`: during an upgrade the global `ahub`
 may still be the older release, whose `recovery` lacks these commands.
 "Effects" means any project past `prepared` or any terminal receipt in the whole
@@ -353,7 +355,7 @@ An attached session is the target's report of that peer online with a thread
 
 | Receipt | Live evidence | Resume | Other actions | Next action text |
 | --- | --- | --- | --- | --- |
-| project `pending` or `prepared`, no effects | roster changed | blocks | abort | `<c> recovery abort <id>, then make a new plan` |
+| project `pending` or `prepared`, no effects | roster changed | blocks | abort where `abortRefusal` allows it, dispose | `a new plan can be made once this operation is cancelled or ended` |
 | project `prepared`, hold ours | roster as planned | roster checked again, then close and commit | abort if no effects | none (it proceeds) |
 | project `prepared`, hold ours | roster changed, effects | blocks, hold kept | dispose | `end that <peer> session` (joined after the plan, or its terminal was closed) or `restore <peer>'s original session`, `then <c> recovery resume <id>` |
 | project `prepared`, hold lapsed (same source instance) | roster as planned | re-prepare, check roster, close, commit | abort if no effects | none |
