@@ -101,6 +101,10 @@ export interface StaySwitchPolicy { stay_switch: StaySwitchMode; max_switch_pref
 export const DEFAULT_STAY_SWITCH: StaySwitchPolicy = { stay_switch: 'shadow', max_switch_prefill_tokens: 32_000 };
 export type SwitchReason = 'new_pin' | 'compaction' | 'context_fit' | 'same_tier' | 'override' | 'tool_loop' | 'prefill_bound' | 'user_turn';
 export interface SwitchCost { inputTokens: number; maxSwitchPrefillTokens: number; fits: (tier: Tier) => boolean }
+/** Input tokens a backend would prefill for a conversation, 4 characters each; the relay and local routes share it. */
+export function estimateInputTokens(messages: unknown, tools?: unknown[]): number {
+  return Math.ceil(JSON.stringify({ messages, tools }).length / 4);
+}
 export interface SwitchPlan { plan: 'stay' | 'switch'; tier: Tier; reason: SwitchReason }
 /** What a route event records about the planner; never prompt text. */
 export interface SwitchTrace { turnType: TurnKind; prefillTokens: number; staySwitch?: 'shadow' | 'enforce'; plan?: 'stay' | 'switch'; reason?: SwitchReason }

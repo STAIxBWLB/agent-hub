@@ -445,6 +445,8 @@ Per peer and model route, `ahub report` also counts model changes between consec
 decisions, how many of them landed inside tool loops and, with `stay_switch` on, sessions
 and the planner's switches (#197). With `stay_switch = "off"` session boundaries are not
 recorded; `shadow` routes exactly as `off` does, so it is the baseline to compare `enforce` with.
+A route event records the decision, so a load-moved request that its MLX fallback served counts
+as a change to `dgx/fast`; the relay's request journal records which backend served it.
 
 `ahub report` counts the same overlap warnings as `scripts/overlaps.ts`, from the
 structured events instead of log lines. `--by task` uses the task each usage and
@@ -1133,13 +1135,14 @@ cooldowns only change their order, never remove one (#199). `dgx/fast` goes firs
 is cooling down (route event `source: "cooldown"`), when an enforced tool loop is pinned to
 it, or when the MLX slot is still busy after `[pi] efficient_wait_ms` (`source: "load"`;
 default 500, below 120000; 0 tries once; read when the hub first starts Pi, like
-`dgx_max_context_tokens`, so a change takes a hub restart). It does not go first while its
-own last dispatch failed in any way, an error status included, until it succeeds or 30 s
-pass (`ahub status`: `last dispatch failed, no load moves until ...`); a load move also
-waits while less than 180 s of a task's elapsed budget is left, as last admitted. If it
-fails, MLX serves the request with the usual slot wait. Enforced, a load move happens only
-at a user turn. After three consecutive transport or
-startup failures outside a cooldown, a relay alias cools down for 30 s, doubling up to
+`dgx_max_context_tokens`, so a change takes a hub restart). It never goes first while it is
+cooling down, or while its own last dispatch failed in any way, an error status included,
+until it succeeds or 30 s pass (`ahub status`: `last dispatch failed, no load moves until ...`).
+A load move or pin is only an optimization: the moved attempt gets 15 s to its response
+headers and is then abandoned, and it happens only while the task's elapsed budget, as last
+admitted, holds the slot wait, an 8 s gateway probe and those 15 s. If the moved attempt
+fails, MLX serves the request with the usual slot wait. Enforced, a load move happens only at
+a user turn. After three consecutive transport or startup failures outside a cooldown, a relay alias cools down for 30 s, doubling up to
 5 min. A busy MLX slot and timeouts cut short by an execution budget never count; any HTTP
 answer, a success or an error status, proves the transport works and ends the streak and the
 cooldown. `ahub status` shows `cooling down until ...` on the backend

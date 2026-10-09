@@ -3,7 +3,7 @@ import { isIP } from "node:net";
 import type { OmniRoute, ChatMessage } from "../omniroute/client.ts";
 import { ensureMlx, MlxBusyError, type MlxHandle, type MlxOptions, type MlxStatus } from "./mlx.ts";
 import { AutoRouteSelector, type AutoChoice, type RelayRouteEvent } from "./route/relay-selector.ts";
-import type { StaySwitchPolicy } from "./route/stage.ts";
+import { estimateInputTokens, type StaySwitchPolicy } from "./route/stage.ts";
 
 export type ModelBackend = { kind: "mlx"; alias?: string } | { kind: "dgx"; alias: string };
 
@@ -170,6 +170,8 @@ export interface ModelRelayOptions {
   now?: () => number;
   /** How long a dispatch waits for a busy MLX slot before it gives up and falls back (default 120 s); tests shorten it. */
   slotWaitMs?: number;
+  /** A moved attempt's deadline for its response headers (default 15 s); tests shorten it. */
+  moveFirstByteMs?: number;
   allowedDGXmodels: Record<string, string>;
   /** Trusted physical model expectations by backend alias. Gateway identifiers can include a provider
    *  prefix or route name that differs from the model reported by generation. Omission preserves the
@@ -204,8 +206,11 @@ export interface RelayCooldownEvent { alias: string; event: "start" | "end"; fai
 
 // ponytail: fixed policy, 3 failures and 30 s doubling up to 5 min; routing.toml keys if a backend needs other values.
 const COOLDOWN_FAILURES = 3, COOLDOWN_MS = 30_000, COOLDOWN_CAP_MS = 300_000;
-/** The longest one upstream request may take, and so the worst case a load move can cost before MLX gets its turn. */
+/** The longest one upstream request may take. */
 const REQUEST_DEADLINE_MS = 180_000;
+// ponytail: a moved attempt (a load move or an enforced pin, both only optimizations) gets 15 s to its response headers
+// and is then abandoned for MLX; tune it from the #199 AC5 measurement. GATEWAY_PROBE_MS is OmniRoute.base()'s two 4 s rounds.
+const MOVE_FIRST_BYTE_MS = 15_000, GATEWAY_PROBE_MS = 8_000;
 
 /**
  * Per-alias health in the relay (#199). A cooldown follows consecutive transport or startup failures, and any HTTP
@@ -226,12 +231,15 @@ export class BackendCooldowns {
     return undefined;
   }
 
-  /** A transport or startup failure. During a cooldown (a request already in flight, or a cooling alias tried as a fallback) it neither counts nor extends it. */
-  failed(alias: string): void {
+  /**
+   * A failed dispatch. `streak`: a transport or startup failure, which counts toward a cooldown unless one is running (a
+   * request already in flight, or a cooling alias tried as a fallback); otherwise it only marks the alias `failing`.
+   */
+  failed(alias: string, streak = true): void {
     const cooling = this.cooling(alias);
     const entry = this.entry(alias);
     entry.failedAt = this.now();
-    if (cooling) return;
+    if (cooling || !streak) return;
     entry.failures++;
     if (entry.failures < COOLDOWN_FAILURES) return;
     const ms = Math.min(COOLDOWN_CAP_MS, COOLDOWN_MS * 2 ** (entry.failures - COOLDOWN_FAILURES));
@@ -266,8 +274,8 @@ interface RequestJournalEntry {
   identify(model: string, source: "header" | "stream" | "configured"): void;
   usage(value: unknown): void;
   close(outcome: RelayRequestRecord["outcome"]): void;
-  /** The failure says nothing about the backend (the execution budget cut the deadline): no cooldown count. */
-  budgetCut?: boolean;
+  /** The relay's own deadline cut the attempt: the execution budget's, or a moved attempt's first-byte one. No cooldown count. */
+  cut?: "budget" | "move";
 }
 
 interface ActiveRequest {
@@ -302,10 +310,6 @@ export function normalizeRelayUsage(value: unknown): RelayUsageObservation | und
 function assertLoopback(host: string): void {
   const value = host.toLowerCase();
   if (value !== "localhost" && value !== "::1" && !(isIP(value) === 4 && value.startsWith("127."))) throw new Error("model relay host must be loopback");
-}
-
-function estimateInputTokens(messages: ChatMessage[], tools?: unknown[]): number {
-  return Math.ceil(JSON.stringify({ messages, tools }).length / 4);
 }
 
 function bearer(request: Request): string | undefined {
@@ -417,6 +421,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
   const defaultBackend = options.defaultBackend ?? (options.mlx ? { kind: "mlx", alias: mlxAlias } : { kind: "dgx", alias: "dgx/coding" });
   const models = relayModelIds(options);
   const efficientWaitMs = options.efficientWaitMs ?? 500;
+  const moveFirstByteMs = options.moveFirstByteMs ?? MOVE_FIRST_BYTE_MS;
   // ponytail: the elapsed budget left, estimated from the last admission (admitting is the only budget reading and it
   // counts a model call); the first call of a newly budgeted turn can still move. A non-counting budget read is the upgrade.
   let budget: { remainingMs: number; at: number } | undefined;
@@ -501,7 +506,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
   };
 
   /** `slot`: an MLX generation slot the caller already holds; released exactly once by whoever ends the request. */
-  const upstream = async (request: RelayRequest, backend: ModelBackend, signal: AbortSignal, journalEntry: RequestJournalEntry, slot?: () => void): Promise<{ response: Response; release: () => void; onModel?: (model: string) => void }> => {
+  const upstream = async (request: RelayRequest, backend: ModelBackend, signal: AbortSignal, journalEntry: RequestJournalEntry, slot?: () => void, firstByteMs?: number): Promise<{ response: Response; release: () => void; onModel?: (model: string) => void }> => {
     const alias = aliasOf(backend, mlxAlias);
     let base: string;
     let model: string;
@@ -541,6 +546,8 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
     if (key) Object.assign(headers, { authorization: `Bearer ${key}` }, options.omni.accessHeaders(base));
     let response: Response;
     let budgetDeadline: AbortSignal | undefined;
+    const firstByte = firstByteMs === undefined ? undefined : new AbortController();
+    let firstByteTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       const isOllama = backend.kind === "mlx" && options.mlx?.provider === "ollama";
       const boundedRequest = isOllama
@@ -552,14 +559,16 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       const deadline = decision?.remainingMs === undefined ? REQUEST_DEADLINE_MS : Math.max(1, Math.min(REQUEST_DEADLINE_MS, decision.remainingMs));
       const timeout = AbortSignal.timeout(deadline);
       if (deadline < REQUEST_DEADLINE_MS) budgetDeadline = timeout;
-      response = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, { method: "POST", ...(isOllama ? { redirect: "error" as const } : {}), headers, body: JSON.stringify(bodyForUpstream(boundedRequest, model)), signal: AbortSignal.any([signal, timeout]) });
+      if (firstByte) firstByteTimer = setTimeout(() => firstByte.abort(new Error(`moved attempt had no answer within ${firstByteMs} ms`)), firstByteMs);
+      response = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, { method: "POST", ...(isOllama ? { redirect: "error" as const } : {}), headers, body: JSON.stringify(bodyForUpstream(boundedRequest, model)), signal: AbortSignal.any([signal, timeout, ...(firstByte ? [firstByte.signal] : [])]) });
     } catch (error) {
       releaseOnce();
       journalEntry.record.failureClass = "transport";
-      if (budgetDeadline?.aborted) journalEntry.budgetCut = true;
+      if (firstByte?.signal.aborted) journalEntry.cut = "move";
+      else if (budgetDeadline?.aborted) journalEntry.cut = "budget";
       setState(backend, { state: "error", lastError: error instanceof Error ? error.message.slice(0, 160) : "upstream request failed" });
       throw error;
-    }
+    } finally { clearTimeout(firstByteTimer); }
     const provider = safeHeader(response.headers.get("x-omniroute-provider"));
     if (provider) {
       journalEntry.record.provider = provider;
@@ -643,17 +652,21 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       }
       // #199: one ordering step. The candidates are the route's own backend and, for MLX, its DGX fallback, exactly as
       // before; a cooldown, an enforced pin or a busy MLX slot only reorders them, so a move never removes the backend a
-      // request would have been served by. A move goes only to a fallback whose last dispatch did not fail.
+      // request would have been served by. Nothing goes ahead to a fallback that is failing or cooling down.
       const candidates: ModelBackend[] = [own, ...(own.kind === "mlx" && options.fallbackDGXAlias ? [{ kind: "dgx", alias: options.fallbackDGXAlias } as ModelBackend] : [])];
       const second = candidates[1];
-      const swap = (source?: "load" | "cooldown") => { candidates.reverse(); auto?.moved(aliasOf(candidates[0]!, mlxAlias), source); };
+      let moved: "optional" | "cooldown" | undefined;
+      const swap = (source?: "load" | "cooldown") => { candidates.reverse(); moved = source === "cooldown" ? "cooldown" : "optional"; auto?.moved(aliasOf(candidates[0]!, mlxAlias), source); };
+      // A load move or pin is only an optimization: bounded by its first-byte deadline, and only while the elapsed budget,
+      // as last admitted, holds that bound with the slot wait and a gateway probe, so MLX still gets its turn after it.
+      // ponytail: an abandoned move that was admitted spends one model_calls unit and MLX another, as main's fallback does;
+      // the gate cannot see model_calls. A non-counting budget read is the upgrade path.
+      const room = !budget || budget.remainingMs - (Date.now() - budget.at) >= efficientWaitMs + GATEWAY_PROBE_MS + moveFirstByteMs;
       let slot: (() => void) | undefined;
-      if (second && !cooldowns.failing(aliasOf(second, mlxAlias))) {
+      if (second && !cooldowns.failing(aliasOf(second, mlxAlias)) && !cooldowns.cooling(aliasOf(second, mlxAlias))) {
         if (cooldowns.cooling(aliasOf(own, mlxAlias))) swap("cooldown");
-        else if (auto?.prefer === aliasOf(second, mlxAlias)) swap();
-        // A load move must leave the MLX fallback its turn within the elapsed budget: none while less than a whole
-        // request deadline is left, since a moved attempt cut by the budget leaves MLX refused at admission.
-        else if (auto?.movable && mlx && !(budget && budget.remainingMs - (Date.now() - budget.at) < REQUEST_DEADLINE_MS)) {
+        else if (auto?.prefer === aliasOf(second, mlxAlias) && room) swap();
+        else if (auto?.movable && mlx && room) {
           try {
             const held = await mlx.acquire(controller.signal, efficientWaitMs);
             let holding = true;
@@ -666,7 +679,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       emitRoute();
       const dispatchGroupId = randomUUID();
       let primaryDispatchId: string | undefined;
-      const dispatch = async (selected: ModelBackend, body: RelayRequest, slot?: () => void) => {
+      const dispatch = async (selected: ModelBackend, body: RelayRequest, slot?: () => void, firstByteMs?: number) => {
         const journalEntry = openRequestRecord(aliasOf(selected, mlxAlias), dispatchGroupId);
         // The surface is a property of the request as admitted: even a failed dispatch keeps what the
         // native published. A request without a tools array carries no observation, never an empty one.
@@ -682,17 +695,18 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
         record.closeRecord = journalEntry.close;
         let result: Awaited<ReturnType<typeof upstream>>;
         try {
-          result = await upstream(body, selected, controller.signal, journalEntry, slot);
+          result = await upstream(body, selected, controller.signal, journalEntry, slot, firstByteMs);
         } catch (error) {
           slot?.();
           journalEntry.record.failureClass ??= controller.signal.aborted ? "cancelled" : error instanceof ExecutionAdmissionError ? "admission" : "startup";
           const failure = journalEntry.record.failureClass;
           // A busy MLX slot is load, never a failure; neither is a cancelled request, an admission refusal or a budget cut.
-          if (!controller.signal.aborted && !journalEntry.budgetCut && !(error instanceof ExecutionAdmissionError) && !(error instanceof MlxBusyError) && (failure === "transport" || failure === "startup")) {
+          if (!controller.signal.aborted && !journalEntry.cut && !(error instanceof ExecutionAdmissionError) && !(error instanceof MlxBusyError) && (failure === "transport" || failure === "startup")) {
             // A DGX alias can fail before it has a status row (gateway or key unavailable); a cooldown must still show.
             if (!states.has(journalEntry.record.alias)) setState(selected, { state: "error", lastError: error instanceof Error ? error.message.slice(0, 160) : "backend unavailable" });
             cooldowns.failed(journalEntry.record.alias);
-          } else if (failure === "http") cooldowns.answered(journalEntry.record.alias, false);
+          } else if (journalEntry.cut === "move") cooldowns.failed(journalEntry.record.alias, false); // slow, not unreachable
+          else if (failure === "http") cooldowns.answered(journalEntry.record.alias, false);
           throw error;
         }
         cooldowns.answered(journalEntry.record.alias, true);
@@ -711,7 +725,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       let lastError: unknown;
       for (const [i, candidate] of candidates.entries()) {
         try {
-          const { result, release, journalEntry, onUsage } = await dispatch(candidate, i ? { ...body, model: aliasOf(candidate, mlxAlias) } : body, i ? undefined : slot);
+          const { result, release, journalEntry, onUsage } = await dispatch(candidate, i ? { ...body, model: aliasOf(candidate, mlxAlias) } : body, i ? undefined : slot, i === 0 && moved === "optional" ? moveFirstByteMs : undefined);
           return sseResponse(result.response, release, result.onModel, (cancel) => { record.cancel = cancel; }, journalEntry.close, onUsage);
         } catch (error) {
           record.closeRecord?.(controller.signal.aborted ? "cancelled" : "failed");

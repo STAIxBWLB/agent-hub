@@ -5,7 +5,7 @@ import { buildEscalationJudgeRequest, parseEscalationVerdict } from "./escalatio
 import { normalizeConversation } from "./normalize.ts";
 import { extractToolSignals, turnKind } from "./signals.ts";
 import { RouteLabelTracker, type RouteLabelEvent, type RouteTurnContext, type RouteTurnOutcome } from "./labels.ts";
-import { dimensionsFromSignal, selectStage, stayOrSwitch, type StageState, type StaySwitchPolicy, type SwitchTrace, type Tier } from "./stage.ts";
+import { dimensionsFromSignal, estimateInputTokens, selectStage, stayOrSwitch, type StageState, type StaySwitchPolicy, type SwitchTrace, type Tier } from "./stage.ts";
 import { EscalationState, SessionState } from "./state.ts";
 import { parseAdvisorVerdict } from "./text.ts";
 import { planExecutePhase, type PlanExecuteState } from "./plan-execute.ts";
@@ -65,10 +65,11 @@ export class HubRouteRuntime {
     if (config.type === "stage") {
       const decision = selectStage(signals, { confidenceThreshold: config.confidence_threshold, capableHoldTurns: config.hold_turns }, state.stage);
       state.stage = decision.state;
-      // OmniRoute models publish no context limit to the hub, so every tier fits here. A PII conversation's size says
+      // OmniRoute models publish no context limit to the hub, so every tier fits here; the estimate leaves out the tool
+      // schemas the host adds to each call, as the relay counts what Pi sends. A PII conversation's size says
       // something about its text, as a private envelope's does: the planner never sees it (no prefill bound, so no
       // plan or reason can depend on it) and the event leaves it out.
-      const staged = stayOrSwitch(this.host.staySwitch?.(), state.pin, decision, turnKind(conversation), { inputTokens: pii ? 0 : Math.ceil(JSON.stringify(messages).length / 4), fits: () => true });
+      const staged = stayOrSwitch(this.host.staySwitch?.(), state.pin, decision, turnKind(conversation), { inputTokens: pii ? 0 : estimateInputTokens(messages), fits: () => true });
       state.pin = staged.pin;
       const { prefillTokens, ...shape } = staged.trace;
       trace = pii ? shape : staged.trace;
