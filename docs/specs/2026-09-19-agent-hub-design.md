@@ -1387,6 +1387,56 @@ polling or redraw triggers are added. Tail, logs and machine-readable output
 remain unchanged. Native light/dark readability and idle-CPU observations are
 separate smoke evidence, not inferred from fake-terminal tests.
 
+Console layout (issue #213) separates the panel header (the project root's
+directory name, since the registry id is a hash, then the tabs), the body and
+the footer with ASCII `-` rules, and puts one rule above the stream footer; the
+console emits no box-drawing or other ambiguous-width glyph. The active tab is
+bracketed; the Approvals and Queue tabs count pending requests and
+`needs_review` deliveries. Peers, Approvals, Tasks and Queue are tables: a
+header row, columns two spaces apart sized with `Bun.stringWidth` from every
+row (at most a third of the width), the last column taking the rest. Peers' LINK
+column reads `tools-only` when the optional `toolsOnly` status field (#205) is
+present. Zero counters read `-`, durations `45s`, `12m`, `3h05m` or `2d03h`, and
+resets and pauses are relative. Detail views and the Approvals panel's request
+block put labels at column 0 and values one column past the longest label; a
+list puts `- ` before each item, and every other line of a value (its own
+newlines, wrapped continuations) starts two columns deeper, so untrusted text
+passes neither for a label nor for an item. Only a field's own string shows as
+written: every agent-written string below it (nested pairs and lists, list
+items) and every option name or id in the Approvals block, the prompts and the
+stream's permission line is JSON-quoted unless it is a plain word starting with
+a letter, so `;`,
+`,`, `)`, quotes and newlines in it cannot pass for hub structure. Values show
+no JSON objects, epoch milliseconds or ISO times. Allow options keep one line
+each; `d deny` always stays in view, options that do not fit are counted on a
+`(more)` line, table rows give way, and a cut title is marked `(more)` in the
+label column. The selected request is tracked by id: only the first request is
+selected on arrival, `[`, `]` and j/k move the selection, `a`, `d` and `v` act on
+it alone, and its detail is rendered from the live request. When it closes, the
+selection and its detail clear with a notice; `a`, `d` and `v` act on nothing
+until `[`, `]` or j/k select again, so a request that arrives as the person
+reacts is never acted on. Everything pending on a request belongs to the
+selected one, checked after every key and every prune: an option choice or
+confirmation for another request is dropped, an open detail follows the
+selection from its top, and the option prompt names the request. `a`, `d` and
+`v` act only while the request list or its detail is shown, and a task or
+delivery detail that arrives after the person moved to another panel or row is
+dropped; with a task, delivery or peer detail open, the row keys act on the item
+the detail shows, by its id. A pushed request's agent-supplied fields are kept as
+strings, so a malformed one cannot throw on a draw. The key table is modal: only
+`?`, Escape and `q` act under it, and a paste is dropped. Offline peers keep the default foreground, also
+when selected, and a tab counts as one space when a line is cut. The footer
+hint lists only the keys valid in the mode, panel and state, and `?` shows a
+key table grouped by panel (in stream mode it is printed into the stream, as
+`v`'s copy of a request is, without entering the Events buffer). Errors and refusals take the failure tone, informing notices (a closed or
+missing selection) the attention tone. A notice clears at the next key, or once 10 s have passed when the
+existing 1 s tick redraws. In the stream, `v` prints the selected request with
+the push's framing, and `:` command output lines start at column 4. `fit`
+measures a cut line as `paint` prints it, so a cut that ends a span in
+`[agent-hub` cannot widen the line with a `> ` marker. A context reading in the
+console stream and Events panel shows its measurement time as local time, as
+event headers do; `ahub tail` and `ahub status` keep the ISO time.
+
 Agent shell CLI calls connect as the detected peer in tools mode. Hub launches
 set `AGENTHUB_PEER_ID`; the pinned installed Codex shell injects
 `CODEX_THREAD_ID` after environment filtering, and Claude uses `CLAUDECODE`.

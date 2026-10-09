@@ -115,7 +115,7 @@ async function streamed(columns: number, msg: any): Promise<string[]> {
   client.onPush(msg);
   signal(); await running;
   const lines: string[] = [];
-  for (let i = output.indexOf("\x1b[21;1H") + 1; output[i + 1] === "\r\n"; i += 2) lines.push(output[i]!);
+  for (let i = output.indexOf("\x1b[20;1H") + 1; output[i + 1] === "\r\n"; i += 2) lines.push(output[i]!);
   return lines;
 }
 
@@ -164,18 +164,26 @@ describe("wrap breaks at word boundaries (#212, #213)", () => {
       for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
     }
   });
-  test("the console help overlay and an approval detail read as whole words", () => {
+  test("the console key table keeps each key whole; details and approval titles read as whole words", () => {
     const s = initialConsoleState(true);
     s.help = true;
-    const paragraph = renderConsole(s, 400, 24, 0)[2]!;
-    const overlay = renderConsole(s, 80, 24, 0).slice(2, -3).filter(Boolean);
-    for (const line of overlay.slice(1)) expect(line).toStartWith("    ");
-    expect(overlay.map(line => line.trim()).join(" ")).toBe(paragraph);
+    const keys = renderConsole(s, 80, 24, 0).slice(2, -4).filter(Boolean);
+    for (const item of ["Tab stream/panels", "j/k or arrows move", "a allow (then y)", "r resolve (reason, then y)", "g kind filter"]) expect(keys.some(line => line.includes(item))).toBe(true);
     s.help = false;
-    s.detail = "pi bash: 한국어 승인 요청 내용을 확인합니다, then run bun test test/help.test.ts in the project ".repeat(4).trim();
-    const detail = renderConsole(s, 80, 24, 0).slice(2, -3).filter(Boolean);
-    expect(detail.length).toBeGreaterThan(1);
-    for (const line of detail) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
-    expect(detail.map(line => line.trim()).join(" ")).toBe(s.detail);
+    const title = "pi bash: 한국어 승인 요청 내용을 확인합니다, then run bun test test/help.test.ts in the project ".repeat(4).trim();
+    for (const value of [title, "x".repeat(150)]) {
+      s.detail = { title: value };
+      const detail = renderConsole(s, 80, 24, 0).slice(2, -4).filter(Boolean);
+      expect(detail.length).toBeGreaterThan(1);
+      for (const line of detail) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
+      expect(detail.slice(1).every(line => line.startsWith(" ".repeat(7)))).toBe(true);
+      expect(detail.map(line => line.replace(/^title/, "").trim()).join(value === title ? " " : "")).toBe(value);
+    }
+    s.detail = undefined; s.panel = 2;
+    s.approvals = [{ id: "p1", peer: "pi", title, expiresAt: 60_000, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] }]; s.approvalId = "p1";
+    const panel = renderConsole(s, 80, 24, 0);
+    const lines = panel.slice(panel.findIndex(line => line.startsWith("title ")), panel.findIndex(line => line.startsWith("a allow ")));
+    expect(lines.length).toBeGreaterThan(1);
+    expect(lines.map(line => line.replace(/^title/, "").trim()).join(" ")).toBe(title);
   });
 });

@@ -1302,3 +1302,18 @@ refused by the identity gate). Claude (the session writing this) and Pi on
   nothing happened on the hub: plain `ahub console`, 0.11 s over 60 s
   (about 0.18%); `ahub console --panels`, 0.46 s over 120 s from 05:52:30
   (about 0.38%, 0.21 to 0.25 s per minute, not growing).
+
+## Console layout and readability: how to check (#213, #201 AC2)
+
+Not run yet. Record the terminal, its theme and the result per step.
+
+- In a light and a dark terminal profile, run `ahub console --panels` at 80x24
+  with at least one pending approval, one task and one `needs_review` delivery.
+- Check that the rules, the bracketed active tab, the tab counts, every table's
+  header row and the footer hint are readable, and that titles, approval details
+  and body text use the default foreground.
+- Repeat with `--color=never`: the active tab, selection marker and states must
+  still read without color.
+- Press `?`, Enter on an approval and Tab back to the stream; check that the key
+  table, the labeled detail and the stream's rule above the footer read in both
+  themes.
