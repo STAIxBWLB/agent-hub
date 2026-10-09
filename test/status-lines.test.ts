@@ -18,6 +18,8 @@ test("a backend line carries the requested and actual model", () => {
 test("#199 a cooling backend says until when and after how many failures", () => {
   expect(backendLine({ kind: "mlx", alias: "mlx/fast", state: "error", active: 0, coolingUntil: "2026-10-09T00:00:30.000Z", failures: 3 }))
     .toBe("  model    mlx/fast error active 0 cooling down until 2026-10-09T00:00:30.000Z after 3 failures");
+  expect(backendLine({ kind: "dgx", alias: "dgx/fast", state: "error", active: 0, failingUntil: "2026-10-09T00:00:30.000Z" }))
+    .toBe("  model    dgx/fast error active 0 last dispatch failed, no load moves until 2026-10-09T00:00:30.000Z");
 });
 
 test("a peer line names the backend the peer asked for on its last turn", () => {

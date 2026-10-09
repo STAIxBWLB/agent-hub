@@ -294,13 +294,16 @@ test("#199 cooldowns start after three transport or startup failures, double up 
   expect(cooldowns.cooling("mlx/fast")!.until - clock).toBe(300_000);
   cooldowns.failed("mlx/fast"); // in flight during the cooldown: neither counted nor extended
   expect(cooldowns.cooling("mlx/fast")!.until - clock).toBe(300_000);
-  cooldowns.answered("mlx/fast");
+  cooldowns.answered("mlx/fast", true);
   expect(cooldowns.cooling("mlx/fast")).toBeUndefined();
   cooldowns.failed("mlx/fast");
   expect(cooldowns.cooling("mlx/fast")).toBeUndefined(); // the success reset the count
   expect(events.slice(0, 3)).toEqual([{ alias: "mlx/fast", event: "start", failures: 3, ms: 30_000 }, { alias: "mlx/fast", event: "end", failures: 3 }, { alias: "mlx/fast", event: "start", failures: 4, ms: 60_000 }]);
   expect(events.at(-1)).toEqual({ alias: "mlx/fast", event: "end", failures: 10 });
 });
+
+/** Releases a held slot after `ms`; the test's cleanup waits for it, before its runtime dir goes away. */
+const later = (release: () => void, ms: number) => { const released = Bun.sleep(ms).then(release); cleanup.push(() => released); };
 
 /** A fake Ollama MLX endpoint: `ready` false fails its startup check, `status` answers chat with that HTTP status. */
 function ollama(state: { ready: boolean; status?: number }) {
@@ -340,7 +343,7 @@ test("#199 a busy MLX slot past efficient_wait_ms moves hub/auto to dgx/fast, a 
   cleanup.push(only.close);
   await route(only, short());
   const busy = await acquireGeneration(local.runtimeDir, 1);
-  setTimeout(busy, 150);
+  later(busy, 150);
   await route(only, short());
   expect(local.counts.chat).toBe(4);
 });
@@ -361,7 +364,7 @@ test("#199 enforced, a tool loop neither moves for load nor leaves the backend a
   await route(relay, short("pi", loop)); // the slot is free again, but the loop stays where it started
   const busy = await acquireGeneration(local.runtimeDir, 1);
   await route(relay, short("other", user));
-  setTimeout(busy, 150);
+  later(busy, 150);
   await route(relay, short("other", [...loop.slice(0, 1), ...toolStep("l2", "bash", { command: "ls" }, "a.ts")] as RelayRequest["messages"]));
   expect(events.map((e) => `${e.tier} ${e.source} ${e.turnType}`)).toEqual(["mlx/fast default user", "dgx/fast load user", "dgx/fast default tool_result", "dgx/fast load user", "dgx/fast default tool_result"]);
 
@@ -371,7 +374,7 @@ test("#199 enforced, a tool loop neither moves for load nor leaves the backend a
   await route(waiting, short("w", user));
   const chats = local.counts.chat;
   const slot = await acquireGeneration(local.runtimeDir, 1);
-  setTimeout(slot, 150);
+  later(slot, 150);
   await route(waiting, short("w", loop)); // pinned to MLX inside the loop: it waits for the slot instead of moving
   expect(local.counts.chat).toBe(chats + 1);
 });
@@ -419,10 +422,10 @@ test("#199 a load move whose gateway is down falls back to MLX, the next busy sl
   cleanup.push(relay.close);
   await route(relay, short());
   const held = await acquireGeneration(local.runtimeDir, 1);
-  setTimeout(held, 150);
+  later(held, 150);
   await route(relay, short()); // moved, the gateway is down: MLX serves it once the slot frees
   const busy = await acquireGeneration(local.runtimeDir, 1);
-  setTimeout(busy, 150);
+  later(busy, 150);
   await route(relay, short()); // dgx/fast just failed: no move, it waits for MLX
   expect(events.map((e) => `${e.tier} ${e.source}`)).toEqual(["mlx/fast default", "dgx/fast load", "mlx/fast default"]);
   expect(local.counts.chat).toBe(3);
@@ -593,4 +596,48 @@ test("#199 review: any HTTP answer resets the failure streak and ends a cooldown
   await send(liveUrl); // a cooling DGX alias is still tried; its answer ends the cooldown
   expect(cooldowns.at(-1)).toEqual({ alias: "dgx/fast", event: "end", failures: 3 });
   expect(relay.status().backends.find((b) => b.alias === "dgx/fast")).not.toHaveProperty("coolingUntil");
+});
+
+test("#199 review: a fallback that answered an error gets no load move until it succeeds or 30 s pass, and status shows it", async () => {
+  const local = ollama({ ready: true });
+  let answer = 503, hits = 0;
+  const dgx = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => { hits++; return answer === 200
+    ? new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } })
+    : new Response("gateway error", { status: answer }); } });
+  cleanup.push(() => dgx.stop(true));
+  let clock = 1_000_000;
+  const events: RouteEvent[] = [];
+  const relay = await startModelRelay({ omni: omni(`http://127.0.0.1:${dgx.port}/v1`), allowedDGXmodels: { "dgx/fast": "fast", "dgx/coding": "coding" }, enableHubAuto: true, token: "5xx",
+    mlx: local.mlx, fallbackDGXAlias: "dgx/fast", efficientWaitMs: 20, now: () => clock, onRoute: (event) => events.push(event as RouteEvent) });
+  cleanup.push(relay.close);
+  const busy = async () => { const held = await acquireGeneration(local.runtimeDir, 1); later(held, 100); await route(relay, short()); };
+  await route(relay, short());
+  await busy(); // moved; dgx/fast answers 503; MLX serves
+  await busy(); // dgx/fast's last dispatch failed: the request waits for MLX
+  expect(hits).toBe(1);
+  expect(relay.status().backends.find((b) => b.alias === "dgx/fast")).toMatchObject({ failingUntil: new Date(clock + 30_000).toISOString() });
+  clock += 30_000;
+  answer = 200;
+  await busy(); // the mark decayed: it moves again, and dgx/fast serves
+  expect(hits).toBe(2);
+  expect(relay.status().backends.find((b) => b.alias === "dgx/fast")).not.toHaveProperty("failingUntil");
+  expect(events.map((e) => `${e.tier} ${e.source}`)).toEqual(["mlx/fast default", "dgx/fast load", "mlx/fast default", "dgx/fast load"]);
+});
+
+test("#199 review: no load move while less than one request deadline of elapsed budget is left", async () => {
+  const local = ollama({ ready: true });
+  let hits = 0, remainingMs: number | undefined = 60_000;
+  const events: RouteEvent[] = [];
+  const relay = await startModelRelay({ omni: omni(gateway(() => { hits++; })), allowedDGXmodels: { "dgx/fast": "fast", "dgx/coding": "coding" }, enableHubAuto: true, token: "budget-move",
+    mlx: local.mlx, fallbackDGXAlias: "dgx/fast", efficientWaitMs: 20, admitRequest: async () => ({ allowed: true, ...(remainingMs === undefined ? {} : { remainingMs }) }),
+    onRoute: (event) => events.push(event as RouteEvent) });
+  cleanup.push(relay.close);
+  const busy = async () => { const held = await acquireGeneration(local.runtimeDir, 1); later(held, 100); await route(relay, short()); };
+  await route(relay, short()); // admitted with 60 s left
+  await busy(); // a moved attempt could use up the budget MLX needs: it waits instead
+  remainingMs = undefined;
+  await route(relay, short()); // admitted without an elapsed budget
+  await busy();
+  expect(events.map((e) => `${e.tier} ${e.source}`)).toEqual(["mlx/fast default", "mlx/fast default", "mlx/fast default", "dgx/fast load"]);
+  expect(hits).toBe(1);
 });

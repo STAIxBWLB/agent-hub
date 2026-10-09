@@ -1133,9 +1133,12 @@ cooldowns only change their order, never remove one (#199). `dgx/fast` goes firs
 is cooling down (route event `source: "cooldown"`), when an enforced tool loop is pinned to
 it, or when the MLX slot is still busy after `[pi] efficient_wait_ms` (`source: "load"`;
 default 500, below 120000; 0 tries once; read when the hub first starts Pi, like
-`dgx_max_context_tokens`, so a change takes a hub restart), and only while its own last
-dispatch did not fail. If it fails, MLX serves the request with the usual slot wait.
-Enforced, a load move happens only at a user turn. After three consecutive transport or
+`dgx_max_context_tokens`, so a change takes a hub restart). It does not go first while its
+own last dispatch failed in any way, an error status included, until it succeeds or 30 s
+pass (`ahub status`: `last dispatch failed, no load moves until ...`); a load move also
+waits while less than 180 s of a task's elapsed budget is left, as last admitted. If it
+fails, MLX serves the request with the usual slot wait. Enforced, a load move happens only
+at a user turn. After three consecutive transport or
 startup failures outside a cooldown, a relay alias cools down for 30 s, doubling up to
 5 min. A busy MLX slot and timeouts cut short by an execution budget never count; any HTTP
 answer, a success or an error status, proves the transport works and ends the streak and the

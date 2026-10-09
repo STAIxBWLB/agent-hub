@@ -27,6 +27,8 @@ export interface RelayBackendStatus {
   /** While the alias cools down after consecutive transport or startup failures (#199). */
   coolingUntil?: string;
   failures?: number;
+  /** While its last dispatch counts as failed: no load move goes to it. */
+  failingUntil?: string;
 }
 
 export interface ModelRelayStatus {
@@ -202,10 +204,16 @@ export interface RelayCooldownEvent { alias: string; event: "start" | "end"; fai
 
 // ponytail: fixed policy, 3 failures and 30 s doubling up to 5 min; routing.toml keys if a backend needs other values.
 const COOLDOWN_FAILURES = 3, COOLDOWN_MS = 30_000, COOLDOWN_CAP_MS = 300_000;
+/** The longest one upstream request may take, and so the worst case a load move can cost before MLX gets its turn. */
+const REQUEST_DEADLINE_MS = 180_000;
 
-/** Per-alias cooldowns after consecutive transport or startup failures (#199). Any HTTP answer, a success included, clears it. */
+/**
+ * Per-alias health in the relay (#199). A cooldown follows consecutive transport or startup failures, and any HTTP
+ * answer, a success included, ends it. Separately, a backend whose last dispatch failed in any way (an error status too)
+ * gets no load move for COOLDOWN_MS or until it succeeds.
+ */
 export class BackendCooldowns {
-  private readonly entries = new Map<string, { failures: number; until?: number }>();
+  private readonly entries = new Map<string, { failures: number; until?: number; failedAt?: number }>();
   constructor(private readonly now: () => number = Date.now, private readonly notify: (event: RelayCooldownEvent) => void = () => {}) {}
 
   /** The alias's cooldown while it lasts. Its end is recorded when it is first seen to have passed, or at an answer. */
@@ -218,11 +226,12 @@ export class BackendCooldowns {
     return undefined;
   }
 
-  /** A failure during a cooldown (a request already in flight, or a cooling alias tried as a fallback) neither counts nor extends it. */
+  /** A transport or startup failure. During a cooldown (a request already in flight, or a cooling alias tried as a fallback) it neither counts nor extends it. */
   failed(alias: string): void {
-    if (this.cooling(alias)) return;
-    const entry = this.entries.get(alias) ?? { failures: 0 };
-    this.entries.set(alias, entry);
+    const cooling = this.cooling(alias);
+    const entry = this.entry(alias);
+    entry.failedAt = this.now();
+    if (cooling) return;
     entry.failures++;
     if (entry.failures < COOLDOWN_FAILURES) return;
     const ms = Math.min(COOLDOWN_CAP_MS, COOLDOWN_MS * 2 ** (entry.failures - COOLDOWN_FAILURES));
@@ -230,16 +239,25 @@ export class BackendCooldowns {
     this.notify({ alias, event: "start", failures: entry.failures, ms });
   }
 
-  /** Whether the alias's last dispatch failed: a load move does not go to a backend known to be failing. */
-  failing(alias: string): boolean {
-    return !!this.entries.get(alias)?.failures;
+  /** The backend answered: its transport works, so the failure streak and any cooldown end. Only a success clears `failing`. */
+  answered(alias: string, ok: boolean): void {
+    const entry = this.entry(alias);
+    if (entry.until !== undefined) this.notify({ alias, event: "end", failures: entry.failures });
+    entry.failures = 0;
+    entry.until = undefined;
+    entry.failedAt = ok ? undefined : this.now();
   }
 
-  /** The backend answered, with any HTTP status: its transport works, so the failure streak and any cooldown end. */
-  answered(alias: string): void {
-    const entry = this.entries.get(alias);
-    this.entries.delete(alias);
-    if (entry?.until !== undefined) this.notify({ alias, event: "end", failures: entry.failures });
+  /** Until when the alias's last dispatch counts as failed for a load move, while it does. */
+  failing(alias: string): number | undefined {
+    const at = this.entries.get(alias)?.failedAt;
+    return at !== undefined && this.now() < at + COOLDOWN_MS ? at + COOLDOWN_MS : undefined;
+  }
+
+  private entry(alias: string) {
+    let entry = this.entries.get(alias);
+    if (!entry) this.entries.set(alias, entry = { failures: 0 });
+    return entry;
   }
 }
 
@@ -399,6 +417,9 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
   const defaultBackend = options.defaultBackend ?? (options.mlx ? { kind: "mlx", alias: mlxAlias } : { kind: "dgx", alias: "dgx/coding" });
   const models = relayModelIds(options);
   const efficientWaitMs = options.efficientWaitMs ?? 500;
+  // ponytail: the elapsed budget left, estimated from the last admission (admitting is the only budget reading and it
+  // counts a model call); the first call of a newly budgeted turn can still move. A non-counting budget read is the upgrade.
+  let budget: { remainingMs: number; at: number } | undefined;
   const cooldowns = new BackendCooldowns(options.now, (event) => { try { options.onCooldown?.(event); } catch { /* observation cannot fail routing */ } });
   const autoRoute = options.enableHubAuto ? new AutoRouteSelector({ ...options, dgxMaxInputTokens }, defaultBackend, mlxAlias, estimateInputTokens) : undefined;
   let mlx: MlxHandle | undefined;
@@ -526,10 +547,11 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
         ? { ...request, max_tokens: request.max_tokens ?? options.mlx!.maxTokens ?? 2048, reasoning_effort: request.reasoning_effort ?? "none" }
         : request;
       const decision = await options.admitRequest?.();
+      budget = decision?.remainingMs === undefined ? undefined : { remainingMs: decision.remainingMs, at: Date.now() };
       if (decision && !decision.allowed) throw new ExecutionAdmissionError(decision.reason ?? "execution budget exhausted");
-      const deadline = decision?.remainingMs === undefined ? 180_000 : Math.max(1, Math.min(180_000, decision.remainingMs));
+      const deadline = decision?.remainingMs === undefined ? REQUEST_DEADLINE_MS : Math.max(1, Math.min(REQUEST_DEADLINE_MS, decision.remainingMs));
       const timeout = AbortSignal.timeout(deadline);
-      if (deadline < 180_000) budgetDeadline = timeout;
+      if (deadline < REQUEST_DEADLINE_MS) budgetDeadline = timeout;
       response = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, { method: "POST", ...(isOllama ? { redirect: "error" as const } : {}), headers, body: JSON.stringify(bodyForUpstream(boundedRequest, model)), signal: AbortSignal.any([signal, timeout]) });
     } catch (error) {
       releaseOnce();
@@ -629,7 +651,9 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       if (second && !cooldowns.failing(aliasOf(second, mlxAlias))) {
         if (cooldowns.cooling(aliasOf(own, mlxAlias))) swap("cooldown");
         else if (auto?.prefer === aliasOf(second, mlxAlias)) swap();
-        else if (auto?.movable && mlx) {
+        // A load move must leave the MLX fallback its turn within the elapsed budget: none while less than a whole
+        // request deadline is left, since a moved attempt cut by the budget leaves MLX refused at admission.
+        else if (auto?.movable && mlx && !(budget && budget.remainingMs - (Date.now() - budget.at) < REQUEST_DEADLINE_MS)) {
           try {
             const held = await mlx.acquire(controller.signal, efficientWaitMs);
             let holding = true;
@@ -668,10 +692,10 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
             // A DGX alias can fail before it has a status row (gateway or key unavailable); a cooldown must still show.
             if (!states.has(journalEntry.record.alias)) setState(selected, { state: "error", lastError: error instanceof Error ? error.message.slice(0, 160) : "backend unavailable" });
             cooldowns.failed(journalEntry.record.alias);
-          } else if (failure === "http") cooldowns.answered(journalEntry.record.alias);
+          } else if (failure === "http") cooldowns.answered(journalEntry.record.alias, false);
           throw error;
         }
-        cooldowns.answered(journalEntry.record.alias);
+        cooldowns.answered(journalEntry.record.alias, true);
         let released = false;
         const release = () => {
           if (released) return;
@@ -702,8 +726,8 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
   });
   const url = `http://${host}:${server.port}/v1`;
   const status = (): ModelRelayStatus => ({ url, models, backends: [...states.values()].map((value) => {
-    const cooling = cooldowns.cooling(value.alias);
-    return { ...value, ...(cooling ? { coolingUntil: new Date(cooling.until).toISOString(), failures: cooling.failures } : {}) };
+    const cooling = cooldowns.cooling(value.alias), failing = cooldowns.failing(value.alias);
+    return { ...value, ...(cooling ? { coolingUntil: new Date(cooling.until).toISOString(), failures: cooling.failures } : {}), ...(failing ? { failingUntil: new Date(failing).toISOString() } : {}) };
   }) });
   const requests = (): RelayRequestRecord[] => journal.map(copyRecord);
   return { url, token, models, status, requests, close: async () => {
