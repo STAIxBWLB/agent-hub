@@ -49,12 +49,17 @@ It does not make the token inaccessible to an agent with unrestricted project
 shell access. The existing OS sandbox and loopback authentication boundaries apply.
 
 Steering tools require an explicit `conductor` role, independent of default-allow
-capabilities. Only one peer may hold that role. A conductor may inspect public
-state, assign or escalate work, start supported headless peers and place its own
-delivery holds. It cannot answer approvals, resolve durable deliveries, override
-budget pauses or release a human hold. Pending approval summaries exclude titles;
-PII tasks remain public stubs. Conduct events contain ids only. Supervision feeds
-use structured reasons and never carry check output or approval bodies.
+capabilities. Only one peer may hold that role. Two task-scoped exceptions need
+no role: a task's current owner and reviewer may read its public view with
+`hub_task_show`, and the peer that proposed a task may redirect it with
+`hub_task_assign` while it is proposed, nobody ever accepted it and no person
+moved it (to another peer only with `assign` when its capabilities are listed).
+A conductor may inspect public state, assign or escalate work, start supported
+headless peers and place its own delivery holds. It cannot answer approvals,
+resolve durable deliveries, override budget pauses or release a human hold.
+Pending approval summaries exclude titles; PII tasks remain public stubs.
+Conduct events contain ids only. Supervision feeds use structured reasons and
+never carry check output or approval bodies.
 
 ## Reporting
 
