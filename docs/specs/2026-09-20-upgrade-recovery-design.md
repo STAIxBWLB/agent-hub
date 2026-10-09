@@ -298,3 +298,51 @@ the runner (refusing while one is alive) and append to the receipt's audit:
   the same instance after its hold lapsed, which was never committed. A roster
   change found while no effects are recorded names `abort` (this operation's lock
   refuses a new upgrade until it is cancelled).
+
+#### Receipts, evidence and next actions
+
+Resume, abort, dispose, the `next` list of `status` and every error follow this
+table. `<c>` is the operation's own coordinator, printed in full as
+`bun <preserved source>/src/cli/main.js`: during an upgrade the global `ahub`
+may still be the older release, whose `recovery` lacks these commands.
+"Effects" means any project past `prepared` or any terminal receipt in the whole
+operation. Stop-and-archive (`<c> recovery dispose <id> --stop-and-archive
+--reason <text>`) is allowed in every open state and is always the last `next`
+entry; the rows give what else applies.
+
+A recorded launcher is the `terminal-recovery.json` row for that peer on the
+target instance. It is live when its process signature matches, gone when the
+pid no longer exists (ESRCH) or now belongs to another process, and unknown when
+the pid exists but its identity cannot be read. Unknown is never treated as gone.
+An attached session is the target's report of that peer online with a thread
+(Codex) or session (Claude, Pi) id.
+
+| Receipt | Live evidence | Resume | Other actions | Next action text |
+| --- | --- | --- | --- | --- |
+| project `pending` or `prepared`, no effects | roster changed | blocks | abort | `<c> recovery abort <id>, then make a new plan` |
+| project `prepared`, hold ours | roster as planned | roster checked again, then close and commit | abort if no effects | none (it proceeds) |
+| project `prepared`, hold ours | roster changed, effects | blocks, hold kept | dispose | `end that <peer> session` (joined after the plan, or its terminal was closed) or `restore <peer>'s original session`, `then <c> recovery resume <id>` |
+| project `prepared`, hold lapsed (same source instance) | roster as planned | re-prepare, check roster, close, commit | abort if no effects | none |
+| project `prepared`, hold lapsed | roster changed | as the two rows above | as above | as above |
+| project `prepared` | source replaced or held by another operation | blocks, nothing touched | dispose (leaves that daemon running) | `<c> recovery status <id>` and stop-and-archive |
+| `closed:<peer>` `pending` | Orca still lists the terminal | blocks | dispose | `close Orca terminal <handle> (the login shell it runs in) by hand, then <c> recovery resume <id>` |
+| `closed:<peer>` done | peer attached again | blocks | dispose | `end that <peer> session, then <c> recovery resume <id>` |
+| `restored:<peer>` `pending` or `failed` | session attached with the planned id (or an accepted new one: fresh choice, planned fresh start, zero-turn Claude) | recorded as restored | none | none |
+| `restored:<peer>` `pending` or `failed` | another session attached | blocks | dispose | `end that <peer> session and close its terminal, then <c> recovery resume <id>` |
+| `restored:<peer>` `pending` or `failed` | no session, recorded launcher live or unknown | blocks | dispose | `wait until it attaches, or end it and close terminal <handle>, then <c> recovery resume <id>` |
+| `restored:<peer>` `pending` | no session, launcher gone or never recorded | receipted `failed`, blocks | fresh session (Codex, Claude), dispose | the failed-restoration choices below |
+| `restored:<peer>` `failed` | no session, launcher gone or never recorded | launches again (fresh if chosen) | fresh session (Codex, Claude), dispose | the failed-restoration choices below |
+| `restored:codex` absent | rollout missing | receipted `failed`, blocks, no terminal created | fresh session, dispose | the failed-restoration choices below |
+| any, before close or create | Codex store unreadable | blocks, nothing closed or created | dispose | `make <store> readable, then <c> recovery resume <id>` |
+| `restored:<peer>` absent | session attached or launcher live/unknown for that peer | blocks, no terminal created | dispose | `end that <peer> launch and close its terminal, then <c> recovery resume <id>` |
+| `fresh` recorded for a peer | none live | launches it without a resume id, records the new id | dispose | none |
+| disposition recorded, not finished | any | refused | stop-and-archive only | `rerun <c> recovery dispose <id> --stop-and-archive --reason <text> once its runtimes have settled` |
+| `completed` or `cancelled` | any | nothing to do | none | none |
+
+The failed-restoration choices are `<c> recovery dispose <id> --fresh-session
+<peer> --reason <text>` (Codex or Claude; records the lost session and resumes)
+and stop-and-archive. A Codex thread with no rollout on which the hub recorded no
+turn since it attached (zero turns: Codex writes the rollout with the first
+message) is not blocked at the plan: the plan lists it under `freshStart`, says
+so, and it restarts as a new session with nothing recorded to lose. A thread
+with recorded turns and no rollout stays a plan blocker.
