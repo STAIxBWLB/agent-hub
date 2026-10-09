@@ -22,11 +22,11 @@ export function initialConsoleState(panels = false): ConsoleState {
 }
 /** Strip terminal controls before any daemon or child output reaches a terminal. Preserve printable Unicode. */
 export function terminalText(value: unknown): string {
-  return sanitize(String(value ?? ""))
+  return sanitize(String(value ?? "")
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)/g, "")
     .replace(/\x1b[P_X^][\s\S]*?(?:\x1b\\|$)/g, "")
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1b[^\n]?/g, "").replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+    .replace(/\x1b[^\n]?/g, "").replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, ""));
 }
 export type Tone = "info" | "strong" | "success" | "attention" | "failure" | "muted";
 export interface Span { text: string; tone?: Tone }
