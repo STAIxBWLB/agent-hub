@@ -366,16 +366,19 @@ An owner named for a task that waits (`owner` with `after`, `--owner` with
 `--after`) is its reserved owner: the task still waits, and when it is ready
 routing offers it to that peer first, not to the first idle peer of the class.
 A reserved owner that is offline, paused, failing, not attached or excluded
-(it declined) is passed over: routing proceeds as usual, the console and
-hub.log say which reservation was passed over and why, and the assignment's
-history note keeps it. The PII constraint and capability limits still apply, so a
+is passed over: routing proceeds as usual, the console and hub.log say which
+reservation was passed over and why, and the assignment's history note keeps
+it. A peer the task was declined for (by itself or by the console) stays
+excluded on every later reroute; an owner released as gone is excluded only
+from that release and may get the task again from its reservation later. The PII constraint and capability limits still apply, so a
 PII task goes to `local` or nobody whoever was reserved. `ahub task assign` on a
-task that waits changes its reserved owner instead of handing it over, and
-`ahub route explain <id>` names the reserved owner and whether routing would
-honor it now. The peer that proposed a task may redirect it with
+task that waits changes its reserved owner instead of handing it over.
+`ahub route explain <id>` names the reserved owner; once the task is ready it
+also says whether routing would honor the reservation now, and why not. The peer that proposed a task may redirect it with
 `hub_task_assign` while it is `proposed` and nobody accepted it, without the
 conductor role (handing it to another peer needs `assign` when the proposer has
-a capabilities list); once accepted, only the conductor and the console move it.
+a capabilities list). Once it is accepted, or after a person assigned or
+reserved it from the console, only the conductor and the console move it.
 
 An owner offline longer than `tasks.release_after_min`
 (default 30, `0` turns it off) in `.agenthub/config.json` loses its open tasks

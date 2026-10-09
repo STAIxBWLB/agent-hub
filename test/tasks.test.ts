@@ -9,6 +9,7 @@ import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { HUB, newEnvelope, USER, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { assign, currentRouting, detectSignals, loadRouting, SPLIT_MIN } from "../src/hub/routing.ts";
+import { DEFAULT_TASK_SWEEP } from "../src/hub/task-sweep.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { Briefs, parseRows } from "../src/memory/brief.ts";
 import { MemoryClient } from "../src/memory/client.ts";
@@ -902,7 +903,7 @@ test("a reserved owner that is offline or paused is passed over with a notice; a
   }
 });
 
-test("a decline never hands a reserved task straight back to the owner it was declined for, the console's included", async () => {
+test("a decline keeps the owner it was declined for out of every later reroute, the console's decline included", async () => {
   const { tasks, board, notices } = await setup();
   const a = await tasks.propose("claude", { title: "schema", class: "implement" });
   const c = await tasks.propose("claude", { title: "client", class: "implement", owner: "codex", after: [a.id] });
@@ -910,7 +911,39 @@ test("a decline never hands a reserved task straight back to the owner it was de
   expect(board.get(c.id)!.owner).toBe("codex");
   const moved = await tasks.decline(USER, c.id, "not this one");
   expect(moved).toMatchObject({ owner: "local", reserved: "codex" });
+  expect(moved.history.findLast((h) => h.event === "declined")).toMatchObject({ by: USER, owner: "codex" });
   expect(notices).toContain(`task #${c.id} client: its reserved owner codex is passed over (excluded (declined or replaced)); routing proceeds`);
+  // explain and assignment agree, and the next reroute does not hand it back either
+  expect(tasks.explain(c.id)).toContain("reserved owner codex: not honored, excluded (declined or replaced); routing proceeds");
+  expect(await tasks.decline("local", c.id)).toMatchObject({ owner: "kimi", reserved: "codex" });
+});
+
+test("an owner released as gone is passed over for that release only; the history note keeps the release's own note", async () => {
+  const { tasks, board, peers } = await setup();
+  const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+  const c = await tasks.propose("claude", { title: "client", class: "implement", owner: "codex", after: [a.id] });
+  await approve(tasks, board, a.id);
+  tasks.accept("codex", c.id);
+  peers.codex!.set("offline");
+  await tasks.releaseFromGone("codex", 30);
+  expect(board.get(c.id)!.owner).toBe("local");
+  expect(board.get(c.id)!.history.at(-1)!.note).toBe("owner codex offline for 30 min; reserved owner codex passed over: excluded (declined or replaced)");
+  // being offline is no refusal: back online, a later reroute honors the reservation again
+  peers.codex!.set("idle");
+  expect(await tasks.decline("local", c.id)).toMatchObject({ owner: "codex" });
+});
+
+test("the idle sweep's owner suggestion says when it passes over the reservation", async () => {
+  const base = await setup();
+  const notices: string[] = [];
+  const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (l) => notices.push(l), sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, unaccepted_min: 1, ladder_min: 1 } });
+  const made = base.board.propose("claude", { title: "client", class: "implement", reserved: "codex" });
+  const task = base.board.update(made.id, HUB, "assigned", { owner: "codex", reviewer: "claude" });
+  const at = task.history.at(-1)!.at + 60_000;
+  for (let step = 0; step < 3; step++) await tasks.sweep(at + step * 60_000);
+  expect(notices.at(-2)).toBe(`task #${task.id} client: its reserved owner codex is passed over (excluded (declined or replaced)); routing proceeds`);
+  expect(notices.at(-1)).toContain("Owner reassignment suggestion: local");
+  expect(base.board.get(task.id)!.owner).toBe("codex"); // a suggestion only
 });
 
 test("assigning a waiting task reserves it for that peer, and the release sweep offers it to them", async () => {

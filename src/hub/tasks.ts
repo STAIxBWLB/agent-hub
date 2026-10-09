@@ -96,7 +96,7 @@ export const samePlace = (a: string, b: string) => {
 };
 
 /** Events that hand a task to an owner (or take it away); newer history records that owner on them (#67). */
-const OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassigned"]);
+export const OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassigned"]);
 /** The note on an accept recorded by the done call itself: its stages are unknown to the split prediction (issue #109). */
 const WITH_DONE = "with its done";
 /** How many times a task changed hands: a cohort member's generation (issue #107). */
@@ -193,6 +193,7 @@ export class Tasks {
           const reviewer = finding.kind === "review-pending";
           const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), responsible], waitsFor: this.waitsFor(task), ...(reviewer ? { candidates: [], notReviewer: task.owner ?? undefined } : {}), ...this.weights(task.class) });
           const candidate = reviewer ? a.reviewer : a.owner;
+          this.passedOver(task, a);
           this.d.notify(`${message} ${reviewer ? "Reviewer" : "Owner"} reassignment suggestion: ${candidate ?? "no eligible peer"}.`);
           if (!reviewer && candidate && this.sweepConfig.auto_reassign && this.sweepAvailable(candidate)) {
             await this.assignOwner(this.d.board.get(task.id)!, HUB, { candidates: [candidate], exclude: [responsible], event: "reassigned", reason: "idle", note: `idle sweep: ${finding.kind}; from ${responsible}` });
@@ -682,7 +683,15 @@ export class Tasks {
     return this.explain(target).map(line => this.nameable(line) ? line : "[routing explanation withheld: it matches a PII pattern]");
   }
 
-  private declined = (task: Task) => task.history.filter((h) => h.event === "declined").map((h) => h.by);
+  /** Who a task was declined for: the owner on the decline (#207: the console declines for it), else its author in older rows. */
+  private declined = (task: Task) => task.history.filter((h) => h.event === "declined").map((h) => h.owner ?? h.by);
+
+  /** Says on the console and hub.log that routing passed over the reserved owner (#207); returns the history note's suffix. */
+  private passedOver(task: Task, a: Assignment): string {
+    if (!a.unreserved) return "";
+    this.d.notify(`task ${this.publicTitle(task)}: its reserved owner ${task.reserved} is passed over (${a.unreserved}); routing proceeds`);
+    return `; reserved owner ${task.reserved} passed over: ${a.unreserved}`;
+  }
 
   /** Why the task will approve directly at done: no reviewer could be picked, and who was skipped (issue #92). */
   private noReviewer(a: Assignment): string {
@@ -707,7 +716,7 @@ export class Tasks {
       this.d.notify(`task ${this.publicTitle(task)} waits for ${waits.map((id) => `#${id}`).join(", ")}; it is offered once they are approved`);
       return task;
     }
-    if (a.unreserved) this.d.notify(`task ${this.publicTitle(task)}: its reserved owner ${task.reserved} is passed over (${a.unreserved}); routing proceeds`);
+    const passed = this.passedOver(task, a);
     if (!a.owner) {
       this.d.notify(`task ${this.publicTitle(task)}: no peer can take it (${a.trace.filter((l) => l.includes("skipped")).length} skipped); assign with: ahub task assign ${task.id} <peer>`);
       // Only a decline takes the task away from its owner; a failed console assign or escalation leaves it where it was.
@@ -718,7 +727,7 @@ export class Tasks {
       return task;
     }
     const profile = this.d.splitProfile?.(a.owner);
-    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}) }, opts.note ?? `to ${a.owner}${a.unreserved ? `; reserved owner ${task.reserved} passed over: ${a.unreserved}` : ""}`, { ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}) });
+    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}) }, `${opts.note ?? `to ${a.owner}`}${passed}`, { ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}) });
     // What calibration reads (issue #109): routing chose the first owner (no single named candidate, no claim; not an
     // escalation, relay or reassignment of work already begun), and the work overlaps another owner's task not started
     // yet. For the record only. Work routed back to its proposer is left out, as its observations are (by === owner).
@@ -907,10 +916,10 @@ export class Tasks {
   async decline(by: PeerId, id: unknown, reason?: string): Promise<Task> {
     const task = this.need(id, true);
     this.mine(task, by, "owner");
-    const back = this.d.board.update(task.id, by, "declined", task.state === "in_progress" ? { state: "proposed" } : {}, reason);
+    // The owner it is declined for goes on the entry, also when the console declines for it: `declined()` keeps it out (#207).
+    const back = this.d.board.update(task.id, by, "declined", { ...(task.state === "in_progress" ? { state: "proposed" as const } : {}), owner: task.owner }, reason);
     this.d.notify(`task ${this.publicTitle(back)} declined by ${by}${reason && !this.isPii(back) ? `: ${reason}` : ""}`);
-    // The owner it is declined for is out too, also when the console declines for it: no route (a reservation, #207) hands it straight back.
-    return this.assignOwner(back, HUB, { event: "reassigned", reason: "declined", clearOnFail: true, exclude: task.owner ? [task.owner] : [] });
+    return this.assignOwner(back, HUB, { event: "reassigned", reason: "declined", clearOnFail: true });
   }
 
   /** Tasks whose check is queued or running, and the owner it was started for. */

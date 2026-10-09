@@ -1,6 +1,8 @@
 import { Database } from "bun:sqlite";
 import type { Task } from "./board.ts";
 import { CONDUCTOR_TOOL_NAMES } from "./hub-tools.ts";
+import { USER } from "./envelope.ts";
+import { OWNERSHIP_EVENTS } from "./tasks.ts";
 import type { HubEvent } from "./events.ts";
 import type { SupervisionFeed } from "./supervision.ts";
 import type { Budget } from "./budget.ts";
@@ -158,7 +160,11 @@ export interface ConductorHooks {
   audit(event: ConductEvent): void;
 }
 
-const taskId = (v: unknown): number | undefined => typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : undefined;
+/** A task id as `Tasks.need()` takes it: a whole number or a digit string. */
+const taskId = (v: unknown): number | undefined => {
+  const n = typeof v === "number" ? v : typeof v === "string" && /^\s*\d+\s*$/.test(v) ? Number(v) : NaN;
+  return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+};
 
 export class Conductor {
   constructor(private readonly holds: ConductorHolds, private readonly hooks: ConductorHooks) {}
@@ -169,8 +175,10 @@ export class Conductor {
       const task = id === undefined ? undefined : this.hooks.task(id);
       // A task's current owner and reviewer read its public view without the role (#208); nobody else does.
       if (task && tool === "hub_task_show" && (task.owner === actor || task.reviewer === actor)) return publicConductorTask(task, this.hooks.publicView);
-      // Its proposer (the first history entry) redirects it while nobody accepted it (#207); work that waits gets a reserved owner.
-      if (task && tool === "hub_task_assign" && task.history[0]?.by === actor && task.state === "proposed") {
+      // Its proposer (the first history entry) redirects it while nobody accepted it (#207); work that waits gets a reserved
+      // owner. Never over the person: a console assign or reservation stands until the conductor or the console moves it.
+      const moved = task?.history.findLast((h) => OWNERSHIP_EVENTS.has(h.event) || h.event === "reserved");
+      if (task && tool === "hub_task_assign" && task.history[0]?.by === actor && task.state === "proposed" && moved?.by !== USER) {
         const peer = peerId(args.peer);
         if (peer !== actor) requireAssign(actor, this.hooks.capabilities());
         await this.hooks.assign(actor, task.id, peer);

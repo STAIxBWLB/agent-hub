@@ -25,7 +25,7 @@ export interface HistoryEntry {
   by: PeerId;
   event: string; // proposed | assigned | accepted | declined | done | approved | changes_requested | escalated | reassigned
   note?: string;
-  /** The owner an event that set it left the task with (#67); absent in rows written before 0.11. */
+  /** The owner an event that set it left the task with (#67), on a decline the owner it was declined for (#207); absent in rows written before 0.11. */
   owner?: PeerId | null;
   /** On a hand-over: the new owner's split profile then (#109); absent when it was unknown. */
   profile?: string;

@@ -206,6 +206,26 @@ test("the proposer redirects its own unaccepted task without the role; other pee
   expect(readEvents(join(f.dir, "events.jsonl")).filter(e => e.type === "conduct").map(e => e.peer)).toEqual(["codex"]);
 });
 
+test("a person's console assign or reservation stands against the proposer; digit-string ids reach the task's own people (#207, #208)", async () => {
+  const f = await fixture("codex");
+  for (const name of ["kimi", "pi"]) { const peer = new QuietPeer(name); f.daemon.bus.add(peer); await peer.start(); }
+  const planner = await f.connect("claude"), pi = await f.connect("pi");
+  const op = (client: ControlClient, name: string, args: Record<string, unknown>) => client.request({ t: "task", op: name, args });
+  expect((await op(planner, "hub_task_propose", { title: "first", class: "implement" })).ok).toBe(true); // routed to pi
+  expect((await op(pi, "hub_task_show", { id: "1" })).ok).toBe(true); // the owner, with the id as a digit string
+  expect((await op(f.console_, "task_assign", { id: 1, peer: "kimi" })).ok).toBe(true);
+  const refused = await op(planner, "hub_task_assign", { id: "1", peer: "pi" });
+  expect(refused.ok).toBe(false); expect(refused.error).toContain("explicit conductor role");
+  expect((await op(planner, "hub_task_propose", { title: "second", class: "implement", owner: "pi", after: [1] })).ok).toBe(true);
+  expect((await op(planner, "hub_task_assign", { id: "2", peer: "kimi" })).ok).toBe(true); // its own reservation: a digit string works
+  expect((await op(f.console_, "task_assign", { id: 2, peer: "pi" })).ok).toBe(true);
+  expect((await op(planner, "hub_task_assign", { id: 2, peer: "kimi" })).ok).toBe(false);
+  // The conductor path is unchanged, and once the conductor moved it the proposer may again.
+  expect((await op(f.lead, "hub_task_assign", { id: 2, peer: "kimi" })).ok).toBe(true);
+  expect((await op(planner, "hub_task_assign", { id: 2, peer: "pi" })).ok).toBe(true);
+  expect(JSON.parse((await op(f.console_, "task_show", { id: 2 })).text)).toMatchObject({ owner: null, reserved: "pi" });
+});
+
 test("peer route explain and quota reads work while quota mutations remain human-only", async () => {
   const f = await fixture();
   const peer = await f.connect("unlisted");
