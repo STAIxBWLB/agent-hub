@@ -47,6 +47,8 @@ export interface Task {
   plan?: TaskPlan;
   /** Tasks that must be approved before this one is offered (issue #34); fixed when it is proposed. */
   deps?: number[];
+  /** Who routing offers the task first once nothing is left to wait for (issue #207); null when nobody was named. */
+  reserved?: PeerId | null;
   signals: string[];
   /** consecutive changes_requested verdicts */
   rejections: number;
@@ -95,14 +97,16 @@ export class Board {
     for (const [col, empty] of [["plan", "{}"], ["deps", "[]"]] as const) {
       if (!have.has(col)) this.db.run(`ALTER TABLE tasks ADD COLUMN ${col} TEXT NOT NULL DEFAULT '${empty}'`);
     }
+    // And from before issue #207: existing rows reserve nobody.
+    if (!have.has("reserved")) this.db.run("ALTER TABLE tasks ADD COLUMN reserved TEXT");
   }
 
-  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; signals?: string[] }): Task {
+  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[] }): Task {
     const now = Date.now();
     const history: HistoryEntry[] = [{ at: now, by, event: "proposed" }];
     const { lastInsertRowid } = this.db
-      .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, signals, history, created, updated) VALUES (?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?, ?)")
-      .run(t.title, t.detail ?? "", t.class, JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now);
+      .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated) VALUES (?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(t.title, t.detail ?? "", t.class, JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now);
     const task = this.get(Number(lastInsertRowid))!;
     this.changed(task, history[0]!);
     return task;
@@ -126,7 +130,7 @@ export class Board {
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "refs" | "plan" | "rejections">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason"> = {}): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason"> = {}): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (patch.state && patch.state !== task.state && !MOVES[task.state].includes(patch.state)) {
@@ -135,8 +139,8 @@ export class Board {
     const next = { ...task, ...patch, refs: { ...task.refs, ...patch.refs } };
     const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}) }];
     this.db
-      .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, refs = ?, plan = ?, rejections = ?, history = ?, updated = ? WHERE id = ?")
-      .run(next.state, next.owner, next.reviewer, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(history), Date.now(), id);
+      .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, history = ?, updated = ? WHERE id = ?")
+      .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(history), Date.now(), id);
     const updated = this.get(id)!;
     this.changed(updated, history.at(-1)!);
     return updated;

@@ -180,6 +180,32 @@ test("a task's owner and reviewer read its done summary and check line; other pe
   expect(readEvents(join(f.dir, "events.jsonl")).some(e => e.type === "conduct")).toBe(false);
 });
 
+test("the proposer redirects its own unaccepted task without the role; other peers and accepted tasks stay the conductor's (#207)", async () => {
+  const f = await fixture("codex");
+  for (const name of ["kimi", "pi"]) { const peer = new QuietPeer(name); f.daemon.bus.add(peer); await peer.start(); }
+  const planner = await f.connect("claude"), kimi = await f.connect("kimi"), pi = await f.connect("pi");
+  const op = (client: ControlClient, name: string, args: Record<string, unknown>) => client.request({ t: "task", op: name, args });
+  const shown = async (id: number) => JSON.parse((await op(f.console_, "task_show", { id })).text);
+  expect((await op(planner, "hub_task_propose", { title: "first", class: "implement" })).ok).toBe(true);
+  expect((await shown(1)).owner).toBe("pi"); // the first idle peer in the class order
+  const notMine = await op(pi, "hub_task_assign", { id: 1, peer: "kimi" });
+  expect(notMine.ok).toBe(false); expect(notMine.error).toContain("explicit conductor role");
+  const redirected = await op(planner, "hub_task_assign", { id: 1, peer: "kimi" });
+  expect(redirected.ok).toBe(true); expect(JSON.parse(redirected.text)).toMatchObject({ owner: "kimi", state: "proposed" });
+  expect((await shown(1)).history.at(-1)).toMatchObject({ event: "reassigned", by: "claude", reason: "manual", owner: "kimi" });
+  expect((await op(kimi, "hub_task_accept", { id: 1 })).ok).toBe(true);
+  expect((await op(planner, "hub_task_assign", { id: 1, peer: "pi" })).ok).toBe(false); // accepted: the conductor's now
+  // A waiting task: the owner named with after is reserved, and its proposer redirects the reservation.
+  expect((await op(planner, "hub_task_propose", { title: "second", class: "implement", owner: "pi", after: [1] })).ok).toBe(true);
+  expect(await shown(2)).toMatchObject({ owner: null, reserved: "pi" });
+  expect((await op(pi, "hub_task_assign", { id: 2, peer: "pi" })).ok).toBe(false);
+  expect(JSON.parse((await op(planner, "hub_task_assign", { id: 2, peer: "kimi" })).text)).toMatchObject({ owner: null, reserved: "kimi" });
+  // The conductor still may, and only its moves are conduct events.
+  expect((await op(f.lead, "hub_task_assign", { id: 2, peer: "pi" })).ok).toBe(true);
+  expect((await shown(2)).reserved).toBe("pi");
+  expect(readEvents(join(f.dir, "events.jsonl")).filter(e => e.type === "conduct").map(e => e.peer)).toEqual(["codex"]);
+});
+
 test("peer route explain and quota reads work while quota mutations remain human-only", async () => {
   const f = await fixture();
   const peer = await f.connect("unlisted");

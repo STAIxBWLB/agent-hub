@@ -432,10 +432,8 @@ export class Tasks {
       if (!this.d.board.get(id)) throw new Error(`after: no task #${id}`);
       if (!deps.includes(id)) deps.push(id);
     }
-    const waits = this.waitsFor({ deps });
-    if (waits.length && input.owner) {
-      throw new Error(`this task would wait for ${waits.map((id) => `#${id}`).join(", ")}, not approved yet: ${input.owner === by ? "claim it once they are" : "propose it without an owner; routing offers it when they are approved"}`);
-    }
+    // An owner for work that waits is reserved (issue #207): routing offers it to that peer first once it is ready.
+    const reserved = this.waitsFor({ deps }).length ? input.owner : undefined;
     const given = input.class === undefined || input.class === "" ? undefined : input.class;
     if (given !== undefined && !CLASSES.includes(given as TaskClass)) throw new Error(`class must be one of ${CLASSES.join(", ")}`);
     const text = { title, detail: String(input.detail ?? "").slice(0, 8000), refs: cleanRefs(input.refs) };
@@ -457,14 +455,14 @@ export class Tasks {
     if (defaulted) cls = "implement";
     if (!cls) throw new Error(`class is required (one of ${CLASSES.join(", ")}); the hub could not name one for you`);
     const draft = { ...text, class: cls };
-    let task = this.d.board.propose(by, { ...draft, plan, ...(deps.length ? { deps } : {}), signals });
+    let task = this.d.board.propose(by, { ...draft, plan, ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals });
     if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
     if (defaulted) task = this.d.board.update(task.id, "hub", "class defaulted", {}, "class implement for a claim without one");
     this.d.notify(`task ${this.publicTitle(task)} proposed by ${by} [${task.class}]${task.signals.length ? ` signals: ${task.signals.join(", ")}` : ""}`);
     // Re-read: a dependency approved while triage was awaited looked for its dependents before this row existed.
     const still = this.waitsFor(task);
     if (still.length) {
-      this.d.notify(`task ${this.publicTitle(task)} waits for ${still.map((id) => `#${id}`).join(", ")}; it is offered once they are approved`);
+      this.d.notify(`task ${this.publicTitle(task)} waits for ${still.map((id) => `#${id}`).join(", ")}; it is offered ${task.reserved ? `to ${task.reserved} first ` : ""}once they are approved`);
       return this.d.board.update(task.id, HUB, "blocked", {}, `waits for ${still.map((id) => `#${id}`).join(", ")}`);
     }
     // Naming yourself is a claim: the work is already yours, so no offer comes back to you (paper: Agensh CLAIM, #68).
@@ -673,7 +671,7 @@ export class Tasks {
       if (!task) throw new Error(`no task #${target}`);
       const a = assign(task, this.states(), routing, { exclude: this.declined(task), waitsFor: this.waitsFor(task), ...this.weights(task.class) });
       // The split trace is for the pair the record is about: the task's owner when it has one (issue #109).
-      return [`task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"})`, "if it were assigned now:", ...a.trace, ...(this.splitShadow(task, task.owner ?? a.owner)?.trace ?? [])];
+      return [`task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"}${task.reserved ? `, reserved for ${task.reserved}` : ""})`, "if it were assigned now:", ...a.trace, ...(this.splitShadow(task, task.owner ?? a.owner)?.trace ?? [])];
     }
     const draft = { title: target.title, detail: target.detail ?? "", refs: target.refs ?? {} };
     return assign({ class: target.class, signals: detectSignals(draft, routing, this.d.cwd) }, this.states(), routing, this.weights(target.class)).trace;
@@ -709,6 +707,7 @@ export class Tasks {
       this.d.notify(`task ${this.publicTitle(task)} waits for ${waits.map((id) => `#${id}`).join(", ")}; it is offered once they are approved`);
       return task;
     }
+    if (a.unreserved) this.d.notify(`task ${this.publicTitle(task)}: its reserved owner ${task.reserved} is passed over (${a.unreserved}); routing proceeds`);
     if (!a.owner) {
       this.d.notify(`task ${this.publicTitle(task)}: no peer can take it (${a.trace.filter((l) => l.includes("skipped")).length} skipped); assign with: ahub task assign ${task.id} <peer>`);
       // Only a decline takes the task away from its owner; a failed console assign or escalation leaves it where it was.
@@ -719,7 +718,7 @@ export class Tasks {
       return task;
     }
     const profile = this.d.splitProfile?.(a.owner);
-    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}) }, opts.note ?? `to ${a.owner}`, { ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}) });
+    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}) }, opts.note ?? `to ${a.owner}${a.unreserved ? `; reserved owner ${task.reserved} passed over: ${a.unreserved}` : ""}`, { ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}) });
     // What calibration reads (issue #109): routing chose the first owner (no single named candidate, no claim; not an
     // escalation, relay or reassignment of work already begun), and the work overlaps another owner's task not started
     // yet. For the record only. Work routed back to its proposer is left out, as its observations are (by === owner).
@@ -801,7 +800,9 @@ export class Tasks {
   async releaseReady(): Promise<void> {
     for (const t of this.d.board.list("proposed")) {
       const last = t.history.at(-1)?.event;
-      if (!t.deps?.length || t.owner || this.offered.has(t.id) || (last !== "blocked" && last !== "ready") || this.waitsFor(t).length) continue;
+      if (!t.deps?.length || t.owner || this.offered.has(t.id) || (last !== "blocked" && last !== "ready" && last !== "reserved") || this.waitsFor(t).length) continue;
+      // ponytail: a reserved owner (#207) that attaches after another peer that can take the task is passed over here like
+      // an offline one; hold reserved tasks for a grace period if restarts show that up.
       if (!assign(t, this.states(), this.d.routing(), { exclude: this.declined(t), ...this.health() }).owner) continue; // nobody attached can take it yet
       await this.offerReady(t, "nothing left to wait for");
     }
@@ -1230,7 +1231,12 @@ export class Tasks {
 
   /** Caller authority is checked by the daemon; keep the real actor in task history. */
   async assignTo(id: unknown, peer: PeerId, by: PeerId = USER): Promise<Task> {
-    return this.assignOwner(this.need(id, true), by, { candidates: [peer], event: "reassigned", reason: "manual" });
+    const task = this.need(id, true);
+    // Work that waits is handed to nobody yet (issue #207): the peer becomes its reserved owner instead.
+    if (!this.waitsFor(task).length) return this.assignOwner(task, by, { candidates: [peer], event: "reassigned", reason: "manual" });
+    const next = this.d.board.update(task.id, by, "reserved", { reserved: peer }, `for ${peer}`);
+    this.d.notify(`task ${this.publicTitle(next)} reserved for ${peer} by ${by}; it is offered to ${peer} first once what it waits for is approved`);
+    return next;
   }
 
   /**

@@ -360,8 +360,24 @@ to the next run.
 `ahub board --ready` and
 `hub_task_list {ready: true}` list the proposed tasks with nothing left to wait
 for. Dependencies are fixed when a task is proposed and can only name tasks that
-already exist, so they cannot form a cycle. A waiting task cannot name an owner;
-use `ahub task assign` once it is ready. An owner offline longer than `tasks.release_after_min`
+already exist, so they cannot form a cycle.
+
+An owner named for a task that waits (`owner` with `after`, `--owner` with
+`--after`) is its reserved owner: the task still waits, and when it is ready
+routing offers it to that peer first, not to the first idle peer of the class.
+A reserved owner that is offline, paused, failing, not attached or excluded
+(it declined) is passed over: routing proceeds as usual, the console and
+hub.log say which reservation was passed over and why, and the assignment's
+history note keeps it. The PII constraint and capability limits still apply, so a
+PII task goes to `local` or nobody whoever was reserved. `ahub task assign` on a
+task that waits changes its reserved owner instead of handing it over, and
+`ahub route explain <id>` names the reserved owner and whether routing would
+honor it now. The peer that proposed a task may redirect it with
+`hub_task_assign` while it is `proposed` and nobody accepted it, without the
+conductor role (handing it to another peer needs `assign` when the proposer has
+a capabilities list); once accepted, only the conductor and the console move it.
+
+An owner offline longer than `tasks.release_after_min`
 (default 30, `0` turns it off) in `.agenthub/config.json` loses its open tasks
 to a peer routing can give them to; with nobody to take them they stay, and a
 paused peer or a hub in a recovery operation is left alone.

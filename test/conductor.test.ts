@@ -98,6 +98,29 @@ test("readonly peer budget projection keeps quota measurements and excludes priv
   expect((projected.pi as any).paused).toEqual({ since: 1, resetsAt: 200, reason: "quota" });
 });
 
+test("a proposer's redirect needs assign capability to hand its task to another peer, and writes no conduct audit (#207)", async () => {
+  const holds = new ConductorHolds(":memory:");
+  const assigned: string[] = [];
+  const events: ConductEvent[] = [];
+  let caps: Record<string, unknown> = { claude: [] };
+  const proposed = (): Task => ({ ...task(), state: "proposed" });
+  const conductor = new Conductor(holds, {
+    roles: () => ({ codex: ["conductor"] }), capabilities: () => caps, status: () => ({ peers: [], taskCounts: {}, approvals: [] }),
+    task: proposed, publicView: (t) => ({ ...t }), assign: async (actor, id, peer) => { assigned.push(`${actor}:${id}:${peer}`); },
+    escalate: async () => task(), preview: (peer) => `ahub ${peer}`, start: async () => {}, known: () => true, pause: () => {}, release: () => {},
+    audit: (event) => { events.push(event); },
+  });
+  try {
+    await expect(conductor.execute("claude", "hub_task_assign", { id: 12, peer: "kimi" })).rejects.toThrow("assign capability");
+    await conductor.execute("claude", "hub_task_assign", { id: 12, peer: "claude" });
+    caps = { claude: ["assign"] };
+    await conductor.execute("claude", "hub_task_assign", { id: 12, peer: "kimi" });
+    await expect(conductor.execute("kimi", "hub_task_assign", { id: 12, peer: "kimi" })).rejects.toThrow("explicit conductor");
+    expect(assigned).toEqual(["claude:12:claude", "claude:12:kimi"]);
+    expect(events).toEqual([]);
+  } finally { holds.close(); }
+});
+
 test("controller binds mutations to actor, public results and ids-only audit", async () => {
   const holds = new ConductorHolds(":memory:");
   const events: ConductEvent[] = [];

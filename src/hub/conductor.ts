@@ -45,10 +45,14 @@ export function conductorPeer(roles: unknown): string | null {
 /** The role check always comes first; default-allow capabilities cannot grant a role. */
 export function requireConductor(peer: string, roles: unknown, capabilities: Record<string, unknown> = {}, assign = false): void {
   if (conductorPeer(roles) !== peer) throw new Error("this operation requires the explicit conductor role");
-  if (assign && Object.hasOwn(capabilities, peer)) {
-    const caps = capabilities[peer];
-    if (!Array.isArray(caps) || !caps.includes("assign")) throw new Error(`${peer} requires assign capability for this operation`);
-  }
+  if (assign) requireAssign(peer, capabilities);
+}
+
+/** A peer with an explicit capabilities list needs `assign` in it to move work. */
+function requireAssign(peer: string, capabilities: Record<string, unknown>): void {
+  if (!Object.hasOwn(capabilities, peer)) return;
+  const caps = capabilities[peer];
+  if (!Array.isArray(caps) || !caps.includes("assign")) throw new Error(`${peer} requires assign capability for this operation`);
 }
 
 export interface ConductorHold { peer: string; actor: string; since: number }
@@ -160,11 +164,19 @@ export class Conductor {
   constructor(private readonly holds: ConductorHolds, private readonly hooks: ConductorHooks) {}
   async execute(actor: string, tool: string, args: Record<string, unknown>): Promise<unknown> {
     if (!CONDUCTOR_TOOL_NAMES.has(tool)) throw new Error("unknown conductor tool");
-    // A task's current owner and reviewer read its public view without the role (#208); nobody else does.
-    if (tool === "hub_task_show" && conductorPeer(this.hooks.roles()) !== actor) {
+    if ((tool === "hub_task_show" || tool === "hub_task_assign") && conductorPeer(this.hooks.roles()) !== actor) {
       const id = taskId(args.id);
       const task = id === undefined ? undefined : this.hooks.task(id);
-      if (task && (task.owner === actor || task.reviewer === actor)) return publicConductorTask(task, this.hooks.publicView);
+      // A task's current owner and reviewer read its public view without the role (#208); nobody else does.
+      if (task && tool === "hub_task_show" && (task.owner === actor || task.reviewer === actor)) return publicConductorTask(task, this.hooks.publicView);
+      // Its proposer (the first history entry) redirects it while nobody accepted it (#207); work that waits gets a reserved owner.
+      if (task && tool === "hub_task_assign" && task.history[0]?.by === actor && task.state === "proposed") {
+        const peer = peerId(args.peer);
+        if (peer !== actor) requireAssign(actor, this.hooks.capabilities());
+        await this.hooks.assign(actor, task.id, peer);
+        const updated = this.hooks.task(task.id);
+        return updated ? publicConductorTask(updated, this.hooks.publicView) : { id: task.id };
+      }
     }
     requireConductor(actor, this.hooks.roles(), this.hooks.capabilities(), tool === "hub_task_assign" || tool === "hub_task_escalate");
     const action = tool.slice(4);

@@ -118,6 +118,8 @@ export interface Assignment {
   route?: string;
   fixedModel?: string;
   piBackend?: "dgx" | "mlx";
+  /** Why the task's reserved owner (issue #207) was passed over; absent when it was honored or there is none. */
+  unreserved?: string;
   trace: string[];
 }
 
@@ -126,7 +128,7 @@ export interface Assignment {
  * prints its trace. `states`: effective bus states of attached peers (a peer that is not in the map is not attached).
  */
 export function assign(
-  task: Pick<Task, "class" | "signals">,
+  task: Pick<Task, "class" | "signals" | "reserved">,
   states: Record<PeerId, PeerState>,
   routing: Routing,
   opts: {
@@ -152,8 +154,10 @@ export function assign(
 ): Assignment {
   const policy = routing.classes[task.class];
   const trace: string[] = [`class ${task.class}${policy ? "" : " (no [classes] entry: only an explicit owner can take it)"}`, `signals: ${task.signals.join(", ") || "none"}`];
+  // A reserved owner (issue #207) is offered the task first. Named candidates (an assign, an escalation, a relay) replace it.
+  const reserved = opts.candidates ? undefined : task.reserved ?? undefined;
   // Readiness is an input like peer states (issue #34): a task that waits for others goes to nobody yet.
-  if (opts.waitsFor?.length) return { trace: [...trace, `blocked: waits for ${opts.waitsFor.map((id) => `#${id}`).join(", ")} (not approved)`] };
+  if (opts.waitsFor?.length) return { trace: [...trace, `blocked: waits for ${opts.waitsFor.map((id) => `#${id}`).join(", ")} (not approved)`, ...(reserved ? [`reserved owner ${reserved}: offered first once it is ready`] : [])] };
   const pii = task.signals.includes("pii") && routing.constraints.pii === "local_only";
 
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {
@@ -226,8 +230,11 @@ export function assign(
     return ranked.find((p) => states[p] === "idle") ?? ranked[0];
   };
 
+  // The PII constraint, capability limits, exclusions and peer states still apply: when they pass it over, routing proceeds.
+  const unreserved = reserved ? blocked(reserved, "owner") : undefined;
+  if (reserved) trace.push(`reserved owner ${reserved}: ${unreserved ? `not honored, ${unreserved}; routing proceeds` : "honored"}`);
   // Never the task's current owner by default: a decline or an escalation has to reach the next peer in the list.
-  const wanted = opts.candidates ?? policy?.peers ?? [];
+  const wanted = reserved && !unreserved ? [reserved] : opts.candidates ?? policy?.peers ?? [];
   const owner = pick(wanted, "owner");
   trace.push(owner ? `owner: ${owner}` : "owner: none available, task stays proposed (ahub task assign <id> <peer>)");
   if (owner && opts.held?.[owner]) trace.push(`  hold: ${owner}'s queue is held: ${opts.held[owner]} (it receives the task once the hold is resolved)`);
@@ -250,7 +257,7 @@ export function assign(
   const piBackend = policy?.pi_backend;
   if (owner === LOCAL) trace.push(`route: ${route ?? "(none)"}, fixed_model ${fixedModel}`);
   if (owner === PI) trace.push(`pi decision: backend ${piBackend ?? "dgx"}${task.signals.includes("long_context") ? `, context limit ${piBackend === "mlx" ? routing.pi.mlx_max_context_tokens : routing.pi.dgx_max_context_tokens}` : ""}`);
-  return { ...(owner ? { owner } : {}), ...(pii ? { reviewer: "user" } : reviewer ? { reviewer } : {}), ...(route ? { route } : {}), fixedModel, ...(piBackend ? { piBackend } : {}), trace };
+  return { ...(owner ? { owner } : {}), ...(pii ? { reviewer: "user" } : reviewer ? { reviewer } : {}), ...(route ? { route } : {}), fixedModel, ...(piBackend ? { piBackend } : {}), ...(unreserved ? { unreserved } : {}), trace };
 }
 
 /**
