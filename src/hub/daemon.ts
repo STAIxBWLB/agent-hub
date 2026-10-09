@@ -1993,6 +1993,7 @@ export async function startDaemon(opts: DaemonOptions) {
         staySwitch: () => currentRouting(opts.cwd, log),
         onRoute: record => event({ type: "route", peer: "pi", ...record }),
         efficientWaitMs: currentRouting(opts.cwd, log).pi.efficient_wait_ms,
+        underBudget: () => { const current = bus.peers.get("pi"); return current instanceof PiPeer && tasks.budgetApplies(current.budgetEnvelopes, "pi"); },
         onCooldown: record => {
           log(`model ${record.alias}: ${record.event === "start" ? `cooling down for ${Math.round(record.ms! / 1000)} s after ${record.failures} transport or startup failures` : "cooldown ended"}`);
           event({ type: "cooldown", peer: "pi", ...record });

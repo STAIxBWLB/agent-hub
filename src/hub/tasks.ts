@@ -224,14 +224,19 @@ export class Tasks {
   /** Charge only budgets matching the task actually delivered to this peer, plus active run budgets. */
   admitExecution = (taskId: number | undefined, peer: PeerId, unit: ExecutionUnit, amount = 1): ExecutionBudgetDecision[] => this.d.executionBudget?.admitTask(taskId, peer, unit, amount) ?? [];
   /** A digest may include several tasks. Charge each matching task budget and each run budget once, atomically. */
-  admitExecutionEnvelopes = (envs: Envelope[], peer: PeerId, unit: ExecutionUnit, amount = 1): ExecutionBudgetDecision[] => {
-    const ids = [...new Set(envs.flatMap((e) => {
+  admitExecutionEnvelopes = (envs: Envelope[], peer: PeerId, unit: ExecutionUnit, amount = 1): ExecutionBudgetDecision[] =>
+    this.d.executionBudget?.admitTasks(this.budgetTaskIds(envs), peer, unit, amount) ?? [];
+
+  /** Whether an execution budget meters this peer's work on these envelopes; admits nothing. */
+  budgetApplies = (envs: Envelope[], peer: PeerId): boolean => this.d.executionBudget?.applies(this.budgetTaskIds(envs), peer) ?? false;
+
+  private budgetTaskIds(envs: Envelope[]): number[] {
+    return [...new Set(envs.flatMap((e) => {
       const value = e.refs?.task;
       const id = typeof value === "string" ? Number(value) : NaN;
       return Number.isSafeInteger(id) && id > 0 ? [id] : [];
     }))];
-    return this.d.executionBudget?.admitTasks(ids, peer, unit, amount) ?? [];
-  };
+  }
 
   /** What peers other than the owner, the console stream and the log may see of a task. */
   publicTitle = (task: Task) => (this.isPii(task) ? `#${task.id} [pii]` : `#${task.id} ${task.title}`);

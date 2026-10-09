@@ -1139,10 +1139,11 @@ default 500, below 120000; 0 tries once; read when the hub first starts Pi, like
 cooling down, or while its own last dispatch failed in any way, an error status included,
 until it succeeds or 30 s pass (`ahub status`: `last dispatch failed, no load moves until ...`).
 A load move or pin is only an optimization: the moved attempt gets 15 s to its response
-headers and is then abandoned, and it happens only while the task's elapsed budget, as last
-admitted, holds the slot wait, an 8 s gateway probe and those 15 s. If the moved attempt
+headers and is then abandoned, and none happens while the request runs under an execution
+budget (it could spend the model call or the time MLX needs). If the moved attempt
 fails, MLX serves the request with the usual slot wait. Enforced, a load move happens only at
-a user turn. After three consecutive transport or startup failures outside a cooldown, a relay alias cools down for 30 s, doubling up to
+a user turn. After three consecutive transport or startup failures outside a cooldown (a
+failure more than 10 min after the last counted one starts the count over), a relay alias cools down for 30 s, doubling up to
 5 min. A busy MLX slot and timeouts cut short by an execution budget never count; any HTTP
 answer, a success or an error status, proves the transport works and ends the streak and the
 cooldown. `ahub status` shows `cooling down until ...` on the backend

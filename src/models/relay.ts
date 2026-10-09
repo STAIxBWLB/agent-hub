@@ -172,6 +172,8 @@ export interface ModelRelayOptions {
   slotWaitMs?: number;
   /** A moved attempt's deadline for its response headers (default 15 s); tests shorten it. */
   moveFirstByteMs?: number;
+  /** Whether the request runs under an execution budget, read without admitting anything; then nothing moves (#199). */
+  underBudget?: () => boolean;
   allowedDGXmodels: Record<string, string>;
   /** Trusted physical model expectations by backend alias. Gateway identifiers can include a provider
    *  prefix or route name that differs from the model reported by generation. Omission preserves the
@@ -209,8 +211,8 @@ const COOLDOWN_FAILURES = 3, COOLDOWN_MS = 30_000, COOLDOWN_CAP_MS = 300_000;
 /** The longest one upstream request may take. */
 const REQUEST_DEADLINE_MS = 180_000;
 // ponytail: a moved attempt (a load move or an enforced pin, both only optimizations) gets 15 s to its response headers
-// and is then abandoned for MLX; tune it from the #199 AC5 measurement. GATEWAY_PROBE_MS is OmniRoute.base()'s two 4 s rounds.
-const MOVE_FIRST_BYTE_MS = 15_000, GATEWAY_PROBE_MS = 8_000;
+// and is then abandoned for MLX; tune it from the #199 AC5 measurement.
+const MOVE_FIRST_BYTE_MS = 15_000;
 
 /**
  * Per-alias health in the relay (#199). A cooldown follows consecutive transport or startup failures, and any HTTP
@@ -218,7 +220,7 @@ const MOVE_FIRST_BYTE_MS = 15_000, GATEWAY_PROBE_MS = 8_000;
  * gets no load move for COOLDOWN_MS or until it succeeds.
  */
 export class BackendCooldowns {
-  private readonly entries = new Map<string, { failures: number; until?: number; failedAt?: number }>();
+  private readonly entries = new Map<string, { failures: number; until?: number; failedAt?: number; countedAt?: number }>();
   constructor(private readonly now: () => number = Date.now, private readonly notify: (event: RelayCooldownEvent) => void = () => {}) {}
 
   /** The alias's cooldown while it lasts. Its end is recorded when it is first seen to have passed, or at an answer. */
@@ -233,13 +235,16 @@ export class BackendCooldowns {
 
   /**
    * A failed dispatch. `streak`: a transport or startup failure, which counts toward a cooldown unless one is running (a
-   * request already in flight, or a cooling alias tried as a fallback); otherwise it only marks the alias `failing`.
+   * request already in flight, or a cooling alias tried as a fallback); otherwise it only marks the alias `failing`. A
+   * streak whose last counted failure is more than twice the cap old starts over, so an old cooldown does not double.
    */
   failed(alias: string, streak = true): void {
     const cooling = this.cooling(alias);
     const entry = this.entry(alias);
     entry.failedAt = this.now();
     if (cooling || !streak) return;
+    if (entry.countedAt !== undefined && this.now() - entry.countedAt > 2 * COOLDOWN_CAP_MS) entry.failures = 0;
+    entry.countedAt = this.now();
     entry.failures++;
     if (entry.failures < COOLDOWN_FAILURES) return;
     const ms = Math.min(COOLDOWN_CAP_MS, COOLDOWN_MS * 2 ** (entry.failures - COOLDOWN_FAILURES));
@@ -422,9 +427,6 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
   const models = relayModelIds(options);
   const efficientWaitMs = options.efficientWaitMs ?? 500;
   const moveFirstByteMs = options.moveFirstByteMs ?? MOVE_FIRST_BYTE_MS;
-  // ponytail: the elapsed budget left, estimated from the last admission (admitting is the only budget reading and it
-  // counts a model call); the first call of a newly budgeted turn can still move. A non-counting budget read is the upgrade.
-  let budget: { remainingMs: number; at: number } | undefined;
   const cooldowns = new BackendCooldowns(options.now, (event) => { try { options.onCooldown?.(event); } catch { /* observation cannot fail routing */ } });
   const autoRoute = options.enableHubAuto ? new AutoRouteSelector({ ...options, dgxMaxInputTokens }, defaultBackend, mlxAlias, estimateInputTokens) : undefined;
   let mlx: MlxHandle | undefined;
@@ -554,7 +556,6 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
         ? { ...request, max_tokens: request.max_tokens ?? options.mlx!.maxTokens ?? 2048, reasoning_effort: request.reasoning_effort ?? "none" }
         : request;
       const decision = await options.admitRequest?.();
-      budget = decision?.remainingMs === undefined ? undefined : { remainingMs: decision.remainingMs, at: Date.now() };
       if (decision && !decision.allowed) throw new ExecutionAdmissionError(decision.reason ?? "execution budget exhausted");
       const deadline = decision?.remainingMs === undefined ? REQUEST_DEADLINE_MS : Math.max(1, Math.min(REQUEST_DEADLINE_MS, decision.remainingMs));
       const timeout = AbortSignal.timeout(deadline);
@@ -657,11 +658,11 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       const second = candidates[1];
       let moved: "optional" | "cooldown" | undefined;
       const swap = (source?: "load" | "cooldown") => { candidates.reverse(); moved = source === "cooldown" ? "cooldown" : "optional"; auto?.moved(aliasOf(candidates[0]!, mlxAlias), source); };
-      // A load move or pin is only an optimization: bounded by its first-byte deadline, and only while the elapsed budget,
-      // as last admitted, holds that bound with the slot wait and a gateway probe, so MLX still gets its turn after it.
-      // ponytail: an abandoned move that was admitted spends one model_calls unit and MLX another, as main's fallback does;
-      // the gate cannot see model_calls. A non-counting budget read is the upgrade path.
-      const room = !budget || budget.remainingMs - (Date.now() - budget.at) >= efficientWaitMs + GATEWAY_PROBE_MS + moveFirstByteMs;
+      // A load move or pin is only an optimization, bounded by its first-byte deadline. Under an execution budget it could
+      // spend the model call or the time MLX needs after it, so none happens then (a throw counts as a budget).
+      // ponytail: no moves at all under a budget; budget-aware moves from admitPiRequest's remaining units are the upgrade.
+      let room = true;
+      try { room = !options.underBudget?.(); } catch { room = false; }
       let slot: (() => void) | undefined;
       if (second && !cooldowns.failing(aliasOf(second, mlxAlias)) && !cooldowns.cooling(aliasOf(second, mlxAlias))) {
         if (cooldowns.cooling(aliasOf(own, mlxAlias))) swap("cooldown");

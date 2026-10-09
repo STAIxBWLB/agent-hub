@@ -632,32 +632,40 @@ test("#199 review: a fallback that answered an error gets no load move until it 
   expect(events.map((e) => `${e.tier} ${e.source}`)).toEqual(["mlx/fast default", "dgx/fast load", "mlx/fast default", "dgx/fast load"]);
 });
 
-test("#199 review: a load move waits for MLX unless the elapsed budget holds the bounded move", async () => {
+test("#199 review: under an execution budget a busy slot waits for MLX, with no load move and no pin move", async () => {
   const local = ollama({ ready: true });
-  let hits = 0, remainingMs: number | undefined = 20_000; // under 20 ms wait + 8 s probe + 15 s first byte
+  let hits = 0, budgeted = true;
   const events: RouteEvent[] = [];
   const relay = await startModelRelay({ omni: omni(gateway(() => { hits++; })), allowedDGXmodels: { "dgx/fast": "fast", "dgx/coding": "coding" }, enableHubAuto: true, token: "budget-move",
-    mlx: local.mlx, fallbackDGXAlias: "dgx/fast", efficientWaitMs: 20, admitRequest: async () => ({ allowed: true, ...(remainingMs === undefined ? {} : { remainingMs }) }),
-    onRoute: (event) => events.push(event as RouteEvent) });
+    mlx: local.mlx, fallbackDGXAlias: "dgx/fast", efficientWaitMs: 20, underBudget: () => budgeted, routeSessionKey: (request) => request.session_key as string,
+    staySwitch: () => ({ stay_switch: "enforce", max_switch_prefill_tokens: 32_000 }), onRoute: (event) => events.push(event as RouteEvent) });
   cleanup.push(relay.close);
-  const busy = () => routeBusy(relay, local.runtimeDir, events, short());
-  await route(relay, short()); // admitted with 20 s left
-  await busy(); // a move could leave MLX too little: it waits instead
-  remainingMs = 30_000;
-  await route(relay, short());
-  await busy(); // the bounded move fits
-  expect(events.map((e) => `${e.tier} ${e.source}`)).toEqual(["mlx/fast default", "mlx/fast default", "mlx/fast default", "dgx/fast load"]);
+  const user = [{ role: "user", content: "List the files." }] as RelayRequest["messages"];
+  const loop = [...user, ...toolStep("u1", "bash", { command: "ls" }, "a.ts")] as RelayRequest["messages"];
+  await route(relay, short("warm"));
+  await routeBusy(relay, local.runtimeDir, events, short("pi", user)); // budgeted: waits for MLX
+  budgeted = false;
+  await routeBusy(relay, local.runtimeDir, events, short("pi2", user)); // no budget: moves, pinned to dgx/fast
+  budgeted = true;
+  await route(relay, short("pi2", loop)); // budgeted again: the pin is not preferred, MLX serves
+  budgeted = false;
+  const throwing = await startModelRelay({ omni: omni(gateway(() => { hits++; })), allowedDGXmodels: { "dgx/fast": "fast" }, enableHubAuto: true, token: "budget-throws",
+    mlx: local.mlx, fallbackDGXAlias: "dgx/fast", efficientWaitMs: 20, underBudget: () => { throw new Error("budget store down"); }, onRoute: (event) => events.push(event as RouteEvent) });
+  cleanup.push(throwing.close);
+  await route(throwing, short());
+  await routeBusy(throwing, local.runtimeDir, events, short()); // an unreadable budget counts as one
+  expect(events.map((e) => `${e.tier} ${e.source}`)).toEqual(["mlx/fast default", "mlx/fast default", "dgx/fast load", "mlx/fast default", "mlx/fast default", "mlx/fast default"]);
   expect(hits).toBe(1);
 });
 
-test("#199 review: a moved attempt gets a short first-byte deadline, then MLX serves within the budget it left", async () => {
+test("#199 review: a moved attempt gets a short first-byte deadline, then MLX serves", async () => {
   const local = ollama({ ready: true });
   const stalled = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Promise<Response>(() => {}) });
   cleanup.push(() => stalled.stop(true));
   let clock = 1_000_000;
   const events: RouteEvent[] = [], cooldowns: RelayCooldownEvent[] = [];
   const relay = await startModelRelay({ omni: omni(`http://127.0.0.1:${stalled.port}/v1`), allowedDGXmodels: { "dgx/fast": "fast", "dgx/coding": "coding" }, enableHubAuto: true, token: "first-byte",
-    mlx: local.mlx, fallbackDGXAlias: "dgx/fast", efficientWaitMs: 20, moveFirstByteMs: 50, now: () => clock, admitRequest: async () => ({ allowed: true, remainingMs: 200_000 }),
+    mlx: local.mlx, fallbackDGXAlias: "dgx/fast", efficientWaitMs: 20, moveFirstByteMs: 50, now: () => clock,
     onRoute: (event) => events.push(event as RouteEvent), onCooldown: (event) => cooldowns.push(event) });
   cleanup.push(relay.close);
   await route(relay, short());
@@ -696,4 +704,19 @@ test("#199 review: no move to a fallback that is cooling down, even once its fai
   await routeBusy(relay, local.runtimeDir, events, short());
   expect(events.at(-1)).toMatchObject({ tier: "mlx/fast", source: "default" });
   expect(g.probes).toBe(probes);
+});
+
+test("#199 review: a failure long after the last counted one starts a new streak instead of doubling an old cooldown", () => {
+  let clock = 0;
+  const events: RelayCooldownEvent[] = [];
+  const cooldowns = new BackendCooldowns(() => clock, (event) => events.push(event));
+  for (let i = 0; i < 3; i++) cooldowns.failed("dgx/fast");
+  clock = 30_000;
+  expect(cooldowns.cooling("dgx/fast")).toBeUndefined();
+  clock += 3 * 60 * 60_000; // hours later
+  cooldowns.failed("dgx/fast");
+  expect(cooldowns.cooling("dgx/fast")).toBeUndefined();
+  cooldowns.failed("dgx/fast"); cooldowns.failed("dgx/fast");
+  expect(cooldowns.cooling("dgx/fast")).toEqual({ until: clock + 30_000, failures: 3 });
+  expect(events.filter((e) => e.event === "start").map((e) => e.ms)).toEqual([30_000, 30_000]);
 });

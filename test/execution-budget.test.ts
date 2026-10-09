@@ -24,6 +24,20 @@ describe("shared execution budgets", () => {
     resumed.close();
   });
 
+  test("#199 applies reads which scopes meter a peer's tasks without admitting or counting anything", () => {
+    const { meter } = open();
+    expect(meter.applies([3], "pi")).toBe(false);
+    meter.configure({ id: "task:3", kind: "task", taskId: 3, peers: ["pi"], limits: { model_calls: 1 } });
+    expect(meter.applies([3], "pi")).toBe(true);
+    expect(meter.applies([4], "pi")).toBe(false);
+    expect(meter.applies([3], "local")).toBe(false);
+    meter.configure({ id: "run:r", kind: "run", peers: ["local"], limits: { elapsed_ms: 1000 } });
+    expect(meter.applies([], "local")).toBe(true);
+    expect(meter.status("task:3")).toMatchObject({ used: {} });
+    expect(meter.admitTask(3, "pi", "model_calls")[0]).toMatchObject({ allowed: true, used: 1 });
+    meter.close();
+  });
+
   test("task and run scopes admit atomically and ignore unrelated peers", () => {
     const { meter } = open();
     meter.configure({ id: "task:2", kind: "task", taskId: 2, peers: ["pi"], limits: { tool_calls: 1 } });

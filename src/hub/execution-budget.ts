@@ -83,16 +83,25 @@ export class ExecutionBudget {
     return this.admitTasks(taskId === undefined ? [] : [taskId], peer, unit, amount);
   }
 
+  /** Whether any budget meters this peer's work on these tasks. It only reads: nothing is admitted or counted. */
+  applies(taskIds: number[], peer: string): boolean {
+    return this.scopes(taskIds, peer).length > 0;
+  }
+
+  private scopes(taskIds: number[], peer: string): BudgetRow[] {
+    const ids = [...new Set(taskIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
+    const taskRows = ids.length
+      ? this.db.query(`SELECT * FROM execution_budgets WHERE kind='task' AND task_id IN (${ids.map(() => "?").join(",")}) AND EXISTS (SELECT 1 FROM json_each(peers) WHERE value=?)`).all(...ids, peer) as BudgetRow[]
+      : [];
+    const runRows = this.db.query("SELECT * FROM execution_budgets WHERE kind='run' AND EXISTS (SELECT 1 FROM json_each(peers) WHERE value=?)").all(peer) as BudgetRow[];
+    return [...taskRows, ...runRows];
+  }
+
   admitTasks(taskIds: number[], peer: string, unit: ExecutionUnit, amount = 1): ExecutionBudgetDecision[] {
     if (!UNITS.has(unit) || !Number.isSafeInteger(amount) || amount <= 0) throw new Error("execution budget admission is invalid");
     const transaction = this.db.transaction(() => {
       // Read scopes only after BEGIN IMMEDIATE so a concurrent configure/admission cannot evade a scope or overdraw it.
-      const ids = [...new Set(taskIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
-      const taskRows = ids.length
-        ? this.db.query(`SELECT * FROM execution_budgets WHERE kind='task' AND task_id IN (${ids.map(() => "?").join(",")}) AND EXISTS (SELECT 1 FROM json_each(peers) WHERE value=?)`).all(...ids, peer) as BudgetRow[]
-        : [];
-      const runRows = this.db.query("SELECT * FROM execution_budgets WHERE kind='run' AND EXISTS (SELECT 1 FROM json_each(peers) WHERE value=?)").all(peer) as BudgetRow[];
-      const rows = [...taskRows, ...runRows].sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
+      const rows = this.scopes(taskIds, peer).sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
       const pending: { cfg: ExecutionBudgetStatus; updates: Partial<Record<ExecutionUnit, number>>; decisions: ExecutionBudgetDecision[] }[] = rows.map((row) => {
         const cfg = fromRow(row), updates: Partial<Record<ExecutionUnit, number>> = {}, decisions: ExecutionBudgetDecision[] = [];
         const now = Date.now(), elapsedLimit = cfg.limits.elapsed_ms;
