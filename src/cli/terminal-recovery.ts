@@ -344,7 +344,13 @@ export async function recordTerminalLaunch(peer: TerminalPeer, projectRoot: stri
   process.env.AGENTHUB_LAUNCH_ID = launchId;
   process.env.AGENTHUB_INSTANCE_ID = instanceId;
   const row: RecordedTerminalLaunch = { peer, projectRoot, stateDir, instanceId, launcherPid: process.pid, launcherSignature, launchId, handle, incarnationId, worktreeId: actualWorktree, env: allowedEnv({ env: process.env }) };
-  const rows = readLaunchRecords(stateDir).filter((item) => !(item.peer === peer && item.instanceId === instanceId));
+  const existing = launchRecords(stateDir);
+  // #215: rewriting an unreadable file would replace every other launcher's record with this one, and recovery would
+  // then read those launchers as gone.
+  if (existing === "unreadable") {
+    throw new OrcaCommandError(blocker("command-error", `${recordPath(stateDir)} cannot be read, so recording this launch would erase every other launcher's record; next action: inspect that file and move it aside (recovery then treats sessions it recorded as unmanaged), then launch again`, peer, handle));
+  }
+  const rows = existing.filter((item) => !(item.peer === peer && item.instanceId === instanceId));
   rows.push(row);
   writeLaunchRecords(stateDir, rows);
   return row;

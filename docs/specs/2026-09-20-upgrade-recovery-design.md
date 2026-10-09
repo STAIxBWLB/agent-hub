@@ -339,7 +339,11 @@ Restore reads this evidence in one place: the target's report, which counts only
 when the target runs as the expected instance, then the recorded launcher. A
 target that does not, a launcher that cannot be read, or a launcher record file
 that cannot be read or parsed is unknown and blocks without changing a receipt;
-the record file is written atomically (temp + rename). A truncated Orca
+the record file is written atomically (temp + rename), and a launch is not recorded
+over a record file that cannot be read (that would erase the other launchers'
+records). `ahub codex` and `ahub pi --mode tui` launched by the operation that
+holds the lock record themselves before the hub's start round trip. Whether a
+target reads waivers is one check, used by staging, restore, `next` and dispose. A truncated Orca
 inventory never shows a terminal as gone. While a stop-and-archive is recorded,
 `resume` is refused by the running release, whichever coordinator started the
 operation, and the runner keeps the disposition's own error. Abort and `next` decide with one predicate
@@ -356,7 +360,7 @@ An attached session is the target's report of that peer online with a thread
 | project `prepared`, hold lapsed | roster changed | as the two rows above | as above | as above |
 | project `prepared` | source replaced or held by another operation | blocks, nothing touched | abort if no effects (cancels and leaves that daemon or hold alone), dispose | `<c> recovery status <id>` and stop-and-archive |
 | project `prepared` with `commitSent` (a per-project receipt flag written right before the commit request; `step` is rewritten on every resume and is not evidence) | any (the commit may have been sent) | continues from the commit | dispose; abort is neither offered nor accepted | `<c> recovery resume <id>` |
-| project `prepared`, no `commitSent`, operation of a #215 coordinator | source stopped (crashed) | prepares again when it runs | abort if no effects (no commit was ever requested), dispose | `<c> recovery abort <id>` |
+| project `prepared`, no `commitSent`, operation of a #215 coordinator | source stopped (crashed before any commit request) | blocks; the phase stays `prepared` (nothing was committed, so there is nothing to start from) | abort if no effects, dispose | `<c> recovery abort <id>` without effects, else stop-and-archive (the lock refuses starting that hub by hand) |
 | project `prepared` | source unavailable, stopping or not inspected | as above when it reads again | dispose; abort neither offered nor accepted (its hold may still stand) | `<c> recovery status <id>` once it answers |
 | project `prepared`, operation of an older coordinator (no `commitSent` written) | source not running, or not inspected | as its own runner does | dispose; abort neither offered nor accepted (it may have committed) | `<c> recovery status <id>` |
 | disposition recorded, first act not finished | any | refused | abort refused, stop-and-archive only | as the disposition row below |

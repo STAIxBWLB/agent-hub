@@ -179,6 +179,11 @@ test("ahub codex records a recovery launch before the hub start, and an ordinary
     writeFileSync(join(home, "recovery.lock"), JSON.stringify({ operationId: id }));
     expect(await codex({ AGENTHUB_RECOVERY_OPERATION: id })).toBe(1);
     expect(records().map((row) => [row.peer, row.handle])).toEqual([["codex", "term-x"]]);
+    // A Pi TUI launch by the same operation records itself before the hub round trip too.
+    const pi = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", root, "pi", "--mode", "tui"], { cwd: root, env: { ...env, AGENTHUB_RECOVERY_OPERATION: id }, stdout: "pipe", stderr: "pipe" });
+    const [piCode] = await Promise.all([pi.exited, new Response(pi.stdout).text(), new Response(pi.stderr).text()]);
+    expect(piCode).toBe(1);
+    expect(records().map((row) => [row.peer, row.handle])).toEqual([["codex", "term-x"], ["pi", "term-x"]]);
   } finally { rmSync(temp, { recursive: true, force: true }); }
 });
 

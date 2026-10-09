@@ -528,14 +528,22 @@ test("a session that joined after the plan, with effects recorded, is to be ende
 });
 
 test("staging refuses a target that cannot read recovery waivers when a reconnect-only session is planned", async () => {
+  // A minimal package of an older release: same identity and protocol, a restart.ts without readRecoveryWaivers.
+  const older = mkdtempSync(join(tmpdir(), "ahub-older-target-")); homes.push(older);
+  for (const dir of ["src/cli", "src/hub", "plugins/agent-hub/.claude-plugin", "templates", ".claude-plugin"]) mkdirSync(join(older, dir), { recursive: true });
+  writeFileSync(join(older, "package.json"), JSON.stringify({ name: "@staix/agent-hub", version: "0.5.0" }));
+  writeFileSync(join(older, "plugins/agent-hub/.claude-plugin/plugin.json"), JSON.stringify({ version: "0.5.0" }));
+  writeFileSync(join(older, "src/cli/main.js"), "");
+  writeFileSync(join(older, "src/hub/restart.ts"), "export function readRestartSnapshot() {}\n");
   const f = fixture("restart");
+  f.operation.sourceRoot = older;
+  Object.assign(f.operation.plan, { sourceRoot: older, sourceDigest: packageDigest(older) });
+  f.operation.plan.projects[0]!.reconnectOnly = ["claude"];
+  const driver = makeRecoveryDriver(async () => ({ code: 0, stdout: `${PROTOCOL}\n`, stderr: "" }));
+  await expect(driver.stage(f.operation)).rejects.toThrow("predates recovery waivers");
   f.operation.sourceRoot = PACKAGE_ROOT;
   Object.assign(f.operation.plan, { sourceRoot: PACKAGE_ROOT, version: JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version, sourceDigest: packageDigest(PACKAGE_ROOT) });
-  f.operation.plan.projects[0]!.reconnectOnly = ["claude"];
-  const driver = makeRecoveryDriver(async (argv) => ({ code: 0, stdout: argv[2]!.includes("readRecoveryWaivers") ? "undefined\n" : `${PROTOCOL}\n`, stderr: "" }));
-  await expect(driver.stage(f.operation)).rejects.toThrow("predates recovery waivers");
-  const current = makeRecoveryDriver(async (argv) => ({ code: 0, stdout: argv[2]!.includes("readRecoveryWaivers") ? "function\n" : `${PROTOCOL}\n`, stderr: "" }));
-  expect((await current.stage(f.operation)).root).toBe(PACKAGE_ROOT);
+  expect((await driver.stage(f.operation)).root).toBe(PACKAGE_ROOT);
 });
 
 // #215 review: a failed roster check during re-preparation keeps the hold it took; a second resume inside the lease
@@ -726,4 +734,29 @@ test("stop-and-archive says when another operation holds a source, and lock refu
 
   const g = fixture();
   expect(activeOperation(g.operation.id, g.home)).toBe(`recovery operation ${g.operation.id} is active; use ${C} status ${g.operation.id} or ${C} resume ${g.operation.id}`);
+});
+
+// #215 review: a #215 coordinator records a commit request first, so a prepared source found stopped without one crashed
+// before any commit: there is nothing to start from, and the phase stays prepared (abort applies without effects).
+test("a stopped prepared source with no commit request stays prepared and names abort, or stop-and-archive with effects", async () => {
+  const f = fixture();
+  f.operation.projects[0]!.phase = "prepared";
+  writeOperation(f.operation.id, f.operation, f.home);
+  f.states.set("alpha", { state: "stopped", peers: [], blockers: [] });
+  const blocked = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(blocked.projects[0]!.phase).toBe("prepared");
+  expect(blocked.error).toContain(`alpha: the source stopped while prepared and no commit was requested, so there is nothing to restore; next actions: ${C} resume ${f.operation.id} | ${C} abort ${f.operation.id}`);
+  expect(f.calls.some((call) => call.startsWith("start:") || call.startsWith("commit:"))).toBe(false);
+  await abortRecovery(f.operation.id, f.driver, f.home);
+  expect((readOperation(f.operation.id, f.home) as { phase: string }).phase).toBe("cancelled");
+
+  // The incident shape: a terminal was already closed, so the way out is stop-and-archive.
+  const g = fixture();
+  Object.assign(g.operation.projects[0]!, { phase: "prepared", terminals: { "closed:claude": true } });
+  writeOperation(g.operation.id, g.operation, g.home);
+  g.states.set("alpha", { state: "stopped", peers: [], blockers: [] });
+  const withEffects = await runRecovery(g.operation.id, g.driver, g.home);
+  expect(withEffects.projects[0]!.phase).toBe("prepared");
+  expect(withEffects.error).toContain(`${C} dispose ${g.operation.id} --stop-and-archive --reason <text>`);
+  expect(withEffects.error).not.toContain(" abort ");
 });

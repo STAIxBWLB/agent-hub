@@ -1162,7 +1162,9 @@ next actions").
   must end, every other one must keep its conversation. With nothing closed yet,
   `abort` cancels the operation (also once its hold has lapsed, or when another
   daemon or operation holds the source, which it leaves alone) so a new plan
-  can be made, also after a source crashed before any commit was requested; it
+  can be made, also after a source crashed before any commit was requested
+  (`resume` then stops, as there is nothing to start from, and names abort, or
+  stop-and-archive once anything was done); it
   refuses while a prepared source cannot be read (its hold may still stand),
   once a commit request may have been sent (or, for an operation from
   an older coordinator, which records no such thing, while a prepared source is

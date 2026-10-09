@@ -391,3 +391,23 @@ test("a fresh-session replacement maps under any session id only when chosen", a
   expect(fresh.manualRequired).toBe(false);
   expect(fresh.newBinding?.sessionId).toBe("thread-new");
 });
+
+// #215 review: recording over an unreadable file would erase every other launcher's record.
+test("a launch is not recorded over an unreadable record file", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-record-unreadable-"));
+  const previous = { handle: process.env.ORCA_TERMINAL_HANDLE, worktree: process.env.ORCA_WORKTREE_ID, launchId: process.env.AGENTHUB_LAUNCH_ID, instance: process.env.AGENTHUB_INSTANCE_ID };
+  process.env.ORCA_TERMINAL_HANDLE = "term-recorded";
+  process.env.ORCA_WORKTREE_ID = worktreeId;
+  const shown = terminal({ handle: "term-recorded", agentIdentity: undefined, sessionId: undefined });
+  const runner = async (argv: readonly string[]) => argv[1] === "show" ? { result: { terminal: shown } } : { result: {} };
+  try {
+    writeFileSync(join(stateDir, "terminal-recovery.json"), "[{ half a write");
+    await expect(recordTerminalLaunch("codex", root, stateDir, "instance-1", runner)).rejects.toThrow("cannot be read, so recording this launch would erase every other launcher's record");
+    expect(readFileSync(join(stateDir, "terminal-recovery.json"), "utf8")).toBe("[{ half a write");
+  } finally {
+    for (const [key, value] of [["ORCA_TERMINAL_HANDLE", previous.handle], ["ORCA_WORKTREE_ID", previous.worktree], ["AGENTHUB_LAUNCH_ID", previous.launchId], ["AGENTHUB_INSTANCE_ID", previous.instance]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});

@@ -77,7 +77,12 @@ export interface RecoveryOperation {
 
 export { recoveryCommand };
 const STOP = "--stop-and-archive --reason <text>";
-/** Whether the staged target reads recovery waivers: a fresh session cannot be released without them. */
+/**
+ * Whether the staged target reads recovery waivers: a fresh session cannot be released without them. The one waiver
+ * check (status, dispose, staging and restore all use it).
+ * ponytail: a text sniff of the target's restart.ts; a rename or re-export reads as "no waivers" (the safe side). Upgrade
+ * path: a capability list in package.json read here and by coordinatorCurrent.
+ */
 export function targetReadsWaivers(op: { targetRoot?: string }): boolean {
   try { return !!op.targetRoot && readFileSync(join(op.targetRoot, "src/hub/restart.ts"), "utf8").includes("export function readRecoveryWaivers"); } catch { return false; }
 }
@@ -261,7 +266,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       if (live.recovery.ready) return sourceRoster(live, planned, progress, again);
       if (driver.now() >= deadline) {
         await driver.abort(project, id, instance);
-        throw new Error(`${project.id}: active turns, approvals or completion checks did not finish; source runtime left running; next actions: ${nextActions(op).join(" | ")}`);
+        throw new Error(`${project.id}: active turns, approvals or completion checks did not finish; source runtime left running; next actions: ${nextActions(op, undefined, { [project.id]: await driver.inspect(project) }).join(" | ")}`);
       }
       await driver.sleep(250);
     }
@@ -326,6 +331,10 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
           } while (driver.now() < deadline);
         } else if (live.state === "running") {
           throw new Error(`${project.id}: the source daemon was replaced by instance ${live.instanceId ?? "unknown"}; refusing to prepare, close or stop it; next action: ${recoveryCommand(op, "status")} lists the recorded effects, and ${recoveryCommand(op, "dispose", STOP)} ends this operation, leaving that daemon running`);
+        } else if (live.state === "stopped" && !progress.commitSent && (!op.sourceRoot || coordinatorCurrent(op.sourceRoot))) {
+          // #215: this coordinator records a commit request before sending it, so a stopped source with none crashed while
+          // prepared: no snapshot was committed and there is nothing to start from. The phase stays `prepared`.
+          throw new Error(`${project.id}: the source stopped while prepared and no commit was requested, so there is nothing to restore; next actions: ${nextActions(op, undefined, { [project.id]: live }).join(" | ")}`);
         }
         if (live.state !== "stopped") throw new Error("old shutdown is not verified; not starting a second daemon");
         progress.phase = "stopped"; save();

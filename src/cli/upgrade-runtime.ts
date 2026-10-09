@@ -307,11 +307,6 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
     }
     return { state: "gone" };
   };
-  // Reconnect-only (#206) and fresh sessions (#215) need a target hub that reads recovery-waivers.json.
-  const waiversSupported = async (root: string) => {
-    const probe = await run([process.execPath, "-e", `import { readRecoveryWaivers } from ${JSON.stringify(join(root, "src/hub/restart.ts"))}; console.log(typeof readRecoveryWaivers)`]);
-    return probe.code === 0 && probe.stdout.trim() === "function";
-  };
   const attachedId = async (planned: PlannedProject, peer: string, op: RecoveryOperation): Promise<string> => {
     for (const deadline = now() + RECONNECT_WAIT_MS; ;) {
       const current = (await inspectRecovery(planned.project)).peers.find((p) => p.id === peer && p.state !== "offline");
@@ -329,7 +324,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         : await stageRelease(op.plan.version, op.plan.integrity!, run);
       const protocol = await run([process.execPath, "-e", `import { PROTOCOL } from ${JSON.stringify(join(target.root, "src/hub/control-client.ts"))}; console.log(PROTOCOL)`]);
       if (protocol.code !== 0 || Number(protocol.stdout.trim()) !== PROTOCOL) throw new Error("target protocol requires a newer coordinator; staged package retained, runtimes unchanged");
-      if (op.plan.projects.some((p) => p.reconnectOnly?.length || p.freshStart?.length) && !(await waiversSupported(target.root))) {
+      // Reconnect-only (#206) and fresh sessions (#215) need a target hub that reads recovery-waivers.json.
+      if (op.plan.projects.some((p) => p.reconnectOnly?.length || p.freshStart?.length) && !targetReadsWaivers({ targetRoot: target.root })) {
         throw new Error(`target ${op.plan.version} predates recovery waivers, so its hub could never accept a reconnect-only Claude or a fresh Codex start; staged package retained, runtimes unchanged; next action: ${recoveryCommand(op, "abort")}, then choose a newer target`);
       }
       return target;
@@ -355,7 +351,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         // A peer whose TUI already exited left nothing to close: the source reports it
         // detached, and inventory silence is the same proof the pending-reconcile path
         // accepts. No mutation is issued for a terminal that no longer exists (#21).
-        const attached = (await inspectRecovery(planned.project)).peers.find((item) => item.id === binding.peer);
+        const sourceNow = await inspectRecovery(planned.project);
+        const attached = sourceNow.peers.find((item) => item.id === binding.peer);
         if (attached?.state === "offline") {
           const result = await run([orcaExecutable(), "terminal", "list", "--json"]);
           const inventory = JSON.parse(result.stdout);
@@ -368,15 +365,15 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         }
         // #215: check resume viability again right before the destructive effect (a planned fresh start has none to lose).
         const transcript = binding.peer === "codex" ? codexTranscript(binding) : "found";
-        if (transcript === "unknown") throw new Error(`${unresumable(binding)}; no terminal was closed; next action: make that store readable, then ${recoveryCommand(op, "resume")}`);
+        if (transcript === "unknown") throw new Error(`${unresumable(binding)}; no terminal was closed; make that store readable; next actions: ${nextActions(op, undefined, { [planned.project.id]: sourceNow }).join(" | ")}`);
         if (transcript === "missing" && !planned.freshStart?.includes("codex")) {
-          throw new Error(`${unresumable(binding)}; no terminal was closed. To continue without its conversation, end that Codex session and close its Orca terminal ${binding.handle}, then resume: it stops at restoring codex, where ${targetReadsWaivers(op) ? "--fresh-session codex becomes a choice" : `only stop-and-archive remains (target ${op.plan.version} cannot read recovery waivers, so it could not release a new session)`}. Stop-and-archive releases the source hold (sessions this operation has not closed stay open; those it closed stay closed). Next actions: ${nextActions(op).join(" | ")}`);
+          throw new Error(`${unresumable(binding)}; no terminal was closed. To continue without its conversation, end that Codex session and close its Orca terminal ${binding.handle}, then resume: it stops at restoring codex, where ${targetReadsWaivers(op) ? "--fresh-session codex becomes a choice" : `only stop-and-archive remains (target ${op.plan.version} cannot read recovery waivers, so it could not release a new session)`}. Stop-and-archive releases the source hold (sessions this operation has not closed stay open; those it closed stay closed). Next actions: ${nextActions(op, undefined, { [planned.project.id]: sourceNow }).join(" | ")}`);
         }
         const idle = await waitForIdle(binding, 600_000, terminalOptions(run));
-        if (!idle.satisfied) throw new Error(`${binding.peer}: terminal is not verified idle; source retained; finish or cancel its turn, then: ${nextActions(op).join(" | ")}`);
+        if (!idle.satisfied) throw new Error(`${binding.peer}: terminal is not verified idle; source retained; finish or cancel its turn, then: ${nextActions(op, undefined, { [planned.project.id]: await inspectRecovery(planned.project) }).join(" | ")}`);
         const source = await inspectRecovery(planned.project);
         if (source.instanceId !== planned.source.instanceId || source.recovery?.operationId !== op.id || !source.recovery.ready) {
-          throw new Error(`source preparation expired or changed while waiting for the terminal; no terminal was closed; next actions: ${nextActions(op).join(" | ")}`);
+          throw new Error(`source preparation expired or changed while waiting for the terminal; no terminal was closed; next actions: ${nextActions(op, undefined, { [planned.project.id]: source }).join(" | ")}`);
         }        // Refresh the same prepared lease immediately before the terminal effect. Preserve
         // the original peer roster, including any terminal already closed in this operation.
         await control(planned.project, "prepare", op.id, planned.source.instanceId!);
@@ -468,11 +465,6 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           // failed, nothing live: launched again below; the receipt stays `failed` until `pending` replaces it, so a
           // refusal on the way keeps the failed-restoration choices
         }
-        if (transcript() === "unknown") throw new Error(`${unresumable(original)}; no terminal was created; next action: make that store readable, then ${resume}`);
-        if (transcript() === "missing" && !fresh()) {
-          progress.terminals[key] = "failed"; save();
-          throw notRestored(unresumable(original).slice("codex: ".length));
-        }
         // Never create beside a live launch, nor on evidence that could not be read: read now, not at restore start.
         // The planned session already attached is the restoration (the table's row for it), not a reason to block.
         const evidence = await peerEvidence(planned, progress, original.peer);
@@ -481,8 +473,13 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           continue;
         }
         if (evidence.state !== "gone") throw blocked(evidence);
+        if (transcript() === "unknown") throw new Error(`${unresumable(original)}; no terminal was created; next action: make that store readable, then ${resume}`);
+        if (transcript() === "missing" && !fresh()) {
+          progress.terminals[key] = "failed"; save();
+          throw notRestored(unresumable(original).slice("codex: ".length));
+        }
         if (fresh()) {
-          if (!(await waiversSupported(op.targetRoot!))) throw new Error(`${original.peer}: target ${op.plan.version} predates recovery waivers, so it cannot accept a new session; next action: ${recoveryCommand(op, "dispose", "--stop-and-archive --reason <text>")}`);
+          if (!targetReadsWaivers(op)) throw new Error(`${original.peer}: target ${op.plan.version} predates recovery waivers, so it cannot accept a new session; next action: ${recoveryCommand(op, "dispose", "--stop-and-archive --reason <text>")}`);
           // The restored daemon must accept the new session instead of the recorded one.
           waiveRecoveryPeers(planned.project.stateDir, op.id, { [original.peer]: progress.fresh?.[original.peer] ? "fresh-session" : "fresh-start" });
         }

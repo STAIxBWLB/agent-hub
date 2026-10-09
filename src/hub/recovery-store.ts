@@ -73,7 +73,11 @@ export function recoveryCommand(op: { id: string; sourceRoot?: string }, action:
   return `${cli} recovery ${action} ${op.id}${flags ? ` ${flags}` : ""}`;
 }
 
-/** Whether a coordinator has the #215 recovery commands (dispose, re-preparation, next actions). */
+/**
+ * Whether a coordinator has the #215 recovery commands (dispose, re-preparation, next actions).
+ * ponytail: a text sniff of its upgrade.ts; a rename or re-export reads as an older coordinator (the running release is
+ * then named, which is safe). Upgrade path: a capability list in package.json, shared with targetReadsWaivers.
+ */
 export function coordinatorCurrent(sourceRoot: string): boolean {
   try { return readFileSync(join(sourceRoot, "src/cli/upgrade.ts"), "utf8").includes("export async function disposeRecovery"); } catch { return false; }
 }

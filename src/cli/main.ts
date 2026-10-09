@@ -593,6 +593,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
     }
     const options = piFlags();
+    // #215: as for Codex, a TUI launch by the recovery operation holding the lock records itself before the hub round
+    // trip, so a resume in that window never reads it as gone; an ordinary launch records only after the hub accepted it.
+    const recovering = options.mode === "tui" && !!process.env.AGENTHUB_RECOVERY_OPERATION && process.env.AGENTHUB_RECOVERY_OPERATION === recoveryLock();
+    const before = readControl(stateDir);
+    if (recovering && before?.instanceId) await recordTerminalLaunch("pi", cwd, stateDir, before.instanceId);
     const hub = await connect();
     const res = await hub.request({ t: "start", peer: "pi", args: options, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
     hub.close();
@@ -604,7 +609,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       delete launchEnv.AGENTHUB_RECOVERY_OPERATION;
       delete launchEnv.AGENTHUB_UNATTENDED;
       const control = readControl(stateDir);
-      if (control?.instanceId) await recordTerminalLaunch("pi", cwd, stateDir, control.instanceId);
+      if (!recovering && control?.instanceId) await recordTerminalLaunch("pi", cwd, stateDir, control.instanceId);
       return execWithEnv(launch.cmd, launch.args, launchEnv);
     }
     console.log(res.already ? "pi is already attached" : 'pi attached (headless). Talk to it with: ahub say @pi "..."');

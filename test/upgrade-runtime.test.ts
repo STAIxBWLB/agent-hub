@@ -691,3 +691,36 @@ test("an unreadable launcher record keeps a pending restoration pending and crea
     server.stop(true); rmSync(temp, { recursive: true, force: true });
   }
 });
+
+// #215 review: what is live is read before a missing rollout is receipted failed: the planned thread attached is the
+// restoration, and an unreadable target changes no receipt.
+test("an absent Codex receipt with a missing rollout reads the evidence first", async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-evidence-first-")));
+  const stateDir = join(temp, "state"), codexHome = join(temp, "codex-home");
+  mkdirSync(stateDir); mkdirSync(join(codexHome, "sessions"), { recursive: true });
+  const server = fakeHub(temp, stateDir, "i-target", () => ({ operationId: "op-215", phase: "restored", ready: true, peers: { codex: { id: "codex", state: "idle", threadId: "thread-T" } } }));
+  const shown = { handle: "term-attached", incarnationId: "inc-attached", worktreeId: "wt", worktreePath: temp, agentIdentity: "codex", sessionId: "thread-T", connected: true };
+  const run = async (argv: string[]) => ({ code: 0, stdout: JSON.stringify({ ok: true, result: argv[2] === "list" ? { terminals: [shown] } : argv[2] === "wait" ? { wait: { satisfied: true } } : { terminal: shown } }), stderr: "" });
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: { CODEX_HOME: codexHome } };
+  const planned: PlannedProject = {
+    project: { id: "p-215", root: temp, stateDir, instanceId: "i-target", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: "codex", state: "idle", threadId: "thread-T" }], blockers: [] },
+    terminals: [{ peer: "codex", handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", projectRoot: temp, sessionId: "thread-T", launch, launchMetadata: launch }], blockers: [],
+  };
+  const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "started", terminals: { "closed:codex": true } };
+  const op = { id: "op-215", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "home");
+  try {
+    await makeRecoveryDriver(run).restore(planned, progress, op, "native", () => {});
+    expect(progress.terminals["restored:codex"]).toMatchObject({ handle: "term-attached", sessionId: "thread-T" });
+
+    server.stop(true); // the target stops answering
+    delete progress.terminals["restored:codex"];
+    await expect(makeRecoveryDriver(run).restore(planned, progress, op, "native", () => {})).rejects.toThrow("whether a codex session or launcher is live cannot be told (the target hub reads as unavailable); nothing was recorded or created");
+    expect(progress.terminals["restored:codex"]).toBeUndefined(); // not receipted failed for the missing rollout
+  } finally {
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+    server.stop(true); rmSync(temp, { recursive: true, force: true });
+  }
+});
