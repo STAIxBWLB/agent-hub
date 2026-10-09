@@ -1015,3 +1015,52 @@ test("--fresh-session is neither offered nor accepted while the planned session 
   await expect(disposeRecovery(f.operation.id, { fresh: "codex" }, "lost", f.driver, f.home)).rejects.toThrow("codex: its planned session is attached again, so nothing was lost");
   expect(readOperation<RecoveryOperation>(f.operation.id, f.home).audit).toBeUndefined();
 });
+
+// #227: an older coordinator's runner never reads `disposition`, and an older global `ahub recovery resume` runs it.
+// Every older runner and abort refuses a receipt whose schema is not 1 before the lock and the runner claim.
+test("stop-and-archive on an older coordinator's operation writes schema 2 with its disposition; a #215 one keeps 1", async () => {
+  const older = failedRestore();
+  older.operation.sourceRoot = "/releases/source-older";
+  writeOperation(older.operation.id, older.operation, older.home);
+  const stop = older.driver.stopAndArchive;
+  let recorded: RecoveryOperation | undefined;
+  older.driver.stopAndArchive = async () => { recorded = readOperation(older.operation.id, older.home); throw new Error("crashed mid-stop"); };
+  await expect(disposeRecovery(older.operation.id, { stop: true }, "give up", older.driver, older.home)).rejects.toThrow("crashed mid-stop");
+  expect(recorded).toMatchObject({ schema: 2, disposition: { choice: "stop-and-archive" } }); // the same write, before the first act
+  // This release reads it as before: status, resume refuses it, abort refuses it, and a dispose rerun finishes it.
+  const op = readOperation<RecoveryOperation>(older.operation.id, older.home);
+  expect(publicOperation(op, undefined, await liveProjects(op, older.driver.inspect)).next).toEqual([`rerun ${C} dispose ${op.id} --stop-and-archive --reason <text>`]);
+  expect((await runRecovery(op.id, older.driver, older.home)).error).toContain("stop-and-archive stopped partway and keeps the lock: crashed mid-stop");
+  await expect(abortRecovery(op.id, older.driver, older.home)).rejects.toThrow("stop-and-archive of this operation is partway");
+  older.driver.stopAndArchive = stop;
+  const done = await disposeRecovery(op.id, { stop: true }, "finish", older.driver, older.home);
+  expect(done).toMatchObject({ schema: 2, phase: "cancelled" });
+  expect(recoveryLock(older.home)).toBeUndefined();
+
+  const current = failedRestore(); // preserved by this package: a #215 coordinator, whose runner refuses a disposition itself
+  expect((await disposeRecovery(current.operation.id, { stop: true }, "give up", current.driver, current.home)).schema).toBe(1);
+});
+
+test("a receipt's schema is 1, or 2 only with a disposition; anything else is refused before any act", async () => {
+  for (const schema of [2, 3, 0]) {
+    const f = fixture();
+    writeOperation(f.operation.id, { ...f.operation, schema }, f.home);
+    await expect(runRecovery(f.operation.id, f.driver, f.home)).rejects.toThrow("unsupported operation receipt");
+    await expect(abortRecovery(f.operation.id, f.driver, f.home)).rejects.toThrow("unsupported operation receipt");
+    await expect(disposeRecovery(f.operation.id, { stop: true }, "give up", f.driver, f.home)).rejects.toThrow("unsupported operation receipt");
+    expect(f.calls).toEqual([]);
+    expect(recoveryRunner(f.operation.id, f.home)).toBeUndefined();
+  }
+});
+
+test("a dispose rerun moves a disposition 0.12.20 recorded at schema 1 on an older coordinator's operation to schema 2", async () => {
+  const f = failedRestore();
+  // What 0.12.20 left: an older coordinator's operation, its stop-and-archive recorded at schema 1 and stopped partway.
+  Object.assign(f.operation, { sourceRoot: "/releases/source-older", disposition: { choice: "stop-and-archive", at: 1, projects: {} } });
+  writeOperation(f.operation.id, f.operation, f.home);
+  // Even a rerun that refuses (a hub that cannot be read) holds the runner claim long enough to move it.
+  f.states.set("beta", { ...f.states.get("beta")!, state: "unavailable" });
+  await expect(disposeRecovery(f.operation.id, { stop: true }, "finish", f.driver, f.home)).rejects.toThrow("beta: its hub reads as unavailable");
+  expect(readOperation<RecoveryOperation>(f.operation.id, f.home).schema).toBe(2);
+  expect(f.calls).toEqual([]);
+});

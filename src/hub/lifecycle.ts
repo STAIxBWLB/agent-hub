@@ -8,6 +8,7 @@ import { startDaemon } from "./daemon.ts";
 import { Registry, type Project } from "./registry.ts";
 import { CODEX_APP, CODEX_PROXY, CONTROL, SWITCHYARD } from "./ports.ts";
 import { assertLifecycleAvailable, recoveryLock } from "./recovery-store.ts";
+import { processLiveness, processSignature } from "../pi/process-signature.ts";
 
 export type ProjectInspection = {
   state: "running" | "stopped" | "stopping" | "unavailable" | "incompatible" | "missing" | "starting";
@@ -15,19 +16,12 @@ export type ProjectInspection = {
   error?: string;
 };
 
-/** Alive, gone (`false`), or uncertain (`undefined`: no valid pid, or no permission to ask). */
-export function processAlive(pid: unknown): boolean | undefined {
-  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return undefined;
-  try { process.kill(pid, 0); return true; }
-  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? false : undefined; }
-}
-
 /** A port or PID alone is never evidence that the selected project's hub is alive. */
 export async function inspectProject(project: Project): Promise<ProjectInspection> {
   if (!existsSync(project.root)) return { state: "missing", error: "project directory is missing" };
   const control = readControl(project.stateDir);
   if (control) {
-    if (processAlive(control.pid) === false) return { state: "stopped" };
+    if (processLiveness(control.pid, control.pidSignature) === "gone") return { state: "stopped" };
     if (control.protocol !== undefined && control.protocol !== PROTOCOL) {
       return { state: "incompatible", error: `hub protocol ${control.protocol}; stop with its matching CLI before upgrading` };
     }
@@ -43,7 +37,7 @@ export async function inspectProject(project: Project): Promise<ProjectInspectio
       if (!response.status || response.status.projectId !== project.id || !response.status.instanceId || response.status.cwd !== project.root) {
         return { state: "unavailable", error: "authenticated hub identity does not match registration" };
       }
-      if (project.instanceId && project.instanceId !== response.status.instanceId && processAlive(project.pid) !== false) {
+      if (project.instanceId && project.instanceId !== response.status.instanceId && processLiveness(project.pid, project.pidSignature) !== "gone") {
         return { state: "unavailable", error: "daemon instance differs from the registry claim" };
       }
       return response.status.stopping
@@ -53,10 +47,11 @@ export async function inspectProject(project: Project): Promise<ProjectInspectio
       return { state: (error as { code?: number }).code === 4426 ? "incompatible" : "unavailable", error: (error as Error).message };
     } finally { client?.close(); }
   }
-  if (project.instanceId && processAlive(project.pid) !== false) return { state: "starting", error: "daemon owns a startup or shutdown claim" };
+  if (project.instanceId && processLiveness(project.pid, project.pidSignature) !== "gone") return { state: "starting", error: "daemon owns a startup or shutdown claim" };
   try {
+    // Written only by daemons up to 0.12.20 (#226): an unsigned legacy record, read as those releases read it.
     const pid = Number(readFileSync(join(project.stateDir, "hub.pid"), "utf8").trim());
-    if (processAlive(pid) !== false) return { state: "unavailable", error: "state has a live or uncertain owner but no usable control connection" };
+    if (processLiveness(pid) !== "gone") return { state: "unavailable", error: "state has a live or uncertain owner but no usable control connection" };
   } catch { /* no legacy PID file */ }
   return { state: "stopped" };
 }
@@ -109,7 +104,7 @@ export async function runProjectDaemon(project: Project, unattended = false): Pr
     const before = await inspectProject(registry.get(project.id) ?? project);
     if (before.state === "running" || before.state === "starting") return;
     if (before.state !== "stopped") throw new Error(before.error ?? before.state);
-    claimed = registry.claim(project.id, instanceId, process.pid);
+    claimed = registry.claim(project.id, instanceId, process.pid, processSignature(process.pid));
     if (!claimed) return;
     let base = registry.get(project.id)!.basePort;
     for (let attempt = 0; attempt < 100; attempt++) {
@@ -185,7 +180,7 @@ function claimHeld(id: string, instanceId: string): boolean {
   const registry = new Registry();
   try {
     const row = registry.get(id);
-    return row?.instanceId === instanceId && (row.pid === null || processAlive(row.pid) !== false);
+    return row?.instanceId === instanceId && (row.pid === null || processLiveness(row.pid, row.pidSignature) !== "gone");
   } finally { registry.close(); }
 }
 

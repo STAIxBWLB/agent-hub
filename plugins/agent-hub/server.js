@@ -15306,7 +15306,8 @@ function readControl(stateDir) {
       instanceId: status.instanceId,
       cwd: status.cwd,
       protocol: status.protocol,
-      pid: status.pid
+      pid: status.pid,
+      ...typeof status.pidSignature === "string" && status.pidSignature ? { pidSignature: status.pidSignature } : {}
     };
   } catch {
     return;

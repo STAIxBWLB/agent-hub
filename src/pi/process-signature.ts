@@ -17,3 +17,26 @@ export function processSignature(pid: number): string | undefined {
     return text ? createHash("sha256").update(text).digest("hex") : undefined;
   } catch { return undefined; }
 }
+
+export type Liveness = "live" | "gone" | "unknown";
+
+/**
+ * #226: the one ownership check behind every recorded pid (hub manifest, registry claim, recovery runner, manager
+ * owner, launcher records). With a recorded `signature` the identity decides: equal is live, different is gone (the
+ * pid was reused, after a reboot for example, also by a process we may not signal), and a pid that exists but whose
+ * identity cannot be read is unknown. Without one (records written by 0.12.20 and older) the pid probe answers as it
+ * always did: live, gone on ESRCH, unknown otherwise. Unknown is never gone.
+ */
+// ponytail: `ps lstart` is derived from boot time plus the process's age; a wall-clock step on Linux can change it for a
+// live process, which then reads as gone (a second hub could take its claim). Upgrade path: a boot-id or start-tick
+// (Linux /proc/<pid>/stat field 22) component in the signature.
+export function processLiveness(pid: unknown, signature?: string | null, identity: (pid: number) => string | undefined = processSignature): Liveness {
+  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return "unknown";
+  if (signature) {
+    let current: string | undefined;
+    try { current = identity(pid); } catch { /* unreadable: the pid probe below decides between gone and unknown */ }
+    if (current) return current === signature ? "live" : "gone";
+  }
+  try { process.kill(pid, 0); return signature ? "unknown" : "live"; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "unknown"; }
+}

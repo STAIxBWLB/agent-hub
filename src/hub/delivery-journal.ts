@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { Database } from "bun:sqlite";
 import type { BusSnapshot } from "./bus.ts";
 import type { Envelope } from "./envelope.ts";
+import { processLiveness } from "../pi/process-signature.ts";
 
 export type JournalDeliveryState =
   | "queued"
@@ -331,13 +332,12 @@ export class DeliveryJournal {
         Number.isInteger(status.pid) &&
         Number(status.pid) > 0
       ) {
-        try {
-          process.kill(Number(status.pid), 0);
+        // #226: a signed manifest whose pid was reused is gone; with a signature, an owner that cannot be identified is
+        // refused like a live one. Unsigned, a pid that cannot be probed (EPERM) never refused here, as before.
+        const signature = typeof status.pidSignature === "string" ? status.pidSignature : undefined;
+        const owner = processLiveness(Number(status.pid), signature);
+        if (owner === "live" || (signature && owner === "unknown"))
           throw new Error("delivery journal is owned by a live instance");
-        } catch (e) {
-          if (e instanceof Error && e.message.includes("owned by a live"))
-            throw e;
-        }
       }
     } catch (e) {
       if (e instanceof Error && e.message.includes("owned by a live")) throw e;

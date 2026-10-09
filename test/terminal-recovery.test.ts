@@ -433,3 +433,120 @@ test("an unreadable record file blocks binding a terminal", async () => {
     expect(calls).toEqual([]);
   } finally { rmSync(stateDir, { recursive: true, force: true }); }
 });
+
+// #228: a row that cannot be evaluated is unknown for every question it may answer, and a writer never drops it.
+const rowFor = (stateDir: string, overrides: Record<string, unknown> = {}) => ({ peer: "claude", projectRoot: root, stateDir, instanceId: "i-now", launcherPid: process.pid,
+  launcherSignature: "launcher-self", launchId: "launch-1", handle: "term-claude", incarnationId: "inc-claude", worktreeId, env: {}, ...overrides });
+const identitySelf = (pid: number) => pid === process.pid ? "launcher-self" : undefined;
+
+test("an invalid launch row for the queried peer and instance is unknown, never no launcher; other rows change nothing", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-invalid-row-"));
+  const file = join(stateDir, "terminal-recovery.json");
+  const options = { stateDir, instanceId: "i-now", processIdentity: identitySelf };
+  try {
+    const cases: [string, unknown, "unknown" | "none"][] = [
+      ["a field of the wrong type", rowFor(stateDir, { launcherPid: "12" }), "unknown"],
+      ["a missing signature", rowFor(stateDir, { launcherSignature: "" }), "unknown"],
+      ["no readable peer, root or instance", { peer: 7, launcherPid: process.pid }, "unknown"],
+      ["not an object", "garbled", "unknown"],
+      ["another peer's row", rowFor(stateDir, { peer: "codex", launcherPid: "12" }), "none"],
+      ["an older instance's row", rowFor(stateDir, { instanceId: "i-old", launcherPid: "12" }), "none"],
+      ["another project's row", rowFor(stateDir, { projectRoot: "/elsewhere", launcherPid: "12" }), "none"],
+    ];
+    for (const [name, invalid, expected] of cases) {
+      writeFileSync(file, JSON.stringify([invalid]));
+      const found = await launcherOf("claude", root, options);
+      if (expected === "unknown") expect(found, name).toEqual({ state: "unknown", invalidRow: true });
+      else expect(found, name).toBeUndefined();
+      // Binding a terminal for that peer is blocked the same way.
+      const { runner } = fake((argv) => argv[1] === "list" ? { result: { terminals: [terminal({ agentIdentity: "claude", handle: "term-claude", incarnationId: "inc-claude" })] } }
+        : { result: { terminal: terminal({ agentIdentity: "claude", handle: "term-claude", incarnationId: "inc-claude" }) } });
+      const inspected = await inspectTerminals(root, { claude: session }, { runner, ...options });
+      expect(inspected.blockers.some((b) => b.code === "ownership-unknown" && b.message.includes("cannot be evaluated")), name).toBe(expected === "unknown");
+    }
+    // Beside a valid live row of its own, an invalid row for the same launcher still makes it unknown.
+    writeFileSync(file, JSON.stringify([rowFor(stateDir), rowFor(stateDir, { launchId: 42 })]));
+    expect(await launcherOf("claude", root, options)).toEqual({ state: "unknown", invalidRow: true });
+    writeFileSync(file, JSON.stringify([rowFor(stateDir), rowFor(stateDir, { peer: "pi", launchId: 42 })]));
+    expect((await launcherOf("claude", root, options))?.state).toBe("live");
+  } finally { rmSync(stateDir, { recursive: true, force: true }); }
+});
+
+test("a restoration create beside an invalid row of its own launch reads may-run, never exited", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-invalid-create-"));
+  try {
+    writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify([rowFor(stateDir, { peer: "codex", instanceId: "i-target", handle: "term-new", launcherPid: "unreadable" })]));
+    const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js codex resume session-1", argv: [], env: {} };
+    const binding: TerminalBinding = { peer: "codex", handle: "term-old", incarnationId: "inc-old", worktreeId, projectRoot: root, sessionId: session, launch, launchMetadata: launch };
+    const gone = { status: 1, stdout: JSON.stringify({ ok: false, error: { code: "terminal_handle_stale" } }) };
+    const { runner } = fake((argv) => argv[1] === "create" ? { result: { terminal: { handle: "term-new", incarnationId: "inc-new", worktreeId } } }
+      : argv[1] === "list" ? { result: { terminals: [terminal({ handle: "term-new", incarnationId: "inc-new" })] } } : gone);
+    const created = await createTerminal(binding, { runner, stateDir, instanceId: "i-target", processIdentity: identitySelf }, 5_000);
+    expect(created.blockers.map((b) => b.code)).not.toContain("launcher-exited");
+    expect(created.manualRequired).toBe(true);
+  } finally { rmSync(stateDir, { recursive: true, force: true }); }
+});
+
+test("recording a launch keeps every invalid row unchanged and replaces only its own valid row; old layouts validate", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-invalid-keep-"));
+  const file = join(stateDir, "terminal-recovery.json");
+  const previous = { handle: process.env.ORCA_TERMINAL_HANDLE, worktree: process.env.ORCA_WORKTREE_ID };
+  process.env.ORCA_TERMINAL_HANDLE = "term-claude";
+  process.env.ORCA_WORKTREE_ID = worktreeId;
+  try {
+    const invalid = { peer: "claude", projectRoot: root, instanceId: "i-now", launcherPid: "hand edit", nested: { kept: [1, 2] } };
+    const newer = { ...rowFor(stateDir, { peer: "codex" }), fieldFromANewerRelease: { x: 1 } }; // a valid row of a later layout
+    // Exactly what v0.5.0 through v0.12.19 write (same fields in every release): validates and reads as before.
+    const old = rowFor(stateDir, { peer: "pi", launchId: "launch-pi" });
+    const replaced = rowFor(stateDir, { launchId: "launch-replaced" });
+    writeFileSync(file, JSON.stringify([invalid, newer, old, replaced]));
+    expect((await launcherOf("pi", root, { stateDir, instanceId: "i-now", processIdentity: identitySelf }))?.state).toBe("live");
+    const shown = terminal({ handle: "term-claude", incarnationId: "inc-claude", agentIdentity: "claude" });
+    const { runner } = fake(() => ({ result: { terminal: shown } }));
+    const recorded = await recordTerminalLaunch("claude", root, stateDir, "i-now", { runner, processIdentity: identitySelf });
+    const rows = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>[];
+    expect(rows).toHaveLength(4);
+    expect(rows).toContainEqual(invalid);
+    expect(rows).toContainEqual(newer);
+    expect(rows).toContainEqual(old);
+    expect(rows).not.toContainEqual(replaced);
+    expect(rows).toContainEqual(JSON.parse(JSON.stringify(recorded)));
+  } finally {
+    if (previous.handle === undefined) delete process.env.ORCA_TERMINAL_HANDLE; else process.env.ORCA_TERMINAL_HANDLE = previous.handle;
+    if (previous.worktree === undefined) delete process.env.ORCA_WORKTREE_ID; else process.env.ORCA_WORKTREE_ID = previous.worktree;
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// #228: up to 0.12.12 the launcher hashed `ps` in its own TZ and locale (#177 pinned it). A live launcher recorded that
+// way reads live to a reader in the same environment. Real subprocesses: in-process TZ changes do not reach ps.
+test("a live launcher recorded with a pre-0.12.13 unpinned signature reads live in the reader's environment", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-unpinned-"));
+  const launcher = Bun.spawn([process.execPath, "-e", `
+    const r = Bun.spawnSync(["ps", "-p", String(process.pid), "-o", "lstart=,comm="], { stdout: "pipe", stderr: "pipe" });
+    const signature = new Bun.CryptoHasher("sha256").update(r.stdout.toString().trim()).digest("hex");
+    await Bun.write(${JSON.stringify(join(stateDir, "terminal-recovery.json"))}, JSON.stringify([{ peer: "claude", projectRoot: ${JSON.stringify(root)},
+      stateDir: ${JSON.stringify(stateDir)}, instanceId: "i-old-layout", launcherPid: process.pid, launcherSignature: signature, launchId: "l", handle: "h",
+      incarnationId: "inc", worktreeId: "wt", env: {} }]));
+    console.log("recorded");
+    await Bun.sleep(60_000);`], { stdout: "pipe", stderr: "pipe", env: { ...process.env, TZ: "Asia/Seoul" } });
+  try {
+    const reader = launcher.stdout.getReader();
+    let text = "";
+    while (!text.includes("\n")) { const { value, done } = await reader.read(); if (done) break; text += new TextDecoder().decode(value); }
+    reader.releaseLock();
+    expect(text.trim()).toBe("recorded");
+    const read = (tz: string) => {
+      const run = Bun.spawnSync([process.execPath, "-e", `
+        import { launcherOf } from ${JSON.stringify(join(import.meta.dir, "../src/cli/terminal-recovery.ts"))};
+        console.log(JSON.stringify(await launcherOf("claude", ${JSON.stringify(root)}, { stateDir: ${JSON.stringify(stateDir)}, instanceId: "i-old-layout" })));`],
+        { stdout: "pipe", stderr: "pipe", env: { ...process.env, TZ: tz } });
+      if (run.exitCode !== 0) throw new Error(run.stderr.toString());
+      return JSON.parse(run.stdout.toString().trim()).state;
+    };
+    expect(read("Asia/Seoul")).toBe("live"); // the pinned signature differs (UTC), the unpinned one matches
+  } finally {
+    launcher.kill(); await launcher.exited;
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});

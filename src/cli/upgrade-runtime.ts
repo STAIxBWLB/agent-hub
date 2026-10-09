@@ -92,7 +92,11 @@ async function rpc(project: Project, message: Record<string, unknown>, protocol 
 }
 
 export async function inspectRecovery(project: Project): Promise<Inspection> {
-  const base = await inspectProject(project);
+  // #226: the claim is judged by the registry as it is now, never by the plan's frozen copy, which holds the source's
+  // pid from planning time (after a reboot another process may hold it). A registry that cannot be read throws: the
+  // caller reads that as not inspected, never as stopped.
+  const claim = registeredProjects().find((p) => p.id === project.id);
+  const base = await inspectProject({ ...project, instanceId: claim?.instanceId ?? null, pid: claim?.pid ?? null, pidSignature: claim?.pidSignature ?? null });
   const control = readControl(project.stateDir);
   const sourceProtocol = control?.protocol;
   const legacySupported = sourceProtocol !== undefined && RECOVERY_SOURCE_PROTOCOLS.includes(sourceProtocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]);
@@ -175,7 +179,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
         if (recorded?.state === "unknown") {
           // An unreadable launcher is never gone (#215): whether the session is managed cannot be told.
           delete peer.sessionId;
-          blockers.push(`claude: ${recorded.record ? `the launcher recorded in terminal ${recorded.record.handle}` : "the launcher record (terminal-recovery.json)"} cannot be read, so whether the attached session is managed is unknown; manual-required; next action: make it readable (or end that session and close its terminal), then make a new plan`);
+          blockers.push(`claude: ${recorded.record ? `the launcher recorded in terminal ${recorded.record.handle}` : recorded.invalidRow ? "a launch record in terminal-recovery.json that may be its launcher's" : "the launcher record (terminal-recovery.json)"} cannot be read, so whether the attached session is managed is unknown; manual-required; next action: make it readable (or end that session and close its terminal), then make a new plan`);
           continue;
         }
         const launcher = recorded?.state === "live" ? recorded.record! : undefined;
@@ -319,6 +323,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
     if (launch?.state === "live") return { state: "live", handle: launch.record!.handle };
     if (launch?.state === "unknown") {
       return launch.record ? { state: "unknown", why: `its launcher in terminal ${launch.record.handle} cannot be read`, step: `wait until it attaches, or end it and close terminal ${launch.record.handle}` }
+        : launch.invalidRow ? { state: "unknown", why: "a launch record that may be its launcher's cannot be evaluated", step: `inspect ${recordPath(planned.project.stateDir)} and fix that row, or end that launcher and remove its row` }
         : { state: "unknown", why: "the launcher records cannot be read", step: `inspect ${recordPath(planned.project.stateDir)} and move it aside (sessions it recorded then count as unmanaged)` };
     }
     return { state: "gone" };

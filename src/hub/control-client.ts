@@ -30,6 +30,8 @@ export interface ControlDescriptor {
   cwd?: string;
   protocol?: number;
   pid?: number;
+  /** #226: the daemon's processSignature, written into status.json only (not the status reply); absent before 0.12.21. */
+  pidSignature?: string;
 }
 
 /** Where the daemon of this state dir listens. Re-read before every connect: port and token change per run. */
@@ -39,7 +41,8 @@ export function readControl(stateDir: string): ControlDescriptor | undefined {
     const token = readFileSync(join(stateDir, "control-token"), "utf8").trim();
     if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token) return undefined;
     return { url: `ws://127.0.0.1:${status.controlPort}`, token, projectId: status.projectId,
-      instanceId: status.instanceId, cwd: status.cwd, protocol: status.protocol, pid: status.pid };
+      instanceId: status.instanceId, cwd: status.cwd, protocol: status.protocol, pid: status.pid,
+      ...(typeof status.pidSignature === "string" && status.pidSignature ? { pidSignature: status.pidSignature } : {}) };
   } catch {
     return undefined;
   }

@@ -325,7 +325,12 @@ nor accepted when the target cannot read recovery waivers; `status` then says
 why in its own `freshSession` field, since `next` holds commands only. A runner
 record that cannot be read shows as `unknown` in `status`, never as no runner;
 while it reads so, resume, abort and dispose are all refused (the runner claim
-cannot tell its owner), so `next` names only `status` again. Otherwise `status` and every error that lists choices build them with one function
+cannot tell its owner), so `next` names only `status` again. The runner row
+carries its runner's process signature (#226): a row whose pid now belongs to
+another process (after a reboot, for example) is no runner and the next claim
+replaces it; one whose process exists but cannot be identified is `unknown`, and
+the claim refuses it with that reason, never a raw `kill` error. A row an older
+runner wrote has no signature and is judged by its pid alone, as before. Otherwise `status` and every error that lists choices build them with one function
 (`nextActions`), in this order: resume (which also launches a failed peer
 again), unless it can never get past what is live (`resumeBlocked`): a
 recorded final refusal (staging refused the fixed target or preserved source), a
@@ -369,7 +374,15 @@ target instance. It is live when its process signature matches, gone when the
 pid no longer exists (ESRCH) or now belongs to another process, and unknown when
 the pid exists but its identity cannot be read. Unknown is never treated as gone. At planning, an
 unknown Claude launcher blocks: whether the attached session is managed cannot
-be told.
+be told. A row that fails validation is never dropped and never read as "no
+launcher" (#228): unless its readable `peer`, `projectRoot` or `instanceId` names
+another launcher, it is unknown for that peer (it blocks binding, creation and the
+plan's managed check), and `ahub <peer>` writes every such row back unchanged,
+replacing only its own valid row. A launcher recorded by 0.12.12 or older hashed
+`ps` in its own TZ and locale (the pin came with #177): when the pinned signature
+differs, the signature computed the unpinned way in the reader's environment is
+compared too, and a match is live; a reader in another environment still reads
+such a launcher as gone.
 Restore reads this evidence in one place: the target's report, which counts only
 when the target runs as the expected instance, then the recorded launcher. A
 target that does not, a launcher that cannot be read, or a launcher record file
@@ -385,7 +398,18 @@ operation, and the runner keeps the disposition's own error. Abort and `next` de
 (`abortRefusal`). `status`, abort and the runner's errors read the same live
 state: every project not yet verified, its source or its target. A manifest
 whose pid no longer exists reads as stopped, whatever protocol it names; probing
-it would read unavailable forever. A stopped runtime also reports whose
+it would read unavailable forever. So does a manifest whose pid now belongs to
+another process (#226): from 0.12.21 `status.json` carries the daemon's process
+signature (`pidSignature`, in the file only; the status reply is unchanged, so no
+protocol bump), the registry claim carries it bound to the claiming instance, and
+every ownership check (manifest, claim, runner, manager owner) goes through one
+helper that reads live, gone or unknown. Recovery reads the claim from the
+registry as it is now, never from the plan's frozen copy. Daemons no longer write
+`hub.pid`; one an older daemon left is an unsigned legacy record. Records without
+a signature give the answers they always did, so an unsigned claim whose pid was
+reused still reads as starting: no command clears it (a hub started by 0.12.20 or
+older that crashed before a reboot), and the operations guide gives the manual
+clear after the process at that pid is checked. A stopped runtime also reports whose
 unreleased restart snapshot its state directory holds.
 An attached session is the target's report of that peer online with a thread
 (Codex) or session (Claude, Pi) id.
@@ -440,7 +464,16 @@ and its `next` entry says what that runner cannot do. Stop-and-archive stops a
 target that speaks an older control protocol at that protocol (a `kill` fenced
 by its instance), then waits for its manifest and registry claim as the
 lifecycle stop does. The disposition and its audit are written before the first
-act. A recovery launch of `ahub codex` records its launcher before the hub's
+act. When the operation's coordinator predates #215, that same write sets the
+receipt's `schema` to 2 (#227): an older runner never reads `disposition`, and an
+older global `ahub recovery resume` still runs it, but every older runner and
+abort refuses a schema other than 1 before it takes the lock or claims the
+runner, so it exits having written nothing (an older `resume` still prints
+`scheduled`; an older `status` still prints the receipt). A #215 coordinator's
+operation keeps schema 1: its runner refuses a disposition itself, and a 0.12.20
+CLI can still rerun its dispose. This release accepts schema 2 only with a
+disposition, and the next abort or dispose that holds the runner claim moves a
+schema-1 disposition 0.12.20 recorded on an older coordinator's operation to 2. A recovery launch of `ahub codex` records its launcher before the hub's
 `start` round trip; an ordinary launch records it after, so a refused start never
 replaces the record of a Codex already running.
 

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Database } from "bun:sqlite";
 import { hubHome } from "./project.ts";
+import { processLiveness, processSignature } from "../pi/process-signature.ts";
 
 export const operationIdPattern = /^[a-f0-9-]{36}$/;
 export function operationPath(id: string, home = hubHome()): string {
@@ -90,9 +91,13 @@ export function activeOperation(owner: string, home = hubHome()): string {
   return `recovery operation ${owner} is active; ${recoveryCommand(op, "status")} lists what to do next`;
 }
 
+/** #226: the runner row's signature column, added to a runner.db an older release created; older runners leave it NULL. */
+const signed = (db: Database) => (db.query("PRAGMA table_info(runner)").all() as { name: string }[]).some((c) => c.name === "signature");
+
 /**
  * The pid of the runner that holds the operation now, read without claiming it (#215 status): undefined when none does,
- * "unknown" when the record cannot be read (unreadable, or still locked after the busy timeout), never "none" then.
+ * "unknown" when the record cannot be read (unreadable, or still locked after the busy timeout) or its owner cannot be
+ * identified, never "none" then. A row whose signature belongs to another process now is no runner (#226).
  */
 export function recoveryRunner(id: string, home = hubHome()): number | "unknown" | undefined {
   const path = `${operationPath(id, home)}.runner.db`;
@@ -103,11 +108,11 @@ export function recoveryRunner(id: string, home = hubHome()): number | "unknown"
     db.run("PRAGMA busy_timeout = 3000"); // a claim in progress must not read as no runner
     // A crash between creating the file and its table leaves no runner; claimRunner creates the table and claims.
     if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runner'").get()) return undefined;
-    const row = db.query("SELECT pid FROM runner WHERE slot = 1").get() as { pid: number } | null;
+    const row = db.query(`SELECT pid${signed(db) ? ", signature" : ""} FROM runner WHERE slot = 1`).get() as { pid: number; signature?: string | null } | null;
     if (!row) return undefined;
     if (!Number.isSafeInteger(row.pid) || row.pid < 1) return "unknown";
-    try { process.kill(row.pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return undefined; }
-    return row.pid;
+    const state = processLiveness(row.pid, row.signature);
+    return state === "gone" ? undefined : state === "live" ? row.pid : "unknown";
   } catch { return "unknown"; } finally { db?.close(); }
 }
 
@@ -119,15 +124,22 @@ export function claimRunner(id: string, home = hubHome()): () => void {
   const nonce = randomUUID();
   try {
     db.run("PRAGMA busy_timeout = 3000");
-    db.run("CREATE TABLE IF NOT EXISTS runner (slot INTEGER PRIMARY KEY, pid INTEGER NOT NULL, nonce TEXT NOT NULL)");
+    db.run("CREATE TABLE IF NOT EXISTS runner (slot INTEGER PRIMARY KEY, pid INTEGER NOT NULL, nonce TEXT NOT NULL, signature TEXT)");
+    if (!signed(db)) {
+      try { db.run("ALTER TABLE runner ADD COLUMN signature TEXT"); }
+      catch (error) { if (!/duplicate column/i.test((error as Error).message)) throw error; } // a concurrent claim added it
+    }
+    const signature = processSignature(process.pid) ?? null;
     db.transaction(() => {
-      const row = db.query("SELECT pid FROM runner WHERE slot = 1").get() as { pid: number } | null;
+      const row = db.query("SELECT pid, signature FROM runner WHERE slot = 1").get() as { pid: number; signature: string | null } | null;
       if (row) {
         if (!Number.isSafeInteger(row.pid) || row.pid < 1) throw new Error("invalid recovery runner ownership");
-        try { process.kill(row.pid, 0); throw new Error(`recovery runner ${row.pid} is still alive`); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+        const state = processLiveness(row.pid, row.signature);
+        if (state === "live") throw new Error(`recovery runner ${row.pid} is still alive`);
+        if (state === "unknown") throw new Error(`recovery runner ${row.pid} cannot be identified (its process exists but cannot be inspected); refusing to replace it`);
       }
-      db.query("INSERT OR REPLACE INTO runner (slot, pid, nonce) VALUES (1, ?, ?)").run(process.pid, nonce);
+      // An older runner rewrites the whole row (INSERT OR REPLACE), so its claim never inherits this signature.
+      db.query("INSERT OR REPLACE INTO runner (slot, pid, nonce, signature) VALUES (1, ?, ?, ?)").run(process.pid, nonce, signature);
     }).immediate();
   } catch (error) { db.close(); throw error; }
   return () => {

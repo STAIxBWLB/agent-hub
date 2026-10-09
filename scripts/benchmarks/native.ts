@@ -438,7 +438,8 @@ async function arm(cas: any, index: number, kind: string, manifest: any) {
         const table = processTable();
         if (!table) return;
         let hubPid = NaN;
-        try { hubPid = Number(readFileSync(join(state, 'hub.pid'), 'utf8').trim()); } catch { }
+        // The daemon's pid is in its manifest; hub.pid was written only up to 0.12.20 (#226).
+        try { hubPid = Number(JSON.parse(readFileSync(join(state, 'status.json'), 'utf8')).pid); } catch { }
         captureActors(owners, table, { dir, hubPid, claudeId, self: process.pid, cwdOf });
         const now = [...owners.values()], seen = JSON.stringify(now);
         if (seen === persistedActors) return; // the ledger is rewritten only when what it records changed

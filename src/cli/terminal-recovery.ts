@@ -2,7 +2,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { processSignature } from "../pi/process-signature.ts";
+import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { atomicPrivateJSON } from "../hub/recovery-store.ts";
 
 /** The only terminal commands used by this adapter. Keep this list in sync with Orca's public CLI. */
@@ -130,6 +130,12 @@ export interface TerminalRecoveryOptions {
   instanceId?: string;
   /** Injectable process-start identity used to reject stale or reused launcher PIDs. */
   processIdentity?: ProcessIdentity;
+  /**
+   * #228: the identity as releases up to 0.12.12 computed it (unpinned `ps`, the reader's TZ and locale). It defaults
+   * to that read only when `processIdentity` is the default, so an injected identity is never second-guessed by a
+   * real `ps` read of the same pid.
+   */
+  legacyIdentity?: ProcessIdentity;
 }
 
 export interface RecordedTerminalLaunch {
@@ -233,6 +239,7 @@ function normalizeOptions(options?: CommandRunner | TerminalRecoveryOptions): Re
     stateDir: config.stateDir ?? "",
     instanceId: config.instanceId ?? "",
     processIdentity: config.processIdentity ?? defaultProcessIdentity,
+    legacyIdentity: config.legacyIdentity ?? (config.processIdentity ? () => undefined : unpinnedProcessIdentity),
   };
 }
 
@@ -272,22 +279,40 @@ export function recordPath(stateDir: string): string {
   return join(stateDir, RECORD_FILE);
 }
 
-/** #215: "unreadable" (a corrupt or unreadable file) says nothing about launchers, so it must never read as "none". */
-function launchRecords(stateDir: string): RecordedTerminalLaunch[] | "unreadable" {
-  if (!stateDir || !existsSync(recordPath(stateDir))) return [];
+function validRecord(item: unknown): item is RecordedTerminalLaunch {
+  const row = object(item);
+  return typeof row.peer === "string" && typeof row.projectRoot === "string" && typeof row.instanceId === "string" && typeof row.handle === "string" && typeof row.incarnationId === "string" && typeof row.worktreeId === "string" && typeof row.launcherPid === "number" && typeof row.launcherSignature === "string" && row.launcherSignature.length > 0 && typeof row.launchId === "string" && row.launchId.length > 0;
+}
+
+/**
+ * #215: "unreadable" (a corrupt or unreadable file) says nothing about launchers, so it must never read as "none".
+ * #228: a row that fails validation is kept apart (`invalid`), never dropped: whatever it would answer is unknown, and
+ * `all` is the file as read, so a writer puts every such row back unchanged.
+ */
+type LaunchRecords = { rows: RecordedTerminalLaunch[]; invalid: unknown[]; all: unknown[] };
+function launchRecords(stateDir: string): LaunchRecords | "unreadable" {
+  const none = { rows: [], invalid: [], all: [] };
+  if (!stateDir || !existsSync(recordPath(stateDir))) return none;
   try {
     const value: unknown = JSON.parse(readFileSync(recordPath(stateDir), "utf8"));
     if (!Array.isArray(value)) return "unreadable";
-    return value.filter((item): item is RecordedTerminalLaunch => {
-      const row = object(item);
-      return typeof row.peer === "string" && typeof row.projectRoot === "string" && typeof row.instanceId === "string" && typeof row.handle === "string" && typeof row.incarnationId === "string" && typeof row.worktreeId === "string" && typeof row.launcherPid === "number" && typeof row.launcherSignature === "string" && row.launcherSignature.length > 0 && typeof row.launchId === "string" && row.launchId.length > 0;
-    });
+    return { rows: value.filter(validRecord), invalid: value.filter((item) => !validRecord(item)), all: value };
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT" ? [] : "unreadable";
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? none : "unreadable";
   }
 }
 
-function writeLaunchRecords(stateDir: string, rows: RecordedTerminalLaunch[]): void {
+/**
+ * #228: whether a row that cannot be evaluated may answer a question about this peer, project and instance: it does
+ * unless one of its fields is a readable string that names another one (a row for another peer or an older instance).
+ */
+function concerns(raw: unknown, query: { peer?: string; projectRoot: string; instanceId: string }): boolean {
+  const row = object(raw);
+  const other = (value: unknown, wanted?: string) => wanted !== undefined && typeof value === "string" && value !== wanted;
+  return !other(row.peer, query.peer) && !other(row.projectRoot, query.projectRoot) && !other(row.instanceId, query.instanceId);
+}
+
+function writeLaunchRecords(stateDir: string, rows: unknown[]): void {
   mkdirSync(stateDir, { recursive: true });
   atomicPrivateJSON(recordPath(stateDir), rows); // temp + rename: a reader never sees half a file
 }
@@ -297,30 +322,50 @@ function writeLaunchRecords(stateDir: string, rows: RecordedTerminalLaunch[]): v
  * process holds it now; unknown when the pid exists but its identity cannot be read. Unknown is never gone.
  */
 export type LauncherState = "live" | "gone" | "unknown";
-async function launcherState(row: RecordedTerminalLaunch, identity: ProcessIdentity): Promise<LauncherState> {
-  let signature: string | undefined;
-  try { signature = await identity(row.launcherPid); } catch { /* unreadable: decided by the pid probe below */ }
-  if (typeof signature === "string" && signature.length > 0) return signature === row.launcherSignature ? "live" : "gone";
-  try { process.kill(row.launcherPid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return "gone"; }
-  return "unknown";
+async function launcherState(row: RecordedTerminalLaunch, identity: ProcessIdentity, legacy: ProcessIdentity): Promise<LauncherState> {
+  let current: string | undefined;
+  try { current = await identity(row.launcherPid) || undefined; } catch { /* unreadable: decided by the pid probe */ }
+  // #228: a launcher recorded by 0.12.12 or older hashed `ps` in its own TZ and locale (#177 pinned it in 0.12.13). Read
+  // the same unpinned way in this reader's environment, a match is that launcher; anything else stays gone (pid reuse).
+  if (current && current !== row.launcherSignature) {
+    let old: string | undefined;
+    try { old = await legacy(row.launcherPid) || undefined; } catch { /* no legacy reading: the pinned one decides */ }
+    if (old === row.launcherSignature) return "live";
+  }
+  return processLiveness(row.launcherPid, row.launcherSignature, () => current);
 }
 
-/** This instance's launch records whose launcher is live, and those whose launcher cannot be identified (never gone). */
-async function recordsByState(rows: RecordedTerminalLaunch[], projectRoot: string, instanceId: string, identity: ProcessIdentity): Promise<{ live: RecordedTerminalLaunch[]; unknown: RecordedTerminalLaunch[] }> {
-  if (!instanceId) return { live: [], unknown: [] };
-  const candidates = rows.filter((item) => item.projectRoot === projectRoot && item.instanceId === instanceId);
-  const states = await Promise.all(candidates.map((item) => launcherState(item, identity)));
-  return { live: candidates.filter((_, i) => states[i] === "live"), unknown: candidates.filter((_, i) => states[i] === "unknown") };
+/** The launcher signature as releases up to 0.12.12 computed it: `ps` in the caller's own TZ and locale, unpinned. */
+function unpinnedProcessIdentity(pid: number): string | undefined {
+  try {
+    const result = Bun.spawnSync(["ps", "-p", String(pid), "-o", "lstart=,comm="], { stdout: "pipe", stderr: "pipe" });
+    const text = result.exitCode === 0 ? result.stdout.toString().trim() : "";
+    return text ? new Bun.CryptoHasher("sha256").update(text).digest("hex") : undefined;
+  } catch { return undefined; }
+}
+
+/**
+ * This instance's launch records whose launcher is live, those whose launcher cannot be identified (never gone), and
+ * the rows that cannot be evaluated and may be this project's and instance's (#228: unknown for their peer).
+ */
+async function recordsByState(records: LaunchRecords, projectRoot: string, instanceId: string, identity: ProcessIdentity, legacy: ProcessIdentity): Promise<{ live: RecordedTerminalLaunch[]; unknown: RecordedTerminalLaunch[]; invalid: unknown[] }> {
+  if (!instanceId) return { live: [], unknown: [], invalid: [] };
+  const candidates = records.rows.filter((item) => item.projectRoot === projectRoot && item.instanceId === instanceId);
+  const states = await Promise.all(candidates.map((item) => launcherState(item, identity, legacy)));
+  return { live: candidates.filter((_, i) => states[i] === "live"), unknown: candidates.filter((_, i) => states[i] === "unknown"),
+    invalid: records.invalid.filter((raw) => concerns(raw, { projectRoot, instanceId })) };
 }
 
 /** #215: the launcher recorded for `peer` on this instance (one row per peer and instance) and its state; managed means live. */
-export async function launcherOf(peer: TerminalPeer, projectRoot: string, options?: TerminalRecoveryOptions): Promise<{ record?: RecordedTerminalLaunch; state: LauncherState } | undefined> {
+export async function launcherOf(peer: TerminalPeer, projectRoot: string, options?: TerminalRecoveryOptions): Promise<{ record?: RecordedTerminalLaunch; state: LauncherState; invalidRow?: true } | undefined> {
   const config = normalizeOptions(options);
   if (!config.stateDir || !config.instanceId) return undefined;
-  const rows = launchRecords(config.stateDir);
-  if (rows === "unreadable") return { state: "unknown" };
-  const record = rows.find((row) => row.peer === peer && row.projectRoot === projectRoot && row.instanceId === config.instanceId);
-  return record ? { record, state: await launcherState(record, config.processIdentity) } : undefined;
+  const records = launchRecords(config.stateDir);
+  if (records === "unreadable") return { state: "unknown" };
+  // #228: a row that cannot be evaluated and may be this launcher's is unknown, never "no launcher".
+  if (records.invalid.some((raw) => concerns(raw, { peer, projectRoot, instanceId: config.instanceId }))) return { state: "unknown", invalidRow: true };
+  const record = records.rows.find((row) => row.peer === peer && row.projectRoot === projectRoot && row.instanceId === config.instanceId);
+  return record ? { record, state: await launcherState(record, config.processIdentity, config.legacyIdentity) } : undefined;
 }
 
 /**
@@ -353,7 +398,8 @@ export async function recordTerminalLaunch(peer: TerminalPeer, projectRoot: stri
   if (existing === "unreadable") {
     throw new OrcaCommandError(blocker("command-error", `${recordPath(stateDir)} cannot be read, so recording this launch would erase every other launcher's record; next action: inspect that file and move it aside (recovery then treats sessions it recorded as unmanaged), then launch again`, peer, handle));
   }
-  const rows = existing.filter((item) => !(item.peer === peer && item.instanceId === instanceId));
+  // #228: every row that cannot be evaluated goes back unchanged; only this peer's valid row for this instance is replaced.
+  const rows = existing.all.filter((item) => !(validRecord(item) && item.peer === peer && item.instanceId === instanceId));
   rows.push(row);
   writeLaunchRecords(stateDir, rows);
   return row;
@@ -482,7 +528,7 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
   // CODEX_HOME or CLAUDE_CONFIG_DIR: an unreadable file blocks the binding, never reads as "no records".
   const rows = launchRecords(config.stateDir);
   if (rows === "unreadable") return { bindings, byPeer, blockers: [blocker("command-error", `${recordPath(config.stateDir)} cannot be read, so no terminal can be bound to its launch; inspect or move it aside, then plan or resume again`)], manualRequired: true };
-  const { live: records, unknown } = await recordsByState(rows, projectRoot, config.instanceId, config.processIdentity);
+  const { live: records, unknown, invalid } = await recordsByState(rows, projectRoot, config.instanceId, config.processIdentity, config.legacyIdentity);
 
   let listed: Record<string, unknown>[];
   try {
@@ -498,6 +544,10 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
     const unread = unknown.find((item) => item.peer === peer);
     if (unread) {
       blockers.push(blocker("ownership-unknown", `the ${peer} launcher recorded for terminal ${unread.handle} (pid ${unread.launcherPid}) cannot be identified, so no terminal can be bound to its launch; wait until it exits or end it, then plan or resume again`, peer, unread.handle));
+      continue;
+    }
+    if (invalid.some((raw) => concerns(raw, { peer, projectRoot, instanceId: config.instanceId }))) {
+      blockers.push(blocker("ownership-unknown", `${recordPath(config.stateDir)} holds a launch record that cannot be evaluated and may be this ${peer} launcher's, so no terminal can be bound to its launch; next action: inspect that row and fix it, or end that launcher and remove its row, then plan or resume again`, peer));
       continue;
     }
     const candidates = listed.filter((terminal) => rootMatches(terminal.worktreePath ?? terminal.projectRoot, projectRoot));
@@ -639,8 +689,10 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
     const launches = async () => {
       const rows = launchRecords(config.stateDir);
       if (rows === "unreadable") return { live: undefined, gone: false, mayRun: true }; // unknown, never gone
-      const possible = rows.filter((item) => item.instanceId === config.instanceId && item.peer === binding.peer && item.projectRoot === binding.projectRoot && item.handle === createdHandle && item.worktreeId === replacement.worktreeId && item.incarnationId === replacement.incarnationId);
-      const states = await Promise.all(possible.map(async (item) => ({ item, state: await launcherState(item, config.processIdentity) })));
+      // #228: a row that cannot be evaluated and may be this launch's is unknown too.
+      if (rows.invalid.some((raw) => concerns(raw, { peer: binding.peer, projectRoot: binding.projectRoot, instanceId: config.instanceId }))) return { live: undefined, gone: false, mayRun: true };
+      const possible = rows.rows.filter((item) => item.instanceId === config.instanceId && item.peer === binding.peer && item.projectRoot === binding.projectRoot && item.handle === createdHandle && item.worktreeId === replacement.worktreeId && item.incarnationId === replacement.incarnationId);
+      const states = await Promise.all(possible.map(async (item) => ({ item, state: await launcherState(item, config.processIdentity, config.legacyIdentity) })));
       return { live: states.find((entry) => entry.state === "live")?.item, gone: states.length > 0 && states.every((entry) => entry.state === "gone"), mayRun: states.some((entry) => entry.state !== "gone") };
     };
     // #215: Orca types the command into a login shell that outlives it, so the terminal never exits with the launcher.

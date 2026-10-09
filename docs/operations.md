@@ -916,8 +916,10 @@ The runtime reset (the default):
 - drops the agent session resume pointers `sessions.json`,
   `claude-session.json` and `claude-context.json`, so the next launch starts
   new agent sessions. Pi transcripts under `pi-sessions/` stay;
-- removes the manifest (`status.json`, `control-token`, `hub.pid`) a hub left
-  when it did not stop cleanly, once no process behind it is alive;
+- removes the manifest (`status.json`, `control-token`, and `hub.pid` from a
+  hub of 0.12.20 or older) a hub left when it did not stop cleanly, once no
+  process behind it is alive (a pid that now belongs to another process counts
+  as gone when the manifest carries the hub's signature, from 0.12.21);
 - keeps the board (tasks, reviews, outcomes, turns, touches), `hub.log`,
   `events.jsonl` and `cli-audit/`, recovery records, execution budgets,
   configuration and files the hub does not own.
@@ -1226,7 +1228,13 @@ next actions").
   be read counts as unknown, never as "nothing attached", and so does a launcher
   record file that cannot be read: `resume` then stops without changing any
   receipt; when the record file is what cannot be read, inspect it and move it
-  aside, then `resume`. `resume` is refused while a stop-and-archive is partway. A lifecycle command refused by the lock names
+  aside, then `resume`. A record file that parses but holds a row that cannot
+  be evaluated (a hand edit, a damaged or a future layout) is read the same way
+  for the peer that row may belong to, and `ahub codex`, `ahub claude` and
+  `ahub pi --mode tui` write such rows back unchanged: fix or remove that row,
+  then `resume`. A launcher recorded by 0.12.12 or older is read with its own
+  unpinned signature too, so it counts as running when this command runs in
+  the same time zone and locale as the launcher did. `resume` is refused while a stop-and-archive is partway. A lifecycle command refused by the lock names
   the operation's own `status` command, which lists what to do next.
 - `ahub recovery dispose <operation-id> --fresh-session <peer> --reason <text>`
   applies to a Codex or Claude peer whose restoration failed (Pi is refused: a
@@ -1240,12 +1248,22 @@ next actions").
   <id>` instead of offering it. A hub that never answers (its pid is alive,
   nothing replies): take the `pid` from that project's
   `.agenthub/state/status.json`, check with `ps -p <pid> -o command=` that it
-  is that project's hub daemon, end it by hand, then run `status` again. If
-  that pid now belongs to another process (reused after a reboot), move the
-  stale `status.json` aside instead, then run `status` again; likewise when
-  `next` says `wait: runner <pid>` and that pid is not an `ahub recovery-run`
-  process, move the operation's `~/.agenthub/recovery/<id>.json.runner.db`
-  aside, then run `status` again. A
+  is that project's hub daemon, end it by hand, then run `status` again. From
+  0.12.21 a hub's manifest and registry claim and a runner's record carry the
+  owner's process signature, so a pid that a reboot handed to another process
+  reads as gone by itself. Records written by 0.12.20 or older carry none and
+  are judged by their pid alone: if that pid now belongs to another process,
+  move the stale `status.json` and `hub.pid` aside together (with only one of
+  them gone the other still reads as an owner), then run `status` again;
+  likewise when `next` says `wait: runner <pid>` and that pid is not an `ahub
+  recovery-run` process, move the operation's
+  `~/.agenthub/recovery/<id>.json.runner.db` aside, then run `status` again.
+  An unsigned registry claim of such a hub, whose pid now belongs to another
+  process, still reads as starting, and no command clears it: after `ps -p
+  <pid> -o command=` shows that the process is not an `ahub ... daemon` of that
+  project, clear it with `sqlite3 ~/.agenthub/registry.db "UPDATE projects SET
+  instance_id = NULL, pid = NULL, claimed_at = NULL WHERE id = '<project id>'
+  AND pid = <pid>"` (`ahub projects --json` shows the id). A
   project whose directory is
   gone is only recorded (`ahub doctor --orphans` lists a hub left running
   there). It records its decision before it acts. It releases a source hold of
@@ -1255,7 +1273,13 @@ next actions").
   `restart.json` aside as `restart.abandoned.<hash>.json` and leaves any other
   hub running; only then is the operation recorded `cancelled` and the lock
   released. If it fails partway it keeps the lock, records what it did, and
-  `resume` refuses until you run it again. Queued messages are not delivered
+  `resume` refuses until you run it again. Once a stop-and-archive is recorded,
+  only the command `next` names continues it. On an operation whose
+  coordinator predates these commands it also marks the receipt `schema: 2`,
+  which every older release refuses before it acts: an older global `ahub
+  recovery resume` still prints "scheduled", but its runner exits without
+  touching the operation, and an older `ahub recovery abort` refuses with
+  "unsupported operation receipt". Queued messages are not delivered
   from the archived file; a 0.7.0 or later hub reloads the queues it kept in
   `hub.db` when it starts again. Terminals it closed stay closed: start those
   sessions again by hand. Replacement terminals it opened stay open but have
