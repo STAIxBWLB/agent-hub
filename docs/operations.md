@@ -1136,8 +1136,9 @@ default 500, below 120000; 0 tries once; read when the hub first starts Pi, like
 dispatch did not fail. If it fails, MLX serves the request with the usual slot wait.
 Enforced, a load move happens only at a user turn. After three consecutive transport or
 startup failures outside a cooldown, a relay alias cools down for 30 s, doubling up to
-5 min; HTTP answers, a busy MLX slot and timeouts cut short by an execution budget never
-count, and one success ends it. `ahub status` shows `cooling down until ...` on the backend
+5 min. A busy MLX slot and timeouts cut short by an execution budget never count; any HTTP
+answer, a success or an error status, proves the transport works and ends the streak and the
+cooldown. `ahub status` shows `cooling down until ...` on the backend
 line and `events.jsonl` records `cooldown` events.
 Progress judgements suggest reassignment; they never change task ownership.
 

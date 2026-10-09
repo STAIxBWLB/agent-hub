@@ -203,12 +203,12 @@ export interface RelayCooldownEvent { alias: string; event: "start" | "end"; fai
 // ponytail: fixed policy, 3 failures and 30 s doubling up to 5 min; routing.toml keys if a backend needs other values.
 const COOLDOWN_FAILURES = 3, COOLDOWN_MS = 30_000, COOLDOWN_CAP_MS = 300_000;
 
-/** Per-alias cooldowns after consecutive transport or startup failures (#199). HTTP answers never count; one success clears it. */
+/** Per-alias cooldowns after consecutive transport or startup failures (#199). Any HTTP answer, a success included, clears it. */
 export class BackendCooldowns {
   private readonly entries = new Map<string, { failures: number; until?: number }>();
   constructor(private readonly now: () => number = Date.now, private readonly notify: (event: RelayCooldownEvent) => void = () => {}) {}
 
-  /** The alias's cooldown while it lasts. Its end is recorded when it is first seen to have passed, or at a success. */
+  /** The alias's cooldown while it lasts. Its end is recorded when it is first seen to have passed, or at an answer. */
   cooling(alias: string): { until: number; failures: number } | undefined {
     const entry = this.entries.get(alias);
     if (entry?.until === undefined) return undefined;
@@ -235,7 +235,8 @@ export class BackendCooldowns {
     return !!this.entries.get(alias)?.failures;
   }
 
-  succeeded(alias: string): void {
+  /** The backend answered, with any HTTP status: its transport works, so the failure streak and any cooldown end. */
+  answered(alias: string): void {
     const entry = this.entries.get(alias);
     this.entries.delete(alias);
     if (entry?.until !== undefined) this.notify({ alias, event: "end", failures: entry.failures });
@@ -667,10 +668,10 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
             // A DGX alias can fail before it has a status row (gateway or key unavailable); a cooldown must still show.
             if (!states.has(journalEntry.record.alias)) setState(selected, { state: "error", lastError: error instanceof Error ? error.message.slice(0, 160) : "backend unavailable" });
             cooldowns.failed(journalEntry.record.alias);
-          }
+          } else if (failure === "http") cooldowns.answered(journalEntry.record.alias);
           throw error;
         }
-        cooldowns.succeeded(journalEntry.record.alias);
+        cooldowns.answered(journalEntry.record.alias);
         let released = false;
         const release = () => {
           if (released) return;

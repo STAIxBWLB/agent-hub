@@ -289,7 +289,7 @@ test("#199 cooldowns start after three transport or startup failures, double up 
   expect(cooldowns.cooling("mlx/fast")!.until - clock).toBe(300_000);
   cooldowns.failed("mlx/fast"); // in flight during the cooldown: neither counted nor extended
   expect(cooldowns.cooling("mlx/fast")!.until - clock).toBe(300_000);
-  cooldowns.succeeded("mlx/fast");
+  cooldowns.answered("mlx/fast");
   expect(cooldowns.cooling("mlx/fast")).toBeUndefined();
   cooldowns.failed("mlx/fast");
   expect(cooldowns.cooling("mlx/fast")).toBeUndefined(); // the success reset the count
@@ -565,4 +565,27 @@ test("#199 review: an enforced loop pinned to dgx/fast by a load move falls back
   expect(events.map((e) => `${e.tier} ${e.source} ${e.turnType}`)).toEqual(["mlx/fast default user", "dgx/fast load user", "dgx/fast default tool_result", "mlx/fast default tool_result"]);
   expect(local.counts.chat).toBe(chats + 2);
   expect(g.probes).toBe(probes);
+});
+
+test("#199 review: any HTTP answer resets the failure streak and ends a cooldown, since the transport works", async () => {
+  let answer = 503;
+  const live = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("busy", { status: answer }) });
+  cleanup.push(() => live.stop(true));
+  const closed = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
+  const refusedUrl = `http://127.0.0.1:${closed.port}/v1`, liveUrl = `http://127.0.0.1:${live.port}/v1`;
+  closed.stop(true);
+  const { g, omni: gatewayOmni } = switchable(refusedUrl);
+  const cooldowns: RelayCooldownEvent[] = [];
+  const relay = await startModelRelay({ omni: gatewayOmni, allowedDGXmodels: { "dgx/fast": "fast" }, token: "answer", onCooldown: (event) => cooldowns.push(event) });
+  cleanup.push(relay.close);
+  const send = async (url: string) => { g.url = url; expect(await post(relay, "dgx/fast")).toBe(502); };
+  for (const url of [refusedUrl, liveUrl, refusedUrl, refusedUrl]) await send(url); // transport, 503, transport, transport
+  expect(relay.requests().map((r) => r.failureClass)).toEqual(["transport", "http", "transport", "transport"]);
+  expect(cooldowns).toEqual([]);
+  await send(refusedUrl); // the third in a row
+  expect(cooldowns).toEqual([{ alias: "dgx/fast", event: "start", failures: 3, ms: 30_000 }]);
+  answer = 400;
+  await send(liveUrl); // a cooling DGX alias is still tried; its answer ends the cooldown
+  expect(cooldowns.at(-1)).toEqual({ alias: "dgx/fast", event: "end", failures: 3 });
+  expect(relay.status().backends.find((b) => b.alias === "dgx/fast")).not.toHaveProperty("coolingUntil");
 });
