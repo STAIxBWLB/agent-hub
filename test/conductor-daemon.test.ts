@@ -148,6 +148,38 @@ test("public task history screens private done/review notes and profile while co
   }
 });
 
+test("a task's owner and reviewer read its done summary and check line; other peers are refused and PII stays a stub (#208)", async () => {
+  const f = await fixture();
+  const board = new Board(join(f.dir, "hub.db"));
+  let id: number, pii: number;
+  try {
+    id = board.propose("claude", { title: "ordinary parser task", class: "implement" }).id;
+    board.update(id, "codex", "accepted", { state: "in_progress", owner: "codex", reviewer: "kimi" });
+    board.update(id, "codex", "done (checking)", {}, "parser fixed, bun test passed");
+    board.update(id, "hub", "check passed", {}, "scripts/check.sh -> exit 0\ncheck: OK");
+    board.update(id, "codex", "done", { state: "in_review" }, "parser fixed, bun test passed\nCheck: scripts/check.sh -> exit 0");
+    pii = board.propose("claude", { title: "PRIVATE-MARKER task", detail: "PRIVATE-MARKER body", class: "implement", signals: ["pii"] }).id;
+    board.update(pii, "codex", "accepted", { state: "in_progress", owner: "codex", reviewer: "kimi" }, "PRIVATE-MARKER note");
+  } finally { board.close(); }
+  const owner = await f.connect("codex"), reviewer = await f.connect("kimi"), other = await f.connect("pi");
+  for (const client of [owner, reviewer]) {
+    const shown = await client.request({ t: "task", op: "hub_task_show", args: { id } });
+    expect(shown.ok).toBe(true);
+    const history = JSON.parse(shown.text).history as { event: string; note?: string }[];
+    expect(history.findLast(h => h.event === "done")!.note).toContain("parser fixed");
+    expect(history.find(h => h.event === "check passed")!.note).toContain("scripts/check.sh -> exit 0");
+    const stub = await client.request({ t: "task", op: "hub_task_show", args: { id: pii } });
+    expect(stub.ok).toBe(true); expect(stub.text).not.toContain("PRIVATE-MARKER");
+    expect(JSON.parse(stub.text)).toMatchObject({ title: "[pii]", detail: "[pii]", history: [] });
+  }
+  for (const target of [id, pii]) {
+    const refused = await other.request({ t: "task", op: "hub_task_show", args: { id: target } });
+    expect(refused.ok).toBe(false); expect(refused.error).toContain("explicit conductor role");
+  }
+  // A read by the task's own people is no conductor action.
+  expect(readEvents(join(f.dir, "events.jsonl")).some(e => e.type === "conduct")).toBe(false);
+});
+
 test("peer route explain and quota reads work while quota mutations remain human-only", async () => {
   const f = await fixture();
   const peer = await f.connect("unlisted");

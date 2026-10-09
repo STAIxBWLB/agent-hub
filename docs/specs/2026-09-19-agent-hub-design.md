@@ -1626,3 +1626,12 @@ push `accepted` and show none of them.
 - Control protocol 16 adds the hello `channel` field and `inbox`. Recovery
   sources add protocol 15 (0.12.17 through 0.12.19); the transition from a real
   0.12.19 hub is not yet proven.
+## Amendment: owner and reviewer read their task (issue #208)
+
+`hub_task_show` stays a conductor tool, and a task's current owner and current
+reviewer may also call it for that task. They get exactly the conductor's
+view: `publicConductorTask` over `Tasks.publicView(task, true)`, so the whole
+history with its done summary and check line, notes that match a PII pattern
+withheld, and a PII task as a stub with no history. Any other peer is refused
+with the conductor-role error, whatever the task. These reads write no conduct
+audit event, as task list polling does not. `hub_status` stays conductor-only.

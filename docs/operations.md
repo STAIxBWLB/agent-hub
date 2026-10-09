@@ -322,7 +322,10 @@ the routing configuration.
 A review request carries a checklist: map the changed signatures and call sites
 to the task's plan (without one, to its detail, which the request then
 includes), read the check result, and list what is
-unmet (`hub_review` takes `unmet`, `ahub review ... --unmet <item>`). The hub
+unmet (`hub_review` takes `unmet`, `ahub review ... --unmet <item>`). A reviewer
+that missed the request, and the owner, read the done summary and check result
+with `hub_task_show {id}`: the task's public view with its history, as the
+conductor sees it, and only a stub for a PII task. Other peers are refused. The hub
 records how each review turned out, per implementer, reviewer and class:
 approved; caught (changes were requested and the owner's redo was approved);
 contradicted (within a week, work on the same file or symbol failed its check

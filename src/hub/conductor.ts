@@ -154,10 +154,18 @@ export interface ConductorHooks {
   audit(event: ConductEvent): void;
 }
 
+const taskId = (v: unknown): number | undefined => typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : undefined;
+
 export class Conductor {
   constructor(private readonly holds: ConductorHolds, private readonly hooks: ConductorHooks) {}
   async execute(actor: string, tool: string, args: Record<string, unknown>): Promise<unknown> {
     if (!CONDUCTOR_TOOL_NAMES.has(tool)) throw new Error("unknown conductor tool");
+    // A task's current owner and reviewer read its public view without the role (#208); nobody else does.
+    if (tool === "hub_task_show" && conductorPeer(this.hooks.roles()) !== actor) {
+      const id = taskId(args.id);
+      const task = id === undefined ? undefined : this.hooks.task(id);
+      if (task && (task.owner === actor || task.reviewer === actor)) return publicConductorTask(task, this.hooks.publicView);
+    }
     requireConductor(actor, this.hooks.roles(), this.hooks.capabilities(), tool === "hub_task_assign" || tool === "hub_task_escalate");
     const action = tool.slice(4);
     const emit = (extra: Pick<ConductEvent, "task" | "peer"> = {}) => {
@@ -165,8 +173,9 @@ export class Conductor {
     };
     if (tool === "hub_status") { const result = publicConductorStatus(this.hooks.status()); emit(); return result; }
     if (tool.startsWith("hub_task_")) {
-      if (typeof args.id !== "number" || !Number.isSafeInteger(args.id) || args.id <= 0) throw new Error("id must be a positive integer");
-      const task = this.hooks.task(args.id);
+      const id = taskId(args.id);
+      if (id === undefined) throw new Error("id must be a positive integer");
+      const task = this.hooks.task(id);
       if (!task) throw new Error(`no task #${args.id}`);
       if (tool === "hub_task_show") { const result = publicConductorTask(task, this.hooks.publicView); emit({ task: task.id }); return result; }
       if (tool === "hub_task_assign") {
