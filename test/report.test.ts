@@ -6,7 +6,7 @@ import type { HubEvent, StampedEvent } from "../src/hub/events.ts";
 import { formatTaskReport, summarizeByTask } from "../src/hub/report.ts";
 
 const ev = (s: number, e: HubEvent): StampedEvent => ({ v: 1, at: new Date(Date.UTC(2026, 9, 9, 0, 0, s)).toISOString(), ...e });
-const task = (id: number, state: string, cls = "implement"): HubEvent => ({ type: "task", id, state, class: cls, event: state, by: "codex", owner: "codex", reviewer: "claude", pii: false });
+const task = (id: number, state: string, cls = "implement"): Extract<HubEvent, { type: "task" }> => ({ type: "task", id, state, class: cls, event: state, by: "codex", owner: "codex", reviewer: "claude", pii: false });
 
 test("task and class reports use latest outcome, first accept/approval, and deduplicated reported counters", () => {
   const events = [ev(0, task(1, "proposed")), ev(1, task(1, "in_progress")), ev(2, task(1, "in_progress")),
