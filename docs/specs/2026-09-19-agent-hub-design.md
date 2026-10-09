@@ -1465,3 +1465,35 @@ provider/configuration change, account retry or authority relaxation. Once quota
 is available under an authorized account, the same isolated read-only status-tool
 and ordinary-role refusal probe must record a native tool event and daemon result
 before this Kimi prerequisite can be marked verified.
+
+## Amendment: per-task usage attribution (issue #200)
+
+Task usage is attributed by a rule at write time, never by a proportional guess:
+
+- A turn whose original delivery names exactly one distinct positive `refs.task` uses that id and `attribution: "delivery"`, even when the peer does not own the task. Two distinct delivery task ids fall through to the next rule.
+- Otherwise a peer with exactly one owned `in_progress` task uses that id and `attribution: "single_open"`.
+- Otherwise the record carries `attribution: "unattributed"` and no task id.
+
+The bus calls `onDeliver(peer, originals)` immediately before `peer.deliver`,
+after retaining the original delivery. The daemon consumes pending delivery
+identity during the synchronous busy/turn-start transition and clears it on
+delivery admission/failure. A user-started native turn cannot inherit an older
+delivery. Tokens and usage use the rule at write time; turn ends preserve the
+start-time attribution. Local worker usage carries its request-bound route
+policy task when one exists. Relay usage would use a route decision's task when
+present; the current daemon has no such relay usage writer, so collection is
+unchanged. Attributed PII records carry only a task id and `pii: true`.
+
+`ahub report --by task` and `--by task --json` use only events, never the board or
+task text. They report latest task class/outcome, attributed turn ends, first
+accept-to-first-approval wall time (unknown while not approved or without both
+boundaries), per-peer token increments and provider counters, and class rollups.
+Usage deduplication uses peer/source/id. Missing counters stay unknown, distinct
+from reported zero, and known-record counts identify measured subsets.
+
+Unattributed token and usage-record shares always appear. Older records without
+`attribution` stay in a distinct `before attribution` bucket, never redistributed
+to a task; both buckets appear even when empty. A zero denominator has unknown
+share. Export carries the new fields without task text. No prices or savings
+counterfactuals are derived. These additive fields retain events schema 1 and
+the existing control protocol. Plain `ahub report` remains unchanged.

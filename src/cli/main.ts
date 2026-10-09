@@ -33,7 +33,7 @@ import { setupOllamaModel } from "./models-setup.ts";
 import { unknownContext } from "../hub/context-window.ts";
 import { backendLine, contextLine, peerLine, type BackendRow, type PeerRow } from "./status-lines.ts";
 import { parseSince, readEvents } from "../hub/events.ts";
-import { formatReport, summarize } from "../hub/report.ts";
+import { formatReport, summarize, formatTaskReport, summarizeByTask } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 import { pathWarnings } from "../hub/conflicts.ts";
 import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, peerCommandRefusal } from "./identity.ts";
@@ -96,7 +96,7 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub queue resolve <delivery-id> --action completed|retry|discard --reason <text>
   ahub status | logs [-f] | doctor | kill
   ahub export [--since 7d|<iso>]  structured events (events.jsonl) as JSON lines; never message bodies
-  ahub report [--since 7d|<iso>] [--json]  turns, tokens, messages, overlaps and task events per period
+  ahub report [--since 7d|<iso>] [--by task] [--json]  turns, tokens, messages, overlaps and task events per period
   ahub check-path <file> [--peer <id>]  other owners' open tasks that claim or changed a file
   ahub check-path --hook        the same as a Claude Code PreToolUse hook (templates/claude-hooks.json); never blocks
   ahub facts --hook             turn-free facts as a Claude Code PreToolUse, PostToolUse and Stop hook (issue #108); never blocks
@@ -825,7 +825,14 @@ const commands: Record<string, () => Promise<void> | void> = {
     for (const e of readEvents(join(stateDir, "events.jsonl"), since())) console.log(JSON.stringify(e));
   },
   report: () => {
-    const r = summarize(readEvents(join(stateDir, "events.jsonl"), since()));
+    const by = args.indexOf("--by");
+    if (by >= 0 && args[by + 1] !== "task") return fail("--by takes task");
+    const events = readEvents(join(stateDir, "events.jsonl"), since());
+    if (by >= 0) {
+      const r = summarizeByTask(events);
+      return console.log(args.includes("--json") ? JSON.stringify(r, null, 2) : formatTaskReport(r).join("\n"));
+    }
+    const r = summarize(events);
     console.log(args.includes("--json") ? JSON.stringify(r, null, 2) : formatReport(r).join("\n"));
   },
   facts: async () => {

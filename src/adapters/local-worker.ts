@@ -35,7 +35,7 @@ export interface LocalOptions {
   /** Runs a hub task tool (hub_task_*, hub_review, hub_remember) as this peer. Absent = the tools are not offered. */
   taskTool?: (name: string, args: Record<string, unknown>, turn: { pii: boolean }) => Promise<string>;
   /** Successful provider responses only; usage may be absent when the gateway omits it. Never includes prompt data. */
-  onUsage?: (record: { id: string; at: string; usage?: ChatResult["usage"]; requestedModel: string; servedModel?: string; provider?: string }) => void;
+  onUsage?: (record: { id: string; at: string; usage?: ChatResult["usage"]; requestedModel: string; servedModel?: string; provider?: string; task?: number }) => void;
   /** Atomic task/run admission immediately before every model request or tool execution. */
   admitBudget?: (envs: Envelope[], unit: "model_calls" | "tool_calls") => Promise<ExecutionBudgetDecision[]>;
   /** Per-turn policy from the task the delivery carries: the class's route, and whether it is a PII task. */
@@ -76,6 +76,7 @@ export class LocalPeer extends BasePeer {
   private readonly routes: HubRouteRuntime;
   private routeEnvs: Envelope[] = [];
   private routePii = false;
+  private routeTask?: number;
   private labelTurnId?: string;
   private turn = 0; // generation guard, as in acp.ts: a turn aborted by the watchdog must not touch the next one
   private abort: AbortController | undefined;
@@ -94,13 +95,13 @@ export class LocalPeer extends BasePeer {
     this.routes = new HubRouteRuntime({
       execute: async (model, messages, judge, signal, maxTokens) => {
         if (signal.aborted) throw new Error("turn cancelled before model request");
-        const envs = this.routeEnvs, pii = this.routePii, generation = this.turn;
+        const envs = this.routeEnvs, pii = this.routePii, generation = this.turn, task = this.routeTask;
         await this.requireBudget(envs, "model_calls");
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
         if (signal.aborted) throw new Error("turn cancelled before model request");
         const tools = judge ? undefined : [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...TASK_TOOLS, ...CONDUCTOR_TOOLS].map(asFunction) : [])];
         const result = await this.opts.omni.chat({ model, messages, ...(tools ? { tools } : {}), ...(judge ? { max_tokens: maxTokens ?? 2048 } : {}) }, { signal, ...(pii ? { onCampusOnly: true } : {}) });
-        this.recordUsage(result, model);
+        this.recordUsage(result, model, task);
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
         this.lastServedBy = `hub ${model} (provider ${result.provider ?? "?"})`;
         return result;
@@ -329,11 +330,12 @@ export class LocalPeer extends BasePeer {
   }
 
   /** L2 when the sidecar is up, otherwise (or when a call through it fails) the fixed model on L3. */
-  private async call(turnMsgs: ChatMessage[], policy: { route?: string; fixedModel?: string; pii?: boolean } | undefined, envs: Envelope[]): Promise<ChatResult> {
+  private async call(turnMsgs: ChatMessage[], policy: { route?: string; fixedModel?: string; pii?: boolean; task?: string } | undefined, envs: Envelope[]): Promise<ChatResult> {
     const { omni, sidecar } = this.opts;
     // A task turn asks for its class's route; a route needs the sidecar, which exists only when the worker was started with one.
     const route = policy?.route ?? this.opts.route;
     const fixedModel = policy?.fixedModel ?? this.opts.fixedModel;
+    const task = policy?.task === undefined ? undefined : Number(policy.task);
     const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...TASK_TOOLS, ...CONDUCTOR_TOOLS].map(asFunction) : [])];
     const signal = this.abort!.signal;
     const messages: ChatMessage[] = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
@@ -345,7 +347,7 @@ export class LocalPeer extends BasePeer {
       try {
         const res = await omni.chat({ model: route!, messages, tools }, { via, sessionId: this.sessionId, signal });
         this.lastServedBy = `switchyard ${route} -> ${res.selectedModel ?? "?"}`;
-        this.recordUsage(res, route!);
+        this.recordUsage(res, route!, task);
         return res;
       } catch (e) {
         if (signal.aborted) throw e;
@@ -355,7 +357,7 @@ export class LocalPeer extends BasePeer {
     await this.requireBudget(envs, "model_calls");
     const res = await omni.chat({ model: fixedModel, messages, tools }, { signal, ...(policy?.pii ? { onCampusOnly: true } : {}) });
     this.lastServedBy = `omniroute ${fixedModel} (provider ${res.provider ?? "?"})`;
-    this.recordUsage(res, fixedModel);
+    this.recordUsage(res, fixedModel, task);
     return res;
   }
 
@@ -364,6 +366,7 @@ export class LocalPeer extends BasePeer {
     try { id = this.opts.turnId?.(); } catch { /* optional host metadata */ }
     id ??= `${this.id}#${this.sessionId}.${generation}`;
     const number = task ? Number(task) : undefined;
+    this.routeTask = Number.isSafeInteger(number) && number! > 0 ? number : undefined;
     this.labelTurnId = id;
     this.routes.beginTurn({ turn: id, pii, ...(Number.isSafeInteger(number) && number! > 0 ? { task: number } : {}) });
     return id;
@@ -418,13 +421,14 @@ export class LocalPeer extends BasePeer {
     } catch { /* optional research observations */ }
   }
 
-  private recordUsage(res: ChatResult, requestedModel: string): void {
+  private recordUsage(res: ChatResult, requestedModel: string, task?: number): void {
     try {
       this.opts.onUsage?.({
         id: randomUUID(),
         at: new Date().toISOString(),
         ...(res.usage ? { usage: res.usage } : {}),
         requestedModel: safeModelLabel(requestedModel) ?? "unknown",
+        ...(Number.isSafeInteger(task) && task! > 0 ? { task } : {}),
         ...(safeModelLabel(res.servedModel ?? res.selectedModel) ? { servedModel: safeModelLabel(res.servedModel ?? res.selectedModel)! } : {}),
         ...(safeModelLabel(res.provider) ? { provider: safeModelLabel(res.provider)! } : {}),
       });

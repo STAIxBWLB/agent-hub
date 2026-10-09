@@ -1,4 +1,5 @@
 import { appendFileSync, closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
+import type { TaskAttribution } from "./attribution.ts";
 
 /** Bumped whenever a field changes meaning or goes away; new fields and new types do not bump it. */
 export const EVENTS_SCHEMA = 1;
@@ -23,7 +24,7 @@ export type HubEvent =
   | { type: "split"; task: number; where?: "routing" | "cohort"; verdict: "split" | "single" | "unknown"; single?: string; splitS?: number; singleS?: number; reason?: string; trace?: string[] }
   | { type: "state"; peer: string; state: string }
   | { type: "turn_start"; peer: string; turn: string }
-  | { type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number }
+  | ({ type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number } & Partial<TaskAttribution>)
   | { type: "native_turn_end"; peer: string; id?: string }
   | { type: "conduct"; peer: string; action: string; task?: number; target?: string }
   | { type: "agent_cli"; peer: string; command: string; refused: boolean }
@@ -32,8 +33,8 @@ export type HubEvent =
   | { type: "supervision_turn"; peer: string; turn: string; tokens?: number; ms?: number }
   | { type: "hook_stats"; peer: string; n: number; startupMs: number; hubMs: number; maxStartupMs: number }
   | { type: "cohort"; id: number; event: "formed" | "joined" | "lifted"; silent: boolean; tasks: number[]; owners: string[] }
-  | { type: "tokens"; peer: string; n: number }
-  | { type: "usage"; peer: string; source: "omniroute" | "claude_transcript"; id: string; measuredAt?: string; requestedModel?: string; servedModel?: string; provider?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; totalTokens?: number }
+  | ({ type: "tokens"; peer: string; n: number } & Partial<TaskAttribution>)
+  | ({ type: "usage"; peer: string; source: "omniroute" | "claude_transcript"; id: string; measuredAt?: string; requestedModel?: string; servedModel?: string; provider?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; totalTokens?: number } & Partial<TaskAttribution>)
   | { type: "task"; id: number; event: string; by: string; state: string; owner: string | null; reviewer: string | null; class: string; pii: boolean }
   | { type: "overlap"; task: number; owner: string; others: { task: number; owner: string; paths: string[]; symbols?: string[] }[] }
   | { type: "conflict"; peer: string; task?: number; other: number; owner: string; paths: string[]; concurrent: boolean; turns?: [string, string] }

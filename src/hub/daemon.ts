@@ -46,6 +46,7 @@ import { DEFAULT_INFERENCE, DIGEST, Inference, type InferenceConfig } from "./in
 import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, detectSignals } from "./routing.ts";
 import { Bus } from "./bus.ts";
+import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
 import { startDashboard } from "./ui.ts";
 import { PROTOCOL, stateDirFor } from "./control-client.ts";
@@ -956,14 +957,26 @@ export async function startDaemon(opts: DaemonOptions) {
   // Turns and their tokens for telemetry (issue #40). Turn ids carry the hub run, so they stay unique across restarts.
   const runId = Date.now().toString(36);
   let turnSeq = 0;
-  const turns = new Map<PeerId, { id: string; start: number; tokens: number; tree?: string; snapshotMs?: number; private?: boolean }>();
+  const turns = new Map<PeerId, { id: string; start: number; tokens: number; tree?: string; snapshotMs?: number; private?: boolean; deliveryTask?: number; attribution: TaskAttribution }>();
+  const pendingDeliveryTask = new Map<PeerId, number>();
+  const taskAttribution = (peer: PeerId, delivery = turns.get(peer)?.deliveryTask): TaskAttribution => {
+    const result = attribute(delivery, board.list("in_progress").filter(t => t.owner === peer).map(t => t.id));
+    const task = result.task === undefined ? undefined : board.get(result.task);
+    return { ...result, ...(task && tasks.isPii(task) ? { pii: true as const } : {}) };
+  };
   const supervisionTurns = new Map<PeerId, { id: string; at: number; tokens?: number; session?: string }>();
+  bus.onDeliver = (peer, originals) => {
+    pendingDeliveryTask.delete(peer);
+    const task = deliveryTask(originals);
+    if (task !== undefined) pendingDeliveryTask.set(peer, task);
+  };
   bus.onDelivered = (peer, originals) => {
+    pendingDeliveryTask.delete(peer);
     if (!originals.some(env => env.from === HUB && env.refs?.supervision) || supervisionTurns.has(peer)) return;
     const turn = turns.get(peer);
     supervisionTurns.set(peer, { id: turn?.id ?? `supervision-${randomUUID()}`, at: turn?.start ?? Date.now(), ...(turn?.tokens ? { tokens: turn.tokens } : {}), ...(contextSession(peer) ? { session: contextSession(peer) } : {}) });
   };
-  bus.onDeliveryFailed = peer => { supervisionTurns.delete(peer); };
+  bus.onDeliveryFailed = peer => { pendingDeliveryTask.delete(peer); supervisionTurns.delete(peer); };
   const finishSupervisionTurn = (peer: PeerId) => {
     const receipt = supervisionTurns.get(peer);
     if (!receipt) return;
@@ -1000,7 +1013,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const supervisionTurn = supervisionTurns.get(peer);
     if (supervisionTurn && Number.isFinite(n) && n >= 0) supervisionTurn.tokens = (supervisionTurn.tokens ?? 0) + n;
     if (n > 0) {
-      event({ type: "tokens", peer, n });
+      event({ type: "tokens", peer, n, ...taskAttribution(peer) });
       const turn = turns.get(peer);
       if (turn) turn.tokens += n;
     }
@@ -1382,7 +1395,7 @@ export async function startDaemon(opts: DaemonOptions) {
       claudeNativeUsageSeen.add(record.id);
       const reported = claudeReportedTokens(record.usage);
       if (reported !== undefined) addTokens("claude", reported);
-      event({ type: "usage", peer: "claude", source: "claude_transcript", id: record.id, ...record.usage, ...(record.servedModel ? { servedModel: record.servedModel } : {}), ...(record.at ? { measuredAt: record.at } : {}) });
+      event({ type: "usage", peer: "claude", source: "claude_transcript", id: record.id, ...record.usage, ...taskAttribution("claude"), ...(record.servedModel ? { servedModel: record.servedModel } : {}), ...(record.at ? { measuredAt: record.at } : {}) });
     }
   };
   const claudeUsageTimer = setInterval(collectClaudeUsage, 2000);
@@ -1631,6 +1644,9 @@ export async function startDaemon(opts: DaemonOptions) {
       // The adapter's own state: a pause shows a busy peer as paused, and its turn goes on all the same.
       const busy = (bus.peers.get(e.peer)?.state ?? e.state) === "busy";
       if (busy && !open) {
+        const delivery = pendingDeliveryTask.get(e.peer);
+        pendingDeliveryTask.delete(e.peer);
+        const attribution = taskAttribution(e.peer, delivery);
         const id = `${e.peer}#${runId}.${++turnSeq}`;
         // A turn of a peer with a PII task open is not snapshotted: what it writes would stay in git's object store until
         // gc. It is still recorded, without trees, so an overlapping turn's undo knows its changes are unknown.
@@ -1639,7 +1655,7 @@ export async function startDaemon(opts: DaemonOptions) {
         turnTasks.set(id, board.list().filter((t) => t.owner === e.peer && ["proposed", "in_progress", "changes_requested", "in_review"].includes(t.state)).map((t) => t.id));
         const start = turnLog && !pii ? snap(`the start of ${id}`) : undefined; // before the peer is handed anything: the tap runs inside setState
         try { turnLog?.begin(id, e.peer, start?.tree); } catch (error) { log(`turn record ${id}: ${(error as Error).message}`); }
-        turns.set(e.peer, { id, start: Date.now(), tokens: 0, ...(start ? { tree: start.tree, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
+        turns.set(e.peer, { id, start: Date.now(), tokens: 0, deliveryTask: delivery, attribution, ...(start ? { tree: start.tree, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
         event({ type: "turn_start", peer: e.peer, turn: id });
       } else if (!busy && open) {
         turns.delete(e.peer);
@@ -1658,7 +1674,7 @@ export async function startDaemon(opts: DaemonOptions) {
           if (changed.length) afterTurn = () => detectConflicts(e.peer, open.id, open.start, changed);
         }
         // A lost Claude channel/watchdog is not native completion; only its real Stop closes a counted turn.
-        if (e.peer !== "claude" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}) });
+        if (e.peer !== "claude" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...open.attribution, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}) });
         if (e.peer !== "claude") { // Claude's native turn end is its Stop hook
           if ((bus.peers.get(e.peer)?.state ?? e.state) === "idle") queueMicrotask(() => finishSupervisionTurn(e.peer));
           turnEnded.set(e.peer, Date.now());
@@ -2087,7 +2103,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const local = new LocalPeer("local", {
         cwd: opts.cwd,
         omni,
-        onUsage: record => event({ type: "usage", peer: "local", source: "omniroute", id: record.id, ...record.usage, requestedModel: record.requestedModel, ...(record.servedModel ? { servedModel: record.servedModel } : {}), ...(record.provider ? { provider: record.provider } : {}), measuredAt: record.at }),
+        onUsage: record => event({ type: "usage", peer: "local", source: "omniroute", id: record.id, ...record.usage, ...taskAttribution("local", record.task), requestedModel: record.requestedModel, ...(record.servedModel ? { servedModel: record.servedModel } : {}), ...(record.provider ? { provider: record.provider } : {}), measuredAt: record.at }),
         admitBudget: async (envs, unit) => tasks.admitExecutionEnvelopes(envs, "local", unit),
         ...(route ? { route } : {}),
         ...(sidecar && route && !route.startsWith("hub/") ? { sidecar } : {}),
