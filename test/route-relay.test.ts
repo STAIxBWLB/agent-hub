@@ -397,3 +397,52 @@ test("#199 three MLX startup failures skip MLX until the cooldown passes, a succ
   expect(cooldowns).toHaveLength(2);
   expect(relay.status().backends.find((b) => b.alias === "mlx/fast")).not.toHaveProperty("coolingUntil");
 });
+
+const post = (relay: Awaited<ReturnType<typeof startModelRelay>>, model: string) => fetch(`${relay.url}/chat/completions`, {
+  method: "POST", headers: { authorization: `Bearer ${relay.token}`, "content-type": "application/json" }, body: JSON.stringify({ model, messages: [{ role: "user", content: "short" }] }),
+}).then(async (response) => { await response.text(); return response.status; });
+
+test("#199 a load move whose gateway is down falls back to MLX, the next busy slot waits instead, and a gateway-less alias shows its cooldown", async () => {
+  const local = ollama({ ready: true });
+  let probes = 0;
+  const down = { base: async () => { probes++; return undefined; }, apiKey: () => "k", accessHeaders: () => ({}) } as any;
+  const events: RouteEvent[] = [];
+  const relay = await startModelRelay({ omni: down, allowedDGXmodels: { "dgx/fast": "fast", "dgx/coding": "coding" }, enableHubAuto: true, token: "down",
+    mlx: local.mlx, fallbackDGXAlias: "dgx/fast", efficientWaitMs: 20, onRoute: (event) => events.push(event as RouteEvent) });
+  cleanup.push(relay.close);
+  await route(relay, short());
+  const held = await acquireGeneration(local.runtimeDir, 1);
+  setTimeout(held, 150);
+  await route(relay, short()); // moved, the gateway is down: MLX serves it once the slot frees
+  const busy = await acquireGeneration(local.runtimeDir, 1);
+  setTimeout(busy, 150);
+  await route(relay, short()); // dgx/fast just failed: no move, it waits for MLX
+  expect(events.map((e) => `${e.tier} ${e.source}`)).toEqual(["mlx/fast default", "dgx/fast load", "mlx/fast default"]);
+  expect(local.counts.chat).toBe(3);
+  expect(probes).toBe(1);
+  expect(relay.requests().map((r) => `${r.alias} ${r.outcome}${r.fallbackOfId ? " fallback" : ""}`)).toEqual(["mlx/fast completed", "dgx/fast failed", "mlx/fast completed fallback", "mlx/fast completed"]);
+
+  for (let i = 0; i < 3; i++) expect(await post(relay, "dgx/coding")).toBe(502);
+  expect(relay.status().backends.find((b) => b.alias === "dgx/coding")).toMatchObject({ state: "error", lastError: "DGX gateway is unavailable", failures: 3 });
+  expect(relay.status().backends.find((b) => b.alias === "dgx/coding")?.coolingUntil).toBeString();
+});
+
+test("#199 timeouts cut short by the execution budget never start a cooldown; refused connections do", async () => {
+  const hang = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Promise<Response>(() => {}) });
+  cleanup.push(() => hang.stop(true));
+  const cooldowns: RelayCooldownEvent[] = [];
+  const budgeted = await startModelRelay({ omni: omni(`http://127.0.0.1:${hang.port}/v1`), allowedDGXmodels: { "dgx/fast": "fast" }, token: "budget",
+    admitRequest: async () => ({ allowed: true, remainingMs: 30 }), onCooldown: (event) => cooldowns.push(event) });
+  cleanup.push(budgeted.close);
+  for (let i = 0; i < 3; i++) expect(await post(budgeted, "dgx/fast")).toBe(502);
+  expect(budgeted.requests().map((r) => r.failureClass)).toEqual(["transport", "transport", "transport"]);
+  expect(cooldowns).toEqual([]);
+
+  const closed = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
+  const port = closed.port;
+  closed.stop(true);
+  const refused = await startModelRelay({ omni: omni(`http://127.0.0.1:${port}/v1`), allowedDGXmodels: { "dgx/fast": "fast" }, token: "refused", onCooldown: (event) => cooldowns.push(event) });
+  cleanup.push(refused.close);
+  for (let i = 0; i < 3; i++) expect(await post(refused, "dgx/fast")).toBe(502);
+  expect(cooldowns).toEqual([{ alias: "dgx/fast", event: "start", failures: 3, ms: 30_000 }]);
+});

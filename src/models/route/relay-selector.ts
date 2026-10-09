@@ -42,7 +42,7 @@ export class AutoRouteSelector {
       const conversation = normalizeConversation(body);
       const decision = selectStage(extractToolSignals(conversation), { mode: "efficient_first", confidenceThreshold: 0.5, capableHoldTurns: 2 }, prior?.stage ?? { capableHoldTurnsRemaining: 0 });
       const inputTokens = this.estimateInputTokens(body.messages, body.tools);
-      const fits = (candidate: Tier) => { const staged = this.stageBackend(candidate, body); return !!staged && (staged.kind === "mlx" || inputTokens <= this.options.dgxMaxInputTokens); };
+      const fits = (candidate: Tier) => { const staged = this.stageBackend(candidate, body, inputTokens); return !!staged && (staged.kind === "mlx" || inputTokens <= this.options.dgxMaxInputTokens); };
       const staged = stayOrSwitch(this.options.staySwitch?.(), prior?.pin?.tier, decision, turnKind(conversation), { inputTokens, fits });
       next = { stage: decision.state, ...(staged.pin ? { pin: { tier: staged.pin, alias: "" } } : {}) };
       trace = staged.trace;
@@ -51,7 +51,7 @@ export class AutoRouteSelector {
       // Enforced, a tool loop that keeps its tier keeps its backend too: a move inside the tier costs the same prefill (#199).
       movable = !(trace.staySwitch === "enforce" && trace.turnType === "tool_result" && trace.plan === "stay" && trace.reason !== "new_pin");
       const kept = !movable && prior?.pin ? this.keep(prior.pin.alias, staged.tier, body, inputTokens) : undefined;
-      const stagedBackend = kept ?? this.stageBackend(staged.tier, body);
+      const stagedBackend = kept ?? this.stageBackend(staged.tier, body, inputTokens);
       if (stagedBackend) backend = stagedBackend;
       else source = "default";
     } catch {
@@ -81,21 +81,20 @@ export class AutoRouteSelector {
   /** The session's pinned backend, while it still serves this tier, fits and is not cooling down. */
   private keep(alias: string, tier: Tier, body: RelayRequest, inputTokens: number): ModelBackend | undefined {
     if (this.options.cooling(alias)) return undefined;
-    if (alias === this.mlxAlias) return tier === "efficient" && this.options.mlx && this.mlxFitsBudget(body) ? { kind: "mlx", alias } : undefined;
+    if (alias === this.mlxAlias) return tier === "efficient" && this.options.mlx && this.mlxFitsBudget(body, inputTokens) ? { kind: "mlx", alias } : undefined;
     return alias in this.options.allowedDGXmodels && (alias === "dgx/coding") === (tier === "capable") && inputTokens <= this.options.dgxMaxInputTokens ? { kind: "dgx", alias } : undefined;
   }
 
-  private stageBackend(tier: "capable" | "efficient", body: RelayRequest): ModelBackend | undefined {
+  private stageBackend(tier: "capable" | "efficient", body: RelayRequest, input: number): ModelBackend | undefined {
     if (tier === "capable") return "dgx/coding" in this.options.allowedDGXmodels ? { kind: "dgx", alias: "dgx/coding" } : undefined;
-    if (this.options.mlx && this.mlxFitsBudget(body)) return { kind: "mlx", alias: this.mlxAlias };
+    if (this.options.mlx && this.mlxFitsBudget(body, input)) return { kind: "mlx", alias: this.mlxAlias };
     return "dgx/fast" in this.options.allowedDGXmodels ? { kind: "dgx", alias: "dgx/fast" } : undefined;
   }
 
-  private mlxFitsBudget(body: RelayRequest): boolean {
+  private mlxFitsBudget(body: RelayRequest, input: number): boolean {
     const context = Math.min(8192, this.options.mlx?.contextWindow ?? 8192);
     const maxOutput = this.options.mlx?.maxTokens ?? 2048;
     const output = body.max_tokens ?? maxOutput;
-    const input = this.estimateInputTokens(body.messages, body.tools);
     const inputLimit = this.options.mlx?.maxInputTokens ?? (this.options.mlx?.provider === "ollama" ? 6000 : 16_000);
     return Number.isInteger(output) && output > 0 && output <= maxOutput && input <= inputLimit && input + output <= context;
   }
