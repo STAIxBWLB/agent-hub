@@ -1,6 +1,8 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
 import { initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, terminalText, parseConsoleCommand, fit, pruneApprovals, panelRows, duration, relative } from "../src/cli/console-state.ts";
 import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
+import { contextLine } from "../src/cli/status-lines.ts";
+import { renderTailEvent } from "../src/cli/tail-render.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import type { ConsoleTerminal } from "../src/cli/console.ts";
 
@@ -326,6 +328,21 @@ describe("console layout (#213)", () => {
     expect(views[5]!.join("\n")).toMatch(/expires +in 1m\n/);
     expect(views[6]!.join("\n")).toMatch(/history +at 10m ago; event proposed; by claude\n[\s\S]*updated +45s ago\nreviews +-/);
     expect(views[7]!.join("\n")).toMatch(/messages +id e1; from pi; body hi/);
+  });
+  test("the stream and the Events panel show a context reading's time as local time; tail keeps its ISO time", async () => {
+    const reading = { source: "codex", measuredAt: T, tokens: 80_000, window: 200_000, used: 0.4, freshness: "fresh" as const };
+    expect(contextLine(reading)).toBe(`context 40% (fresh, codex, measured ${new Date(T).toISOString()})`);
+    const env = { ...newEnvelope("pi", "body"), ts: T };
+    expect(renderTailEvent({ t: "envelope", env })).toBe(`${new Date(T).toLocaleTimeString()} pi -> *\n    body`);
+    const iso = /\d{4}-\d\d-\d\dT\d\d:\d\d/;
+    const f = fixture(); const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
+    f.client.onPush({ t: "context", peer: "codex", reading });
+    expect(streamed(f.output)).toEqual([`  codex: context 40% (fresh, codex, measured ${new Date(T).toLocaleTimeString()})`]);
+    f.input("\t"); f.output.length = 0; f.input("5");
+    const drawn = f.output.join("");
+    expect(drawn).toContain(`>   codex: context 40% (fresh, codex, measured ${new Date(T).toLocaleTimeString()})`);
+    expect(drawn).not.toMatch(iso);
+    f.input("q"); await running;
   });
   test("a task or delivery opened with Enter shows labeled fields", async () => {
     const task = { id: 3, title: "한국어 태스크", state: "proposed", class: "implement", owner: "pi", created: Date.now() - 60_000, history: [] };

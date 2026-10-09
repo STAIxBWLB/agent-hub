@@ -1407,7 +1407,9 @@ mode). A notice clears at the next key, or once 10 s have passed when the
 existing 1 s tick redraws. In the stream, `v` prints the selected request with
 the push's framing, and `:` command output lines start at column 4. `fit`
 measures a cut line as `paint` prints it, so a cut that ends a span in
-`[agent-hub` cannot widen the line with a `> ` marker.
+`[agent-hub` cannot widen the line with a `> ` marker. A context reading in the
+console stream and Events panel shows its measurement time as local time, as
+event headers do; `ahub tail` and `ahub status` keep the ISO time.
 
 Agent shell CLI calls connect as the detected peer in tools mode. Hub launches
 set `AGENTHUB_PEER_ID`; the pinned installed Codex shell injects

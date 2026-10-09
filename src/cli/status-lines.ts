@@ -11,8 +11,9 @@ export function backendLabel(backend: BackendRow): string {
   return alias.startsWith(`${kind}/`) ? alias : `${kind}/${alias}`;
 }
 
-export function contextLine(reading: ContextView): string {
-  return `context ${reading.used === null ? "unknown" : `${Math.round(reading.used * 100)}%`} (${reading.freshness}${reading.source ? `, ${reading.source}` : ""}${reading.measuredAt !== null ? `, measured ${new Date(reading.measuredAt).toISOString()}` : ""})`;
+/** `measured` reads as an ISO time unless `time` says otherwise: the console uses local time, as its event headers do. */
+export function contextLine(reading: ContextView, time = (at: number) => new Date(at).toISOString()): string {
+  return `context ${reading.used === null ? "unknown" : `${Math.round(reading.used * 100)}%`} (${reading.freshness}${reading.source ? `, ${reading.source}` : ""}${reading.measuredAt !== null ? `, measured ${time(reading.measuredAt)}` : ""})`;
 }
 
 export function peerLine(id: string, p: PeerRow): string {

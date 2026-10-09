@@ -189,7 +189,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     if (!active) return;
     try {
       if (msg.t === "event") stream({ text: renderTailEvent(msg.e), peer: msg.e.peer ?? msg.e.env?.from, kind: msg.e.env?.kind ?? msg.e.t, tone: eventTone(msg.e) });
-      else if (msg.t === "context") stream({ text: `  ${msg.peer}: ${contextLine(msg.reading)}`, peer: msg.peer, kind: "context" });
+      else if (msg.t === "context") stream({ text: `  ${msg.peer}: ${contextLine(msg.reading, at => new Date(at).toLocaleTimeString())}`, peer: msg.peer, kind: "context" });
       else if (msg.t === "notice") stream({ text: `  * ${msg.line}`, kind: "notice" });
       else if (msg.t === "permission") {
         stream({ text: permissionText(msg), peer: msg.peer, kind: "permission", tone: "attention" });
