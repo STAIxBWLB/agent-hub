@@ -241,7 +241,7 @@ test("hub_inbox is refused while a conductor holds the tools-only claude or reco
   const lead = await ControlClient.connect(stateDir, { role: "tools", peer: "codex" });
   cleanup.push(() => lead.close());
   expect((await lead.request({ t: "task", op: "hub_peer_hold", args: { peer: "claude" } })).ok).toBe(true);
-  expect(await inbox()).toBe("not read: held by the conductor codex");
+  expect(await inbox()).toBe("not read: held by the conductor codex; it releases it with hub_peer_release, or the console user with ahub resume claude");
   expect((await lead.request({ t: "task", op: "hub_peer_release", args: { peer: "claude" } })).ok).toBe(true);
   daemon.bus.setRecoveryHold(true);
   expect(await inbox()).toBe("not read: recovery is holding deliveries");

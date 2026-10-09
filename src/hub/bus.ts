@@ -752,6 +752,8 @@ export class Bus {
     const queued = [...queue];
     const batch = [...(preface ? [preface] : []), ...this.take(id, queue)];
     this.prefaces.delete(id);
+    // Before the checkpoint, as in a drain, so the persisted snapshot carries it; on a failure the bus stops anyway.
+    this.remember(batch);
     try {
       const deliveryId = crypto.randomUUID();
       this.journal?.transaction(() => {
@@ -764,7 +766,6 @@ export class Bus {
       this.storageError = "delivery journal unavailable";
       throw error;
     }
-    this.remember(batch);
     this.failureStreak.delete(id); this.lastFailure.delete(id); // read, as a completed push receipt clears them
     this.onQueues?.();
     return batch;

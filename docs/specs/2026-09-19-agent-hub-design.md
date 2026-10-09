@@ -1591,9 +1591,10 @@ push `accepted` and show none of them.
   peer as attached.
 - `hub_inbox` sends `inbox`. The daemon answers "not attached yet; retry"
   between welcome and attach, and refuses it for a session with pushes.
-  `Bus.pull` is held by exactly what holds a drain (`Bus.held`: recovery, an
-  uncertain delivery, a console, budget or conductor pause); a held pull
-  journals nothing and the refusal names the hold. Otherwise it takes what one
+  `Bus.pull` is held by every hold a drain respects (`Bus.held`: recovery, an
+  uncertain delivery, a console, budget or conductor pause), though unlike a
+  drain it does not wait for the peer to be idle; a held pull journals nothing
+  and the refusal names the hold and the next action. Otherwise it takes what one
   push delivery would (the preface, then `take`'s batch of at most ten,
   important first; the reply says how many still wait) and checkpoints it like
   a push, so queued journal rows of the same envelopes (an operator retry) are

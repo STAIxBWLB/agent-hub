@@ -54,7 +54,9 @@ test("a pull-only peer is never handed a delivery: its queue is counted, then re
   expect(durable.list("claude")).toEqual([]);
   bus.resume("claude");
   expect(peer.deliveries).toHaveLength(0);
-  expect(bus.pull("claude")!.map((e) => [e.from, e.kind])).toEqual([["hub", "presence"], ["user", env.kind]]);
+  const read = bus.pull("claude")!;
+  expect(read.map((e) => [e.from, e.kind])).toEqual([["hub", "presence"], ["user", env.kind]]);
+  expect(durable.snapshot().bus.seen.map((e) => e.id)).toContain(read[0]!.id); // the persisted snapshot resolves a reply to it
   expect(bus.queued("claude")).toBe(0);
   expect(bus.pull("claude")).toEqual([]);
   expect(durable.list("claude").map((r) => [r.state, r.reason])).toEqual([["completed", "read through hub_inbox"]]);

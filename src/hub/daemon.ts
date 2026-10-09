@@ -1293,7 +1293,7 @@ export async function startDaemon(opts: DaemonOptions) {
   /** Why a paused peer gets nothing; the bus pause itself is the hold. */
   const pauseReason = (id: PeerId) => {
     const r = budget.record(id), hold = conductorHolds.get(id);
-    return r ? `paused by the budget coordinator: ${r.reason}; to override: ahub budget resume ${id}` : manualPaused.has(id) ? `paused by the console user; ahub resume ${id}` : hold ? `held by the conductor ${hold.actor}` : "paused";
+    return r ? `paused by the budget coordinator: ${r.reason}; to override: ahub budget resume ${id}` : manualPaused.has(id) ? `paused by the console user; ahub resume ${id}` : hold ? `held by the conductor ${hold.actor}; it releases it with hub_peer_release, or the console user with ahub resume ${id}` : "paused";
   };
   let releasing = false; // gone-owner release (#6) and the ready sweep (#34): one run at a time, and a recovery commit waits for it
   const recoveryReady = () => {
