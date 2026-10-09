@@ -26,6 +26,43 @@ a reason. Tasks use the same public redaction as the board. Panels need at least
 polling runs only while the corresponding panel is visible. Leaving restores
 the terminal and returning from panels replays the bounded stream buffer.
 
+Console color policy is `--color=auto|always|never`, with `auto` as the default.
+Auto enables color only when both input and output are TTYs, `TERM` is not
+`dumb`, and `NO_COLOR` is empty or absent. Explicit `always` overrides these
+conditions, including redirected stream output; `never` disables styling.
+Neither option changes terminal size requirements, panel decisions, cursor
+management or the final reset. Invalid values fail before connecting.
+
+| Meaning | Palette | Examples |
+|---|---|---|
+| Information and navigation | Cyan, bold cyan for active/selected labels | Tabs, section/peer labels and `>` selection marker |
+| Success and availability | Green | Idle peer, approved task |
+| Waiting and attention | Yellow | Busy/paused peer, pending approval, confirmation, review/ready task, important priority |
+| Failure and intervention | Red | Failed/check-failed task, undeliverable/overflow, `needs_review` queue, denial request or expired/cancelled approval |
+| Metadata | Bright black | Ages and remaining approval time |
+
+Offline peers, primary titles, action details and message body lines keep the
+terminal's default foreground. Labels and prompts remain readable without
+color. Stream styling applies only to the header, using structured event data;
+message text cannot choose a color. A local denial is shown as requested, not
+as a confirmed receipt; a remote answered closure has no option-kind metadata
+and is not guessed to be a denial. A fixed palette is applied after terminal
+control sanitization. Width, clipping, wrapping and cursor placement use plain
+Unicode text. Each styled span and every interactive exit restores attributes.
+Color adds no polling, timers or extra redraws. `ahub tail`, logs and JSON stay
+unchanged.
+
+```sh
+ahub console --panels --color=auto
+NO_COLOR=1 ahub console
+ahub console --color=never
+ahub console --color=always > console-stream.txt
+```
+
+Actual light/dark terminal readability and bounded idle-CPU observations are
+recorded separately in the smoke ledger; fake-terminal tests establish policy,
+geometry, sanitization and restoration only.
+
 The command input accepts existing status, board, task, review, say, pause,
 resume, budget, queue, permit, ask, remember, route, turns, undo, check-path and
 report operations. It executes an argument vector with closed stdin. Lifecycle,

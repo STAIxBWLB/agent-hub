@@ -4,7 +4,7 @@ export interface Approval {
   id: string; peer: string; title: string; expiresAt: number;
   options: { optionId: string; name: string; kind: string }[];
 }
-export interface ConsoleEvent { text: string; peer?: string; kind?: string }
+export interface ConsoleEvent { text: string; peer?: string; kind?: string; tone?: Tone }
 export interface ConsoleState {
   mode: "stream" | "panels"; panel: number; selection: number; approvalIndex: number;
   input: string; editing: boolean; history: string[]; historyIndex: number;
@@ -22,11 +22,48 @@ export function initialConsoleState(panels = false): ConsoleState {
 }
 /** Strip terminal controls before any daemon or child output reaches a terminal. Preserve printable Unicode. */
 export function terminalText(value: unknown): string {
-  return sanitize(String(value ?? ""))
+  return sanitize(String(value ?? "")
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\|$)/g, "")
     .replace(/\x1b[P_X^][\s\S]*?(?:\x1b\\|$)/g, "")
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1b[^\n]?/g, "").replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+    .replace(/\x1b[^\n]?/g, "").replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, ""));
+}
+export type Tone = "info" | "strong" | "success" | "attention" | "failure" | "muted";
+export interface Span { text: string; tone?: Tone }
+export const PALETTE: Readonly<Record<Tone, string>> = Object.freeze({
+  info: "\x1b[36m", strong: "\x1b[1;36m", success: "\x1b[32m", attention: "\x1b[33m", failure: "\x1b[31m", muted: "\x1b[90m",
+});
+export function paint(line: Span[], color: boolean): string {
+  return line.map(span => {
+    const text = terminalText(span.text);
+    const sgr = span.tone && Object.hasOwn(PALETTE, span.tone) ? PALETTE[span.tone] : undefined;
+    return color && sgr && text ? sgr + text + "\x1b[0m" : text;
+  }).join("");
+}
+export function resolveColor(flag: string | undefined, env: { isTTY: boolean; TERM?: string; NO_COLOR?: string }): boolean | Error {
+  if (flag === "always") return true;
+  if (flag === "never") return false;
+  if (flag === undefined || flag === "auto") return env.isTTY && env.TERM !== "dumb" && !env.NO_COLOR;
+  return new Error("usage: ahub console [--panels] [--color=auto|always|never]");
+}
+export function stateTone(state: string): Tone | undefined {
+  if (state === "idle" || state === "approved") return "success";
+  if (["busy", "paused", "in_review", "changes_requested", "ready"].includes(state)) return "attention";
+  if (["failed", "check failed", "needs_review"].includes(state)) return "failure";
+  return undefined;
+}
+const span = (text: unknown, tone?: Tone): Span => ({ text: String(text ?? ""), ...(tone ? { tone } : {}) });
+/** Clip only sanitized plain text, then retain the tones of the surviving prefix. */
+function fitLine(line: Span[], columns: number): Span[] {
+  const clean = line.map(s => ({ ...s, text: terminalText(s.text).replace(/\n/g, " ") }));
+  const text = clean.map(s => s.text).join("");
+  const clipped = fit(text, columns);
+  const marker = text === clipped ? "" : ".".repeat(Math.max(0, Math.min(3, columns)));
+  let remaining = clipped.length - marker.length;
+  const out: Span[] = [];
+  for (const s of clean) { const part = s.text.slice(0, Math.max(0, remaining)); if (part) out.push({ ...s, text: part }); remaining -= part.length; }
+  if (marker) out.push(span(marker));
+  return out;
 }
 export function fit(value: unknown, columns: number): string {
   const text = terminalText(value).replace(/\n/g, " ");
@@ -179,35 +216,64 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   return done();
 }
 export function renderConsole(s: ConsoleState, columns: number, rows = 24, now = Date.now()): string[] {
+  return renderConsoleLines(s, columns, rows, now).map(line => paint(line, false));
+}
+export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, now = Date.now()): Span[][] {
   const permission = s.approvals[s.approvalIndex];
   let prompt = s.editing ? `: ${s.input}` : "q quit | Tab panels | : command | a allow d deny v view [ ] select";
   if (s.confirm?.type === "permission") prompt = `allow ${s.confirm.option} for ${s.confirm.peer} (request ${s.confirm.id})? y/N`;
   if (s.confirm?.type === "command") prompt = `${s.confirm.args.join(" ")}? y/N`;
   if (s.optionChoice) prompt = s.approvals.find(a => a.id === s.optionChoice)?.options.filter(o => o.kind.startsWith("allow")).map((o, i) => `${i + 1}:${o.name}`).join(" | ") ?? "";
+  const summary: Span[] = [];
+  for (const [id, p] of Object.entries(s.peers)) {
+    if (summary.length) summary.push(span(" "));
+    summary.push(span(id, p.state === "offline" ? undefined : "info"), span(":"), span(p.state, stateTone(p.state)), span(` q${p.queued ?? 0}`));
+    if (p.needsReview) summary.push(span(` review${p.needsReview}`, "failure"));
+    if (p.paused) summary.push(span(" paused", "attention"));
+  }
   const quotas = Object.entries(s.budget).map(([id, b]) => `${id}:${b.windows?.map((w: any) => `${w.id} ${Math.round(w.used * 100)}%`).join("/") ?? "?"}`).join(" ");
-  const summary = Object.entries(s.peers).map(([id, p]) => `${id}:${p.state} q${p.queued ?? 0}${p.needsReview ? ` review${p.needsReview}` : ""}${p.paused ? " paused" : ""}`).join(" ");
-  const footer = [fit(summary + (quotas ? ` | ${quotas}` : ""), columns), fit(`${s.approvals.length} approvals${permission ? ` | ${permission.peer} ${permission.id} ${Math.max(0, Math.ceil((permission.expiresAt - now) / 1000))}s` : ""}${s.notice ? ` | ${s.notice}` : ""}`, columns), fit(prompt, columns)];
+  if (quotas) summary.push(span(` | ${quotas}`));
+  const approvals = [span(`${s.approvals.length} approvals`, s.approvals.length ? "attention" : undefined)];
+  if (permission) approvals.push(span(` | ${permission.peer} ${permission.id}`, "attention"), span(` ${Math.max(0, Math.ceil((permission.expiresAt - now) / 1000))}s`, "muted"));
+  if (s.notice) approvals.push(span(` | ${s.notice}`));
+  const footer = [fitLine(summary, columns), fitLine(approvals, columns), fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
   if (s.mode === "stream") return footer;
-  const title = ["Peers", "Approvals", "Tasks", "Queue", "Events"][s.panel - 1];
-  const lines = [fit(`agent-hub | 1 Peers 2 Approvals 3 Tasks 4 Queue 5 Events | ${title}`, columns), fit(`j/k move Enter detail Esc back ? keys${s.panel === 5 ? ` | f peer:${s.peerFilter ?? "all"} g kind:${s.kindFilter ?? "all"}` : ""}`, columns)];
-  if (s.help) lines.push(...wrap("Tab stream/panels; 1-5 panel; j/k or arrows move; Enter detail; Esc back; : command; q quit. Approvals: a allow (confirm y), d deny, v title, [ ] select. Peers: p pause, r resume. Tasks: a assign (confirm y), r review. Queue: r resolve (reason and confirm y). Events: f peer filter, g kind filter.", columns));
-  else if (s.detail) { const detail = wrap(s.detail, columns); lines.push(...detail.slice(Math.min(s.detailOffset, Math.max(0, detail.length - (rows - 5))))); }
+  const titles = ["Peers", "Approvals", "Tasks", "Queue", "Events"];
+  const title = titles[s.panel - 1];
+  const tabs = [span("agent-hub | ", "info")];
+  for (const [i, name] of titles.entries()) tabs.push(span(`${i + 1} ${name}${i < 4 ? " " : ""}`, i + 1 === s.panel ? "strong" : "info"));
+  tabs.push(span(` | ${title}`, "strong"));
+  const lines: Span[][] = [fitLine(tabs, columns), fitLine([span(`j/k move Enter detail Esc back ? keys${s.panel === 5 ? ` | f peer:${s.peerFilter ?? "all"} g kind:${s.kindFilter ?? "all"}` : ""}`)], columns)];
+  if (s.help) lines.push(...wrap("Tab stream/panels; 1-5 panel; j/k or arrows move; Enter detail; Esc back; : command; q quit. Approvals: a allow (confirm y), d deny, v title, [ ] select. Peers: p pause, r resume. Tasks: a assign (confirm y), r review. Queue: r resolve (reason and confirm y). Events: f peer filter, g kind filter.", columns).map(text => [span(text)]));
+  else if (s.detail) { const detail = wrap(s.detail, columns); lines.push(...detail.slice(Math.min(s.detailOffset, Math.max(0, detail.length - (rows - 5)))).map(text => [span(text)])); }
   else {
     const data = panelRows(s); const capacity = Math.max(1, s.panel === 2 ? Math.floor((rows - 6) / 2) : rows - 6); const start = Math.max(0, s.selection - capacity + 1);
     for (const [i, row] of data.slice(start, start + capacity).entries()) {
-      let text = "";
+      const selected = start + i === s.selection;
+      const line = [span(`${selected ? ">" : " "} `, selected ? "strong" : undefined)];
       if (s.panel === 1) {
         const b = s.budget[row.id];
-        text = `${row.id} ${row.state} ${row.attached === false ? "detached" : "attached"} q:${row.queued ?? 0} !:${row.queuedImportant ?? 0} review:${row.needsReview ?? 0} ${row.paused ? `paused:${JSON.stringify(row.paused)}` : ""} ${b?.paused ? `budget pause ${b.paused.reason} reset:${b.paused.resetsAt}` : ""} ${b?.windows?.map((w: any) => `${w.id}:${Math.round(w.used * 100)}% reset:${w.resetsAt ?? "?"}`).join(" ") ?? "quota:?"} model:${row.servedBy ?? row.requestedModel ?? "?"}`;
-      } else if (s.panel === 2) text = `${row.id} ${row.peer} ${Math.max(0, Math.ceil((row.expiresAt - now) / 1000))}s ${row.title}`;
-      else if (s.panel === 3) { const at = row.history?.at(-1)?.at ?? row.updated ?? row.created; text = `#${row.id} ${row.state}${row.ready ? " ready" : ""} ${row.owner ?? "-"} review:${row.reviewer ?? "-"} ${row.class} age:${at ? Math.max(0, Math.floor((now - at) / 1000)) + "s" : "?"} ${row.title}`; }
-      else if (s.panel === 4) text = `${row.id} ${row.peer} ${row.state} rev:${row.revision} age:${row.createdAt ? Math.max(0, Math.floor((now - row.createdAt) / 1000)) + "s" : "?"}`;
-      else text = row.text;
-      lines.push(fit(`${start + i === s.selection ? ">" : " "} ${text}`, columns));
+        line.push(span(row.id, row.state === "offline" ? undefined : selected ? "strong" : "info"), span(" "), span(row.state, stateTone(row.state)),
+          span(` ${row.attached === false ? "detached" : "attached"} q:${row.queued ?? 0} `), span(`!:${row.queuedImportant ?? 0}`, row.queuedImportant ? "attention" : undefined),
+          span(` review:${row.needsReview ?? 0}`, row.needsReview ? "failure" : undefined), span(" "),
+          span(row.paused ? `paused:${JSON.stringify(row.paused)}` : "", "attention"), span(" "),
+          span(b?.paused ? `budget pause ${b.paused.reason} reset:${b.paused.resetsAt}` : "", "attention"), span(" "),
+          span(b?.windows?.map((w: any) => `${w.id}:${Math.round(w.used * 100)}% reset:${w.resetsAt ?? "?"}`).join(" ") ?? "quota:?"), span(` model:${row.servedBy ?? row.requestedModel ?? "?"}`));
+      } else if (s.panel === 2) line.push(span(`${row.id} ${row.peer}`, "attention"), span(` ${Math.max(0, Math.ceil((row.expiresAt - now) / 1000))}s`, "muted"), span(` ${row.title}`));
+      else if (s.panel === 3) {
+        const last = row.history?.at(-1);
+        const at = last?.at ?? row.updated ?? row.created;
+        const tone = last?.event === "check failed" || last?.event === "failed" ? "failure" : stateTone(row.state);
+        const failure = (last?.event === "check failed" || last?.event === "failed") && row.state !== last.event ? ` ${last.event}` : "";
+        line.push(span(`#${row.id}`, selected ? "strong" : "info"), span(" "), span(row.state, tone), span(failure, "failure"), span(row.ready ? " ready" : "", "attention"),
+          span(` ${row.owner ?? "-"} review:${row.reviewer ?? "-"} ${row.class} `), span(`age:${at ? Math.max(0, Math.floor((now - at) / 1000)) + "s" : "?"}`, "muted"), span(` ${row.title}`));
+      } else if (s.panel === 4) line.push(span(row.id, selected ? "strong" : "info"), span(` ${row.peer} `), span(row.state, stateTone(row.state)), span(` rev:${row.revision} `), span(`age:${row.createdAt ? Math.max(0, Math.floor((now - row.createdAt) / 1000)) + "s" : "?"}`, "muted"));
+      else { const [header, ...body] = String(row.text).split("\n"); line.push(span(header, row.tone)); if (body.length) line.push(span("\n" + body.join("\n"))); }
+      lines.push(fitLine(line, columns));
     }
-    if (!data.length) lines.push("(empty)");
-    if (s.panel === 2 && permission) lines.push(...wrap(permission.title, columns).slice(0, Math.max(0, rows - 3 - lines.length)));
+    if (!data.length) lines.push([span("(empty)")]);
+    if (s.panel === 2 && permission) lines.push(...wrap(permission.title, columns).slice(0, Math.max(0, rows - 3 - lines.length)).map(text => [span(text)]));
   }
-  const body = lines.slice(0, rows - 3); while (body.length < rows - 3) body.push("");
+  const body = lines.slice(0, rows - 3); while (body.length < rows - 3) body.push([]);
   return [...body, ...footer];
 }

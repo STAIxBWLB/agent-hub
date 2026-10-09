@@ -3,8 +3,9 @@ import { StringDecoder } from "node:string_decoder";
 import type { ControlClient } from "../hub/control-client.ts";
 import { contextLine } from "./status-lines.ts";
 import { renderTailEvent } from "./tail-render.ts";
-import { initialConsoleState, pruneApprovals, reduceConsole, renderConsole, terminalText, wrap } from "./console-state.ts";
-import type { ConsoleEffect, ConsoleEvent } from "./console-state.ts";
+import { initialConsoleState, paint, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, terminalText, wrap } from "./console-state.ts";
+import type { ConsoleEffect, ConsoleEvent, Tone } from "./console-state.ts";
+import type { BusEvent } from "../hub/bus.ts";
 
 export interface ConsoleTerminal {
   columns: number; rows: number; isTTY: boolean; isRaw?: boolean;
@@ -19,11 +20,23 @@ export interface ConsoleOptions {
   client: Pick<ControlClient, "request" | "send" | "close" | "onPush" | "onClose">;
   cwd: string; stateDir: string; panels?: boolean; columns?: number; rows?: number;
   terminal?: ConsoleTerminal;
+  color?: boolean;
   /** Injected command runner must use argv, closed stdin, and return a cancellation handle. */
   runCommand?: (args: string[], output: (text: string) => void, done: () => void) => (() => void);
   pollMs?: number;
 }
 export const RESTORE_CONSOLE = "\x1b[?1049l\x1b[r\x1b[0m\x1b[?25h";
+/** Console-only styling uses event structure; tail text and message bodies are never parsed for meaning. */
+export function eventTone(e: BusEvent): Tone | undefined {
+  if (e.t === "state") return stateTone(e.state);
+  if (e.t === "undeliverable" || e.t === "overflow") return "failure";
+  if (e.t === "envelope") {
+    if (e.dropped === "hop") return "failure";
+    if (e.env.priority === "important" || e.env.kind === "task" || e.env.kind === "review" || e.env.kind === "budget") return "attention";
+    return "info";
+  }
+  return undefined;
+}
 function nativeTerminal(): ConsoleTerminal {
   return {
     get columns() { return process.stdout.columns ?? 80; }, get rows() { return process.stdout.rows ?? 24; },
@@ -46,6 +59,7 @@ function nativeTerminal(): ConsoleTerminal {
 /** One terminal client, no daemon ownership. All text crosses terminalText before writing. */
 export async function runConsole(options: ConsoleOptions): Promise<void> {
   const { client } = options; const terminal = options.terminal ?? nativeTerminal();
+  const color = options.color ?? resolveColor(undefined, { isTTY: terminal.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR }) === true;
   let state = initialConsoleState(!!options.panels);
   let columns = options.columns ?? terminal.columns; let rows = options.rows ?? terminal.rows;
   let active = true; let inAlternate = false; let plain = !terminal.isTTY || columns < 80 || rows < 24;
@@ -54,15 +68,19 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   const removers: (() => void)[] = []; const timers: ReturnType<typeof setInterval>[] = [];
   let resolveDone: () => void = () => {}; const done = new Promise<void>(resolve => { resolveDone = resolve; });
   let pendingStream: ConsoleEvent[] = []; let droppedStream = 0;
-  const safeWrite = (text: string) => terminal.write(terminalText(text));
-  const writeStream = (text: string) => {
+  const safeWrite = (text: string) => terminal.write(paint([{ text }], color));
+  const streamLines = (event: ConsoleEvent) => terminalText(event.text).split("\n").flatMap((text, index) => wrap(text, columns).map(line => [{ text: line, ...(index === 0 && event.tone ? { tone: event.tone } : {}) }]));
+  const writeStream = (event: ConsoleEvent) => {
     terminal.write(`\x1b[${rows - 3};1H`);
-    for (const line of wrap(text, columns)) { safeWrite(line); terminal.write("\r\n"); }
+    for (const line of streamLines(event)) { terminal.write(paint(line, color)); terminal.write("\r\n"); }
   };
   const stream = (event: ConsoleEvent) => {
     state.events = [...state.events, { ...event, text: terminalText(event.text) }].slice(-1000);
-    if (plain) safeWrite(event.text + "\n");
-    else if (state.mode === "stream") writeStream(event.text);
+    if (plain) {
+      const [header, ...body] = terminalText(event.text).split("\n");
+      terminal.write(paint([{ text: header ?? "", tone: event.tone }, ...body.map(text => ({ text: "\n" + text }))], color) + "\n");
+    }
+    else if (state.mode === "stream") writeStream(event);
     else { pendingStream.push(event); if (pendingStream.length > 1000) { pendingStream.shift(); droppedStream++; } }
   };
   const draw = () => {
@@ -70,15 +88,15 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     if (state.mode === "panels" && !inAlternate) { terminal.write("\x1b[r\x1b[?1049h\x1b[2J"); inAlternate = true; }
     else if (state.mode === "stream" && inAlternate) {
       terminal.write(`\x1b[?1049l\x1b[1;${rows - 3}r`); inAlternate = false;
-      if (droppedStream) writeStream(`${droppedStream} older panel-mode events omitted from console memory; inspect hub.log for the full stream.`);
-      for (const event of pendingStream) writeStream(event.text);
+      if (droppedStream) writeStream({ text: `${droppedStream} older panel-mode events omitted from console memory; inspect hub.log for the full stream.` });
+      for (const event of pendingStream) writeStream(event);
       pendingStream = []; droppedStream = 0;
     }
     terminal.write(state.mode === "stream" ? `\x1b[1;${rows - 3}r` : "\x1b[r");
-    const lines = renderConsole(state, columns, rows);
+    const lines = renderConsoleLines(state, columns, rows);
     const start = state.mode === "stream" ? rows - 2 : 1;
-    for (const [index, line] of lines.entries()) { terminal.write(`\x1b[${start + index};1H\x1b[2K`); safeWrite(line); }
-    terminal.write(`\x1b[${rows};${Math.min(columns, Bun.stringWidth(lines.at(-1) ?? "") + 1)}H\x1b[?25h`);
+    for (const [index, line] of lines.entries()) { terminal.write(`\x1b[${start + index};1H\x1b[2K`); terminal.write(paint(line, color)); }
+    terminal.write(`\x1b[${rows};${Math.min(columns, Bun.stringWidth(paint(lines.at(-1) ?? [], false)) + 1)}H\x1b[?25h`);
   };
   const stop = (reason?: string) => {
     if (!active) return;
@@ -130,7 +148,11 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   });
   const effect = async (action: ConsoleEffect) => {
     if (action.type === "exit") return stop();
-    if (action.type === "permit") { client.send({ t: "permit", surface: "console", id: action.id, ...(action.option ? { option: action.option } : {}) }); return; }
+    if (action.type === "permit") {
+      client.send({ t: "permit", surface: "console", id: action.id, ...(action.option ? { option: action.option } : {}) });
+      if (!action.option) stream({ text: `  ! denial requested for permission ${action.id}`, kind: "permission", tone: "failure" });
+      return;
+    }
     if (action.type === "show") {
       const result = await client.request(action.panel === 3 ? { t: "task", op: "task_show", args: { id: action.id } } : { t: "queue", op: "show", id: action.id }, 3000);
       if (!active) return;
@@ -157,14 +179,15 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   client.onPush = msg => {
     if (!active) return;
     try {
-      if (msg.t === "event") stream({ text: renderTailEvent(msg.e), peer: msg.e.peer ?? msg.e.env?.from, kind: msg.e.env?.kind ?? msg.e.t });
+      if (msg.t === "event") stream({ text: renderTailEvent(msg.e), peer: msg.e.peer ?? msg.e.env?.from, kind: msg.e.env?.kind ?? msg.e.t, tone: eventTone(msg.e) });
       else if (msg.t === "context") stream({ text: `  ${msg.peer}: ${contextLine(msg.reading)}`, peer: msg.peer, kind: "context" });
       else if (msg.t === "notice") stream({ text: `  * ${msg.line}`, kind: "notice" });
       else if (msg.t === "permission") {
-        stream({ text: `  ? ${msg.peer} asks permission: ${String(msg.title).replace(/\n/g, "\n      | ")}\n    answer with: ahub permit ${msg.id} <${msg.options.map((o: any) => `${o.optionId} (${o.name})`).join(", ")}> | deny`, peer: msg.peer, kind: "permission" });
+        stream({ text: `  ? ${msg.peer} asks permission: ${String(msg.title).replace(/\n/g, "\n      | ")}\n    answer with: ahub permit ${msg.id} <${msg.options.map((o: any) => `${o.optionId} (${o.name})`).join(", ")}> | deny`, peer: msg.peer, kind: "permission", tone: "attention" });
         if (typeof msg.expiresAt === "number" && msg.expiresAt > Date.now() && !state.approvals.some(a => a.id === msg.id)) state.approvals.push(msg);
       } else if (msg.t === "permission_closed") {
         state.approvals = state.approvals.filter(a => a.id !== msg.id); state = pruneApprovals(state, Date.now());
+        if (msg.reason === "expired" || msg.outcome === "cancelled" || msg.outcome?.startsWith("reject")) stream({ text: `  ! ${msg.peer} permission ${msg.id} ${msg.reason ?? msg.outcome}`, peer: msg.peer, kind: "permission", tone: "failure" });
       }
       draw();
     } catch (error) { stop(`Console error: ${String((error as Error).message)}`); }

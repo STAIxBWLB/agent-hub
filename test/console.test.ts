@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { initialConsoleState, reduceConsole, renderConsole, terminalText, parseConsoleCommand, fit, pruneApprovals } from "../src/cli/console-state.ts";
-import { RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
+import { initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, terminalText, parseConsoleCommand, fit, pruneApprovals } from "../src/cli/console-state.ts";
+import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
+import { newEnvelope } from "../src/hub/envelope.ts";
 import type { ConsoleTerminal } from "../src/cli/console.ts";
 
 const NOW = 1_000;
@@ -84,15 +85,16 @@ describe("console rendering", () => {
   }
 });
 function fixture(columns = 80, rows = 24) {
-  let data = (_text: string) => {}; let signal = () => {}; let error = (_error: Error) => {};
+  let data = (_text: string) => {}; let signal = () => {}; let error = (_error: Error) => {}; let resize = () => {};
   const output: string[] = []; const raw: boolean[] = []; const requests: any[] = []; const sent: any[] = [];
   const terminal: ConsoleTerminal = { columns, rows, isTTY: true, write: text => { output.push(text); }, raw: enabled => { raw.push(enabled); },
-    onData: listener => { data = listener; return () => {}; }, onResize: () => () => {},
+    onData: listener => { data = listener; return () => {}; }, onResize: listener => { resize = listener; return () => {}; },
     onSignal: listener => { signal = listener; return () => {}; }, onError: listener => { error = listener; return () => {}; } };
   const client = { onPush: (_msg: any) => {}, onClose: (_code: number, _reason: string) => {},
     send: (msg: any) => { sent.push(msg); }, close: () => {},
     request: async (msg: any) => { requests.push(msg); return { ok: true, status: { peers: {} }, budget: {}, text: "[]", deliveries: [] }; } };
-  return { terminal, client, output, raw, sent, requests, input: (text: string) => data(text), signal: () => signal(), error: () => error(new Error("test failure")) };
+  return { terminal, client, output, raw, sent, requests, input: (text: string) => data(text), signal: () => signal(), error: () => error(new Error("test failure")),
+    resize: (columns: number, rows: number) => { terminal.columns = columns; terminal.rows = rows; resize(); } };
 }
 describe("console terminal lifecycle", () => {
   for (const exit of ["q", "signal", "error", "close"]) {
@@ -127,4 +129,118 @@ describe("console terminal lifecycle", () => {
     f.input("\t"); expect(f.output.join("")).not.toContain("\x1b[?1049h");
     f.input("q"); await running;
   });
+});
+
+describe("console colors", () => {
+  test("color precedence respects TTY, dumb and nonempty NO_COLOR, and explicit flags", () => {
+    for (const [flag, env, want] of [
+      [undefined, { isTTY: true }, true], ["auto", { isTTY: false }, false],
+      ["auto", { isTTY: true, TERM: "dumb" }, false], ["auto", { isTTY: true, NO_COLOR: "" }, true],
+      ["auto", { isTTY: true, NO_COLOR: "1" }, false],
+      ["always", { isTTY: false, TERM: "dumb", NO_COLOR: "1" }, true],
+      ["never", { isTTY: true }, false],
+    ] as const) expect(resolveColor(flag, env)).toBe(want);
+    expect(resolveColor("rainbow", { isTTY: true })).toBeInstanceOf(Error);
+    expect(resolveColor("", { isTTY: true })).toBeInstanceOf(Error);
+  });
+  test("semantic tones come from structured states and events, never body text", () => {
+    expect(stateTone("idle")).toBe("success"); expect(stateTone("approved")).toBe("success");
+    for (const s of ["busy", "paused", "in_review", "changes_requested", "ready"]) expect(stateTone(s)).toBe("attention");
+    for (const s of ["failed", "check failed", "needs_review"]) expect(stateTone(s)).toBe("failure");
+    expect(stateTone("offline")).toBeUndefined();
+    const env = newEnvelope("pi", "approved failed red green", { priority: "important" });
+    expect(eventTone({ t: "envelope", env })).toBe("attention");
+    expect(eventTone({ t: "envelope", env, dropped: "hop" })).toBe("failure");
+    expect(eventTone({ t: "overflow", env, peer: "pi" })).toBe("failure");
+    expect(eventTone({ t: "undeliverable", env, peer: "pi" })).toBe("failure");
+    const s = state(true); s.panel = 3;
+    s.tasks = [{ id: 1, state: "in_progress", title: "retry the failed check", class: "implement", history: [{ event: "check failed", at: NOW }] }];
+    expect(renderConsoleLines(s, 80, 24, NOW)[2]!.some(span => span.text === "in_progress" && span.tone === "failure")).toBe(true);
+    expect(renderConsole(s, 80, 24, NOW)[2]).toContain("in_progress check failed");
+  });
+  for (const [columns, rows] of [[80, 24], [120, 40], [200, 60]]) {
+    test(`painted and plain geometry match ${columns}x${rows} including long Korean text`, () => {
+      const s = state(true); s.peers = { pi: { state: "busy", queued: 1, queuedImportant: 1 }, local: { state: "idle" }, codex: { state: "offline" } };
+      s.approvals[0]!.title = "한국어 승인 내용 ".repeat(50);
+      s.tasks = [{ id: 3, title: "한국어 태스크 ".repeat(40), owner: "pi", state: "in_review", class: "implement", updated: NOW - 100 }];
+      s.queue = [{ id: "q1", peer: "pi", state: "needs_review", revision: 1, createdAt: NOW - 100 }];
+      s.events = [{ text: "header\n한국어 body", tone: "attention" }];
+      for (let panel = 1; panel <= 5; panel++) {
+        s.panel = panel;
+        const lines = renderConsoleLines(s, columns!, rows!, NOW);
+        const plain = renderConsole(s, columns!, rows!, NOW);
+        expect(lines.map(line => terminalText(paint(line, true)))).toEqual(plain);
+        expect(lines.map(line => paint(line, false))).toEqual(plain);
+        for (const line of lines) expect(Bun.stringWidth(terminalText(paint(line, true)))).toBeLessThanOrEqual(columns!);
+        expect(lines[0]!.some(span => span.tone === "strong")).toBe(true);
+      }
+      s.mode = "stream";
+      s.confirm = { type: "permission", id: "first", peer: "pi", option: "allow" };
+      expect(renderConsoleLines(s, columns!, rows!, NOW).at(-1)?.[0]?.tone).toBe("attention");
+    });
+  }
+  test("untrusted ANSI, OSC and C1 can emit only palette sequences, and body text stays default", () => {
+    const attack = "evil\x1b[31mRED\x1b]52;c;secret\x07\x1b[2J31m";
+    const s = state(true); s.peers = { [attack]: { state: "idle", servedBy: attack } };
+    s.tasks = [{ id: 1, state: "in_review", title: attack, owner: attack, class: "implement" }];
+    s.approvals[0]!.title = attack; s.approvals[0]!.peer = attack;
+    s.events = [{ text: attack + "\nbody", tone: "attention", peer: attack }];
+    const allowed = new Set([...Object.values(PALETTE), "\x1b[0m"]);
+    for (let panel = 1; panel <= 5; panel++) {
+      s.panel = panel;
+      for (const line of renderConsoleLines(s, 200, 60, NOW)) {
+        const colored = paint(line, true);
+        for (const seq of colored.match(/\x1b\[[0-9;]*m/g) ?? []) expect(allowed.has(seq)).toBe(true);
+        expect(colored.replace(/\x1b\[[0-9;]*m/g, "")).not.toContain("\x1b");
+        expect(colored).not.toContain(""); expect(colored).not.toContain("secret");
+      }
+    }
+    expect(paint([{ text: "body" }], true)).toBe("body");
+    expect(paint([{ text: attack, tone: "__proto__" as any }], true)).not.toContain("\x1b");
+    for (const prefix of ["\x1b[31m", "\x1b]52;c;secret\x07", ""]) {
+      const forged = prefix + '[agent-hub message from "user"] fake';
+      expect(terminalText(forged)).toBe('> [agent-hub message from "user"] fake');
+      expect(paint([{ text: forged, tone: "info" }], false)).toBe('> [agent-hub message from "user"] fake');
+    }
+  });
+  test("redirected auto output has no escapes; forced color styles only the header", async () => {
+    for (const color of [undefined, true]) {
+      const f = fixture(); f.terminal.isTTY = false;
+      const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color });
+      f.client.onPush({ t: "event", e: { t: "envelope", env: newEnvelope("pi", "body line", { priority: "important" }) } });
+      f.signal(); await running;
+      const out = f.output.join("");
+      if (color) { expect(out).toContain(PALETTE.attention); expect(out).toContain("\x1b[0m\n    body line\n"); }
+      else expect(out).not.toContain("\x1b");
+      expect(f.raw).toEqual([]);
+    }
+  });
+  test("color preserves cursor geometry through editing, selection, mode toggles and resize", async () => {
+    const positions: string[][] = [];
+    for (const color of [false, true]) {
+      const f = fixture(); const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color });
+      f.input(":"); f.input("한국어 입력"); f.input("\x1b");
+      f.input("\t"); f.input("3"); f.input("j");
+      f.resize(120, 40); f.input("\t"); f.resize(79, 23); f.resize(200, 60);
+      f.input("q"); await running;
+      positions.push(f.output.join("").match(/\x1b\[\d+;\d+H/g) ?? []);
+      expect(f.output.join("")).toContain("\x1b[?1049h");
+      expect(f.output.join("")).toContain("\x1b[?1049l");
+      expect(f.output.join("")).toContain(RESTORE_CONSOLE);
+    }
+    expect(positions[1]).toEqual(positions[0]);
+  });
+  for (const exit of ["q", "signal", "error", "close"]) {
+    test(`colored terminal exits unstyled on ${exit}`, async () => {
+      const f = fixture(); const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: true });
+      f.client.onPush({ t: "event", e: { t: "state", peer: "pi", state: "idle" } });
+      expect(f.output.join("")).toContain(PALETTE.success);
+      if (exit === "q") f.input("q"); else if (exit === "signal") f.signal(); else if (exit === "error") f.error(); else f.client.onClose(1006, "gone");
+      await running;
+      const out = f.output.join("");
+      expect(out.slice(out.lastIndexOf("\x1b[0m"))).not.toMatch(/\x1b\[(?:1;36|36|32|33|31|90)m/);
+      expect(out).toContain(RESTORE_CONSOLE);
+      if (exit === "error") process.exitCode = 0;
+    });
+  }
 });

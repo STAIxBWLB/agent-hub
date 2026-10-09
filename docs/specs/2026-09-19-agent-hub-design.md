@@ -1360,6 +1360,30 @@ approval. Deny is direct. Pending requests include expiry and are withdrawn by
 Panels expose Peers, Approvals, Tasks, Queue and Events with bounded polling and
 Unicode cell widths, fall back below 80x24, and restore terminal state on exit.
 
+Console semantic colors (issue #201) use spans with a fixed terminal-native
+palette: cyan information, bold cyan active/selected labels, green availability
+and success, yellow attention/waiting, red failure/intervention, and restrained
+bright-black metadata. Offline peers, ordinary titles, action details and body
+lines use the default foreground. Existing labels, selection markers and
+confirmation prompts remain sufficient without color. Stream headers use event
+structure for their tone; body text is never parsed for meaning or passed
+through as terminal styling. Denial requests and observed expiry/cancellation
+are red; an answered remote closure lacks option-kind metadata and is not
+guessed to be a denial.
+
+`--color=auto|always|never` affects styling only. Auto requires terminal input
+and output, a non-dumb TERM, and absent/empty NO_COLOR. Always overrides those
+checks even for redirected stream output, without enabling panels or raw mode;
+never disables styling. Invalid values fail with usage text before connection.
+Plain `renderConsole` remains available, while `renderConsoleLines` exposes
+semantic spans. Geometry is computed from sanitized plain Unicode text before
+painting. `paint` sanitizes every span, inserts only fixed palette SGR sequences
+and resets each styled span. Interactive exits, signals, disconnect and errors
+retain the console restoration sequence. No new dependencies, protocol changes,
+polling or redraw triggers are added. Tail, logs and machine-readable output
+remain unchanged. Native light/dark readability and idle-CPU observations are
+separate smoke evidence, not inferred from fake-terminal tests.
+
 Agent shell CLI calls connect as the detected peer in tools mode. Hub launches
 set `AGENTHUB_PEER_ID`; the pinned installed Codex shell injects
 `CODEX_THREAD_ID` after environment filtering, and Claude uses `CLAUDECODE`.
