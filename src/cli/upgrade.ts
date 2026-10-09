@@ -444,7 +444,6 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
         // #225: a target that stopped after it started, with this operation's snapshot, starts again from it.
         const live = await driver.inspect(project);
         if (live.state === "stopped") {
-          if (restarted.has(progress.id)) throw new Error(`${project.id}: ${stoppedAgain(progress)}; read its hub.log before resuming again`);
           if (live.snapshot !== id) throw new Error(`${project.id}: the target stopped after it started and this operation's restart snapshot is gone, so nothing can start it`);
           step(`restart:${project.id}`);
           recordRestart(progress, driver.now()); restarted.add(progress.id); save();

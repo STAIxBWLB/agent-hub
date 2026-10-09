@@ -955,3 +955,63 @@ test("a Claude attached to the target without a session id blocks its relaunch: 
     server.stop(true); rmSync(temp, { recursive: true, force: true });
   }
 });
+
+// #225 review: after a restart the accepted session is the one to relaunch, but the operator's fresh choice stays on
+// record when it attaches; an accepted Claude with no transcript starts new instead of a --resume that cannot succeed.
+test("a restarted target keeps a fresh choice when the accepted session attaches, and starts an accepted Claude with no transcript anew", async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-restart-accepted-")));
+  const stateDir = join(temp, "state"), claudeConfig = join(temp, "claude-config"), codexHome = join(temp, "codex-home");
+  mkdirSync(stateDir); mkdirSync(join(claudeConfig, "projects"), { recursive: true }); mkdirSync(join(codexHome, "sessions"), { recursive: true });
+  writeFileSync(join(codexHome, "sessions", "rollout-thread-accepted.jsonl"), "{}\n");
+  let peers: Record<string, unknown> = { codex: { id: "codex", state: "idle", threadId: "thread-accepted" } };
+  const server = fakeHub(temp, stateDir, "i-new", () => ({ operationId: "op-225", phase: "restored", ready: true, peers }));
+  const shown = (handle: string, agentIdentity: string, sessionId: string) => ({ handle, incarnationId: `inc-${handle}`, worktreeId: "wt", worktreePath: temp, agentIdentity, sessionId, connected: true });
+  let replacement = shown("term-codex-attached", "codex", "thread-accepted");
+  const calls: string[][] = [];
+  const run = async (argv: string[]) => {
+    calls.push(argv);
+    if (argv[1] === "-e") return { code: 0, stdout: "function\n", stderr: "" };
+    if (argv[2] === "create") {
+      writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify([{ peer: "claude", projectRoot: temp, stateDir, instanceId: "i-new", launcherPid: process.pid,
+        launcherSignature: processSignature(process.pid), launchId: "l-new", handle: "term-claude-new", incarnationId: "inc-term-claude-new", worktreeId: "wt", env: {} }]));
+      replacement = shown("term-claude-new", "claude", "S-new");
+      peers = { claude: { id: "claude", state: "idle", sessionId: "S-new" } };
+    }
+    const result = argv[2] === "create" ? { terminal: { handle: replacement.handle, incarnationId: replacement.incarnationId, worktreeId: "wt" } }
+      : argv[2] === "show" ? { terminal: replacement } : argv[2] === "wait" ? { wait: { satisfied: true } } : { terminals: [replacement] };
+    return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
+  };
+  const codexLaunch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: { CODEX_HOME: codexHome } };
+  const claudeLaunch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: { CLAUDE_CONFIG_DIR: claudeConfig } };
+  const codex = { peer: "codex" as const, handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", projectRoot: temp, sessionId: "thread-T", launch: codexLaunch, launchMetadata: codexLaunch };
+  const claude = { peer: "claude" as const, handle: "term-claude", incarnationId: "inc-claude", worktreeId: "wt", projectRoot: temp, sessionId: "S-planned", launch: claudeLaunch, launchMetadata: claudeLaunch };
+  const planned: PlannedProject = {
+    project: { id: "p-215", root: temp, stateDir, instanceId: "i-source", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: "codex", state: "idle", threadId: "thread-T" }, { id: "claude", state: "idle", sessionId: "S-planned" }], blockers: [] },
+    terminals: [codex, claude], blockers: [],
+  };
+  const progress: ProjectProgress = { id: "p-215", instanceId: "i-new", phase: "started", restarts: [{ instanceId: "i-dead", at: 1 }],
+    fresh: { codex: { lost: "thread-T", reason: "chosen", at: 1 } },
+    terminals: { "closed:codex": true, "closed:claude": true, "closedRetired:codex": true, "closedRetired:claude": true,
+      "retired:codex": { ...codex, sessionId: "thread-accepted" }, "retired:claude": { ...claude, sessionId: "S-accepted" }, "restored:codex": "pending" } };
+  const op = { id: "op-225", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "home");
+  try {
+    const driver = makeRecoveryDriver(run);
+    // The accepted thread is attached: the pending receipt settles to it and the operator's choice stays recorded.
+    await driver.restore(planned, progress, op, "native", () => {});
+    expect(progress.terminals["restored:codex"]).toMatchObject({ sessionId: "thread-accepted" });
+    expect(progress.fresh?.codex).toMatchObject({ lost: "thread-T" });
+    // The accepted Claude session never got a transcript: it starts new rather than resuming S-accepted.
+    await driver.restore(planned, progress, op, "claude", () => {});
+    const create = calls.filter((c) => c[2] === "create").at(-1)!;
+    const command = create[create.indexOf("--command") + 1]!;
+    expect(command).toEndWith("'claude'");
+    expect(command).not.toContain("--resume");
+    expect(progress.terminals["restored:claude"]).toMatchObject({ sessionId: "S-new" });
+  } finally {
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+    server.stop(true); rmSync(temp, { recursive: true, force: true });
+  }
+});

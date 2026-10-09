@@ -319,11 +319,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
     const attached = target.peers.find((p) => p.id === peer && p.state !== "offline");
     const session = peer === "codex" ? attached?.threadId : attached?.sessionId;
     if (session) return { state: "live", session };
-    // #225: attached with no provable session id (a Claude of a dead instance whose plugin reconnected, or one that has
-    // not reported its id yet) is a session of unknown identity, never "nothing attached".
-    if (attached) return { state: "unknown", why: `a ${peer} session is attached to the target without a session id`, step: `wait until it reports one, or end that ${peer} session` };
     // #225: the launch records of every instance this operation started for the project, the current one first: a
-    // launcher a dead instance recorded may still run.
+    // launcher a dead instance recorded may still run (read before the check below, so a block names its terminal).
     for (const instanceId of [progress.instanceId, ...(progress.restarts ?? []).map((r) => r.instanceId)]) {
       if (!instanceId) continue;
       const launch = await launcherOf(peer, planned.project.root, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId });
@@ -334,6 +331,9 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           : { state: "unknown", why: "the launcher records cannot be read", step: `inspect ${recordPath(planned.project.stateDir)} and move it aside (sessions it recorded then count as unmanaged)` };
       }
     }
+    // #225: attached with no provable session id (a Claude of a dead instance whose plugin reconnected, or one that has
+    // not reported its id yet) is a session of unknown identity, never "nothing attached".
+    if (attached) return { state: "unknown", why: `a ${peer} session is attached to the target without a session id`, step: `wait until it reports one, or end that ${peer} session` };
     return { state: "gone" };
   };
   /**
@@ -472,8 +472,10 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         const chosen = !!progress.fresh?.[original.peer];
         let read: ReturnType<typeof codexTranscript> | undefined;
         const transcript = () => original.peer !== "codex" || (chosen && !accepted) ? "found" : (read ??= codexTranscript(original));
-        // An accepted session starts new again only when it is a Codex thread that never got a rollout (nothing to lose).
-        const fresh = () => accepted ? (original.peer === "codex" && (chosen || !!planned.freshStart?.includes("codex")) && transcript() === "missing")
+        // An accepted session starts new again only when it has nothing to resume: a Codex thread that never got a
+        // rollout, or a Claude session with no transcript (`--resume` could never succeed, #21).
+        const fresh = () => accepted
+          ? (original.peer === "codex" ? (chosen || !!planned.freshStart?.includes("codex")) && transcript() === "missing" : original.peer === "claude" && !claudeTranscriptExists(original))
           : chosen || (!!planned.freshStart?.includes(original.peer) && transcript() === "missing");
         // The runner ends this with the choices `status` shows (nextActions); resume comes first and launches a failed
         // peer again, which helps once its cause (a transient Orca create failure, a fixed store) is gone.
@@ -499,8 +501,9 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           if (attached !== original.sessionId && !fresh() && !(original.peer === "claude" && !claudeTranscriptExists(original))) {
             throw new Error(`${original.peer}: terminal creation outcome is uncertain: session ${attached} is attached instead of ${original.sessionId}; end that ${original.peer} session and close its terminal first`);
           }
-          // The original came back after all: a fresh session chosen for it lost nothing.
-          if (attached === original.sessionId && progress.fresh?.[original.peer]) {
+          // The planned session came back after all: a fresh session chosen for it lost nothing. Compared with the plan,
+          // never with a session accepted after a restart (#225), whose choice must stay on record.
+          if (attached === plannedBinding.sessionId && progress.fresh?.[original.peer]) {
             delete progress.fresh[original.peer];
             if (!Object.keys(progress.fresh).length) delete progress.fresh;
           }
