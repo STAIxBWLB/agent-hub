@@ -217,14 +217,25 @@ function buildSignals(calls: Array<{name:string;command?:string;source?:string}>
   return signal;
 }
 
+const COMPACTED = 'session is being continued';
+
 export function extractToolSignals(conversation: Conversation, recentWindow = DEFAULT_RECENT_WINDOW): ToolSignals {
   const calls: Array<{name:string;command?:string}> = []; const results: Result[]=[]; const ids=new Map<string,boolean>(); let assistants=0; let compacted=false;
   for(const message of conversation.messages){if(message.role==='assistant')assistants++;
-    if(message.content.toLowerCase().includes('session is being continued'))compacted=true;
+    if(message.content.toLowerCase().includes(COMPACTED))compacted=true;
     for(const call of message.toolCalls){const command=argumentCommand(call.arguments);calls.push({name:call.name,...(command!==undefined?{command}:{})}); ids.set(call.id,semantic(call.name,command)==='read');}
     for(const result of message.toolResults){const retrieval=ids.get(result.toolCallId)===true&&!result.isError;results.push({text:retrieval?'':result.content,isError:result.isError===true});}
   }
   return buildSignals(calls,results,conversation.messages.length,assistants,compacted,recentWindow);
+}
+
+export type TurnKind = 'tool_result' | 'user' | 'compaction';
+
+/** What a call answers (#197, not ported): its last message is a tool result, a compaction summary or a user message. */
+export function turnKind(conversation: Conversation): TurnKind {
+  const last = conversation.messages.at(-1);
+  if (last?.toolResults.length) return 'tool_result';
+  return last?.content.toLowerCase().includes(COMPACTED) ? 'compaction' : 'user';
 }
 
 export function extractToolSignalsFromObservations(observations: readonly ToolObservation[], turnDepth = observations.length, recentWindow = DEFAULT_RECENT_WINDOW): ToolSignals {

@@ -4,6 +4,7 @@ import type { Task, TaskClass } from "./board.ts";
 import type { PeerId, PeerState } from "./envelope.ts";
 
 import { parseHubRoutes, type HubRoute } from "../models/route/config.ts";
+import { DEFAULT_STAY_SWITCH, type StaySwitchMode } from "../models/route/stage.ts";
 
 type Table = Record<string, unknown>;
 
@@ -26,10 +27,14 @@ export interface Routing {
   targets: Record<string, Table & { id: string }>;
   routes: Record<string, Table & { type: string }>;
   hub_routes?: Record<string, HubRoute>;
+  /** Session-aware stay/switch for `hub/auto` and hub stage routes (#197). */
+  stay_switch: StaySwitchMode;
+  max_switch_prefill_tokens: number;
   classes: Partial<Record<TaskClass, ClassPolicy>>;
   signals: { pii_patterns: string[]; long_context_tokens: number };
   constraints: { pii: "local_only" | "off"; long_context: "skip_local" | "off"; budget_paused: "skip_peer" | "off" };
-  pi: { dgx_max_context_tokens: number; mlx_max_context_tokens: number };
+  /** `efficient_wait_ms`, opt-in (#199): how long a hub/auto request waits for a busy MLX slot before it moves to dgx/fast; absent, nothing moves for load. */
+  pi: { dgx_max_context_tokens: number; mlx_max_context_tokens: number; efficient_wait_ms?: number };
 }
 
 const TEMPLATE = join(import.meta.dir, "..", "..", "templates", "routing.toml");
@@ -54,11 +59,23 @@ export function loadRouting(cwd: string): Routing {
   }
   const pi = { dgx_max_context_tokens: 262_144, mlx_max_context_tokens: 16_000, ...(raw as any).pi };
   if (!(Number.isSafeInteger(pi.dgx_max_context_tokens) && pi.dgx_max_context_tokens > 0) || !(Number.isSafeInteger(pi.mlx_max_context_tokens) && pi.mlx_max_context_tokens > 0)) throw new Error("routing.toml: [pi] context limits must be positive integers");
+  // A dispatch gives up on a busy MLX slot after 120 s; a longer load wait would never move anything.
+  if (pi.efficient_wait_ms !== undefined && !(Number.isSafeInteger(pi.efficient_wait_ms) && pi.efficient_wait_ms >= 0 && pi.efficient_wait_ms < 120_000)) throw new Error("routing.toml: [pi] efficient_wait_ms must be an integer from 0 to 119999");
+  const { stay_switch, max_switch_prefill_tokens } = { ...DEFAULT_STAY_SWITCH, ...(raw as any) };
+  // Written after a table header, a top-level key lands in that table and would be ignored without a word.
+  const misplaced = (table: unknown, path: string): string | undefined => !table || typeof table !== "object" || Array.isArray(table) ? undefined
+    : Object.entries(table).map(([key, value]) => Object.hasOwn(DEFAULT_STAY_SWITCH, key) ? `${path}${key}` : misplaced(value, `${path}${key}.`)).find(Boolean);
+  const nested = Object.entries(raw).map(([key, value]) => misplaced(value, `${key}.`)).find(Boolean);
+  if (nested) throw new Error(`routing.toml: ${nested} is inside a table; stay_switch and max_switch_prefill_tokens are top-level keys, before any table`);
+  if (!["off", "shadow", "enforce"].includes(stay_switch)) throw new Error('routing.toml: stay_switch must be "off", "shadow" or "enforce" (a top-level key, before any table)');
+  if (!(Number.isSafeInteger(max_switch_prefill_tokens) && max_switch_prefill_tokens > 0)) throw new Error("routing.toml: max_switch_prefill_tokens must be a positive integer");
   return {
     local: raw.local,
     targets: raw.targets ?? {},
     routes: raw.routes ?? {},
     hub_routes: parseHubRoutes(raw.hub_routes),
+    stay_switch,
+    max_switch_prefill_tokens,
     classes,
     signals,
     constraints: { pii: "local_only", long_context: "skip_local", budget_paused: "skip_peer", ...raw.constraints },

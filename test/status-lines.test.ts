@@ -15,6 +15,13 @@ test("a backend line carries the requested and actual model", () => {
     .toBe("  model    mlx/fast ready active 0 requested mlx/fast actual /models/qwen3-8b-mlx");
 });
 
+test("#199 a cooling backend says until when and after how many failures", () => {
+  expect(backendLine({ kind: "mlx", alias: "mlx/fast", state: "error", active: 0, coolingUntil: "2026-10-09T00:00:30.000Z", failures: 3 }))
+    .toBe("  model    mlx/fast error active 0 cooling down until 2026-10-09T00:00:30.000Z after 3 failures");
+  expect(backendLine({ kind: "dgx", alias: "dgx/fast", state: "error", active: 0, failingUntil: "2026-10-09T00:00:30.000Z" }))
+    .toBe("  model    dgx/fast error active 0 last dispatch failed, no load moves until 2026-10-09T00:00:30.000Z");
+});
+
 test("a peer line names the backend the peer asked for on its last turn", () => {
   expect(peerLine("pi", { state: "idle", queued: 0, requestedModel: "dgx/coding" })).toContain("model: dgx/coding");
   expect(peerLine("kimi", { state: "idle", queued: 0 })).toBe("  kimi     idle     queued 0");

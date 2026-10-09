@@ -13,6 +13,21 @@ export interface Report {
   quota: { readings: number; hard: number };
   conduct: Record<string, Record<string, number>>;
   supervision: Record<string, { turns: number | null; tokens: number | null; measuredTokens: number | null; knownTokenTurns: number; unknownTokenTurns: number }>;
+  /** Per "peer route": model changes between consecutive decisions of a session, and the planner's verdicts (#197). */
+  routes: Record<string, RouteSwitches>;
+}
+
+export interface RouteSwitches {
+  decisions: number;
+  /** Pins the planner started; 0 while stay_switch is off, when session boundaries are not recorded. */
+  sessions: number;
+  /** Decisions made without a session key: each looks like a new session, so sessions are unknown. */
+  stateless: number;
+  switches: number;
+  toolLoopSwitches: number;
+  planned: number;
+  plannedInToolLoops: number;
+  modes: string[];
 }
 
 export interface UsageCoverage {
@@ -85,7 +100,7 @@ function formatUsage(usage: Report["usage"]): string[] {
 
 /** The numbers `ahub report` prints, from `events.jsonl` alone (issue #40). */
 export function summarize(events: StampedEvent[]): Report {
-  const r: Report = { peers: {}, conduct: {}, supervision: {}, usage: { peers: {}, totals: { inputTokens: 0, inputRecords: 0, outputTokens: 0, outputRecords: 0, cacheReadTokens: 0, cacheReadRecords: 0, cacheWriteTokens: 0, cacheWriteRecords: 0, totalTokens: 0, totalRecords: 0 }, unknownPeers: [], completeCoverage: true }, messages: { total: 0, dropped: {}, overflow: 0, undeliverable: 0, perTask: 0 }, overlaps: { warnings: 0, pairs: 0 }, conflicts: 0, tasks: {}, quota: { readings: 0, hard: 0 } };
+  const r: Report = { peers: {}, conduct: {}, supervision: {}, routes: {}, usage: { peers: {}, totals: { inputTokens: 0, inputRecords: 0, outputTokens: 0, outputRecords: 0, cacheReadTokens: 0, cacheReadRecords: 0, cacheWriteTokens: 0, cacheWriteRecords: 0, totalTokens: 0, totalRecords: 0 }, unknownPeers: [], completeCoverage: true }, messages: { total: 0, dropped: {}, overflow: 0, undeliverable: 0, perTask: 0 }, overlaps: { warnings: 0, pairs: 0 }, conflicts: 0, tasks: {}, quota: { readings: 0, hard: 0 } };
   const supervisor = (id: string) => (r.supervision[id] ??= { turns: null, tokens: null, measuredTokens: null, knownTokenTurns: 0, unknownTokenTurns: 0 });
   const peer = (id: string) => (r.peers[id] ??= { turns: 0, busyMinutes: 0, tokens: 0 });
   const claudeNativeStops = events.some(event => event.type === "native_turn_end" && event.peer === "claude" && !!event.id);
@@ -95,6 +110,7 @@ export function summarize(events: StampedEvent[]): Report {
   const taskMessages = new Map<string, number>();
   const seenUsage = new Set<string>();
   const seenSupervision = new Set<string>();
+  const lastTier = new Map<string, string>();
   for (const e of events) {
     r.from ??= e.at;
     r.to = e.at;
@@ -168,6 +184,26 @@ export function summarize(events: StampedEvent[]): Report {
         r.quota.readings++;
         if (e.hard) r.quota.hard++;
         break;
+      case "route": {
+        // ponytail: consecutive decisions of one peer and route are taken as one session between pins; that holds while each
+        // peer runs one session at a time (Pi, and local outside PII turns). An opaque session ordinal is the upgrade path.
+        const key = `${e.peer} ${e.route}`;
+        const s = (r.routes[key] ??= { decisions: 0, sessions: 0, stateless: 0, switches: 0, toolLoopSwitches: 0, planned: 0, plannedInToolLoops: 0, modes: [] });
+        s.decisions++;
+        if (e.staySwitch && !s.modes.includes(e.staySwitch)) s.modes.push(e.staySwitch);
+        if (e.stateless) s.stateless++;
+        if (e.reason === "new_pin" && !e.stateless) s.sessions++;
+        else if (lastTier.has(key) && lastTier.get(key) !== e.tier) {
+          s.switches++;
+          if (e.turnType === "tool_result") s.toolLoopSwitches++;
+        }
+        lastTier.set(key, e.tier);
+        if (e.plan === "switch") {
+          s.planned++;
+          if (e.turnType === "tool_result") s.plannedInToolLoops++;
+        }
+        break;
+      }
     }
   }
   r.overlaps.pairs = pairs.size;
@@ -205,6 +241,12 @@ export function formatReport(r: Report): string[] {
   const tasks = Object.entries(r.tasks).sort().map(([k, n]) => `${k} ${n}`).join(", ");
   lines.push(`task events: ${tasks || "none"}`);
   lines.push(`quota readings: ${r.quota.readings} (${r.quota.hard} hard limits)`);
+  for (const [key, s] of Object.entries(r.routes).sort(([a], [b]) => a.localeCompare(b))) {
+    const sessions = s.stateless ? `sessions unknown (${s.stateless} decision${s.stateless === 1 ? "" : "s"} without a session key)`
+      : s.sessions ? `${s.sessions} session${s.sessions === 1 ? "" : "s"}, ${(s.switches / s.sessions).toFixed(1)} model changes per session` : "sessions unknown (stay_switch off)";
+    const planner = s.modes.length ? `; planner (${s.modes.join(", ")}): ${s.planned} switches, ${s.plannedInToolLoops} inside tool loops` : "";
+    lines.push(`route ${key}: ${s.decisions} decisions, ${sessions}; ${s.switches} model change${s.switches === 1 ? "" : "s"}, ${s.toolLoopSwitches} inside tool loops${planner}`);
+  }
   return lines;
 }
 

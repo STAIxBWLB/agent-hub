@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
-import { extractToolSignalsFromObservations, type ToolSignals } from "../src/models/route/signals.ts";
-import { dimensionsFromSignal, handoffNoteFor, pickTier, scoreSignal, selectStage } from "../src/models/route/stage.ts";
+import { normalizeConversation } from "../src/models/route/normalize.ts";
+import { extractToolSignalsFromObservations, turnKind, type ToolSignals } from "../src/models/route/signals.ts";
+import { dimensionsFromSignal, handoffNoteFor, pickTier, planSwitch, scoreSignal, selectStage, type Tier } from "../src/models/route/stage.ts";
 
 const neutral = (): ToolSignals => extractToolSignalsFromObservations([]);
 
@@ -83,4 +84,54 @@ test("resolved stage choices attach notes once, while held, passing, and ambiguo
   expect(passing.note).toBeUndefined();
   expect(selectStage(neutral(), { mode: "capable_first", handoffNotes }).note).toBeUndefined();
   expect(selectStage({ ...neutral(), severity: 1 }).note).toBeUndefined();
+});
+
+// #197: session-aware stay/switch.
+const cost = (inputTokens = 1000, fits: (tier: Tier) => boolean = () => true) => ({ inputTokens, maxSwitchPrefillTokens: 32_000, fits });
+const efficient = { tier: undefined, defaultTier: "efficient", source: "ambiguous" } as const;
+const dimensionsCapable = { tier: "capable", defaultTier: "efficient", source: "dimensions" } as const;
+
+test("planSwitch keeps the pinned tier through a tool loop and switches at a user turn", () => {
+  expect(planSwitch("capable", efficient, "tool_result", cost())).toEqual({ plan: "stay", tier: "capable", reason: "tool_loop" });
+  expect(planSwitch("efficient", dimensionsCapable, "tool_result", cost())).toEqual({ plan: "stay", tier: "efficient", reason: "tool_loop" });
+  expect(planSwitch("capable", efficient, "user", cost())).toEqual({ plan: "switch", tier: "efficient", reason: "user_turn" });
+  expect(planSwitch("efficient", dimensionsCapable, "user", cost())).toEqual({ plan: "switch", tier: "capable", reason: "user_turn" });
+  expect(planSwitch("efficient", efficient, "tool_result", cost())).toEqual({ plan: "stay", tier: "efficient", reason: "same_tier" });
+  expect(planSwitch(undefined, efficient, "tool_result", cost())).toEqual({ plan: "stay", tier: "efficient", reason: "new_pin" });
+});
+
+test("planSwitch escalates a hard override on a tool-result turn and lets a compaction start a fresh pin", () => {
+  const override = { tier: "capable", defaultTier: "efficient", source: "override" } as const;
+  expect(planSwitch("efficient", override, "tool_result", cost())).toEqual({ plan: "switch", tier: "capable", reason: "override" });
+  expect(planSwitch("efficient", override, "compaction", cost())).toEqual({ plan: "switch", tier: "capable", reason: "compaction" });
+  expect(planSwitch("capable", override, "compaction", cost())).toEqual({ plan: "stay", tier: "capable", reason: "compaction" });
+});
+
+test("planSwitch stays when a de-escalation would prefill more than the bound, and never picks a tier that cannot fit", () => {
+  expect(planSwitch("capable", efficient, "user", cost(32_001))).toEqual({ plan: "stay", tier: "capable", reason: "prefill_bound" });
+  expect(planSwitch("capable", efficient, "user", cost(32_000)).plan).toBe("switch");
+  const onlyCapable = (tier: Tier) => tier === "capable";
+  expect(planSwitch("capable", efficient, "user", cost(1000, onlyCapable))).toEqual({ plan: "stay", tier: "capable", reason: "context_fit" });
+  expect(planSwitch(undefined, efficient, "user", cost(1000, onlyCapable))).toEqual({ plan: "stay", tier: "capable", reason: "new_pin" });
+  expect(planSwitch("efficient", efficient, "tool_result", cost(1000, onlyCapable))).toEqual({ plan: "switch", tier: "capable", reason: "context_fit" });
+});
+
+test("turnKind reads what a call answers from its last message", () => {
+  const kind = (messages: unknown[]) => turnKind(normalizeConversation(messages));
+  expect(kind([{ role: "user", content: "fix it" }])).toBe("user");
+  expect(kind([{ role: "user", content: "fix it" }, { role: "assistant", content: "", tool_calls: [{ id: "a", function: { name: "bash", arguments: "{}" } }] }, { role: "tool", tool_call_id: "a", content: "ok" }])).toBe("tool_result");
+  expect(kind([{ role: "user", content: "This session is being continued from a previous conversation." }])).toBe("compaction");
+});
+
+test("#197 review: a hard override during a stage hold still plans an immediate escalation", () => {
+  const dims = { ...neutral(), severity: 0.7 };
+  const escalated = selectStage(dims, { confidenceThreshold: 0.4 });
+  expect(escalated).toMatchObject({ tier: "capable", source: "dimensions", hardOverride: false });
+  // Enforced, the dimension escalation waits inside the tool loop: the pin stays efficient while the hold runs.
+  expect(planSwitch("efficient", escalated, "tool_result", cost())).toMatchObject({ plan: "stay", reason: "tool_loop" });
+  const repeated = selectStage({ ...neutral(), repeatedFailure: true }, { confidenceThreshold: 0.4 }, escalated.state);
+  expect(repeated).toMatchObject({ tier: "capable", source: "capable_hold", hardOverride: true });
+  expect(planSwitch("efficient", repeated, "tool_result", cost())).toEqual({ plan: "switch", tier: "capable", reason: "override" });
+  const held = selectStage(neutral(), { confidenceThreshold: 0.4 }, escalated.state);
+  expect(planSwitch("efficient", held, "tool_result", cost())).toMatchObject({ plan: "stay", reason: "tool_loop" });
 });

@@ -3,22 +3,24 @@ import { AdvisorGate, buildAdvisorJudgeRequest, redoFeedback } from "./advisor.t
 import type { HubRoute } from "./config.ts";
 import { buildEscalationJudgeRequest, parseEscalationVerdict } from "./escalation.ts";
 import { normalizeConversation } from "./normalize.ts";
-import { extractToolSignals } from "./signals.ts";
+import { extractToolSignals, turnKind } from "./signals.ts";
 import { RouteLabelTracker, type RouteLabelEvent, type RouteTurnContext, type RouteTurnOutcome } from "./labels.ts";
-import { dimensionsFromSignal, selectStage, type StageState } from "./stage.ts";
+import { dimensionsFromSignal, estimateInputTokens, selectStage, stayOrSwitch, type StageState, type StaySwitchPolicy, type SwitchTrace, type Tier } from "./stage.ts";
 import { EscalationState, SessionState } from "./state.ts";
 import { parseAdvisorVerdict } from "./text.ts";
 import { planExecutePhase, type PlanExecuteState } from "./plan-execute.ts";
 
-export interface RouteEvent {
+export interface RouteEvent extends Partial<SwitchTrace> {
   route: string; tier: string; source: "override" | "dimensions" | "hold" | "classifier" | "default"; score: number; ms: number;
   decision?: string; turn?: string; task?: number; pii?: boolean; severity?: number; spinning?: number; exploring?: number; production?: number;
 }
 export interface AdvisorEvent { route: string; trigger: string; verdict: "approve" | "redo" | "failed"; discardedChars: number }
-interface RouteState { fingerprint: string; stage: StageState; plan: PlanExecuteState; escalation: EscalationState; advisor: AdvisorGate }
+interface RouteState { fingerprint: string; stage: StageState; pin?: Tier; plan: PlanExecuteState; escalation: EscalationState; advisor: AdvisorGate }
 export interface RouteHost {
   execute: (model: string, messages: ChatMessage[], judge: boolean, signal: AbortSignal, maxTokens?: number) => Promise<ChatResult>;
   onCampus: () => Promise<boolean>;
+  /** Read on every stage call (#197); absent is the shadow default. */
+  staySwitch?: () => StaySwitchPolicy | undefined;
   onRoute?: (event: RouteEvent) => void;
   onRouteOutcome?: (event: RouteLabelEvent) => void;
   onAdvisor?: (event: AdvisorEvent) => void;
@@ -59,11 +61,19 @@ export class HubRouteRuntime {
     const dimensions = dimensionsFromSignal(signals);
     const efficient = config.efficient ?? "fast", capable = config.capable ?? "coding";
     let model = efficient, source: RouteEvent["source"] = "default", score = 0;
-    let sent = messages;
+    let sent = messages, trace: Partial<SwitchTrace> = {};
     if (config.type === "stage") {
       const decision = selectStage(signals, { confidenceThreshold: config.confidence_threshold, capableHoldTurns: config.hold_turns }, state.stage);
       state.stage = decision.state;
-      model = (decision.tier ?? decision.defaultTier) === "capable" ? capable : efficient;
+      // OmniRoute models publish no context limit to the hub, so every tier fits here; the estimate leaves out the tool
+      // schemas the host adds to each call, as the relay counts what Pi sends. A PII conversation's size says
+      // something about its text, as a private envelope's does: the planner never sees it (no prefill bound, so no
+      // plan or reason can depend on it) and the event leaves it out.
+      const staged = stayOrSwitch(this.host.staySwitch?.(), state.pin, decision, turnKind(conversation), { inputTokens: pii ? 0 : estimateInputTokens(messages), fits: () => true });
+      state.pin = staged.pin;
+      const { prefillTokens, ...shape } = staged.trace;
+      trace = pii ? shape : staged.trace;
+      model = staged.tier === "capable" ? capable : efficient;
       score = decision.score;
       source = decision.source === "capable_hold" ? "hold" : decision.source === "override" || decision.source === "dimensions" ? decision.source : "default";
     } else if (config.type === "plan_execute") {
@@ -72,7 +82,7 @@ export class HubRouteRuntime {
       state.plan = decision.state;
       if (decision.planningPrompt) sent = [{ role: "system", content: decision.planningPrompt }, ...messages];
     } else if (config.type === "escalation" && state.escalation.snapshot().latched) model = capable;
-    let decisionId = this.emitRoute({ route, tier: model, source, score, ms: performance.now() - started }, labelTurn, dimensions, pii, messages);
+    let decisionId = this.emitRoute({ route, tier: model, source, score, ms: performance.now() - started, ...trace }, labelTurn, dimensions, pii, messages);
     const result = await this.host.execute(model, sent, false, signal);
     if (config.type !== "escalation" || state.escalation.snapshot().latched) return this.withDecision(result, decisionId);
     const request = buildEscalationJudgeRequest(normalizeConversation([...messages, result.message]), signals.assistantTurnCount + 1);

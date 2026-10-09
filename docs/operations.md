@@ -441,6 +441,13 @@ ahub report --by task           # tokens, turns and wall time per task and class
 ahub export --since 24h         # the raw events as JSON lines, for your own analysis
 ```
 
+Per peer and model route, `ahub report` also counts model changes between consecutive
+decisions, how many of them landed inside tool loops and, with `stay_switch` on, sessions
+and the planner's switches (#197). With `stay_switch = "off"` session boundaries are not
+recorded; `shadow` routes exactly as `off` does, so it is the baseline to compare `enforce` with.
+A route event records the decision, so a load-moved request that its MLX fallback served counts
+as a change to `dgx/fast`; the relay's request journal records which backend served it.
+
 `ahub report` counts the same overlap warnings as `scripts/overlaps.ts`, from the
 structured events instead of log lines. `--by task` uses the task each usage and
 token record was attributed to when it was written: the delivery that started the
@@ -1109,9 +1116,46 @@ PII calls require a positively confirmed campus gateway immediately before trans
 PII turns never enter shared history, memory capture, or progress observation.
 The `route`, `advisor`, `progress` and `stuck` events contain identifiers and aggregates only.
 
+Session-aware stay/switch (#197) covers `hub/auto` and `stage` routes. The top-level
+`routing.toml` key `stay_switch` is `off`, `shadow` (default: route events record what the
+planner would do, routing unchanged) or `enforce`. Enforced, a hard override (compaction,
+critical failure, repeated failure) escalates at once; a tool-result turn keeps the
+session's tier; other changes wait for the next user turn, and a de-escalation whose
+conversation is larger than `max_switch_prefill_tokens` (default 32000) stays; a PII route
+has no such bound, so its size never shows in a decision. A capable
+hold then lasts at least until the next user turn; `hold_turns` can extend it past that
+turn. A tier whose backend
+cannot hold the conversation is never chosen; no route summarizes or trims the history.
+
 Pi exposes `hub/auto` for stage routing when available. Fixed `dgx/coding`, `dgx/fast`
 and `mlx/fast` aliases still pin the backend. Automatic MLX selection admits the complete
 input, tool schemas and requested output within the configured context window.
+A `hub/auto` request bound for MLX has two candidates, MLX and its `dgx/fast` fallback; load
+and cooldowns only change their order, never remove one (#199). A fixed alias (`mlx/fast`,
+`pi_backend = "mlx"`) keeps its backend first as before. `dgx/fast` goes first when MLX is
+cooling down (route event `source: "cooldown"`). Load moves are opt-in until they are
+measured: with `[pi] efficient_wait_ms` set (0 to 119999; 0 tries once; read when the hub
+first starts Pi, like `dgx_max_context_tokens`, so a change takes a hub restart), a request
+whose MLX slot is still busy after that wait goes to `dgx/fast` first (`source: "load"`), and
+so does an enforced tool loop pinned to it (`source: "pin"`); without it nothing moves for load. `dgx/fast`
+never goes first while it is cooling down, or while its own last dispatch failed in any way,
+an error status or a failed stream included, until it succeeds or 30 s pass (`ahub status`:
+`last dispatch failed, no load moves until ...`). No load move or pin happens while the request
+runs under an execution budget, and enforced, a load move happens only at a user turn. A moved
+attempt gets 15 s to its response headers after the gateway lookup (OmniRoute's own probe,
+up to two 4 s rounds when no gateway is cached) and is then abandoned for MLX, which serves
+with the usual slot wait. The bound ends with the headers: a stream that stalls or fails
+after them is not retried on MLX, and a failed one marks `dgx/fast` failing (a client that
+disconnects does not). Each backend is tried once per request, so with moves on, a moved attempt
+cut at 15 s followed by an MLX slot that stays busy past 120 s fails the request (502), where
+without moves the request would have waited for MLX and then had `dgx/fast` with its full
+deadline; this is part of what the opt-in accepts until #199 AC5 measures it. After three
+consecutive transport or startup failures outside a cooldown (a failure more than 10 min after
+the last counted one starts the count over), a relay alias cools down for 30 s, doubling up to
+5 min. A busy MLX slot and timeouts cut short by an execution budget never count; any HTTP
+answer, a success or an error status, proves the transport works and ends the streak and the
+cooldown. `ahub status` shows `cooling down until ...` on the backend line and `events.jsonl`
+records `cooldown` events.
 Progress judgements suggest reassignment; they never change task ownership.
 
 ## Disable local MLX while keeping remote auto routing

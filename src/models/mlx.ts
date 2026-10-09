@@ -48,7 +48,8 @@ export interface MlxHandle {
   readonly status: () => MlxStatus;
   readonly url: string;
   readonly model: string;
-  readonly acquire: (signal?: AbortSignal) => Promise<() => void>;
+  /** `waitMs` bounds the wait for a free generation slot (default 120 s); past it, `MlxBusyError`. */
+  readonly acquire: (signal?: AbortSignal, waitMs?: number) => Promise<() => void>;
   readonly close: () => Promise<void>;
 }
 
@@ -177,6 +178,8 @@ interface GenerationOwner {
 }
 
 class GenerationSlotBusy extends Error {}
+/** Every generation slot stayed taken for the whole wait. */
+export class MlxBusyError extends Error {}
 
 function generationDatabase(runtimeDir: string): Database {
   mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
@@ -239,10 +242,10 @@ function claimGenerationSlot(db: Database, slot: number, readInfo: (pid: number)
   };
 }
 
-export async function acquireGeneration(runtimeDir: string, maxConcurrency: number, signal?: AbortSignal, readInfo: (pid: number) => ProcessSignature | undefined = processInfo): Promise<() => void> {
+export async function acquireGeneration(runtimeDir: string, maxConcurrency: number, signal?: AbortSignal, readInfo: (pid: number) => ProcessSignature | undefined = processInfo, waitMs = 120_000): Promise<() => void> {
   if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) throw new Error("MLX maxConcurrency must be a positive integer");
   if (signal?.aborted) throw new Error("MLX generation acquisition cancelled");
-  const deadline = Date.now() + 120_000;
+  const deadline = Date.now() + waitMs;
   const db = generationDatabase(runtimeDir);
   try {
     for (;;) {
@@ -251,7 +254,7 @@ export async function acquireGeneration(runtimeDir: string, maxConcurrency: numb
         if (release) return release;
       }
       if (signal?.aborted) throw new Error("MLX generation acquisition cancelled");
-      if (Date.now() >= deadline) throw new Error("MLX generation is busy");
+      if (Date.now() >= deadline) throw new MlxBusyError("MLX generation is busy");
       await new Promise<void>((resolve, reject) => {
         let settled = false;
         const finish = (error?: Error) => {
@@ -359,8 +362,8 @@ export async function ensureMlx(options: MlxOptions = {}): Promise<MlxHandle> {
   }
   const sharedHandle = (status: MlxStatus): MlxHandle => {
     let active = 0;
-    return { url: status.url!, model: modelPath, status: () => ({ ...status, active }), acquire: async (signal) => {
-      const releaseSlot = await acquireGeneration(runtimeDir, maxConcurrency, signal, readInfo);
+    return { url: status.url!, model: modelPath, status: () => ({ ...status, active }), acquire: async (signal, waitMs) => {
+      const releaseSlot = await acquireGeneration(runtimeDir, maxConcurrency, signal, readInfo, waitMs);
       active++;
       return () => { active = Math.max(0, active - 1); releaseSlot(); };
     }, close: async () => {} };
@@ -408,8 +411,8 @@ export async function ensureMlx(options: MlxOptions = {}): Promise<MlxHandle> {
         // The server is machine-shared. Relay shutdown releases this process's handle;
         // only the explicit stopMlx operation may stop the owned runtime.
         const close = async () => {};
-        return { url, model: modelPath, status: () => ({ state: "ready", url, model: modelPath, pid: child?.pid, maxInputTokens, maxConcurrency, active }), acquire: async (signal) => {
-          const releaseSlot = await acquireGeneration(runtimeDir, maxConcurrency, signal, readInfo);
+        return { url, model: modelPath, status: () => ({ state: "ready", url, model: modelPath, pid: child?.pid, maxInputTokens, maxConcurrency, active }), acquire: async (signal, waitMs) => {
+          const releaseSlot = await acquireGeneration(runtimeDir, maxConcurrency, signal, readInfo, waitMs);
           active++;
           return () => { active = Math.max(0, active - 1); releaseSlot(); };
         }, close };

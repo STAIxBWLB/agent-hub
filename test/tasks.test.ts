@@ -219,6 +219,9 @@ test("routing.toml is re-read when it changes; a half-saved file keeps the last 
   write("[local\nfixed_model =", 3);
   expect(currentRouting(dir, (l) => lines.push(l)).local.fixed_model).toBe("two");
   expect(lines[0]).toContain("keeping the previous policy");
+  // #197: stay_switch reads it on every model call; a broken file is parsed and logged once per change, not per call.
+  for (let i = 0; i < 3; i++) expect(currentRouting(dir, (l) => lines.push(l)).local.fixed_model).toBe("two");
+  expect(lines).toHaveLength(1);
 });
 
 test("decline moves on; nobody left keeps it proposed with a notice; the console can assign", async () => {

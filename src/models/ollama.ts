@@ -142,8 +142,8 @@ export async function ensureOllama(options: MlxOptions = {}): Promise<MlxHandle>
     url: `${baseUrl(config)}/v1`,
     model: config.model,
     status,
-    acquire: async (signal) => {
-      const releaseSlot = await acquireGeneration(config.runtimeDir, config.maxConcurrency, signal);
+    acquire: async (signal, waitMs) => {
+      const releaseSlot = await acquireGeneration(config.runtimeDir, config.maxConcurrency, signal, undefined, waitMs);
       try {
         const current = await inspectOllama(options);
         if (signal?.aborted) throw new Error("Ollama generation was cancelled");

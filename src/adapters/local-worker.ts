@@ -1,6 +1,7 @@
 import { HubRouteRuntime, type RouteEvent, type AdvisorEvent } from "../models/route/runtime.ts";
 import type { HubRoute } from "../models/route/config.ts";
 import type { RouteLabelEvent, RouteTurnOutcome } from "../models/route/labels.ts";
+import type { StaySwitchPolicy } from "../models/route/stage.ts";
 import type { ToolObservation } from "../models/route/signals.ts";
 import { randomUUID } from "node:crypto";
 import { renderDigest, replyAudience, replyParent, STANDING_INSTRUCTION, USER, type Envelope, type EnvelopeOpts, type PeerId } from "../hub/envelope.ts";
@@ -24,6 +25,8 @@ export interface LocalOptions {
   /** Model id sent straight to OmniRoute when the sidecar is absent, unhealthy or fails a call. */
   fixedModel: string;
   hubRoutes?: () => Record<string, HubRoute>;
+  /** routing.toml `stay_switch` for hub stage routes (#197). */
+  staySwitch?: () => StaySwitchPolicy | undefined;
   onRoute?: (event: RouteEvent) => void;
   onAdvisor?: (event: AdvisorEvent) => void;
   onRouteOutcome?: (event: RouteLabelEvent) => void;
@@ -107,6 +110,7 @@ export class LocalPeer extends BasePeer {
         return result;
       },
       onCampus: () => this.opts.omni.onCampus(),
+      staySwitch: () => this.opts.staySwitch?.(),
       onRoute: event => this.opts.onRoute?.(event),
       onAdvisor: event => this.opts.onAdvisor?.(event),
       onRouteOutcome: event => this.opts.onRouteOutcome?.(event),

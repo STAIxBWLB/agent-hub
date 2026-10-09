@@ -93,3 +93,30 @@ test("usage report does not print a zero team total when no peer reported counte
   expect(r.usage.unknownPeers).toEqual(["claude"]);
   expect(formatReport(r).join("\n")).toContain("reported token total unknown (0 known records)");
 });
+
+// #197: model changes per session and inside tool loops, next to what the planner would have done.
+test("report counts route model changes per session and inside tool loops, and the planner's switches", () => {
+  const route = (s: number, tier: string, turnType: string, plan: string, reason: string) =>
+    ev(s, { type: "route", peer: "pi", route: "hub/auto", tier, source: "default", score: 0, ms: 1, turnType, prefillTokens: 10, staySwitch: "shadow", plan, reason });
+  const r = summarize([
+    route(0, "dgx/fast", "user", "stay", "new_pin"),
+    route(1, "dgx/coding", "tool_result", "switch", "override"),
+    route(2, "dgx/fast", "tool_result", "stay", "tool_loop"),
+    route(3, "dgx/fast", "user", "switch", "user_turn"),
+    route(4, "dgx/coding", "user", "stay", "new_pin"),
+    ev(5, { type: "route", peer: "local", route: "hub/coding", tier: "fast", source: "default", score: 0, ms: 1 }),
+    ev(6, { type: "route", peer: "local", route: "hub/coding", tier: "coding", source: "dimensions", score: 0, ms: 1 }),
+  ]);
+  expect(r.routes["pi hub/auto"]).toEqual({ decisions: 5, sessions: 2, stateless: 0, switches: 2, toolLoopSwitches: 2, planned: 2, plannedInToolLoops: 1, modes: ["shadow"] });
+  expect(r.routes["local hub/coding"]).toMatchObject({ decisions: 2, sessions: 0, switches: 1, toolLoopSwitches: 0, modes: [] });
+  const text = formatReport(r).join("\n");
+  expect(text).toContain("route pi hub/auto: 5 decisions, 2 sessions, 1.0 model changes per session; 2 model changes, 2 inside tool loops; planner (shadow): 2 switches, 1 inside tool loops");
+  expect(text).toContain("route local hub/coding: 2 decisions, sessions unknown (stay_switch off); 1 model change, 0 inside tool loops");
+});
+
+test("#199 review: decisions without a session key still count model changes, with sessions unknown", () => {
+  const route = (s: number, tier: string) => ev(s, { type: "route", peer: "pi", route: "hub/auto", tier, source: "default", score: 0, ms: 1, turnType: "tool_result", staySwitch: "shadow", plan: "stay", reason: "new_pin", stateless: true });
+  const r = summarize([route(0, "dgx/fast"), route(1, "dgx/coding"), route(2, "dgx/coding")]);
+  expect(r.routes["pi hub/auto"]).toMatchObject({ decisions: 3, sessions: 0, stateless: 3, switches: 1, toolLoopSwitches: 1 });
+  expect(formatReport(r).join("\n")).toContain("route pi hub/auto: 3 decisions, sessions unknown (3 decisions without a session key); 1 model change, 1 inside tool loops");
+});
