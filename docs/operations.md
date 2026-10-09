@@ -1119,7 +1119,8 @@ Session-aware stay/switch (#197) covers `hub/auto` and `stage` routes. The top-l
 planner would do, routing unchanged) or `enforce`. Enforced, a hard override (compaction,
 critical failure, repeated failure) escalates at once; a tool-result turn keeps the
 session's tier; other changes wait for the next user turn, and a de-escalation whose
-conversation is larger than `max_switch_prefill_tokens` (default 32000) stays. A capable
+conversation is larger than `max_switch_prefill_tokens` (default 32000) stays; a PII route
+has no such bound, so its size never shows in a decision. A capable
 hold then lasts at least until the next user turn; `hold_turns` can extend it past that
 turn. A tier whose backend
 cannot hold the conversation is never chosen; no route summarizes or trims the history.

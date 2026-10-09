@@ -265,11 +265,16 @@ test("#197 enforce keeps a tool loop on its tier, de-escalates at the next user 
   expect(bounded[6]).toMatchObject({ plan: "stay", reason: "prefill_bound" });
 });
 
-test("#197 a PII local route records the planner without the conversation size", async () => {
+test("#197 a PII local route records the planner without the conversation size, and its size never decides a plan", async () => {
   const events = await replayLocal(undefined, true);
   expect(tiers(events)).toEqual(RECORDED);
   expect(events[0]).toMatchObject({ turnType: "user", plan: "stay", reason: "new_pin" });
   expect(events.some((e) => "prefillTokens" in e)).toBe(false);
+  const bounded = { stay_switch: "enforce", max_switch_prefill_tokens: 1 } as const;
+  expect((await replayLocal(bounded, false)).some((e) => e.reason === "prefill_bound")).toBe(true);
+  const pii = await replayLocal(bounded, true);
+  expect(pii.some((e) => e.reason === "prefill_bound")).toBe(false);
+  expect(tiers(pii)).toEqual(tiers(await replayLocal({ stay_switch: "enforce", max_switch_prefill_tokens: 32_000 }, false)));
 });
 
 // #199: load-aware efficient tier and backend cooldowns.

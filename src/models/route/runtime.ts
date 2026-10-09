@@ -65,10 +65,11 @@ export class HubRouteRuntime {
     if (config.type === "stage") {
       const decision = selectStage(signals, { confidenceThreshold: config.confidence_threshold, capableHoldTurns: config.hold_turns }, state.stage);
       state.stage = decision.state;
-      // OmniRoute models publish no context limit to the hub, so every tier fits here.
-      const staged = stayOrSwitch(this.host.staySwitch?.(), state.pin, decision, turnKind(conversation), { inputTokens: Math.ceil(JSON.stringify(messages).length / 4), fits: () => true });
+      // OmniRoute models publish no context limit to the hub, so every tier fits here. A PII conversation's size says
+      // something about its text, as a private envelope's does: the planner never sees it (no prefill bound, so no
+      // plan or reason can depend on it) and the event leaves it out.
+      const staged = stayOrSwitch(this.host.staySwitch?.(), state.pin, decision, turnKind(conversation), { inputTokens: pii ? 0 : Math.ceil(JSON.stringify(messages).length / 4), fits: () => true });
       state.pin = staged.pin;
-      // A PII conversation's size says something about its text, as a private envelope's does: it is left out.
       const { prefillTokens, ...shape } = staged.trace;
       trace = pii ? shape : staged.trace;
       model = staged.tier === "capable" ? capable : efficient;
