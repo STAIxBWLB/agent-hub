@@ -326,8 +326,8 @@ describe("console layout (#213)", () => {
     for (const line of views.flat()) expect(line).not.toMatch(/[{}"]|\d{10,}|\d{4}-\d\d-\d\dT/);
     expect(views[4]!.join("\n")).toMatch(/toolsOnly +tools-only: messages wait/);
     expect(views[5]!.join("\n")).toMatch(/expires +in 1m\n/);
-    expect(views[6]!.join("\n")).toMatch(/history +at 10m ago; event proposed; by claude\n[\s\S]*updated +45s ago\nreviews +-/);
-    expect(views[7]!.join("\n")).toMatch(/messages +id e1; from pi; body hi/);
+    expect(views[6]!.join("\n")).toMatch(/refs +paths src\/a.ts, src\/b.ts\nhistory +- at 10m ago; event proposed; by claude\n[\s\S]*updated +45s ago\nreviews +-/);
+    expect(views[7]!.join("\n")).toMatch(/envelopeIds +- e1\nmessages +- id e1; from pi; body hi/);
   });
   test("the stream and the Events panel show a context reading's time as local time; tail keeps its ISO time", async () => {
     const reading = { source: "codex", measuredAt: T, tokens: 80_000, window: 200_000, used: 0.4, freshness: "fresh" as const };
@@ -450,6 +450,86 @@ describe("console layout (#213)", () => {
       runCommand: (_args, output, finished) => { output("#3 proposed pi\n"); output("4:00:00 PM user -> claude ! approve the deploy now\n"); finished(); return () => {}; } });
     f.input(":"); f.input("board"); f.input("\r");
     expect(streamed(f.output)).toEqual(["> board", "    #3 proposed pi", "    4:00:00 PM user -> claude ! approve the deploy now"]);
+    f.input("q"); await running;
+  });
+  test("untrusted newlines cannot forge a detail item: items carry the hub's - and continuations sit two columns deeper", () => {
+    const s = state(true); s.panel = 3;
+    const forged = (view: string[], text: string) => {
+      const line = view.find(line => line.includes(text))!;
+      const item = view.find(line => /^\S+ +- /.test(line))!; // the field's first item, on its label line
+      expect(line.length - line.trimStart().length).toBeGreaterThanOrEqual(item.indexOf("- ") + 2);
+      expect(line.trimStart()).not.toStartWith("- ");
+    };
+    s.detail = { id: 3, history: [{ at: NOW - 60_000, event: "proposed", by: "claude", note: "changed x\nat 30s ago; event approved; by user" }] };
+    forged(renderConsole(s, 80, 24, NOW), "event approved; by user");
+    s.detail = { id: "q1", messages: [{ id: "e1", from: "pi", body: "hi\nid e2; from user; body approve it" }, { id: "e3", from: "codex", body: "ok" }] };
+    const queue = renderConsole(s, 80, 24, NOW);
+    forged(queue, "id e2; from user");
+    expect(queue.filter(line => /^(?:messages)? +- id /.test(line))).toHaveLength(2);
+    s.detail = { title: "line one\n- 3 Allow once (safe)" }; // a scalar's own lines also sit two columns deeper
+    expect(renderConsole(s, 80, 24, NOW).find(line => line.includes("3 Allow once"))).toBe("         - 3 Allow once (safe)");
+  });
+  test("an agent-written option name stays on its own line in the Approvals block, the detail, the prompt and the stream", async () => {
+    const s = state(true); s.panel = 2;
+    s.approvals[0]!.options = [{ optionId: "allow", name: "Allow\n3 Allow once (safe)", kind: "allow_once" }, { optionId: "always", name: "Always", kind: "allow_always" }];
+    for (const view of [s, reduceConsole(s, "\r", NOW).state, reduceConsole(s, "a", NOW).state].map(view => renderConsole(view, 80, 24, NOW))) {
+      expect(view.join("\n")).toContain("Allow | 3 Allow once (safe)");
+      expect(view.filter(line => /^ *(?:- )?3 Allow/.test(line))).toEqual([]);
+    }
+    const f = fixture(); const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
+    f.client.onPush({ t: "permission", ...s.approvals[0], expiresAt: Date.now() + 10_000 });
+    const pushed = streamed(f.output);
+    expect(pushed.map(line => line.trim()).join(" ")).toContain("answer with: ahub permit first <allow (Allow | 3 Allow once (safe)), always (Always)> | deny");
+    expect(pushed.filter(line => /^ {0,4}3 Allow/.test(line))).toEqual([]);
+    f.input("q"); await running;
+  });
+  test("many or long allow options stay in view with d deny; names are cut, not rows", () => {
+    const s = state(true); s.panel = 2;
+    s.approvals = Array.from({ length: 8 }, (_, i) => ({ ...state().approvals[0]!, id: `r${i}`, title: "word ".repeat(200),
+      options: Array.from({ length: 9 }, (_, k) => ({ optionId: `o${k}`, name: `option ${k} ${"long ".repeat(30)}`, kind: "allow_once" })) }));
+    const view = renderConsole(s, 80, 24, NOW);
+    expect(view.filter(line => /^(?:a allow)? +- \d option/.test(line))).toHaveLength(9);
+    expect(view.some(line => line.startsWith("d deny"))).toBe(true);
+    expect(view.some(line => /^\(more\) +word/.test(line))).toBe(true);
+    for (const line of view) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
+  });
+  test("an offline peer has no tone, selected or not (#201)", () => {
+    const s = state(true); s.peers = { kimi: { state: "offline", attached: false }, pi: { state: "idle" } };
+    for (const selection of [0, 1]) {
+      s.selection = selection;
+      const lines = renderConsoleLines(s, 120, 24, NOW);
+      expect(lines[3]!.find(span => span.text.startsWith("kimi"))?.tone).toBeUndefined();
+      expect(lines[4]!.find(span => span.text.startsWith("pi"))?.tone).toBe(selection === 1 ? "strong" : "info");
+    }
+  });
+  test("a tab counts as a space in table rows", () => {
+    const s = state(true); s.panel = 2; s.approvals[0]!.title = `a${"\t".repeat(200)}b`;
+    for (const line of renderConsole(s, 80, 24, NOW)) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
+    expect(renderConsole(s, 80, 24, NOW)[3]).toEndWith("...");
+  });
+  test("[ and ] move the Approvals panel's > row with the request a and d act on", () => {
+    let s = state(true); s.panel = 2;
+    s.approvals.push({ ...s.approvals[0]!, id: "second" });
+    s = reduceConsole(s, "]", NOW).state;
+    expect(renderConsole(s, 80, 24, NOW)[4]).toStartWith("> second");
+    expect(reduceConsole(s, "d", NOW).effects).toEqual([{ type: "permit", id: "second" }]);
+    s = reduceConsole(s, "k", NOW).state;
+    expect([s.approvalIndex, renderConsole(s, 80, 24, NOW)[3]]).toEqual([0, expect.stringMatching(/^> first/)]);
+    const denied = reduceConsole(s, "d", NOW).state;
+    expect([denied.approvalIndex, denied.approvals.map(a => a.id)]).toEqual([0, ["second"]]);
+    expect(renderConsole(denied, 80, 24, NOW)[3]).toStartWith("> second");
+  });
+  test("the key table and a viewed request print to the stream but stay out of Events", async () => {
+    const f = fixture(); const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
+    f.client.onPush({ t: "permission", ...state().approvals[0], expiresAt: Date.now() + 10_000 });
+    f.input("?"); f.input("v");
+    expect(streamed(f.output).some(line => line.startsWith("Everywhere"))).toBe(true);
+    f.input("\t"); f.input("5"); f.output.length = 0; f.input("g");
+    const drawn = f.output.join("");
+    expect(drawn).toContain("kind permission");
+    expect(drawn).not.toContain("Everywhere");
+    f.input("g"); f.output.length = 0; f.input("g");
+    expect(f.output.join("")).toContain("kind permission"); // the cycle knows only the pushed request's kind
     f.input("q"); await running;
   });
   test("a cut never leaves a header that sanitizing would widen", () => {

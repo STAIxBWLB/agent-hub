@@ -1398,12 +1398,20 @@ row (at most a third of the width), the last column taking the rest. Peers' LINK
 column reads `tools-only` when the optional `toolsOnly` status field (#205) is
 present. Zero counters read `-`, durations `45s`, `12m`, `3h05m` or `2d03h`, and
 resets and pauses are relative. Detail views and the Approvals panel's request
-block put labels at column 0 and every value line one column past the longest
-label, so untrusted text never starts where a label does; values show no JSON,
-epoch milliseconds or ISO times, and a cut approval title is marked in the label
-column. The footer hint lists only the keys valid in the mode, panel and state,
-and `?` shows a key table grouped by panel (printed into the stream in stream
-mode). A notice clears at the next key, or once 10 s have passed when the
+block put labels at column 0 and values one column past the longest label; a
+list puts `- ` before each item, and every other line of a value (its own
+newlines, wrapped continuations) starts two columns deeper, so untrusted text
+passes neither for a label nor for an item. Values show no JSON, epoch
+milliseconds or ISO times. Allow options keep one line each, cut rather than
+wrapped, and an agent-written newline in an option name or id shows as ` | `,
+also in the stream's permission line; table rows give way so that every option
+and `d deny` stay in view, and a cut approval title is marked in the label
+column. The Approvals panel's selected row is the request `a`, `d` and `v` act
+on, so `[` and `]` move it too. Offline peers keep the default foreground, also
+when selected, and a tab counts as one space when a line is cut. The footer
+hint lists only the keys valid in the mode, panel and state, and `?` shows a
+key table grouped by panel (in stream mode it is printed into the stream, as
+`v`'s copy of a request is, without entering the Events buffer). A notice clears at the next key, or once 10 s have passed when the
 existing 1 s tick redraws. In the stream, `v` prints the selected request with
 the push's framing, and `:` command output lines start at column 4. `fit`
 measures a cut line as `paint` prints it, so a cut that ends a span in

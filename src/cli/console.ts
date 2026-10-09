@@ -81,8 +81,9 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     terminal.write(`\x1b[${rows - 4};1H`); // the scroll region ends above the rule and the three footer lines
     for (const line of streamLines(event)) { terminal.write(paint(line, color)); terminal.write("\r\n"); }
   };
-  const stream = (event: ConsoleEvent) => {
-    state.events = [...state.events, { ...event, text: terminalText(event.text) }].slice(-1000);
+  /** `record: false` is for the console's own prints (the key table, a request viewed again): not events, so not in Events. */
+  const stream = (event: ConsoleEvent, record = true) => {
+    if (record) state.events = [...state.events, { ...event, text: terminalText(event.text) }].slice(-1000);
     if (plain) {
       const [header, ...body] = terminalText(event.text).split("\n");
       terminal.write(paint([{ text: header ?? "", tone: event.tone }, ...body.map(text => ({ text: "\n" + text }))], color) + "\n");
@@ -160,7 +161,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (!action.option) stream({ text: `  ! denial requested for permission ${action.id}`, kind: "permission", tone: "failure" });
       return;
     }
-    if (action.type === "print") return stream({ text: action.text, kind: action.kind, ...(action.tone ? { tone: action.tone } : {}) });
+    if (action.type === "print") return stream({ text: action.text, kind: action.kind, ...(action.tone ? { tone: action.tone } : {}) }, false);
     if (action.type === "show") {
       const result = await client.request(action.panel === 3 ? { t: "task", op: "task_show", args: { id: action.id } } : { t: "queue", op: "show", id: action.id }, 3000);
       if (!active) return;

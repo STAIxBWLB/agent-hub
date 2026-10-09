@@ -60,8 +60,9 @@ the rest and is cut with `...`.
 
 Zero counters and unknown values read `-`. Durations read `45s`, `12m`, `3h05m`
 or `2d03h`; quota resets and budget pauses read `in 2h13m`, and a pause by the
-console user reads `user`. LINK reads `tools-only` for a Claude session attached
-without channel pushes (#205). Below the Approvals table, a rule and the selected
+console user reads `user`. When a peer's status carries #205's optional
+`toolsOnly` field (a Claude session attached without channel pushes), LINK reads
+`tools-only`. Below the Approvals table, a rule and the selected
 request: its title, its allow options numbered as `a` offers them, and `d deny`.
 A title too long for the panel is marked `(more)` in the label column; Enter
 shows it whole.

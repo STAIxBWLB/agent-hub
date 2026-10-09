@@ -55,12 +55,14 @@ export function stateTone(state: string): Tone | undefined {
   return undefined;
 }
 const span = (text: unknown, tone?: Tone): Span => ({ text: String(text ?? ""), ...(tone ? { tone } : {}) });
+/** One line of sanitized text: a newline or a tab becomes a space, as wrap() counts a tab (stringWidth("\t") is 0). */
+const flat = (value: unknown) => terminalText(value).replace(/[\n\t]/g, " ");
 /**
  * Clip sanitized plain text to the width and keep the tones of the surviving prefix. Widths are measured as paint()
  * prints them: paint() sanitizes each span again, and a cut that ends a span in `[agent-hub` earns it a `> `.
  */
 function fitLine(line: Span[], columns: number): Span[] {
-  const clean = line.map(s => ({ ...s, text: terminalText(s.text).replace(/\n/g, " ") }));
+  const clean = line.map(s => ({ ...s, text: flat(s.text) }));
   if (Bun.stringWidth(clean.map(s => s.text).join("")) <= columns) return clean;
   const marker = ".".repeat(Math.max(0, Math.min(3, columns)));
   const out: Span[] = []; let room = columns - marker.length;
@@ -117,35 +119,47 @@ export function duration(ms: number): string {
 /** A moment as `in 2h13m` or `12m ago`. */
 export const relative = (at: number, now: number) => at > now ? `in ${duration(at - now)}` : `${duration(now - at)} ago`;
 const TIME_KEY = /^(?:at|created|updated|since|expires)$|At$/;
-/** A detail value as text, never JSON: times relative, shares as percent, one list item per line, objects as `key value` pairs. */
+/** A detail value as text, never JSON: times relative, shares as percent, objects as `key value` pairs, nested lists inline. */
 function detailText(value: unknown, key: string, now: number): string {
   if (value === null || value === undefined || value === "") return "-";
   if (typeof value === "number" && TIME_KEY.test(key)) return relative(value, now);
   if (typeof value === "number" && key === "used") return `${Math.round(value * 100)}%`;
-  if (Array.isArray(value)) return value.length ? value.map(item => detailText(item, key, now)).join("\n") : "-";
+  if (Array.isArray(value)) return value.map(item => item && typeof item === "object" && !Array.isArray(item) ? `(${detailText(item, key, now)})` : detailText(item, key, now)).join(", ") || "-";
   if (typeof value === "object") return Object.entries(value).map(([k, v]) => `${k} ${detailText(v, k, now)}`).join("; ") || "-";
   return String(value);
 }
-/** Labels at column 0 and every value line one column past the longest label, so untrusted text never starts where a label does. */
+/**
+ * Labels at column 0, values one column past the longest label. A list puts the hub's `- ` before each item, and every
+ * other line of a value (its own newlines, wrapped continuations) starts two columns deeper: untrusted text can pass
+ * neither for a label nor for an item. Allow options keep one line each, cut rather than wrapped.
+ */
 function fieldLines(fields: [string, unknown][], columns: number, now: number): Span[][][] {
   const pad = Math.min(16, Math.max(0, ...fields.map(([label]) => Bun.stringWidth(label))) + 2);
-  return fields.map(([label, value]) => wrap(detailText(value, label, now), columns - pad).map((text, i) => {
-    const head = i ? "" : fit(label, pad - 2);
-    return [span(head + " ".repeat(pad - Bun.stringWidth(head)), i ? undefined : "info"), span(text)];
-  }));
+  const width = columns - pad - 2;
+  return fields.map(([label, value]) => {
+    const list = Array.isArray(value) && value.length > 0;
+    const items = list ? (value as unknown[]).map(item => detailText(item, label, now)) : [detailText(value, label, now)];
+    const lines = items.flatMap(item => (label === "a allow" ? [fit(item, width)] : wrap(item, width)).map((text, i) => (i ? "  " : list ? "- " : "") + text));
+    return lines.map((text, i) => {
+      const head = i ? "" : fit(label, pad - 2);
+      return [span(head + " ".repeat(pad - Bun.stringWidth(head)), i ? undefined : "info"), span(text)];
+    });
+  });
 }
 const detailLines = (detail: Detail, columns: number, now: number): Span[][] =>
   typeof detail === "string" ? wrap(detail, columns).map(text => [span(text)]) : fieldLines(Object.entries(detail), columns, now).flat();
 const allowOptions = (a: Approval) => a.options.filter(o => o.kind.startsWith("allow"));
+/** An agent-written option name or id on one line: its newlines show as ` | `. */
+const oneLine = (text: unknown) => String(text ?? "").replace(/\s*\n\s*/g, " | ");
 /** A request as labeled fields: allow options numbered as `a` offers them, then deny. */
 function approvalFields(a: Approval): [string, unknown][] {
   const allow = allowOptions(a);
   return [["request", a.id], ["peer", a.peer], ["expires", a.expiresAt], ["title", a.title],
-    ["a allow", allow.length > 1 ? allow.map((o, i) => `${i + 1} ${o.name}`) : allow[0]?.name], ["d deny", "at once, no confirmation"]];
+    ["a allow", allow.length > 1 ? allow.map((o, i) => `${i + 1} ${oneLine(o.name)}`) : allow[0] && oneLine(allow[0].name)], ["d deny", "at once, no confirmation"]];
 }
 /** How the stream shows a permission request: hub text at columns 2 and 4, title lines framed at column 6. */
 export function permissionText(a: Pick<Approval, "id" | "peer" | "title" | "options">): string {
-  return `  ? ${a.peer} asks permission: ${String(a.title).replace(/\n/g, "\n      | ")}\n    answer with: ahub permit ${a.id} <${a.options.map(o => `${o.optionId} (${o.name})`).join(", ")}> | deny`;
+  return `  ? ${a.peer} asks permission: ${String(a.title).replace(/\n/g, "\n      | ")}\n    answer with: ahub permit ${a.id} <${a.options.map(o => `${oneLine(o.optionId)} (${oneLine(o.name)})`).join(", ")}> | deny`;
 }
 const KEYS: [string, string[]][] = [
   ["Everywhere", ["Tab stream/panels", "1-5 panel", ": command", "? keys", "Esc back", "q quit"]],
@@ -206,9 +220,11 @@ export function panelRows(s: ConsoleState): any[] {
   if (s.panel === 4) return s.queue.filter(q => q.state === "needs_review" || q.state === "queued");
   return s.events.filter(e => (!s.peerFilter || e.peer === s.peerFilter) && (!s.kindFilter || e.kind === s.kindFilter));
 }
+/** The selected row: the Approvals panel selects the request that a, d and v act on. */
+const selection = (s: ConsoleState) => s.panel === 2 ? s.approvalIndex : s.selection;
 export function reduceConsole(state: ConsoleState, key: string, now = Date.now()): { state: ConsoleState; effects: ConsoleEffect[] } {
   let s = pruneApprovals({ ...state }, now); const effects: ConsoleEffect[] = [];
-  const done = () => ({ state: s, effects });
+  const done = () => { s.approvalIndex = Math.min(s.approvalIndex, Math.max(0, s.approvals.length - 1)); return { state: s, effects }; };
   s.notice = ""; // a notice answers the key before this one
   if (key === "\x03") { effects.push({ type: "exit" }); return done(); }
   if (s.confirm) {
@@ -257,7 +273,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   if (key === "\x1b") { s.detail = undefined; s.help = false; s.optionChoice = undefined; return done(); }
   if (s.mode === "panels" && ["j", "k", "\x1b[A", "\x1b[B"].includes(key)) {
     if (s.detail !== undefined) { s.detailOffset = Math.max(0, s.detailOffset + (["j", "\x1b[B"].includes(key) ? 1 : -1)); return done(); }
-    s.selection = Math.max(0, Math.min(panelRows(s).length - 1, s.selection + (["j", "\x1b[B"].includes(key) ? 1 : -1)));
+    s.selection = Math.max(0, Math.min(panelRows(s).length - 1, selection(s) + (["j", "\x1b[B"].includes(key) ? 1 : -1)));
     if (s.panel === 2) s.approvalIndex = s.selection;
     return done();
   }
@@ -282,7 +298,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     if (key === "v" && s.mode === "stream") { effects.push({ type: "print", text: permissionText(approval), kind: "permission", tone: "attention" }); return done(); }
     if (key === "v") { s.detail = Object.fromEntries(approvalFields(approval)); s.detailOffset = 0; return done(); }
   }
-  const row = panelRows(s)[s.selection];
+  const row = panelRows(s)[selection(s)];
   if (s.mode === "panels" && row) {
     if (key === "\r" || key === "\n") {
       if (s.panel === 3 || s.panel === 4) effects.push({ type: "show", panel: s.panel, id: String(row.id) });
@@ -317,7 +333,7 @@ const TABLES: Record<number, string[]> = {
 const count = (n: unknown) => typeof n === "number" && n ? String(n) : "-";
 /** One span per column of a panel row; zero counters and unknown values read `-`. */
 function cells(s: ConsoleState, row: any, selected: boolean, now: number): Span[] {
-  const id = (text: unknown, tone: Tone | undefined = "info") => span(text, tone && (selected ? "strong" : tone));
+  const id = (text: unknown, tone: Tone | undefined) => span(text, tone && (selected ? "strong" : tone));
   if (s.panel === 1) {
     const b = s.budget[row.id];
     const paused = b?.paused ? `budget ${relative(b.paused.resetsAt, now)}` : row.paused && typeof row.paused === "object"
@@ -335,10 +351,10 @@ function cells(s: ConsoleState, row: any, selected: boolean, now: number): Span[
     const last = row.history?.at(-1);
     const at = last?.at ?? row.updated ?? row.created;
     const failed = last?.event === "check failed" || last?.event === "failed";
-    return [id(`#${row.id}`), span(`${row.state}${failed && row.state !== last.event ? ` ${last.event}` : ""}${row.ready ? " ready" : ""}`, failed ? "failure" : row.ready ? "attention" : stateTone(row.state)),
+    return [id(`#${row.id}`, "info"), span(`${row.state}${failed && row.state !== last.event ? ` ${last.event}` : ""}${row.ready ? " ready" : ""}`, failed ? "failure" : row.ready ? "attention" : stateTone(row.state)),
       span(row.owner ?? "-"), span(row.reviewer ?? "-"), span(row.class ?? "-"), span(typeof at === "number" ? duration(now - at) : "-", "muted"), span(row.title)];
   }
-  if (s.panel === 4) return [id(row.id), span(row.peer), span(row.state, stateTone(row.state)), span(row.revision ?? "-"), span(typeof row.createdAt === "number" ? duration(now - row.createdAt) : "-", "muted")];
+  if (s.panel === 4) return [id(row.id, "info"), span(row.peer), span(row.state, stateTone(row.state)), span(row.revision ?? "-"), span(typeof row.createdAt === "number" ? duration(now - row.createdAt) : "-", "muted")];
   const [header, ...body] = String(row.text).split("\n");
   return [span(header, row.tone), ...(body.length ? [span("\n" + body.join("\n"))] : [])];
 }
@@ -349,7 +365,7 @@ function cells(s: ConsoleState, row: any, selected: boolean, now: number): Span[
  */
 function table(head: string[], rows: Span[][], columns: number): Span[][] {
   const cap = Math.max(24, Math.floor(columns / 3));
-  const width = (cell: Span | undefined) => Bun.stringWidth(terminalText(cell?.text).replace(/\n/g, " "));
+  const width = (cell: Span | undefined) => Bun.stringWidth(flat(cell?.text));
   const widths = head.map((h, i) => Math.min(cap, rows.reduce((max, row) => Math.max(max, width(row[i])), Bun.stringWidth(h))));
   return [head.map(h => span(h, "info")), ...rows].map(row => row.map((cell, i) => {
     if (i === head.length - 1) return cell;
@@ -364,7 +380,7 @@ function hint(s: ConsoleState): string {
   if (s.help) return "? or Esc close  q quit";
   const approvals = s.panel === 2 ? pending : [];
   if (s.detail !== undefined) return [...approvals, "j/k scroll", "Esc back", "? keys", "q quit"].join("  ");
-  const row = panelRows(s)[s.selection];
+  const row = panelRows(s)[selection(s)];
   const context = !row ? [] : s.panel === 1 ? ["p pause", "r resume"] : s.panel === 3 ? ["a assign", "r review"] : s.panel === 4 ? ["r resolve"] : [];
   return [...approvals, ...context, ...(s.panel === 5 ? ["f peer", "g kind"] : []), ...(row ? ["j/k move", "Enter view"] : []), "? keys", ": command", "Tab stream", "q quit"].join("  ");
 }
@@ -386,7 +402,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   if (s.confirm?.type === "permission") prompt = `allow ${s.confirm.option} for ${s.confirm.peer} (request ${s.confirm.id})? y/N`;
   if (s.confirm?.type === "command") prompt = `${s.confirm.args.join(" ")}? y/N`;
   const choice = s.optionChoice ? s.approvals.find(a => a.id === s.optionChoice) : undefined;
-  if (choice) prompt = `allow with: ${allowOptions(choice).map((o, i) => `${i + 1} ${o.name}`).join("  ")}  Esc cancel`;
+  if (choice) prompt = `allow with: ${allowOptions(choice).map((o, i) => `${i + 1} ${oneLine(o.name)}`).join("  ")}  Esc cancel`;
   const summary: Span[] = [];
   for (const [id, p] of Object.entries(s.peers)) {
     if (summary.length) summary.push(span(" "));
@@ -408,18 +424,22 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   if (s.help) lines.push(...keyTable(columns));
   else if (s.detail !== undefined) { const detail = detailLines(s.detail, columns, now); lines.push(...detail.slice(Math.min(s.detailOffset, Math.max(0, detail.length - height)))); }
   else {
-    const data = panelRows(s); const head = TABLES[s.panel];
-    const capacity = Math.max(1, s.panel === 2 ? Math.floor(height / 2) - 1 : height - 1); const start = Math.max(0, s.selection - capacity + 1);
-    const rowsOf = head ? table(head, data.map((row, i) => cells(s, row, i === s.selection, now)), columns) : undefined;
+    const data = panelRows(s); const head = TABLES[s.panel]; const at = selection(s);
+    // Below the Approvals table: the selected request's title, then every allow option and deny, one line each. Rows give
+    // way so that they fit with at least one title line.
+    const [title = [], ...rest] = s.panel === 2 && permission ? fieldLines(approvalFields(permission).slice(3), columns, now) : [];
+    const tail = rest.flat();
+    // ponytail: more allow options than the panel has lines still push deny out of view; scroll the block if that happens
+    const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : height - 1); const start = Math.max(0, at - capacity + 1);
+    const rowsOf = head ? table(head, data.map((row, i) => cells(s, row, i === at, now)), columns) : undefined;
     lines.push(fitLine([span("  "), ...(rowsOf?.[0] ?? [span(`peer ${s.peerFilter ?? "all"}  kind ${s.kindFilter ?? "all"}`, "info")])], columns));
     for (let i = start; i < Math.min(data.length, start + capacity); i++) {
-      const selected = i === s.selection;
+      const selected = i === at;
       lines.push(fitLine([span(selected ? "> " : "  ", selected ? "strong" : undefined), ...(rowsOf?.[i + 1] ?? cells(s, data[i], selected, now))], columns));
     }
     if (!data.length) lines.push([span("  (empty)")]);
-    if (s.panel === 2 && permission) {
-      const [title = [], ...rest] = fieldLines(approvalFields(permission).slice(3), columns, now);
-      const tail = rest.flat(); const room = Math.max(1, height - lines.length - 1 - tail.length);
+    if (title.length) {
+      const room = Math.max(1, height - lines.length - 1 - tail.length);
       if (title.length > room) { // the label column is the hub's own: mark a cut title there, Enter shows it whole
         title.length = room;
         const [label, ...value] = title[room - 1]!;
