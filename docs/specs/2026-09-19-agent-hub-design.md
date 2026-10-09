@@ -1409,12 +1409,16 @@ produce a warning when they replace these hooks. An ordinary terminal records a
 private launcher identity without creating an Orca terminal-recovery record.
 The facts control request accepts session/start/pre/post/stop phases and carries
 nativeInstanceId and nativeLaunchId alongside sessionId and transcriptPath.
+The command hook forwards launcher identity only for its matching state directory
+and peer; library calls targeting another hub do not inherit that identity.
 The daemon fences observations to its current instance and launcher, validates
 the session transcript, and rejects stale stop/post observations. Native prompt
 text is never included in those requests or events.
 
 A genuine native Stop requires the current daemon/launcher binding and an actual
-assistant end_turn transcript message at or after current activity. Its opaque
+assistant end_turn transcript message at or after the native turn's first start,
+distinct from the completed-message baseline recorded at that start. Later tool
+activity does not move this turn-start boundary. Its opaque
 deduplication id binds session, launch and message; transport replacement or new
 activity cannot turn a replay into another completion. Unbound or idless legacy
 Stop events cannot certify completion or finish supervision. A current private

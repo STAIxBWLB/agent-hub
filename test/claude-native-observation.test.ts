@@ -8,6 +8,8 @@ import { readEvents } from "../src/hub/events.ts";
 import { formatReport, summarize } from "../src/hub/report.ts";
 import { buildLaunch, claudeObservationHooks } from "../src/cli/launch.ts";
 import { HUB, newEnvelope } from "../src/hub/envelope.ts";
+import { nativeHookIdentity } from "../src/cli/facts-hook.ts";
+import { claudeReportedTokens } from "../src/hub/usage.ts";
 
 const cleanup: Array<() => unknown> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -104,4 +106,19 @@ test("Claude report uses unique native Stops over logical ends and labels legacy
   expect(formatReport(legacy).join("\n")).toContain("logical state, native completion unobserved");
   const unbound = summarize([{ v: 1, at, type: "state", peer: "claude", state: "idle" }, { v: 1, at, type: "native_turn_end", peer: "claude" }]);
   expect(unbound.peers.claude?.turns).toBeNull(); expect(unbound.peers.claude?.turnSource).toBe("unknown");
+});
+
+test("library hook calls do not forward a different native launch's environment identity", () => {
+  const env = { AGENTHUB_STATE_DIR: "/other/state", AGENTHUB_PEER_ID: "claude", AGENTHUB_INSTANCE_ID: "other-instance", AGENTHUB_LAUNCH_ID: "other-launch" };
+  expect(nativeHookIdentity("/target/state", "claude", env)).toEqual({});
+  expect(nativeHookIdentity("/other/state", "codex", env)).toEqual({});
+  expect(nativeHookIdentity("/other/state", "claude", env)).toEqual({ nativeInstanceId: "other-instance", nativeLaunchId: "other-launch" });
+});
+
+test("Claude reported categories count without an explicit total and absent input/output stay unknown", () => {
+  expect(claudeReportedTokens({ inputTokens: 3, outputTokens: 2 })).toBe(5);
+  expect(claudeReportedTokens({ inputTokens: 3, outputTokens: 2, cacheReadTokens: 4, cacheWriteTokens: 1 })).toBe(10);
+  expect(claudeReportedTokens({ inputTokens: 3 })).toBeUndefined();
+  expect(claudeReportedTokens({ outputTokens: 2 })).toBeUndefined(); expect(claudeReportedTokens(undefined)).toBeUndefined();
+  expect(claudeReportedTokens({ totalTokens: 0 })).toBe(0);
 });

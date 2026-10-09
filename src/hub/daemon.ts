@@ -12,7 +12,7 @@ import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./tas
 import { stripUntrusted } from "./config-trust.ts";
 import { eventLog, readEvents, tokenDeltas } from "./events.ts";
 import { ExecutionBudget } from "./execution-budget.ts";
-import { readClaudeTranscriptUsage } from "./usage.ts";
+import { claudeReportedTokens, readClaudeTranscriptUsage } from "./usage.ts";
 import type { ServerWebSocket } from "bun";
 import { AcpPeer, type PermissionRequest } from "../adapters/acp.ts";
 import { CodexPeer } from "../adapters/codex-appserver.ts";
@@ -838,6 +838,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const nativeCompletedAt = new Map<PeerId, number>();
   const nativeStopsSeen = new Set(readEvents(join(opts.stateDir, "events.jsonl")).flatMap(event => event.type === "native_turn_end" && event.id ? [event.id] : []));
   const activeAt = new Map<PeerId, number>();
+  const nativeTurnStart = new Map<PeerId, { at: number; baseline?: string; generation: string; session: string }>();
   /** Every Claude hook call's own start-up and the hub's time for it, summed per turn (issue #108): reported at Stop. */
   const hookStats = new Map<PeerId, { n: number; startupMs: number; hubMs: number; maxStartupMs: number }>();
   /**
@@ -1377,7 +1378,8 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const record of readClaudeTranscriptUsage(session.sessionId, session.transcriptPath)) {
       if (claudeNativeUsageSeen.has(record.id)) continue;
       claudeNativeUsageSeen.add(record.id);
-      if (record.usage?.totalTokens !== undefined) addTokens("claude", record.usage.totalTokens);
+      const reported = claudeReportedTokens(record.usage);
+      if (reported !== undefined) addTokens("claude", reported);
       event({ type: "usage", peer: "claude", source: "claude_transcript", id: record.id, ...record.usage, ...(record.servedModel ? { servedModel: record.servedModel } : {}), ...(record.at ? { measuredAt: record.at } : {}) });
     }
   };
@@ -2578,7 +2580,15 @@ export async function startDaemon(opts: DaemonOptions) {
           if (peer === "claude" && msg.nativeInstanceId !== undefined && msg.nativeInstanceId !== instanceId) return void reply({ t: "facts", ok: false });
           const nativePeer = nativeClaude ? bus.peers.get(peer) : undefined;
           if (phase === "session") { recordSessions(); return void reply({ t: "facts", ok: true }); }
-          if ((phase === "start" || phase === "pre") && nativePeer instanceof WsPeer) nativePeer.nativeStarted(sessionId!);
+          if ((phase === "start" || phase === "pre") && nativePeer instanceof WsPeer) {
+            const previous = nativeTurnStart.get(peer);
+            if (phase === "start" || nativePeer.state !== "busy" || previous?.generation !== nativePeer.sessionGeneration || previous?.session !== sessionId) {
+              const session = claudeSession();
+              const baseline = session.sessionId && session.transcriptPath ? readClaudeTranscriptUsage(session.sessionId, session.transcriptPath).filter(record => record.completedTurn).at(-1)?.id : undefined;
+              nativeTurnStart.set(peer, { at: Date.now(), ...(baseline ? { baseline } : {}), generation: nativePeer.sessionGeneration, session: sessionId! });
+            }
+            nativePeer.nativeStarted(sessionId!);
+          }
           if (phase === "start") { activeAt.set(peer, Date.now()); return void reply({ t: "facts", ok: true }); }
           // Quiescence evidence is kept in every regime: a PII window must not make an active peer look stopped. Only
           // a tool call starting is new activity: a PostToolUse of an earlier call can arrive after the Stop.
@@ -2588,7 +2598,9 @@ export async function startDaemon(opts: DaemonOptions) {
               const session = claudeSession();
               const latest = session.sessionId && session.transcriptPath ? readClaudeTranscriptUsage(session.sessionId, session.transcriptPath).filter(record => record.completedTurn).at(-1) : undefined;
               // Completion belongs to the immutable native message, not the receiver's active state/generation.
-              if (!latest?.at || Date.parse(latest.at) < (activeAt.get(peer) ?? 0)) return void reply({ t: "facts", ok: false });
+              const started = nativeTurnStart.get(peer);
+              if (!latest?.at) { log("native Stop refused for claude: completed transcript message unavailable"); return void reply({ t: "facts", ok: false }); }
+              if (started?.baseline === latest.id || Date.parse(latest.at) < (started?.at ?? 0)) { log("native Stop refused for claude: completion predates current native turn"); return void reply({ t: "facts", ok: false }); }
               nativeStopId = createHash("sha256").update(`${sessionId}:${session.launchId ?? "legacy"}:${latest.id}`).digest("hex");
               if (nativeStopsSeen.has(nativeStopId)) return void reply({ t: "facts", ok: true });
               nativeStopsSeen.add(nativeStopId);

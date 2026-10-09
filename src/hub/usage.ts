@@ -13,6 +13,15 @@ export interface UsageRecord {
   provider?: string;
 }
 
+/** Claude-native counters have separate input/output/cache categories, often no explicit total. */
+export function claudeReportedTokens(usage: NormalizedUsage | undefined): number | undefined {
+  if (!usage) return undefined;
+  if (usage.totalTokens !== undefined) return usage.totalTokens;
+  if (usage.inputTokens === undefined || usage.outputTokens === undefined) return undefined;
+  const total = usage.inputTokens + usage.outputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
+  return Number.isSafeInteger(total) && total >= 0 ? total : undefined;
+}
+
 function opaqueId(sessionId: string, messageId: string): string {
   return createHash("sha256").update(sessionId).update("\0").update(messageId).digest("hex");
 }

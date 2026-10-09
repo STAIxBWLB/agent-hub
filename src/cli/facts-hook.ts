@@ -5,6 +5,12 @@
 // call; the hub confirms it from the transcript row Claude Code writes for it, by tool use id, before it counts as seen.
 import { ControlClient } from "../hub/control-client.ts";
 
+/** A library call may target another hub; only the managed command hook inherits that target's native identity. */
+export function nativeHookIdentity(stateDir: string, peer: string, env: NodeJS.ProcessEnv = process.env): { nativeInstanceId?: string; nativeLaunchId?: string } {
+  if (env.AGENTHUB_STATE_DIR !== stateDir || env.AGENTHUB_PEER_ID !== peer) return {};
+  return { ...(env.AGENTHUB_INSTANCE_ID ? { nativeInstanceId: env.AGENTHUB_INSTANCE_ID } : {}), ...(env.AGENTHUB_LAUNCH_ID ? { nativeLaunchId: env.AGENTHUB_LAUNCH_ID } : {}) };
+}
+
 /** The hook's stdout for one Claude Code hook input, or undefined for none. */
 export async function factsHook(stdin: string, stateDir: string, peer: string, timeoutMs = 2000): Promise<string | undefined> {
   const input = JSON.parse(stdin) as { hook_event_name?: unknown; tool_name?: unknown; tool_input?: unknown; tool_use_id?: unknown; session_id?: unknown; transcript_path?: unknown };
@@ -14,8 +20,7 @@ export async function factsHook(stdin: string, stateDir: string, peer: string, t
     const res = await hub.request({
       t: "facts",
       phase,
-      ...(process.env.AGENTHUB_INSTANCE_ID ? { nativeInstanceId: process.env.AGENTHUB_INSTANCE_ID } : {}),
-      ...(process.env.AGENTHUB_LAUNCH_ID ? { nativeLaunchId: process.env.AGENTHUB_LAUNCH_ID } : {}),
+      ...nativeHookIdentity(stateDir, peer),
       tool: typeof input.tool_name === "string" ? input.tool_name : "",
       input: input.tool_input ?? {},
       ...(typeof input.tool_use_id === "string" ? { toolUseId: input.tool_use_id } : {}),
