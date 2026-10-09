@@ -97,6 +97,35 @@ test("a pull groups the queued row an operator retry left, so no journal row sta
   durable.close();
 });
 
+test("what a pull hands over resolves as reply_to, a preface and an envelope that aged out of the seen cache included (#205)", () => {
+  const bus = new Bus({ batchMs: 0 });
+  bus.add(Object.assign(new FakePeer("claude"), { pullOnly: true }));
+  bus.preface("claude", "recall");
+  const env = newEnvelope("user", "old question", { to: ["claude"] });
+  bus.publish(env);
+  for (let i = 0; i < 2100; i++) bus.publish(newEnvelope("user", `noise ${i}`, { to: ["nobody"] }));
+  expect(bus.get(env.id)).toBeUndefined();
+  const read = bus.pull("claude")!;
+  expect(read).toHaveLength(2);
+  expect(read.map((e) => bus.get(e.id)?.id)).toEqual(read.map((e) => e.id));
+});
+
+test("a pull whose journal write fails keeps every pause, the queue and the preface, and stops the bus (#205)", () => {
+  const { bus, durable } = setupBus();
+  bus.add(Object.assign(new FakePeer("claude"), { pullOnly: true }));
+  bus.add(new FakePeer("codex"));
+  bus.pause("codex"); // a budget or conductor pause, which the snapshot does not carry
+  bus.preface("claude", "recall");
+  const env = newEnvelope("user", "kept", { to: ["claude"] });
+  bus.publish(env);
+  durable.close();
+  expect(() => bus.pull("claude")).toThrow();
+  expect(bus.isPaused("codex")).toBe(true);
+  expect(bus.queueIds("claude")).toEqual([env.id]);
+  expect(bus.snapshot(false).prefaces.claude).toBeDefined();
+  expect(bus.storageError).toBe("delivery journal unavailable");
+});
+
 test("one pull takes what one push delivery would, and the rest keep waiting (#205)", () => {
   const { bus, durable } = setupBus();
   bus.add(Object.assign(new FakePeer("claude"), { pullOnly: true }));

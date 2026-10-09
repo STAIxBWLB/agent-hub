@@ -26,8 +26,8 @@ const until = async (cond: () => boolean, what = "condition") => {
   if (!cond()) throw new Error(`timed out waiting for ${what}`);
 };
 
-async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities; coordination?: string; experiments?: typeof DEFAULT_CONFIG.experiments } = {}) {
-  const { memoryUrl, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, coordination, experiments, ...rest } = extra;
+async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities; coordination?: string; experiments?: typeof DEFAULT_CONFIG.experiments; roles?: typeof DEFAULT_CONFIG.roles } = {}) {
+  const { memoryUrl, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, coordination, experiments, roles, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
     cwd: ROOT,
@@ -50,6 +50,7 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?:
       ...(capabilities ? { capabilities } : {}),
       ...(coordination ? { coordination: coordination as typeof DEFAULT_CONFIG.coordination } : {}),
       ...(experiments ? { experiments } : {}),
+      ...(roles ? { roles } : {}),
     },
     permissionTimeoutMs: 200,
     ...rest,
@@ -230,6 +231,48 @@ test("hub_inbox is held by a needs_review delivery and reads the operator's retr
   expect(await inbox()).toContain("pushed then lost");
   expect(daemon.bus.queueList("claude").filter((r) => ["queued", "dispatching", "accepted", "needs_review"].includes(r.state))).toEqual([]);
 });
+
+test("hub_inbox is refused while a conductor holds the tools-only claude or recovery holds deliveries, and journals nothing (#205)", async () => {
+  const { stateDir, daemon, console_ } = await hub({ roles: { ...DEFAULT_CONFIG.roles, codex: ["conductor"] } });
+  const plain = await fakeClaude(stateDir, null);
+  await until(() => (daemon.bus.peers.get("claude") as any)?.pullOnly === true, "plain attach");
+  const inbox = async () => ((await plain.client.callTool({ name: "hub_inbox", arguments: {} })) as any).content[0].text as string;
+  await console_.request({ t: "send", body: "held back", to: ["claude"] });
+  const lead = await ControlClient.connect(stateDir, { role: "tools", peer: "codex" });
+  cleanup.push(() => lead.close());
+  expect((await lead.request({ t: "task", op: "hub_peer_hold", args: { peer: "claude" } })).ok).toBe(true);
+  expect(await inbox()).toBe("not read: held by the conductor codex");
+  expect((await lead.request({ t: "task", op: "hub_peer_release", args: { peer: "claude" } })).ok).toBe(true);
+  daemon.bus.setRecoveryHold(true);
+  expect(await inbox()).toBe("not read: recovery is holding deliveries");
+  daemon.bus.setRecoveryHold(false);
+  expect(daemon.bus.queueList("claude").every((row) => row.state === "queued")).toBe(true);
+  expect(await inbox()).toContain("held back");
+});
+
+test("a standing-by ahub claude session takes the peer back from a session without pushes that attached first (#205)", async () => {
+  const { stateDir, daemon, console_, events } = await hub();
+  const token = readFileSync(join(stateDir, "control-token"), "utf8").trim();
+  const hello = (channel: boolean) => new Promise<WebSocket>((resolve) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${daemon.port}`);
+    cleanup.push(() => ws.close());
+    ws.onopen = () => { ws.send(JSON.stringify({ t: "hello", v: PROTOCOL, token, role: "peer", peer: "claude", channel, rid: 1 })); resolve(ws); };
+  });
+  const flagged = await fakeClaude(stateDir);
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "channel attach");
+  const taker = await hello(true); // a newer channel session: the flagged one stands by
+  await until(() => events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline").length === 1, "replacement");
+  taker.close();
+  const plain = await hello(false); // attaches before the standing-by session looks again
+  let plainClose = 0;
+  plain.onclose = (ev) => { plainClose = ev.code; };
+  await until(() => (daemon.bus.peers.get("claude") as any)?.pullOnly === true, "plain session attached first");
+  for (let i = 0; i < 800 && plainClose !== 4000; i++) await Bun.sleep(10); // the standby backoff
+  expect(plainClose).toBe(4000);
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle" && !(daemon.bus.peers.get("claude") as any).pullOnly, "channel session back");
+  await console_.request({ t: "send", body: "pushed again", to: ["claude"] });
+  await until(() => flagged.channel.length === 1, "push to the channel session");
+}, 30_000);
 
 test("claude and an ACP peer talk through the daemon in both directions", async () => {
   const { stateDir, daemon, console_ } = await hub();

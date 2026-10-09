@@ -1591,12 +1591,17 @@ push `accepted` and show none of them.
   a push, so queued journal rows of the same envelopes (an operator retry) are
   grouped into it, then marks it `completed`, reason `read through hub_inbox`,
   in the same transaction: the tool result that returns them is the readback,
-  so nothing waits in `accepted`. A pull is not a native turn and is not
+  so nothing waits in `accepted`. What it hands over is registered for
+  `reply_to` like a push. If that journal write fails, only this peer's queue
+  and preface are put back (every pause stays) and the bus stops with
+  `delivery journal unavailable`. A pull is not a native turn and is not
   counted as supervision. A reply lost between the hub and the plugin after
   that write loses its batch (a `ponytail:` ceiling in `Bus.pull`).
 - Who holds the peer: an `ahub claude` session takes it from a plain session
-  as any newer hello does; attach clears `pullOnly`, the waiting queue is
-  pushed to it, and the plain session stands by (close 4000). A plain session
+  as any newer hello does, a standing-by one included (its standby check does
+  not wait for a holder that status reports `toolsOnly`); attach clears
+  `pullOnly`, the waiting queue is pushed to it, and the plain session stands by
+  (close 4000). A plain session
   never takes it from a session with pushes, attached or still arriving: its
   hello is closed with 4000 and it stands by the same way, so an IDE or plain
   `claude` with the user-scope plugin cannot strand the channel session's

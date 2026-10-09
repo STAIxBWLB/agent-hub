@@ -729,8 +729,10 @@ export class Bus {
    * What one push delivery would take (the preface, then `take`'s batch), handed to a pull-only peer and recorded as
    * completed: the tool result that returns it is the readback, so nothing waits for settlement and nothing is ever
    * `accepted` (issue #205). It is checkpointed like a push, so queued rows of the same envelopes (an operator retry)
-   * are grouped into it. Undefined while held. ponytail: recorded at hand-out, so a reply lost between hub and plugin
-   * loses that batch; take/confirm in two steps if that is ever observed.
+   * are grouped into it, and registered for `reply_to` like a push. Undefined while held. A failed journal write puts
+   * back only this peer's queue and preface (every pause stays) and stops the bus like any other journal failure.
+   * ponytail: recorded at hand-out, so a reply lost between hub and plugin loses that batch; take/confirm in two steps
+   * if that is ever observed.
    */
   pull(id: PeerId): Envelope[] | undefined {
     if (this.storageError) throw new Error("delivery journal unavailable");
@@ -739,17 +741,23 @@ export class Bus {
     this.dropIrrelevant(id, queue);
     const preface = this.prefaces.get(id);
     if (!preface && !queue.length) return [];
-    const before = this.snapshotWithoutJournal();
-    let batch: Envelope[];
+    const queued = [...queue];
+    const batch = [...(preface ? [preface] : []), ...this.take(id, queue)];
+    this.prefaces.delete(id);
     try {
-      batch = [...(preface ? [preface] : []), ...this.take(id, queue)];
-      this.prefaces.delete(id);
       const deliveryId = crypto.randomUUID();
       this.journal?.transaction(() => {
-        this.durableHandoff(id, deliveryId, batch, batch);
+        this.durableHandoff(id, deliveryId, batch, batch); // its bus snapshot is the queue after this pull
         this.journal!.transition(deliveryId, "completed", "read through hub_inbox");
       });
-    } catch (error) { this.loadSnapshot(before); throw error; }
+    } catch (error) {
+      queue.splice(0, queue.length, ...queued);
+      if (preface) this.prefaces.set(id, preface);
+      this.storageError = "delivery journal unavailable";
+      throw error;
+    }
+    for (const e of batch) if (!this.seen.has(e.id)) this.seen.set(e.id, e);
+    while (this.seen.size > SEEN_CAP) this.seen.delete(this.seen.keys().next().value as string);
     this.onQueues?.();
     return batch;
   }

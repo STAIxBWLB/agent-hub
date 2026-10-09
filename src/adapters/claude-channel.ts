@@ -17,14 +17,15 @@ import { frame, replyParent, sanitize, HUB_MESSAGE_INSTRUCTION, type Envelope } 
 const stateDir = process.env.AGENTHUB_STATE_DIR ?? stateDirFor(process.cwd());
 const projectRoot = process.env.AGENTHUB_PROJECT_DIR ?? process.cwd();
 const peerId = process.env.AGENTHUB_PEER_ID ?? "claude";
-/** tools mode: the same server, run by Kimi (ACP mcpServers) or Codex (mcp_servers override). Their messages arrive through their own adapters, so no channel here. */
-const toolsOnly = process.env.AGENTHUB_MODE === "tools";
+/** tools mode: the same server, run by Kimi (ACP mcpServers) or Codex (mcp_servers override). Their messages arrive through their own adapters, so no channel here. Not the "tools-only" Claude below. */
+const toolsMode = process.env.AGENTHUB_MODE === "tools";
 /**
  * Channel evidence (issue #205): `ahub claude` sets AGENTHUB_CHANNEL=1 beside the development-channel flag. Without the
- * flag Claude Code drops channel notifications without an error, so a session without the marker attaches tools-only:
- * no channel capability, its messages wait at the hub for hub_inbox, and it never reports a delivery `accepted`.
+ * flag Claude Code drops channel notifications without an error, so a Claude session without the marker attaches
+ * "tools-only" (as status calls it; unrelated to toolsMode): no channel capability, its messages wait at the hub for
+ * hub_inbox, and it never reports a delivery `accepted`.
  */
-const channel = !toolsOnly && process.env.AGENTHUB_CHANNEL === "1";
+const channel = !toolsMode && process.env.AGENTHUB_CHANNEL === "1";
 
 function roles(): Record<string, string[]> {
   // The machine's own file overrides the shared one, as in loadConfig (issue #17).
@@ -59,8 +60,10 @@ const INBOX_CAP = 200;
  */
 function peerHeld(): boolean {
   try {
-    const status = JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")) as { peers?: Record<string, { state?: string; claiming?: boolean }> };
+    const status = JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")) as { peers?: Record<string, { state?: string; claiming?: boolean; toolsOnly?: string }> };
     const peer = status.peers?.[peerId];
+    // A session with pushes takes the peer from one without them (issue #205); the hub never lets the reverse happen.
+    if (channel && peer?.toolsOnly && !peer.claiming) return false;
     // `claiming`: a hello that has not finished its preface. It reads as offline but a session is arriving.
     return !!peer && (peer.state !== "offline" || peer.claiming === true);
   } catch {
@@ -99,7 +102,7 @@ const text = (s: string) => ({ content: [{ type: "text" as const, text: s }] });
 
 const server = new Server(
   { name: "agent-hub", version: VERSION },
-  toolsOnly ? { capabilities: { tools: {} }, instructions: TOOLS_INSTRUCTIONS } : { capabilities: channel ? { experimental: { "claude/channel": {} }, tools: {} } : { tools: {} }, instructions: INSTRUCTIONS },
+  toolsMode ? { capabilities: { tools: {} }, instructions: TOOLS_INSTRUCTIONS } : { capabilities: channel ? { experimental: { "claude/channel": {} }, tools: {} } : { tools: {} }, instructions: INSTRUCTIONS },
 );
 
 const inbox: string[] = []; // pushes that failed; drained by hub_inbox
@@ -157,7 +160,7 @@ async function connectLoop(): Promise<void> {
     }
     let code: number | undefined;
     try {
-      const client = await ControlClient.connect(stateDir, { role: toolsOnly ? "tools" : "peer", peer: peerId, ...(toolsOnly ? {} : { channel }),
+      const client = await ControlClient.connect(stateDir, { role: toolsMode ? "tools" : "peer", peer: peerId, ...(toolsMode ? {} : { channel }),
         ...(process.env.AGENTHUB_PROJECT_DIR ? { projectRoot } : {}) });
       client.onPush = (msg) => {
         if (msg.t !== "deliver") return;
@@ -208,7 +211,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         additionalProperties: false,
       },
     },
-    ...(toolsOnly
+    ...(toolsMode
       ? []
       : [
           {
@@ -241,7 +244,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const result = await hub.request({ t: "delivery_complete", deliveryId: a.delivery_id, generation: a.delivery_generation });
     return text(result.ok ? "delivery completed" : `not completed: ${result.error}`);
   }
-  if (name === "hub_inbox" && !channel && !toolsOnly) {
+  if (name === "hub_inbox" && !channel && !toolsMode) {
     if (!hub) return text(offline());
     const res = await hub.request({ t: "inbox" });
     if (!res.ok) return text(`not read: ${res.error}`);
