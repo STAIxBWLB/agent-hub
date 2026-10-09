@@ -9,6 +9,7 @@ import { VERSION } from "../src/version.ts";
 import type { PlannedProject, ProjectProgress, RecoveryOperation } from "../src/cli/upgrade.ts";
 import { Registry } from "../src/hub/registry.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
+import { readRecoveryWaivers } from "../src/hub/restart.ts";
 
 // #206: a plain `claude` is attached while claude-session.json still holds the session an earlier, ended
 // `ahub claude` launch recorded, and the project terminal it runs in shows no agent identity.
@@ -302,5 +303,106 @@ test("production recovery verification tolerates a fresh zero-turn Claude sessio
     } finally {
       peer.close(); consoleClient.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true });
     }
+  }
+});
+
+// #215: a fake hub that answers status and every recovery request with the given view.
+function fakeHub(root: string, stateDir: string, instanceId: string, view: () => Record<string, unknown>) {
+  const server = Bun.serve<any>({
+    hostname: "127.0.0.1", port: 0,
+    fetch(request, srv) { return srv.upgrade(request) ? undefined : new Response("no"); },
+    websocket: { message(ws, data) {
+      const msg = JSON.parse(String(data));
+      if (msg.t === "hello") ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p-215", instanceId, cwd: root, protocol: PROTOCOL }));
+      else if (msg.t === "status") ws.send(JSON.stringify({ rid: msg.rid, t: "status", ok: true, status: { projectId: "p-215", instanceId, cwd: root, version: VERSION, protocol: PROTOCOL } }));
+      else ws.send(JSON.stringify({ rid: msg.rid, t: "recovery", ok: true, recovery: view() }));
+    } },
+  });
+  writeFileSync(join(stateDir, "control-token"), "token-215\n");
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: server.port, protocol: PROTOCOL, projectId: "p-215", instanceId, cwd: root }));
+  return server;
+}
+
+test("a Codex thread without a rollout in its launcher's store is refused before its terminal is closed", async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-codex-viability-")));
+  const stateDir = join(temp, "state"), codexHome = join(temp, "codex-home");
+  mkdirSync(stateDir); mkdirSync(join(codexHome, "sessions", "2026", "10", "09"), { recursive: true });
+  const server = fakeHub(temp, stateDir, "i-source", () => ({ operationId: "op-215", phase: "prepared", ready: true, peers: { codex: { id: "codex", state: "idle", threadId: "thread-T" } } }));
+  const shown = { handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", worktreePath: temp, agentIdentity: "codex", sessionId: "thread-T", connected: true };
+  let closed = false;
+  const calls: string[][] = [];
+  const run = async (argv: string[]) => {
+    calls.push(argv);
+    const result = argv[2] === "show" ? { terminal: shown } : argv[2] === "wait" ? { satisfied: true } : argv[2] === "close" ? (closed = true, {}) : { terminals: closed ? [] : [shown] };
+    return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
+  };
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: { CODEX_HOME: codexHome } };
+  const planned: PlannedProject = {
+    project: { id: "p-215", root: temp, stateDir, instanceId: "i-source", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: "codex", state: "idle", threadId: "thread-T" }], blockers: [] },
+    terminals: [{ peer: "codex", handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", projectRoot: temp, sessionId: "thread-T", launch, launchMetadata: launch }], blockers: [],
+  };
+  const progress: ProjectProgress = { id: "p-215", phase: "prepared", terminals: {} };
+  const op = { id: "op-215", plan: { version: VERSION } } as RecoveryOperation;
+  try {
+    const driver = makeRecoveryDriver(run);
+    await expect(driver.closeTerminals(planned, progress, op, () => {})).rejects.toThrow(`codex: thread thread-T has no resumable transcript under ${join(codexHome, "sessions")}; no terminal was closed`);
+    expect(calls).toEqual([]);
+    expect(progress.terminals).toEqual({});
+    writeFileSync(join(codexHome, "sessions", "2026", "10", "09", "rollout-2026-10-09T00-00-00-thread-T.jsonl"), "{}\n");
+    await driver.closeTerminals(planned, progress, op, () => {});
+    expect(progress.terminals).toEqual({ "closed:codex": true });
+    expect(calls.filter((argv) => argv[2] === "close")).toHaveLength(1);
+  } finally { server.stop(true); rmSync(temp, { recursive: true, force: true }); }
+});
+
+test("a Codex restoration that cannot resume is receipted failed with both choices; a chosen fresh session is recorded under its new id", async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-codex-restore-")));
+  const stateDir = join(temp, "state"), codexHome = join(temp, "codex-home"), sessions = join(codexHome, "sessions", "2026", "10", "09");
+  mkdirSync(stateDir); mkdirSync(sessions, { recursive: true });
+  let attachedThread: string | undefined;
+  const server = fakeHub(temp, stateDir, "i-target", () => ({ operationId: "op-215", phase: "restored", ready: true,
+    peers: attachedThread ? { codex: { id: "codex", state: "idle", threadId: attachedThread } } : {} }));
+  let exits = true;
+  const replacement = { handle: "term-new", incarnationId: "inc-new", worktreeId: "wt", worktreePath: temp, agentIdentity: "codex", sessionId: "thread-new", connected: true };
+  const calls: string[][] = [];
+  const run = async (argv: string[]) => {
+    calls.push(argv);
+    const result = argv[2] === "create" ? { terminal: { handle: "term-new", incarnationId: "inc-new", worktreeId: "wt" } }
+      : argv[2] === "show" ? { terminal: replacement }
+      : argv[2] === "wait" ? { satisfied: argv.includes("exit") ? exits : !exits } : { terminals: [replacement] };
+    return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
+  };
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: { CODEX_HOME: codexHome } };
+  const planned: PlannedProject = {
+    project: { id: "p-215", root: temp, stateDir, instanceId: "i-target", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: "codex", state: "idle", threadId: "thread-T" }], blockers: [] },
+    terminals: [{ peer: "codex", handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", projectRoot: temp, sessionId: "thread-T", launch, launchMetadata: launch }], blockers: [],
+  };
+  const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "started", terminals: { "closed:codex": true } };
+  const op = { id: "op-215", targetRoot: "/target", plan: { version: VERSION } } as RecoveryOperation;
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "home");
+  try {
+    const driver = makeRecoveryDriver(run);
+    await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("--fresh-session codex --reason <text>");
+    expect(progress.terminals["restored:codex"]).toBe("failed");
+    expect(calls).toEqual([]); // found before any terminal was created
+
+    writeFileSync(join(sessions, "rollout-2026-10-09T00-00-00-thread-T.jsonl"), "{}\n");
+    await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("its restoration launcher exited before the session was ready");
+    expect(progress.terminals["restored:codex"]).toBe("failed");
+    expect(calls.filter((argv) => argv[2] === "create")).toHaveLength(1);
+
+    progress.fresh = { codex: { lost: "thread-T", reason: "test", at: 1 } };
+    exits = false; attachedThread = "thread-new";
+    await driver.restore(planned, progress, op, "native", () => {});
+    expect((progress.terminals["restored:codex"] as { sessionId: string }).sessionId).toBe("thread-new");
+    const create = calls.filter((argv) => argv[2] === "create").at(-1)!;
+    expect(create[create.indexOf("--command") + 1]).toEndWith("'codex'");
+    expect(readRecoveryWaivers(stateDir, "op-215")).toEqual({ codex: "fresh-session" });
+  } finally {
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+    server.stop(true); rmSync(temp, { recursive: true, force: true });
   }
 });

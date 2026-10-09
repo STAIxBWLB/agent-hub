@@ -1,16 +1,16 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ControlClient, PROTOCOL, RECOVERY_SOURCE_PROTOCOLS, readControl } from "../hub/control-client.ts";
-import { inspectProject } from "../hub/lifecycle.ts";
+import { inspectProject, stopProject } from "../hub/lifecycle.ts";
 import type { Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
 import { packageDigest, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
 import { inspectTerminals, closeTerminal, createTerminal, recordedLauncher, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
 import { planFingerprint, registeredProjects, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
 import { refreshManager } from "../hub/manager.ts";
-import { waiveRecoveryPeers } from "../hub/restart.ts";
+import { abandonRestartSnapshot, waiveRecoveryPeers } from "../hub/restart.ts";
 
 /** An unmanaged Claude's plugin retries with a backoff of at most 30 s; three of those bound the reconnect wait (#206). */
 const RECONNECT_WAIT_MS = 90_000;
@@ -29,6 +29,19 @@ function claudeTranscriptExists(binding: TerminalBinding): boolean {
   return existsSync(join(config, "projects", slug, `${binding.sessionId}.jsonl`));
 }
 
+/**
+ * #215: `codex resume <id>` reads the thread's rollout from the store its launcher uses (the captured CODEX_HOME, else
+ * the default), so an app-server thread id alone proves nothing.
+ * ponytail: a `.jsonl` under sessions/ whose name carries the thread id is the evidence; ask Codex itself once it offers
+ * a supported resumability query, or when its store layout changes.
+ */
+const codexSessions = (binding: TerminalBinding) => join(binding.launch.env.CODEX_HOME ?? join(homedir(), ".codex"), "sessions");
+function codexTranscriptExists(binding: TerminalBinding): boolean {
+  try { return readdirSync(codexSessions(binding), { recursive: true }).some((name) => String(name).endsWith(".jsonl") && basename(String(name)).includes(binding.sessionId)); }
+  catch { return false; }
+}
+const unresumable = (binding: TerminalBinding) => `codex: thread ${binding.sessionId} has no resumable transcript under ${codexSessions(binding)}`;
+
 function terminalOptions(run: RunCommand = runCommand): TerminalRecoveryOptions {
   return { orcaExecutable: orcaExecutable(), runner: async (args) => {
     const result = await run([orcaExecutable(), ...args], { timeoutMs: 610_000 });
@@ -36,12 +49,13 @@ function terminalOptions(run: RunCommand = runCommand): TerminalRecoveryOptions 
   } };
 }
 
-export function restoredTerminalArgv(entrypoint: string, projectRoot: string, binding: TerminalBinding): string[] {
-  if (binding.peer === "codex") return [process.execPath, entrypoint, "--project", projectRoot, "codex", "resume", binding.sessionId];
-  if (binding.peer === "claude") return [process.execPath, entrypoint, "--project", projectRoot, "claude", "--resume", binding.sessionId];
+/** `fresh` (#215, the operator's explicit choice) starts the peer without resuming its recorded session. */
+export function restoredTerminalArgv(entrypoint: string, projectRoot: string, binding: TerminalBinding, fresh = false): string[] {
+  if (binding.peer === "codex") return [process.execPath, entrypoint, "--project", projectRoot, "codex", ...(fresh ? [] : ["resume", binding.sessionId])];
+  if (binding.peer === "claude") return [process.execPath, entrypoint, "--project", projectRoot, "claude", ...(fresh ? [] : ["--resume", binding.sessionId])];
   return [process.execPath, entrypoint, "--project", projectRoot, "pi", "--mode", "tui",
     ...(binding.backend ? ["--backend", binding.backend] : []), ...(binding.model ? ["--model", binding.model] : []),
-    ...(binding.sessionFile ? ["--session-file", binding.sessionFile] : ["--session-id", binding.sessionId])];
+    ...(fresh ? [] : binding.sessionFile ? ["--session-file", binding.sessionFile] : ["--session-id", binding.sessionId])];
 }
 
 async function rpc(project: Project, message: Record<string, unknown>, protocol = PROTOCOL): Promise<any> {
@@ -157,6 +171,9 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
       ...terminalOptions(run), stateDir: project.stateDir, instanceId: source.instanceId,
     });
     blockers.push(...terminals.blockers.map((b) => `${b.message}${b.terminalReference ? ` (terminal ${b.terminalReference})` : ""}${b.nextAction ? `; next action: ${b.nextAction}` : ""}`));
+    for (const binding of terminals.bindings) if (binding.peer === "codex" && !codexTranscriptExists(binding)) {
+      blockers.push(`${unresumable(binding)}, so its conversation cannot come back after the restart; manual-required; next action: end that Codex session (ahub codex starts a new one later), then make a new plan`);
+    }
     body.projects.push({ project, source, terminals: terminals.bindings, blockers, ...(reconnectOnly.length ? { reconnectOnly } : {}) });
   }
   if (!body.projects.length) body.blockers.push("no running registered projects in scope");
@@ -233,6 +250,15 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
     if (session !== saved.sessionId) throw new Error(`${saved.peer}: daemon session changed during terminal revalidation; manual-required`);
     return current;
   };
+  const attachedId = async (planned: PlannedProject, peer: string, op: RecoveryOperation): Promise<string> => {
+    for (const deadline = now() + RECONNECT_WAIT_MS; ;) {
+      const current = (await inspectRecovery(planned.project)).peers.find((p) => p.id === peer && p.state !== "offline");
+      const id = peer === "codex" ? current?.threadId : current?.sessionId;
+      if (id) return id;
+      if (now() >= deadline) throw new Error(`${peer}: the fresh session reported no id within ${RECONNECT_WAIT_MS / 1000} s; next action: ahub recovery resume ${op.id} once it has`);
+      await sleep(1000);
+    }
+  };
   return {
     now, sleep, inspect: inspectRecovery,
     stage: async (op) => {
@@ -274,6 +300,10 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
             throw new Error(`${binding.peer}: terminal close outcome needs manual reconciliation`);
           }
           progress.terminals[key] = true; save(); continue;
+        }
+        // #215: check resume viability again right before the destructive effect.
+        if (binding.peer === "codex" && !codexTranscriptExists(binding)) {
+          throw new Error(`${unresumable(binding)}; no terminal was closed; next action: ahub recovery dispose ${op.id} --stop-and-archive --reason <text> releases the source with its sessions still open, or end that Codex session and ahub recovery resume ${op.id} to continue without its conversation`);
         }
         const idle = await waitForIdle(binding, 600_000, terminalOptions(run));
         if (!idle.satisfied) throw new Error(`${binding.peer}: terminal is not verified idle; source retained`);
@@ -318,6 +348,13 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
       for (const original of planned.terminals as TerminalBinding[]) {
         if ((original.peer === "claude") !== (group === "claude")) continue;
         const key = `restored:${original.peer}`;
+        const fresh = !!progress.fresh?.[original.peer];
+        // #215: a failed launch left no attached session, so launching again is no duplicate. A thread that is
+        // still not resumable fails again below with the same choices.
+        if (progress.terminals[key] === "failed") { delete progress.terminals[key]; save(); }
+        const notRestored = (why: string) => new Error(fresh
+          ? `${original.peer}: ${why}; next action: ahub recovery resume ${op.id} once ahub ${original.peer} starts in this project, or ahub recovery dispose ${op.id} --stop-and-archive --reason <text>`
+          : `${original.peer}: ${why}; session ${original.sessionId} was not restored; choices: ahub recovery dispose ${op.id} --fresh-session ${original.peer} --reason <text> starts a new ${original.peer} session and records this one as lost, or ahub recovery dispose ${op.id} --stop-and-archive --reason <text> abandons the upgrade`);
         if (progress.terminals[key] && progress.terminals[key] !== "pending") {
           progress.terminals[key] = await revalidateTerminal(planned, progress, progress.terminals[key] as TerminalBinding, true); save();
           continue;
@@ -331,9 +368,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
             // #21: a Claude session that never got a first turn has no transcript on disk,
             // so `claude --resume S` can never succeed and nothing it stood for is lost by
             // accepting the fresh attach. A session WITH a transcript keeps the strict
-            // identity check. Codex stays strict too: its rollout jsonl is written when the
-            // thread starts, so an unrestorable thread should not exist.
-            if (original.peer !== "claude" || !peer || peer.state === "offline" || !attached || claudeTranscriptExists(original)) {
+            // identity check, and so does Codex, unless the operator chose a fresh session (#215).
+            if (!peer || peer.state === "offline" || !attached || !(fresh || (original.peer === "claude" && !claudeTranscriptExists(original)))) {
               throw new Error(`${original.peer}: terminal creation outcome is uncertain; attach the original session manually, then resume`);
             }
             expected = { ...original, sessionId: attached };
@@ -341,22 +377,33 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           const existing = await revalidateTerminal(planned, progress, expected, false);
           progress.terminals[key] = existing; save(); continue;
         }
+        if (original.peer === "codex" && !fresh && !codexTranscriptExists(original)) {
+          progress.terminals[key] = "failed"; save();
+          throw notRestored(unresumable(original));
+        }
+        // The restored daemon must accept the new session the operator chose instead of the recorded one.
+        if (fresh) waiveRecoveryPeers(planned.project.stateDir, op.id, { [original.peer]: "fresh-session" });
         const entrypoint = join(op.targetRoot!, "src/cli/main.js");
-        const argv = restoredTerminalArgv(entrypoint, planned.project.root, original);
+        const argv = restoredTerminalArgv(entrypoint, planned.project.root, original, fresh);
         const assignments = { ...original.launch.env, AGENTHUB_HOME: hubHome(), AGENTHUB_RECOVERY_OPERATION: op.id };
         const launch = { ...original.launch, packageEntrypoint: entrypoint, argv,
           command: ["env", ...Object.entries(assignments).map(([k, v]) => `${k}=${v}`), ...argv].map(shellQuote).join(" ") };
         const binding = { ...original, launch, launchMetadata: launch };
         progress.terminals[key] = "pending"; save();
-        const restored = await createTerminal(binding, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId });
+        const restored = await createTerminal(binding, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId }, undefined, fresh);
+        if (restored.blockers.some((b) => b.code === "launcher-exited")) {
+          progress.terminals[key] = "failed"; save();
+          throw notRestored(`its ${fresh ? "fresh" : "restoration"} launcher exited before the session was ready`);
+        }
         if (restored.manualRequired || !restored.newBinding) throw new Error(`${original.peer}: original session restoration needs manual verification`);
-        progress.terminals[key] = restored.newBinding; save();
+        // The daemon's id is authoritative: a fresh session is recorded under the id it reports once attached.
+        progress.terminals[key] = fresh ? { ...restored.newBinding, sessionId: await attachedId(planned, original.peer, op) } : restored.newBinding; save();
       }
       if (group === "claude") for (const id of planned.reconnectOnly ?? []) {
         // #206: nothing is launched for an unmanaged session; its plugin reconnects by itself, within a bound.
         const deadline = now() + RECONNECT_WAIT_MS;
         while (!(await inspectRecovery(planned.project)).peers.some((p) => p.id === id && p.state !== "offline")) {
-          if (now() >= deadline) throw new Error(`${id}: the unmanaged session did not reconnect within ${RECONNECT_WAIT_MS / 1000} s; next action: if that Claude session is still open, ahub recovery resume ${op.id}`);
+          if (now() >= deadline) throw new Error(`${id}: the unmanaged session did not reconnect within ${RECONNECT_WAIT_MS / 1000} s; next action: if that Claude session was closed, start Claude in the project again (its plugin reconnects), then ahub recovery resume ${op.id}`);
           await sleep(1000);
         }
       }
@@ -379,6 +426,17 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
       const readback = await run(["ahub", "--version"], { env: env(op) });
       if (readback.code !== 0 || readback.stdout.trim() !== op.plan.version) throw new Error("global CLI version was not verified");
     },
+    stopAndArchive: async (project, op, instance) => {
+      if (instance) {
+        // The lifecycle lock admits only this operation; stopProject verifies the instance and waits until the
+        // manifest and the registry claim are gone.
+        const previous = process.env.AGENTHUB_RECOVERY_OPERATION;
+        process.env.AGENTHUB_RECOVERY_OPERATION = op.id;
+        try { await stopProject(project, instance); }
+        finally { if (previous === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION; else process.env.AGENTHUB_RECOVERY_OPERATION = previous; }
+      }
+      abandonRestartSnapshot(project.stateDir, op.id);
+    },
     refreshManager: async (op) => { await refreshManager({ home: hubHome(), cli: join(op.targetRoot!, "src/cli/main.ts") }); },
     verify: async (planned, progress, op) => {
       const live = await inspectRecovery(planned.project);
@@ -386,6 +444,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
       for (const old of planned.source.peers.filter((p) => p.state !== "offline")) {
         const peer = live.peers.find((p) => p.id === old.id);
         if (!peer || !["idle", "busy", "paused"].includes(peer.state)) throw new Error(`${old.id}: peer reattachment not verified`);
+        if (progress.fresh?.[old.id]) continue; // #215: the operator accepted a new session; its loss is recorded
         if (old.id === "codex" && peer.threadId !== old.threadId) throw new Error("Codex resumed a different conversation");
         if (old.id === "claude" && peer.sessionId !== old.sessionId) {
           // #64: the restore gate already accepted a fresh session when the original never
@@ -398,7 +457,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
       }
       for (const original of planned.terminals as TerminalBinding[]) {
         const saved = progress.terminals[`restored:${original.peer}`];
-        if (!saved || saved === "pending") throw new Error(`${original.peer}: restored terminal outcome is not recorded; manual-required`);
+        if (!saved || typeof saved === "string") throw new Error(`${original.peer}: restored terminal outcome is not recorded; manual-required`);
         await revalidateTerminal(planned, progress, saved as TerminalBinding, true);
       }
       const snapshot = await rpc(planned.project, { t: "ui_snapshot", after: 0 });

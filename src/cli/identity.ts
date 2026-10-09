@@ -44,7 +44,7 @@ export function cliCommandLabel(command: string, args: readonly string[]): strin
   if (!["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "claude", "codex", "kimi", "pi", "local", "models", "say", "queue", "tail", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "status", "logs", "export", "report", "facts", "check-path", "turns", "undo", "kill", "reset", "doctor"].includes(command)) return "unknown";
   if (["task", "queue", "budget", "route", "recovery", "models", "projects"].includes(command)) {
     const sub = args[0];
-    if (sub && ["propose", "show", "assign", "escalate", "list", "resolve", "resume", "set", "execution", "explain", "status", "abort", "setup", "start", "stop", "remove"].includes(sub)) return `${command} ${sub}`;
+    if (sub && ["propose", "show", "assign", "escalate", "list", "resolve", "resume", "set", "execution", "explain", "status", "abort", "dispose", "setup", "start", "stop", "remove"].includes(sub)) return `${command} ${sub}`;
   }
   return (/^[a-z][a-z0-9-]*$/.test(command) && !/\s/.test(command)) || ["--help", "--version"].includes(command) ? command : "unknown";
 }

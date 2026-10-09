@@ -1311,8 +1311,8 @@ export async function startDaemon(opts: DaemonOptions) {
       // online at the snapshot is still offline, so skipping the comparison cannot hide an
       // identity change - it only keeps a detach from wedging readiness forever.
       if (now.state === "offline") return true;
-      // #206: the coordinator waived this peer's id on the target (an unmanaged Claude session reconnects with
-      // whatever its plugin carries and can never report the saved id here); it still has to reattach to release.
+      // The coordinator waived this peer's id on the target: an unmanaged Claude session reconnects and can never report
+      // the saved id here (#206), or the operator moved the peer to a fresh session (#215). It still has to reattach.
       const waived = () => recoveryPhase === "restored" && !!readRecoveryWaivers(opts.stateDir, recoveryOperationId!)[saved.id];
       if (saved.threadId && saved.threadId !== now.threadId && !waived()) return false;
       // Kimi/local rebuild a fresh worker with task context on the target; native

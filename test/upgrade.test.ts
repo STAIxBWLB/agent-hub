@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { abortRecovery, createOperation, planFingerprint, registeredProjects, runRecovery, type Inspection, type RecoveryDriver, type UpgradePlan } from "../src/cli/upgrade.ts";
+import { abortRecovery, createOperation, disposeRecovery, planFingerprint, publicOperation, registeredProjects, runRecovery, type Inspection, type RecoveryDriver, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { acquireRecoveryLock, claimRunner, readOperation, recoveryLock, releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
 import { exactVersion, packageDigest, registryRelease } from "../src/cli/recovery-package.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
@@ -37,6 +37,7 @@ function fixture(kind: "restart" | "upgrade" = "upgrade") {
     installGlobal: async () => { calls.push("global"); },
     release: async (p) => { calls.push(`release:${p.id}`); states.get(p.id)!.recovery!.phase = "released"; },
     verify: async (p) => { calls.push(`verify:${p.project.id}`); },
+    stopAndArchive: async (p, _op, instance) => { calls.push(`stop-archive:${p.id}${instance ? `:${instance}` : ""}`); states.set(p.id, { state: "stopped", peers: [], blockers: [] }); },
     now: () => clock,
     sleep: async (ms) => { clock += ms; },
   };
@@ -308,4 +309,125 @@ test("a reconnect-only Claude passes the source roster check without the session
     if (reconnectOnly) expect(result.phase).toBe("completed");
     else expect(result.error).toContain("source conversation or active peer membership changed");
   }
+});
+
+// #215: alpha was prepared and its Claude terminal closed, then the ten-minute lease expired before commit.
+function expiredLease() {
+  const f = fixture();
+  f.plan.projects[0]!.source.peers = [{ id: "claude", state: "idle", sessionId: "s1" }, { id: "codex", state: "idle", threadId: "t1" }];
+  const { fingerprint: _ignored, ...body } = f.plan;
+  f.plan.fingerprint = planFingerprint(body);
+  f.operation.projects[0]!.phase = "prepared";
+  f.operation.projects[0]!.terminals = { "closed:claude": true };
+  f.states.get("alpha")!.peers = [{ id: "claude", state: "offline", sessionId: "s1" }, { id: "codex", state: "idle", threadId: "t1" }];
+  writeOperation(f.operation.id, f.operation, f.home);
+  f.driver.closeTerminals = async (planned, progress, _op, save) => {
+    for (const peer of ["claude", "codex"]) if (planned.project.id === "alpha" && progress.terminals[`closed:${peer}`] !== true) {
+      f.calls.push(`close:${peer}`); progress.terminals[`closed:${peer}`] = true; save();
+    }
+  };
+  return f;
+}
+
+test("after an expired lease resume re-prepares the same source, keeps the close receipt and never closes twice", async () => {
+  const f = expiredLease();
+  const result = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(result.phase).toBe("completed");
+  expect(f.calls.slice(0, 4)).toEqual(["stage", "prepare:alpha", "close:codex", "commit:alpha"]);
+  expect(f.calls).not.toContain("close:claude");
+  expect(f.calls.filter((call) => call === "commit:alpha")).toHaveLength(1);
+  expect(result.projects[0]!.terminals["closed:claude"]).toBe(true);
+});
+
+test("re-preparation refuses a conflicting operation, a replaced daemon and a changed session without acting", async () => {
+  const cases = [
+    { change: (f: ReturnType<typeof fixture>) => { f.states.get("alpha")!.recovery = { operationId: "11111111-1111-1111-1111-111111111111", phase: "prepared", ready: true }; },
+      error: "held by another recovery operation 11111111-1111-1111-1111-111111111111", prepared: false },
+    { change: (f: ReturnType<typeof fixture>) => { f.states.get("alpha")!.instanceId = "replacement"; }, error: "replaced by instance replacement", prepared: false },
+    { change: (f: ReturnType<typeof fixture>) => { f.states.get("alpha")!.peers[1]!.threadId = "t-other"; }, error: "codex changed while terminal effects of this operation are recorded", prepared: true },
+  ];
+  for (const c of cases) {
+    const f = expiredLease();
+    c.change(f);
+    const result = await runRecovery(f.operation.id, f.driver, f.home);
+    expect(result.phase).toBe("blocked");
+    expect(result.error).toContain(c.error);
+    expect(result.error).toContain(`ahub recovery`); // an actionable next step, not the bare "source is no longer prepared"
+    expect(f.calls.includes("prepare:alpha")).toBe(c.prepared);
+    expect(f.calls.some((call) => ["commit:alpha", "close:codex", "close:claude", "abort:alpha"].includes(call))).toBe(false);
+    expect(result.projects[0]!.terminals).toEqual({ "closed:claude": true });
+    expect(recoveryLock(f.home)).toBe(f.operation.id);
+  }
+});
+
+function failedRestore() {
+  const f = fixture();
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: {} };
+  f.plan.projects[0]!.terminals = [{ peer: "codex", handle: "term-codex", incarnationId: "inc", worktreeId: "wt", projectRoot: "/alpha", sessionId: "t1", launch, launchMetadata: launch }];
+  const { fingerprint: _ignored, ...body } = f.plan;
+  f.plan.fingerprint = planFingerprint(body);
+  Object.assign(f.operation.projects[0]!, { phase: "started", instanceId: "new-alpha", terminals: { "closed:codex": true, "restored:codex": "failed" } });
+  f.operation.phase = "blocked";
+  f.states.set("alpha", { state: "running", instanceId: "new-alpha", version: "0.5.0", protocol: 10, peers: [], blockers: [], recovery: { operationId: f.operation.id, phase: "restored", ready: true } });
+  writeOperation(f.operation.id, f.operation, f.home);
+  return f;
+}
+
+test("a failed restoration offers both dispositions; fresh-session records the lost thread and keeps the lock", async () => {
+  const f = failedRestore();
+  expect(publicOperation(readOperation(f.operation.id, f.home)).next).toEqual([
+    `ahub recovery resume ${f.operation.id}`,
+    `ahub recovery dispose ${f.operation.id} --fresh-session codex --reason <text>`,
+    `ahub recovery dispose ${f.operation.id} --stop-and-archive --reason <text>`,
+  ]);
+  await expect(disposeRecovery(f.operation.id, { fresh: "claude" }, "wrong peer", f.driver, f.home)).rejects.toThrow("no restoration of it failed");
+  const op = await disposeRecovery(f.operation.id, { fresh: "codex" }, "rollout missing from the store", f.driver, f.home);
+  expect(op.projects[0]!.fresh?.codex).toMatchObject({ lost: "t1", reason: "rollout missing from the store" });
+  expect(op.projects[0]!.terminals).toEqual({ "closed:codex": true, "restored:codex": "failed" }); // until resume launches the fresh session
+  expect(publicOperation(op).next).not.toContain(`ahub recovery dispose ${f.operation.id} --fresh-session codex --reason <text>`);
+  expect(op.audit).toEqual([expect.objectContaining({ action: "fresh-session", peer: "codex", projects: ["alpha"] })]);
+  expect(op.phase).toBe("blocked");
+  expect(recoveryLock(f.home)).toBe(f.operation.id);
+  expect(publicOperation(op).projects[0]).toMatchObject({ lostContinuity: { codex: "t1" } });
+  expect(f.calls).toEqual([]);
+});
+
+test("stop-and-archive stops only its own target, releases its own source hold, and only then the lock", async () => {
+  const f = failedRestore();
+  Object.assign(f.operation.projects[1]!, { phase: "prepared" });
+  f.states.get("beta")!.recovery = { operationId: f.operation.id, phase: "prepared", ready: true };
+  writeOperation(f.operation.id, f.operation, f.home);
+  const uncertain = structuredClone(f.states.get("beta")!);
+  f.states.set("beta", { ...uncertain, state: "unavailable" });
+  await expect(disposeRecovery(f.operation.id, { stop: true }, "give up", f.driver, f.home)).rejects.toThrow("ownership cannot be verified");
+  expect(f.calls).toEqual([]);
+  expect(recoveryLock(f.home)).toBe(f.operation.id);
+
+  f.states.set("beta", uncertain);
+  const op = await disposeRecovery(f.operation.id, { stop: true }, "give up", f.driver, f.home);
+  expect(f.calls).toEqual(["stop-archive:alpha:new-alpha", "abort:beta"]);
+  expect(op.phase).toBe("cancelled");
+  expect(op.disposition?.projects).toEqual({ alpha: "target stopped", beta: "source hold released; source left running" });
+  expect(op.globalInstalled).toBeUndefined();
+  expect(recoveryLock(f.home)).toBeUndefined();
+  expect(publicOperation(op)).toMatchObject({ phase: "cancelled", globalInstalled: false, next: [] });
+  expect((await runRecovery(f.operation.id, f.driver, f.home)).phase).toBe("cancelled");
+});
+
+test("status tells a live runner from a stale running receipt", () => {
+  const f = fixture();
+  f.operation.phase = "running";
+  expect(publicOperation(f.operation)).toMatchObject({ runner: { state: "none" }, stale: expect.stringContaining("no runner holds") });
+  expect(publicOperation(f.operation, 4242)).toMatchObject({ runner: { state: "running", pid: 4242 }, next: [expect.stringContaining("runner 4242")] });
+  expect(publicOperation(f.operation, 4242).stale).toBeUndefined();
+});
+
+test("stop-and-archive never stops a daemon this operation does not hold", async () => {
+  const f = failedRestore();
+  f.states.set("alpha", { state: "running", instanceId: "replacement", version: "0.5.0", protocol: 10, peers: [], blockers: [] });
+  const op = await disposeRecovery(f.operation.id, { stop: true }, "replacement appeared", f.driver, f.home);
+  expect(f.calls).toEqual([]);
+  expect(op.disposition?.projects).toEqual({ alpha: "left running: instance replacement is not held by this operation", beta: "left running: instance old-beta is not held by this operation" });
+  expect(op.phase).toBe("cancelled");
+  expect(recoveryLock(f.home)).toBeUndefined();
 });

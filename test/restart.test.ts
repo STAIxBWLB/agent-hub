@@ -9,7 +9,7 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { newEnvelope, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
-import { readRestartSnapshot, releasedRestartPath, waiveRecoveryPeers, writeRestartSnapshot, type RestartSnapshot } from "../src/hub/restart.ts";
+import { abandonRestartSnapshot, readRestartSnapshot, releasedRestartPath, waiveRecoveryPeers, writeRestartSnapshot, type RestartSnapshot } from "../src/hub/restart.ts";
 
 class HeldPeer extends BasePeer {
   readonly deliveries: Envelope[][] = [];
@@ -420,4 +420,20 @@ test("a restored daemon waives a saved session id only for peers its own operati
     console_.close();
     await daemon.stop();
   }
+});
+
+// #215 stop-and-archive: only this operation's committed snapshot moves aside, privately, so an ordinary start works again.
+test("an abandoned operation's snapshot is archived and another operation's is left alone", () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "agenthub-abandon-"));
+  writeRestartSnapshot(stateDir, {
+    schemaVersion: 1, projectRoot: "/project", projectId: "project-1", sourceInstanceId: "instance-1", operationId: "op-a", committedAt: Date.now(),
+    bus: { schemaVersion: 1, queues: {}, prefaces: {}, seen: [], attempts: {}, withdrawn: [] }, manualPaused: [], peers: [],
+  });
+  abandonRestartSnapshot(stateDir, "op-b");
+  expect(readRestartSnapshot(stateDir, { projectRoot: "/project", projectId: "project-1", operationId: "op-a" })).toBeDefined();
+  abandonRestartSnapshot(stateDir, "op-a");
+  expect(readRestartSnapshot(stateDir, { projectRoot: "/project", projectId: "project-1" })).toBeUndefined();
+  const archived = join(stateDir, `restart.abandoned.${createHash("sha256").update("op-a").digest("hex")}.json`);
+  expect(JSON.parse(readFileSync(archived, "utf8")).operationId).toBe("op-a");
+  expect(statSync(archived).mode & 0o777).toBe(0o600);
 });

@@ -1057,6 +1057,8 @@ ahub upgrade --to 0.12.19 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>
+ahub recovery dispose <operation-id> --fresh-session <peer> --reason <text>
+ahub recovery dispose <operation-id> --stop-and-archive --reason <text>
 ```
 
 The coordinator commits only once the source is quiet: no turn running, no
@@ -1130,6 +1132,49 @@ are upgraded.
 Do not run an upgrade with an incompatible active protocol, an unverified
 terminal binding, or an unresolved operation lock. Dry-run performs no package,
 plugin, daemon, or terminal mutation.
+
+### A partial operation
+
+`ahub recovery status <operation-id>` reads the receipt without changing it:
+its phase, step and error; `runner`, which says whether a runner process holds
+the operation now (`running` with its pid, or `none`; `stale` marks a receipt
+that says running with no runner behind it); each project's phase and effect
+receipts (`closed:<peer>`, `restored:<peer>` as `done`, `pending` or `failed`);
+whether the shared plugin and the global CLI were installed; and `next`, the
+commands that apply now. It shows no task or message text. `resume` does not
+start a second runner while one is alive.
+
+- The source hold lapses after 10 minutes. A later `resume` prepares the same
+  source again and checks its peers again, keeping the receipts, so no terminal
+  is closed twice. It refuses, naming the next step, when the source daemon was
+  replaced, when another operation holds it, or when a peer changed: a peer whose
+  terminal the operation closed must stay closed, every other one must keep its
+  conversation.
+- A Codex conversation comes back only when a rollout file naming its thread
+  exists under `sessions/` of the store the restored terminal uses (the
+  recorded `CODEX_HOME`, else `~/.codex`). The plan blocks on one that does not,
+  the coordinator checks again before closing the terminal and before creating
+  the new one, and a restored terminal whose launcher exits is recognized
+  within one 5-second wait slice. Either way the receipt says
+  `restored:codex` `failed`; it never counts as restored.
+- `ahub recovery dispose <operation-id> --fresh-session <peer> --reason <text>`
+  applies to a peer whose restoration failed. It records the lost session or
+  thread id (status shows it under `lostContinuity`) and resumes: the peer
+  starts without its old conversation, and the rest is verified as usual.
+- `ahub recovery dispose <operation-id> --stop-and-archive --reason <text>`
+  abandons the operation. It checks every project first and refuses while a
+  runtime is starting, stopping or unreachable. It releases a source hold of
+  its own (that hub keeps running), stops a target hub it started and has not
+  released, moves that operation's `restart.json` aside as
+  `restart.abandoned.<hash>.json` (never replayed) and leaves any other hub
+  running; only then is the operation recorded `cancelled` and the lock
+  released. Terminals it closed stay closed: start those sessions again by hand.
+  Start a project whose target ran with that release's CLI (`bunx --package
+  @staix/agent-hub@<version> ahub up`), since it may have changed the task
+  database. The global CLI was not promoted.
+- Both choices are for a person in a terminal; an agent shell is refused, and
+  the reason is kept in the operation's audit. Run them with the same release
+  that ran the upgrade.
 
 ### After an unplanned stop
 

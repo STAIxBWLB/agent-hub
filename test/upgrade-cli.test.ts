@@ -105,3 +105,19 @@ test("a refused restart lists every blocker before its final line", async () => 
     expect(await cli(["restart", "--yes"])).toEqual({ code: 1, err: ["ahub: blocker: no running registered projects in scope", "ahub: plan has blockers; no runtime was changed"] });
   } finally { rmSync(temp, { recursive: true, force: true }); }
 });
+
+// #215 AC4: the disposition is a person's decision; an agent shell is refused before any receipt is read.
+test("an agent shell cannot dispose of a recovery operation", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "ahub-dispose-cli-"));
+  mkdirSync(join(temp, "project"));
+  const root = realpathSync(join(temp, "project"));
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("ORCA_") || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete env[key];
+  Object.assign(env, { AGENTHUB_HOME: join(temp, "home"), CLAUDECODE: "1" });
+  try {
+    const p = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", root, "recovery", "dispose", "00000000-0000-4000-8000-000000000000", "--stop-and-archive", "--reason", "test"],
+      { cwd: root, env, stdout: "pipe", stderr: "pipe" });
+    const [code, , err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    expect({ code, err: err.trim() }).toEqual({ code: 1, err: "ahub: claude cannot run ahub recovery dispose; the person runs it in ahub console or a terminal" });
+  } finally { rmSync(temp, { recursive: true, force: true }); }
+});

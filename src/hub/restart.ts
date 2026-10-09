@@ -99,7 +99,7 @@ export function removeRestartSnapshot(stateDir: string): void {
 
 /**
  * Peers whose saved native session id the restored daemon does not require back, each with the coordinator's
- * reason (#206 reconnect-only). Fenced by operation: a file left by another operation waives nothing.
+ * reason (#206 reconnect-only, #215 fresh session). Fenced by operation: a file left by another operation waives nothing.
  */
 export function readRecoveryWaivers(stateDir: string, operationId: string): Record<string, string> {
   try {
@@ -111,6 +111,14 @@ export function readRecoveryWaivers(stateDir: string, operationId: string): Reco
 
 export function waiveRecoveryPeers(stateDir: string, operationId: string, peers: Record<string, string>): void {
   atomicPrivateJSON(join(stateDir, "recovery-waivers.json"), { operationId, peers: { ...readRecoveryWaivers(stateDir, operationId), ...peers } });
+}
+
+/** #215 stop-and-archive: keep an abandoned operation's committed snapshot for manual reconciliation; it is never replayed. */
+export function abandonRestartSnapshot(stateDir: string, operationId: string): void {
+  try { if (JSON.parse(readFileSync(restartPath(stateDir), "utf8"))?.operationId !== operationId) return; } catch { return; }
+  const archived = join(stateDir, `restart.abandoned.${createHash("sha256").update(operationId).digest("hex")}.json`);
+  renameSync(restartPath(stateDir), archived);
+  chmodSync(archived, 0o600);
 }
 
 /** Preserve an uncertain release outcome for manual reconciliation without making it authoritative on startup. */

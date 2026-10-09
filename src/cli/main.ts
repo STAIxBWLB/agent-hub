@@ -22,9 +22,9 @@ import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
 import { freeText } from "./free-text.ts";
 import { createInterface } from "node:readline/promises";
-import { assertLifecycleAvailable, readOperation, recoveryLock } from "../hub/recovery-store.ts";
+import { assertLifecycleAvailable, readOperation, recoveryLock, recoveryRunner } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
-import { abortRecovery, createOperation, publicOperation, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
+import { abortRecovery, createOperation, disposeRecovery, publicOperation, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
 import { makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { recordTerminalLaunch } from "./terminal-recovery.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
@@ -365,12 +365,26 @@ const commands: Record<string, () => Promise<void> | void> = {
   upgrade: () => upgrade("upgrade"),
   restart: () => upgrade("restart"),
   recovery: async () => {
-    const [action, id] = args;
-    if (args.length !== 2 || !id || !["status", "resume", "abort"].includes(action ?? "")) fail("usage: ahub recovery status|resume|abort <operation-id>");
+    const [action, id, ...rest] = args;
+    const usage = "usage: ahub recovery status|resume|abort <operation-id> | ahub recovery dispose <operation-id> --fresh-session <peer>|--stop-and-archive --reason <text>";
+    if (!id || !["status", "resume", "abort", "dispose"].includes(action ?? "") || (action !== "dispose" && rest.length)) fail(usage);
     const operation = readOperation<RecoveryOperation>(id);
-    if (action === "status") console.log(JSON.stringify(publicOperation(operation), null, 2));
+    const runner = recoveryRunner(id);
+    if (action === "status") console.log(JSON.stringify(publicOperation(operation, runner), null, 2));
     else if (action === "abort") { await abortRecovery(id, makeRecoveryDriver()); console.log("preflight cancelled; no committed transition was rolled back"); }
+    else if (action === "dispose") {
+      // #215: human-only (the identity gate refuses agent shells); the reason is kept in the operation's audit.
+      const { one, rest: flags } = takeFlags(rest, ["--fresh-session", "--reason"], []);
+      const stop = flags.length === 1 && flags[0] === "--stop-and-archive";
+      const reason = one["--reason"]?.trim() ?? "";
+      if (!reason || reason.length > 500 || (flags.length && !stop) || stop === !!one["--fresh-session"]) fail(usage);
+      const result = await disposeRecovery(id, stop ? { stop: true } : { fresh: one["--fresh-session"]! }, reason, makeRecoveryDriver());
+      if (!stop) { console.log(`${one["--fresh-session"]}: a fresh session is accepted and the lost one is recorded; resuming`); return spawnRecovery(result); }
+      console.log(JSON.stringify(publicOperation(result), null, 2));
+      console.log("upgrade abandoned, not completed; the recovery lock is released. A project whose target ran starts again with that version's CLI.");
+    }
     else if (["completed", "cancelled"].includes(operation.phase)) console.log(`recovery is already ${operation.phase}`);
+    else if (runner) console.log(`runner ${runner} is still working on this operation; ahub recovery status ${id}`);
     else spawnRecovery(operation);
   },
   "recovery-run": async () => {

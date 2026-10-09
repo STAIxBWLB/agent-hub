@@ -303,3 +303,41 @@ test("the default launcher signature is stable across the reading invocation's t
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+// #215: `codex resume <id>` that finds no saved session exits; its terminal never becomes TUI-idle.
+test("a restoration launcher that exits is recognized within one wait slice and is not restored", async () => {
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js codex resume session-1", argv: [], env: {} };
+  const binding: TerminalBinding = { peer: "codex", handle: "term-old", incarnationId: "inc-old", worktreeId, projectRoot: root, sessionId: session, launch, launchMetadata: launch };
+  const replacement = terminal({ handle: "term-new", incarnationId: "inc-new" });
+  const { calls, runner } = fake((argv) => {
+    if (argv[1] === "create") return { result: { terminal: { handle: "term-new", incarnationId: "inc-new", worktreeId } } };
+    if (argv[1] === "show") return { result: { terminal: replacement } };
+    if (argv[1] === "wait") return { result: { satisfied: argv.includes("exit") } };
+    throw new Error("unexpected command");
+  });
+  const started = Date.now();
+  const result = await createTerminal(binding, runner);
+  expect(Date.now() - started).toBeLessThan(5_000);
+  expect(result).toMatchObject({ created: true, ready: false, manualRequired: true });
+  expect(result.newBinding).toBeUndefined();
+  expect(result.blockers[0]?.code).toBe("launcher-exited");
+  const waits = calls.filter((argv) => argv[1] === "wait");
+  expect(waits.map((argv) => [argv[argv.indexOf("--for") + 1], argv[argv.indexOf("--timeout-ms") + 1]])).toEqual([["tui-idle", "5000"], ["exit", "1"]]);
+});
+
+// #215: a fresh session the operator chose maps to the replacement under its new id; without the choice it is refused.
+test("a fresh-session replacement maps under any session id only when chosen", async () => {
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js codex", argv: [], env: {} };
+  const binding: TerminalBinding = { peer: "codex", handle: "term-old", incarnationId: "inc-old", worktreeId, projectRoot: root, sessionId: session, launch, launchMetadata: launch };
+  const replacement = terminal({ handle: "term-new", incarnationId: "inc-new", sessionId: "thread-new" });
+  const { runner } = fake((argv) => {
+    if (argv[1] === "create") return { result: { terminal: { handle: "term-new", incarnationId: "inc-new", worktreeId } } };
+    if (argv[1] === "show") return { result: { terminal: replacement } };
+    if (argv[1] === "wait") return { result: { satisfied: true } };
+    throw new Error("unexpected command");
+  });
+  expect((await createTerminal(binding, runner, 1000)).manualRequired).toBe(true);
+  const fresh = await createTerminal(binding, runner, 1000, true);
+  expect(fresh.manualRequired).toBe(false);
+  expect(fresh.newBinding?.sessionId).toBe("thread-new");
+});
