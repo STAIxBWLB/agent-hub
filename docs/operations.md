@@ -399,7 +399,10 @@ offered to nobody, cannot be claimed, accepted or marked done, and `ahub route
 explain <id>` says what it waits for. When the last one is approved, the task
 goes through assignment like a new one; if the hub stopped before it got that
 far, the task is offered within a minute of a peer that can take it attaching
-to the next run.
+to the next run. An offer is used up only by an assignment, after an approval
+and on the timer alike. If no peer can take it or a ready/assignment write fails,
+the task stays eligible; the timer adds no history or notices while nobody can
+take it.
 `ahub board --ready` and
 `hub_task_list {ready: true}` list the proposed tasks with nothing left to wait
 for. Dependencies are fixed when a task is proposed and can only name tasks that
@@ -832,6 +835,9 @@ has only `ahub status`, `ahub tail` and the task board.
 
 Resolution requires the current observed revision. A retry closes the old
 record and creates one linked attempt. Stale or conflicting resolutions fail.
+A refused or failed resolution puts back only that peer's queue and preface
+and keeps every pause, including budget and conductor holds. A storage failure
+stops the bus; a validation refusal leaves it running under the existing holds.
 If dispatching or accepted work has an uncertain outcome after a crash,
 the system marks it `needs_review`. Establish evidence before choosing
 `completed`, `retry`, or `discard`. Timeouts,

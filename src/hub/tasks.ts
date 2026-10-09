@@ -915,7 +915,7 @@ export class Tasks {
     }
   }
 
-  private readonly offered = new Set<number>(); // ready tasks offered in this hub run
+  private readonly offered = new Set<number>(); // assignments in this hub run, including offers still in flight
   private readonly sent = new Map<string, PeerId>(); // hand-over (`handOver`) -> owner, for the owner's current turn: its task envelope started it, or it claimed the task in it
 
   /**
@@ -939,9 +939,15 @@ export class Tasks {
     const t = this.d.board.get(stale.id);
     if (!t || t.state !== "proposed" || t.owner || this.offered.has(t.id)) return;
     this.offered.add(t.id);
-    const ready = t.history.at(-1)?.event === "ready" ? t : this.d.board.update(t.id, HUB, "ready", {}, why);
-    this.d.notify(`task ${this.publicTitle(ready)} is ready: what it waited for is approved`);
-    await this.assignOwner(ready, HUB).catch((e: Error) => this.d.notify(`task ${this.publicTitle(ready)}: could not be assigned: ${e.message}`));
+    try {
+      const ready = t.history.at(-1)?.event === "ready" ? t : this.d.board.update(t.id, HUB, "ready", {}, why);
+      this.d.notify(`task ${this.publicTitle(ready)} is ready: what it waited for is approved`);
+      await this.assignOwner(ready, HUB);
+    } catch (e) {
+      this.d.notify(`task ${this.publicTitle(t)}: could not be assigned: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      if (!this.d.board.get(t.id)?.owner) this.offered.delete(t.id);
+    }
   }
 
   private mine(task: Task, by: PeerId, role: "owner" | "reviewer"): void {

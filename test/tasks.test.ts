@@ -2216,3 +2216,43 @@ test("a split prediction counts busy as taking a task only in the turn that task
   await tasks.propose(USER, { title: "routed part", class: "implement", refs: { paths: ["src/c.ts"] } });
   expect(recorded.find((r) => r.where === "routing")?.trace).toContain("kimi is not available");
 });
+
+test("an approval offer with no peer is retried once codex returns, without timer noise while offline (#231)", async () => {
+  const { tasks, board, peers, notices } = await setup(["claude", "codex"]);
+  const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+  const c = await tasks.propose("claude", { title: "client", class: "implement", after: [a.id] });
+  await tasks.done("codex", a.id, "done");
+  peers.codex!.set("offline");
+  await tasks.review("claude", a.id, "approved");
+  expect(board.get(c.id)).toMatchObject({ owner: null, reviewer: null, state: "proposed" });
+  expect(board.get(c.id)!.history.at(-1)!.event).toBe("ready");
+  const history = board.get(c.id)!.history, beforeNotices = [...notices];
+  await tasks.releaseReady(); await tasks.releaseReady();
+  expect(board.get(c.id)!.history).toEqual(history);
+  expect(notices).toEqual(beforeNotices);
+  peers.codex!.set("idle");
+  await tasks.releaseReady(); await tick();
+  expect(board.get(c.id)!.owner).toBe("codex");
+  expect(peers.codex!.got.filter((e) => e.kind === "task" && e.refs?.task === String(c.id))).toHaveLength(1);
+});
+
+for (const event of ["ready", "assigned"] as const) {
+  test(`a failed dependent ${event} write does not throw after approval or consume the offer (#231)`, async () => {
+    const { tasks, board, peers, notices } = await setup(["claude", "codex"]);
+    const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+    const c = await tasks.propose("claude", { title: "client", class: "implement", after: [a.id] });
+    await tasks.done("codex", a.id, "done");
+    const update = board.update.bind(board);
+    board.update = (...args: Parameters<Board["update"]>) => {
+      if (args[0] === c.id && args[2] === event) throw new Error(`injected ${event} write failure`);
+      return update(...args);
+    };
+    try { await expect(tasks.review("claude", a.id, "approved")).resolves.toMatchObject({ state: "approved" }); }
+    finally { board.update = update; }
+    expect(notices.some((line) => line.includes(`task #${c.id} client`) && line.includes(`injected ${event} write failure`))).toBe(true);
+    expect(board.get(c.id)!.owner).toBeNull();
+    await tasks.releaseReady(); await tick();
+    expect(board.get(c.id)!.owner).toBe("codex");
+    expect(peers.codex!.got.filter((e) => e.kind === "task" && e.refs?.task === String(c.id))).toHaveLength(1);
+  });
+}

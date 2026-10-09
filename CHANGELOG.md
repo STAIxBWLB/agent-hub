@@ -5,6 +5,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Preserve empty committed queue entries for offline peers during journal-backed recovery, so preservation verification does not require them to reconnect. Durable queues and delivery receipts remain authoritative; stale non-empty snapshot queues are never replayed (#234).
+- Preserve every pause and queue array when a delivery resolution is refused or its journal write fails; roll back only the recipient queue and preface (#229).
+- Retry a dependent task released while no peer can take it or its ready/assignment write fails; consume its per-run offer only after assignment (#231).
 
 ## 0.12.20
 

@@ -355,7 +355,10 @@ export class Bus {
     if (record.revision !== revision) throw new Error("stale delivery revision");
     if (record.state === "queued" && action === "retry") throw new Error("queued delivery is already scheduled");
     if (action === "retry" && (this.queues.get(record.peer)?.length ?? 0) + record.originals.length > this.opts.queueCap) throw new Error("recipient queue is full");
-    const before = this.snapshotWithoutJournal();
+    const queue = this.queues.get(record.peer) ?? [];
+    const hadQueue = this.queues.has(record.peer);
+    const before = [...queue];
+    const preface = this.prefaces.get(record.peer);
     try {
       this.journal.transaction(() => {
         if (!this.journal!.get(id)) this.journal!.createDelivery({ ...record });
@@ -363,10 +366,9 @@ export class Bus {
         this.journal!.resolve(id, current.revision, action, reason, revision);
         if (record.state === "queued") {
           const ids = new Set(record.originals.map((env) => env.id));
-          this.queues.set(record.peer, (this.queues.get(record.peer) ?? []).filter((env) => !ids.has(env.id)));
+          queue.splice(0, queue.length, ...queue.filter((env) => !ids.has(env.id)));
         }
         if (action === "retry") {
-          const queue = this.queues.get(record.peer) ?? [];
           for (const env of record.originals) {
             if (env.from === HUB && env.kind === "presence") this.restorePreface(record.peer, env);
             else if (!queue.some((old) => old.id === env.id)) queue.push(env);
@@ -375,7 +377,13 @@ export class Bus {
         }
         this.persist();
       });
-    } catch (error) { this.loadSnapshot(before); throw error; }
+    } catch (error) {
+      queue.splice(0, queue.length, ...before);
+      if (!hadQueue) this.queues.delete(record.peer);
+      if (preface) this.prefaces.set(record.peer, preface);
+      else this.prefaces.delete(record.peer);
+      throw error;
+    }
     this.refreshRecoveryHold(record.peer);
     this.onQueues?.();
     void this.drain(record.peer);
