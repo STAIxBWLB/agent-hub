@@ -1767,9 +1767,14 @@ it stops a running hub through `stopProject`, the path `ahub kill` takes, then
 acts on the stopped state directory.
 
 - Refusals, each before anything changes: the machine's recovery lock is held
-  (`assertLifecycleAvailable`); no registration matches this root and state
-  directory, running or not (`ahub up` registers a stopped project); the hub's
-  ownership is not verified (any inspection state other than stopped, running
+  (`recoveryLock()` read directly: a reset is never part of an operation, so
+  `AGENTHUB_RECOVERY_OPERATION` does not let it through as it lets the
+  operation's own processes through `assertLifecycleAvailable`); no
+  registration matches this root and state directory, running or not (`ahub
+  up` registers a stopped project; when this root is registered with another
+  state directory the error names `ahub --project <id> reset` instead, since
+  `ahub up` would register the default directory and orphan that state); the
+  hub's ownership is not verified (any inspection state other than stopped, running
   or stopping); a running hub reports a recovery operation whose phase is not
   `released`; `--all` with a state directory other than the literal
   `<root>/.agenthub/state` (an override or symlink elsewhere would cross file
@@ -1798,7 +1803,8 @@ acts on the stopped state directory.
 - Failures: the plan is read only for the dry run, so `--all --yes` archives a
   state directory it cannot read as it is (its dry run says what it could not
   read). A failure after the stop says how far it got. A runtime reset that
-  cannot read the state (a corrupt `hub.db`, malformed JSON, a journal the
+  cannot read the state (a corrupt `hub.db`, malformed JSON or valid JSON of
+  the wrong shape, which `planReset` checks as the journal would, a journal the
   constructor refuses: root mismatch, corrupt metadata, too many rows) fails
   the same way on a rerun, so its error points to `--all`; any other runtime
   failure is finished by a rerun, every step being idempotent. `--all` prints

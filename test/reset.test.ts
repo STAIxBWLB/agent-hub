@@ -217,12 +217,17 @@ test("AC4: an agent shell, an open recovery operation and an unmatched registrat
     }
     expect(drainCliAudits(stateDir).map((row) => [row.command, row.outcome])).toEqual(Array(3).fill(["reset", "refused"]));
 
-    writeFileSync(join(base, "home", "recovery.lock"), JSON.stringify({ operationId: randomUUID() }));
+    const owner = randomUUID();
+    writeFileSync(join(base, "home", "recovery.lock"), JSON.stringify({ operationId: owner }));
     for (const args of [["reset"], ["reset", "--yes"], ["reset", "--all", "--yes"]]) {
       const result = await cli(root, args);
       expect(result.code).toBe(1);
       expect(result.stderr).toMatch(/recovery operation [0-9a-f-]{36} is active/);
     }
+    // Not even a shell that carries the operation's own id: a reset is never part of an operation.
+    const inside = await cli(root, ["reset", "--yes"], { AGENTHUB_RECOVERY_OPERATION: owner });
+    expect(inside.code).toBe(1);
+    expect(inside.stderr).toContain(`recovery operation ${owner} is active`);
     rmSync(join(base, "home", "recovery.lock"));
 
     const registry = new Registry(join(base, "home", "registry.db"));
@@ -263,6 +268,10 @@ test("AC4: --all refuses a state directory outside <root>/.agenthub, and a stopp
     const runtime = await cli(root, ["reset", "--yes"], { AGENTHUB_STATE_DIR: custom });
     expect(runtime.code, runtime.stderr).toBe(0);
     expect(existsSync(join(custom, "sessions.json"))).toBe(false);
+    // From a plain terminal the default state directory has no registration; `ahub up` would orphan the custom one.
+    const plain = await cli(root, ["reset", "--yes"]);
+    expect(plain.code).toBe(1);
+    expect(plain.stderr).toContain(`this project is registered with the state directory ${custom}; run ahub --project ${project.id} reset; nothing was changed`);
 
     const again = new Registry(join(base, "home", "registry.db"));
     again.remove(project.id);
@@ -396,5 +405,29 @@ test("a parser error is named by class only: data it choked on is never printed"
     expect(runtime.code).toBe(1);
     expect(runtime.stderr).toContain("SyntaxError reading hub.db; the hub is stopped and the reset is incomplete");
     for (const out of [dry, dryAll, runtime]) expect(out.stdout + out.stderr).not.toContain(token);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+}, 60_000);
+
+test("valid JSON of the wrong shape counts as damage: the dry run and --yes point to --all", async () => {
+  const { base, root, stateDir, project } = fixture();
+  try {
+    seed(stateDir, project);
+    const set = (column: string, value: string) => {
+      const db = new Database(join(stateDir, "hub.db"));
+      db.query(`UPDATE delivery_meta SET ${column} = ?`).run(value);
+      db.close();
+    };
+    set("manual_paused", "{}");
+    const dry = await cli(root, ["reset"]);
+    expect(dry.code).toBe(1);
+    expect(dry.stderr).toContain("cannot read the state (invalid delivery journal: manual_paused has the wrong shape); nothing was changed; ahub reset --all --yes archives it as it is");
+    const yes = await cli(root, ["reset", "--yes"]);
+    expect(yes.code).toBe(1);
+    expect(yes.stderr).toContain("a rerun fails the same way; ahub reset --all --yes archives it as it is");
+    set("manual_paused", "[]");
+    set("bus_snapshot", JSON.stringify({ schemaVersion: 1, queues: { kimi: {} }, prefaces: {}, seen: [], attempts: {}, withdrawn: [] }));
+    const queue = await cli(root, ["reset"]);
+    expect(queue.stderr).toContain("bus_snapshot has the wrong shape");
+    expect(rows(stateDir, "SELECT count(*) AS n FROM resolution_history")).toEqual([{ n: 0 }]);
   } finally { rmSync(base, { recursive: true, force: true }); }
 }, 60_000);

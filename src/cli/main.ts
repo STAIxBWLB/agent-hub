@@ -22,7 +22,7 @@ import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
 import { freeText } from "./free-text.ts";
 import { createInterface } from "node:readline/promises";
-import { assertLifecycleAvailable, readOperation } from "../hub/recovery-store.ts";
+import { assertLifecycleAvailable, readOperation, recoveryLock } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
 import { abortRecovery, createOperation, publicOperation, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
 import { makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
@@ -115,6 +115,12 @@ function matchingProject(): Project | undefined {
   finally { registry.close(); }
 }
 const hubManifest = () => !!readControl(stateDir) || existsSync(join(stateDir, "hub.pid"));
+/** A reset is never part of an upgrade or recovery: any operation holding the machine's lock refuses it, whatever
+ *  AGENTHUB_RECOVERY_OPERATION says (assertLifecycleAvailable lets that operation's own processes through). */
+function resetLockFree(): void {
+  const owner = recoveryLock();
+  if (owner) throw new Error(`recovery operation ${owner} is active; use ahub recovery status|resume ${owner}; nothing was changed`);
+}
 /** A manifest whose daemon is alive or uncertain, by inspectProject's rule; a crashed daemon's leftovers do not count. */
 function liveManifest(): boolean {
   const control = readControl(stateDir);
@@ -930,8 +936,12 @@ const commands: Record<string, () => Promise<void> | void> = {
   reset: async () => {
     if (args.some((a) => !["--all", "--yes"].includes(a))) fail("usage: ahub reset [--all] [--yes]");
     const all = args.includes("--all");
-    assertLifecycleAvailable();
-    const project = matchingProject() ?? fail(hubManifest() ? "hub has no matching registration; use its matching CLI to stop it; nothing was changed" : "no registration matches this project and state directory; nothing was changed (ahub up registers it)");
+    resetLockFree();
+    // Registered with another state directory: `ahub up` here would register the default one and orphan that state.
+    const elsewhere = registeredProjects().find((p) => p.root === cwd);
+    const project = matchingProject() ?? fail(hubManifest() ? "hub has no matching registration; use its matching CLI to stop it; nothing was changed"
+      : elsewhere ? `this project is registered with the state directory ${elsewhere.stateDir}; run ahub --project ${elsewhere.id} reset; nothing was changed`
+        : "no registration matches this project and state directory; nothing was changed (ahub up registers it)");
     if (!existsSync(stateDir)) return console.log("no state directory; nothing to reset");
     // A state directory elsewhere (AGENTHUB_STATE_DIR, or a symlink) would cross file systems or pull outside state
     // into the project tree.
@@ -978,7 +988,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       }
       if (liveManifest()) throw new Error("a hub started after the stop; nothing was reset, run ahub reset again");
       // An upgrade or recovery that took the machine's lock after the first check must not run beside the reset.
-      assertLifecycleAvailable();
+      resetLockFree();
       if (all) {
         let archived: string;
         try { archived = archiveState(cwd, stateDir); }

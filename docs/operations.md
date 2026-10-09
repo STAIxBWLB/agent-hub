@@ -947,7 +947,9 @@ changed:
   or a running hub that reports an unreleased recovery);
 - when no registration matches this project and state directory. A running
   hub must then be stopped with its matching CLI; a stopped project is
-  registered again by `ahub up` (then `ahub reset --yes` stops it first);
+  registered again by `ahub up` (then `ahub reset --yes` stops it first). When
+  the project is registered with another state directory, the error names
+  `ahub --project <id> reset` instead;
 - when the hub's ownership cannot be verified, as `ahub kill` refuses it;
 - for `--all`, when the state directory is not `<root>/.agenthub/state`
   (`AGENTHUB_STATE_DIR` or a symlink elsewhere): archive such a directory by

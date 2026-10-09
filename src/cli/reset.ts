@@ -39,6 +39,13 @@ export interface ResetPlan {
   entries: number;
 }
 
+const isList = (value: unknown, item: (v: unknown) => boolean) => Array.isArray(value) && value.every(item);
+const isText = (v: unknown) => typeof v === "string";
+const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+const isEnvelope = (v: unknown) => isObject(v) && typeof v.id === "string";
+/** Valid JSON of the wrong shape is damage as well: the journal refuses it on every open, so the message says so. */
+const shaped = (ok: boolean, what: string) => { if (!ok) throw new Error(`invalid delivery journal: ${what} has the wrong shape`); };
+
 /** What a reset would act on, read from the state directory without changing it (hub.db opened read-only). */
 export function planReset(stateDir: string, projectId: string): ResetPlan {
   const plan: ResetPlan = { queued: [], needsReview: [], inFlight: [], manualHolds: [], budgetPauses: [], conductorHolds: [],
@@ -55,13 +62,20 @@ export function planReset(stateDir: string, projectId: string): ResetPlan {
     const rows = db.query("SELECT id, peer, state, originals FROM deliveries WHERE project_id = ? AND state IN ('queued', 'dispatching', 'accepted', 'needs_review') ORDER BY created_at, id").all(projectId) as { id: string; peer: string; state: string; originals: string }[];
     for (const row of rows) (row.state === "queued" ? plan.queued : row.state === "needs_review" ? plan.needsReview : plan.inFlight).push(row.id);
     const meta = db.query("SELECT bus_snapshot, manual_paused FROM delivery_meta WHERE project_id = ?").get(projectId) as { bus_snapshot: string; manual_paused: string } | null;
-    const bus = JSON.parse(meta?.bus_snapshot || "{}") as { queues?: Record<string, { id: string }[]>; manualPaused?: string[] };
-    plan.manualHolds = [...new Set([...JSON.parse(meta?.manual_paused || "[]") as string[], ...bus.manualPaused ?? []])].sort();
+    const bus: unknown = JSON.parse(meta?.bus_snapshot || "{}"), manual: unknown = JSON.parse(meta?.manual_paused || "[]");
+    shaped(isList(manual, isText), "manual_paused");
+    shaped(isObject(bus) && (bus.manualPaused === undefined || isList(bus.manualPaused, isText)) && (bus.queues === undefined || (isObject(bus.queues) && Object.values(bus.queues).every((queue) => isList(queue, isEnvelope)))), "bus_snapshot");
+    const { queues = {}, manualPaused = [] } = bus as { queues?: Record<string, { id: string }[]>; manualPaused?: string[] };
+    plan.manualHolds = [...new Set([...manual as string[], ...manualPaused])].sort();
     // As Bus.queueList: a queued envelope that no open row stands for is listed as q:<peer>:<envelope id>.
     // ponytail: the rule is copied so the dry run never opens the journal for writing; the reset tests compare the
     // listed ids with the settled ones. Share one pure helper with queueList if that rule changes.
-    const recorded = new Set(rows.flatMap((row) => (JSON.parse(row.originals) as { id: string }[]).map((env) => `${row.peer}:${env.id}`)));
-    for (const [peer, queue] of Object.entries(bus.queues ?? {})) for (const env of queue) if (!recorded.has(`${peer}:${env.id}`)) plan.queued.push(`q:${peer}:${env.id}`);
+    const recorded = new Set(rows.flatMap((row) => {
+      const originals: unknown = JSON.parse(row.originals);
+      shaped(isList(originals, isEnvelope), `delivery ${row.id} originals`);
+      return (originals as { id: string }[]).map((env) => `${row.peer}:${env.id}`);
+    }));
+    for (const [peer, queue] of Object.entries(queues)) for (const env of queue) if (!recorded.has(`${peer}:${env.id}`)) plan.queued.push(`q:${peer}:${env.id}`);
   } finally { db.close(); }
   return plan;
 }
