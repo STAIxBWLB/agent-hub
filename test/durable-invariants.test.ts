@@ -39,6 +39,24 @@ function setupBus(options: Partial<ConstructorParameters<typeof Bus>[0]> = {}) {
   return { bus, durable };
 }
 
+test("a pull-only peer is never handed a delivery: its queue is counted, then read once as one completed delivery (#205)", async () => {
+  const { bus, durable } = setupBus();
+  const peer = Object.assign(new FakePeer("claude"), { pullOnly: true }); bus.add(peer);
+  bus.preface("claude", "recall");
+  const env = newEnvelope("user", "review task #3", { to: ["claude"] });
+  bus.publish(env);
+  peer.setState("idle"); // the idle transition that drains every other peer
+  await Bun.sleep(10);
+  expect(peer.deliveries).toHaveLength(0);
+  expect(bus.queued("claude")).toBe(1);
+  expect(bus.pull("claude").map((e) => [e.from, e.kind])).toEqual([["hub", "presence"], ["user", env.kind]]);
+  expect(bus.queued("claude")).toBe(0);
+  expect(bus.pull("claude")).toEqual([]);
+  expect(durable.list("claude").map((r) => [r.state, r.reason])).toEqual([["completed", "read through hub_inbox"]]);
+  expect(durable.snapshot().bus.queues.claude).toEqual([]);
+  durable.close();
+});
+
 test("an async condensation cannot checkpoint away a batch when another publish persists the bus", async () => {
   let release!: () => void;
   const pending = new Promise<void>((resolve) => { release = resolve; });

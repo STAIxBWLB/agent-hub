@@ -5,6 +5,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - `ahub help` groups the commands into sections, starts every description at one column and wraps at word boundaries to the terminal width (80 to 100 columns), colored with the console palette only on a terminal without `TERM=dumb` or `NO_COLOR`. `--help`, `-h` and `help <command>` work, and `ahub <command> -h` (or `--help`) given as the only argument prints that command's help instead of running it, except for claude and codex, which pass it to the agent; an unknown command prints a one-line hint instead of the full list. The console shares the word-aware wrapping, which also covers the wrapping item of #213: the help overlay, approval titles, details and stream lines break at word boundaries. A continuation line starts four columns deeper than its source line (at most half the width), so wrapped peer text in the console stream never starts at column 0 or 2, where headers and event lines start; a wrapped line that starts like a hub header keeps its `> ` marker, now counted in its width (#212).
+- A Claude session started without `ahub claude` has no channel evidence and attaches tools-only: it declares no channel and never reports a delivery `accepted`; its messages stay queued and `hub_inbox` reads them as one `completed` delivery. `ahub status`, the console and the dashboard name the state and the next action, `ahub claude`, which takes the peer back with pushes (#205).
+- Control protocol 16 (hello `channel`, `inbox`); a running protocol-15 hub (0.12.17 through 0.12.19) remains an upgrade source.
 
 ## 0.12.19
 

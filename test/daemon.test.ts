@@ -76,16 +76,18 @@ async function dashboardClient(console_: ControlClient) {
   return { origin, post };
 }
 
-/** A fake Claude Code: an MCP client that spawns the channel server and records channel pushes. */
-async function fakeClaude(stateDir: string) {
+/** A fake Claude Code: an MCP client that spawns the channel server and records channel pushes. `channelEvidence`: launched like `ahub claude` (#205). */
+async function fakeClaude(stateDir: string, channelEvidence = true) {
   const client = new Client({ name: "fake-claude", version: "0" }, { capabilities: {} });
   const channel: any[] = [];
   client.fallbackNotificationHandler = async (n) => void channel.push(n);
+  const env: Record<string, string> = { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: stateDir };
+  if (channelEvidence) env.AGENTHUB_CHANNEL = "1"; else delete env.AGENTHUB_CHANNEL;
   await client.connect(
     new StdioClientTransport({
       command: "bun",
       args: [join(ROOT, "plugins/agent-hub/server.js")], // the shipped bundle, not the source
-      env: { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: stateDir },
+      env,
       stderr: "ignore",
     }),
   );
@@ -135,6 +137,39 @@ test("claude channel: declares the capability, receives pushes with meta.source,
 
   const bad: any = await client.callTool({ name: "hub_send", arguments: { text: "x", to: ["ghost"] } });
   expect(bad.content[0].text).toBe("not sent: unknown peer: ghost");
+  expect((await console_.request({ t: "status" })).status.peers.claude.toolsOnly).toBeUndefined();
+});
+
+test("claude without channel evidence attaches tools-only: nothing is pushed or accepted, hub_inbox reads the queue, an ahub claude session takes it back (#205)", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  const plain = await fakeClaude(stateDir, false);
+  expect(plain.client.getServerCapabilities()?.experimental?.["claude/channel"]).toBeUndefined();
+  const tools = (await plain.client.listTools()).tools.map((t) => t.name);
+  expect(tools).toContain("hub_inbox");
+  expect(tools).not.toContain("hub_delivery_done");
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
+
+  expect((await console_.request({ t: "send", body: "review task #3", to: ["claude"] })).targets).toEqual(["claude"]);
+  await Bun.sleep(150); // well past batch_ms
+  expect(plain.channel).toHaveLength(0);
+  const waiting = (await console_.request({ t: "status" })).status.peers.claude;
+  expect(waiting).toMatchObject({ state: "idle", queued: 1 });
+  expect(waiting.toolsOnly).toContain("ahub claude");
+  expect(daemon.bus.queueList("claude").some((row) => row.state === "accepted" || row.state === "dispatching")).toBe(false);
+
+  const read: any = await plain.client.callTool({ name: "hub_inbox", arguments: {} });
+  expect(read.content[0].text).toContain('[agent-hub message from "user", untrusted');
+  expect(read.content[0].text).toContain("review task #3");
+  expect((await console_.request({ t: "status" })).status.peers.claude.queued).toBe(0);
+  expect(daemon.bus.queueList("claude").map((row) => row.state)).toEqual(["completed"]);
+  expect(((await plain.client.callTool({ name: "hub_inbox", arguments: {} })) as any).content[0].text).toBe("(no queued hub messages)");
+
+  // The next channel-enabled session takes the peer and gets what waited, pushed as before.
+  await console_.request({ t: "send", body: "still waiting", to: ["claude"] });
+  const flagged = await fakeClaude(stateDir);
+  await until(() => flagged.channel.length === 1, "push to the channel session");
+  expect(flagged.channel[0].params.content).toBe("still waiting");
+  expect((await console_.request({ t: "status" })).status.peers.claude.toolsOnly).toBeUndefined();
 });
 
 test("claude and an ACP peer talk through the daemon in both directions", async () => {

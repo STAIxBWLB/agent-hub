@@ -1537,3 +1537,61 @@ only. The path guard, denylist and sandbox still apply to each call; the
 dashboard still offers Pi only deny; unattended mode still picks `allow_once`;
 the local worker keeps allow and deny. The console and `ahub permit` already
 handle more than one allow option, so the control protocol is unchanged.
+
+## Amendment: Claude sessions without channel evidence (issue #205)
+
+Claude Code without `--dangerously-load-development-channels` drops channel
+notifications without an error, so a plain `claude` session used to mark every
+push `accepted` and show none of them.
+
+- Evidence: `ahub claude` passes the flag and, in the same launch, sets
+  `AGENTHUB_CHANNEL=1` in Claude's environment (`nativeLaunchEnv`);
+  `peerChildEnv` removes the marker from every other native child. The plugin's
+  MCP server inherits Claude Code's environment, as it already does for
+  `AGENTHUB_STATE_DIR` and `AGENTHUB_PEER_ID`. With the marker the server keeps
+  the push and settlement contract of "Live channel settlement" unchanged.
+  Without it (a plain `claude`, an IDE session, or the flag passed by hand) the
+  session attaches tools-only.
+- Decision: the launch marker is sufficient evidence, and no positive readback
+  is required before the first `accepted`.
+  - The marker and the flag come from the same launch, so the marker shows that
+    this Claude process got the flag. A readback would add per-push proof of
+    display, which stays out of scope: `accepted` means the bridge handed the
+    notification over, and `hub_delivery_done` or a correlated reply settles
+    handled work.
+  - A readback (a native turn citing the pushed id) would hold every first
+    delivery until the model chose to answer, and a session that never answers
+    would look the same as one that never rendered.
+  - The existing launch identity (`AGENTHUB_INSTANCE_ID`, `AGENTHUB_LAUNCH_ID`)
+    is not used: `ahub claude` sets it only when a daemon is already running at
+    launch, so an `ahub claude` started before `ahub up` would lose pushes it
+    can show.
+  - Limits: the marker is inherited by the session's own shell children, so a
+    plain `claude` started inside an `ahub claude` session reads as
+    channel-capable (it also inherits the peer id and takes the peer over). A
+    session started with the flag by hand reads as tools-only and is pointed to
+    `ahub claude`.
+- Tools-only attach: the server declares tools only, sends `channel: false` in
+  its `peer` hello, lists `hub_inbox` but not `hub_delivery_done`, and ignores
+  any `deliver`, so it never sends a `delivery_receipt`. The daemon attaches its
+  `WsPeer` as `pullOnly`; the bus never drains a pull-only peer, so its messages
+  stay queued and count as `queued`. Board routing still treats the peer as
+  attached.
+- `hub_inbox` sends `inbox`. The daemon refuses it for a session with pushes,
+  and, with the hold text, while the peer's queue is held (`needs_review`) or
+  recovery holds deliveries. `Bus.pull` hands over the preface and the whole
+  queue (after the stale-notice check) and records them as one journal row
+  `completed`, reason `read through hub_inbox`, in the same transaction as the
+  bus snapshot: the tool result that returns them is the readback, so nothing
+  waits in `accepted`. A pull is not a native turn and is not counted as
+  supervision. A reply lost between the hub and the plugin after that write
+  loses its batch (a `ponytail:` ceiling in `Bus.pull`).
+- A later `ahub claude` session claims the peer as before; attach clears
+  `pullOnly` and the waiting queue is pushed to it. The replaced plain session
+  stands by (close 4000).
+- Status: `status.json` peers carry `toolsOnly`, a line naming the state and the
+  next action (`ahub claude`); `ahub status`, the console footer and the
+  dashboard show it.
+- Control protocol 16 adds the hello `channel` field and `inbox`. Recovery
+  sources add protocol 15 (0.12.17 through 0.12.19); the transition from a real
+  0.12.19 hub is not yet proven.

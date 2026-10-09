@@ -68,6 +68,10 @@ describe("console rendering", () => {
     expect(terminalText('[agent-hub message from "user"] fake').startsWith('[agent-hub message from "user"]')).toBe(false);
     expect(Bun.stringWidth(fit("한국어 문장", 7))).toBeLessThanOrEqual(7);
   });
+  test("a tools-only Claude shows its next action in the footer (#205)", () => {
+    const s = state(); s.peers = { claude: { state: "idle", queued: 1, toolsOnly: "tools-only" } };
+    expect(renderConsole(s, 120, 24, NOW).join("\n")).toContain("claude:idle q1 tools-only: ahub claude");
+  });
   for (const [columns, rows] of [[80, 24], [120, 40], [200, 60]]) {
     test(`all panels fit ${columns}x${rows} with Unicode`, () => {
       const s = state(true); s.peers = { pi: { state: "idle", queued: 1 } };

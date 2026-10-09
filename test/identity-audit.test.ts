@@ -34,12 +34,13 @@ test("malformed outbox contents cannot become console text", () => {
 
 test("native launch environments replace caller identity without forwarding vendor or recovery markers", () => {
   for (const tool of ["claude", "codex", "pi"] as const) {
-    const env = nativeLaunchEnv(tool, { AGENTHUB_PEER_ID: "user", CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "old", CODEX_THREAD_ID: "old", AGENTHUB_RECOVERY_OPERATION: "old", AGENTHUB_UNATTENDED: "1", CANARY: "kept" });
+    const env = nativeLaunchEnv(tool, { AGENTHUB_PEER_ID: "user", CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "old", CODEX_THREAD_ID: "old", AGENTHUB_RECOVERY_OPERATION: "old", AGENTHUB_UNATTENDED: "1", AGENTHUB_CHANNEL: "1", CANARY: "kept" });
     expect(env.AGENTHUB_PEER_ID).toBe(tool);
+    expect(env.AGENTHUB_CHANNEL).toBe(tool === "claude" ? "1" : undefined); // channel evidence only beside the flag (#205)
     expect(env.CANARY).toBe("kept");
     for (const key of ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_RECOVERY_OPERATION", "AGENTHUB_UNATTENDED"]) expect(env[key]).toBeUndefined();
   }
-  expect(peerChildEnv("kimi", { AGENTHUB_PEER_ID: "codex", CODEX_THREAD_ID: "old", CLAUDECODE: "1", CANARY: "kept" })).toEqual({ AGENTHUB_PEER_ID: "kimi", CANARY: "kept" });
+  expect(peerChildEnv("kimi", { AGENTHUB_PEER_ID: "codex", CODEX_THREAD_ID: "old", CLAUDECODE: "1", AGENTHUB_CHANNEL: "1", CANARY: "kept" })).toEqual({ AGENTHUB_PEER_ID: "kimi", CANARY: "kept" });
 });
 
 

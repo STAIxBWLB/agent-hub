@@ -715,8 +715,36 @@ export class Bus {
     finally { this.steering--; this.onQueues?.(); }
   }
 
+  /**
+   * A pull-only peer's whole queue, its preface first, recorded as one completed delivery: the tool result that returns
+   * it is the readback, so nothing waits for settlement and nothing is ever `accepted` (issue #205). Held like a drain.
+   * ponytail: recorded at hand-out, so a reply lost between hub and plugin loses that batch; take/confirm in two
+   * steps if that is ever observed.
+   */
+  pull(id: PeerId): Envelope[] {
+    if (this.storageError) throw new Error("delivery journal unavailable");
+    if (this.recoveryHeld || this.recoveryHeldPeers.has(id)) return [];
+    const queue = this.queues.get(id) ?? [];
+    this.dropIrrelevant(id, queue);
+    const preface = this.prefaces.get(id);
+    const batch = preface ? [preface, ...queue] : [...queue];
+    if (!batch.length) return [];
+    const before = this.snapshotWithoutJournal();
+    try {
+      queue.splice(0);
+      this.prefaces.delete(id);
+      const write = () => {
+        this.journal?.createDelivery({ id: crypto.randomUUID(), peer: id, state: "completed", createdAt: Date.now(), originals: batch, out: batch, reason: "read through hub_inbox" });
+        this.persist();
+      };
+      if (this.journal) this.journal.transaction(write); else write();
+    } catch (error) { this.loadSnapshot(before); throw error; }
+    this.onQueues?.();
+    return batch;
+  }
+
   private async drain(id: PeerId): Promise<void> {
-    if (this.storageError || this.draining.has(id) || !this.peers.has(id)) return;
+    if (this.storageError || this.draining.has(id) || !this.peers.has(id) || this.peers.get(id)!.pullOnly) return;
     this.draining.add(id);
     try {
       const peer = this.peers.get(id)!;

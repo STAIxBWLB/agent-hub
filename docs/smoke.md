@@ -321,6 +321,23 @@ ahub setup                                 # Claude Code channel plugin from thi
 
 Claude channels are a research preview: `ahub claude` passes `--dangerously-load-development-channels plugin:agent-hub@agent-hub`.
 
+## Claude without channel evidence (#205)
+
+Not run live yet. On a candidate with the rebuilt plugin bundle (protocol 16),
+record only what was observed:
+
+1. Start a plain `claude` in the project (not `ahub claude`). `ahub status`
+   shows `claude` `idle` with `tools-only: messages wait for hub_inbox; ...`.
+   Run `ahub say @claude "<unique text>"`: status shows `queued 1`, `ahub queue
+   list --peer claude` has no `accepted` or `dispatching` row, and no pushed row
+   appears in the TUI. Ask the session to call `hub_inbox`: it returns the text
+   under an `[agent-hub message from "user"` header, status shows `queued 0`,
+   and the queue list shows one `completed` row `read through hub_inbox`.
+2. Start `ahub claude` in the same project (AC3). It takes the peer and the
+   plain session stands by. A new `ahub say @claude "<unique text>"` appears as
+   a native channel row, its delivery reaches `accepted`, and `hub_delivery_done`
+   or a correlated reply settles it `completed`. Status shows no `tools-only`.
+
 ## npm package preparation (issue #4)
 
 Verified locally on 2026-09-19 with Bun 1.3.14, using an actual `npm pack` tarball:

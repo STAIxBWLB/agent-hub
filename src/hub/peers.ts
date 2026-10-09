@@ -11,6 +11,8 @@ export interface PeerAdapter {
   readonly state: PeerState;
   /** A peer the hub drives itself (Pi, the local worker). It cannot be trusted to rate its own urgency: the bus caps it. */
   readonly hubNative?: boolean;
+  /** Never handed a delivery: its queue waits for `Bus.pull` (a Claude session that cannot show channel pushes, issue #205). */
+  readonly pullOnly?: boolean;
   /** Inject now, as one prompt. Only called while `state === "idle"`. Rejecting puts the envelopes back at the queue head. */
   deliver(envs: Envelope[], deliveryId?: string): Promise<void>;
   /** Optional: feed envelopes into the turn that is running now. Only called while `state === "busy"`. */

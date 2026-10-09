@@ -71,6 +71,7 @@ export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi", raw: s
     unresolved.push({ field: "bridge/relay endpoints and owner credentials", reason: "assigned at runtime; preview does not bind a server or start a model" });
     if (!value("--session-id") && !value("--session-file")) unresolved.push({ field: "sessionId", reason: "new native session identity is not allocated by preview" });
   }
+  if (tool === "claude") envNames.push("AGENTHUB_CHANNEL");
   if (tool === "claude" || tool === "codex") {
     envNames.push("AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID");
     unresolved.push({ field: "env.AGENTHUB_INSTANCE_ID", reason: tool === "claude" ? "injected when an existing daemon instance is read at launch; preview does not read runtime state" : "injected when a verified Orca terminal launch is recorded against the daemon; preview does not record it" });

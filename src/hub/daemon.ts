@@ -306,6 +306,8 @@ class WsPeer extends BasePeer {
   private claimed: Sock | undefined;
   private nativeSession: string | undefined;
   private nativeActive = false;
+  /** The attached session said it cannot show channel pushes (issue #205): the bus keeps its queue for `inbox`. */
+  pullOnly = false;
   /** Called at hello, before the async preface: the newest hello wins even if an older one's recall finishes last. */
   claim(sock: Sock): void {
     this.claimGeneration = crypto.randomUUID();
@@ -316,7 +318,7 @@ class WsPeer extends BasePeer {
   get claiming(): boolean {
     return !!this.claimed && this.claimed !== this.sock && this.claimed.readyState === WebSocket.OPEN;
   }
-  attach(sock: Sock): void {
+  attach(sock: Sock, pullOnly = false): void {
     if (sock !== this.claimed) return void sock.close(4000, "replaced"); // a newer session said hello meanwhile
     if (this.sock) this.setState("offline"); // unresolved work belongs to the previous connection
     this.sock?.close(4000, "replaced");
@@ -325,12 +327,14 @@ class WsPeer extends BasePeer {
     this.delivered.clear();
     this.nativeSession = undefined;
     this.nativeActive = false;
+    this.pullOnly = pullOnly; // before idle: the idle transition drains
     this.setState("idle");
   }
   detach(sock: Sock): void {
     if (this.sock !== sock) return;
     this.sock = undefined;
     this.nativeActive = false;
+    this.pullOnly = false;
     this.setState("offline");
   }
   async deliver(envs: Envelope[], deliveryId?: string): Promise<void> {
@@ -1448,7 +1452,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      bus.knownPeers().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
+      bus.knownPeers().map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof WsPeer && p.pullOnly ? { toolsOnly: "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude" } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelay?.status().backends ?? [] } : {}) }]; }),
     ),
     ...(sidecar ? { switchyard: sidecar.status } : {}),
     ...(modelRelay ? { models: modelRelay.status() } : {}),
@@ -2487,7 +2491,7 @@ export async function startDaemon(opts: DaemonOptions) {
         ws.claim(sock);
         writeStatus(); // the claim has to be visible before the preface, or a standing-by session takes the id back
         void ensurePreface(c.peer).finally(() => {
-          if (sock.readyState === WebSocket.OPEN) ws.attach(sock);
+          if (sock.readyState === WebSocket.OPEN) ws.attach(sock, msg.channel === false);
         });
       }
       return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: PROTOCOL });
@@ -2518,6 +2522,18 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role !== "peer" || !(peer instanceof WsPeer) || typeof msg.deliveryId !== "string" || !peer.ownsDelivery(sock, msg.generation, msg.deliveryId) || !["accepted", "needs_review"].includes(msg.state)) return void reply({ ok: false, error: "invalid delivery receipt" });
         bus.deliveryReceipt(peer.id, { id: msg.deliveryId, state: msg.state, ...(msg.state === "needs_review" ? { reason: "Claude bridge could not confirm notification delivery" } : {}) });
         return void reply({ ok: true });
+      }
+      case "inbox": {
+        // A Claude session that cannot show channel pushes reads its queue here; nothing it reads is ever `accepted` (issue #205).
+        const peer = c.peer ? bus.peers.get(c.peer) : undefined;
+        if (c.role !== "peer" || !(peer instanceof WsPeer) || !peer.owns(sock) || !peer.pullOnly) return void reply({ ok: false, error: "messages are pushed to this session; hub_inbox only drains failed pushes" });
+        const held = queueHold(peer.id) ?? (bus.isRecoveryHeld ? "recovery is holding deliveries" : undefined);
+        if (held) return void reply({ ok: false, error: held });
+        try {
+          const envs = bus.pull(peer.id);
+          if (envs.length) log(`${peer.id} read ${envs.length} queued message(s) through hub_inbox`);
+          return void reply({ ok: true, envs });
+        } catch { return void reply({ ok: false, error: "delivery journal unavailable" }); }
       }
       case "delivery_complete": {
         const peer = c.peer ? bus.peers.get(c.peer) : undefined;
