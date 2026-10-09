@@ -228,15 +228,22 @@ they start the native agent. A replacement is awaited in 5-second slices of
 Orca's `tui-idle` wait (Orca 1.4.223 answers a timed-out wait with exit 1 and
 `{"ok":false,"error":{"code":"timeout"}}`, which counts as not yet). Between
 slices, and once the terminal reads idle (an idle terminal may be the shell the
-launcher returned to), a recorded launcher whose process is gone, or a handle
-Orca reports `terminal_handle_stale`, means the launch failed, recognized within
-one slice. A launcher that died before recording itself is not distinguished
-from a slow one: it waits out the 10-minute readiness bound, and its `pending`
-receipt is reconciled on resume, where no live recorded launcher and no attached
-session for that peer on the target means `failed`. No terminal is created while
-a recorded launcher for the peer lives on the target or its session is attached.
+launcher returned to), a recorded launcher that is gone means the launch failed,
+recognized within one slice. A launcher whose identity cannot be read is unknown
+and is waited for, never taken as gone. A handle Orca reports
+`terminal_handle_stale` means the terminal is gone only when no recorded
+launcher may still run and Orca no longer lists the terminal's incarnation;
+otherwise the create stays uncertain. A launcher that died before recording
+itself is not distinguished from a slow one: it waits out the 10-minute
+readiness bound. Resume settles a `pending` or `failed` receipt by what is live
+(the table below): an attached planned (or accepted) session is the
+restoration, a launcher that may run is waited for, and only nothing live makes
+it `failed` or, for `failed`, launches again. No terminal is created while a
+recorded launcher for the peer may run on the target or its session is attached.
 A launch that failed, or a thread found not resumable before the launch, is
-receipted `restored:<peer>` = `failed` and never counts as restored. Claude's
+receipted `restored:<peer>` = `failed` and never counts as restored. A Codex
+store that cannot be read (other than missing) is unknown and blocks the plan,
+the close and the create rather than counting as not resumable. Claude's
 zero-turn rule is unchanged; Pi resume viability is not checked.
 
 Failed restoration. The operation blocks naming the peer, its session or thread

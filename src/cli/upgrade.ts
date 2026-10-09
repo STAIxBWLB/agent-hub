@@ -30,6 +30,8 @@ export interface PlannedProject {
   blockers: string[];
   /** Unmanaged sessions (#206): their plugin reattaches to the new daemon; no terminal is closed or relaunched and no session id is compared. */
   reconnectOnly?: string[];
+  /** #215: Codex threads with no rollout and no turn the hub recorded; they restart as a new session, nothing to lose. */
+  freshStart?: string[];
 }
 export interface UpgradePlan {
   schema: 1;
@@ -70,6 +72,20 @@ export interface RecoveryOperation {
   audit?: { at: number; action: "fresh-session" | "stop-and-archive"; reason: string; peer?: string; projects: string[] }[];
   disposition?: { choice: "stop-and-archive"; at: number; projects: Record<string, string> };
 }
+
+/**
+ * #215: the command line of this operation's own coordinator, which has every recovery command. Mid-upgrade the global
+ * `ahub` may still be the older release, so next actions and errors never name it bare.
+ */
+export function recoveryCommand(op: { id: string; sourceRoot?: string }, action: "status" | "resume" | "abort" | "dispose", flags = ""): string {
+  const entry = op.sourceRoot ? join(op.sourceRoot, "src/cli/main.js") : undefined;
+  const cli = !entry ? "ahub" : /^[\w./@+-]+$/.test(entry) ? `bun ${entry}` : `bun '${entry.replace(/'/g, `'\\''`)}'`;
+  return `${cli} recovery ${action} ${op.id}${flags ? ` ${flags}` : ""}`;
+}
+const STOP = "--stop-and-archive --reason <text>";
+
+/** Effects anywhere in the operation: a project past `prepared` or any terminal receipt. Abort needs none. */
+export const hasEffects = (op: RecoveryOperation) => op.projects.some((p) => !["pending", "prepared"].includes(p.phase) || Object.keys(p.terminals).length > 0);
 
 /** Registry reads for planning must not create a registry or run migrations. */
 export function registeredProjects(home = hubHome()): Project[] {
@@ -171,9 +187,9 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     if (!changed) return;
     // A session that is not in the plan, or whose terminal this operation closed, has no original to restore.
     const fix = extra || closed(changed.id) ? `end that ${changed.id} session` : `restore ${changed.id}'s original session`;
-    if (Object.keys(progress.terminals).length) throw new Error(`${planned.project.id}: ${changed.id} changed while terminal effects of this operation are recorded, so a new plan cannot replace it; next action: ${fix}, then ahub recovery resume ${id}; or ahub recovery dispose ${id} --stop-and-archive --reason <text>`);
+    if (hasEffects(op)) throw new Error(`${planned.project.id}: ${changed.id} changed while this operation has recorded effects, so a new plan cannot replace it; next action: ${fix}, then ${recoveryCommand(op, "resume")}; or ${recoveryCommand(op, "dispose", STOP)}`);
     // The lock this operation holds refuses a new upgrade until the operation is cancelled.
-    throw new Error(`source conversation or active peer membership changed; next action: ahub recovery abort ${id}, then make a new plan`);
+    throw new Error(`source conversation or active peer membership changed; next action: ${recoveryCommand(op, "abort")}, then make a new plan`);
   };
   // Prepare, or after an expired lease re-prepare, the planned source and wait until it is quiet.
   const prepareSource = async (planned: PlannedProject, progress: ProjectProgress, again = false) => {
@@ -193,7 +209,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     }
   };
   try {
-    if (op.disposition) throw new Error(`a stop-and-archive of this operation is partway; finish it with ahub recovery dispose ${id} --stop-and-archive --reason <text>`);
+    if (op.disposition) throw new Error(`a stop-and-archive of this operation is partway; next action: rerun ${recoveryCommand(op, "dispose", STOP)} once its runtimes have settled`);
     op.phase = "running"; delete op.error; save();
     step("stage");
     const target = await driver.stage(op);
@@ -224,12 +240,15 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
         if (live.state === "running" && live.instanceId === planned.source.instanceId) {
           if (live.recovery?.operationId !== id || !live.recovery.ready) {
             const other = live.recovery?.operationId;
-            if (other && other !== id && live.recovery?.phase !== "released") throw new Error(`${project.id}: the source is held by another recovery operation ${other}; nothing was prepared, closed or stopped; next action: resolve ${other}, then ahub recovery resume ${id}`);
+            if (other && other !== id && live.recovery?.phase !== "released") throw new Error(`${project.id}: the source is held by another recovery operation ${other}; nothing was prepared, closed or stopped; next action: ${recoveryCommand(op, "status")}, then ${recoveryCommand(op, "dispose", STOP)} ends this operation and leaves that hold alone`);
             // #215: the hold lapsed (an expired lease) after this operation may have recorded terminal effects.
             // Re-prepare the same verified source; the receipts stay, so no terminal is closed twice.
             step(`reprepare:${project.id}`);
             await prepareSource(planned, progress, true);
             step(`commit:${project.id}`);
+          } else {
+            // #215: a hold of ours can predate a roster change, as after a resume whose roster check failed: check again.
+            sourceRoster(live, planned, progress, true);
           }
           await driver.closeTerminals(planned, progress, op, save);
           await driver.commit(project, id, planned.source.instanceId!);
@@ -241,7 +260,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
             await driver.sleep(100);
           } while (driver.now() < deadline);
         } else if (live.state === "running") {
-          throw new Error(`${project.id}: the source daemon was replaced by instance ${live.instanceId ?? "unknown"}; refusing to prepare, close or stop it; next action: ahub recovery status ${id} lists the recorded effects, and ahub recovery dispose ${id} --stop-and-archive --reason <text> ends this operation, leaving that daemon running`);
+          throw new Error(`${project.id}: the source daemon was replaced by instance ${live.instanceId ?? "unknown"}; refusing to prepare, close or stop it; next action: ${recoveryCommand(op, "status")} lists the recorded effects, and ${recoveryCommand(op, "dispose", STOP)} ends this operation, leaving that daemon running`);
         }
         if (live.state !== "stopped") throw new Error("old shutdown is not verified; not starting a second daemon");
         progress.phase = "stopped"; save();
@@ -300,14 +319,14 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
 export function publicOperation(op: RecoveryOperation, runnerPid?: number) {
   const effect = (value: unknown) => value === "pending" || value === "failed" ? value : "done";
   const failed = [...new Set(op.projects.flatMap((p) => Object.entries(p.terminals).filter(([key, value]) => key.startsWith("restored:") && key !== "restored:pi" && value === "failed" && !p.fresh?.[key.slice("restored:".length)]).map(([key]) => key.slice("restored:".length))))];
-  const effects = op.projects.some((p) => !["pending", "prepared"].includes(p.phase) || Object.keys(p.terminals).length);
   const open = op.phase !== "completed" && op.phase !== "cancelled";
-  const next = !open ? [] : runnerPid ? [`wait: runner ${runnerPid} is working; ahub recovery status ${op.id}`]
-    : op.disposition ? [`ahub recovery dispose ${op.id} --stop-and-archive --reason <text>`] : [
-    `ahub recovery resume ${op.id}${op.error ? " (after the cause in error is fixed)" : ""}`,
-    ...(effects ? [] : [`ahub recovery abort ${op.id}`]),
-    ...failed.map((peer) => `ahub recovery dispose ${op.id} --fresh-session ${peer} --reason <text>`),
-    ...(effects ? [`ahub recovery dispose ${op.id} --stop-and-archive --reason <text>`] : []),
+  // The order and the texts follow the receipt table in the recovery spec; stop-and-archive is always allowed, last.
+  const next = !open ? [] : runnerPid ? [`wait: runner ${runnerPid} is working; ${recoveryCommand(op, "status")}`]
+    : op.disposition ? [`rerun ${recoveryCommand(op, "dispose", STOP)} once its runtimes have settled`] : [
+    `${recoveryCommand(op, "resume")}${op.error ? " (after the next action in error)" : ""}`,
+    ...(hasEffects(op) ? [] : [recoveryCommand(op, "abort")]),
+    ...failed.map((peer) => recoveryCommand(op, "dispose", `--fresh-session ${peer} --reason <text>`)),
+    recoveryCommand(op, "dispose", STOP),
   ];
   return { id: op.id, phase: op.phase, step: op.step, version: op.plan.version, updatedAt: op.updatedAt,
     runner: runnerPid ? { state: "running", pid: runnerPid } : { state: "none" },
@@ -333,8 +352,8 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
       if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
       return;
     }
-    if (op.projects.some((p) => !["pending", "prepared"].includes(p.phase) || Object.keys(p.terminals).length)) {
-      throw new Error(`operation has stopped runtimes or uncertain terminal effects; resume it instead, or end it with ahub recovery dispose ${id} --stop-and-archive --reason <text>`);
+    if (hasEffects(op)) {
+      throw new Error(`operation has stopped runtimes or uncertain terminal effects; resume it instead (${recoveryCommand(op, "resume")}), or end it with ${recoveryCommand(op, "dispose", STOP)}`);
     }
     const { fingerprint, ...body } = op.plan;
     if (fingerprint !== planFingerprint(body)) throw new Error("operation plan changed");
@@ -371,11 +390,11 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
     const at = driver.now();
     if ("fresh" in choice) {
       // `ahub pi` sends no fresh flag, and a restored hub refills a Pi start from its recorded resume (daemon startPeer).
-      if (choice.fresh === "pi") throw new Error(`pi: --fresh-session is not supported: a restored hub resumes Pi's recorded session, so a fresh one cannot be guaranteed; next action: ahub recovery dispose ${id} --stop-and-archive --reason <text>`);
-      if (op.disposition) throw new Error(`a stop-and-archive of this operation is partway; finish it with ahub recovery dispose ${id} --stop-and-archive --reason <text>`);
+      if (choice.fresh === "pi") throw new Error(`pi: --fresh-session is not supported: a restored hub resumes Pi's recorded session, so a fresh one cannot be guaranteed; next action: ${recoveryCommand(op, "dispose", STOP)}`);
+      if (op.disposition) throw new Error(`a stop-and-archive of this operation is partway; next action: rerun ${recoveryCommand(op, "dispose", STOP)} once its runtimes have settled`);
       const peer = choice.fresh;
       const failed = op.projects.filter((p) => p.terminals[`restored:${peer}`] === "failed");
-      if (!failed.length) throw new Error(`${peer}: no restoration of it failed in this operation; --fresh-session applies only then (ahub recovery status ${id})`);
+      if (!failed.length) throw new Error(`${peer}: no restoration of it failed in this operation; --fresh-session applies only then (${recoveryCommand(op, "status")})`);
       for (const progress of failed) {
         const binding = (op.plan.projects.find((p) => p.project.id === progress.id)!.terminals as { peer: string; sessionId: string }[]).find((t) => t.peer === peer)!;
         (progress.fresh ??= {})[peer] = { lost: binding.sessionId, reason, at };
@@ -399,6 +418,8 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
         : live.state !== "running" ? undefined
         : ours && live.instanceId === planned.source.instanceId && ["pending", "prepared"].includes(progress.phase) ? "source hold released; source left running"
         : target ? "target stopped"
+        : live.instanceId === planned.source.instanceId && ["pending", "prepared"].includes(progress.phase)
+          ? `source left running (${progress.phase === "prepared" ? "its hold had lapsed" : "never prepared"})`
         : `left running: instance ${live.instanceId ?? "unknown"} is not held by this operation`;
       if (!act) throw new Error(`${planned.project.id}: runtime is ${live!.state}, so its ownership cannot be verified; nothing was stopped or released; retry once it settles`);
       acts.push({ planned, ...(live ? { live } : {}), act });
@@ -418,7 +439,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
       }
     } catch (error) {
       op.phase = "blocked"; op.updatedAt = driver.now();
-      op.error = `stop-and-archive stopped partway and keeps the lock: ${error instanceof Error ? error.message : "disposition failed"}; rerun ahub recovery dispose ${id} --stop-and-archive --reason <text> once its runtimes have settled (a committed source stops by itself)`;
+      op.error = `stop-and-archive stopped partway and keeps the lock: ${error instanceof Error ? error.message : "disposition failed"}; next action: rerun ${recoveryCommand(op, "dispose", STOP)} once its runtimes have settled (a committed source stops by itself)`;
       writeOperation(id, op, home);
       throw error;
     }

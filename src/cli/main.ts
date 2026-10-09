@@ -24,7 +24,7 @@ import { freeText } from "./free-text.ts";
 import { createInterface } from "node:readline/promises";
 import { assertLifecycleAvailable, readOperation, recoveryLock, recoveryRunner } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
-import { abortRecovery, createOperation, disposeRecovery, publicOperation, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
+import { abortRecovery, createOperation, disposeRecovery, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
 import { makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { recordTerminalLaunch } from "./terminal-recovery.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
@@ -328,9 +328,10 @@ function spawnRecovery(operation: RecoveryOperation): void {
   const child = spawn(process.execPath, [join(operation.sourceRoot, "src/cli/main.js"), "recovery-run", operation.id], {
     cwd, detached: true, stdio: "ignore", env: { ...process.env, AGENTHUB_RECOVERY_OPERATION: operation.id },
   });
-  child.on("error", () => console.error(`runner launch failed; use ahub recovery resume ${operation.id}`));
+  child.on("error", () => console.error(`runner launch failed; use ${recoveryCommand(operation, "resume")}`));
   child.unref();
-  console.log(`Recovery operation ${operation.id} scheduled.\nahub recovery status ${operation.id}`);
+  // #215: the operation's own coordinator, which has every recovery command; the global ahub may be older mid-upgrade.
+  console.log(`Recovery operation ${operation.id} scheduled.\n${recoveryCommand(operation, "status")}`);
 }
 
 async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
@@ -342,6 +343,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   console.log(JSON.stringify(plan, null, 2));
   // #206: name every blocker and reconnect-only session on stderr, not only inside the JSON above.
   for (const p of plan.projects) for (const peer of p.reconnectOnly ?? []) console.error(`ahub: ${p.project.id}: ${peer} is reconnect-only (unmanaged session): its plugin reattaches to the new hub; no terminal is closed or relaunched`);
+  for (const p of plan.projects) for (const peer of p.freshStart ?? []) console.error(`ahub: ${p.project.id}: ${peer} restarts as a new session: its thread has no rollout and the hub recorded no turn on it, so nothing is lost`);
   const blockers = [...plan.blockers, ...plan.projects.flatMap((p) => p.blockers.map((b) => `${p.project.id}: ${b}`))];
   for (const blocker of blockers) console.error(`ahub: blocker: ${blocker}`);
   if (args.includes("--dry-run")) return;
@@ -384,7 +386,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       console.log("upgrade abandoned, not completed; the recovery lock is released. A project whose target ran starts again with that version's CLI.");
     }
     else if (["completed", "cancelled"].includes(operation.phase)) console.log(`recovery is already ${operation.phase}`);
-    else if (runner) console.log(`runner ${runner} is still working on this operation; ahub recovery status ${id}`);
+    else if (runner) console.log(`runner ${runner} is still working on this operation; ${recoveryCommand(operation, "status")}`);
     else spawnRecovery(operation);
   },
   "recovery-run": async () => {

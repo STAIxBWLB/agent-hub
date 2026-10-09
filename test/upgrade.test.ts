@@ -9,6 +9,7 @@ import { PROTOCOL } from "../src/hub/control-client.ts";
 import { makeRecoveryDriver, PACKAGE_ROOT } from "../src/cli/upgrade-runtime.ts";
 
 const homes: string[] = [];
+const C = "bun /retained/src/cli/main.js recovery"; // the fixture's preserved coordinator (#215)
 afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true }); });
 function fixture(kind: "restart" | "upgrade" = "upgrade") {
   const home = mkdtempSync(join(tmpdir(), "ahub-upgrade-test-")); homes.push(home);
@@ -344,7 +345,7 @@ test("re-preparation refuses a conflicting operation, a replaced daemon and a ch
     { change: (f: ReturnType<typeof fixture>) => { f.states.get("alpha")!.recovery = { operationId: "11111111-1111-1111-1111-111111111111", phase: "prepared", ready: true }; },
       error: "held by another recovery operation 11111111-1111-1111-1111-111111111111", prepared: false },
     { change: (f: ReturnType<typeof fixture>) => { f.states.get("alpha")!.instanceId = "replacement"; }, error: "replaced by instance replacement", prepared: false },
-    { change: (f: ReturnType<typeof fixture>) => { f.states.get("alpha")!.peers[1]!.threadId = "t-other"; }, error: "codex changed while terminal effects of this operation are recorded", prepared: true },
+    { change: (f: ReturnType<typeof fixture>) => { f.states.get("alpha")!.peers[1]!.threadId = "t-other"; }, error: "codex changed while this operation has recorded effects", prepared: true },
   ];
   for (const c of cases) {
     const f = expiredLease();
@@ -352,7 +353,7 @@ test("re-preparation refuses a conflicting operation, a replaced daemon and a ch
     const result = await runRecovery(f.operation.id, f.driver, f.home);
     expect(result.phase).toBe("blocked");
     expect(result.error).toContain(c.error);
-    expect(result.error).toContain(`ahub recovery`); // an actionable next step, not the bare "source is no longer prepared"
+    expect(result.error).toContain(`${C} `); // the operation's own coordinator, not the bare "source is no longer prepared"
     expect(f.calls.includes("prepare:alpha")).toBe(c.prepared);
     expect(f.calls.some((call) => ["commit:alpha", "close:codex", "close:claude", "abort:alpha"].includes(call))).toBe(false);
     expect(result.projects[0]!.terminals).toEqual({ "closed:claude": true });
@@ -376,15 +377,15 @@ function failedRestore() {
 test("a failed restoration offers both dispositions; fresh-session records the lost thread and keeps the lock", async () => {
   const f = failedRestore();
   expect(publicOperation(readOperation(f.operation.id, f.home)).next).toEqual([
-    `ahub recovery resume ${f.operation.id}`,
-    `ahub recovery dispose ${f.operation.id} --fresh-session codex --reason <text>`,
-    `ahub recovery dispose ${f.operation.id} --stop-and-archive --reason <text>`,
+    `${C} resume ${f.operation.id}`,
+    `${C} dispose ${f.operation.id} --fresh-session codex --reason <text>`,
+    `${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`,
   ]);
   await expect(disposeRecovery(f.operation.id, { fresh: "claude" }, "wrong peer", f.driver, f.home)).rejects.toThrow("no restoration of it failed");
   const op = await disposeRecovery(f.operation.id, { fresh: "codex" }, "rollout missing from the store", f.driver, f.home);
   expect(op.projects[0]!.fresh?.codex).toMatchObject({ lost: "t1", reason: "rollout missing from the store" });
   expect(op.projects[0]!.terminals).toEqual({ "closed:codex": true, "restored:codex": "failed" }); // until resume launches the fresh session
-  expect(publicOperation(op).next).not.toContain(`ahub recovery dispose ${f.operation.id} --fresh-session codex --reason <text>`);
+  expect(publicOperation(op).next).not.toContain(`${C} dispose ${f.operation.id} --fresh-session codex --reason <text>`);
   expect(op.audit).toEqual([expect.objectContaining({ action: "fresh-session", peer: "codex", projects: ["alpha"] })]);
   expect(op.phase).toBe("blocked");
   expect(recoveryLock(f.home)).toBe(f.operation.id);
@@ -427,7 +428,7 @@ test("stop-and-archive never stops a daemon this operation does not hold", async
   f.states.set("alpha", { state: "running", instanceId: "replacement", version: "0.5.0", protocol: 10, peers: [], blockers: [] });
   const op = await disposeRecovery(f.operation.id, { stop: true }, "replacement appeared", f.driver, f.home);
   expect(f.calls).toEqual([]);
-  expect(op.disposition?.projects).toEqual({ alpha: "left running: instance replacement is not held by this operation", beta: "left running: instance old-beta is not held by this operation" });
+  expect(op.disposition?.projects).toEqual({ alpha: "left running: instance replacement is not held by this operation", beta: "source left running (never prepared)" });
   expect(op.phase).toBe("cancelled");
   expect(recoveryLock(f.home)).toBeUndefined();
 });
@@ -462,7 +463,7 @@ test("a stop-and-archive that fails partway records what it did, keeps the lock 
   let op = readOperation(f.operation.id, f.home) as ReturnType<typeof fixture>["operation"];
   expect(op.disposition?.projects).toEqual({ alpha: "target stopped" });
   expect(op.error).toContain("stop-and-archive stopped partway and keeps the lock");
-  expect(publicOperation(op).next).toEqual([`ahub recovery dispose ${f.operation.id} --stop-and-archive --reason <text>`]);
+  expect(publicOperation(op).next).toEqual([`rerun ${C} dispose ${f.operation.id} --stop-and-archive --reason <text> once its runtimes have settled`]);
   expect(recoveryLock(f.home)).toBe(f.operation.id);
   await expect(disposeRecovery(f.operation.id, { fresh: "codex" }, "no", f.driver, f.home)).rejects.toThrow("stop-and-archive of this operation is partway");
   const calls = f.calls.length;
@@ -493,7 +494,7 @@ test("--fresh-session pi is refused and never offered", async () => {
   writeOperation(f.operation.id, f.operation, f.home);
   await expect(disposeRecovery(f.operation.id, { fresh: "pi" }, "lost", f.driver, f.home)).rejects.toThrow("pi: --fresh-session is not supported");
   const next = publicOperation(readOperation(f.operation.id, f.home)).next;
-  expect(next).toContain(`ahub recovery dispose ${f.operation.id} --fresh-session codex --reason <text>`);
+  expect(next).toContain(`${C} dispose ${f.operation.id} --fresh-session codex --reason <text>`);
   expect(next.some((line) => line.includes("--fresh-session pi"))).toBe(false);
 });
 
@@ -508,8 +509,8 @@ test("a changed roster after an expired hold with no effects names abort, and ab
   writeOperation(f.operation.id, f.operation, f.home);
   f.states.get("alpha")!.peers = [{ id: "codex", state: "idle", threadId: "t1" }, { id: "kimi", state: "idle" }];
   const blocked = await runRecovery(f.operation.id, f.driver, f.home);
-  expect(blocked.error).toBe(`source conversation or active peer membership changed; next action: ahub recovery abort ${f.operation.id}, then make a new plan`);
-  expect(publicOperation(blocked).next).toContain(`ahub recovery abort ${f.operation.id}`);
+  expect(blocked.error).toBe(`source conversation or active peer membership changed; next action: ${C} abort ${f.operation.id}, then make a new plan`);
+  expect(publicOperation(blocked).next).toContain(`${C} abort ${f.operation.id}`);
   delete f.states.get("alpha")!.recovery; // the re-prepared hold lapses again before the operator acts
   await abortRecovery(f.operation.id, f.driver, f.home);
   expect((readOperation(f.operation.id, f.home) as { phase: string }).phase).toBe("cancelled");
@@ -521,7 +522,7 @@ test("a session that joined after the plan, with effects recorded, is to be ende
   const f = expiredLease();
   f.states.get("alpha")!.peers.push({ id: "kimi", state: "idle" });
   const result = await runRecovery(f.operation.id, f.driver, f.home);
-  expect(result.error).toContain("kimi changed while terminal effects of this operation are recorded, so a new plan cannot replace it; next action: end that kimi session, then ahub recovery resume");
+  expect(result.error).toContain(`kimi changed while this operation has recorded effects, so a new plan cannot replace it; next action: end that kimi session, then ${C} resume`);
 });
 
 test("staging refuses a target that cannot read recovery waivers when a reconnect-only session is planned", async () => {
@@ -533,4 +534,38 @@ test("staging refuses a target that cannot read recovery waivers when a reconnec
   await expect(driver.stage(f.operation)).rejects.toThrow("predates recovery waivers");
   const current = makeRecoveryDriver(async (argv) => ({ code: 0, stdout: argv[2]!.includes("readRecoveryWaivers") ? "function\n" : `${PROTOCOL}\n`, stderr: "" }));
   expect((await current.stage(f.operation)).root).toBe(PACKAGE_ROOT);
+});
+
+// #215 review: a failed roster check during re-preparation keeps the hold it took; a second resume inside the lease
+// sees the hold ours and ready and must still compare the roster before it closes anything (#215 AC2).
+test("a second resume within the hold's lease checks the roster again and never closes or commits a changed conversation", async () => {
+  const f = expiredLease();
+  f.states.get("alpha")!.peers[1]!.threadId = "t-new"; // the person started a new Codex conversation meanwhile
+  expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toContain("codex changed while this operation has recorded effects");
+  expect(f.states.get("alpha")!.recovery).toMatchObject({ operationId: f.operation.id, ready: true });
+  const second = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(second.error).toContain("codex changed while this operation has recorded effects");
+  expect(f.calls.filter((call) => call === "prepare:alpha")).toHaveLength(1); // the second run did not re-prepare
+  expect(f.calls.some((call) => ["close:codex", "close:claude", "commit:alpha"].includes(call))).toBe(false);
+});
+
+test("a roster change in an untouched project names stop-and-archive, not abort, once another project has effects", async () => {
+  const f = fixture();
+  f.plan.projects[1]!.source.peers = [{ id: "codex", state: "idle", threadId: "t1" }];
+  const { fingerprint: _ignored, ...body } = f.plan;
+  f.plan.fingerprint = planFingerprint(body);
+  f.operation.projects[0]!.phase = "verified";
+  writeOperation(f.operation.id, f.operation, f.home);
+  f.states.get("beta")!.peers = [{ id: "codex", state: "idle", threadId: "t2" }];
+  const result = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(result.error).toContain(`beta: codex changed while this operation has recorded effects, so a new plan cannot replace it; next action: restore codex's original session, then ${C} resume ${f.operation.id}; or ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
+  expect(result.error).not.toContain(" abort ");
+  expect(publicOperation(result).next).not.toContain(`${C} abort ${f.operation.id}`);
+});
+
+test("stop-and-archive names the operation's own lapsed source as such", async () => {
+  const f = expiredLease();
+  const op = await disposeRecovery(f.operation.id, { stop: true }, "give up after the lease", f.driver, f.home);
+  expect(op.disposition?.projects.alpha).toBe("source left running (its hold had lapsed)");
+  expect(f.calls).toEqual([]);
 });

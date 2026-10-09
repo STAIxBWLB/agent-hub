@@ -132,7 +132,7 @@ test("resume declines while a runner holds the operation", async () => {
   for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("ORCA_") || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete env[key];
   env.AGENTHUB_HOME = home;
   const id = "00000000-0000-4000-8000-000000000215";
-  writeOperation(id, { schema: 1, id, phase: "running", step: "restore:p", plan: { version: "0.0.0" }, projects: [], updatedAt: 1 }, home);
+  writeOperation(id, { schema: 1, id, phase: "running", step: "restore:p", sourceRoot: "/preserved/coordinator", plan: { version: "0.0.0" }, projects: [], updatedAt: 1 }, home);
   const release = claimRunner(id, home);
   const cli = async (args: string[]) => {
     const p = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", root, ...args], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
@@ -140,7 +140,8 @@ test("resume declines while a runner holds the operation", async () => {
     return { code, out };
   };
   try {
-    expect(await cli(["recovery", "resume", id])).toEqual({ code: 0, out: `runner ${process.pid} is still working on this operation; ahub recovery status ${id}\n` });
+    // Named by the operation's own coordinator: mid-upgrade the global ahub may be the older release (#215).
+    expect(await cli(["recovery", "resume", id])).toEqual({ code: 0, out: `runner ${process.pid} is still working on this operation; bun /preserved/coordinator/src/cli/main.js recovery status ${id}\n` });
     expect(JSON.parse((await cli(["recovery", "status", id])).out)).toMatchObject({ runner: { state: "running", pid: process.pid } });
   } finally { release(); rmSync(temp, { recursive: true, force: true }); }
 });

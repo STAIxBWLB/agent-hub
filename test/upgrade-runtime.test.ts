@@ -10,6 +10,7 @@ import type { PlannedProject, ProjectProgress, RecoveryOperation } from "../src/
 import { Registry } from "../src/hub/registry.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
 import { readRecoveryWaivers } from "../src/hub/restart.ts";
+import { BasePeer } from "../src/hub/peers.ts";
 
 // #206: a plain `claude` is attached while claude-session.json still holds the session an earlier, ended
 // `ahub claude` launch recorded, and the project terminal it runs in shows no agent identity.
@@ -373,6 +374,7 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
   const run = async (argv: string[]) => {
     calls.push(argv);
     if (argv[1] === "-e") return { code: 0, stdout: "function\n", stderr: "" }; // the target reads recovery waivers
+    if (argv[2] === "wait" && attachedThread) return { code: 0, stdout: JSON.stringify({ ok: true, result: { wait: { satisfied: true } } }), stderr: "" };
     if (argv[2] === "create") { record(resumes); if (resumes) attachedThread = "thread-new"; }
     // The launch was typed into a login shell that outlives it: a codex that exits leaves a terminal that never
     // reads TUI-idle, and Orca answers each timed-out wait with exit 1 and error code "timeout".
@@ -389,7 +391,7 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
     terminals: [{ peer: "codex", handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", projectRoot: temp, sessionId: "thread-T", launch, launchMetadata: launch }], blockers: [],
   };
   const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "started", terminals: { "closed:codex": true, "restored:codex": "pending" } };
-  const op = { id: "op-215", targetRoot: "/target", plan: { version: VERSION } } as RecoveryOperation;
+  const op = { id: "op-215", sourceRoot: "/retained", targetRoot: "/target", plan: { version: VERSION } } as RecoveryOperation;
   const previousHome = process.env.AGENTHUB_HOME;
   process.env.AGENTHUB_HOME = join(temp, "home");
   try {
@@ -408,10 +410,17 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
     expect(calls.filter((argv) => argv[2] === "create")).toHaveLength(1);
     expect(calls.some((argv) => argv.includes("exit"))).toBe(false);
 
-    // A launcher still live here is never doubled, whatever the receipt says.
+    // A failed receipt is settled by what is live: a launcher still running is waited for, never doubled.
     record(true, "term-elsewhere");
-    await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("is live on the target although none was restored; no terminal was created");
+    await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("its launcher in terminal term-elsewhere is running but no codex session attached yet; next action: wait until it attaches, or end it and close terminal term-elsewhere, then bun /retained/src/cli/main.js recovery resume op-215");
+    expect(progress.terminals["restored:codex"]).toBe("failed");
     expect(calls.filter((argv) => argv[2] === "create")).toHaveLength(1);
+    // ...and once the planned thread attached there, the failed receipt is the restoration.
+    replacement.sessionId = "thread-T"; attachedThread = "thread-T";
+    await driver.restore(planned, progress, op, "native", () => {});
+    expect(progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", sessionId: "thread-T" });
+    expect(calls.filter((argv) => argv[2] === "create")).toHaveLength(1);
+    progress.terminals["restored:codex"] = "failed"; replacement.sessionId = "thread-new"; attachedThread = undefined;
     record(false);
 
     progress.fresh = { codex: { lost: "thread-T", reason: "test", at: 1 } };
@@ -424,5 +433,46 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
   } finally {
     if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
     server.stop(true); rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+// #215 review: Codex writes a thread's rollout with its first message, so an attached thread with no turn has none yet.
+test("a Codex thread with no rollout restarts fresh while the hub recorded no turn on it, and blocks once it has one", async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-codex-zero-turn-")));
+  mkdirSync(join(temp, "project"));
+  const store = join(temp, "codex-home");
+  mkdirSync(join(store, "sessions"), { recursive: true });
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "home");
+  const registry = new Registry(join(temp, "home", "registry.db"));
+  const project = registry.register(join(temp, "project"));
+  registry.close();
+  const daemon = await startDaemon({ cwd: project.root, stateDir: project.stateDir, projectId: project.id, instanceId: "i-zero", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [] } } });
+  class CodexLike extends BasePeer {
+    async deliver(): Promise<void> {}
+    async start(): Promise<void> { this.setState("idle"); }
+    async stop(): Promise<void> { this.setState("offline"); }
+    turn(): void { this.setState("busy"); this.setState("idle"); }
+    recoveryMetadata(): Record<string, unknown> { return { launch: { kind: "codex" }, threadId: "thread-Z" }; }
+  }
+  const codex = new CodexLike("codex");
+  daemon.bus.add(codex);
+  await codex.start();
+  const shown = { handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", worktreePath: project.root, agentIdentity: "codex", sessionId: "thread-Z", connected: true, env: { CODEX_HOME: store } };
+  const run = async (argv: string[]) => ({ code: 0, stdout: JSON.stringify({ ok: true, result: argv[2] === "list" ? { terminals: [shown] } : { terminal: shown } }), stderr: "" });
+  try {
+    const plan = await makeUpgradePlan("restart", VERSION, project.root, run);
+    expect(plan.projects[0]?.freshStart).toEqual(["codex"]);
+    expect(plan.projects[0]?.blockers).toEqual([]);
+    codex.turn();
+    const later = await makeUpgradePlan("restart", VERSION, project.root, run);
+    expect(later.projects[0]?.freshStart).toBeUndefined();
+    expect(later.projects[0]?.blockers).toEqual([expect.stringContaining("codex: thread thread-Z has no resumable transcript under")]);
+    expect(later.projects[0]?.blockers[0]).toContain("although the hub recorded turns on it");
+  } finally {
+    await daemon.stop();
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+    rmSync(temp, { recursive: true, force: true });
   }
 });

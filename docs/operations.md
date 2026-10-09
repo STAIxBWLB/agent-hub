@@ -1144,7 +1144,13 @@ that says running with no runner behind it); each project's phase and effect
 receipts (`closed:<peer>`, `restored:<peer>` as `done`, `pending` or `failed`);
 whether the shared plugin and the global CLI were installed; and `next`, the
 commands that apply now. It shows no task or message text. `resume` does not
-start a second runner while one is alive.
+start a second runner while one is alive. Every `next` entry and error names the
+operation's own coordinator, `bun <preserved source>/src/cli/main.js recovery
+...`: in the middle of an upgrade the global `ahub` may still be the older
+release, whose `recovery` lacks these commands. Copy that command line. What
+each receipt allows, given what is live, is tabulated in the recovery spec
+(`docs/specs/2026-09-20-upgrade-recovery-design.md`, "Receipts, evidence and
+next actions").
 
 - The source hold lapses after 10 minutes. A later `resume` prepares the same
   source again and checks its peers again, keeping the receipts, so no terminal
@@ -1153,22 +1159,31 @@ start a second runner while one is alive.
   terminal the operation closed must stay closed, a session that joined since
   must end, every other one must keep its conversation. With nothing closed yet,
   `abort` cancels the operation (also once its hold has lapsed) so a new plan
-  can be made.
+  can be made; once any project has effects, the way out is stop-and-archive.
+  A second `resume` while its own hold still stands checks the peers again
+  before it closes anything.
 - A Codex conversation comes back only when a rollout file naming its thread
   exists under `sessions/` of the store the restored terminal uses (the
-  recorded `CODEX_HOME`, else `~/.codex`). The plan blocks on one that does not,
-  the coordinator checks again before closing the terminal and before creating
-  the new one. To continue without such a conversation, end that Codex session
-  and close its Orca terminal, then `resume`; it stops at restoring Codex, where
-  `--fresh-session codex` below is the way on.
+  recorded `CODEX_HOME`, else `~/.codex`). Codex writes that file with the
+  first message, so a thread on which the hub recorded no turn since Codex
+  attached is listed under `freshStart` and restarts as a new session, with
+  nothing to lose; the command says so. A thread with turns and no rollout
+  blocks the plan, and so does a store that cannot be read (unknown, not
+  missing). The coordinator checks again before closing the terminal and before
+  creating the new one. To continue without such a conversation, end that Codex
+  session and close its Orca terminal, then `resume`; it stops at restoring
+  Codex, where `--fresh-session codex` below is the way on.
 - A restored terminal runs its launch in a login shell, so the coordinator
   watches the launcher, not the terminal: once `ahub codex`, `ahub claude` or
   `ahub pi` has recorded itself there and its process is gone, or Orca no longer
-  has the terminal, the restoration failed (found within one 5-second wait). A
-  launcher that dies before recording itself is found only after the 10-minute
+  lists that terminal at all, the restoration failed (found within one 5-second
+  wait). A launcher whose process cannot be read counts as running, never as
+  gone. One that dies before recording itself is found only after the 10-minute
   wait, or when `resume` finds neither a live launcher nor an attached session.
-  The receipt then says `restored:<peer>` `failed`; it never counts as restored,
-  and no second terminal is opened while a launcher for that peer still runs.
+  The receipt then says `restored:<peer>` `failed`; it never counts as restored.
+  `resume` settles a `pending` or `failed` receipt by what is live: the planned
+  session attached is the restoration, a launcher still running is waited for,
+  and no second terminal is opened while one may run.
 - `ahub recovery dispose <operation-id> --fresh-session <peer> --reason <text>`
   applies to a Codex or Claude peer whose restoration failed (Pi is refused: a
   restored hub resumes Pi's recorded session). It records the lost session or

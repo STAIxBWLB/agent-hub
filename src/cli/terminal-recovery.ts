@@ -280,12 +280,20 @@ function writeLaunchRecords(stateDir: string, rows: RecordedTerminalLaunch[]): v
 }
 
 async function launcherMatches(row: RecordedTerminalLaunch, identity: ProcessIdentity): Promise<boolean> {
-  try {
-    const signature = await identity(row.launcherPid);
-    return typeof signature === "string" && signature.length > 0 && signature === row.launcherSignature;
-  } catch {
-    return false;
-  }
+  return await launcherState(row, identity) === "live";
+}
+
+/**
+ * #215: live when the recorded process signature matches; gone when the pid no longer exists (ESRCH) or another
+ * process holds it now; unknown when the pid exists but its identity cannot be read. Unknown is never gone.
+ */
+export type LauncherState = "live" | "gone" | "unknown";
+async function launcherState(row: RecordedTerminalLaunch, identity: ProcessIdentity): Promise<LauncherState> {
+  let signature: string | undefined;
+  try { signature = await identity(row.launcherPid); } catch { /* unreadable: decided by the pid probe below */ }
+  if (typeof signature === "string" && signature.length > 0) return signature === row.launcherSignature ? "live" : "gone";
+  try { process.kill(row.launcherPid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return "gone"; }
+  return "unknown";
 }
 
 async function liveRecords(stateDir: string, projectRoot: string, instanceId: string, identity: ProcessIdentity): Promise<RecordedTerminalLaunch[]> {
@@ -297,8 +305,16 @@ async function liveRecords(stateDir: string, projectRoot: string, instanceId: st
 
 /** The live launcher recorded for `peer` against this daemon instance, if any: what makes a native session managed (#206). */
 export async function recordedLauncher(peer: TerminalPeer, projectRoot: string, options?: TerminalRecoveryOptions): Promise<RecordedTerminalLaunch | undefined> {
+  const launch = await launcherOf(peer, projectRoot, options);
+  return launch?.state === "live" ? launch.record : undefined;
+}
+
+/** #215: the launcher recorded for `peer` on this instance (one row per peer and instance) and its state. */
+export async function launcherOf(peer: TerminalPeer, projectRoot: string, options?: TerminalRecoveryOptions): Promise<{ record: RecordedTerminalLaunch; state: LauncherState } | undefined> {
   const config = normalizeOptions(options);
-  return (await liveRecords(config.stateDir, projectRoot, config.instanceId, config.processIdentity)).find((row) => row.peer === peer);
+  if (!config.stateDir || !config.instanceId) return undefined;
+  const record = readLaunchRecords(config.stateDir).find((row) => row.peer === peer && row.projectRoot === projectRoot && row.instanceId === config.instanceId);
+  return record ? { record, state: await launcherState(record, config.processIdentity) } : undefined;
 }
 
 /**
@@ -415,7 +431,7 @@ function blocker(code: RecoveryBlocker["code"], message: string, peer?: Terminal
     code === "ambiguous-terminal" ? "close or identify the duplicate terminal, then resume recovery" :
     code === "ambiguous-create" ? "inspect the existing terminal and attach the original session before resuming" :
     code === "terminal-unready" ? "finish or cancel the active terminal turn, then resume recovery" :
-    code === "launcher-exited" ? "read ahub recovery status for the recorded choices; the session was not restored" :
+    code === "launcher-exited" ? "the session was not restored; the coordinator's error names the choices" :
     code === "terminal-gone" ? "the terminal was closed; inspect the project's terminals in Orca before resuming recovery" :
     "inspect the named terminal and resume recovery after the identity is verified";
   return { code, message, ...(peer ? { peer } : {}), ...(handle ? { handle, terminalReference: handle } : {}), nextAction };
@@ -598,30 +614,39 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
       created = listed[0]!;
     }
     let replacement: TerminalBinding = { ...binding, handle: createdHandle, incarnationId: nestedString(created, ["incarnationId"])!, worktreeId, launch: binding.launch, launchMetadata: binding.launch };
-    // The launch record `ahub <peer>` writes in the new terminal, with whether its process still runs.
+    // The launch record `ahub <peer>` writes in the new terminal: live, gone (all recorded launchers), or neither.
     const launches = async () => {
       const possible = readLaunchRecords(config.stateDir).filter((item) => item.instanceId === config.instanceId && item.peer === binding.peer && item.projectRoot === binding.projectRoot && item.handle === createdHandle && item.worktreeId === replacement.worktreeId && item.incarnationId === replacement.incarnationId);
-      return { possible, live: (await Promise.all(possible.map(async (item) => await launcherMatches(item, config.processIdentity) ? item : undefined))).find((item): item is RecordedTerminalLaunch => item !== undefined) };
+      const states = await Promise.all(possible.map(async (item) => ({ item, state: await launcherState(item, config.processIdentity) })));
+      return { live: states.find((entry) => entry.state === "live")?.item, gone: states.length > 0 && states.every((entry) => entry.state === "gone"), mayRun: states.some((entry) => entry.state !== "gone") };
     };
     // #215: Orca types the command into a login shell that outlives it, so the terminal never exits with the launcher.
     // Readiness is awaited in slices, and between them the launcher's own record says whether it still runs: one that
-    // recorded itself and is gone, or a terminal Orca no longer has, failed. One that never recorded itself is
-    // left to the readiness bound and to the coordinator's reconciliation of its pending receipt.
+    // recorded itself and is gone failed. A stale handle is gone only when Orca no longer lists the terminal's
+    // incarnation and no recorded launcher may still run. One that never recorded itself is left to the readiness
+    // bound and to the coordinator's reconciliation of its pending receipt.
     const exited = (why: string) => ({ created: true, ready: false, manualRequired: true, blockers: [blocker("launcher-exited", `the ${binding.peer} restoration launcher in terminal ${createdHandle} ${why} before its TUI was ready`, binding.peer, createdHandle)] });
     const deadline = Date.now() + Math.min(timeoutMs, MAX_WAIT_MS);
-    let idle = await waitForIdle(replacement, Math.min(EXIT_SLICE_MS, timeoutMs), config);
+    const slice = () => Math.max(1, Math.min(EXIT_SLICE_MS, deadline - Date.now())); // Orca refuses --timeout-ms 0
+    let idle = await waitForIdle(replacement, slice(), config);
     for (;;) {
-      if (idle.blockers[0]?.code === "terminal-gone") return exited("lost its terminal");
+      if (idle.blockers[0]?.code === "terminal-gone") {
+        const launch = await launches();
+        if (launch.gone) return exited("exited");
+        if (launch.mayRun) break;
+        const listed = listTerminals(await run(config.runner, ["terminal", "list", "--json"])).some((terminal) => terminal.incarnationId === replacement.incarnationId);
+        if (!listed) return exited("lost its terminal");
+        break;
+      }
       if (idle.satisfied || idle.blockers[0]?.code !== "terminal-unready") break;
-      const launch = await launches();
-      if (launch.possible.length && !launch.live) return exited("exited");
+      if ((await launches()).gone) return exited("exited");
       if (Date.now() >= deadline) break;
-      idle = await waitForIdle(replacement, Math.min(EXIT_SLICE_MS, deadline - Date.now()), config);
+      idle = await waitForIdle(replacement, slice(), config);
     }
     if (!idle.satisfied) return { created: true, ready: false, manualRequired: true, blockers: idle.blockers };
     // An idle terminal may be the login shell the launcher returned to.
     const launch = await launches();
-    if (launch.possible.length && !launch.live) return exited("exited");
+    if (launch.gone) return exited("exited");
     const shown = await showBinding(replacement, config);
     const identity = identityFrom(shown);
     const session = sessionFrom(shown);
