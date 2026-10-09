@@ -1354,3 +1354,33 @@ untracked), with at least two real peers attached:
 - Let one task run past its `timeout_s`; check the run stops, names the open task and reads `stopped`.
 - Press Ctrl-C during a `verify`; check the attempt reads `interrupted` and nothing it started keeps running.
 - Run a second arm, then `ahub bench compare <arm> <arm>`; check the dashboard's Benchmarks section shows both.
+
+## Permission modes (#240, #242), 2026-10-10
+
+Installed native versions: Kimi 2.1.1, Codex 0.162.0, Claude Code 2.1.296,
+Pi 1.0.1. Checks use disposable scratch fixtures outside this repository, one
+short file-edit plus harmless `printf` shell prompt per non-ask mode. Native
+runs go through `dot admit`; no production permission command or sandbox
+change is used. Two admission attempts were deferred before any prompt by
+unrelated rsync jobs; a later attempt admitted the sequential fixture run.
+
+| Agent | Mode | File edit | Harmless shell | Permission evidence |
+| --- | --- | --- | --- | --- |
+| Kimi | ask-when-needed (`yolo`) | `file-edit-ok` read back | `shell-ok` read back | 0 ACP permission requests |
+| Kimi | never-ask (`auto`) | `file-edit-ok` read back | `shell-ok` read back | 0 ACP permission requests |
+| Codex | both non-ask modes | Pending, unverified | Pending, unverified | Native proxy fixture running |
+| Claude | both non-ask modes | Pending, unverified | Pending, unverified | Native fixture not completed |
+| Pi | both non-ask modes | Pending, unverified | Pending, unverified | Native fixture not completed |
+
+The Kimi trace records set_mode replies before each prompt. session/new lists
+`default`, `plan`, `auto`, `yolo` and currentModeId default; loading the same
+session after never-ask reports default, with no extra prompt. Fake regressions
+also cover a resumed session retaining auto/yolo, which is reset to default
+before prompts under the project's ask policy.
+
+Kimi's CLI calls `yolo` Ask When Needed and says routine edits and commands run
+automatically. The observed harmless shells agree. These two benign prompts do
+not prove risky-action policy or distinguish the two modes on risky actions;
+the contradictory ACP mode descriptions do not justify reversing the CLI/UI
+mapping. Codex similarly uses its native on-request policy rather than the
+Claude/Pi read/edit allowlist.

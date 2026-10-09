@@ -1,3 +1,4 @@
+import { PERMISSION_MODES } from "../hub/permission-mode.ts";
 import { sanitize } from "../hub/envelope.ts";
 
 export interface Approval {
@@ -19,6 +20,7 @@ export interface ConsoleState {
   peerFilter?: string; kindFilter?: string; project?: string;
   confirm?: { type: "permission"; id: string; option: string; peer: string } | { type: "command"; args: string[] };
   optionChoice?: string;
+  modeChoice?: string;
 }
 /** A detail view: text as the stream shows it, or labeled fields. */
 export type Detail = string | Record<string, unknown>;
@@ -267,7 +269,7 @@ const KEYS: [string, string[]][] = [
   ["Command", ["Enter run", "Esc cancel", "Up/Down history", "Ctrl-U clear"]],
   ["Panels", ["1-5 panel", "j/k or arrows move", "Enter view", "j/k scroll a view"]],
   ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select"]],
-  ["Peers", ["p pause", "r resume"]],
+  ["Peers", ["p pause", "r resume", "m permission mode"]],
   ["Tasks", ["a assign (then y)", "r review"]],
   ["Queue", ["r resolve (reason, then y)"]],
   ["Events", ["f peer filter", "g kind filter"]],
@@ -301,7 +303,7 @@ function bound(s: ConsoleState): ConsoleState {
   if (s.requestDetail && s.requestDetail !== s.approvalId) { s.requestDetail = s.approvalId; s.detailOffset = 0; }
   return s;
 }
-const COMMANDS = new Set(["status", "board", "task", "review", "say", "pause", "resume", "budget", "queue", "permit", "ask", "remember", "route", "turns", "undo", "check-path", "report"]);
+const COMMANDS = new Set(["status", "board", "task", "review", "say", "pause", "resume", "budget", "queue", "permit", "permission", "ask", "remember", "route", "turns", "undo", "check-path", "report"]);
 /** A tiny argv parser, never a shell. Quotes group arguments; backslash escapes one character. */
 export function parseConsoleCommand(input: string): string[] {
   const words: string[] = []; let word = ""; let quote = ""; let escaped = false; let started = false;
@@ -320,7 +322,8 @@ export function parseConsoleCommand(input: string): string[] {
   return words;
 }
 export function commandNeedsConfirmation(args: string[]): boolean {
-  return (args[0] === "task" && args[1] === "assign") || (args[0] === "queue" && args[1] === "resolve") || (args[0] === "permit" && args[2] !== "deny");
+  const positional = args.filter(arg => arg !== "--yes");
+  return (positional[0] === "permission" && positional[2] === "never-ask") || (args[0] === "task" && args[1] === "assign") || (args[0] === "queue" && args[1] === "resolve") || (args[0] === "permit" && args[2] !== "deny");
 }
 export function panelRows(s: ConsoleState): any[] {
   if (s.panel === 1) return Object.entries(s.peers).map(([id, peer]) => ({ id, ...peer, budget: s.budget[id] }));
@@ -344,11 +347,23 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   if (s.confirm) {
     const confirm = s.confirm; s.confirm = undefined;
     if (key === "y") {
-      if (confirm.type === "command") effects.push({ type: "command", args: confirm.args });
+      if (confirm.type === "command") effects.push({ type: "command", args: confirm.args[0] === "permission" && confirm.args[2] === "never-ask" ? [...confirm.args.filter(arg => arg !== "--yes"), "--yes"] : confirm.args });
       else if (s.approvals.some(a => a.id === confirm.id && allowOptions(a).some(o => o.optionId === confirm.option))) {
         effects.push({ type: "permit", id: confirm.id, option: confirm.option });
         answered(confirm.id);
       }
+    }
+    return done();
+  }
+  if (s.modeChoice) {
+    const peer = s.modeChoice;
+    if (key === "\x1b") { s.modeChoice = undefined; return done(); }
+    const mode = PERMISSION_MODES[Number(key) - 1];
+    if (/^[1-3]$/.test(key) && mode) {
+      s.modeChoice = undefined;
+      if (!s.peers[peer] || s.peers[peer].state === "offline") notify(s, `${peer} is no longer attached`, now);
+      else if (mode === "never-ask") s.confirm = { type: "command", args: ["permission", peer, mode] };
+      else effects.push({ type: "command", args: ["permission", peer, mode] });
     }
     return done();
   }
@@ -364,7 +379,8 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       const input = s.input; s.input = ""; s.editing = false;
       if (!input.trim()) return done();
       try {
-        const args = parseConsoleCommand(input);
+        const parsed = parseConsoleCommand(input);
+        const args = parsed[0] === "permission" ? [...parsed.filter(arg => arg !== "--yes"), ...(parsed.includes("--yes") ? ["--yes"] : [])] : parsed;
         if (args[0] === "queue" && args[1] === "resolve") {
           const reason = args.indexOf("--reason");
           if (reason < 0 || !args[reason + 1]?.trim()) throw new Error("queue resolve requires --reason");
@@ -430,6 +446,14 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     return done();
   }
   if (s.mode === "panels" && item !== undefined && item !== null) {
+    if (s.panel === 1 && key === "m") {
+      const peer = String(item);
+      const info = s.peers[peer];
+      if (peer === "local") notify(s, "local permission mode is not applicable: its sandbox bounds it", now);
+      else if (!info || info.state === "offline") notify(s, `${peer} is not attached`, now);
+      else s.modeChoice = peer;
+      return done();
+    }
     const prefill = s.panel === 1 && key === "p" ? `pause ${item}` : s.panel === 1 && key === "r" ? `resume ${item}` :
       s.panel === 3 && key === "a" ? `task assign ${item} ` : s.panel === 3 && key === "r" ? `review ${item} ` :
       s.panel === 4 && key === "r" ? `queue resolve ${item} --action retry --reason ` : undefined;
@@ -455,6 +479,7 @@ const TABLES: Record<number, string[]> = {
   3: ["ID", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "TITLE"],
   4: ["ID", "PEER", "STATE", "REV", "AGE"],
 };
+const showPermissionModes = (s: ConsoleState) => Object.values(s.peers).some(peer => peer.permissionMode && peer.permissionMode !== "ask");
 const count = (n: unknown) => typeof n === "number" && n ? String(n) : "-";
 /** One span per column of a panel row; zero counters and unknown values read `-`. */
 function cells(s: ConsoleState, row: any, selected: boolean, now: number): Span[] {
@@ -465,6 +490,7 @@ function cells(s: ConsoleState, row: any, selected: boolean, now: number): Span[
       ? `${row.paused.by ?? "paused"}${typeof row.paused.at === "number" ? ` ${duration(now - row.paused.at)}` : ""}`
       : row.paused === "manual" ? "user" : row.paused ? String(row.paused).split(":")[0] : "-";
     return [id(row.id, row.state === "offline" ? undefined : "info"), span(row.state, stateTone(row.state)),
+      ...(showPermissionModes(s) ? [span(row.permissionMode && row.permissionMode !== "ask" ? row.permissionMode : "-", row.permissionMode === "never-ask" ? "attention" : undefined)] : []),
       span(row.toolsOnly ? "tools-only" : row.attached === false ? "detached" : "attached", row.toolsOnly ? "attention" : undefined),
       span(count(row.queued)), span(count(row.queuedImportant), row.queuedImportant ? "attention" : undefined),
       span(count(row.needsReview), row.needsReview ? "failure" : undefined), span(paused, paused === "-" ? undefined : "attention"),
@@ -499,15 +525,16 @@ function table(head: string[], rows: Span[][], columns: number): Span[][] {
   }));
 }
 /** The footer's key hint: only keys that act in this mode, panel and state. */
-function hint(s: ConsoleState): string {
+function hint(s: ConsoleState, columns: number): string {
   const pending = selectedApproval(s) ? ["a allow", "d deny"] : [];
   if (s.mode === "stream") return [...pending, ...(pending.length ? ["v view"] : []), ...(s.approvals.length > (pending.length ? 1 : 0) ? ["[ ] select"] : []), "Tab panels", ": command", "? keys", "q quit"].join("  ");
   if (s.help) return "? or Esc close  q quit";
   const approvals = s.panel === 2 ? pending : [];
   if (s.detail !== undefined || s.requestDetail) return [...approvals, "j/k scroll", "Esc back", "? keys", "q quit"].join("  ");
   const rows = panelRows(s); const row = rows[selection(s)];
-  const context = !row ? [] : s.panel === 1 ? ["p pause", "r resume"] : s.panel === 3 ? ["a assign", "r review"] : s.panel === 4 ? ["r resolve"] : [];
-  return [...approvals, ...context, ...(s.panel === 5 ? ["f peer", "g kind"] : []), ...(rows.length ? ["j/k move"] : []), ...(row ? ["Enter view"] : []), "? keys", ": command", "Tab stream", "q quit"].join("  ");
+  const context = !row ? [] : s.panel === 1 ? ["p pause", "r resume", "m permission mode"] : s.panel === 3 ? ["a assign", "r review"] : s.panel === 4 ? ["r resolve"] : [];
+  const text = [...approvals, ...context, ...(s.panel === 5 ? ["f peer", "g kind"] : []), ...(rows.length ? ["j/k move"] : []), ...(row ? ["Enter view"] : []), "? keys", ": command", "Tab stream", "q quit"].join("  ");
+  return s.panel === 1 && Bun.stringWidth(text) > columns ? text.replace("m permission mode", "m mode").replace("j/k move", "j/k").replace(": command", ": cmd") : text;
 }
 /** The project, then the tabs: the active one in brackets, pending approvals and held deliveries counted. */
 function header(s: ConsoleState, columns: number): Span[] {
@@ -525,15 +552,17 @@ function header(s: ConsoleState, columns: number): Span[] {
 const more = (line: Span[], text?: string): Span[] => [span("(more)".padEnd(Bun.stringWidth(line[0]!.text)), "attention"), ...(text === undefined ? line.slice(1) : [span(text)])];
 export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, now = Date.now()): Span[][] {
   const permission = selectedApproval(s);
-  let prompt = s.editing ? `: ${s.input}` : hint(s);
+  let prompt = s.editing ? `: ${s.input}` : hint(s, columns);
   if (s.confirm?.type === "permission") prompt = `allow ${quoted(s.confirm.option)} for ${s.confirm.peer} (request ${s.confirm.id})? y/N`;
   if (s.confirm?.type === "command") prompt = `${s.confirm.args.join(" ")}? y/N`;
+  if (s.modeChoice) prompt = `permission ${s.modeChoice}: 1 ask  2 ask-when-needed  3 never-ask  Esc cancel`;
   const choice = s.optionChoice ? s.approvals.find(a => a.id === s.optionChoice) : undefined;
   if (choice) prompt = `allow request ${choice.id} (${choice.peer}) with: ${allowOptions(choice).map((o, i) => `${i + 1} ${quoted(o.name)}`).join("  ")}  Esc cancel`;
   const summary: Span[] = [];
   for (const [id, p] of Object.entries(s.peers)) {
     if (summary.length) summary.push(span(" "));
     summary.push(span(id, p.state === "offline" ? undefined : "info"), span(":"), span(p.state, stateTone(p.state)), span(` q${p.queued ?? 0}`));
+    if (p.permissionMode && p.permissionMode !== "ask") summary.push(span(` ${p.permissionMode}`, "attention"));
     if (p.needsReview) summary.push(span(` review${p.needsReview}`, "failure"));
     if (p.paused) summary.push(span(" paused", "attention"));
     if (p.toolsOnly) summary.push(span(" tools-only: ahub claude", "attention"));
@@ -555,7 +584,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     lines.push(...detail.slice(Math.min(s.detailOffset, Math.max(0, detail.length - height))));
   }
   else {
-    const data = panelRows(s); const head = TABLES[s.panel]; const at = selection(s);
+    const data = panelRows(s); const head = s.panel === 1 && showPermissionModes(s) ? ["PEER", "STATE", "MODE", ...TABLES[1]!.slice(2)] : TABLES[s.panel]; const at = selection(s);
     // Below the Approvals table: the selected request's title, its allow options and deny, one line each. Deny always
     // shows; options that do not fit are counted, rows give way to the rest, and the title gets what is left.
     const [title = [], allow = [], deny = []] = s.panel === 2 && permission ? fieldLines(approvalFields(permission).slice(3), columns, now) : [];

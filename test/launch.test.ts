@@ -18,19 +18,53 @@ test("an exact candidate MCP bundle selects its server channel without overridin
 });
 
 
-test("Claude native observation hooks are opt-in in advisory and preserve caller settings", () => {
+test("Claude permission hooks are always installed while native observation remains opt-in", () => {
   const paths = { script: "/candidate/facts-hook.ts", stateDir: "/candidate/state" };
-  expect(claudeObservationHooks({ coordination: "advisory", task_sweep: { enabled: false } }, paths)).toBeUndefined();
-  expect(claudeObservationHooks({ coordination: "advisory" }, paths)).toBeUndefined();
+  expect(claudeObservationHooks({ coordination: "advisory", task_sweep: { enabled: false } }, paths)?.purpose).toBe("permission");
+  expect(claudeObservationHooks({ coordination: "advisory" }, paths)?.purpose).toBe("permission");
   for (const [coordination, enabled, purpose] of [["advisory", true, "idle"], ["turn-free", false, "facts"], ["turn-free", true, "facts-and-idle"]] as const) {
     const facts = claudeObservationHooks({ coordination, task_sweep: { enabled } }, paths)!;
     expect(facts.purpose).toBe(purpose);
     const launch = buildLaunch("claude", [], { unattended: false, statusLine: { script: "/candidate/tee.ts", stateDir: paths.stateDir }, facts });
     const settings = JSON.parse(launch.args[launch.args.indexOf("--settings") + 1]!);
     for (const hook of ["PreToolUse", "PostToolUse", "Stop"]) expect(settings.hooks[hook][0].hooks[0].command).toContain("facts-hook.ts");
-    const own = buildLaunch("claude", ["--settings", "caller-settings"], { unattended: false, statusLine: { script: "/candidate/tee.ts", stateDir: paths.stateDir }, facts });
+    const own = buildLaunch("claude", ["--settings", JSON.stringify({ statusLine: { command: "caller" }, hooks: { PreToolUse: [{ hooks: [{ command: "caller-hook" }] }] } })], { unattended: false, statusLine: { script: "/candidate/tee.ts", stateDir: paths.stateDir }, facts });
     expect(own.args.filter(arg => arg === "--settings")).toHaveLength(1);
-    expect(own.args.at(-1)).toBe("caller-settings");
-    expect(own.warning).toContain(purpose === "facts" ? "turn-free facts hooks are off" : "native idle observation hooks are off");
+    const ownSettings = JSON.parse(own.args[own.args.indexOf("--settings") + 1]!);
+    expect(ownSettings.statusLine.command).toBe("caller");
+    expect(ownSettings.hooks.PreToolUse).toHaveLength(2);
+    expect(own.permissionHook).toBe(true);
   }
+});
+
+
+test("advisory and unattended launches install the permission hook without global settings changes", () => {
+  const facts = claudeObservationHooks({ coordination: "advisory" }, { script: "/candidate/facts-hook.ts", stateDir: "/candidate/state" })!;
+  for (const unattended of [false, true]) {
+    const launch = buildLaunch("claude", [], { unattended, facts });
+    expect(launch).toMatchObject({ permissionHook: true, unattended });
+    const settings = JSON.parse(launch.args[launch.args.indexOf("--settings") + 1]!);
+    expect(Object.keys(settings.hooks)).toEqual(["PreToolUse"]);
+    expect(settings).not.toHaveProperty("statusLine");
+  }
+  expect(() => buildLaunch("claude", ["--settings", "/missing/settings.json"], { unattended: false, facts })).toThrow("permission hook must be installed");
+  const dir = mkdtempSync(join(tmpdir(), "ahub-permission-settings-"));
+  try {
+    const file = join(dir, "settings.json"); writeFileSync(file, JSON.stringify({ env: { USER_VALUE: "preserved" } }));
+    const launch = buildLaunch("claude", [`--settings=${file}`], { unattended: false, facts });
+    expect(JSON.parse(launch.args[launch.args.indexOf("--settings") + 1]!)).toMatchObject({ env: { USER_VALUE: "preserved" } });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test("facts-only launches inject managed settings and hook metadata reflects installation", () => {
+  const facts = claudeObservationHooks({ coordination: "turn-free" }, { script: "/candidate/facts-hook.ts", stateDir: "/candidate/state" });
+  const launch = buildLaunch("claude", [], { unattended: false, facts });
+  const index = launch.args.indexOf("--settings"); expect(index).toBeGreaterThanOrEqual(0);
+  const settings = JSON.parse(launch.args[index + 1]!);
+  for (const event of ["PreToolUse", "PostToolUse", "Stop", "SessionStart", "UserPromptSubmit"]) expect(settings.hooks[event]).toBeDefined();
+  expect(settings).not.toHaveProperty("statusLine"); expect(launch.permissionHook).toBe(true);
+  expect(() => buildLaunch("claude", ["--settings", JSON.stringify({ disableAllHooks: true })], { unattended: false, facts })).toThrow("disableAllHooks prevents the required hub permission hook");
+  const unmanaged = buildLaunch("claude", [], { unattended: false });
+  expect(unmanaged.args).not.toContain("--settings"); expect(unmanaged.permissionHook).toBe(false);
 });

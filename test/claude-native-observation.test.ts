@@ -34,7 +34,7 @@ test("managed Claude launcher and genuine command hooks register a non-Orca sess
   const launch = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", dir, "claude"], { cwd: dir, env, stdout: "pipe", stderr: "pipe" });
   const launchError = await new Response(launch.stderr).text(); expect(await launch.exited).toBe(0); expect(launchError).not.toContain("cannot run");
   const registered = JSON.parse(readFileSync(capture, "utf8")); expect(registered.peer).toBe("claude"); expect(registered.instanceId).toBeDefined(); expect(registered.launchId).toBeDefined();
-  expect(JSON.parse(readFileSync(join(stateDir, "claude-launch.json"), "utf8")).launchId).toBe(registered.launchId);
+  expect(JSON.parse(readFileSync(join(stateDir, "claude-launch.json"), "utf8"))).toMatchObject({ launchId: registered.launchId, permissionHook: true, unattended: false });
   expect(readFileSync(join(stateDir, "terminal-recovery.json"), "utf8")).toBe(oldRecovery); // ordinary replacement preserves unrelated recovery authority
   const settings = JSON.parse(registered.args[registered.args.indexOf("--settings") + 1]);
   for (const kind of ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]) expect(settings.hooks[kind]).toBeDefined();
@@ -139,7 +139,7 @@ test("conductor native hooks preserve explicit caller settings and report missin
   const hooks = claudeObservationHooks({ coordination: "advisory", roles: { claude: ["conductor"] }, task_sweep: { enabled: false } }, paths)!;
   expect(hooks.observeNative).toBe(true);
   const own = buildLaunch("claude", ["--settings", "{}"], { unattended: false, statusLine: { script: "/candidate/tee.ts", stateDir: paths.stateDir }, facts: hooks });
-  expect(own.args.filter(arg => arg === "--settings")).toHaveLength(1); expect(own.warning).toContain("native session/turn observation hooks are off");
+  expect(own.args.filter(arg => arg === "--settings")).toHaveLength(1); expect(JSON.parse(own.args[own.args.indexOf("--settings") + 1]!).hooks.Stop).toBeDefined();
   const report = summarize([{ v: 1, at: "2026-10-09T00:00:00.000Z", type: "state", peer: "claude", state: "idle" }]);
   expect(report.peers.claude?.turns).toBeNull(); expect(formatReport(report).join("\n")).toContain("turns unknown");
 });

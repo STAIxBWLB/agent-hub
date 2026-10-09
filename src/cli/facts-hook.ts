@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
-// Claude Code PreToolUse, PostToolUse and Stop hook for turn-free facts (issue #108). `ahub claude` adds it to the
-// session's settings in a turn-free project. It never blocks or fails a tool call: a hub that is down, an advisory
-// project or any error prints nothing. A fact comes back as `additionalContext`, which Claude Code adds with the tool
-// call; the hub confirms it from the transcript row Claude Code writes for it, by tool use id, before it counts as seen.
+// Managed Claude hook transport for turn-free facts, native observations and runtime permissions.
+// PreToolUse preserves facts additionalContext and adds permission decisions; other phases observe only.
+// A failed or timed-out hub decides nothing, leaving Claude's native permission rules in effect.
+import { isPermissionMode } from "../hub/permission-mode.ts";
 import { ControlClient } from "../hub/control-client.ts";
 
 /** A library call may target another hub; only the managed command hook inherits that target's native identity. */
@@ -28,8 +28,13 @@ export async function factsHook(stdin: string, stateDir: string, peer: string, t
       ...(typeof input.transcript_path === "string" ? { transcriptPath: input.transcript_path } : {}),
       startedMs: performance.now(), // this process's own start-up and connect time, for the latency record
     }, timeoutMs);
-    if (phase !== "pre" || !res?.ok || typeof res.text !== "string" || !res.text) return undefined;
-    return JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: res.text } });
+    if (phase !== "pre" || !res?.ok) return undefined;
+    const permission = isPermissionMode(res.permission) ? res.permission : "ask";
+    const fileTool = ["Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Glob", "Grep", "LS"].includes(String(input.tool_name));
+    const allow = input.hook_event_name === "PreToolUse" && (permission === "never-ask" || permission === "ask-when-needed" && fileTool);
+    const text = typeof res.text === "string" && res.text ? res.text : undefined;
+    if (!allow && !text) return undefined;
+    return JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", ...(text ? { additionalContext: text } : {}), ...(allow ? { permissionDecision: "allow" } : {}) } });
   } finally {
     hub.close();
   }

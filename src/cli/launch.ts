@@ -40,6 +40,8 @@ export interface Launch {
   cmd: string;
   args: string[];
   warning?: string;
+  permissionHook?: boolean;
+  unattended?: boolean;
 }
 
 export interface StatusLineTee {
@@ -61,22 +63,22 @@ export function statusLineSettings(tee: StatusLineTee): string {
   return JSON.stringify({ statusLine: { type: "command", command, refreshInterval: tee.original?.refreshInterval ?? 10, ...(tee.original?.padding !== undefined ? { padding: tee.original.padding } : {}) } });
 }
 
-/** The turn-free facts hook (issue #108): absolute path of src/cli/facts-hook.ts and the hub's state dir. */
+/** Shared facts, native observation and permission hook transport. */
 export interface FactsHook {
   script: string;
   stateDir: string;
   /** The same hook transport can observe native turns without injecting facts. */
-  purpose?: "facts" | "idle" | "facts-and-idle";
+  purpose?: "facts" | "idle" | "facts-and-idle" | "permission";
   /** Observe native sessions/turns for every enabled facts, idle or conductor hook configuration. */
   observeNative?: boolean;
 }
 
-/** Shared by actual launch and read-only preview; advisory facts remain disabled. */
-export function claudeObservationHooks(config: { coordination?: string; task_sweep?: { enabled: boolean }; roles?: Record<string, string[]> }, paths: Pick<FactsHook, "script" | "stateDir">): FactsHook | undefined {
+/** Shared by actual launch and preview; permissions are always enabled, advisory facts remain disabled. */
+export function claudeObservationHooks(config: { coordination?: string; task_sweep?: { enabled: boolean }; roles?: Record<string, string[]> }, paths: Pick<FactsHook, "script" | "stateDir">): FactsHook {
   const facts = config.coordination === "turn-free";
   const idle = config.task_sweep?.enabled === true;
   const observeNative = facts || idle || config.roles?.claude?.includes("conductor") === true;
-  return facts || idle || observeNative ? { ...paths, purpose: facts ? (idle ? "facts-and-idle" : "facts") : "idle", ...(observeNative ? { observeNative: true } : {}) } : undefined;
+  return { ...paths, purpose: facts ? (idle ? "facts-and-idle" : "facts") : idle || observeNative ? "idle" : "permission", ...(observeNative ? { observeNative: true } : {}) };
 }
 
 /**
@@ -84,11 +86,11 @@ export function claudeObservationHooks(config: { coordination?: string; task_swe
  * facts hook before and after every tool call and at the end of each turn (issue #108; the turn end is the quiescence
  * evidence of issue #107).
  */
-export function sessionSettings(tee: StatusLineTee, facts?: FactsHook): string {
-  const settings = JSON.parse(statusLineSettings(tee)) as Record<string, unknown>;
+export function sessionSettings(tee?: StatusLineTee, facts?: FactsHook): string {
+  const settings = (tee ? JSON.parse(statusLineSettings(tee)) : {}) as Record<string, unknown>;
   if (facts) {
     const hooks = [{ type: "command", command: `AGENTHUB_STATE_DIR=${sh(facts.stateDir)} bun ${sh(facts.script)}`, timeout: 5 }];
-    settings.hooks = { PreToolUse: [{ matcher: "*", hooks }], PostToolUse: [{ matcher: "*", hooks }], Stop: [{ hooks }] };
+    settings.hooks = { PreToolUse: [{ matcher: "*", hooks }], ...(facts.purpose !== "permission" ? { PostToolUse: [{ matcher: "*", hooks }], Stop: [{ hooks }] } : {}) };
     if (facts.observeNative) Object.assign(settings.hooks as object, { SessionStart: [{ matcher: "*", hooks }], UserPromptSubmit: [{ hooks }] });
   }
   return JSON.stringify(settings);
@@ -109,17 +111,44 @@ export function buildLaunch(
   if (tool === "claude") {
     // `--settings` takes one value, so a user-supplied one wins and Claude has no quota source for that session.
     const own = passthrough.some((a) => a === "--settings" || a.startsWith("--settings="));
-    const tee = ctx.statusLine && !own ? ["--settings", sessionSettings(ctx.statusLine, ctx.facts)] : [];
+    let settingsArgs = ctx.statusLine && !own ? ["--settings", sessionSettings(ctx.statusLine, ctx.facts)] : [];
+    let nativeArgs = passthrough;
+    if (ctx.facts && own) {
+      if (passthrough.filter(a => a === "--settings" || a.startsWith("--settings=")).length > 1) throw new Error("pass --settings only once so the hub permission hook stays installed");
+      const index = passthrough.findIndex(a => a === "--settings" || a.startsWith("--settings="));
+      const arg = passthrough[index]!;
+      const value = arg === "--settings" ? passthrough[index + 1] : arg.slice("--settings=".length);
+      if (!value) throw new Error("--settings requires a JSON object or readable file so the hub permission hook can be installed");
+      let caller: Record<string, unknown>;
+      try {
+        caller = JSON.parse(value.trim().startsWith("{") ? value : readFileSync(resolve(value), "utf8"));
+        if (!caller || typeof caller !== "object" || Array.isArray(caller)) throw new Error("not an object");
+      } catch { throw new Error("cannot read --settings as a JSON object; the hub permission hook must be installed"); }
+      if (caller.disableAllHooks === true) throw new Error("--settings disableAllHooks prevents the required hub permission hook; enable hooks to launch");
+      const injected = JSON.parse(sessionSettings(undefined, ctx.facts));
+      const callerHooks = caller.hooks;
+      if (callerHooks !== undefined && (!callerHooks || typeof callerHooks !== "object" || Array.isArray(callerHooks))) throw new Error("--settings hooks must be an object");
+      const hooks = { ...(callerHooks as Record<string, unknown> | undefined) };
+      for (const [event, entries] of Object.entries(injected.hooks)) {
+        const existing = hooks[event];
+        if (existing !== undefined && !Array.isArray(existing)) throw new Error(`--settings ${event} hooks must be an array`);
+        hooks[event] = [...(existing as unknown[] | undefined ?? []), ...(entries as unknown[])];
+      }
+      settingsArgs = ["--settings", JSON.stringify({ ...caller, hooks })];
+      nativeArgs = passthrough.filter((_, i) => i !== index && (arg !== "--settings" || i !== index + 1));
+    } else if (ctx.facts && !ctx.statusLine) {
+      const injected = JSON.parse(sessionSettings(undefined, ctx.facts));
+      settingsArgs = ["--settings", JSON.stringify({ hooks: injected.hooks })];
+    }
     const notes = [
       unattended ? UNATTENDED_WARNING : "",
       ctx.statusLine && own ? "note: you passed --settings, so the hub's status line tee is off and the budget coordinator cannot see Claude's quota (ahub budget set claude <0..1> still works)." : "",
-      ctx.facts && own && ctx.facts.purpose !== "idle" ? "note: you passed --settings, so the hub's turn-free facts hooks are off for this session: Claude will not see the other agents' changes at its tool calls." : "",
-      ctx.facts && own && (ctx.facts.purpose === "idle" || ctx.facts.purpose === "facts-and-idle") ? "note: you passed --settings, so native idle observation hooks are off for this session: task idle sweeps cannot verify Claude between turns." : "",
-      ctx.facts?.observeNative && own ? "note: you passed --settings, so native session/turn observation hooks are off: completed turns and supervision tokens may be unavailable." : "",
     ].filter(Boolean);
     return {
       cmd: "claude",
-      args: ["--dangerously-load-development-channels", claudeChannel(passthrough), ...(unattended ? ["--dangerously-skip-permissions"] : []), ...tee, ...passthrough],
+      args: ["--dangerously-load-development-channels", claudeChannel(passthrough), ...(unattended ? ["--dangerously-skip-permissions"] : []), ...settingsArgs, ...nativeArgs],
+      permissionHook: !!ctx.facts,
+      unattended,
       ...(notes.length ? { warning: notes.join("\n") } : {}),
     };
   }

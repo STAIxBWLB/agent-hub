@@ -493,7 +493,7 @@ describe("console layout (#213)", () => {
   test("the footer hint lists only keys that act in this mode, panel and state", () => {
     const s = sample(); const hints: string[] = [];
     const hint = () => { const line = renderConsole(s, 80, 24, T).at(-1)!; hints.push(line); return line; };
-    s.panel = 1; expect(hint()).toBe("p pause  r resume  j/k move  Enter view  ? keys  : command  Tab stream  q quit");
+    s.panel = 1; expect(hint()).toBe("p pause  r resume  m mode  j/k  Enter view  ? keys  : cmd  Tab stream  q quit");
     s.panel = 2; expect(hint()).toBe("a allow  d deny  j/k move  Enter view  ? keys  : command  Tab stream  q quit");
     s.panel = 3; expect(hint()).toStartWith("a assign  r review  j/k move");
     s.panel = 4; expect(hint()).toStartWith("r resolve  j/k move");
@@ -828,4 +828,64 @@ describe("console layout (#213)", () => {
     const s = state(true); s.panel = 5; s.events = [{ text: "[agent-hubby stuff here and more" }];
     for (let columns = 10; columns <= 30; columns++) for (const line of renderConsoleLines(s, columns, 24, NOW)) expect(Bun.stringWidth(paint(line, false))).toBeLessThanOrEqual(columns);
   });
+});
+
+
+describe("console permission modes (#242)", () => {
+  function peers() { const s = initialConsoleState(true); s.peers = { pi: { state: "idle", permissionMode: "ask-when-needed" } }; return s; }
+  test("Peers renders non-default mode and chooser; ask modes use command effects", () => {
+    const s = peers();
+    const rendered = renderConsole(s, 160, 24, NOW);
+    expect(rendered.join("\n")).toContain("ask-when-needed");
+    expect(rendered[2]).toContain("MODE");
+    for (const permissionMode of [undefined, "ask"]) {
+      s.peers.pi.permissionMode = permissionMode;
+      expect(renderConsole(s, 160, 24, NOW)[2]).not.toMatch(/\bMODE\b/);
+    }
+    s.peers.pi.permissionMode = "ask-when-needed";
+    const chosen = reduceConsole(s, "m", NOW).state;
+    expect(chosen.modeChoice).toBe("pi");
+    const text = renderConsole(chosen, 160, 24, NOW).join("\n");
+    for (const mode of ["ask", "ask-when-needed", "never-ask"]) expect(text).toContain(mode);
+    expect(reduceConsole(chosen, "1", NOW).effects).toEqual([{ type: "command", args: ["permission", "pi", "ask"] }]);
+    expect(reduceConsole(chosen, "2", NOW).effects).toEqual([{ type: "command", args: ["permission", "pi", "ask-when-needed"] }]);
+    expect(reduceConsole(chosen, "\x1b", NOW).state.modeChoice).toBeUndefined();
+  });
+  test("never-ask waits for explicit y, then passes --yes; typed --yes still confirms", () => {
+    const chosen = reduceConsole(peers(), "m", NOW).state;
+    const pending = reduceConsole(chosen, "3", NOW);
+    expect(pending.effects).toEqual([]);
+    expect(renderConsole(pending.state, 160, 24, NOW).join("\n")).toContain("never-ask? y/N");
+    expect(reduceConsole(pending.state, "\r", NOW).effects).toEqual([]);
+    expect(reduceConsole(pending.state, "y", NOW).effects).toEqual([{ type: "command", args: ["permission", "pi", "never-ask", "--yes"] }]);
+    for (const input of ["permission pi never-ask", "permission pi never-ask --yes", "permission --yes pi never-ask"]) {
+      const s = peers(); s.editing = true; s.input = input;
+      const entered = reduceConsole(s, "\r", NOW);
+      expect(entered.effects).toEqual([]);
+      expect(reduceConsole(entered.state, "y", NOW).effects).toEqual([{ type: "command", args: ["permission", "pi", "never-ask", "--yes"] }]);
+    }
+  });
+  test("unsupported local and detached peers cannot open chooser", () => {
+    for (const [peer, info, reason] of [["local", { state: "idle" }, "not applicable"], ["pi", { state: "offline" }, "not attached"]] as const) {
+      const s = initialConsoleState(true); s.peers = { [peer]: info };
+      const result = reduceConsole(s, "m", NOW);
+      expect(result.state.modeChoice).toBeUndefined(); expect(result.state.notice).toContain(reason); expect(result.effects).toEqual([]);
+    }
+    const chosen = reduceConsole(peers(), "m", NOW).state; chosen.peers = {};
+    expect(reduceConsole(chosen, "2", NOW).effects).toEqual([]);
+  });
+});
+
+
+test("Peers mode chooser executes through the console CLI effect only after explicit confirmation (#242)", async () => {
+  const f = fixture(160, 24); const commands: string[][] = [];
+  f.client.request = async (msg: any) => { f.requests.push(msg); return { ok: true, status: { peers: { pi: { state: "idle", permissionMode: "ask" } } }, budget: {}, text: "[]", deliveries: [] }; };
+  const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, panels: true,
+    runCommand: (args) => { commands.push(args); return () => {}; } });
+  await Promise.resolve(); await Promise.resolve();
+  f.input("m"); f.input("3");
+  expect(commands).toEqual([]);
+  f.input("y");
+  expect(commands).toEqual([["permission", "pi", "never-ask", "--yes"]]);
+  f.input("\x03"); await running;
 });

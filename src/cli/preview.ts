@@ -39,8 +39,18 @@ export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi", raw: s
     // Build with original inputs so channel selection and owned-flag validation match normal launch.
     const facts = claudeObservationHooks(config, { script: join(import.meta.dir, "facts-hook.ts"), stateDir });
     launch = buildLaunch(tool, args, { unattended, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir, ...(original ? { original: { command: original.command ? REDACTED : "", ...(typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}), ...(typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {}) } } : {}) }, ...(facts ? { facts } : {}) });
-    const passthrough = args.filter(arg => !["--unattended", "--safe", "--new"].includes(arg));
-    launch.args = launch.args.slice(0, launch.args.length - passthrough.length).concat(passthrough.map(publicArg));
+    // Merged caller settings change the native argument count. Rebuild a redacted preview,
+    // retaining the managed hooks but never serializing caller settings or their file path.
+    const safeArgs = args.map((arg, i) => {
+      if (args[i - 1] === "--settings") return "{}";
+      if (arg.startsWith("--settings=")) return "--settings={}";
+      if (["--unattended", "--safe", "--new"].includes(arg)) return arg;
+      return publicArg(arg);
+    });
+    const publicLaunch = buildLaunch(tool, safeArgs, { unattended, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir,
+      ...(original ? { original: { command: original.command ? REDACTED : "", ...(typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}), ...(typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {}) } } : {}) }, facts });
+    publicLaunch.args.splice(0, 2, ...launch.args.slice(0, 2)); // channel selection was verified against the original MCP config
+    launch = publicLaunch;
   } else if (tool === "codex") {
     // A fresh native proxy is assigned by start, never guessed from an old status file.
     launch = buildLaunch(tool, args, { unattended, proxyUrl: UNRESOLVED, codexBin: config.codex_bin === "codex" ? "codex" : REDACTED });

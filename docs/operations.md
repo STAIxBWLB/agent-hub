@@ -53,11 +53,12 @@ the rest and is cut with `...`.
 
 | Panel | Columns |
 |---|---|
-| Peers | PEER STATE LINK Q ! REVIEW PAUSE QUOTA MODEL |
+| Peers | PEER STATE MODE LINK Q ! REVIEW PAUSE QUOTA MODEL |
 | Approvals | ID PEER LEFT TITLE |
 | Tasks | ID STATE OWNER REVIEWER CLASS AGE TITLE |
 | Queue | ID PEER STATE REV AGE |
 
+The MODE column appears only when at least one peer has a non-`ask` mode.
 Zero counters and unknown values read `-`. Durations read `45s`, `12m`, `3h05m`
 or `2d03h`; quota resets and budget pauses read `in 2h13m`, and a pause by the
 console user reads `user`. When a peer's status carries #205's optional
@@ -805,6 +806,87 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
 - `"experiments": {"stale_notices": "deliver"}` in `.agenthub/config.json`
   turns the stale-notice drop off, for a controlled comparison only (the #106
   ablation in `docs/cooperbench.md`); the hub logs it at start.
+
+## Permission modes for running peers
+
+A person can inspect or change a running peer's permission mode from a plain
+terminal:
+
+```bash
+ahub permission
+ahub permission pi
+ahub permission pi ask-when-needed
+ahub permission pi never-ask --yes
+ahub permission pi ask
+```
+
+No arguments lists attached peers; a peer alone shows its mode. `ask` leaves
+approval decisions to the agent's own defaults. `ask-when-needed` allows routine
+reads and edits with the native behavior below. `never-ask` removes approval
+prompts and requires explicit `--yes`. Other agents' messages remain untrusted,
+and actions covered by a non-`ask` mode run without asking you. These modes do
+not change an agent's sandbox or the hub's path guards and denylist.
+
+In `ahub console`, select a peer in Peers and press `m`, then `1` (`ask`), `2`
+(`ask-when-needed`) or `3` (`never-ask`). Choosing `never-ask` requires a separate
+`y`; Enter or another key cancels. Typed `permission ... never-ask` commands also
+require that confirmation, even with `--yes`. Status and Peers display modes
+other than `ask`. Each successful change writes a `permission_mode` event
+(peer, from, to) and a hub.log line, without tool arguments; events schema is 1.
+
+Only console-role requests can change a mode. Agent shells, including a
+conductor's shell, are refused before connecting; `--as-user` does not bypass
+that identity gate. Hub tools and peer messages cannot set a mode. An older hub
+that answers the command as unknown needs upgrading.
+
+Runtime changes last until the hub stops. Configure defaults for subsequent
+starts, including recovery, in `.agenthub/config.json`:
+
+```json
+{
+  "permission_modes": {
+    "kimi": "ask-when-needed",
+    "codex": "ask",
+    "claude": "ask",
+    "pi": "ask"
+  }
+}
+```
+
+An omitted peer defaults to `ask`; invalid modes or unsupported peer keys fail
+config loading. This setting replaces the proposed `kimi_mode` in #240. A hub
+restart reapplies these defaults rather than saving the last runtime selection.
+
+| Peer | `ask-when-needed` | `never-ask` | Returning to `ask` |
+|------|-------------------|-------------|--------------------|
+| Kimi | ACP `session/set_mode` with `yolo` | ACP mode `auto` | ACP mode `default` |
+| Codex | `approvalPolicy: "on-request"` on every outgoing `turn/start`, from the TUI or hub | `approvalPolicy: "never"` on every outgoing `turn/start` | Restore the captured native policy once, then stop overriding it |
+| Claude | PreToolUse allows Read, Edit, Write, MultiEdit, NotebookEdit, Glob, Grep and LS | PreToolUse allows every tool | Hook returns no approval decision |
+| Pi | Choose `allow_once` for read, edit, write, ls, find and grep; other tools retain the console path | Choose `allow_once` for every tool | Normal console path (existing per-tool grants remain until Pi restarts) |
+
+Kimi's mode is set after both a new and a resumed ACP session, before a prompt.
+If the session does not offer the requested id or refuses the change, startup
+fails with the mode named; it does not silently fall back. A non-`ask` Kimi start
+logs a warning. The `yolo`/`auto` mapping follows Kimi 2.1.1's UI labels and CLI
+flags, whose ACP descriptions disagree. Its live behavior remains unverified;
+see [the live smoke record](smoke.md). Exact-name auto-approval for the hub's own
+Kimi tools remains `allow_once`, and any requests Kimi still sends use the console.
+
+Codex's native `on-request` policy decides when it needs a prompt; it is not a
+hub-enforced read/edit allowlist. Switching a mode affects subsequent turns,
+including hub deliveries and steers, rather than an already running turn. The
+native approval policy is captured before an overlay. If that policy is
+unavailable, returning to `ask` is refused with a restart instruction; a failed
+restoration is retried on a later turn, never treated as restored.
+
+Claude must have been started through `ahub claude` with a verified hook for the
+current session. If it has not run the hook yet, run a tool first and retry.
+The hook is installed in every such launch, including projects without turn-free
+coordination. A timed-out or unavailable hub yields no decision, so Claude's own
+rules apply. Claude or Codex started `--unattended` is refused: restart without
+that flag. A Codex TUI outside the proxy must reconnect through `ahub codex`.
+`local` has no permission mode because its sandbox and denylist bound its tools;
+unknown peers and modes are refused with their reason.
 
 ## Approvals and pauses
 

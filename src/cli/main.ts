@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { isPermissionMode } from "../hub/permission-mode.ts";
 import { currentRouting } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -539,10 +540,6 @@ const commands: Record<string, () => Promise<void> | void> = {
       process.env.AGENTHUB_INSTANCE_ID = control.instanceId;
       const terminal = await recordTerminalLaunch("claude", cwd, stateDir, control.instanceId);
       if (!terminal) process.env.AGENTHUB_LAUNCH_ID = randomUUID();
-      // Native hook identity exists in an ordinary terminal too; this is not an Orca recovery record.
-      const file = join(stateDir, "claude-launch.json");
-      writeFileSync(`${file}.tmp`, JSON.stringify({ instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID }), { mode: 0o600 });
-      chmodSync(`${file}.tmp`, 0o600); renameSync(`${file}.tmp`, file);
     }
     // `--settings` outranks project and user settings, so the tee has to wrap whichever status line would have won:
     // project local, then project, then user.
@@ -557,6 +554,12 @@ const commands: Record<string, () => Promise<void> | void> = {
     // Turn-free facts and opted-in task sweeps share native PreToolUse/PostToolUse/Stop observations.
     const facts = claudeObservationHooks(projectConfig(), { script: join(import.meta.dir, "facts-hook.ts"), stateDir });
     const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir, ...(original ? { original } : {}) }, ...(facts ? { facts } : {}) });
+    if (control?.instanceId) {
+      // Publish only the final launch's installed hook and effective permission flags.
+      const file = join(stateDir, "claude-launch.json");
+      writeFileSync(`${file}.tmp`, JSON.stringify({ instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID, permissionHook: launch.permissionHook === true, unattended: launch.unattended === true }), { mode: 0o600 });
+      chmodSync(`${file}.tmp`, 0o600); renameSync(`${file}.tmp`, file);
+    }
     if (launch.warning) console.error(launch.warning);
     exec(launch.cmd, launch.args, "claude");
   },
@@ -575,7 +578,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const before = readControl(stateDir);
     if (recovering && before?.instanceId) await recordTerminalLaunch("codex", cwd, stateDir, before.instanceId);
     const hub = await connect();
-    const res = await hub.request({ t: "start", peer: "codex", operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+    const res = await hub.request({ t: "start", peer: "codex", args: { unattended: launch0.unattended === true }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
     hub.close();
     if (!res.ok) fail(res.error);
     const control = readControl(stateDir);
@@ -838,6 +841,23 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   pause: () => hold("pause"),
   resume: () => hold("resume"),
+
+  permission: async () => {
+    const positional = args.filter(arg => arg !== "--yes");
+    const [peer, mode] = positional;
+    if (positional.length > 2 || positional.some(arg => arg.startsWith("--")) || (mode !== undefined && !isPermissionMode(mode))) fail("usage: ahub permission [<peer> [ask|ask-when-needed|never-ask]] [--yes]");
+    if (mode === "never-ask" && !args.includes("--yes")) fail("never-ask requires --yes; nothing was changed");
+    const hub = await connect();
+    try {
+      const reply = await hub.request({ t: "permission", ...(peer ? { peer } : {}), ...(mode ? { mode, confirmed: args.includes("--yes") } : {}) });
+      if (reply.ok === false) {
+        const error = String(reply.error ?? "permission request refused");
+        fail(/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know "permission"/i.test(error) ? `${error}; upgrade the running hub to use ahub permission` : error);
+      }
+      if (reply.peers) for (const [id, value] of Object.entries(reply.peers)) console.log(`${id}: ${value}`);
+      else console.log(`${peer}: ${reply.permissionMode}`);
+    } finally { hub.close(); }
+  },
 
   permit: async () => {
     const [id, option] = args;

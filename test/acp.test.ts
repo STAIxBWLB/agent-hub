@@ -411,3 +411,73 @@ test("#161 native cumulative usage preserves zero and projects only checked coun
   for (const value of [{ totalTokens: -1 }, { totalTokens: Infinity }, { totalTokens: '0' }, { inputTokens: 2 }]) expect(normalizeACPUsage(value).availability).toBe('invalid');
   expect(normalizeACPUsage({ unrelated: 'private' }, 'prompt_result')).toEqual({ source: 'prompt_result', availability: 'unsupported', shape: 'none' });
 });
+
+// #240/#242: opt-in native modes are negotiated before any prompt, on new and recovered sessions.
+for (const resume of [false, true]) for (const [mode, modeId] of [["ask-when-needed", "yolo"], ["never-ask", "auto"]] as const) {
+  test(`ACP ${resume ? "load" : "new"} applies ${mode} before prompting`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ahub-acp-mode-"));
+    const record = join(dir, "protocol.jsonl");
+    try {
+      const { bus, said } = await setup({ cmd: [...FAKE, "--record-protocol", record], permissionMode: mode, ...(resume ? { resumeSessionId: "s1" } : {}) });
+      expect(peer!.getPermissionMode()).toBe(mode);
+      bus.publish(newEnvelope("user", "ping", { to: ["kimi"] }));
+      await until(() => said.length === 1);
+      expect(said[0]!.body).toBe("echo: ping"); // fake rejects a prompt while set_mode's reply is pending
+      const calls = readFileSync(record, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      expect(calls.map((m) => m.method)).toEqual(["initialize", resume ? "session/load" : "session/new", "session/set_mode", "session/prompt"]);
+      expect(calls[2].params).toEqual({ sessionId: "s1", modeId });
+      await peer!.setPermissionMode("ask");
+      expect(peer!.getPermissionMode()).toBe("ask");
+      const reset = readFileSync(record, "utf8").trim().split("\n").map((line) => JSON.parse(line)).at(-1);
+      expect(reset.params.modeId).toBe("default");
+    } finally { await peer?.stop(); rmSync(dir, { recursive: true, force: true }); }
+  });
+}
+
+test("ACP ask leaves the initial session default untouched", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-acp-default-"));
+  try {
+    const record = join(dir, "protocol.jsonl");
+    await setup({ cmd: [...FAKE, "--record-protocol", record], permissionMode: "ask" });
+    expect(readFileSync(record, "utf8")).not.toContain("session/set_mode");
+    expect(peer!.getPermissionMode()).toBe("ask");
+  } finally { await peer?.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+for (const args of [["--modes", "default"], ["--refuse-mode"]]) {
+  test(`ACP startup fails offline naming the unavailable/refused mode: ${args.join(" ")}`, async () => {
+    peer = new AcpPeer("kimi", { cmd: [...FAKE, ...args], cwd: process.cwd(), permissionMode: "never-ask" });
+    await expect(peer.start()).rejects.toThrow("never-ask");
+    expect(peer.state).toBe("offline");
+  });
+}
+
+test("ACP runtime refusal preserves the previously applied mode", async () => {
+  await setup({ cmd: [...FAKE, "--refuse-mode"] });
+  await expect(peer!.setPermissionMode("never-ask")).rejects.toThrow("never-ask");
+  expect(peer!.getPermissionMode()).toBe("ask");
+  expect(peer!.state).toBe("idle");
+});
+
+for (const loaded of ["yolo", "auto"]) {
+  test(`ACP resumed ask resets a retained ${loaded} mode before its first prompt`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ahub-acp-resumed-mode-"));
+    const record = join(dir, "protocol.jsonl");
+    try {
+      const { bus, said } = await setup({ cmd: [...FAKE, "--loaded-mode", loaded, "--record-protocol", record], resumeSessionId: "s1" });
+      bus.publish(newEnvelope("user", "ping", { to: ["kimi"] }));
+      await until(() => said.length === 1);
+      expect(said[0]!.body).toBe("echo: ping");
+      const calls = readFileSync(record, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      expect(calls.map((m) => m.method)).toEqual(["initialize", "session/load", "session/set_mode", "session/prompt"]);
+      expect(calls[2].params.modeId).toBe("default");
+      expect(peer!.getPermissionMode()).toBe("ask");
+    } finally { await peer?.stop(); rmSync(dir, { recursive: true, force: true }); }
+  });
+}
+
+test("ACP resumed ask refuses a retained mode when default cannot be negotiated", async () => {
+  peer = new AcpPeer("kimi", { cmd: [...FAKE, "--loaded-mode", "auto", "--modes", "auto"], cwd: process.cwd(), resumeSessionId: "s1" });
+  await expect(peer.start()).rejects.toThrow("permission mode ask unavailable");
+  expect(peer.state).toBe("offline");
+});

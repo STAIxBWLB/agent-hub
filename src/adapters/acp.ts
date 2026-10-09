@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
+import { KIMI_MODE_IDS, type PermissionMode } from "../hub/permission-mode.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 
@@ -56,6 +57,7 @@ export interface AcpOptions {
   cmd: string[];
   /** Coordinator-visible selected model only; contains no prompts or command arguments. */
   launchModel?: string;
+  permissionMode?: PermissionMode;
   /** Load this earlier session (ACP `session/load`) instead of starting a new one: crash recovery, issue #37. */
   resumeSessionId?: string;
   cwd: string;
@@ -108,6 +110,8 @@ function jsonObject(text: string | undefined): object | undefined {
 
 /** ACP client (JSON-RPC 2.0, newline-delimited, over the child's stdio). One session, one prompt in flight. */
 export class AcpPeer extends BasePeer {
+  private permissionMode: PermissionMode;
+  private availableModes = new Set<string>();
   private proc: ChildProcessWithoutNullStreams | undefined;
   private sessionId = "";
   private nextId = 1;
@@ -126,6 +130,7 @@ export class AcpPeer extends BasePeer {
     private readonly opts: AcpOptions,
   ) {
     super(id, opts.watchdogMs);
+    this.permissionMode = opts.permissionMode ?? "ask";
   }
 
   recoveryMetadata(): Record<string, unknown> {
@@ -154,19 +159,40 @@ export class AcpPeer extends BasePeer {
       // The agent replays the session as updates while it loads; they arrive before the peer is idle, so none of
       // them is taken for an answer.
       if (!init?.agentCapabilities?.loadSession) throw new Error(`${this.id} cannot load an earlier session (the agent offers no loadSession)`);
-      await this.request("session/load", { sessionId: resume, cwd: this.opts.cwd, mcpServers: this.opts.mcpServers ?? [] });
-      return { sessionId: resume };
+      const loaded = await this.request("session/load", { sessionId: resume, cwd: this.opts.cwd, mcpServers: this.opts.mcpServers ?? [] });
+      return { ...loaded, sessionId: resume };
     };
     const timeout = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error(`${this.id} did not complete the ACP handshake within ${HANDSHAKE_MS / 1000} s`)), HANDSHAKE_MS).unref();
     });
     try {
-      this.sessionId = (await Promise.race([handshake(), timeout])).sessionId;
+      const session = await Promise.race([handshake(), timeout]);
+      this.sessionId = session.sessionId;
+      const modes: unknown = session.modes?.availableModes;
+      this.availableModes = new Set(Array.isArray(modes) ? modes.flatMap((mode) => typeof mode?.id === "string" ? [mode.id] : []) : []);
+      // A recovered session can retain a previous runtime opt-in. An advertised non-default mode
+      // must be reset for the configured ask default before any prompt; a fresh ask session stays untouched.
+      const resetResumed = this.opts.resumeSessionId && typeof session.modes?.currentModeId === "string" && session.modes.currentModeId !== KIMI_MODE_IDS.ask;
+      if (this.permissionMode !== "ask" || resetResumed) await this.setPermissionMode(this.permissionMode);
     } catch (e) {
+      this.setState("offline");
       await stopOwnedProcess(proc, { group: true }).catch((stop: Error) => this.opts.log?.(`[${this.id}] ${stop.message}`));
       throw e;
     }
     this.setState("idle");
+  }
+
+  getPermissionMode(): PermissionMode { return this.permissionMode; }
+
+  async setPermissionMode(mode: PermissionMode): Promise<void> {
+    const id = KIMI_MODE_IDS[mode];
+    if (!this.sessionId || !this.proc || !this.availableModes.has(id)) throw new Error(`${this.id} permission mode ${mode} unavailable: session does not offer ${id}`);
+    try {
+      await this.request("session/set_mode", { sessionId: this.sessionId, modeId: id }, HANDSHAKE_MS);
+    } catch (error) {
+      throw new Error(`${this.id} permission mode ${mode} refused: ${(error as Error).message}`);
+    }
+    this.permissionMode = mode;
   }
 
   async stop(): Promise<void> {
@@ -350,10 +376,18 @@ export class AcpPeer extends BasePeer {
     });
   }
 
-  private request(method: string, params: unknown): Promise<any> {
+  private request(method: string, params: unknown, timeoutMs?: number): Promise<any> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`${method} did not answer within ${timeoutMs / 1000} s`));
+      }, timeoutMs);
+      timer?.unref();
+      this.pending.set(id, {
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+        reject: (error) => { clearTimeout(timer); reject(error); },
+      });
       this.send({ jsonrpc: "2.0", id, method, params });
     });
   }

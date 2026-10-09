@@ -43,6 +43,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
   ["Messages and approvals", [
     ["ahub say [@peer ...] <text>", "send as the console user (no @peer = broadcast); delivered at once, start the text with [STATUS] to let it batch or [FYI] for the record only"],
     ["ahub tail", "live stream of messages, states and permission requests"],
+    ["ahub permission [<peer> [ask|ask-when-needed|never-ask]] [--yes]", "human only: inspect or set a running peer permission mode; never-ask requires --yes"],
     ["ahub permit <id> <option>", "answer a permission request shown by tail (\"deny\" cancels)"],
     ["ahub pause|resume <peer>", "hold a peer's deliveries in its queue / release them"],
     ["ahub queue list [--peer <id>] [--json]", "inspect durable deliveries"],

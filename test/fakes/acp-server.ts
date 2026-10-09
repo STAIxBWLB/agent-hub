@@ -3,6 +3,7 @@
 // "SLOW" (until session/cancel), and fails the prompt on "BROKEN". "CAPPED" ends the prompt with an
 // abnormal stop reason and no answer chunks at all. "LOOPPROTECT" rejects with Qwen 0.24.7's pinned
 // loop-protection error (message plus structured data).
+import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const delay = Number(process.env.FAKE_ACP_DELAY_MS ?? 20);
@@ -110,23 +111,41 @@ async function prompt(id: number, text: string) {
   send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
 }
 let usageTotal = 0;
+const arg = (name: string) => { const i = process.argv.indexOf(name); return i < 0 ? undefined : process.argv[i + 1]; };
+const modes = { currentModeId: "default", availableModes: (arg("--modes") ?? "default,yolo,auto").split(",").map((id) => ({ id, name: id })) };
+let modePending = false;
+
 
 createInterface({ input: process.stdin }).on("line", (line) => {
   const msg = JSON.parse(line);
+  const record = arg("--record-protocol");
+  if (record) appendFileSync(record, `${JSON.stringify(msg)}\n`);
   if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
   else if (msg.method === "session/load") {
+    modes.currentModeId = arg("--loaded-mode") ?? "default";
     const record = process.argv.indexOf("--record-load");
     if (record > 0) Bun.write(process.argv[record + 1]!, msg.params.sessionId); // argv, not env: the hub scrubs a child's environment
     // what a real agent does while it loads: replay the history, then answer
     send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: msg.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "replayed history" } } } });
-    send({ jsonrpc: "2.0", id: msg.id, result: null });
+    send({ jsonrpc: "2.0", id: msg.id, result: { modes } });
   }
   else if (msg.method === "session/new") {
     if (process.env.FAKE_ACP_RECORD) Bun.write(process.env.FAKE_ACP_RECORD, JSON.stringify(msg.params));
     if (process.env.FAKE_ACP_ENV_RECORD) Bun.write(process.env.FAKE_ACP_ENV_RECORD, JSON.stringify({ recovery: process.env.AGENTHUB_RECOVERY_OPERATION, codex: process.env.CODEX_HOME, claude: process.env.CLAUDE_CONFIG_DIR, state: process.env.AGENTHUB_STATE_DIR }));
-    send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s1" } });
+    send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s1", modes } });
+  }
+  else if (msg.method === "session/set_mode") {
+    modePending = true;
+    setTimeout(() => {
+      modePending = false;
+      if (process.argv.includes("--refuse-mode")) send({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "mode disabled" } });
+      else { modes.currentModeId = msg.params.modeId; send({ jsonrpc: "2.0", id: msg.id, result: {} }); }
+    }, 40);
   }
   else if (msg.method === "session/cancel") cancel?.();
-  else if (msg.method === "session/prompt") void prompt(msg.id, msg.params.prompt[0].text);
+  else if (msg.method === "session/prompt") {
+    if (modePending) send({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "prompt before mode reply" } });
+    else void prompt(msg.id, msg.params.prompt[0].text);
+  }
   else if (msg.id !== undefined && !msg.method) waiting.get(msg.id)?.(msg.result);
 });

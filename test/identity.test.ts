@@ -46,3 +46,8 @@ test("audit labels and human-action hints contain command names only", () => {
   expect(cliCommandLabel("permit\n", [])).toBe("unknown");
   expect(peerCommandRefusal("claude", "permit")).toContain("ahub console or a terminal");
 });
+
+ test("permission is human-only even with --as-user or conductor markers (#242)", () => {
+  for (const args of [[], ["pi"], ["pi", "never-ask", "--yes"], ["pi", "never-ask", "--yes", "--as-user"]]) expect(classifyPeerCommand("permission", args)).toBe("console");
+  expect(cliCommandLabel("permission", ["private-peer"])).toBe("permission");
+});

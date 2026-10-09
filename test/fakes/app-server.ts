@@ -4,6 +4,7 @@ export function startFakeAppServer(
   port = 0,
   onRevert?: (params: { threadId: string; beforeTurnId: string }) => void,
   usedPercent = 93,
+  reportApprovalPolicy = true,
 ) {
   let turnSeq = 0;
   let threadTotal = 0; // the thread's running token total, as Codex keeps it
@@ -11,6 +12,7 @@ export function startFakeAppServer(
   let active = false;
   let activeTurnId = "";
   let steered: string[] = [];
+  const requests: any[] = [];
   const reverted: { threadId: string; beforeTurnId: string }[] = [];
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -22,14 +24,15 @@ export function startFakeAppServer(
     websocket: {
       async message(ws, data) {
         const msg = JSON.parse(String(data));
+        requests.push(msg);
         const reply = (result: unknown) => void ws.send(JSON.stringify({ id: msg.id, result }));
         const note = (method: string, params: unknown) => void ws.send(JSON.stringify({ method, params }));
         if (msg.method === "initialize") return reply({ userAgent: "fake-codex/0.154.0" });
-        if (msg.method === "thread/start") return (threadTotal = 0), reply({ thread: { id: "th1" }, model: "fake" });
+        if (msg.method === "thread/start") return (threadTotal = 0), reply({ thread: { id: "th1" }, model: "fake", ...(reportApprovalPolicy ? { approvalPolicy: msg.params.approvalPolicy ?? "untrusted" } : {}) });
         if (msg.method === "thread/resume") {
           // A thread with 5000 tokens of history; Codex 0.156 replays its saved usage to the connection that attaches.
           threadTotal = 5000;
-          reply({ thread: { id: msg.params.threadId }, model: "fake" });
+          reply({ thread: { id: msg.params.threadId }, model: "fake", ...(reportApprovalPolicy ? { approvalPolicy: msg.params.approvalPolicy ?? "untrusted" } : {}) });
           return note("thread/tokenUsage/updated", { threadId: msg.params.threadId, turnId: "old", tokenUsage: { total: usage(threadTotal), last: usage(800) } });
         }
         if (msg.method === "account/rateLimits/read") return reply({ rateLimits: { primary: { usedPercent, windowDurationMins: 300, resetsAt: 1_900_000_000 }, secondary: null } });
@@ -50,6 +53,7 @@ export function startFakeAppServer(
           return note("item/completed", { threadId: msg.params.threadId, turnId: activeTurnId, completedAtMs: Date.now(), item: { type: "userMessage", id: `u${steered.length}`, content: msg.params.input } });
         }
         if (msg.method !== "turn/start") return;
+        if (msg.params.input[0].text.includes("REFUSE_TURN")) return void ws.send(JSON.stringify({ id: msg.id, error: { code: -32000, message: "turn rejected" } }));
         if (active) return void ws.send(JSON.stringify({ id: msg.id, error: { code: -32000, message: "turn in progress" } }));
         active = true;
         const turn = { id: `turn${++turnSeq}`, items: [], status: "inProgress" };
@@ -102,5 +106,5 @@ export function startFakeAppServer(
       },
     },
   });
-  return { url: `ws://127.0.0.1:${server.port}`, stop: () => server.stop(true), reverted };
+  return { url: `ws://127.0.0.1:${server.port}`, stop: () => server.stop(true), reverted, requests };
 }
