@@ -17,6 +17,8 @@ export type BusEvent =
   | { t: "state"; peer: PeerId; state: PeerState };
 
 export interface BusOptions {
+  /** Observe original envelopes immediately before a transport starts its turn. */
+  onDeliver?: (peer: PeerId, originals: Envelope[]) => void;
   retryMs: number;
   /** A queue this long is delivered without waiting for the batch window. */
   batchMax: number;
@@ -125,6 +127,8 @@ export class Bus {
   onQueues?: () => void;
   /** Actual transport admission, using originals even when a digest was condensed. Never an enqueue metric. */
   onDelivered?: (peer: PeerId, originals: Envelope[]) => void;
+  /** Before deliver's synchronous busy transition, with originals rather than a condensed digest. */
+  onDeliver?: (peer: PeerId, originals: Envelope[]) => void;
   /** Synchronous native failure observation, before queue callbacks can finish turn metrics. */
   onDeliveryFailed?: (peer: PeerId) => void;
   private recoveryHeld = false;
@@ -135,6 +139,7 @@ export class Bus {
 
   constructor(opts: Partial<BusOptions> = {}) {
     this.opts = { ...DEFAULT_BUS, ...opts };
+    this.onDeliver = opts.onDeliver;
     this.journal = opts.journal;
     if (this.journal) {
       const state = this.journal.snapshot();
@@ -753,6 +758,7 @@ export class Bus {
         const deliveryId = crypto.randomUUID();
         if (this.journal) { this.durableHandoff(id, deliveryId, delivery, out); this.activeDeliveries.set(deliveryId, id); }
         try {
+          try { this.onDeliver?.(id, delivery); } catch { /* observation must never affect delivery */ }
           if (this.journal) await peer.deliver(out, deliveryId);
           else { await peer.deliver(out); this.delivered(id, delivery); }
         } catch {
