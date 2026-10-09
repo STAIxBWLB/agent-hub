@@ -176,41 +176,52 @@ describe("console colors", () => {
     expect(task.find(s => s.text === "#1")?.tone).toBe("taskRef");
     expect(task.find(s => s.text === "#232")?.tone).toBe("issueRef");
     expect(streamTokens(examples[0]!).find(s => s.text === "6:51:38 AM")?.tone).toBe("number");
-    const peerTones = ["claude", "codex", "kimi", "pi", "local", "hub", "custom"].map(peer => streamTokens(`${peer}: context 21%`)[0]!.tone!);
-    expect(new Set(peerTones).size).toBe(7);
-    expect(peerTones.at(-1)).toBeUndefined();
-    const semanticCodes = ["info", "strong", "success", "attention", "failure", "muted"].map(t => PALETTE[t as keyof typeof PALETTE]);
-    for (const tone of peerTones.slice(0, -1)) expect(semanticCodes).not.toContain(PALETTE[tone]);
+    expect(streamTokens("claude: context 21%")[0]?.tone).toBe("peerClaude");
+    expect(streamTokens("codex: context 21%")[0]?.tone).toBe("peerCodex");
+    for (const peer of ["kimi", "pi", "local", "hub", "custom"]) expect(streamTokens(`${peer}: context 21%`)[0]?.tone).toBeUndefined();
     const tokenTones = ["taskKeyword", "number", "issueRef", "taskRef"] as const;
-    const hue = (sgr: string) => Number(sgr.match(/(?:3|9)([0-7])m/)?.[1] ?? -1);
-    const peerHues = new Set(peerTones.slice(0, -1).map(tone => hue(PALETTE[tone])));
-    expect(hue(PALETTE.peerClaude)).not.toBe(hue(PALETTE.peerCodex));
-    for (const tone of tokenTones) { expect(peerHues.has(hue(PALETTE[tone]))).toBe(false); expect(hue(PALETTE[tone])).not.toBe(1); }
+    const nonTokenCodes = ["info", "strong", "success", "attention", "failure", "muted", "peerClaude", "peerCodex"].map(t => PALETTE[t as keyof typeof PALETTE]);
+    for (const tone of tokenTones) expect(nonTokenCodes).not.toContain(PALETTE[tone]);
+    expect(PALETTE.taskKeyword).toBe("\x1b[35m"); expect(PALETTE.taskRef).toBe("\x1b[4;35m");
+    expect(PALETTE.issueRef).toBe("\x1b[4m"); expect(PALETTE.number).toBe("\x1b[1m");
     expect(new Set(tokenTones.map(tone => PALETTE[tone])).size).toBe(4);
     for (const suffix of [":", ",", ")"]) expect(streamTokens(`#233${suffix}`).find(s => s.text === "#233")?.tone).toBe("issueRef");
     expect(task.find(s => s.text === "#233")?.tone).toBe("issueRef");
+    for (const text of ["task #3", "Task #3", "[task #3]", "[review #3]", "[REVIEW #3]"]) expect(streamTokens(text).find(s => s.text === "#3")?.tone).toBe("taskRef");
+    for (const text of ["2.", "3:"]) expect(streamTokens(text)[0]?.tone).toBe("number");
     const attack = streamTokens("codex\x1b[31m: 21%\x1b]52;c;secret\x07 #232");
     expect(terminalText(paint(attack, true))).toBe("codex: 21% #232");
     expect(paint(attack, true)).not.toContain("secret");
   });
   test("wrapped tokens retain source semantics instead of reclassifying untrusted continuations", () => {
-    const text = permissionText({ ...state().approvals[0]!, title: 'local hub 3abc -> ! '.repeat(10) }).split("\n")[0]!;
+    const text = permissionText({ ...state().approvals[0]!, peer: "claude", title: 'local hub 3abc -> ! '.repeat(10) }).split("\n")[0]!;
     const lines = wrapStreamTokens(text, 80, "attention", "permission");
     expect(lines.flat().filter(s => s.tone === "attention").map(s => s.text)).toEqual(["?"]);
-    expect(lines.flat().filter(s => s.tone === "peerPi").map(s => s.text)).toEqual(["pi"]);
+    expect(lines.flat().filter(s => s.tone === "peerClaude").map(s => s.text)).toEqual(["claude"]);
     expect(lines.map(line => paint(line, false))).toEqual(wrap(text, 80));
     const task = "* task #1 " + "long title ".repeat(20) + "accepted by codex";
     expect(wrapStreamTokens(task, 80, undefined, "notice").flat().find(s => s.text === "codex")?.tone).toBe("peerCodex");
+  });
+  test("tab-normalized spans match wrapping and projection stays stopped after a miss", () => {
+    const tabbed = "codex:\tcontext\t7% (measured\t6:51:38 AM) #233:";
+    expect(paint(streamTokens(tabbed), false)).toBe(tabbed.replace(/\t/g, " "));
+    expect(wrapStreamTokens(tabbed, 80).map(line => paint(line, false))).toEqual(wrap(tabbed, 80));
+    const text = "* task #1 " + "word ".repeat(14) + "[agent-hub message from user] " + "word ".repeat(20) + "accepted by codex";
+    const lines = wrapStreamTokens(text, 80, "attention", "notice");
+    expect(lines.map(line => paint(line, false))).toEqual(wrap(text, 80));
+    expect(lines[0]!.find(s => s.text === "*")?.tone).toBe("attention");
+    expect(lines.slice(1).flat().every(s => !s.tone)).toBe(true);
+    expect(streamTokens("* task #1 title declined by pi: accepted by codex", undefined, "notice").find(s => s.text === "codex")?.tone).toBeUndefined();
   });
   test("only trusted peer slots and state/permission semantics are toned; identifiers stay whole", () => {
     for (const state of ["busy", "idle", "failed"]) {
       const spans = streamTokens(`  . local is ${state}`, stateTone(state), "state");
       expect(spans.find(s => s.text === state)?.tone).toBe(stateTone(state));
-      expect(spans.find(s => s.text === "local")?.tone).toBe("peerLocal");
+      expect(spans.find(s => s.text === "local")?.tone).toBeUndefined();
     }
-    const permission = streamTokens(permissionText({ ...state().approvals[0]!, title: "local hub pi -> ! 3abc 3-abc 2026-10-10T06:51:38Z v1.2.3 127.0.0.1" }).split("\n")[0]!, "attention", "permission");
+    const permission = streamTokens(permissionText({ ...state().approvals[0]!, peer: "claude", title: "local hub pi -> ! 3abc 3-abc 2026-10-10T06:51:38Z v1.2.3 127.0.0.1 12345678" }).split("\n")[0]!, "attention", "permission");
     expect(permission.find(s => s.text === "?")?.tone).toBe("attention");
-    expect(permission.filter(s => s.tone === "peerPi").map(s => s.text)).toEqual(["pi"]);
+    expect(permission.filter(s => s.tone === "peerClaude").map(s => s.text)).toEqual(["claude"]);
     for (const token of ["local", "hub", "->", "!"]) expect(permission.filter(s => s.text === token).every(s => !s.tone)).toBe(true);
     expect(permission.filter(s => s.tone === "number")).toEqual([]);
     expect(streamTokens("custom: context 21%")[0]?.tone).toBeUndefined();
@@ -329,7 +340,7 @@ describe("console colors", () => {
       if (exit === "q") f.input("q"); else if (exit === "signal") f.signal(); else if (exit === "error") f.error(); else f.client.onClose(1006, "gone");
       await running;
       const out = f.output.join("");
-      expect(out.slice(out.lastIndexOf("\x1b[0m"))).not.toMatch(/\x1b\[(?:1|1;3[1-6]|3[1-6]|9[0-6])m/);
+      expect(out.slice(out.lastIndexOf("\x1b[0m"))).not.toMatch(/\x1b\[(?:1|4|4;35|1;3[1-6]|3[1-6]|9[0-6])m/);
       expect(out).toContain(RESTORE_CONSOLE);
       if (exit === "error") process.exitCode = 0;
     });

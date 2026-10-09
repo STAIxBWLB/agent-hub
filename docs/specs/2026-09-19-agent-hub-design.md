@@ -1372,22 +1372,23 @@ and success, yellow attention/waiting, red failure/intervention, and restrained
 bright-black metadata. Offline peers, ordinary titles, action details and body
 lines use the default foreground. Existing labels, selection markers and
 confirmation prompts remain sufficient without color. Console stream headers
-color meaningful tokens only (#239): a fixed peer map (bright blue Claude/Kimi/local,
-bright cyan Codex/Pi/hub; others default), magenta `task`, green numeric values,
-yellow issue references and bold default foreground task references following
-`task`. Claude and Codex differ; other peer names may share their fixed hues.
-Peer SGR codes differ from state codes. Token hues never use peer blue/cyan,
-even on terminals that promote bold foreground colors to bright colors. Red
-remains reserved for failures. Bold default preserves task-reference contrast
-on both light and dark backgrounds. All use basic 16-color ANSI and emphasis;
-there is no hashing or user theme. Ordinary words remain default foreground.
+color meaningful tokens only (#239; dated issue Decisions): Claude bright blue
+(94), Codex bright cyan (96), all other peers default; `task` magenta (35, never
+bold), numbers bold default foreground (1), task references magenta underlined
+(4;35), and other issue references underlined default foreground (4). No token
+SGR equals a state or peer SGR. Green/yellow/red remain states/approvals/failures,
+cyan remains navigation. Case-insensitive `task #N`, `Task #N`, `[task #N]` and
+`[review #N]` identify task references. Ordinary words keep default foreground;
+there is no hashing or user theme.
 Only hub-written peer slots, state words and structural markers receive their
 semantic tones; title words and markers cannot choose them. Numeric tokens have
 whole-token boundaries, so UUIDs and ISO identifiers stay plain. Legacy notices
-lack typed reference ranges: the explicit `task #N` heuristic is bounded by a
+lack typed reference ranges: the task/review prefix heuristic is bounded by a
 `ponytail:` comment; other `#N` tokens use the issue tone until structured notice
-spans classify assign/which references. Header text crosses `terminalText` before
-tokenization. Wrapped spans retain the source classification. Bodies and every
+spans classify assign/which references. Header text crosses `terminalText` and tab-to-space normalization before
+tokenization. Wrapped spans retain the source classification. After a projection
+miss, structural tones remain but token projection stops for that line and all
+later continuations. Bodies and every
 command-output line stay plain. Denial requests and observed expiry/cancellation
 are red; an answered remote closure lacks option-kind metadata and is not
 guessed to be a denial.

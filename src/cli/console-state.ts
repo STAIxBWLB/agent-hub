@@ -36,13 +36,12 @@ export function terminalText(value: unknown): string {
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/\x1b[^\n]?/g, "").replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, ""));
 }
-export type Tone = "info" | "strong" | "success" | "attention" | "failure" | "muted" | "peerClaude" | "peerCodex" | "peerKimi" | "peerPi" | "peerLocal" | "peerHub" | "taskKeyword" | "number" | "issueRef" | "taskRef";
+export type Tone = "info" | "strong" | "success" | "attention" | "failure" | "muted" | "peerClaude" | "peerCodex" | "taskKeyword" | "number" | "issueRef" | "taskRef";
 export interface Span { text: string; tone?: Tone }
 export const PALETTE: Readonly<Record<Tone, string>> = Object.freeze({
   info: "\x1b[36m", strong: "\x1b[1;36m", success: "\x1b[32m", attention: "\x1b[33m", failure: "\x1b[31m", muted: "\x1b[90m",
-  peerClaude: "\x1b[94m", peerCodex: "\x1b[96m", peerKimi: "\x1b[94m", peerPi: "\x1b[96m",
-  peerLocal: "\x1b[94m", peerHub: "\x1b[96m",
-  taskKeyword: "\x1b[35m", number: "\x1b[32m", issueRef: "\x1b[33m", taskRef: "\x1b[1m",
+  peerClaude: "\x1b[94m", peerCodex: "\x1b[96m",
+  taskKeyword: "\x1b[35m", number: "\x1b[1m", issueRef: "\x1b[4m", taskRef: "\x1b[4;35m",
 });
 export function paint(line: Span[], color: boolean): string {
   return line.map(span => {
@@ -53,9 +52,9 @@ export function paint(line: Span[], color: boolean): string {
 }
 /** Console stream headers only. Tokenize sanitized text; bodies and command output stay plain. */
 export function streamTokens(value: string, eventTone?: Tone, kind?: string): Span[] {
-  const text = terminalText(value);
+  const text = terminalText(value).replace(/\t/g, " ");
   if (kind === "command" || kind === "console") return [{ text }];
-  const peers: Readonly<Record<string, Tone>> = { claude: "peerClaude", codex: "peerCodex", kimi: "peerKimi", pi: "peerPi", local: "peerLocal", hub: "peerHub" };
+  const peers: Readonly<Record<string, Tone>> = { claude: "peerClaude", codex: "peerCodex" };
   // Hub-written peer slots only; words such as local/pi/hub in a title do not identify a speaker.
   const peerSlots = new Set<number>();
   const leading = text.match(/^\s*(?:[.?*!]\s+)?([A-Za-z_][A-Za-z_0-9-]*)(?=:| is | asks permission:)/);
@@ -66,7 +65,7 @@ export function streamTokens(value: string, eventTone?: Tone, kind?: string): Sp
     let at = route[0].lastIndexOf(route[2]!);
     for (const recipient of route[2]!.split(",")) { peerSlots.add(at); at += recipient.length + 1; }
   }
-  if (kind === "notice" || /^\s*\* task #/.test(text)) {
+  if (/^\s*\* task #[0-9]+ .+ (?:accepted by|assigned to) [A-Za-z_][A-Za-z_0-9-]*$/.test(text) && !/ declined| reason:/.test(text)) {
     const owner = text.match(/(?:accepted by|assigned to) ([A-Za-z_][A-Za-z_0-9-]*)$/);
     if (owner) peerSlots.add(owner.index! + owner[0].lastIndexOf(owner[1]!));
   }
@@ -74,21 +73,21 @@ export function streamTokens(value: string, eventTone?: Tone, kind?: string): Sp
   const markerAt = marker ? marker[0].length - 1 : -1;
   const state = kind === "state" ? text.match(/ is ([A-Za-z_]+)$/) : undefined;
   const stateAt = state ? state.index! + 4 : -1;
-  const out: Span[] = []; let end = 0; let afterTask = false;
-  for (const match of text.matchAll(/(?<![\p{L}\p{N}_#-])#[0-9]+(?![\p{L}\p{N}_-])|(?<![\p{L}\p{N}_#.:-])(?:[0-9]+(?::[0-9]+)+(?: AM| PM)?|[0-9]+(?:\.[0-9]+)?(?:%|ms|s|m|h)?)(?![\p{L}\p{N}_%.:-])|[A-Za-z_][A-Za-z_0-9-]*|->|[.?*!]/gu)) {
+  const out: Span[] = []; let end = 0;
+  for (const match of text.matchAll(/(?<![\p{L}\p{N}_#-])#[0-9]+(?![\p{L}\p{N}_-])|(?<![\p{L}\p{N}_#.:-])(?:[0-9]+(?::[0-9]+)+(?: AM| PM)?|[0-9]+(?:\.[0-9]+)?(?:%|ms|s|m|h)?)(?![\p{L}\p{N}_%-]|[.:][\p{L}\p{N}])|[A-Za-z_][A-Za-z_0-9-]*|->|[.?*!]/gu)) {
     const token = match[0]; const start = match.index;
     const gap = text.slice(end, start);
     if (gap) out.push({ text: gap });
     let tone: Tone | undefined;
-    // ponytail: explicit `task #N` is a task reference; other #N tokens are issue refs.
-    // Ceiling: legacy notice text has no typed ref ranges. Upgrade to structured notice spans to classify assign/which refs.
-    if (token.startsWith("#")) tone = afterTask && /^\s*$/.test(gap) ? "taskRef" : "issueRef";
-    else if (token === "task" && /^\s*\*?\s*$/.test(text.slice(0, start))) tone = "taskKeyword";
-    else if (/^[0-9]/.test(token)) tone = "number";
+    // ponytail: legacy notices have no typed reference ranges. Classify task/review prefixes textually;
+    // assign/which #N remains an issue reference until notices carry structured reference spans.
+    if (token.startsWith("#")) tone = /\b(?:task|review)\s*$/i.test(text.slice(0, start)) ? "taskRef" : "issueRef";
+    else if (token.toLowerCase() === "task" && /^\s*\*?\s*\[?\s*$/.test(text.slice(0, start))) tone = "taskKeyword";
+    else if (/^[0-9]/.test(token) && !(/^[0-9]{8}$/.test(token) && kind === "permission")) tone = "number";
     else if (peerSlots.has(start) && Object.hasOwn(peers, token)) tone = peers[token];
     else if (start === markerAt || start === stateAt || (route && token === "->" && start < route[0].length)) tone = eventTone;
     out.push({ text: token, ...(tone ? { tone } : {}) });
-    afterTask = token === "task"; end = start + token.length;
+    end = start + token.length;
   }
   if (end < text.length) out.push({ text: text.slice(end) });
   return out;
@@ -97,11 +96,15 @@ export function streamTokens(value: string, eventTone?: Tone, kind?: string): Sp
 export function wrapStreamTokens(value: string, columns: number, tone?: Tone, kind?: string): Span[][] {
   const spans = streamTokens(value, tone, kind);
   const text = spans.map(s => s.text).join("");
-  let cursor = 0;
-  return wrap(text, columns).map(line => {
+  let cursor = 0; let projecting = true;
+  return wrap(text, columns).map((line, index) => {
     const content = line.trimStart();
-    const start = text.indexOf(content, cursor);
-    if (!content || start < 0) return [{ text: line }];
+    const start = projecting ? text.indexOf(content, cursor) : -1;
+    if (!content || start < 0) {
+      if (content) projecting = false;
+      // Only the first physical header can have structural markers. Never infer structure from a continuation.
+      return index === 0 ? streamTokens(line, tone, kind).map(s => ({ text: s.text, ...(s.tone === tone && tone ? { tone } : {}) })) : [{ text: line }];
+    }
     const end = start + content.length; cursor = end;
     const out: Span[] = [{ text: line.slice(0, line.length - content.length) }];
     let at = 0;
