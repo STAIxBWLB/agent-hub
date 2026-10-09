@@ -4,6 +4,7 @@ import type { MemoryClient } from "../memory/client.ts";
 import { CLASSES, OUTCOMES_KEPT_MS, PLAN_KEYS, TASK_MOVE_REASONS, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
+import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
 import { assign, detectSignals, LOCAL, peerEntry, PI, predictSplit, type Assignment, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
@@ -44,6 +45,10 @@ export interface TasksDeps {
   roles?: Record<string, string[]>;
   /** Optional: name a class for a task proposed without one. `onCampus` says whether the model call stays on campus. */
   triage?: { classify: (title: string, detail: string) => Promise<TaskClass | undefined>; onCampus: () => Promise<boolean> };
+  /** The PII screen (issue #198): a closed verdict from a model on this machine or on campus, `unknown` on any failure. */
+  piiScreen?: (text: string) => Promise<PiiVerdict>;
+  /** Each screen verdict, for the record: item, label, source and category, never the text. */
+  recordScreen?: (record: ScreenRecord) => void;
   /** Turn-free coordination (issue #107): configured and no PII task open. Asked at each use. */
   turnFree?: () => boolean;
   /** Whether a peer's context path for facts is verified in its current session (issue #108). */
@@ -164,6 +169,40 @@ export class Tasks {
 
   isPii = (task: Pick<Task, "signals">) => task.signals.includes("pii") && this.d.routing().constraints.pii === "local_only";
 
+  /** `signals.pii_screen = "local"` where the PII constraint applies (issue #198); on without a screener, every verdict is unknown. */
+  private screenOn = (): boolean => {
+    const r = this.d.routing();
+    return r.signals.pii_screen === "local" && r.constraints.pii === "local_only";
+  };
+
+  /** One bounded screen call. A screener that fails is no verdict, handled as PII (fail closed). */
+  private async screenCall(text: string): Promise<PiiVerdict> {
+    return (await this.d.piiScreen?.(text).catch(() => undefined)) ?? { label: "unknown", miss: "failed", ms: 0 };
+  }
+
+  private recordScreen(task: number | undefined, item: ScreenItem, v: PiiVerdict | undefined): void {
+    const record: ScreenRecord = !v
+      ? { item, label: "pii", source: "regex" }
+      : { item, label: v.label === "clear" ? "clear" : "pii", source: v.label === "unknown" ? "unknown" : "screen", ...(v.category ? { category: v.category } : {}), ...(v.miss ? { miss: v.miss } : {}), ms: v.ms };
+    try {
+      this.d.recordScreen?.({ ...(task === undefined ? {} : { task }), ...record });
+    } catch { /* telemetry only */ }
+  }
+
+  /**
+   * Whether the model screen withholds free text about an ordinary task (issue #198): it is on and its verdict is not
+   * `clear`. Text that matches a pattern needs no call (the #69 checks withhold it), and a PII task's text is private.
+   */
+  private async withholds(item: ScreenItem, text: string | undefined, task?: Task): Promise<boolean> {
+    if (!text?.trim() || !this.screenOn() || (task && this.isPii(task)) || !this.nameable(text)) return false;
+    const v = await this.screenCall(text);
+    this.recordScreen(task?.id, item, v);
+    return v.label !== "clear";
+  }
+
+  /** Why free text is withheld: the pattern check first, as #69 words it. */
+  private whyWithheld = (text: string) => (this.nameable(text) ? "the PII screen did not clear it" : "it matches a PII pattern");
+
   /** Task-owned, default-off between-turn ladder. Persist before sending so restart cannot repeat a step. */
   async sweep(now = Date.now()): Promise<{ task: number; finding: SweepRecord }[]> {
     const recorded: { task: number; finding: SweepRecord }[] = [];
@@ -245,10 +284,10 @@ export class Tasks {
   publicView(task: Task, fullHistory = false): Record<string, unknown> {
     const { title, detail, history, ...rest } = task;
     if (this.isPii(task)) return { ...rest, refs: {}, plan: {}, title: "[pii]", detail: "[pii]" };
-    const screenHistoryText = (text: string, field: string): string => this.nameable(text) ? text : `[history ${field} withheld: it matches a PII pattern; ahub task show ${task.id}]`;
+    const screenHistoryText = (text: string, field: string, withheld = false): string => !withheld && this.nameable(text) ? text : `[history ${field} withheld: ${this.whyWithheld(text)}; ahub task show ${task.id}]`;
     const publicHistory = (fullHistory ? history : history.slice(-5)).map(h => ({
       at: h.at, by: h.by, event: h.event,
-      ...(h.note === undefined ? {} : { note: screenHistoryText(h.note, "note") }),
+      ...(h.note === undefined ? {} : { note: screenHistoryText(h.note, "note", h.withheld) }),
       ...(h.profile === undefined ? {} : { profile: screenHistoryText(h.profile, "profile") }),
       ...(h.owner === undefined ? {} : { owner: h.owner }),
       ...(h.reason && TASK_MOVE_REASONS.includes(h.reason) ? { reason: h.reason } : {}),
@@ -448,6 +487,11 @@ export class Tasks {
     const signals = detectSignals({ ...text, detail: [text.detail, planText(plan)].join("\n") }, this.d.routing(), this.d.cwd);
     // Urgent work is handed over even when its paused owner's window resets soon (issue #36).
     if (input.urgent === true && !signals.includes("urgent")) signals.push("urgent");
+    // The PII screen (issue #198) reads the same text before anything else does: until its verdict the task is on no
+    // board, in no envelope and before no other model. A pattern match is PII without a call; no verdict is PII too.
+    const screening = this.screenOn();
+    const screened = screening && !signals.includes("pii") ? await this.screenCall([text.title, text.detail, planText(plan)].join("\n")) : undefined;
+    if (screened && screened.label !== "clear") signals.push("pii");
     let cls = given as TaskClass | undefined;
     let triaged = false;
     if (!cls && this.d.triage) {
@@ -462,6 +506,7 @@ export class Tasks {
     if (!cls) throw new Error(`class is required (one of ${CLASSES.join(", ")}); the hub could not name one for you`);
     const draft = { ...text, class: cls };
     let task = this.d.board.propose(by, { ...draft, plan, ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals });
+    if (screening) task = this.screenedTask(task, screened);
     if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
     if (defaulted) task = this.d.board.update(task.id, "hub", "class defaulted", {}, "class implement for a claim without one");
     this.d.notify(`task ${this.publicTitle(task)} proposed by ${by} [${task.class}]${task.signals.length ? ` signals: ${task.signals.join(", ")}` : ""}`);
@@ -473,6 +518,14 @@ export class Tasks {
     }
     // Naming yourself is a claim: the work is already yours, so no offer comes back to you (paper: Agensh CLAIM, #68).
     return this.assignOwner(task, by, input.owner ? { candidates: [input.owner], claim: input.owner === by } : {});
+  }
+
+  /** Where a screened task's `pii` signal came from, on its history and in events (issue #198); no verdict is a console line by id. */
+  private screenedTask(task: Task, v: PiiVerdict | undefined): Task {
+    this.recordScreen(task.id, "task", v);
+    if (v?.label === "unknown") this.d.notify(`task #${task.id}: the PII screen gave no verdict (${v.miss}); it is handled as a PII task`);
+    const note = !v ? "pii: regex" : v.label === "clear" ? "clear" : v.label === "pii" ? `pii: screen, ${v.category}` : `pii: unknown, ${v.miss}`;
+    return this.d.board.update(task.id, HUB, "screened", {}, note);
   }
 
   /**
@@ -568,12 +621,12 @@ export class Tasks {
    * Model-written free text about an ordinary task (a done summary, a review note with its unmet items, a handoff)
    * that matches a PII pattern stays on this machine (#69): every peer gets a stub, `local` too, which handles an
    * ordinary task's turn like any other (gateway off campus allowed, memory capture on). The board keeps the text for
-   * `ahub task show`. A PII task's messages are private already.
+   * `ahub task show`. A PII task's messages are private already. `withheld`: the PII screen did not clear it (#198).
    */
-  private screen(task: Task, text: string, what: string, to: PeerId | null | undefined): string {
-    if (!text || this.isPii(task) || to === USER || this.nameable(text)) return text;
-    this.d.notify(`task #${task.id}: the ${what} was withheld from ${to ?? "a peer"} (it matches a PII pattern)`);
-    return `[${what} withheld: it matches a PII pattern; ahub task show ${task.id}]`;
+  private screen(task: Task, text: string, what: string, to: PeerId | null | undefined, withheld = false): string {
+    if (!text || this.isPii(task) || to === USER || (!withheld && this.nameable(text))) return text;
+    this.d.notify(`task #${task.id}: the ${what} was withheld from ${to ?? "a peer"} (${this.whyWithheld(text)})`);
+    return `[${what} withheld: ${this.whyWithheld(text)}; ahub task show ${task.id}]`;
   }
 
   /** Where two tasks meet: shared paths, then shared symbols, leaving out any name that matches a PII pattern. */
@@ -680,7 +733,10 @@ export class Tasks {
       return [`task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"}${task.reserved ? `, reserved for ${task.reserved}` : ""})`, "if it were assigned now:", ...a.trace, ...(this.splitShadow(task, task.owner ?? a.owner)?.trace ?? [])];
     }
     const draft = { title: target.title, detail: target.detail ?? "", refs: target.refs ?? {} };
-    return assign({ class: target.class, signals: detectSignals(draft, routing, this.d.cwd) }, this.states(), routing, this.weights(target.class)).trace;
+    const signals = detectSignals(draft, routing, this.d.cwd);
+    const trace = assign({ class: target.class, signals }, this.states(), routing, this.weights(target.class)).trace;
+    // A draft is not sent to the PII screen (issue #198): a proposal is, and a pii or unknown verdict adds the pii signal.
+    return this.screenOn() && !signals.includes("pii") ? [...trace, "pii_screen is on: at proposal a pii or unknown verdict adds signal pii (local only)"] : trace;
   }
 
   /** Public read path: every generated line is screened, including profile/config-derived trace fields. */
@@ -775,7 +831,8 @@ export class Tasks {
   private async sendTask(task: Task, a: Assignment, context?: string, overlap = ""): Promise<void> {
     const pii = this.isPii(task);
     const brief = pii ? undefined : await this.d.briefs?.forTask(task.owner!, task).catch(() => undefined);
-    const rejected = task.history.filter((h) => h.event === "changes_requested").map((h) => `- ${h.by}: ${this.screen(task, h.note ?? "", "review note", a.owner)}`);
+    const rejected = task.history.filter((h) => h.event === "changes_requested").map((h) => `- ${h.by}: ${this.screen(task, h.note ?? "", "review note", a.owner, h.withheld)}`);
+    const handoff = context && !pii ? this.screen(task, context, "handoff", a.owner, await this.withholds("handoff", context, task)).slice(0, 3000) : "";
     const facts = [`class ${task.class}`, a.owner === PI ? `backend pi/${a.piBackend ?? "dgx"}` : "", task.refs.paths?.length ? `paths ${task.refs.paths.join(", ")}` : "", task.refs.branch ? `branch ${task.refs.branch}` : "", a.reviewer ? `reviewer ${a.reviewer}` : task.class === "review" ? "no reviewer" : this.noReviewer(a)].filter(Boolean).join("; ");
     const plan = planText(task.plan);
     const body = [
@@ -787,7 +844,7 @@ export class Tasks {
       rejected.length ? `Earlier review notes:\n${rejected.join("\n")}` : "",
       brief ?? "",
       // What the previous owner left behind. Peer-written free text: never attached to a PII task.
-      context && !pii ? `Handoff from the previous owner:\n${this.screen(task, context, "handoff", a.owner).slice(0, 3000)}` : "",
+      handoff ? `Handoff from the previous owner:\n${handoff}` : "",
       `Take it with hub_task_accept {id: ${task.id}, plan: {paths, symbols, signatures, insertion_points}} (what you will change, before you start${pii ? "" : "; owners of overlapping tasks see it"}) or pass with hub_task_decline. When finished: hub_task_done {id: ${task.id}, summary: what changed, why, and the check you ran with its result, refs}.`,
     ].filter(Boolean).join("\n\n");
     // A hand-over the owner takes in a turn of its own (#109, #115): idle before, busy after and not queued, this envelope
@@ -949,6 +1006,8 @@ export class Tasks {
   isChecking = (id: number) => this.checking.has(id);
 
   async done(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs): Promise<Task> {
+    // The PII screen reads the summary first (issue #198); everything below reads the board after it.
+    const withheld = await this.withholds("summary", summary, this.need(id));
     let task = this.need(id);
     this.mine(task, by, "owner");
     if (task.state === "in_review" || task.state === "approved") throw new Error(`task #${task.id} is already ${task.state}`);
@@ -987,15 +1046,15 @@ export class Tasks {
     }
     if (task.state === "proposed" || task.state === "changes_requested") task = this.d.board.update(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE); // done without a separate accept
     const command = this.d.runCheck ? this.d.check?.(task.class) : undefined;
-    if (!command) return this.complete(task, by, summary, refs);
+    if (!command) return this.complete(task, by, summary, refs, "", withheld);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
     this.checking.set(task.id, task.owner);
-    const pending = this.d.board.update(task.id, by, "done (checking)", { refs: cleanRefs(refs) }, summary);
+    const pending = this.d.board.update(task.id, by, "done (checking)", { refs: cleanRefs(refs) }, summary, { withheld: withheld || undefined });
     this.d.notify(`task ${this.publicTitle(pending)} done by ${by}; its check is queued or running: ${command}`);
     const seen = { events: pending.history.length, owner: pending.owner };
     this.pendingChecks++;
     this.checkQueue = this.checkQueue
-      .then(() => this.finishChecked(pending.id, by, summary, command, seen))
+      .then(() => this.finishChecked(pending.id, by, summary, command, seen, withheld))
       .catch((e: Error) => this.d.notify(`task #${pending.id}: its check result could not be recorded: ${e.message}`))
       .finally(() => this.pendingChecks--);
     return pending;
@@ -1032,7 +1091,7 @@ export class Tasks {
         const theirs = this.places(u);
         const paths = mine.paths.filter((p) => theirs.paths.some((q) => samePlace(p, q)));
         const symbols = mine.symbols.filter((x) => theirs.symbols.includes(x));
-        return paths.length || symbols.length ? [this.completedNotice(u, { task: t, paths, symbols }, at.note)] : [];
+        return paths.length || symbols.length ? [this.completedNotice(u, { task: t, paths, symbols }, at.note, at.withheld)] : [];
       });
       if (!open.length && !done.length) continue;
       const owners = [...new Set(open.map((h) => h.task.owner!))];
@@ -1060,7 +1119,8 @@ export class Tasks {
     const lines = others.map((t) => {
       const files = this.places(t).paths.filter(this.nameable);
       const signatures = (t.plan?.signatures ?? []).filter(this.nameable);
-      const first = (doneAt(t)?.note ?? "").split("\n").find((l) => l.trim())?.trim().slice(0, 300);
+      const done = doneAt(t);
+      const first = done?.withheld ? undefined : (done?.note ?? "").split("\n").find((l) => l.trim())?.trim().slice(0, 300);
       return [
         `- ${this.publicTitle(t)} (owner ${t.owner}, ${t.state})`,
         files.length ? `  changed files: ${files.join(", ")}` : "",
@@ -1076,7 +1136,7 @@ export class Tasks {
     return [head, "The done counts once the files did not change between two calls and the others have stopped.", ...lines, facts?.text ?? ""].filter(Boolean).join("\n");
   }
 
-  private async finishChecked(id: number, by: PeerId, summary: string | undefined, command: string, seen: { events: number; owner: PeerId | null }): Promise<void> {
+  private async finishChecked(id: number, by: PeerId, summary: string | undefined, command: string, seen: { events: number; owner: PeerId | null }, withheld: boolean): Promise<void> {
     const result = await this.d.runCheck!(command).catch((e: Error) => ({ code: null, timedOut: false, interrupted: false, tail: e.message }));
     this.checking.delete(id);
     const task = this.d.board.get(id);
@@ -1101,7 +1161,7 @@ export class Tasks {
       }
       this.d.board.update(id, HUB, "check passed", {}, `${outcome}\n${result.tail}`.trim());
       // The output goes to the reviewer with the done note, not into shared memory: nobody screened it.
-      await this.complete(this.d.board.get(id)!, by, `${summary ?? ""}\nCheck: ${outcome}`.trim(), undefined, result.tail);
+      await this.complete(this.d.board.get(id)!, by, `${summary ?? ""}\nCheck: ${outcome}`.trim(), undefined, result.tail, withheld);
       return;
     }
     this.d.board.update(id, HUB, "check failed", {}, `${outcome}\n${result.tail}`.trim());
@@ -1112,12 +1172,12 @@ export class Tasks {
     this.tell(task, `Task #${id}: its check failed.\n$ ${outcome}${result.tail ? `\n${result.tail}` : ""}\nFix it and call hub_task_done again.`, pii);
   }
 
-  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = ""): Promise<Task> {
+  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false): Promise<Task> {
     const reviewer = task.reviewer;
-    const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", refs: cleanRefs(refs) }, checkOutput ? `${summary ?? ""}\n${checkOutput}`.trim() : summary);
+    const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", refs: cleanRefs(refs) }, checkOutput ? `${summary ?? ""}\n${checkOutput}`.trim() : summary, { withheld: withheld || undefined });
     this.cohorts.closed(next.id); // its owner's next native turn end settles it in its cohort (issue #107)
-    this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`);
-    this.tellCompleted(next, summary);
+    this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`, withheld);
+    this.tellCompleted(next, summary, withheld);
     if (!reviewer) {
       if (next.owner) this.d.board.recordOutcome(next.owner, next.class, true); // approved without a review is a success too
       this.d.notify(`task ${this.publicTitle(next)} done by ${by}, no reviewer: approved`);
@@ -1133,7 +1193,7 @@ export class Tasks {
    * work is done (after its check, when one runs), and nobody else does (issue #31). A message of its own, not a
    * ride-along line: an owner in the middle of those files needs it before its next task arrives.
    */
-  private tellCompleted(task: Task, summary?: string): void {
+  private tellCompleted(task: Task, summary?: string, withheld = false): void {
     const hits = this.overlapHits(task).filter((h) => h.task.owner !== USER && h.task.owner !== HUB);
     const cohort = this.cohorts.of(task.id);
     const silent = this.silentFor(task.id);
@@ -1144,19 +1204,20 @@ export class Tasks {
         cohort.held.add(task.id);
         continue;
       }
-      this.whileOpen(hit.task.owner!, hit.task.id, this.completedNotice(task, hit, summary));
+      this.whileOpen(hit.task.owner!, hit.task.id, this.completedNotice(task, hit, summary, withheld));
     }
   }
 
   /**
    * The completed-change notice: files, signatures and the summary are the owner's own words (paths given at done
-   * included), and any item that matches a PII pattern is left out of what other owners get.
+   * included), and any item that matches a PII pattern is left out of what other owners get, the summary also when the
+   * PII screen did not clear it (`withheld`, #198).
    */
-  private completedNotice(task: Task, hit: { task: Task; paths: string[]; symbols: string[] }, summary?: string): string {
+  private completedNotice(task: Task, hit: { task: Task; paths: string[]; symbols: string[] }, summary?: string, withheld = false): string {
     const paths = this.places(task).paths.filter(this.nameable);
     const signatures = (task.plan?.signatures ?? []).filter(this.nameable);
     const first = (summary ?? "").split("\n").find((l) => l.trim())?.trim().slice(0, 300);
-    const line = first && this.nameable(first) ? first : undefined;
+    const line = first && !withheld && this.nameable(first) ? first : undefined;
     return [
       `Task #${task.id} (owner ${task.owner}) is done and touches your open #${hit.task.id} on ${this.where(hit)}. Check your work against it before you go on.`,
       paths.length ? `Changed files: ${paths.join(", ")}` : "",
@@ -1171,7 +1232,7 @@ export class Tasks {
       const t = this.d.board.get(id);
       if (!t || this.isPii(t)) return [];
       const done = [...t.history].reverse().find((h) => h.event === "done");
-      return [this.completedNotice(t, { task, paths: this.places(task).paths.filter((p) => this.places(t).paths.some((q) => samePlace(p, q))), symbols: [] }, done?.note)];
+      return [this.completedNotice(t, { task, paths: this.places(task).paths.filter((p) => this.places(t).paths.some((q) => samePlace(p, q))), symbols: [] }, done?.note, done?.withheld)];
     });
     return lines.length ? lines.join("\n") : undefined;
   }
@@ -1190,21 +1251,24 @@ export class Tasks {
       `- ${check ? `Check result: ${(check.note ?? "").split("\n")[0]}` : "No check ran for this class: run the affected tests yourself."}`,
       `- List what is unmet in hub_review's unmet, one item each.`,
     ].join("\n");
-    const summary = last?.note ? this.screen(task, last.note, "summary", reviewer) : "(no summary)";
+    const summary = last?.note ? this.screen(task, last.note, "summary", reviewer, last.withheld) : "(no summary)";
     const body = `Review task #${task.id} [${task.class}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
     this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, task: String(task.id) }, ...(this.isPii(task) ? { private: true } : {}) }));
   }
 
   async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown): Promise<Task> {
+    const items = textList(unmet);
+    if (items.length) note = `${note ?? ""}\nUnmet: ${items.join("; ")}`.trim();
+    // The PII screen reads the note first (issue #198); everything below reads the board after it.
+    const withheld = await this.withholds("review note", note, this.need(id));
     const task = this.need(id);
     this.mine(task, by, "reviewer");
     if (verdict !== "approved" && verdict !== "changes_requested") throw new Error('verdict must be "approved" or "changes_requested"');
     if (task.state !== "in_review") throw new Error(`task #${task.id} is ${task.state}: cannot move to ${verdict} before its owner calls hub_task_done`);
     const pii = this.isPii(task);
-    const items = textList(unmet);
-    if (items.length) note = `${note ?? ""}\nUnmet: ${items.join("; ")}`.trim();
+    const flag = { withheld: withheld || undefined };
     if (verdict === "approved") {
-      const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0 }, note);
+      const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0 }, note, flag);
       if (next.owner) {
         this.d.board.recordOutcome(next.owner, next.class, true);
         this.d.board.recordReview({ implementer: next.owner, reviewer: by, class: next.class, kind: "approved", task: next.id });
@@ -1213,25 +1277,25 @@ export class Tasks {
           this.d.board.recordReview({ implementer: next.owner, reviewer: r, class: next.class, kind: "caught", task: next.id });
         }
       }
-      this.note(next, by, "decision", `Task #${next.id} approved by ${by}: ${next.title}\n${note ?? ""}`);
-      this.tell(next, `Task #${next.id} approved by ${by}.${note ? ` ${this.screen(next, note, "review note", next.owner)}` : ""}`, pii);
+      this.note(next, by, "decision", `Task #${next.id} approved by ${by}: ${next.title}\n${note ?? ""}`, withheld);
+      this.tell(next, `Task #${next.id} approved by ${by}.${note ? ` ${this.screen(next, note, "review note", next.owner, withheld)}` : ""}`, pii);
       await this.releaseDependents(next);
       return next;
     }
-    const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: task.rejections + 1 }, note);
+    const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: task.rejections + 1 }, note, flag);
     this.cohorts.withdraw(rejected.id); // open again: its done intent no longer counts (issue #107)
     if (rejected.owner) this.d.board.recordOutcome(rejected.owner, rejected.class, false);
     this.contradict(rejected);
-    this.note(rejected, by, "decision", `Task #${rejected.id} changes requested by ${by}: ${rejected.title}\n${note ?? ""}`);
+    this.note(rejected, by, "decision", `Task #${rejected.id} changes requested by ${by}: ${rejected.title}\n${note ?? ""}`, withheld);
     if (rejected.rejections >= ESCALATE_AFTER) {
       const moved = await this.escalate(HUB, rejected.id, `${rejected.rejections} consecutive changes_requested`, "rejections");
       if (moved.owner !== rejected.owner) return moved;
       // Nobody to escalate to: the owner still has to hear the verdict and the note.
-      this.tell(moved, `Task #${moved.id}: ${by} requests changes again.${note ? ` ${this.screen(moved, note, "review note", moved.owner)}` : ""} Nobody else can take it; fix it and call hub_task_done again.`, pii);
+      this.tell(moved, `Task #${moved.id}: ${by} requests changes again.${note ? ` ${this.screen(moved, note, "review note", moved.owner, withheld)}` : ""} Nobody else can take it; fix it and call hub_task_done again.`, pii);
       return moved;
     }
     const reopened = this.d.board.update(rejected.id, HUB, "reopened", { state: "in_progress" });
-    this.tell(reopened, `Task #${reopened.id}: ${by} requests changes.${note ? ` ${this.screen(reopened, note, "review note", reopened.owner)}` : ""} Fix it and call hub_task_done again.`, pii);
+    this.tell(reopened, `Task #${reopened.id}: ${by} requests changes.${note ? ` ${this.screen(reopened, note, "review note", reopened.owner, withheld)}` : ""} Fix it and call hub_task_done again.`, pii);
     return reopened;
   }
 
@@ -1313,6 +1377,7 @@ export class Tasks {
     // Shared with every other peer as well, so text that matches a PII pattern is refused like a note about a PII task.
     const title = String(input.title ?? "").trim();
     if (this.isPii({ signals: detectSignals({ title, detail: text, refs: {} }, this.d.routing(), this.d.cwd) })) throw new Error("this note matches a PII pattern and is not saved: claude-mem processes what it stores with a cloud model");
+    if (await this.withholds("note", `${title}\n${text}`, task)) throw new Error("the PII screen did not clear this note, so it is not saved: claude-mem processes what it stores with a cloud model");
     if (!this.d.memory) return "memory is disabled; nothing saved";
     const kind = (NOTE_KINDS as readonly string[]).includes(String(input.kind)) ? String(input.kind) : "finding";
     const res = await this.d.memory.save({ text, ...(title ? { title } : {}), project: this.d.project, metadata: { peer: by, kind, ...(task ? { task: task.id } : {}) } });
@@ -1324,10 +1389,11 @@ export class Tasks {
   }
 
   /** Auto notes: only transitions that carry content, never for PII. */
-  private note(task: Task, by: PeerId, kind: string, text: string): void {
+  private note(task: Task, by: PeerId, kind: string, text: string, withheld = false): void {
     if (this.isPii(task) || !this.d.memory) return;
-    // claude-mem's observer is a cloud model: model-written text that matches a PII pattern is not sent (#69).
-    if (!this.nameable(text)) return this.d.notify(`task #${task.id}: a ${kind} note was not saved to shared memory (it matches a PII pattern)`);
+    // claude-mem's observer is a cloud model: model-written text that matches a PII pattern, or that the PII screen did
+    // not clear (#198), is not sent (#69).
+    if (withheld || !this.nameable(text)) return this.d.notify(`task #${task.id}: a ${kind} note was not saved to shared memory (${this.whyWithheld(text)})`);
     void this.d.memory.save({ text, title: `agent-hub task #${task.id}: ${task.title}`.slice(0, 120), project: this.d.project, metadata: { peer: by, task: task.id, kind } });
   }
 
