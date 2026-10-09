@@ -272,3 +272,71 @@ test("AC4: --all refuses a state directory outside <root>/.agenthub, and a stopp
     expect(unregistered.stderr).toContain("no registration matches this project and state directory; nothing was changed (ahub up registers it)");
   } finally { rmSync(base, { recursive: true, force: true }); }
 }, 60_000);
+
+test("a crashed hub's manifest and dead-pid claim do not block either scope; the runtime reset removes the manifest", async () => {
+  const { base, root, stateDir, project } = fixture();
+  const crash = () => {
+    const dead = Bun.spawnSync(["true"]).pid; // reaped: its pid names no process now
+    const registry = new Registry(join(base, "home", "registry.db"));
+    expect(registry.claim(project.id, "crashed", dead)).toBe(true);
+    registry.close();
+    writeFileSync(join(stateDir, "status.json"), JSON.stringify({ cwd: root, projectId: project.id, instanceId: "crashed", controlPort: 9, pid: dead }));
+    writeFileSync(join(stateDir, "control-token"), "stale-token");
+    writeFileSync(join(stateDir, "hub.pid"), `${dead}\n`);
+  };
+  try {
+    seed(stateDir, project);
+    crash();
+    const dry = await cli(root, ["reset"]);
+    expect(dry.stdout).toContain("the hub is stopped");
+    expect(dry.stdout).toContain("remove the manifest a hub left when it did not stop cleanly: status.json, control-token, hub.pid");
+    const result = await cli(root, ["reset", "--yes"]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain('settled 4 deliveries as discard with reason "reset"');
+    expect(result.stdout).toContain("removed the manifest a hub left when it did not stop cleanly: status.json, control-token, hub.pid");
+    for (const name of ["status.json", "control-token", "hub.pid"]) expect(existsSync(join(stateDir, name))).toBe(false);
+    const registry = new Registry(join(base, "home", "registry.db"));
+    expect(registry.get(project.id)?.instanceId).toBeNull();
+    registry.close();
+
+    crash();
+    const all = await cli(root, ["reset", "--all", "--yes"]);
+    expect(all.code, all.stderr).toBe(0);
+    expect(readdirSync(stateDir)).toEqual(["project.json"]);
+    const [name] = readdirSync(join(root, ".agenthub", "archive")).filter((entry) => entry.startsWith("state-"));
+    expect(readFileSync(join(root, ".agenthub", "archive", name!, "control-token"), "utf8")).toBe("stale-token");
+  } finally { rmSync(base, { recursive: true, force: true }); }
+}, 60_000);
+
+test("a state the reset cannot read points to --all, which archives it as it is and restores an edited archive .gitignore", async () => {
+  const { base, root, stateDir, project } = fixture();
+  try {
+    // A journal for another root: the journal refuses it on every open, so a rerun cannot finish the runtime reset.
+    const journal = new DeliveryJournal({ file: join(stateDir, "hub.db"), projectRoot: "/elsewhere", projectId: project.id, instanceId: "seed" });
+    journal.close();
+    writeFileSync(join(stateDir, "project.json"), JSON.stringify({ root, projectId: project.id }));
+    const runtime = await cli(root, ["reset", "--yes"]);
+    expect(runtime.code).toBe(1);
+    expect(runtime.stderr).toContain("project root does not match database");
+    expect(runtime.stderr).toContain("a rerun fails the same way; ahub reset --all --yes archives it as it is");
+
+    writeFileSync(join(stateDir, "hub.db"), "not a database at all, and long enough to be read as a page header..........");
+    const before = contents(stateDir);
+    const dry = await cli(root, ["reset"]);
+    expect(dry.code).toBe(1);
+    expect(dry.stderr).toContain("ahub reset --all --yes archives it as it is");
+    const dryAll = await cli(root, ["reset", "--all"]);
+    expect(dryAll.code, dryAll.stderr).toBe(0);
+    expect(dryAll.stdout).toContain("could not read the state");
+    expect(contents(stateDir)).toEqual(before);
+
+    mkdirSync(join(root, ".agenthub", "archive"));
+    writeFileSync(join(root, ".agenthub", "archive", ".gitignore"), "!*\n");
+    const all = await cli(root, ["reset", "--all", "--yes"]);
+    expect(all.code, all.stderr).toBe(0);
+    expect(readFileSync(join(root, ".agenthub", "archive", ".gitignore"), "utf8")).toBe("*\n");
+    const [name] = readdirSync(join(root, ".agenthub", "archive")).filter((entry) => entry.startsWith("state-"));
+    expect(contents(join(root, ".agenthub", "archive", name!))).toEqual(before);
+    expect(readdirSync(stateDir)).toEqual(["project.json"]);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+}, 60_000);

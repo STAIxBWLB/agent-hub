@@ -1776,25 +1776,40 @@ acts on the stopped state directory.
   systems or pull outside state into the tree).
 - Between stop and act: after `stopProject` the CLI takes the project's
   registry claim (`Registry.claim` with its own pid), the claim a daemon must
-  hold to run, and checks that no manifest exists; either failing means a hub
-  started in between and nothing is reset. The claim is released when the
-  reset ends; a reset that dies leaves a dead pid, which the next claim takes
-  over. A failure after the stop says how far it got: the runtime steps are
-  idempotent and a rerun finishes them; `--all` prints the archive path as
-  soon as the rename happened.
+  hold to run, and checks that no manifest names a daemon whose pid is alive
+  or uncertain (`processAlive`, the rule `inspectProject` uses); either failing
+  means a hub started in between and nothing is reset. A crashed daemon's
+  manifest (`status.json`, `control-token`, `hub.pid` with a dead pid, after
+  SIGKILL or the forced shutdown exit) does not count: the runtime reset
+  removes it and `--all` archives it. With the claim held, the CLI checks the
+  machine's recovery lock again, so an upgrade or recovery that took it in
+  between does not run beside the reset. The claim is released when the reset
+  ends; a reset that dies leaves a dead pid, which the next claim takes over.
+- Failures: the plan is read only for the dry run, so `--all --yes` archives a
+  state directory it cannot read as it is (its dry run says what it could not
+  read). A failure after the stop says how far it got. A runtime reset that
+  cannot read the state (a corrupt `hub.db`, malformed JSON, a journal the
+  constructor refuses: root mismatch, corrupt metadata, too many rows) fails
+  the same way on a rerun, so its error points to `--all`; any other runtime
+  failure is finished by a rerun, every step being idempotent. `--all` prints
+  the archive path as soon as the rename happened.
 - Runtime scope (default): the CLI opens the journal as a new instance, which
   turns the stopped run's dispatching and accepted rows into `needs_review`,
   and settles every `queued` and `needs_review` entry of `Bus.queueList`,
   including queue entries without a row, with `resolveDelivery(..., "discard",
   "reset")`: one `resolution_history` entry each. It clears manual holds
   through the bus, deletes the `budget_pauses` and `conductor_holds` rows and
-  removes `sessions.json`, `claude-session.json` and `claude-context.json`.
+  removes `sessions.json`, `claude-session.json` and `claude-context.json`,
+  and a crashed run's manifest.
   The board, turns and touches, execution budgets, logs, `events.jsonl`,
   `cli-audit/`, recovery records, `pi-sessions/` and configuration stay.
 - Full scope (`--all`): the state directory is renamed, unchanged, to
   `<root>/.agenthub/archive/state-<YYYYMMDDTHHMMSSZ>/` (0700); an existing
   target refuses the move. The archive directory gets a `.gitignore` of `*`
-  because `hub.db` holds task text, PII included, and `.agenthub/archive` is a
+  (checked on every `--all` and rewritten when it differs) because `hub.db`
+  holds task text, PII included; turn snapshots exclude `**/.agenthub/archive/**`
+  as they exclude the state directory, also when the user's index tracks it or
+  the `.gitignore` is gone; and `.agenthub/archive` is a
   `DENY_SEGMENTS` entry (`src/local/deny.ts`), so the local worker's and Pi's
   path guard, seatbelt profile and memory capture refuse it like
   `.agenthub/state`. A new 0700 state directory (created with `recursive`, as

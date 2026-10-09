@@ -66,6 +66,20 @@ test("hub state stays out of a snapshot even when the user's index tracks it", (
   expect(git("diff", "--cached", "--name-only").stdout.toString()).toContain(".agenthub/state/hub.db"); // the user's index keeps it
 });
 
+test("reset archives stay out of a snapshot without their .gitignore, even when the user's index tracks them (#214)", () => {
+  const { top, git, r } = repo();
+  const archived = join(top, ".agenthub", "archive", "state-20261009T000000Z");
+  mkdirSync(archived, { recursive: true });
+  writeFileSync(join(archived, "hub.db"), "v1");
+  git("add", "-f", ".agenthub/archive/state-20261009T000000Z/hub.db"); // staged by mistake
+  const t = turn(r, () => {
+    writeFileSync(join(archived, "events.jsonl"), "{}"); // no .gitignore in the archive: an edited or deleted one
+    writeFileSync(join(top, "a.txt"), "edited\n");
+  });
+  expect(t.changed).toEqual(["a.txt"]);
+  expect(git("ls-tree", "-r", "--name-only", t.end_tree).stdout.toString()).not.toContain(".agenthub/archive");
+});
+
 test("a same-size edit in the second the index was written is seen: the index copy keeps the index's mtime", () => {
   const { top, git, r } = repo();
   git("config", "core.trustctime", "false"); // so an add and an edit whose ctimes fall in different seconds cannot hide the race

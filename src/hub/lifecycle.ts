@@ -15,7 +15,8 @@ export type ProjectInspection = {
   error?: string;
 };
 
-function processAlive(pid: unknown): boolean | undefined {
+/** Alive, gone (`false`), or uncertain (`undefined`: no valid pid, or no permission to ask). */
+export function processAlive(pid: unknown): boolean | undefined {
   if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return undefined;
   try { process.kill(pid, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? false : undefined; }

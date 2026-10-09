@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../hub/bus.ts";
 import { DeliveryJournal } from "../hub/delivery-journal.ts";
@@ -8,6 +8,13 @@ import type { Project } from "../hub/registry.ts";
 
 /** Agent session resume pointers. `pi-sessions/` holds Pi transcripts, history rather than pointers, and stays. */
 export const SESSION_POINTERS = ["sessions.json", "claude-session.json", "claude-context.json"];
+/** What a running daemon publishes; a daemon that did not stop cleanly (crash, SIGKILL, forced exit) leaves it. */
+export const MANIFEST = ["status.json", "control-token", "hub.pid"];
+
+/** A state the reset cannot read the same way twice: rerunning fails alike, while `--all` archives it as it is. */
+export function damagedState(error: unknown): boolean {
+  return error instanceof SyntaxError || /invalid delivery journal|not a database|malformed|corrupt/i.test((error as Error)?.message ?? "");
+}
 
 /** Ids and peer names only: a reset never prints task or message text (#214). */
 export interface ResetPlan {
@@ -64,9 +71,9 @@ export function resetLines(plan: ResetPlan): string[] {
 /**
  * Runtime reset of a stopped hub: every queued and needs_review delivery is discarded with reason `reset` through
  * the journal (one resolution_history entry each), manual, budget and conductor holds are cleared and the session
- * pointers dropped. The board, logs, audit, recovery records and execution budgets stay.
+ * pointers dropped, with a crashed run's manifest. The board, logs, audit, recovery records and execution budgets stay.
  */
-export function resetRuntime(stateDir: string, project: Project): { settled: string[]; plan: ResetPlan } {
+export function resetRuntime(stateDir: string, project: Project): { settled: string[]; plan: ResetPlan; stale: string[] } {
   const file = join(stateDir, "hub.db");
   const plan = planReset(stateDir, project.id);
   const settled: string[] = [];
@@ -92,7 +99,10 @@ export function resetRuntime(stateDir: string, project: Project): { settled: str
     } finally { db.close(); }
   }
   for (const name of SESSION_POINTERS) rmSync(join(stateDir, name), { force: true });
-  return { settled, plan };
+  // The caller has checked that no daemon behind these is alive or uncertain: they are a crashed run's leftovers.
+  const stale = MANIFEST.filter((name) => existsSync(join(stateDir, name)));
+  for (const name of stale) rmSync(join(stateDir, name), { force: true });
+  return { settled, plan, stale };
 }
 
 /**
@@ -104,7 +114,9 @@ export function archiveState(root: string, stateDir: string, now = new Date()): 
   mkdirSync(archive, { recursive: true, mode: 0o700 });
   // hub.db holds task text, PII included: keep the archive out of git whatever the project's .gitignore says.
   // The local worker's denylist (src/local/deny.ts) keeps it out of its tools, sandbox and memory capture.
-  if (!existsSync(join(archive, ".gitignore"))) writeFileSync(join(archive, ".gitignore"), "*\n");
+  // Verified, not only created: an edited or emptied one is put back. Turn snapshots exclude the archive as well.
+  const ignore = join(archive, ".gitignore");
+  if (!existsSync(ignore) || readFileSync(ignore, "utf8") !== "*\n") writeFileSync(ignore, "*\n");
   const target = join(archive, `state-${now.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`);
   if (existsSync(target)) throw new Error(`${target} already exists; nothing was moved`);
   renameSync(stateDir, target);

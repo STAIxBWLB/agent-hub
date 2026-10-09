@@ -909,6 +909,8 @@ The runtime reset (the default):
 - drops the agent session resume pointers `sessions.json`,
   `claude-session.json` and `claude-context.json`, so the next launch starts
   new agent sessions. Pi transcripts under `pi-sessions/` stay;
+- removes the manifest (`status.json`, `control-token`, `hub.pid`) a hub left
+  when it did not stop cleanly, once no process behind it is alive;
 - keeps the board (tasks, reviews, outcomes, turns, touches), `hub.log`,
   `events.jsonl` and `cli-audit/`, recovery records, execution budgets,
   configuration and files the hub does not own.
@@ -922,7 +924,8 @@ the state directory and are not touched. The archive keeps the task text,
 PII included, so it stays in the project: the reset writes
 `.agenthub/archive/.gitignore` (`*`) so git ignores it, and the local
 worker's and Pi's denylist (file tools, sandbox, memory capture) covers
-`.agenthub/archive` as it covers `.agenthub/state`. Nothing deletes or prunes
+`.agenthub/archive` as it covers `.agenthub/state`. Turn snapshots leave the
+archive out as they leave the state out. Nothing deletes or prunes
 archives; removing one is a manual act.
 
 To restore an archive, stop the hub, move the current state directory into
@@ -952,9 +955,12 @@ changed:
 
 After stopping the hub the reset holds the project's registry claim, the one a
 daemon takes to run, until it is done, so no hub starts under it; a hub that
-started in between makes it stop with nothing reset. If a step fails after the
-stop, the error says how far it got: rerun `ahub reset --yes` to finish a
-runtime reset (every step can run again); a full reset names the archive once
+started in between makes it stop with nothing reset; a crashed hub's leftover
+manifest does not count as one. If a step fails after the stop, the error says
+how far it got: rerun `ahub reset --yes` to finish a runtime reset (every step
+can run again), unless the error says the state cannot be read (a damaged
+`hub.db` or journal fails the same way every time): `ahub reset --all --yes`
+archives such a state directory as it is. A full reset names the archive once
 the state directory has moved.
 It never touches claude-mem: notes saved with `hub_remember` are shared memory,
 not hub state. Claude Code sessions attached to the hub lose their hub session;

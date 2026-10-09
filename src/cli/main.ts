@@ -10,7 +10,7 @@ import { loadConfig } from "../hub/daemon.ts";
 import { factsHook } from "./facts-hook.ts";
 import { projectContext, realPath } from "../hub/project.ts";
 import { Registry, type Project } from "../hub/registry.ts";
-import { inspectProject, startProject, stopProject, runProjectDaemon } from "../hub/lifecycle.ts";
+import { inspectProject, processAlive, startProject, stopProject, runProjectDaemon } from "../hub/lifecycle.ts";
 import { openManager, startManager, stopManager } from "../hub/manager.ts";
 import { OmniRoute } from "../omniroute/client.ts";
 import { MemoryClient } from "../memory/client.ts";
@@ -42,7 +42,7 @@ import { runConsole } from "./console.ts";
 import { resolveColor } from "./console-state.ts";
 import { renderHelp } from "./help.ts";
 import { renderTailEvent } from "./tail-render.ts";
-import { archiveState, planReset, resetLines, resetRuntime, startState } from "./reset.ts";
+import { archiveState, damagedState, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
 
 /** `--since 7d|24h|<iso>` for export and report; everything when absent. */
 const since = (): number => {
@@ -115,6 +115,13 @@ function matchingProject(): Project | undefined {
   finally { registry.close(); }
 }
 const hubManifest = () => !!readControl(stateDir) || existsSync(join(stateDir, "hub.pid"));
+/** A manifest whose daemon is alive or uncertain, by inspectProject's rule; a crashed daemon's leftovers do not count. */
+function liveManifest(): boolean {
+  const control = readControl(stateDir);
+  let pid: number | undefined;
+  try { pid = Number(readFileSync(join(stateDir, "hub.pid"), "utf8").trim()); } catch { /* no pid file */ }
+  return (!!control && processAlive(control.pid) !== false) || (pid !== undefined && processAlive(pid) !== false);
+}
 
 async function healthy(): Promise<boolean> {
   let hub: ControlClient | undefined;
@@ -930,16 +937,24 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (!["stopped", "running", "stopping"].includes(live.state)) fail(`${live.error ?? `hub is ${live.state}`}; nothing was changed`);
     const recovery = live.status?.recovery as { operationId?: string; phase?: string } | undefined;
     if (recovery?.operationId && recovery.phase !== "released") fail(`recovery operation ${recovery.operationId} is open in this hub; nothing was changed`);
-    const plan = planReset(stateDir, project.id);
     const kept = "kept: the board, logs and audit, recovery records, execution budgets, configuration and pi-sessions/";
     const memory = "claude-mem is not touched: notes saved with hub_remember stay in shared memory";
     if (!args.includes("--yes")) {
+      // Planned only for the dry run: `--all --yes` archives a state directory it cannot read as it is.
+      let plan: ResetPlan | undefined, unread: string | undefined;
+      try { plan = planReset(stateDir, project.id); }
+      catch (error) {
+        if (!all) fail(`cannot read ${stateDir}: ${(error as Error).message}; nothing was changed${damagedState(error) ? "; ahub reset --all --yes archives it as it is" : ""}`);
+        unread = (error as Error).message;
+      }
       console.log(`ahub reset${all ? " --all" : ""}, dry run: the hub is ${live.state}${live.state === "stopped" ? "" : "; --yes stops it first, as ahub kill does"}`);
       if (all) {
-        console.log(`  move ${stateDir} (${plan.entries} entries) to ${join(cwd, ".agenthub", "archive")}/state-<UTC time>/ (0700), then start an empty state directory holding only project.json; project ${project.id} keeps its id and registration`);
-        console.log("  archived as they are:");
+        console.log(`  move ${stateDir}${plan ? ` (${plan.entries} entries)` : ""} to ${join(cwd, ".agenthub", "archive")}/state-<UTC time>/ (0700), then start an empty state directory holding only project.json; project ${project.id} keeps its id and registration`);
+        console.log(unread ? `  could not read the state (${unread}); it is archived as it is` : "  archived as they are:");
       } else console.log('  settle as discard with reason "reset", clear and drop:');
-      for (const line of resetLines(plan)) console.log(`    ${line}`);
+      for (const line of plan ? resetLines(plan) : []) console.log(`    ${line}`);
+      const stale = live.state === "stopped" && !all ? MANIFEST.filter((name) => existsSync(join(stateDir, name))) : [];
+      if (stale.length) console.log(`  remove the manifest a hub left when it did not stop cleanly: ${stale.join(", ")}`);
       console.log(`  ${all ? ".agenthub/config.json, config.local.json and routing.toml are outside the state directory and stay" : kept}`);
       console.log(`  ${memory}`);
       return console.log("nothing was changed; add --yes to apply");
@@ -951,7 +966,9 @@ const commands: Record<string, () => Promise<void> | void> = {
     const registry = new Registry();
     const claim = randomUUID();
     try {
-      if (!registry.claim(project.id, claim, process.pid) || hubManifest()) throw new Error("a hub started after the stop; nothing was reset, run ahub reset again");
+      if (!registry.claim(project.id, claim, process.pid) || liveManifest()) throw new Error("a hub started after the stop; nothing was reset, run ahub reset again");
+      // An upgrade or recovery that took the machine's lock after the first check must not run beside the reset.
+      assertLifecycleAvailable();
       if (all) {
         const archived = archiveState(cwd, stateDir);
         console.log(`moved the state directory to ${archived}`);
@@ -961,9 +978,12 @@ const commands: Record<string, () => Promise<void> | void> = {
       } else {
         let result: ReturnType<typeof resetRuntime>;
         try { result = resetRuntime(stateDir, project); }
-        catch (error) { throw new Error(`${(error as Error).message}; the hub is stopped and the reset is incomplete: run ahub reset --yes again to finish it`); }
+        catch (error) {
+          throw new Error(`${(error as Error).message}; the hub is stopped and the reset is incomplete: ${damagedState(error) ? "the state cannot be read, so a rerun fails the same way; ahub reset --all --yes archives it as it is" : "run ahub reset --yes again to finish it"}`);
+        }
         console.log(`settled ${result.settled.length} deliveries as discard with reason "reset"`);
         for (const line of resetLines(result.plan).slice(1)) console.log(`cleared ${line}`);
+        if (result.stale.length) console.log(`removed the manifest a hub left when it did not stop cleanly: ${result.stale.join(", ")}`);
         console.log(kept);
       }
     } finally { registry.release(project.id, claim); registry.close(); }
