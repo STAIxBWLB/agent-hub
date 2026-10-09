@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 import { currentRouting } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { ControlClient, readControl } from "../hub/control-client.ts";
@@ -511,7 +512,12 @@ const commands: Record<string, () => Promise<void> | void> = {
     const control = readControl(stateDir);
     if (control?.instanceId) {
       process.env.AGENTHUB_INSTANCE_ID = control.instanceId;
-      await recordTerminalLaunch("claude", cwd, stateDir, control.instanceId);
+      const terminal = await recordTerminalLaunch("claude", cwd, stateDir, control.instanceId);
+      if (!terminal) process.env.AGENTHUB_LAUNCH_ID = randomUUID();
+      // Native hook identity exists in an ordinary terminal too; this is not an Orca recovery record.
+      const file = join(stateDir, "claude-launch.json");
+      writeFileSync(`${file}.tmp`, JSON.stringify({ instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID }), { mode: 0o600 });
+      chmodSync(`${file}.tmp`, 0o600); renameSync(`${file}.tmp`, file);
     }
     // `--settings` outranks project and user settings, so the tee has to wrap whichever status line would have won:
     // project local, then project, then user.

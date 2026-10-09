@@ -1401,5 +1401,25 @@ these readings are not per-notice token attribution. Missing measurements are
 unknown. Native TUI conductor, sandbox and feed-on smoke results must be recorded
 as observed outcomes, separately from unit/fake protocol tests.
 
+Claude conductor launches install native observation hooks even when facts
+injection and task-idle sweeps are disabled. SessionStart registers the native
+session and UserPromptSubmit starts observation; PreToolUse keeps a tool turn
+active and Stop closes it. Explicit caller settings remain authoritative and
+produce a warning when they replace these hooks. An ordinary terminal records a
+private launcher identity without creating an Orca terminal-recovery record.
+The facts control request accepts session/start/pre/post/stop phases and carries
+nativeInstanceId and nativeLaunchId alongside sessionId and transcriptPath.
+The daemon fences observations to its current instance and launcher, validates
+the session transcript, and rejects stale stop/post observations. Native prompt
+text is never included in those requests or events.
+
+A genuine native Stop records an opaque deduplication id. Claude turn reports
+prefer unique native Stop events; historical logical-state counts are labelled
+as such, and an unobserved completion remains unknown. Channel idle, watchdog
+expiry, board approval and a tool reply do not independently establish native
+completion. The live harness waits for the current fixture/instance/session's
+final transcript end_turn and turn_duration after its last review before
+reporting a completed case or terminating its native TUI.
+
 These additions use control protocol 15. Supported recovery sources include
 protocol 14 (0.12.16) alongside the previous source protocols.

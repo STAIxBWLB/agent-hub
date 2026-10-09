@@ -303,6 +303,8 @@ class WsPeer extends BasePeer {
   private delivered = new Set<string>();
   private sock: Sock | undefined;
   private claimed: Sock | undefined;
+  private nativeSession: string | undefined;
+  private nativeActive = false;
   /** Called at hello, before the async preface: the newest hello wins even if an older one's recall finishes last. */
   claim(sock: Sock): void {
     this.claimGeneration = crypto.randomUUID();
@@ -320,11 +322,14 @@ class WsPeer extends BasePeer {
     this.sock = sock;
     this.generation = crypto.randomUUID();
     this.delivered.clear();
+    this.nativeSession = undefined;
+    this.nativeActive = false;
     this.setState("idle");
   }
   detach(sock: Sock): void {
     if (this.sock !== sock) return;
     this.sock = undefined;
+    this.nativeActive = false;
     this.setState("offline");
   }
   async deliver(envs: Envelope[], deliveryId?: string): Promise<void> {
@@ -333,6 +338,24 @@ class WsPeer extends BasePeer {
     this.sock.send(JSON.stringify({ t: "deliver", envs, generation: this.generation, ...(deliveryId ? { deliveryId } : {}) }));
   }
   owns(sock: Sock): boolean { return this.sock === sock; }
+  nativeStarted(session: string): void {
+    if (!this.sock) return;
+    this.nativeSession = session;
+    this.nativeActive = true;
+    this.setState("busy");
+  }
+  nativeStopped(session: string): boolean {
+    if (!this.sock || (this.nativeSession !== undefined && this.nativeSession !== session)) return false;
+    this.nativeSession = session;
+    this.nativeActive = false;
+    this.setState("idle");
+    return true;
+  }
+  protected override onWatchdog(): void {
+    // A silent native model/approval wait does not prove Stop. Retain the observed active turn until Stop/detach.
+    if (this.nativeActive) { this.touch(); return; }
+    super.onWatchdog();
+  }
   ownsDelivery(sock: Sock, generation: unknown, id: string): boolean { return this.owns(sock) && generation === this.generation && this.delivered.has(id); }
   async start(): Promise<void> {}
   async stop(): Promise<void> {
@@ -812,6 +835,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // never a delivery acknowledgement. Cohorts record them as they happen (`Cohorts.turnEnded`), so a later turn of the
   // same peer cannot undo a settlement.
   const turnEnded = new Map<PeerId, number>();
+  const nativeStopsSeen = new Set(readEvents(join(opts.stateDir, "events.jsonl")).flatMap(event => event.type === "native_turn_end" && event.id ? [event.id] : []));
   const activeAt = new Map<PeerId, number>();
   /** Every Claude hook call's own start-up and the hub's time for it, summed per turn (issue #108): reported at Stop. */
   const hookStats = new Map<PeerId, { n: number; startupMs: number; hubMs: number; maxStartupMs: number }>();
@@ -1271,6 +1295,10 @@ export async function startDaemon(opts: DaemonOptions) {
       const value = JSON.parse(readFileSync(join(opts.stateDir, "claude-session.json"), "utf8"));
       if (value.instanceId !== instanceId) return {};
       try {
+        const launch = JSON.parse(readFileSync(join(opts.stateDir, "claude-launch.json"), "utf8"));
+        if (launch.instanceId === instanceId && launch.launchId && value.launchId !== launch.launchId) return {};
+      } catch { /* older/manual launches retain the existing instance fence */ }
+      try {
         const records = JSON.parse(readFileSync(join(opts.stateDir, "terminal-recovery.json"), "utf8"));
         const current = Array.isArray(records) ? records.find((row) => row?.peer === "claude" && row?.projectRoot === opts.cwd && row?.instanceId === instanceId) : undefined;
         if (current?.launchId && value.launchId !== current.launchId) return {};
@@ -1344,8 +1372,7 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const record of readClaudeTranscriptUsage(session.sessionId, session.transcriptPath)) {
       if (claudeNativeUsageSeen.has(record.id)) continue;
       claudeNativeUsageSeen.add(record.id);
-      const pending = supervisionTurns.get("claude");
-      if (pending && record.at && Date.parse(record.at) >= pending.at && record.usage?.totalTokens !== undefined) pending.tokens = (pending.tokens ?? 0) + record.usage.totalTokens;
+      if (record.usage?.totalTokens !== undefined) addTokens("claude", record.usage.totalTokens);
       event({ type: "usage", peer: "claude", source: "claude_transcript", id: record.id, ...record.usage, ...(record.servedModel ? { servedModel: record.servedModel } : {}), ...(record.at ? { measuredAt: record.at } : {}) });
     }
   };
@@ -1621,7 +1648,8 @@ export async function startDaemon(opts: DaemonOptions) {
           // After the turn_end event: a notice delivered at once starts the peer's next turn, which must come after it.
           if (changed.length) afterTurn = () => detectConflicts(e.peer, open.id, open.start, changed);
         }
-        event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}) });
+        // A lost Claude channel/watchdog is not native completion; only its real Stop closes a counted turn.
+        if (e.peer !== "claude" || (turnEnded.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}) });
         if (e.peer !== "claude") { // Claude's native turn end is its Stop hook
           if ((bus.peers.get(e.peer)?.state ?? e.state) === "idle") queueMicrotask(() => finishSupervisionTurn(e.peer));
           turnEnded.set(e.peer, Date.now());
@@ -2506,7 +2534,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // context), `post` after it (its effect, and the readback of what went in before), `stop` when its turn ends.
         // The hook never shows an error: on any failure the answer is just empty.
         if (!c.peer || c.role === "console") return void reply({ t: "facts", ok: false, error: "facts are for a peer" });
-        const phase: "pre" | "post" | "stop" = msg.phase === "post" || msg.phase === "stop" ? msg.phase : "pre";
+        const phase: "session" | "start" | "pre" | "post" | "stop" = ["session", "start", "post", "stop"].includes(msg.phase) ? msg.phase : "pre";
         const tool = typeof msg.tool === "string" ? msg.tool.slice(0, 64) : "";
         const input = msg.input && typeof msg.input === "object" && !Array.isArray(msg.input) ? msg.input : {};
         const toolUseId = typeof msg.toolUseId === "string" && msg.toolUseId ? msg.toolUseId.slice(0, 128) : undefined;
@@ -2519,18 +2547,55 @@ export async function startDaemon(opts: DaemonOptions) {
         };
         try {
           const peer = c.peer;
+          let nativeClaude = false;
+          if (peer === "claude" && sessionId && msg.nativeInstanceId === instanceId) {
+            let expectedLaunch: string | undefined;
+            try {
+              const rows = JSON.parse(readFileSync(join(opts.stateDir, "terminal-recovery.json"), "utf8"));
+              expectedLaunch = Array.isArray(rows) ? rows.find(row => row?.peer === "claude" && row?.projectRoot === opts.cwd && row?.instanceId === instanceId)?.launchId : undefined;
+            } catch { /* an ordinary terminal has no Orca recovery identity */ }
+            try {
+              const launch = JSON.parse(readFileSync(join(opts.stateDir, "claude-launch.json"), "utf8"));
+              if (launch.instanceId === instanceId && typeof launch.launchId === "string") expectedLaunch = launch.launchId;
+            } catch { /* older/manual launches do not have a launcher marker */ }
+            const current = claudeSession();
+            if ((phase === "stop" || phase === "post") && current.sessionId && current.sessionId !== sessionId) return void reply({ t: "facts", ok: false });
+            if (!expectedLaunch || msg.nativeLaunchId === expectedLaunch) {
+              const transcript = claudeTranscript(sessionId, msg.transcriptPath);
+              const launchId = typeof msg.nativeLaunchId === "string" ? msg.nativeLaunchId : undefined;
+              const file = join(opts.stateDir, "claude-session.json");
+              writeFileSync(`${file}.hook.tmp`, JSON.stringify({ at: Date.now(), instanceId, sessionId, ...(launchId ? { launchId } : {}), ...(transcript ? { transcriptPath: transcript } : {}) }), { mode: 0o600 });
+              chmodSync(`${file}.hook.tmp`, 0o600); renameSync(`${file}.hook.tmp`, file);
+              nativeClaude = true;
+            }
+            if (!nativeClaude) return void reply({ t: "facts", ok: false });
+          }
+          if (peer === "claude" && msg.nativeInstanceId !== undefined && msg.nativeInstanceId !== instanceId) return void reply({ t: "facts", ok: false });
+          const nativePeer = nativeClaude ? bus.peers.get(peer) : undefined;
+          if (phase === "session") { recordSessions(); return void reply({ t: "facts", ok: true }); }
+          if ((phase === "start" || phase === "pre") && nativePeer instanceof WsPeer) nativePeer.nativeStarted(sessionId!);
+          if (phase === "start") { activeAt.set(peer, Date.now()); return void reply({ t: "facts", ok: true }); }
           // Quiescence evidence is kept in every regime: a PII window must not make an active peer look stopped. Only
           // a tool call starting is new activity: a PostToolUse of an earlier call can arrive after the Stop.
           if (phase === "stop") {
+            let nativeStopId: string | undefined;
+            if (nativeClaude) {
+              const session = claudeSession();
+              const latest = session.sessionId && session.transcriptPath ? readClaudeTranscriptUsage(session.sessionId, session.transcriptPath).at(-1)?.id : undefined;
+              nativeStopId = createHash("sha256").update(`${sessionId}:${latest ?? "unavailable"}:${nativePeer instanceof WsPeer ? nativePeer.sessionGeneration : "detached"}:${activeAt.get(peer) ?? "unobserved"}`).digest("hex");
+              if (nativeStopsSeen.has(nativeStopId)) return void reply({ t: "facts", ok: true });
+              nativeStopsSeen.add(nativeStopId);
+            }
             collectClaudeUsage();
             finishSupervisionTurn(peer);
             turnEnded.set(peer, Date.now());
             tasks.cohorts.turnEnded(peer);
-            event({ type: "native_turn_end", peer });
+            event({ type: "native_turn_end", peer, ...(nativeStopId ? { id: nativeStopId } : {}) });
             tally(peer);
             const st = hookStats.get(peer)!;
             event({ type: "hook_stats", peer, n: st.n, startupMs: Math.round(st.startupMs), hubMs: Math.round(st.hubMs), maxStartupMs: Math.round(st.maxStartupMs) });
             hookStats.delete(peer);
+            if (nativePeer instanceof WsPeer) nativePeer.nativeStopped(sessionId!);
           } else {
             if (phase === "pre") activeAt.set(peer, Date.now());
             queueMicrotask(() => tally(peer)); // after this call's own work below

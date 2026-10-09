@@ -24,7 +24,7 @@ export type HubEvent =
   | { type: "state"; peer: string; state: string }
   | { type: "turn_start"; peer: string; turn: string }
   | { type: "turn_end"; peer: string; turn: string; ms: number; tokens?: number; files?: number; snapshotMs?: number }
-  | { type: "native_turn_end"; peer: string }
+  | { type: "native_turn_end"; peer: string; id?: string }
   | { type: "conduct"; peer: string; action: string; task?: number; target?: string }
   | { type: "agent_cli"; peer: string; command: string; refused: boolean }
   | { type: "permission"; id: string; peer: string; event: "requested" | "answered" | "expired" | "cancelled"; latencyMs?: number; surface?: "console" | "dashboard" | "terminal"; option?: "allow_once" | "allow_always" | "reject_once" | "reject_always" }

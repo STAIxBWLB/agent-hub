@@ -8,13 +8,16 @@
  * Keep terminal transcripts private; only summary/report metadata is suitable for sharing.
  * This script records incomplete legs honestly and leaves private evidence for investigation.
  */
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { ControlClient, stateDirFor } from "../src/hub/control-client.ts";
 import { readEvents, type StampedEvent } from "../src/hub/events.ts";
 import { summarize, type Report } from "../src/hub/report.ts";
 import { terminalText } from "../src/cli/console-state.ts";
+import { realPath } from "../src/hub/project.ts";
+import { readClaudeTranscriptUsage } from "../src/hub/usage.ts";
 
 const flags = process.argv.slice(2);
 function option(name: string): string | undefined { const at = flags.indexOf(name); if (at < 0) return undefined; const value = flags[at + 1]; if (!value || value.startsWith("--")) throw new Error(`${name} needs a value`); return value; }
@@ -141,6 +144,40 @@ for (const peer of ["claude", "codex"]) {
 const manifest: any = { kind: "native-conductor-smoke", preparedAt: new Date().toISOString(), versions, requestedCodexModel: model ?? null,
   providerVerification: "not established by model cache or preparation", approvalMode: fileInput ? "manual chat-authorized file input to native console" : "manual native console stdin", operatorInputSource: fileInput ? "chat/file-input" : "foreground stdin", resumeFixture: resumeFixture ?? null, originalSummary: resumeFixture ? join(dirname(resumeFixture), "summary.json") : null, timeoutSeconds, runRoot, live, legs: [] };
 function save() { writeFileSync(join(runRoot, "summary.json"), JSON.stringify(manifest, null, 2) + "\n", { mode: 0o600 }); }
+/** Native completion is independent of the channel's idle state. Only the
+ * current daemon's session and this fixture's own bounded transcript qualify. */
+function claudeNative(stateDir: string, fixture: string, instanceId: string, sinceMs: number) {
+  try {
+    const session = JSON.parse(readFileSync(join(stateDir, "claude-session.json"), "utf8"));
+    if (session.instanceId !== instanceId || typeof session.sessionId !== "string" || typeof session.transcriptPath !== "string") return undefined;
+    const projects = realPath(join(env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects"));
+    const transcript = realPath(session.transcriptPath);
+    const expected = join(projects, fixture.replace(/[^a-zA-Z0-9]/g, "-"), `${session.sessionId}.jsonl`);
+    if (transcript !== realPath(expected) || basename(transcript) !== `${session.sessionId}.jsonl` || statSync(transcript).size > 32 * 1024 * 1024) return undefined;
+    const rows: any[] = [];
+    for (const line of readFileSync(transcript, "utf8").split("\n")) {
+      try { const row = JSON.parse(line); if (row.sessionId === session.sessionId && (!row.cwd || realPath(row.cwd) === realPath(fixture))) rows.push(row); } catch { /* partial row is not completion */ }
+    }
+    const active = rows.filter(row => ["assistant", "user"].includes(row.type) && Date.parse(row.timestamp) >= sinceMs);
+    const lastAssistant = active.filter(row => row.type === "assistant").at(-1);
+    const endedAt = lastAssistant?.message?.stop_reason === "end_turn" ? Date.parse(lastAssistant.timestamp) : NaN;
+    const lastActivity = Math.max(...active.map(row => Date.parse(row.timestamp)).filter(Number.isFinite));
+    const durations = rows.filter(row => row.type === "system" && row.subtype === "turn_duration" && Date.parse(row.timestamp) >= sinceMs);
+    const complete = Number.isFinite(endedAt) && lastActivity <= endedAt && durations.some(row => Date.parse(row.timestamp) >= endedAt);
+    const usage = readClaudeTranscriptUsage(session.sessionId, transcript);
+    const totals = usage.map(row => {
+      const u = row.usage;
+      if (!u) return undefined;
+      if (u.totalTokens !== undefined) return u.totalTokens;
+      const parts = [u.inputTokens, u.outputTokens, u.cacheReadTokens, u.cacheWriteTokens];
+      return parts.every(n => n !== undefined) ? parts.reduce<number>((sum, n) => sum + n!, 0) : undefined;
+    });
+    const known = totals.filter((n): n is number => n !== undefined);
+    return { complete, endedAt: Number.isFinite(endedAt) ? endedAt : null, completedTurns: durations.length,
+      transcript, sessionId: session.sessionId, instanceId, usageRecords: usage.length, knownUsageRecords: known.length,
+      tokens: known.length === usage.length && known.length ? known.reduce((sum, n) => sum + n, 0) : null };
+  } catch { return undefined; }
+}
 /** Select one canonical measured source, never add rich usage to native counter increments. */
 function measuredTokens(events: StampedEvent[], report: Report, peer: string) {
   const usage = report.usage.peers[peer];
@@ -166,9 +203,11 @@ function scorePartial(leg: any, stateDir: string, peer: string, tasks?: any[]): 
   }
   const approvals = events.filter(event => event.type === "permission" && event.event === "answered" && event.surface === "console");
   leg.consoleApprovals = approvals.length ? "observed in daemon audit" : "not established"; leg.consoleApprovalCount = approvals.length;
-  leg.conductorTurns = report.peers[peer]?.turns ?? null;
+  leg.conductorTurns = peer === "claude" ? leg.nativeCompletion?.completedTurns ?? null : report.peers[peer]?.turns ?? null;
   const usage = report.usage.peers[peer]; const measured = measuredTokens(events, report, peer);
-  leg.conductorTokens = measured.tokens; leg.tokenSource = measured.tokenSource; leg.nativeIncrementRecords = measured.nativeIncrementRecords; leg.invalidNativeIncrementRecords = measured.invalidNativeIncrementRecords;
+  leg.conductorTokens = peer === "claude" ? leg.nativeCompletion?.tokens ?? null : measured.tokens;
+  leg.tokenSource = peer === "claude" ? leg.nativeCompletion ? "verified-native-transcript" : null : measured.tokenSource;
+  leg.nativeIncrementRecords = measured.nativeIncrementRecords; leg.invalidNativeIncrementRecords = measured.invalidNativeIncrementRecords;
   leg.ownerUsage = Object.fromEntries(["local", "pi"].map(p => [p, { turns: report.peers[p]?.turns ?? null, ...measuredTokens(events, report, p) }]));
   leg.tokenCoverage = usage ? { records: usage.records, knownTotalRecords: usage.totalRecords, recordsWithUsage: usage.withUsage, recordsWithoutUsage: usage.withoutUsage } : null;
   leg.supervisionTurns = report.supervision[peer]?.turns ?? null; leg.supervisionTokens = report.supervision[peer]?.tokens ?? null;
@@ -233,6 +272,7 @@ legs: for (const { peer, feed } of requestedLegs) {
     }
     console.log(`Native ${peer}/${feed}: operator keys reach ahub console via ${fileInput ? "chat-authorized .input.jsonl" : "foreground stdin"}. Terminal evidence: ${join(runRoot, `${peer}-${feed}-console.terminal.txt`)}`);
     const args = peer === "claude" ? ["--mcp-config", mcp, "--strict-mcp-config", "--allowedTools", "mcp__agent-hub__*", "Read", "--ax-screen-reader", prompt] : ["--model", model!, prompt];
+    const nativeStartedMs = Date.now();
     tui = nativePty([process.execPath, entry, "--project", dir, peer, ...args], dir, `${peer}-${feed}-tui`);
     leg.nativeTuiLaunched = true; save();
     await until(async () => { const s = (await hub!.request({ t: "status" }, 3000)).status; return s?.peers?.[peer]?.attached !== false && ["idle", "busy"].includes(s?.peers?.[peer]?.state) ? true : undefined; }, "native conductor attachment", 120);
@@ -256,8 +296,16 @@ legs: for (const { peer, feed } of requestedLegs) {
       }
       return tasks.length === 2 && tasks.every(t => t.state === "approved") ? tasks : undefined;
     }, "two reviewed tasks");
-    if (readFileSync(join(dir, "alpha.txt"), "utf8").trim() !== "ALPHA" || readFileSync(join(dir, "beta.txt"), "utf8").trim() !== "BETA") throw new Error("fixture output mismatch");
-    await until(async () => { const status = (await hub!.request({ t: "status" }, 3000)).status; return status?.peers?.[peer]?.state === "idle" ? true : undefined; }, "completed conductor turn", 120);
+    if (!readFileSync(join(dir, "alpha.txt")).equals(Buffer.from("ALPHA")) || !readFileSync(join(dir, "beta.txt")).equals(Buffer.from("BETA"))) throw new Error("fixture output byte mismatch");
+    await until(async () => {
+      const status = (await hub!.request({ t: "status" }, 3000)).status;
+      if (peer !== "claude") return status?.peers?.[peer]?.state === "idle" ? true : undefined;
+      if (!status?.instanceId) return undefined;
+      const native = claudeNative(stateDir, dir, status.instanceId, nativeStartedMs);
+      const lastReview = Math.max(nativeStartedMs, ...readEvents(join(stateDir, "events.jsonl")).filter(e => e.type === "conduct" && e.peer === peer && e.action === "review").map(e => Date.parse(e.at)));
+      if (!native?.complete || native.endedAt === null || native.endedAt < lastReview) return undefined;
+      leg.nativeCompletion = native; save(); return true;
+    }, "completed native conductor turn", 120);
     const histories = await Promise.all(completed.map(async t => JSON.parse((await hub!.request({ t: "task", op: "task_show", args: { id: t.id } }, 3000)).text)));
     const reassigned = histories.some(t => t.history.some((h: any) => h.by === peer && ["assigned", "reassigned"].includes(h.event) && h.owner === "pi"));
     const reviewed = histories.every(t => t.history.some((h: any) => h.by === peer && h.event === "approved"));
@@ -266,9 +314,11 @@ legs: for (const { peer, feed } of requestedLegs) {
     const approvalConsole = events.some(e => e.type === "permission" && e.event === "answered" && e.surface === "console");
     leg.completedTasks = completed.length; leg.reassigned = reassigned; leg.reviewed = reviewed; leg.startedBothWorkers = started;
     leg.consoleApprovals = approvalConsole ? "observed in daemon audit" : "not established";
-    leg.conductorTurns = report.peers[peer]?.turns ?? null;
+    leg.conductorTurns = peer === "claude" ? leg.nativeCompletion?.completedTurns ?? null : report.peers[peer]?.turns ?? null;
     const measured = measuredTokens(events, report, peer);
-    leg.conductorTokens = measured.tokens; leg.tokenSource = measured.tokenSource; leg.nativeIncrementRecords = measured.nativeIncrementRecords; leg.invalidNativeIncrementRecords = measured.invalidNativeIncrementRecords;
+    leg.conductorTokens = peer === "claude" ? leg.nativeCompletion?.tokens ?? null : measured.tokens;
+    leg.tokenSource = peer === "claude" ? leg.nativeCompletion ? "verified-native-transcript" : null : measured.tokenSource;
+    leg.nativeIncrementRecords = measured.nativeIncrementRecords; leg.invalidNativeIncrementRecords = measured.invalidNativeIncrementRecords;
     leg.supervisionTurns = report.supervision[peer]?.turns ?? null; leg.supervisionTokens = report.supervision[peer]?.tokens ?? null;
     leg.turnsPerCompletedTask = leg.conductorTurns === null ? null : leg.conductorTurns / completed.length;
     leg.tokensPerCompletedTask = leg.conductorTokens === null ? null : leg.conductorTokens / completed.length;

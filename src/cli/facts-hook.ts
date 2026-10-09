@@ -8,12 +8,14 @@ import { ControlClient } from "../hub/control-client.ts";
 /** The hook's stdout for one Claude Code hook input, or undefined for none. */
 export async function factsHook(stdin: string, stateDir: string, peer: string, timeoutMs = 2000): Promise<string | undefined> {
   const input = JSON.parse(stdin) as { hook_event_name?: unknown; tool_name?: unknown; tool_input?: unknown; tool_use_id?: unknown; session_id?: unknown; transcript_path?: unknown };
-  const phase = ({ PostToolUse: "post", Stop: "stop" } as Record<string, string>)[String(input.hook_event_name)] ?? "pre";
+  const phase = ({ SessionStart: "session", UserPromptSubmit: "start", PostToolUse: "post", Stop: "stop" } as Record<string, string>)[String(input.hook_event_name)] ?? "pre";
   const hub = await ControlClient.connect(stateDir, { role: "tools", peer }, timeoutMs);
   try {
     const res = await hub.request({
       t: "facts",
       phase,
+      ...(process.env.AGENTHUB_INSTANCE_ID ? { nativeInstanceId: process.env.AGENTHUB_INSTANCE_ID } : {}),
+      ...(process.env.AGENTHUB_LAUNCH_ID ? { nativeLaunchId: process.env.AGENTHUB_LAUNCH_ID } : {}),
       tool: typeof input.tool_name === "string" ? input.tool_name : "",
       input: input.tool_input ?? {},
       ...(typeof input.tool_use_id === "string" ? { toolUseId: input.tool_use_id } : {}),
