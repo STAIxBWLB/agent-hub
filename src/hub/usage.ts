@@ -22,6 +22,30 @@ export function claudeReportedTokens(usage: NormalizedUsage | undefined): number
   return Number.isSafeInteger(total) && total >= 0 ? total : undefined;
 }
 
+export type ClaudeCompletionWait = { record?: UsageRecord; reason: "verified" | "unavailable" | "baseline" | "before-start" | "superseded" };
+/** Native transcript appends can become visible just after Stop. The hook's whole request deadline is 2 s. */
+export async function waitForClaudeCompletion(read: () => UsageRecord | undefined, current: () => boolean, start: { at: number; baseline?: string }, timeoutMs = 1200): Promise<ClaudeCompletionWait> {
+  const budget = Number.isFinite(timeoutMs) ? Math.min(1200, Math.max(0, timeoutMs)) : 1200;
+  if (budget === 0) return { reason: "unavailable" };
+  const deadline = performance.now() + budget;
+  let reason: ClaudeCompletionWait["reason"] = "unavailable";
+  while (true) {
+    if (!current()) return { reason: "superseded" };
+    const record = read();
+    if (!current()) return { reason: "superseded" };
+    if (performance.now() > deadline) return { reason };
+    const at = typeof record?.at === "string" ? Date.parse(record.at) : NaN;
+    if (record?.completedTurn && Number.isFinite(at)) {
+      if (record.id === start.baseline) reason = "baseline";
+      else if (at < start.at) reason = "before-start";
+      else return { record, reason: "verified" };
+    } else reason = "unavailable";
+    const left = deadline - performance.now();
+    if (left <= 0) return { reason };
+    await Bun.sleep(Math.min(40, left));
+  }
+}
+
 function opaqueId(sessionId: string, messageId: string): string {
   return createHash("sha256").update(sessionId).update("\0").update(messageId).digest("hex");
 }

@@ -73,7 +73,7 @@ test("managed Claude launcher and genuine command hooks register a non-Orca sess
     const json = (file: string): Record<string, unknown> | undefined => { try { return JSON.parse(readFileSync(join(stateDir, file), "utf8")); } catch { return undefined; } };
     const marker = json("claude-launch.json"), metadata = json("claude-session.json");
     const suffix = readFileSync(join(stateDir, "hub.log"), "utf8").slice(beforeStopLog);
-    const classes = ["current native turn start unavailable", "completed transcript message unavailable", "completion predates current native turn"];
+    const classes = ["current native turn start unavailable", "completed transcript message unavailable", "completion predates current native turn", "completion still matches start baseline", "completion timestamp precedes native start", "native start superseded during completion wait"];
     const refusals = classes.filter(reason => suffix.includes(`native Stop refused for claude: ${reason}`));
     // This fixture is synthetic. Print only fixed classes/binding booleans, never IDs, paths, transcript/tool text.
     console.error("native Stop synthetic fixture diagnostics: " + JSON.stringify({ refusals,
@@ -93,6 +93,12 @@ test("managed Claude launcher and genuine command hooks register a non-Orca sess
   expect(events.filter(event => event.type === "supervision_turn" && event.peer === "claude")).toHaveLength(1);
   expect(summarize(events).peers.claude).toMatchObject({ turns: 1, turnSource: "native-stop", tokens: 5 });
   expect(JSON.stringify(events)).not.toContain("UNTRANSFERRED-PRIVATE-PROMPT");
+  expect(daemon.bus.stateOf("claude")).toBe("idle"); // duplicate completion A remains a no-op after its start is consumed
+  appendFileSync(transcript, JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id: "completion-without-new-start", stop_reason: "end_turn" } }) + "\n");
+  await hook("Stop");
+  const consumed = readEvents(join(stateDir, "events.jsonl"));
+  expect(consumed.filter(event => event.type === "native_turn_end")).toHaveLength(1);
+  expect(consumed.filter(event => event.type === "supervision_turn")).toHaveLength(1); // completion B cannot reuse consumed start A
   await hook("UserPromptSubmit"); await hook("PreToolUse"); expect(daemon.bus.stateOf("claude")).toBe("busy");
   await hook("Stop"); expect(daemon.bus.stateOf("claude")).toBe("busy");
   expect(readEvents(join(stateDir, "events.jsonl")).filter(event => event.type === "native_turn_end")).toHaveLength(1);
@@ -107,6 +113,24 @@ test("managed Claude launcher and genuine command hooks register a non-Orca sess
   appendFileSync(transcript, JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id: "completed-message-2", stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } } }) + "\n");
   await hook("Stop"); expect(daemon.bus.stateOf("claude")).toBe("idle");
   expect(summarize(readEvents(join(stateDir, "events.jsonl"))).peers.claude).toMatchObject({ turns: 2, turnSource: "native-stop", tokens: 7 });
+  await hook("UserPromptSubmit"); await hook("PreToolUse");
+  const beforeDelayed = JSON.parse(readFileSync(join(stateDir, "claude-session.json"), "utf8")).at;
+  let delayedFinished = false;
+  const delayed = hook("Stop").then(() => { delayedFinished = true; }); // baseline is an already certified completion
+  for (let n = 0; n < 100 && JSON.parse(readFileSync(join(stateDir, "claude-session.json"), "utf8")).at === beforeDelayed; n++) await Bun.sleep(5);
+  expect(JSON.parse(readFileSync(join(stateDir, "claude-session.json"), "utf8")).at).not.toBe(beforeDelayed); // the actual daemon handler reached Stop
+  await Bun.sleep(80); expect(delayedFinished).toBe(false); // a seen baseline must not bypass the wait
+  appendFileSync(transcript, JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id: "delayed-completed-message", stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } } }) + "\n");
+  await delayed; expect(daemon.bus.stateOf("claude")).toBe("idle");
+  expect(summarize(readEvents(join(stateDir, "events.jsonl"))).peers.claude).toMatchObject({ turns: 3, tokens: 9 });
+  await hook("UserPromptSubmit"); await hook("PreToolUse");
+  const superseded = hook("Stop"); await Bun.sleep(100);
+  await hook("UserPromptSubmit"); // a new observed start invalidates the older Stop's pending wait
+  appendFileSync(transcript, JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id: "new-start-completed-message", stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } } }) + "\n");
+  await superseded; expect(daemon.bus.stateOf("claude")).toBe("busy");
+  expect(readEvents(join(stateDir, "events.jsonl")).filter(event => event.type === "native_turn_end")).toHaveLength(3);
+  await hook("Stop"); expect(daemon.bus.stateOf("claude")).toBe("idle");
+  expect(summarize(readEvents(join(stateDir, "events.jsonl"))).peers.claude).toMatchObject({ turns: 4, tokens: 11 });
 }, 20_000);
 
 test("conductor native hooks preserve explicit caller settings and report missing completion as unknown", () => {

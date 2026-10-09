@@ -1420,6 +1420,14 @@ assistant end_turn transcript message at or after the native turn's first start,
 distinct from the completed-message baseline recorded at that start. Later tool
 activity does not move this turn-start boundary. Missing start evidence or a
 start from another session, launch or channel claim leaves completion unknown.
+Accepted completion consumes that start before the peer becomes idle, so another
+message cannot reuse it. A Stop request may wait up to 1200 monotonic milliseconds
+for its transcript append to become visible, within the existing two-second hook
+request. Each read and final consumption revalidate the captured start, session,
+launch, peer and claim. A seen previous-turn baseline still waits while a new
+current start exists; a consumed duplicate remains a no-op. Timeout, malformed or
+oversized evidence and superseded context leave completion unknown. This wait
+does not retry a user action or relax authority.
 The live harness also binds its final receipt to the current private launch id.
 Its opaque
 deduplication id binds session, launch and message; transport replacement or new
@@ -1433,7 +1441,8 @@ as such, and an unobserved completion remains unknown. Channel idle, watchdog
 expiry, board approval and a tool reply do not independently establish native
 completion. The live harness waits for the current fixture/instance/session's
 final transcript end_turn and turn_duration after its last review before
-reporting a completed case or terminating its native TUI.
+reporting a completed case or terminating its native TUI. It also requires the
+matching opaque native completion event, an idle peer and settled delivery rows.
 
 These additions use control protocol 15. Supported recovery sources include
 protocol 14 (0.12.16) alongside the previous source protocols.

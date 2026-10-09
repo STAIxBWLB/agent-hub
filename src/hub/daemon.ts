@@ -12,7 +12,7 @@ import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./tas
 import { stripUntrusted } from "./config-trust.ts";
 import { eventLog, readEvents, tokenDeltas } from "./events.ts";
 import { ExecutionBudget } from "./execution-budget.ts";
-import { claudeReportedTokens, readClaudeTranscriptUsage } from "./usage.ts";
+import { claudeReportedTokens, readClaudeTranscriptUsage, waitForClaudeCompletion } from "./usage.ts";
 import type { ServerWebSocket } from "bun";
 import { AcpPeer, type PermissionRequest } from "../adapters/acp.ts";
 import { CodexPeer } from "../adapters/codex-appserver.ts";
@@ -838,7 +838,9 @@ export async function startDaemon(opts: DaemonOptions) {
   const nativeCompletedAt = new Map<PeerId, number>();
   const nativeStopsSeen = new Set(readEvents(join(opts.stateDir, "events.jsonl")).flatMap(event => event.type === "native_turn_end" && event.id ? [event.id] : []));
   const activeAt = new Map<PeerId, number>();
-  const nativeTurnStart = new Map<PeerId, { at: number; baseline?: string; generation: string; session: string; launch: string }>();
+  interface NativeTurnStart { at: number; baseline?: string; generation: string; session: string; launch: string }
+  const nativeTurnStart = new Map<PeerId, NativeTurnStart>();
+  const nativeStopWaits = new Map<PeerId, { start: NativeTurnStart; wait: ReturnType<typeof waitForClaudeCompletion> }>();
   /** Every Claude hook call's own start-up and the hub's time for it, summed per turn (issue #108): reported at Stop. */
   const hookStats = new Map<PeerId, { n: number; startupMs: number; hubMs: number; maxStartupMs: number }>();
   /**
@@ -2594,32 +2596,59 @@ export async function startDaemon(opts: DaemonOptions) {
           // Quiescence evidence is kept in every regime: a PII window must not make an active peer look stopped. Only
           // a tool call starting is new activity: a PostToolUse of an earlier call can arrive after the Stop.
           if (phase === "stop") {
-            let nativeStopId: string | undefined;
-            if (nativeClaude) {
-              const session = claudeSession();
-              const latest = session.sessionId && session.transcriptPath ? readClaudeTranscriptUsage(session.sessionId, session.transcriptPath).filter(record => record.completedTurn).at(-1) : undefined;
-              // Completion belongs to the immutable native message, not the receiver's active state/generation.
-              const started = nativeTurnStart.get(peer);
-              if (!started || started.session !== sessionId || started.launch !== (session.launchId ?? "") || !(nativePeer instanceof WsPeer) || started.generation !== nativePeer.sessionGeneration) { log("native Stop refused for claude: current native turn start unavailable"); return void reply({ t: "facts", ok: false }); }
-              if (!latest?.at) { log("native Stop refused for claude: completed transcript message unavailable"); return void reply({ t: "facts", ok: false }); }
-              if (started.baseline === latest.id || Date.parse(latest.at) < started.at) { log("native Stop refused for claude: completion predates current native turn"); return void reply({ t: "facts", ok: false }); }
-              nativeStopId = createHash("sha256").update(`${sessionId}:${session.launchId ?? "legacy"}:${latest.id}`).digest("hex");
-              if (nativeStopsSeen.has(nativeStopId)) return void reply({ t: "facts", ok: true });
-              nativeStopsSeen.add(nativeStopId);
+            const finishStop = (id?: string) => {
+              if (id) {
+                collectClaudeUsage(); finishSupervisionTurn(peer); nativeCompletedAt.set(peer, Date.now());
+                event({ type: "native_turn_end", peer, id });
+              }
+              turnEnded.set(peer, Date.now()); tasks.cohorts.turnEnded(peer); tally(peer);
+              const st = hookStats.get(peer)!;
+              event({ type: "hook_stats", peer, n: st.n, startupMs: Math.round(st.startupMs), hubMs: Math.round(st.hubMs), maxStartupMs: Math.round(st.maxStartupMs) });
+              hookStats.delete(peer);
+              if (id && nativePeer instanceof WsPeer) nativePeer.nativeStopped(sessionId!);
+              if (factsOn()) { factSession(peer, sessionId); readbacks(peer, claudeTranscript(sessionId, msg.transcriptPath)); }
+              reply({ t: "facts", ok: true });
+            };
+            if (!nativeClaude) { finishStop(); return; } // legacy bookkeeping cannot certify native completion
+            const session = claudeSession();
+            let transcript = session.transcriptPath ?? claudeTranscript(sessionId, msg.transcriptPath);
+            const readCompletion = () => { transcript ??= claudeTranscript(sessionId, msg.transcriptPath); return session.sessionId && transcript ? readClaudeTranscriptUsage(session.sessionId, transcript).filter(record => record.completedTurn).at(-1) : undefined; };
+            const completionId = (id: string) => createHash("sha256").update(`${sessionId}:${session.launchId ?? "legacy"}:${id}`).digest("hex");
+            const latest = readCompletion();
+            const started = nativeTurnStart.get(peer);
+            const activeStart = !!started && started.session === sessionId && started.launch === (session.launchId ?? "") && nativePeer instanceof WsPeer && started.generation === nativePeer.sessionGeneration;
+            // A seen previous completion is a duplicate only outside an active start. During B it is B's baseline.
+            if (!activeStart && latest?.at && nativeStopsSeen.has(completionId(latest.id))) return void reply({ t: "facts", ok: true });
+            if (!started || !activeStart || !(nativePeer instanceof WsPeer)) { log("native Stop refused for claude: current native turn start unavailable"); return void reply({ t: "facts", ok: false }); }
+            const scopeCurrent = () => {
+              const now = claudeSession();
+              return !stopping && bus.peers.get(peer) === nativePeer && nativePeer.sessionGeneration === started.generation && now.sessionId === started.session && (now.launchId ?? "") === started.launch;
+            };
+            const current = () => scopeCurrent() && nativeTurnStart.get(peer) === started;
+            let pending = nativeStopWaits.get(peer);
+            if (!pending || pending.start !== started) {
+              pending = { start: started, wait: waitForClaudeCompletion(readCompletion, current, started, Math.max(0, 1200 - (performance.now() - callStarted))) };
+              nativeStopWaits.set(peer, pending);
             }
-            if (nativeClaude) {
-              collectClaudeUsage();
-              finishSupervisionTurn(peer);
-              nativeCompletedAt.set(peer, Date.now());
-              event({ type: "native_turn_end", peer, id: nativeStopId! });
-            }
-            turnEnded.set(peer, Date.now());
-            tasks.cohorts.turnEnded(peer);
-            tally(peer);
-            const st = hookStats.get(peer)!;
-            event({ type: "hook_stats", peer, n: st.n, startupMs: Math.round(st.startupMs), hubMs: Math.round(st.hubMs), maxStartupMs: Math.round(st.maxStartupMs) });
-            hookStats.delete(peer);
-            if (nativePeer instanceof WsPeer) nativePeer.nativeStopped(sessionId!);
+            const ownWait = pending;
+            void ownWait.wait.then(result => {
+              if (nativeStopWaits.get(peer) === ownWait) nativeStopWaits.delete(peer);
+              if (!result.record) {
+                const reason = ({ unavailable: "completed transcript message unavailable", baseline: "completion still matches start baseline", "before-start": "completion timestamp precedes native start", superseded: "native start superseded during completion wait", verified: "completed transcript message unavailable" } as const)[result.reason];
+                log(`native Stop refused for claude: ${reason}`); reply({ t: "facts", ok: false }); return;
+              }
+              const id = completionId(result.record.id);
+              if (scopeCurrent() && nativeStopsSeen.has(id)) { reply({ t: "facts", ok: true }); return; }
+              if (!current()) { log("native Stop refused for claude: native start superseded during completion wait"); reply({ t: "facts", ok: false }); return; }
+              nativeStopsSeen.add(id); nativeTurnStart.delete(peer); // consume before idle admits another native turn
+              if (transcript && !session.transcriptPath) {
+                const file = join(opts.stateDir, "claude-session.json");
+                writeFileSync(`${file}.hook.tmp`, JSON.stringify({ at: Date.now(), instanceId, sessionId, launchId: session.launchId, transcriptPath: transcript }), { mode: 0o600 });
+                chmodSync(`${file}.hook.tmp`, 0o600); renameSync(`${file}.hook.tmp`, file);
+              }
+              finishStop(id);
+            }).catch(() => { if (nativeStopWaits.get(peer) === ownWait) nativeStopWaits.delete(peer); log("native Stop refused for claude: completion wait unavailable"); reply({ t: "facts", ok: false }); });
+            return;
           } else {
             if (phase === "pre") activeAt.set(peer, Date.now());
             queueMicrotask(() => tally(peer)); // after this call's own work below
@@ -2628,10 +2657,6 @@ export async function startDaemon(opts: DaemonOptions) {
           if (peer === "claude" && phase === "pre") observeProgress(peer, normalizeClaudeObservation(tool, input));
           factSession(peer, sessionId);
           const transcript = claudeTranscript(sessionId, msg.transcriptPath);
-          if (phase === "stop") {
-            readbacks(peer, transcript);
-            return void reply({ t: "facts", ok: true });
-          }
           if (phase === "post") {
             facts.postTool(peer, toolUseId, tool, input);
             readbacks(peer, transcript);

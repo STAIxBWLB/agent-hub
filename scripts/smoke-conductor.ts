@@ -11,6 +11,7 @@
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { ControlClient, stateDirFor } from "../src/hub/control-client.ts";
 import { readEvents, type StampedEvent } from "../src/hub/events.ts";
@@ -177,10 +178,15 @@ function claudeNative(stateDir: string, fixture: string, instanceId: string, sin
       return parts.every(n => n !== undefined) ? parts.reduce<number>((sum, n) => sum + n!, 0) : undefined;
     });
     const known = totals.filter((n): n is number => n !== undefined);
+    const opaqueMessageId = typeof lastAssistant?.message?.id === "string"
+      ? createHash("sha256").update(session.sessionId).update("\0").update(lastAssistant.message.id).digest("hex") : undefined;
+    const expectedStopId = opaqueMessageId
+      ? createHash("sha256").update(`${session.sessionId}:${launch.launchId}:${opaqueMessageId}`).digest("hex") : undefined;
     return { complete, endedAt: Number.isFinite(endedAt) ? endedAt : null, completedTurns: durations.length,
       finalMessageUuid: lastAssistant?.uuid ?? null, finalMessageId: lastAssistant?.message?.id ?? null,
       finalStopReason: lastAssistant?.message?.stop_reason ?? null, finalTurnDurationAt: finalDuration?.timestamp ?? null,
       finalTurnDurationMs: finalDuration?.durationMs ?? null,
+      expectedStopId: expectedStopId ?? null,
       transcript, sessionId: session.sessionId, instanceId, launchId: launch.launchId, usageRecords: usage.length, knownUsageRecords: known.length,
       tokens: known.length === usage.length && known.length ? known.reduce((sum, n) => sum + n, 0) : null };
   } catch { return undefined; }
@@ -257,7 +263,7 @@ legs: for (const { peer, feed } of requestedLegs) {
   const stateDir = stateDirFor(dir);
   const mcp = join(dir, ".agenthub", "candidate-mcp.json");
   if (!resumeFixture) writeFileSync(mcp, JSON.stringify({ mcpServers: { "agent-hub": { command: "bun", args: [bundle], env: { AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: dir, AGENTHUB_PEER_ID: peer } } } }, null, 2) + "\n", { mode: 0o600 });
-  const prompt = resumeFixture ? `Continue the existing disposable native smoke, do not start a new round. Task #1 is already approved: leave its state and alpha.txt unchanged. Existing task #2 is in_progress, owner pi, reviewer ${peer}; beta.txt already contains BETA. Use hub_status and hub_task_show for task #2. Start headless pi with hub_peer_start if detached. If its queue has a needs_review hold, tell the person to inspect ahub queue show and decide ahub queue resolve; never resolve, retry, discard, or bypass the hold yourself. Once Pi is available, send only Pi a precise read-only continuation request: read existing beta.txt, verify exactly the 4 bytes BETA without writing any file, and call hub_task_done id 2 with the actual observed check (do not accept an already in_progress task). Do not create new tasks, write any files, reassign owners, or restart local. When native Pi marks task #2 done, independently inspect beta.txt and approve task #2 with hub_review only after its bytes match. Start every final response with [FYI]; never broadcast task instructions or answer approvals.` : `You are the conductor/reviewer for a disposable native smoke. Start local and headless pi with hub_peer_start. Do not hold peers before assigning: paused peers are unavailable to routing. Propose exactly two class implement tasks initially owned by local: task A must write alpha.txt containing exactly ALPHA then read it and call hub_task_done with the observed check; task B must write beta.txt containing exactly BETA then read it and call hub_task_done with the observed check. Give each task a precise path plan in refs/plan. Verify both returned owners are local; if assignment is unavailable, report it without creating duplicates. Reassign task B to pi with hub_task_assign while task A waits for human approval. After successful assignment, place and release your own holds on both peers to check the hold tools. Do not implement these tasks yourself. Never answer any permission request: tell the person to answer in ahub console. As reviewer, inspect the resulting files with Read and approve with hub_review only after their actual content matches. ${feed === "off" ? "The supervision feed is off; return after delegation and wait for a user review prompt." : "The own supervision feed is on; handle milestones without polling loops and report once both tasks are approved."} Create no additional tasks and never broadcast task instructions to owners. Start every final response with [FYI] so it stays in the console instead of causing duplicate owner turns. Use no network or unrelated files.`;
+  let prompt = resumeFixture ? `Continue the existing disposable native smoke, do not start a new round. Task #1 is already approved: leave its state and alpha.txt unchanged. Existing task #2 is in_progress, owner pi, reviewer ${peer}; beta.txt already contains BETA. Use hub_status and hub_task_show for task #2. Start headless pi with hub_peer_start if detached. If its queue has a needs_review hold, tell the person to inspect ahub queue show and decide ahub queue resolve; never resolve, retry, discard, or bypass the hold yourself. Once Pi is available, send only Pi a precise read-only continuation request: read existing beta.txt, verify exactly the 4 bytes BETA without writing any file, and call hub_task_done id 2 with the actual observed check (do not accept an already in_progress task). Do not create new tasks, write any files, reassign owners, or restart local. When native Pi marks task #2 done, independently inspect beta.txt and approve task #2 with hub_review only after its bytes match. Start every final response with [FYI]; never broadcast task instructions or answer approvals.` : `You are the conductor/reviewer for a disposable native smoke. Start local and headless pi with hub_peer_start. Do not hold peers before assigning: paused peers are unavailable to routing. Propose exactly two class implement tasks initially owned by local: task A must write alpha.txt containing exactly ALPHA then read it and call hub_task_done with the observed check; task B must write beta.txt containing exactly BETA then read it and call hub_task_done with the observed check. Give each task a precise path plan in refs/plan. Verify both returned owners are local; if assignment is unavailable, report it without creating duplicates. Reassign task B to pi with hub_task_assign while task A waits for human approval. After successful assignment, place and release your own holds on both peers to check the hold tools. Do not implement these tasks yourself. Never answer any permission request: tell the person to answer in ahub console. As reviewer, inspect the resulting files with Read and approve with hub_review only after their actual content matches. ${feed === "off" ? "The supervision feed is off; return after delegation and wait for a user review prompt." : "The own supervision feed is on; handle milestones without polling loops and report once both tasks are approved."} Create no additional tasks and never broadcast task instructions to owners. Start every final response with [FYI] so it stays in the console instead of causing duplicate owner turns. Use no network or unrelated files.`;
   writeFileSync(join(runRoot, `${peer}-${feed}-conductor-prompt.txt`), prompt + "\n", { mode: 0o600 });
   const leg: any = { peer, feed, fixture: dir, status: "prepared", nativeTuiTransport: "real PTY", nativeTuiLaunched: false, nativeConductorAttached: false, consolePtyLaunched: false, consoleApprovals: "not observed", completedTasks: 0, conductorTurns: null, conductorTokens: null, supervisionTurns: null, supervisionTokens: null, operatorInputSource: fileInput ? "chat/file-input" : "foreground stdin", terminalFiles: { conductor: join(runRoot, `${peer}-${feed}-tui.terminal.txt`), console: join(runRoot, `${peer}-${feed}-console.terminal.txt`) }, inputFiles: { conductor: join(runRoot, `${peer}-${feed}-tui.input.jsonl`), console: join(runRoot, `${peer}-${feed}-console.input.jsonl`) } };
   manifest.legs.push(leg); save();
@@ -276,6 +282,16 @@ legs: for (const { peer, feed } of requestedLegs) {
     if (!fileInput) {
       input = data => { if (data.includes(3)) interrupted = true; consolePty?.input(data.toString()); };
       process.stdin.setRawMode(true); process.stdin.on("data", input); process.stdin.resume();
+    }
+    if (resumeFixture) {
+      const listed = await hub.request({ t: "task", op: "hub_task_list", args: {} }, 3000);
+      const existing = listed.ok ? JSON.parse(listed.text) : [];
+      if (existing.length !== 2 || !existing.some((task: any) => task.id === 1 && task.state === "approved") || !existing.some((task: any) => task.id === 2 && task.owner === "pi")) throw new Error("resume fixture does not match the existing two-task contract");
+      if (existing.every((task: any) => task.state === "approved")) {
+        leg.resumeCompleted = true;
+        prompt = "Read-only continuation of the existing smoke: both tasks are already approved. Use hub_status and hub_task_show for tasks 1 and 2, then Read the existing alpha.txt and beta.txt to verify exactly ALPHA (5 bytes) and BETA (4 bytes), no newline. Do not propose, assign, accept, complete or review any task, start/restart peers, write files or change settings. If an actual queued review message for an already-approved task reaches your native session, inspect its task history and file, then acknowledge only that actual delivery_id with hub_delivery_done. Never fabricate delivery completion or resolve a needs_review hold: ask the person. Report the observed checks once with [FYI]; no broadcasts, unrelated files or network tools.";
+        writeFileSync(join(runRoot, `${peer}-${feed}-conductor-prompt.txt`), prompt + "\n", { mode: 0o600 });
+      }
     }
     console.log(`Native ${peer}/${feed}: operator keys reach ahub console via ${fileInput ? "chat-authorized .input.jsonl" : "foreground stdin"}. Terminal evidence: ${join(runRoot, `${peer}-${feed}-console.terminal.txt`)}`);
     const args = peer === "claude" ? ["--mcp-config", mcp, "--strict-mcp-config", "--allowedTools", "mcp__agent-hub__*", "Read", "--ax-screen-reader", prompt] : ["--model", model!, prompt];
@@ -298,8 +314,10 @@ legs: for (const { peer, feed } of requestedLegs) {
       const queued = await hub!.request({ t: "queue", op: "list" }, 3000);
       if (queued.ok) leg.pendingQueue = queued.deliveries.filter((row: any) => row.state === "needs_review" || row.state === "queued").map((row: any) => ({ id: row.id, peer: row.peer, state: row.state, revision: row.revision, reason: row.reason ?? null }));
       save();
-      if (feed === "off" && !reviewPrompted && tasks.length === 2 && tasks.every(t => ["in_review", "approved"].includes(t.state))) {
-        reviewPrompted = true; tui!.input("Inspect alpha.txt and beta.txt using Read, then review both tasks with hub_review. Only approve actual matching contents.\r");
+      if (feed === "off" && !leg.resumeCompleted && !reviewPrompted && tasks.length === 2 && tasks.every(t => ["in_review", "approved"].includes(t.state))) {
+        reviewPrompted = true;
+        tui!.input("Inspect alpha.txt and beta.txt using Read, then review both tasks with hub_review. Only approve actual matching contents.");
+        await Bun.sleep(250); tui!.input("\r");
       }
       return tasks.length === 2 && tasks.every(t => t.state === "approved") ? tasks : undefined;
     }, "two reviewed tasks");
@@ -309,10 +327,19 @@ legs: for (const { peer, feed } of requestedLegs) {
       if (peer !== "claude") return status?.peers?.[peer]?.state === "idle" ? true : undefined;
       if (!status?.instanceId) return undefined;
       const native = claudeNative(stateDir, dir, status.instanceId, nativeStartedMs);
-      const lastReview = Math.max(nativeStartedMs, ...readEvents(join(stateDir, "events.jsonl")).filter(e => e.type === "conduct" && e.peer === peer && e.action === "review").map(e => Date.parse(e.at)));
+      const events = readEvents(join(stateDir, "events.jsonl"));
+      const lastReview = Math.max(nativeStartedMs, ...events.filter(e => e.type === "conduct" && e.peer === peer && e.action === "review").map(e => Date.parse(e.at)));
       if (!native?.complete || native.endedAt === null || native.endedAt < lastReview) return undefined;
-      leg.nativeCompletion = native; save(); return true;
-    }, "completed native conductor turn", 120);
+      const receipt = events.find(e => e.type === "native_turn_end" && e.peer === peer && e.id === native.expectedStopId);
+      const queued = await hub!.request({ t: "queue", op: "list" }, 3000);
+      const unsettled = queued.ok ? queued.deliveries.filter((row: any) => ["queued", "dispatching", "accepted", "needs_review"].includes(row.state)) : undefined;
+      leg.nativeCompletion = native;
+      leg.nativeStopReceipt = receipt ?? null;
+      leg.pendingQueue = unsettled?.map((row: any) => ({ id: row.id, peer: row.peer, state: row.state, revision: row.revision, reason: row.reason ?? null })) ?? null;
+      save();
+      if (!receipt || status.peers?.[peer]?.state !== "idle" || !unsettled || unsettled.length) return undefined;
+      leg.deliverySettlementVerified = true; return true;
+    }, "native final, matching daemon Stop and delivery settlement", 120);
     const histories = await Promise.all(completed.map(async t => JSON.parse((await hub!.request({ t: "task", op: "task_show", args: { id: t.id } }, 3000)).text)));
     const reassigned = histories.some(t => t.history.some((h: any) => h.by === peer && ["assigned", "reassigned"].includes(h.event) && h.owner === "pi"));
     const reviewed = histories.every(t => t.history.some((h: any) => h.by === peer && h.event === "approved"));
