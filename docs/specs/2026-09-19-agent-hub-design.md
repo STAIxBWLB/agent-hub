@@ -994,7 +994,11 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   awaited an approval. An approval is saved before its dependents are assigned,
   so the daemon's 60 s release timer sweeps for ownerless tasks whose last event
   is `blocked` or `ready` and that wait for nothing: each is offered once per hub
-  run, once an attached peer can take it, outside recovery operations.
+  run, once an attached peer can take it, outside recovery operations. An offer
+  is used up only by an assignment, after an approval and on the timer alike;
+  failed dependent reads, ready writes or assignments do not escape a saved
+  approval. Their notices are best effort because notification can read the
+  same unavailable board. An ownerless task stays eligible once a peer can take it.
 - A recovery commit also waits for task operations in flight and for completion
   checks queued or running: both can write the board after its integrity digest
   (a check the commit's stop kills records `check interrupted`).
@@ -1654,7 +1658,10 @@ push `accepted` and show none of them.
   to the newest end of the cache) for `reply_to` like a push, and a read clears
   the peer's failure streak as a completed push does. If that journal write fails, only this peer's queue
   and preface are put back (every pause stays) and the bus stops with
-  `delivery journal unavailable`. A pull is not a native turn and is not
+  `delivery journal unavailable`. A refused or failed `resolveDelivery` likewise
+  puts back only that peer's queue and preface and keeps every pause. Queue
+  contents change in place, preserving arrays held by a suspended drain; only
+  the constructor and recovery restore reload a bus snapshot. A pull is not a native turn and is not
   counted as supervision. The row is completed at hand-out, before anything
   shows the model saw it: a reply lost on the way, a tool call cancelled with
   Esc or a plugin that dies loses the batch (a `ponytail:` ceiling in

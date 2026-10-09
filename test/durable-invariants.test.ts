@@ -355,3 +355,51 @@ test("an uncertain native receipt retains needs_review instead of fabricating co
     expect(bus.queueList("claude")[0]?.state).toBe("needs_review");
   } finally { bus.closeJournal(); }
 });
+
+for (const action of ["discard", "retry"] as const) {
+  test(`a refused ${action} of a completed pull preserves a non-manual pause (#229)`, async () => {
+    const { bus, durable } = setupBus();
+    const peer = Object.assign(new FakePeer("claude"), { pullOnly: true }); bus.add(peer);
+    bus.publish(newEnvelope("user", "read", { to: ["claude"] }));
+    bus.pull("claude");
+    const row = durable.list("claude")[0]!;
+    bus.pause("claude");
+    expect(() => bus.resolveDelivery(row.id, row.revision, action, "operator")).toThrow(/already terminal/);
+    expect(bus.isPaused("claude")).toBe(true);
+    expect(bus.stateOf("claude")).toBe("paused");
+    expect(bus.storageError).toBeUndefined();
+    bus.publish(newEnvelope("user", "still held", { to: ["claude"] }));
+    expect(bus.pull("claude")).toBeUndefined();
+    Object.assign(peer, { pullOnly: false }); peer.setState("idle");
+    await Bun.sleep(10);
+    expect(peer.deliveries).toHaveLength(0);
+    expect(bus.queued("claude")).toBe(1);
+    durable.close();
+  });
+
+  test(`a failing ${action} journal write restores only the recipient queue and preface in place (#229)`, () => {
+    const { bus, durable } = setupBus();
+    for (const id of ["claude", "codex"]) { bus.add(new FakePeer(id)); bus.pause(id); bus.preface(id, `${id} recall`); }
+    bus.setManualPaused(["codex"]);
+    bus.publish(newEnvelope("user", "waiting", { priority: "status" }));
+    const queues = (bus as unknown as { queues: Map<string, Envelope[]> }).queues;
+    const claudeQueue = queues.get("claude")!, codexQueue = queues.get("codex")!;
+    const before = bus.snapshot(false);
+    const original = newEnvelope("user", "retry original", { to: ["claude"] });
+    const row = action === "discard" ? bus.queueList("claude")[0]! : durable.createDelivery({
+      id: "uncertain", peer: "claude", state: "needs_review", createdAt: original.ts,
+      originals: [newEnvelope("hub", "old recall", { kind: "presence" }), original], out: [original],
+    });
+    const persist = durable.persistBus;
+    durable.persistBus = () => { throw new Error("injected journal write failure"); };
+    try { expect(() => bus.resolveDelivery(row.id, row.revision, action, "operator")).toThrow(/journal unavailable/); }
+    finally { durable.persistBus = persist; }
+    expect(queues.get("claude")).toBe(claudeQueue);
+    expect(queues.get("codex")).toBe(codexQueue);
+    expect(bus.snapshot(false)).toEqual(before);
+    for (const id of ["claude", "codex"]) { expect(bus.isPaused(id)).toBe(true); expect(bus.stateOf(id)).toBe("paused"); }
+    expect(bus.storageError).toBe("delivery journal unavailable");
+    expect(durable.resolution(row.id)).toBeUndefined();
+    durable.close();
+  });
+}

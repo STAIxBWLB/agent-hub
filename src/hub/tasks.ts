@@ -909,19 +909,29 @@ export class Tasks {
 
   /** An approved task may be the last thing others waited for: those go through assignment now (issue #34). */
   private async releaseDependents(approved: Task): Promise<void> {
-    for (const t of this.d.board.list("proposed")) {
-      if (!t.deps?.includes(approved.id) || t.owner || this.waitsFor(t).length) continue;
-      await this.offerReady(t, `#${approved.id} approved`);
+    try {
+      for (const t of this.d.board.list("proposed")) {
+        if (!t.deps?.includes(approved.id) || t.owner || this.waitsFor(t).length) continue;
+        await this.offerReady(t, `#${approved.id} approved`);
+      }
+    } catch (e) {
+      this.releaseNotice(`task #${approved.id}: could not release dependents: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
-  private readonly offered = new Set<number>(); // ready tasks offered in this hub run
+  /** Notifications may read the same unavailable board; they must not undo a saved approval's return. */
+  private releaseNotice(line: string): void {
+    try { this.d.notify(line); } catch { /* best effort; the release timer retries ownerless work */ }
+  }
+
+  private readonly offered = new Set<number>(); // assignments in this hub run, including offers still in flight
   private readonly sent = new Map<string, PeerId>(); // hand-over (`handOver`) -> owner, for the owner's current turn: its task envelope started it, or it claimed the task in it
 
   /**
    * A stop between an approval and the assignment of its dependents (both are saved on their own) leaves them ownerless
    * with nothing left to wait for, and no later approval to offer them. The daemon calls this on its release timer:
-   * each such task is offered once per hub run, once an attached peer can take it (peers attach one by one).
+   * each such task is offered once an attached peer can take it (peers attach one by one). Only an assignment uses
+   * up its offer for this hub run; a failed or ownerless offer stays eligible, after approval and on the timer alike.
    */
   async releaseReady(): Promise<void> {
     for (const t of this.d.board.list("proposed")) {
@@ -936,12 +946,27 @@ export class Tasks {
 
   /** Callers hold a list read before an await: re-read, or a task the other caller offered meanwhile is offered twice. */
   private async offerReady(stale: Task, why: string): Promise<void> {
-    const t = this.d.board.get(stale.id);
-    if (!t || t.state !== "proposed" || t.owner || this.offered.has(t.id)) return;
-    this.offered.add(t.id);
-    const ready = t.history.at(-1)?.event === "ready" ? t : this.d.board.update(t.id, HUB, "ready", {}, why);
-    this.d.notify(`task ${this.publicTitle(ready)} is ready: what it waited for is approved`);
-    await this.assignOwner(ready, HUB).catch((e: Error) => this.d.notify(`task ${this.publicTitle(ready)}: could not be assigned: ${e.message}`));
+    let offering = false;
+    try {
+      const t = this.d.board.get(stale.id);
+      if (!t || t.state !== "proposed" || t.owner || this.offered.has(t.id)) return;
+      this.offered.add(t.id);
+      offering = true;
+      const ready = t.history.at(-1)?.event === "ready" ? t : this.d.board.update(t.id, HUB, "ready", {}, why);
+      this.releaseNotice(`task ${this.publicTitle(ready)} is ready: what it waited for is approved`);
+      await this.assignOwner(ready, HUB);
+    } catch (e) {
+      this.releaseNotice(`task ${this.publicTitle(stale)}: could not be assigned: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      if (offering) {
+        try {
+          if (!this.d.board.get(stale.id)?.owner) this.offered.delete(stale.id);
+        } catch (e) {
+          this.offered.delete(stale.id);
+          this.releaseNotice(`task ${this.publicTitle(stale)}: could not verify assignment: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
   }
 
   private mine(task: Task, by: PeerId, role: "owner" | "reviewer"): void {

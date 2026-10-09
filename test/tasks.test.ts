@@ -2216,3 +2216,131 @@ test("a split prediction counts busy as taking a task only in the turn that task
   await tasks.propose(USER, { title: "routed part", class: "implement", refs: { paths: ["src/c.ts"] } });
   expect(recorded.find((r) => r.where === "routing")?.trace).toContain("kimi is not available");
 });
+
+test("an approval offer with no peer is retried once codex returns, without timer noise while offline (#231)", async () => {
+  const { tasks, board, peers, notices } = await setup(["claude", "codex"]);
+  const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+  const c = await tasks.propose("claude", { title: "client", class: "implement", after: [a.id] });
+  await tasks.done("codex", a.id, "done");
+  peers.codex!.set("offline");
+  await tasks.review("claude", a.id, "approved");
+  expect(board.get(c.id)).toMatchObject({ owner: null, reviewer: null, state: "proposed" });
+  expect(board.get(c.id)!.history.at(-1)!.event).toBe("ready");
+  const history = board.get(c.id)!.history, beforeNotices = [...notices];
+  await tasks.releaseReady(); await tasks.releaseReady();
+  expect(board.get(c.id)!.history).toEqual(history);
+  expect(notices).toEqual(beforeNotices);
+  peers.codex!.set("idle");
+  await tasks.releaseReady(); await tick();
+  expect(board.get(c.id)!.owner).toBe("codex");
+  expect(peers.codex!.got.filter((e) => e.kind === "task" && e.refs?.task === String(c.id))).toHaveLength(1);
+});
+
+for (const event of ["ready", "assigned"] as const) {
+  test(`a failed dependent ${event} write does not throw after approval or consume the offer (#231)`, async () => {
+    const { tasks, board, peers, notices } = await setup(["claude", "codex"]);
+    const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+    const c = await tasks.propose("claude", { title: "client", class: "implement", after: [a.id] });
+    await tasks.done("codex", a.id, "done");
+    const update = board.update.bind(board);
+    board.update = (...args: Parameters<Board["update"]>) => {
+      if (args[0] === c.id && args[2] === event) throw new Error(`injected ${event} write failure`);
+      return update(...args);
+    };
+    try { await expect(tasks.review("claude", a.id, "approved")).resolves.toMatchObject({ state: "approved" }); }
+    finally { board.update = update; }
+    expect(notices.some((line) => line.includes(`task #${c.id} client`) && line.includes(`injected ${event} write failure`))).toBe(true);
+    expect(board.get(c.id)!.owner).toBeNull();
+    await tasks.releaseReady(); await tick();
+    expect(board.get(c.id)!.owner).toBe("codex");
+    expect(peers.codex!.got.filter((e) => e.kind === "task" && e.refs?.task === String(c.id))).toHaveLength(1);
+  });
+}
+
+for (const read of [1, 4]) {
+  test(`dependent offer read ${read} failing after approval is reported and leaves the offer unused (#231)`, async () => {
+    const { tasks, board, peers, notices } = await setup(["claude", "codex"]);
+    const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+    const c = await tasks.propose("claude", { title: "client", class: "implement", after: [a.id] });
+    await tasks.done("codex", a.id, "done");
+    peers.codex!.set("offline"); // entry, ready update's two reads, then final owner check (no assignment write)
+    const get = board.get.bind(board);
+    let reads = 0;
+    board.get = (id: number) => {
+      if (id === c.id && ++reads === read) throw new Error(`injected offer read ${read} failure`);
+      return get(id);
+    };
+    try { await expect(tasks.review("claude", a.id, "approved")).resolves.toMatchObject({ state: "approved" }); }
+    finally { board.get = get; }
+    expect(reads).toBe(read); // read 4 must fail in finally, after both reads within the ready write
+    const path = read === 4 ? "could not verify assignment" : "could not be assigned";
+    expect(notices.some((line) => line.includes(`task #${c.id} client: ${path}`) && line.includes(`injected offer read ${read} failure`))).toBe(true);
+    expect(board.get(c.id)!.owner).toBeNull();
+    peers.codex!.set("idle");
+    await tasks.releaseReady(); await tick();
+    expect(board.get(c.id)!.owner).toBe("codex");
+    expect(peers.codex!.got.filter((e) => e.kind === "task" && e.refs?.task === String(c.id))).toHaveLength(1);
+  });
+}
+
+for (const path of ["ready", "catch", "finally"] as const) {
+  test(`an offer's ${path} notification failing cannot escape a saved approval (#231)`, async () => {
+    const base = await setup(["claude", "codex"]);
+    let dependent = 0, failedNotices = 0;
+    const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (line) => {
+      const match = path === "ready" ? "is ready:" : path === "catch" ? "could not be assigned:" : "could not verify assignment:";
+      if (line.includes(`task #${dependent} `) && line.includes(match)) { failedNotices++; throw new Error("notification board unavailable"); }
+    } });
+    const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+    const c = await tasks.propose("claude", { title: "client", class: "implement", after: [a.id] }); dependent = c.id;
+    await tasks.done("codex", a.id, "done");
+    const update = base.board.update.bind(base.board), get = base.board.get.bind(base.board);
+    let reads = 0;
+    if (path === "catch") base.board.update = (...args: Parameters<Board["update"]>) => {
+      if (args[0] === c.id && args[2] === "ready") throw new Error("ready write unavailable");
+      return update(...args);
+    };
+    if (path === "finally") {
+      base.peers.codex!.set("offline");
+      base.board.get = (id: number) => { if (id === c.id && ++reads === 4) throw new Error("final owner read unavailable"); return get(id); };
+    }
+    try { await expect(tasks.review("claude", a.id, "approved")).resolves.toMatchObject({ state: "approved" }); }
+    finally { base.board.update = update; base.board.get = get; }
+    expect(failedNotices).toBe(1);
+    if (path === "ready") expect(base.board.get(c.id)!.owner).toBe("codex");
+    base.peers.codex!.set("idle");
+    await tasks.releaseReady(); await tick();
+    expect(base.board.get(c.id)!.owner).toBe("codex");
+    expect(base.peers.codex!.got.filter((e) => e.kind === "task" && e.refs?.task === String(c.id))).toHaveLength(1);
+  });
+}
+
+for (const path of ["list", "waits"] as const) {
+  test(`a dependent ${path} read failing after approval is reported without escaping and retries later (#231)`, async () => {
+    const { tasks, board, peers, notices } = await setup(["claude", "codex"]);
+    const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+    const c = await tasks.propose("claude", { title: "client", class: "implement", after: [a.id] });
+    await tasks.done("codex", a.id, "done");
+    const list = board.list.bind(board), get = board.get.bind(board);
+    let scanning = false, failedReads = 0;
+    board.list = (state) => {
+      if (state === "proposed") {
+        scanning = true;
+        if (path === "list" && !failedReads++) throw new Error("dependent list unavailable");
+      }
+      return list(state);
+    };
+    if (path === "waits") board.get = (id) => {
+      if (scanning && id === a.id && !failedReads++) throw new Error("dependency read unavailable");
+      return get(id);
+    };
+    try { await expect(tasks.review("claude", a.id, "approved")).resolves.toMatchObject({ state: "approved" }); }
+    finally { board.list = list; board.get = get; }
+    expect(failedReads).toBe(1);
+    expect(notices.some((line) => line.includes("could not release dependents:") && line.includes(path === "list" ? "dependent list unavailable" : "dependency read unavailable"))).toBe(true);
+    expect(board.get(c.id)!.owner).toBeNull();
+    await tasks.releaseReady(); await tick();
+    expect(board.get(c.id)!.owner).toBe("codex");
+    expect(peers.codex!.got.filter((e) => e.kind === "task" && e.refs?.task === String(c.id))).toHaveLength(1);
+  });
+}
