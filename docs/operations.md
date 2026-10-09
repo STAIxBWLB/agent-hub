@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.18 and control protocol 15. Live verification
+This guide describes ahub 0.12.19 and control protocol 15. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Operator console and panels
@@ -792,21 +792,21 @@ Rows without a live process are stale registrations; forget them with
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15) 14 (0.12.16) or 15 (0.12.17 and 0.12.18), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15) 14 (0.12.16) or 15 (0.12.17 through 0.12.19), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.18 ahub upgrade --to 0.12.18 --dry-run
-bunx --package @staix/agent-hub@0.12.18 ahub upgrade --to 0.12.18 --yes
+bunx --package @staix/agent-hub@0.12.19 ahub upgrade --to 0.12.19 --dry-run
+bunx --package @staix/agent-hub@0.12.19 ahub upgrade --to 0.12.19 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 and 0.12.18 (protocol 15) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -838,14 +838,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.18 --dry-run
+ahub upgrade --to 0.12.19 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.18 --yes
+ahub upgrade --to 0.12.19 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>

@@ -1252,3 +1252,36 @@ the sentinel. Missing served-model evidence remains `identified: false`.
 Before recording live acceptance, run a bounded unavailable-local/healthy-remote
 leg and retain the sanitized JSON plus process cleanup confirmation. Fixture
 verdicts do not certify provider availability or a real local generation.
+
+## 0.12.18 live checks: task attribution and console colors (#200, #201, 2026-10-09)
+
+The agent-hub project's own hub was upgraded from 0.12.17 to 0.12.18 by the
+user with the 0.12.18 coordinator, run from a plain terminal (an agent shell is
+refused by the identity gate). Claude (the session writing this) and Pi on
+`dgx/coding` were attached for the checks. Times are UTC.
+
+- **The upgrade left Claude held.** Operation `c671d786` (source 0.12.17,
+  protocol 15, running) was created at 05:26:55, the 0.12.18 daemon started
+  the same second, and the operation completed with the project verified. Ten deliveries Claude had accepted but never settled (three board review
+  requests, seven Codex chats, all handled before the upgrade) were moved to
+  `needs_review` with "peer disconnected before delivery settlement", and
+  Claude's queue was held behind them. `ahub queue resolve` is a console
+  command, so only the user can release it; the unsettled acceptances are #205.
+- **#200 AC4, attribution on a live turn.** Board task #19 (class `test`,
+  owner Pi) was proposed at 05:30:03, accepted at 05:30:07, done at 05:34:52
+  and approved at 05:35:16. `ahub report --by task` at 05:35:06 attributed Pi's
+  one turn and 602,255 tokens to #19 by its delivery. Unattributed: 2,159,396
+  of 38,171,695 token increments (5.7%) and 21 of 116 usage records (18.1%),
+  all Claude's own user-driven turns, which have no task-bearing delivery and
+  no single open task. The `before attribution` bucket held 35,410,044 tokens
+  and 95 records from before the upgrade. Both shares equal the JSON
+  `unattributed` counts over `totals`, and the JSON carried task ids, class and
+  outcome but no title or detail text.
+- **Pi could not run the check itself.** Its sandbox denies
+  `.agenthub/state/` (the `ahub` binary under the bunx cache and `events.jsonl`
+  both failed with EPERM). It reported every check as not run instead of
+  passing it, and the reviewer ran them.
+- **#201 AC7, idle console CPU.** Sampled with `ps` cumulative CPU time while
+  nothing happened on the hub: plain `ahub console`, 0.11 s over 60 s
+  (about 0.18%); `ahub console --panels`, 0.46 s over 120 s from 05:52:30
+  (about 0.38%, 0.21 to 0.25 s per minute, not growing).
