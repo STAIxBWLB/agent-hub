@@ -10,7 +10,8 @@ import { loadConfig } from "../hub/daemon.ts";
 import { factsHook } from "./facts-hook.ts";
 import { projectContext, realPath } from "../hub/project.ts";
 import { Registry, type Project } from "../hub/registry.ts";
-import { inspectProject, processAlive, startProject, stopProject, runProjectDaemon } from "../hub/lifecycle.ts";
+import { inspectProject, startProject, stopProject, runProjectDaemon } from "../hub/lifecycle.ts";
+import { processLiveness } from "../pi/process-signature.ts";
 import { openManager, startManager, stopManager } from "../hub/manager.ts";
 import { OmniRoute } from "../omniroute/client.ts";
 import { MemoryClient } from "../memory/client.ts";
@@ -124,10 +125,11 @@ function resetLockFree(): void {
 /** A manifest whose daemon is alive or uncertain, by inspectProject's rule; a crashed daemon's leftovers do not count. */
 function liveManifest(): boolean {
   const control = readControl(stateDir);
-  if (control && processAlive(control.pid) !== false) return true;
+  if (control && processLiveness(control.pid, control.pidSignature) !== "gone") return true;
   let text: string;
+  // Only daemons up to 0.12.20 wrote hub.pid (#226): an unsigned legacy record.
   try { text = readFileSync(join(stateDir, "hub.pid"), "utf8").trim(); } catch { return false; }
-  if (/^\d+$/.test(text)) return processAlive(Number(text)) !== false;
+  if (/^\d+$/.test(text)) return processLiveness(Number(text)) !== "gone";
   // Empty or garbled: beside a dead daemon's status it is that daemon's leftover too; alone it proves nothing.
   return !control;
 }
@@ -225,9 +227,7 @@ function orphanPids(project: Project): number[] {
     const pid = Number(readFileSync(join(project.stateDir, "hub.pid"), "utf8").trim());
     if (Number.isSafeInteger(pid) && pid > 0) candidates.add(pid);
   } catch { /* no legacy pid file */ }
-  return [...candidates].filter((pid) => {
-    try { process.kill(pid, 0); return true; } catch { return false; }
-  });
+  return [...candidates].filter((pid) => processLiveness(pid) === "live");
 }
 
 const processGone = (pid: number): boolean => !processCommandLine(pid);

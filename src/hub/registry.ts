@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { canonicalPath, hubHome, projectRoot } from "./project.ts";
+import { processLiveness } from "../pi/process-signature.ts";
 
 const BASE_PORT = 4600;
 const STRIDE = 10;
@@ -19,22 +20,27 @@ export interface Project {
   basePort: number;
   instanceId: string | null;
   pid: number | null;
+  /** #226: the claimant's processSignature; absent for a claim written by 0.12.20 or older (judged by its pid alone). */
+  pidSignature?: string | null;
+}
+
+/**
+ * #226: `pid_signature` holds "<instance id> <signature>". An older daemon's claim rewrites instance_id and pid but not
+ * this column, so a signature counts only for the instance that wrote it: under another instance the claim is unsigned.
+ */
+export const PROJECT_COLUMNS = "id, root, state_dir as stateDir, base_port as basePort, instance_id as instanceId, pid";
+export function projectFromRow(raw: Record<string, unknown>): Project {
+  const { pid_signature: signed, ...row } = raw;
+  const project = { ...row } as unknown as Project;
+  const prefix = `${project.instanceId} `;
+  if (project.instanceId && typeof signed === "string" && signed.startsWith(prefix) && signed.length > prefix.length) project.pidSignature = signed.slice(prefix.length);
+  return project;
 }
 
 const idFor = (root: string) => `p_${createHash("sha256").update(root).digest("hex").slice(0, 24)}`;
 // Preserve the original identifier of missing legacy checkouts as a reservation.
 const legacyRoot = (path: string) => { try { return realpathSync(path); } catch { return resolve(path); } };
 const canonicalState = canonicalPath;
-const alive = (pid: number): boolean | undefined => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ESRCH") return false;
-    return undefined;
-  }
-};
 
 export class Registry {
   readonly path: string;
@@ -56,6 +62,11 @@ export class Registry {
       base_port INTEGER NOT NULL UNIQUE, instance_id TEXT, pid INTEGER, claimed_at INTEGER
     )`);
     this.db.run("CREATE TABLE IF NOT EXISTS registry_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    const columns = this.db.query("PRAGMA table_info(projects)").all() as { name: string }[];
+    if (!columns.some((c) => c.name === "pid_signature")) {
+      try { this.db.run("ALTER TABLE projects ADD COLUMN pid_signature TEXT"); }
+      catch (error) { if (!/duplicate column/i.test((error as Error).message)) throw error; } // a concurrent open added it
+    }
     this.importLegacy();
   }
 
@@ -70,7 +81,7 @@ export class Registry {
       if (existing) {
         if (existing.root !== canonicalRoot) throw new Error(`registry id collision for ${canonicalRoot}`);
         if (explicitState && existing.stateDir !== state) {
-          if (existing.instanceId && (existing.pid === null || alive(existing.pid) !== false)) throw new Error(`cannot relocate live or uncertain project ${id}`);
+          if (existing.instanceId && (existing.pid === null || processLiveness(existing.pid, existing.pidSignature) !== "gone")) throw new Error(`cannot relocate live or uncertain project ${id}`);
           this.db.query("UPDATE projects SET state_dir = ? WHERE id = ?").run(state, id);
         }
         return;
@@ -91,7 +102,7 @@ export class Registry {
   }
 
   list(): Project[] {
-    return this.db.query("SELECT id, root, state_dir as stateDir, base_port as basePort, instance_id as instanceId, pid FROM projects ORDER BY root").all() as Project[];
+    return (this.db.query(`SELECT ${PROJECT_COLUMNS}, pid_signature FROM projects ORDER BY root`).all() as Record<string, unknown>[]).map(projectFromRow);
   }
 
   allocate(root: string): number {
@@ -110,17 +121,18 @@ export class Registry {
     return base;
   }
 
-  claim(id: string, instanceId: string, pid: number): boolean {
+  /** `signature`: the claimant's processSignature (#226); without one the claim is judged by its pid alone. */
+  claim(id: string, instanceId: string, pid: number, signature?: string): boolean {
     let claimed = false;
     const tx = this.db.transaction(() => {
       const project = this.row(id);
       if (!project) return;
       if (project.instanceId && project.instanceId !== instanceId) {
         if (project.pid === null) return;
-        const state = alive(project.pid);
-        if (state !== false) return;
+        if (processLiveness(project.pid, project.pidSignature) !== "gone") return;
       }
-      this.db.query("UPDATE projects SET instance_id = ?, pid = ?, claimed_at = ? WHERE id = ?").run(instanceId, pid, Date.now(), id);
+      this.db.query("UPDATE projects SET instance_id = ?, pid = ?, pid_signature = ?, claimed_at = ? WHERE id = ?")
+        .run(instanceId, pid, signature ? `${instanceId} ${signature}` : null, Date.now(), id);
       claimed = true;
     });
     runTx(tx as Tx);
@@ -128,7 +140,7 @@ export class Registry {
   }
 
   release(id: string, instanceId: string): void {
-    this.db.query("UPDATE projects SET instance_id = NULL, pid = NULL, claimed_at = NULL WHERE id = ? AND instance_id = ?").run(id, instanceId);
+    this.db.query("UPDATE projects SET instance_id = NULL, pid = NULL, pid_signature = NULL, claimed_at = NULL WHERE id = ? AND instance_id = ?").run(id, instanceId);
   }
 
   remove(id: string): void {
@@ -136,16 +148,17 @@ export class Registry {
       const project = this.row(id);
       if (!project) return;
       if (project.instanceId) {
-        if (project.pid === null || alive(project.pid) !== false) throw new Error(`project ${id} has a live or uncertain claim`);
+        if (project.pid === null || processLiveness(project.pid, project.pidSignature) !== "gone") throw new Error(`project ${id} has a live or uncertain claim`);
       } else if (existsSync(join(project.stateDir, "status.json")) || existsSync(join(project.stateDir, "control-token"))) {
-        let pid: number | undefined;
+        let pid: number | undefined, signature: string | undefined;
         try {
-          const status = JSON.parse(readFileSync(join(project.stateDir, "status.json"), "utf8")) as { pid?: number };
+          const status = JSON.parse(readFileSync(join(project.stateDir, "status.json"), "utf8")) as { pid?: number; pidSignature?: unknown };
           pid = typeof status.pid === "number" ? status.pid : undefined;
+          signature = typeof status.pidSignature === "string" ? status.pidSignature : undefined;
         } catch {
           // A state directory without a readable owner marker is uncertain.
         }
-        if (pid === undefined || alive(pid) !== false) throw new Error(`project ${id} has a live or uncertain legacy state`);
+        if (pid === undefined || processLiveness(pid, signature) !== "gone") throw new Error(`project ${id} has a live or uncertain legacy state`);
       }
       this.db.query("DELETE FROM projects WHERE id = ?").run(id);
     });
@@ -157,7 +170,8 @@ export class Registry {
   }
 
   private row(id: string): Project | null {
-    return this.db.query("SELECT id, root, state_dir as stateDir, base_port as basePort, instance_id as instanceId, pid FROM projects WHERE id = ?").get(id) as Project | null;
+    const raw = this.db.query(`SELECT ${PROJECT_COLUMNS}, pid_signature FROM projects WHERE id = ?`).get(id) as Record<string, unknown> | null;
+    return raw ? projectFromRow(raw) : null;
   }
 
   private nextBase(after = BASE_PORT - STRIDE): number {

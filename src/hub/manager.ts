@@ -9,6 +9,7 @@ import { hubHome } from "./project.ts";
 import { startDashboard } from "./ui.ts";
 import { projectChain } from "../memory/recall.ts";
 import type { ProjectInspection } from "./lifecycle.ts";
+import { processLiveness, processSignature } from "../pi/process-signature.ts";
 
 export type ProjectRecord = Project;
 export type Lifecycle = {
@@ -18,7 +19,7 @@ export type Lifecycle = {
 };
 export type ManagerOptions = { registry?: Registry; lifecycle?: Lifecycle; home?: string; cli?: string; orphanWatchMs?: number };
 type ManagerHandle = { stop(): Promise<void>; stopped: Promise<void> };
-type Manifest = { port: number; protocol: number; instanceId: string; pid: number };
+type Manifest = { port: number; protocol: number; instanceId: string; pid: number; pidSignature?: string };
 const active = new Map<string, { handle: ManagerHandle; issue(): string }>();
 const CONTROL_TIMEOUT = 3000;
 // A current CLI may authenticate the previous protocol-9 manager while
@@ -41,20 +42,20 @@ async function bounded<T>(promise: Promise<T>, ms: number): Promise<T> {
     timer = setTimeout(() => reject(new Error("completion was not confirmed; refresh before retrying")), ms);
   })]); } finally { clearTimeout(timer); }
 }
-function alive(pid: number): boolean | undefined {
-  if (!Number.isSafeInteger(pid) || pid < 1) return undefined;
-  try { process.kill(pid, 0); return true; }
-  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? false : undefined; }
-}
-function claimOwner(path: string, instanceId: string): Database {
+function claimOwner(path: string, instanceId: string, signature: string | undefined): Database {
   const db = new Database(path, { create: true });
   try {
     db.run("PRAGMA busy_timeout = 5000");
-    db.run("CREATE TABLE IF NOT EXISTS owner (slot INTEGER PRIMARY KEY CHECK (slot = 1), instance_id TEXT NOT NULL, pid INTEGER NOT NULL)");
+    db.run("CREATE TABLE IF NOT EXISTS owner (slot INTEGER PRIMARY KEY CHECK (slot = 1), instance_id TEXT NOT NULL, pid INTEGER NOT NULL, signature TEXT)");
+    if (!(db.query("PRAGMA table_info(owner)").all() as { name: string }[]).some((c) => c.name === "signature")) {
+      try { db.run("ALTER TABLE owner ADD COLUMN signature TEXT"); }
+      catch (error) { if (!/duplicate column/i.test((error as Error).message)) throw error; }
+    }
     db.transaction(() => {
-      const row = db.query("SELECT pid FROM owner WHERE slot = 1").get() as { pid: number } | null;
-      if (row && alive(row.pid) !== false) throw new Error("manager has a live or uncertain owner");
-      db.query("INSERT OR REPLACE INTO owner (slot, instance_id, pid) VALUES (1, ?, ?)").run(instanceId, process.pid);
+      // #226: an older manager's INSERT OR REPLACE leaves the signature NULL, so its row is judged by the pid alone.
+      const row = db.query("SELECT pid, signature FROM owner WHERE slot = 1").get() as { pid: number; signature: string | null } | null;
+      if (row && processLiveness(row.pid, row.signature) !== "gone") throw new Error("manager has a live or uncertain owner");
+      db.query("INSERT OR REPLACE INTO owner (slot, instance_id, pid, signature) VALUES (1, ?, ?, ?)").run(instanceId, process.pid, signature ?? null);
     }).immediate();
     return db;
   } catch (error) { db.close(); throw error; }
@@ -83,6 +84,7 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
   const f = files(home);
   mkdirSync(f.dir, { recursive: true, mode: 0o700 });
   const token = randomBytes(32).toString("hex"), instanceId = randomUUID();
+  const pidSignature = processSignature(process.pid); // #226: the owner row and manifest say which process holds this pid
   let owner: Database | undefined;
   let server: ReturnType<typeof Bun.serve> | undefined;
   let dashboard: ReturnType<typeof startDashboard> | undefined;
@@ -110,7 +112,7 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
     cleanup(); resolveStopped();
   };
   try {
-    owner = claimOwner(f.owner, instanceId);
+    owner = claimOwner(f.owner, instanceId, pidSignature);
     const aliases = new Map<string, { at: number; names: string[] }>();
     const list = async () => {
       const projects = registry.list();
@@ -172,7 +174,7 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
     writeFileSync(f.token, token, { mode: 0o600 });
     chmodSync(f.token, 0o600);
     const temp = `${f.status}.${instanceId}.tmp`;
-    writeFileSync(temp, JSON.stringify({ port: server.port, protocol: PROTOCOL, instanceId, pid: process.pid }));
+    writeFileSync(temp, JSON.stringify({ port: server.port, protocol: PROTOCOL, instanceId, pid: process.pid, ...(pidSignature ? { pidSignature } : {}) }));
     renameSync(temp, f.status);
     // The manager outlives whoever opened it; a deleted AGENTHUB_HOME (a test suite's temp
     // home, issue #56) must not leave it serving a registry that no longer exists.
@@ -209,7 +211,7 @@ export async function openManager(options: ManagerOptions = {}): Promise<string>
   try { return (await managerRequest(home, "/open")).body.url; }
   catch (error) {
     const old = readManifest(home);
-    if (old && alive(old.pid) !== false) throw error;
+    if (old && processLiveness(old.pid, old.pidSignature) !== "gone") throw error;
     // A definitely dead manager can be recovered by its ownership claim.
   }
   const f = files(home);

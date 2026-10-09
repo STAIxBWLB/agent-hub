@@ -9,6 +9,9 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Retry a dependent task released while no peer can take it or its ready/assignment write fails; consume its per-run offer only after assignment (#231).
 - Test port probes bind 127.0.0.1 to match the Codex servers, and failed daemon starts show their error in assertion diffs (#232).
 - Reuse Git fixture templates and restore sealed-study mutations between subtests to reduce export test process spawns without changing its 20 s timeout (#233).
+- Judge a recorded hub manifest, registry claim, recovery runner and manager owner by its process signature as well as its pid, through one helper, so a pid that a reboot handed to another process (one we may not even signal) no longer wedges recovery, `ahub up` or `ahub reset`. `status.json` (file only), the registry claim, the runner record and the manager owner now carry the signature, daemons stop writing `hub.pid`, and recovery reads the registry's live claim instead of the plan's frozen copy. Records written by 0.12.20 and older keep the bare-pid answer; the operations guide gives the manual clear for such a claim (#226).
+- A stop-and-archive recorded on an operation whose coordinator predates #215 marks its receipt `schema: 2`, which every older runner and abort refuse before they take the lock, so an older global `ahub recovery resume` can no longer advance an operation being abandoned; checked against the real v0.12.19 source (#227).
+- A `terminal-recovery.json` row that fails validation is unknown for the launcher it may describe, never "no launcher", and the next `ahub codex`, `ahub claude` or `ahub pi` writes it back unchanged; launchers recorded by 0.12.12 or older are also read by their unpinned signature (#228).
 
 ## 0.12.20
 

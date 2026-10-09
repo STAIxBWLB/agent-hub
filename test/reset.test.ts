@@ -325,6 +325,41 @@ test("a crashed hub's manifest and dead-pid claim do not block either scope; the
   } finally { rmSync(base, { recursive: true, force: true }); }
 }, 60_000);
 
+// #226: after a reboot the crashed hub's pids belong to other processes. Its signed manifest and claim then read as gone.
+test("a crashed hub whose signed manifest and claim pids were reused does not block up or reset", async () => {
+  const { base, root, stateDir, project } = fixture();
+  const other = Bun.spawn(["sleep", "30"]); // what the pid points at now
+  const crash = () => {
+    const registry = new Registry(join(base, "home", "registry.db"));
+    expect(registry.claim(project.id, "crashed", other.pid, "the crashed daemon's signature")).toBe(true);
+    registry.close();
+    writeFileSync(join(stateDir, "status.json"), JSON.stringify({ cwd: root, projectId: project.id, instanceId: "crashed", controlPort: 9, pid: other.pid, pidSignature: "the crashed daemon's signature" }));
+    writeFileSync(join(stateDir, "control-token"), "stale-token");
+  };
+  try {
+    crash();
+    const dry = await cli(root, ["reset"]);
+    expect(dry.stdout).toContain("the hub is stopped");
+    expect(dry.stdout).toContain("remove the manifest a hub left when it did not stop cleanly: status.json, control-token");
+    const result = await cli(root, ["reset", "--yes"]);
+    expect(result.code, result.stderr).toBe(0);
+    for (const name of ["status.json", "control-token"]) expect(existsSync(join(stateDir, name))).toBe(false);
+
+    crash();
+    const up = await cli(root, ["up"]);
+    expect(up.code, up.stderr).toBe(0);
+    const status = JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8"));
+    expect(status.pid).not.toBe(other.pid);
+    expect(status.pidSignature).toMatch(/^[0-9a-f]{64}$/);
+    expect(existsSync(join(stateDir, "hub.pid"))).toBe(false); // this release writes no legacy pid file
+    expect((await cli(root, ["kill"])).code).toBe(0);
+  } finally {
+    other.kill(); await other.exited;
+    await cli(root, ["kill"]).catch(() => undefined);
+    rmSync(base, { recursive: true, force: true });
+  }
+}, 60_000);
+
 test("a state the reset cannot read points to --all, which archives it as it is and restores an edited archive .gitignore", async () => {
   const { base, root, stateDir, project } = fixture();
   try {

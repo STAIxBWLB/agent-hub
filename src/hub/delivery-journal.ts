@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { Database } from "bun:sqlite";
 import type { BusSnapshot } from "./bus.ts";
 import type { Envelope } from "./envelope.ts";
+import { processLiveness } from "../pi/process-signature.ts";
 
 export type JournalDeliveryState =
   | "queued"
@@ -331,13 +332,9 @@ export class DeliveryJournal {
         Number.isInteger(status.pid) &&
         Number(status.pid) > 0
       ) {
-        try {
-          process.kill(Number(status.pid), 0);
+        // A pid that cannot be probed (EPERM) never refused here; a signed manifest whose pid was reused is gone (#226).
+        if (processLiveness(Number(status.pid), typeof status.pidSignature === "string" ? status.pidSignature : undefined) === "live")
           throw new Error("delivery journal is owned by a live instance");
-        } catch (e) {
-          if (e instanceof Error && e.message.includes("owned by a live"))
-            throw e;
-        }
       }
     } catch (e) {
       if (e instanceof Error && e.message.includes("owned by a live")) throw e;

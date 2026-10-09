@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Project } from "../hub/registry.ts";
+import { PROJECT_COLUMNS, projectFromRow, type Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
 import { acquireRecoveryLock, claimRunner, coordinatorCurrent, readOperation, recoveryCommand, recoveryLock, releaseRecoveryLock, writeOperation } from "../hub/recovery-store.ts";
 
@@ -58,7 +58,11 @@ export interface ProjectProgress {
   commitSent?: boolean;
 }
 export interface RecoveryOperation {
-  schema: 1;
+  /**
+   * #227: 2 marks a stop-and-archive recorded on an operation whose coordinator predates #215. Every older runner and
+   * abort refuses a schema other than 1 before it takes the lock or claims the runner, so none can advance it.
+   */
+  schema: 1 | 2;
   id: string;
   plan: UpgradePlan;
   createdAt: number;
@@ -231,7 +235,9 @@ export function registeredProjects(home = hubHome()): Project[] {
   if (!existsSync(path)) return [];
   const db = new Database(path, { readonly: true });
   try {
-    return db.query("SELECT id, root, state_dir as stateDir, base_port as basePort, instance_id as instanceId, pid FROM projects ORDER BY root").all() as Project[];
+    // #226: a registry no current release opened yet has no signature column, and this read never migrates.
+    const signed = (db.query("PRAGMA table_info(projects)").all() as { name: string }[]).some((c) => c.name === "pid_signature");
+    return (db.query(`SELECT ${PROJECT_COLUMNS}${signed ? ", pid_signature" : ""} FROM projects ORDER BY root`).all() as Record<string, unknown>[]).map(projectFromRow);
   } finally { db.close(); }
 }
 
@@ -256,8 +262,21 @@ export function createOperation(plan: UpgradePlan, sourceRoot: string, home = hu
   return op;
 }
 
+/**
+ * #227: a coordinator from before #215 never reads `disposition`, and an older global `ahub recovery resume` runs it.
+ * Every older validateReceipt refuses a schema other than 1 before the lock and the runner claim, so schema 2 keeps it
+ * from advancing an operation being abandoned. A #215 coordinator's runner refuses the disposition itself and keeps
+ * schema 1, so a 0.12.20 CLI can still rerun its dispose. True when the receipt changed (a disposition recorded at 1
+ * by 0.12.20 is moved to 2 by the next command of this release that holds the runner claim).
+ */
+function abandoned(op: RecoveryOperation): boolean {
+  if (!op.disposition || op.schema !== 1 || !op.sourceRoot || coordinatorCurrent(op.sourceRoot)) return false;
+  op.schema = 2;
+  return true;
+}
+
 function validateReceipt(id: string, op: RecoveryOperation): void {
-  if (op.schema !== 1 || op.id !== id) throw new Error("unsupported operation receipt");
+  if (!(op.schema === 1 || (op.schema === 2 && op.disposition)) || op.id !== id) throw new Error("unsupported operation receipt");
   const { fingerprint, ...reviewed } = op.plan;
   if (fingerprint !== planFingerprint(reviewed) || op.projects.length !== op.plan.projects.length ||
       op.projects.some((p, i) => p.id !== op.plan.projects[i]?.project.id)) throw new Error("reviewed operation plan or project scope changed");
@@ -507,6 +526,7 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
       if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
       return;
     }
+    if (abandoned(op)) writeOperation(id, op, home);
     const { fingerprint, ...body } = op.plan;
     if (fingerprint !== planFingerprint(body)) throw new Error("operation plan changed");
     const live = await liveProjects(op, driver.inspect);
@@ -543,6 +563,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
       if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
       throw new Error(`operation is already ${op.phase}`);
     }
+    if (abandoned(op)) writeOperation(id, op, home);
     const at = driver.now();
     // Read once, as status and the runner do: every choice and refusal below is decided on it.
     const live = await liveProjects(op, driver.inspect);
@@ -596,6 +617,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
     }
     // Each outcome is recorded as it happens, so a disposition that stops partway stays true and resume refuses it.
     const disposition = (op.disposition ??= { choice: "stop-and-archive", at, projects: {} });
+    abandoned(op); // #227: in the same write as the disposition
     (op.audit ??= []).push({ at, action: "stop-and-archive", reason, projects: acts.map((a) => a.planned.project.id) });
     // Recorded before the first act: a crash inside a stop leaves a disposition that resume refuses to override.
     op.updatedAt = driver.now(); writeOperation(id, op, home);

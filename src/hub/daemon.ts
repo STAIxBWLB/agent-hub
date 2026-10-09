@@ -20,6 +20,7 @@ import { PiPeer } from "../adapters/pi.ts";
 import { startModelRelay, type ModelRelay } from "../models/relay.ts";
 import { ensureMlx, type MlxOptions } from "../models/mlx.ts";
 import { PiToolReceipts } from "../pi/tool-receipts.ts";
+import { processSignature } from "../pi/process-signature.ts";
 import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
 import { runTool, toolResultFailed, TOOL_SCHEMAS, type ToolContext } from "../local/tools.ts";
@@ -1477,10 +1478,13 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(bus.storageError ? { deliveryError: bus.storageError } : {}),
     ...(recoveryOperationId ? { recovery: { operationId: recoveryOperationId, phase: recoveryPhase, ready: recoveryReady() } } : {}),
   });
+  // #226: who owns this manifest, beyond a pid that a reboot can hand to another process. Only the file carries it
+  // (the status reply is unchanged); readers without it judge the pid alone, as 0.12.20 did.
+  const pidSignature = processSignature(process.pid);
   const writeStatus = () => {
     try {
       const file = join(opts.stateDir, "status.json"); // clients parse this on every connect: replace it atomically
-      writeFileSync(`${file}.${instanceId}.tmp`, `${JSON.stringify(status(), null, 2)}\n`);
+      writeFileSync(`${file}.${instanceId}.tmp`, `${JSON.stringify({ ...status(), ...(pidSignature ? { pidSignature } : {}) }, null, 2)}\n`);
       renameSync(`${file}.${instanceId}.tmp`, file);
     } catch { /* the state dir is gone; the watchdog is stopping the hub (issue #56) */ }
   };
@@ -2947,8 +2951,7 @@ export async function startDaemon(opts: DaemonOptions) {
   writeFileSync(tokenFile, token, { mode: 0o600 });
   chmodSync(tokenFile, 0o600);
   budget.restore(); // pauses recorded by an earlier hub run stay in force; unfinished handoffs wait for peers to attach
-  writeFileSync(join(opts.stateDir, "hub.pid"), `${process.pid}\n`);
-  writeStatus();
+  writeStatus(); // #226: no hub.pid any more; status.json carries the pid with its signature
   log(`${RUN_START}${process.pid} control=127.0.0.1:${server.port} cwd=${opts.cwd}`);
   ready = true;
   if (crashed) {
