@@ -324,18 +324,22 @@ legs: for (const { peer, feed } of requestedLegs) {
     if (!readFileSync(join(dir, "alpha.txt")).equals(Buffer.from("ALPHA")) || !readFileSync(join(dir, "beta.txt")).equals(Buffer.from("BETA"))) throw new Error("fixture output byte mismatch");
     await until(async () => {
       const status = (await hub!.request({ t: "status" }, 3000)).status;
-      if (peer !== "claude") return status?.peers?.[peer]?.state === "idle" ? true : undefined;
+      const queued = await hub!.request({ t: "queue", op: "list" }, 3000);
+      const unsettled = queued.ok ? queued.deliveries.filter((row: any) => ["queued", "dispatching", "accepted", "needs_review"].includes(row.state)) : undefined;
+      leg.pendingQueue = unsettled?.map((row: any) => ({ id: row.id, peer: row.peer, state: row.state, revision: row.revision, reason: row.reason ?? null })) ?? null;
+      if (peer !== "claude") {
+        save();
+        if (status?.peers?.[peer]?.state !== "idle" || !unsettled || unsettled.length) return undefined;
+        leg.deliverySettlementVerified = true; return true;
+      }
       if (!status?.instanceId) return undefined;
       const native = claudeNative(stateDir, dir, status.instanceId, nativeStartedMs);
       const events = readEvents(join(stateDir, "events.jsonl"));
       const lastReview = Math.max(nativeStartedMs, ...events.filter(e => e.type === "conduct" && e.peer === peer && e.action === "review").map(e => Date.parse(e.at)));
       if (!native?.complete || native.endedAt === null || native.endedAt < lastReview) return undefined;
       const receipt = events.find(e => e.type === "native_turn_end" && e.peer === peer && e.id === native.expectedStopId);
-      const queued = await hub!.request({ t: "queue", op: "list" }, 3000);
-      const unsettled = queued.ok ? queued.deliveries.filter((row: any) => ["queued", "dispatching", "accepted", "needs_review"].includes(row.state)) : undefined;
       leg.nativeCompletion = native;
       leg.nativeStopReceipt = receipt ?? null;
-      leg.pendingQueue = unsettled?.map((row: any) => ({ id: row.id, peer: row.peer, state: row.state, revision: row.revision, reason: row.reason ?? null })) ?? null;
       save();
       if (!receipt || status.peers?.[peer]?.state !== "idle" || !unsettled || unsettled.length) return undefined;
       leg.deliverySettlementVerified = true; return true;
