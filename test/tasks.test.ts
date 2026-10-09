@@ -911,11 +911,39 @@ test("a decline keeps the owner it was declined for out of every later reroute, 
   expect(board.get(c.id)!.owner).toBe("codex");
   const moved = await tasks.decline(USER, c.id, "not this one");
   expect(moved).toMatchObject({ owner: "local", reserved: "codex" });
-  expect(moved.history.findLast((h) => h.event === "declined")).toMatchObject({ by: USER, owner: "codex" });
+  expect(moved.history.findLast((h) => h.event === "declined")).toMatchObject({ by: USER, from: "codex" });
   expect(notices).toContain(`task #${c.id} client: its reserved owner codex is passed over (excluded (declined or replaced)); routing proceeds`);
   // explain and assignment agree, and the next reroute does not hand it back either
   expect(tasks.explain(c.id)).toContain("reserved owner codex: not honored, excluded (declined or replaced); routing proceeds");
   expect(await tasks.decline("local", c.id)).toMatchObject({ owner: "kimi", reserved: "codex" });
+});
+
+test("an owner the task was escalated away from stays out of later reroutes", async () => {
+  const { tasks, board } = await setup();
+  const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+  const c = await tasks.propose("claude", { title: "client", class: "implement", owner: "codex", after: [a.id] });
+  await approve(tasks, board, a.id);
+  for (let round = 0; round < 2; round++) {
+    await tasks.done("codex", c.id, "done");
+    await tasks.review("claude", c.id, "changes_requested", "again");
+  }
+  const escalated = board.get(c.id)!;
+  expect(escalated.owner).toBe("kimi"); // escalate_to codex, kimi, claude: codex is the one it leaves
+  expect(escalated.history.findLast((h) => h.event === "escalated")).toMatchObject({ owner: "kimi", from: "codex" });
+  expect(await tasks.decline("kimi", c.id)).toMatchObject({ owner: "local", reserved: "codex" });
+  expect(tasks.explain(c.id)).toContain("reserved owner codex: not honored, excluded (declined or replaced); routing proceeds");
+});
+
+test("a person's explicit assign is not blocked by past declines; the conductor's and a proposer's are", async () => {
+  const { tasks, board, notices } = await setup();
+  const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+  const c = await tasks.propose("claude", { title: "client", class: "implement", owner: "codex", after: [a.id] });
+  await approve(tasks, board, a.id);
+  await tasks.decline(USER, c.id, "not now");
+  expect(board.get(c.id)!.owner).toBe("local");
+  expect(await tasks.assignTo(c.id, "codex", "claude")).toMatchObject({ owner: "local" });
+  expect(notices.at(-1)).toContain("no peer can take it");
+  expect(await tasks.assignTo(c.id, "codex")).toMatchObject({ owner: "codex" });
 });
 
 test("an owner released as gone is passed over for that release only; the history note keeps the release's own note", async () => {

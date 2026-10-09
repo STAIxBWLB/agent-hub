@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import type { Task } from "./board.ts";
 import { CONDUCTOR_TOOL_NAMES } from "./hub-tools.ts";
-import { USER } from "./envelope.ts";
+import { HUB, USER } from "./envelope.ts";
 import { OWNERSHIP_EVENTS } from "./tasks.ts";
 import type { HubEvent } from "./events.ts";
 import type { SupervisionFeed } from "./supervision.ts";
@@ -176,8 +176,9 @@ export class Conductor {
       // A task's current owner and reviewer read its public view without the role (#208); nobody else does.
       if (task && tool === "hub_task_show" && (task.owner === actor || task.reviewer === actor)) return publicConductorTask(task, this.hooks.publicView);
       // Its proposer (the first history entry) redirects it while nobody accepted it (#207); work that waits gets a reserved
-      // owner. Never over the person: a console assign or reservation stands until the conductor or the console moves it.
-      const moved = task?.history.findLast((h) => OWNERSHIP_EVENTS.has(h.event) || h.event === "reserved");
+      // owner. Never over the person: a console assign or reservation stands until the conductor or the console moves it,
+      // also once the hub carried it out (the hub's own moves are not decisions).
+      const moved = task?.history.findLast((h) => h.by !== HUB && (OWNERSHIP_EVENTS.has(h.event) || h.event === "reserved"));
       if (task && tool === "hub_task_assign" && task.history[0]?.by === actor && task.state === "proposed" && moved?.by !== USER) {
         const peer = peerId(args.peer);
         if (peer !== actor) requireAssign(actor, this.hooks.capabilities());

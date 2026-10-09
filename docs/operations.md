@@ -368,17 +368,22 @@ routing offers it to that peer first, not to the first idle peer of the class.
 A reserved owner that is offline, paused, failing, not attached or excluded
 is passed over: routing proceeds as usual, the console and hub.log say which
 reservation was passed over and why, and the assignment's history note keeps
-it. A peer the task was declined for (by itself or by the console) stays
-excluded on every later reroute; an owner released as gone is excluded only
-from that release and may get the task again from its reservation later. The PII constraint and capability limits still apply, so a
-PII task goes to `local` or nobody whoever was reserved. `ahub task assign` on a
+it. A peer the task was declined for (by itself or by the console) or
+escalated away from stays excluded on every later reroute; an owner released
+as gone is excluded only from that release and may get the task again from
+its reservation later. Your own `ahub task assign` is not blocked by those
+exclusions. The PII constraint and capability limits still apply, so a PII
+task goes to `local` or nobody whoever was reserved. `ahub task assign` on a
 task that waits changes its reserved owner instead of handing it over.
 `ahub route explain <id>` names the reserved owner; once the task is ready it
-also says whether routing would honor the reservation now, and why not. The peer that proposed a task may redirect it with
-`hub_task_assign` while it is `proposed` and nobody accepted it, without the
-conductor role (handing it to another peer needs `assign` when the proposer has
-a capabilities list). Once it is accepted, or after a person assigned or
-reserved it from the console, only the conductor and the console move it.
+also says whether routing would honor the reservation now, and why not.
+
+The peer that proposed a task may redirect it with `hub_task_assign` while it
+is `proposed` and nobody accepted it, without the conductor role (handing it
+to another peer needs `assign` when the proposer has a capabilities list).
+Once it is accepted, or after a person assigned or reserved it from the
+console (also once the hub carried that out), only the conductor and the
+console move it.
 
 An owner offline longer than `tasks.release_after_min`
 (default 30, `0` turns it off) in `.agenthub/config.json` loses its open tasks

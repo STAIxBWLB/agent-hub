@@ -48,7 +48,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
   ]],
   ["Tasks and review", [
     ["ahub board [state | --ready]", "the task board; --ready: proposed tasks with nothing left to wait for"],
-    ["ahub task propose [--class <c> | <class>] <title...> [--owner <peer>] [--path <p>]... [--after <id>]... [--urgent] [--detail <text>]", "put a task on the board; a first word that names a class is taken as the class; with --after, --owner reserves the task for that peer, offered to it first once it is ready"],
+    ["ahub task propose [--class <c> | <class>] <title...> [--owner <peer>] [--path <p>]... [--after <id>]... [--urgent] [--detail <text>]", "put a task on the board; a first word that names a class is taken as the class; while a task named by --after is not approved yet, --owner reserves the task for that peer, offered to it first once it is ready; otherwise --owner assigns it now"],
     ["ahub task show|escalate <id>", "full task with history (PII text included) / hand it to the next peer in escalate_to"],
     ["ahub task assign <id> <peer>", "give a task to a peer yourself; a task that still waits is reserved for that peer instead"],
     ["ahub review <id> approved|changes_requested [note...] [--unmet <item>]...", "give a review verdict on a task"],

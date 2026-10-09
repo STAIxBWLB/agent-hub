@@ -226,6 +226,24 @@ test("a person's console assign or reservation stands against the proposer; digi
   expect(JSON.parse((await op(f.console_, "task_show", { id: 2 })).text)).toMatchObject({ owner: null, reserved: "pi" });
 });
 
+test("a person's reservation carried out by the hub still stands against the proposer (#207)", async () => {
+  const f = await fixture("codex");
+  for (const name of ["kimi", "pi"]) { const peer = new QuietPeer(name); f.daemon.bus.add(peer); await peer.start(); }
+  const planner = await f.connect("claude"), pi = await f.connect("pi");
+  const op = (client: ControlClient, name: string, args: Record<string, unknown>) => client.request({ t: "task", op: name, args });
+  const shown = async (id: number) => JSON.parse((await op(f.console_, "task_show", { id })).text);
+  expect((await op(planner, "hub_task_propose", { title: "first", class: "implement" })).ok).toBe(true); // routed to pi
+  expect((await op(planner, "hub_task_propose", { title: "second", class: "implement", owner: "pi", after: [1] })).ok).toBe(true);
+  expect((await op(f.console_, "task_assign", { id: 2, peer: "kimi" })).ok).toBe(true); // the person reserves kimi
+  expect((await op(pi, "hub_task_accept", { id: 1 })).ok).toBe(true);
+  expect((await op(pi, "hub_task_done", { id: 1, summary: "done" })).ok).toBe(true); // no reviewer attached: approved
+  for (let n = 0; n < 100 && (await shown(2)).owner !== "kimi"; n++) await Bun.sleep(10);
+  expect(await shown(2)).toMatchObject({ owner: "kimi", state: "proposed" });
+  expect((await shown(2)).history.at(-1)).toMatchObject({ by: "hub", event: "assigned" });
+  const refused = await op(planner, "hub_task_assign", { id: 2, peer: "pi" });
+  expect(refused.ok).toBe(false); expect(refused.error).toContain("explicit conductor role");
+});
+
 test("peer route explain and quota reads work while quota mutations remain human-only", async () => {
   const f = await fixture();
   const peer = await f.connect("unlisted");
