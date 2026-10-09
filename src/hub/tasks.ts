@@ -909,10 +909,19 @@ export class Tasks {
 
   /** An approved task may be the last thing others waited for: those go through assignment now (issue #34). */
   private async releaseDependents(approved: Task): Promise<void> {
-    for (const t of this.d.board.list("proposed")) {
-      if (!t.deps?.includes(approved.id) || t.owner || this.waitsFor(t).length) continue;
-      await this.offerReady(t, `#${approved.id} approved`);
+    try {
+      for (const t of this.d.board.list("proposed")) {
+        if (!t.deps?.includes(approved.id) || t.owner || this.waitsFor(t).length) continue;
+        await this.offerReady(t, `#${approved.id} approved`);
+      }
+    } catch (e) {
+      this.releaseNotice(`task #${approved.id}: could not release dependents: ${e instanceof Error ? e.message : String(e)}`);
     }
+  }
+
+  /** Notifications may read the same unavailable board; they must not undo a saved approval's return. */
+  private releaseNotice(line: string): void {
+    try { this.d.notify(line); } catch { /* best effort; the release timer retries ownerless work */ }
   }
 
   private readonly offered = new Set<number>(); // assignments in this hub run, including offers still in flight
@@ -944,17 +953,17 @@ export class Tasks {
       this.offered.add(t.id);
       offering = true;
       const ready = t.history.at(-1)?.event === "ready" ? t : this.d.board.update(t.id, HUB, "ready", {}, why);
-      this.d.notify(`task ${this.publicTitle(ready)} is ready: what it waited for is approved`);
+      this.releaseNotice(`task ${this.publicTitle(ready)} is ready: what it waited for is approved`);
       await this.assignOwner(ready, HUB);
     } catch (e) {
-      this.d.notify(`task ${this.publicTitle(stale)}: could not be assigned: ${e instanceof Error ? e.message : String(e)}`);
+      this.releaseNotice(`task ${this.publicTitle(stale)}: could not be assigned: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       if (offering) {
         try {
           if (!this.d.board.get(stale.id)?.owner) this.offered.delete(stale.id);
         } catch (e) {
           this.offered.delete(stale.id);
-          this.d.notify(`task ${this.publicTitle(stale)}: could not verify assignment: ${e instanceof Error ? e.message : String(e)}`);
+          this.releaseNotice(`task ${this.publicTitle(stale)}: could not verify assignment: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
     }

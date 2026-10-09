@@ -996,8 +996,9 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   is `blocked` or `ready` and that wait for nothing: each is offered once per hub
   run, once an attached peer can take it, outside recovery operations. An offer
   is used up only by an assignment, after an approval and on the timer alike;
-  a failed ready write or assignment is reported without escaping the approval,
-  and an ownerless task stays eligible once a peer can take it.
+  failed dependent reads, ready writes or assignments do not escape a saved
+  approval. Their notices are best effort because notification can read the
+  same unavailable board. An ownerless task stays eligible once a peer can take it.
 - A recovery commit also waits for task operations in flight and for completion
   checks queued or running: both can write the board after its integrity digest
   (a check the commit's stop kills records `check interrupted`).
