@@ -360,7 +360,7 @@ test("the adapter stops a launcher that ignores SIGTERM together with the native
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const pidFile = join(dir, "native.pid"), launcherFile = join(dir, "launcher.pid"), bin = join(dir, "codex");
   writeFileSync(bin, `#!/bin/sh\necho $$ > ${launcherFile}\ntrap "" TERM\nbun ${join(import.meta.dir, "fakes/codex-bin.ts")} "$@" &\necho $! > ${pidFile}\nwhile :; do sleep 1; done\n`, { mode: 0o755 });
-  const freePort = () => { const s = Bun.serve({ port: 0, fetch: () => new Response() }); const p = s.port as number; s.stop(true); return p; };
+  const freePort = () => { const s = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() }); const p = s.port as number; s.stop(true); return p; };
   const peer = new CodexPeer("codex", { proxyPort: 0, appPort: freePort(), bin, cwd: dir });
   await peer.start();
   const native = Number(readFileSync(pidFile, "utf8")), launcher = Number(readFileSync(launcherFile, "utf8"));
@@ -378,7 +378,7 @@ test("a start that fails after the app-server is up reports its own error and le
   writeFileSync(bin, `#!/bin/sh\nbun ${join(import.meta.dir, "fakes/codex-bin.ts")} "$@" &\necho $! > ${pidFile}\nwait\n`, { mode: 0o755 });
   const taken = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
   cleanup.push(() => taken.stop(true));
-  const freePort = () => { const s = Bun.serve({ port: 0, fetch: () => new Response() }); const p = s.port as number; s.stop(true); return p; };
+  const freePort = () => { const s = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() }); const p = s.port as number; s.stop(true); return p; };
   const peer = new CodexPeer("codex", { proxyPort: taken.port as number, appPort: freePort(), bin, cwd: dir });
   cleanup.push(() => peer.stop());
   await expect(peer.start()).rejects.toThrow(String(taken.port));

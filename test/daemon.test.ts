@@ -1230,10 +1230,10 @@ test("snapshots: a Codex turn records its native id, and turn_revert reverts the
   const bin = join(dir, "..", `${dir.split("/").at(-1)}-codex.sh`);
   writeFileSync(bin, `#!/bin/sh\nexec bun ${join(ROOT, "test/fakes/codex-bin.ts")} --record ${record} "$@"\n`, { mode: 0o755 });
   cleanup.push(() => rmSync(bin, { force: true }));
-  const freePort = () => { const s = Bun.serve({ port: 0, fetch: () => new Response() }); const p = s.port as number; s.stop(true); return p; };
+  const freePort = () => { const s = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() }); const p = s.port as number; s.stop(true); return p; };
   const [appPort, proxyPort] = [freePort(), freePort()];
   const { stateDir, daemon, console_ } = await hub({ cwd: dir, snapshots: { enabled: true, keep: 20 }, codex_bin: bin, codexAppPort: appPort, codexProxyPort: proxyPort });
-  expect((await console_.request({ t: "start", peer: "codex" })).ok).toBe(true);
+  expect(await console_.request({ t: "start", peer: "codex" })).toMatchObject({ ok: true });
   const tui = new WebSocket(`ws://127.0.0.1:${proxyPort}`);
   cleanup.push(() => tui.close());
   await new Promise((r) => (tui.onopen = r));
@@ -1633,11 +1633,11 @@ test("turn-free end to end: verified context paths, a silent cohort, held-back m
   const bin = join(dir, "..", `${dir.split("/").at(-1)}-codex.sh`);
   writeFileSync(bin, `#!/bin/sh\nexec bun ${join(ROOT, "test/fakes/codex-bin.ts")} "$@"\n`, { mode: 0o755 });
   cleanup.push(() => rmSync(bin, { force: true }));
-  const freePort = () => { const s = Bun.serve({ port: 0, fetch: () => new Response() }); const p = s.port as number; s.stop(true); return p; };
+  const freePort = () => { const s = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() }); const p = s.port as number; s.stop(true); return p; };
   const [appPort, proxyPort] = [freePort(), freePort()];
   const { stateDir, daemon, console_ } = await hub({ cwd: dir, coordination: "turn-free", codex_bin: bin, codexAppPort: appPort, codexProxyPort: proxyPort });
   const events = () => readEvents(join(stateDir, "events.jsonl"));
-  expect((await console_.request({ t: "start", peer: "codex" })).ok).toBe(true);
+  expect(await console_.request({ t: "start", peer: "codex" })).toMatchObject({ ok: true });
   const tui = new WebSocket(`ws://127.0.0.1:${proxyPort}`);
   cleanup.push(() => tui.close());
   const fromCodex: any[] = [];

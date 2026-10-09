@@ -1,5 +1,5 @@
 """Focused stdlib tests for the sealed-study summary export (#171); synthetic metadata only, no evaluator or native processes."""
-import csv, io, json, os, subprocess, sys, tempfile, unittest
+import csv, io, json, os, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "benchmarks"
@@ -11,6 +11,27 @@ import study_supervisor as supervisor
 
 
 class StudyExportTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        templates = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(templates.cleanup)
+        base = Path(templates.name)
+        fixture = cls()
+        cls.source_template = fixture.build_source_repo(base / "source")
+        cls.source_head = fixture.git(cls.source_template, "rev-parse", "HEAD")
+        cls.arm_template = base / "arm"
+        (cls.arm_template / "src").mkdir(parents=True)
+        source = cls.arm_template / "src/example.py"
+        source.write_text("original = True\n")
+        fixture.git(cls.arm_template, "init", "-q")
+        fixture.git(cls.arm_template, "add", "-A")
+        fixture.git(cls.arm_template, "commit", "-qm", "sealed fixture")
+        cls.sealed_commit = fixture.git(cls.arm_template, "rev-parse", "HEAD")
+        source.write_text("original = False\n")
+        cls.patchbytes = subprocess.check_output(["git", "-C", str(cls.arm_template), "diff", "--binary",
+                                                cls.sealed_commit, "--", "src"])
+        source.write_text("original = True\n")
+
     def manifest(self):
         m = runner.load(SCRIPTS / "manifest-v3-pi-qwen.json")
         m["cases"] = m["cases"][:1]
@@ -21,7 +42,7 @@ class StudyExportTests(unittest.TestCase):
         return subprocess.check_output(["git", "-C", str(cwd), "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost",
                                         "-c", "commit.gpgsign=false", *args], text=True, stderr=subprocess.PIPE).strip()
 
-    def source_repo(self, root):
+    def build_source_repo(self, root):
         root.mkdir()
         for path in set(audit.SOURCE_FILES.values()) | set(runner.SOURCE_PIN_PATHS):
             p = root / path; p.parent.mkdir(parents=True, exist_ok=True); p.write_text("sealed source " + path)
@@ -92,12 +113,10 @@ class StudyExportTests(unittest.TestCase):
             params = self.cell_params(m, rep, arm)
             # The fixture was prepared for every arm, including an attempt that never wrote a record.
             cwd = root / "fixtures" / f"00-{arm}"
-            (cwd / "src").mkdir(parents=True)
-            (cwd / "src/example.py").write_text("original = True\n")
-            self.git(cwd, "init", "-q"); self.git(cwd, "add", "-A"); self.git(cwd, "commit", "-qm", "sealed fixture")
-            sealed_commit = self.git(cwd, "rev-parse", "HEAD")
+            shutil.copytree(self.arm_template, cwd)
+            sealed_commit = self.sealed_commit
             (cwd / "src/example.py").write_text("original = False\n")
-            patchbytes = subprocess.check_output(["git", "-C", str(cwd), "diff", "--binary", sealed_commit, "--", "src"])
+            patchbytes = self.patchbytes
             prep["fixtures"].append({"case": 0, "arm": arm, "cwd": str(cwd), "base_commit": sealed_commit, "source_dirs": ["src"]})
             if params["status"] == "missing":
                 grade["rows"].append({"case": 0, "arm": arm, "status": "missing", "pass": None})
@@ -145,7 +164,7 @@ class StudyExportTests(unittest.TestCase):
         supervisor's serialized copy of equal contents, the runtime manifest is that copy plus the recorded
         hub-version amendments, and provenance pins each of them separately; two graded cohorts, the verified
         safe aggregate and the pooled ledger."""
-        repo = self.source_repo(base / "source")
+        repo = Path(shutil.copytree(self.source_template, base / "source"))
         root = base / "study"
         root.mkdir()
         m = self.manifest()
@@ -158,7 +177,7 @@ class StudyExportTests(unittest.TestCase):
         audit.write_new(root / "runtime-manifest.json", runtime)
         cohorts = [self.cohort(root / f"r{rep}", rep, repo) for rep in range(2)]
         runner.dump(root / "provenance.json", {
-            "source_head": self.git(repo, "rev-parse", "HEAD"), "source_repository": str(repo.resolve()),
+            "source_head": self.source_head, "source_repository": str(repo.resolve()),
             "original_sha256": runner.file_sha(source),
             "original_copy_sha256": runner.file_sha(root / "original-manifest.json"),
             "runtime_sha256": runner.file_sha(root / "runtime-manifest.json"), "amendments": amendments})
@@ -419,17 +438,24 @@ class StudyExportTests(unittest.TestCase):
             ("pooled-ledger.log", lambda s: s["rows"][0].update(end_reason=[]), "ledger-malformed"),
             ("study.json", lambda s: s.update(phase="graded"), "study-not-sealed"),
         ]
-        for artifact, change, reason in mutations:
-            with self.subTest(artifact=artifact, reason=reason), tempfile.TemporaryDirectory() as d:
-                root = self.study(Path(d))
-                value = runner.load(root / artifact)
-                change(value)
-                runner.dump(root / artifact, value)
-                # A changed artifact is rejected before interpreting its alleged recorded status.
-                if artifact != "study.json":
-                    self.assertEqual(audit.terminal_coverage(root)["reason"], "seal-binding-mismatch")
-                self.seal_index(root)
-                self.assertEqual(audit.terminal_coverage(root), {"available": False, "reason": reason})
+        with tempfile.TemporaryDirectory() as d:
+            root = self.study(Path(d))
+            for artifact, change, reason in mutations:
+                with self.subTest(artifact=artifact, reason=reason):
+                    path = root / artifact
+                    original = path.read_bytes()
+                    try:
+                        value = runner.load(path)
+                        change(value)
+                        runner.dump(path, value)
+                        # A changed artifact is rejected before interpreting its alleged recorded status.
+                        if artifact != "study.json":
+                            self.assertEqual(audit.terminal_coverage(root)["reason"], "seal-binding-mismatch")
+                        self.seal_index(root)
+                        self.assertEqual(audit.terminal_coverage(root), {"available": False, "reason": reason})
+                    finally:
+                        path.write_bytes(original)
+                        self.seal_index(root)
         with tempfile.TemporaryDirectory() as d:
             root = self.study(Path(d))
             (root / "private-evidence-hashes.json").unlink()

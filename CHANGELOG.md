@@ -7,6 +7,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Preserve empty committed queue entries for offline peers during journal-backed recovery, so preservation verification does not require them to reconnect. Durable queues and delivery receipts remain authoritative; stale non-empty snapshot queues are never replayed (#234).
 - Preserve every pause and queue array when a delivery resolution is refused or its journal write fails; roll back only the recipient queue and preface (#229).
 - Retry a dependent task released while no peer can take it or its ready/assignment write fails; consume its per-run offer only after assignment (#231).
+- Test port probes bind 127.0.0.1 to match the Codex servers, and failed daemon starts show their error in assertion diffs (#232).
+- Reuse Git fixture templates and restore sealed-study mutations between subtests to reduce export test process spawns without changing its 20 s timeout (#233).
 
 ## 0.12.20
 
