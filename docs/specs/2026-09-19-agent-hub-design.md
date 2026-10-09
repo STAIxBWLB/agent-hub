@@ -496,7 +496,7 @@ inside a peer.
 ### Configuration and state
 
 - `.agenthub/config.json` (roles, ports, filter tiers, watchdog), `.agenthub/routing.toml`.
-- `.agenthub/state/` gitignored: `hub.pid`, `status.json`, `control-token` (0600, per run),
+- `.agenthub/state/` gitignored: `status.json` (with the daemon's pid and process signature, #226; daemons up to 0.12.20 also wrote `hub.pid`), `control-token` (0600, per run),
   `hub.db` (tasks, messages, budget; from M4), `hub.log`, `switchyard.toml`, `checkpoint.md`.
 - Env: `AGENTHUB_STATE_DIR`, `AGENTHUB_OMNIROUTE_URL`, `OMNIROUTE_API_KEY`,
   `AGENTHUB_SWITCHYARD_BIN`, `AGENTHUB_UNATTENDED`.
@@ -1796,9 +1796,9 @@ acts on the stopped state directory.
   Checked, then renamed by path: a symlink swapped in between still wins
   (marked `ponytail:`; `renameat` on a held descriptor would close it).
 - Between stop and act: after `stopProject` the CLI takes the project's
-  registry claim (`Registry.claim` with its own pid), the claim a daemon must
+  registry claim (`Registry.claim` with its own pid and process signature), the claim a daemon must
   hold to run, and checks that no manifest names a daemon whose pid is alive
-  or uncertain (`processAlive`, the rule `inspectProject` uses); either failing
+  or uncertain (`processLiveness`, the rule `inspectProject` uses, #226); either failing
   means a hub started in between and nothing is reset. A reset's claim carries
   the instance prefix `reset-`, so losing the claim to a concurrent reset says
   so. A crashed daemon's manifest (`status.json`, `control-token`, `hub.pid`
@@ -1807,7 +1807,7 @@ acts on the stopped state directory.
   removes it and `--all` archives it. With the claim held, the CLI checks the
   machine's recovery lock again, so an upgrade or recovery that took it in
   between does not run beside the reset. The claim is released when the reset
-  ends; a reset that dies leaves a dead pid, which the next claim takes over.
+  ends; a reset that dies leaves a dead or reused pid with its signature, which the next claim takes over.
 - Failures: the plan is read only for the dry run, so `--all --yes` archives a
   state directory it cannot read as it is (its dry run says what it could not
   read). A failure after the stop says how far it got. A runtime reset that

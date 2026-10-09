@@ -62,6 +62,13 @@ test("an unmanaged Claude with a stale session record is planned reconnect-only 
     expect(managed.projects[0]?.reconnectOnly).toBeUndefined();
     expect(managed.projects[0]?.blockers).toEqual([]);
     expect((managed.projects[0]?.terminals as { handle: string; sessionId: string }[]).map((t) => [t.handle, t.sessionId])).toEqual([["term-managed", "session-live"]]);
+
+    // #228: a launch row that may be this Claude's but cannot be evaluated is unknown, never "no launcher": the plan
+    // blocks the Claude instead of planning it reconnect-only.
+    writeFileSync(join(project.stateDir, "terminal-recovery.json"), JSON.stringify([{ peer: "claude", projectRoot: project.root, instanceId: "i-live", launcherPid: "hand edit" }]));
+    const invalid = await makeUpgradePlan("restart", VERSION, project.root, run);
+    expect(invalid.projects[0]?.reconnectOnly).toBeUndefined();
+    expect(invalid.projects[0]?.blockers.some((b) => b.startsWith("claude: a launch record in terminal-recovery.json that may be its launcher's cannot be read"))).toBe(true);
   } finally {
     claude.close(); await daemon.stop();
     if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;

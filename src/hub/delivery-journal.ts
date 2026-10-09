@@ -332,8 +332,11 @@ export class DeliveryJournal {
         Number.isInteger(status.pid) &&
         Number(status.pid) > 0
       ) {
-        // A pid that cannot be probed (EPERM) never refused here; a signed manifest whose pid was reused is gone (#226).
-        if (processLiveness(Number(status.pid), typeof status.pidSignature === "string" ? status.pidSignature : undefined) === "live")
+        // #226: a signed manifest whose pid was reused is gone; with a signature, an owner that cannot be identified is
+        // refused like a live one. Unsigned, a pid that cannot be probed (EPERM) never refused here, as before.
+        const signature = typeof status.pidSignature === "string" ? status.pidSignature : undefined;
+        const owner = processLiveness(Number(status.pid), signature);
+        if (owner === "live" || (signature && owner === "unknown"))
           throw new Error("delivery journal is owned by a live instance");
       }
     } catch (e) {

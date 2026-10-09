@@ -11,7 +11,7 @@ import { factsHook } from "./facts-hook.ts";
 import { projectContext, realPath } from "../hub/project.ts";
 import { Registry, type Project } from "../hub/registry.ts";
 import { inspectProject, startProject, stopProject, runProjectDaemon } from "../hub/lifecycle.ts";
-import { processLiveness } from "../pi/process-signature.ts";
+import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { openManager, startManager, stopManager } from "../hub/manager.ts";
 import { OmniRoute } from "../omniroute/client.ts";
 import { MemoryClient } from "../memory/client.ts";
@@ -126,6 +126,8 @@ function resetLockFree(): void {
 function liveManifest(): boolean {
   const control = readControl(stateDir);
   if (control && processLiveness(control.pid, control.pidSignature) !== "gone") return true;
+  // A signed manifest is this release's daemon, which writes no hub.pid: one beside it is an older run's leftover.
+  if (control?.pidSignature) return false;
   let text: string;
   // Only daemons up to 0.12.20 wrote hub.pid (#226): an unsigned legacy record.
   try { text = readFileSync(join(stateDir, "hub.pid"), "utf8").trim(); } catch { return false; }
@@ -219,10 +221,11 @@ function hubDaemonCommand(pid: number, root: string): string | undefined {
 
 /** Live PID candidates for a registration whose project root is gone: the claim, the manifest, the legacy pid file. */
 function orphanPids(project: Project): number[] {
+  // #226: a recorded pid counts only while its signature (when one was recorded) still names its process.
   const candidates = new Set<number>();
-  if (typeof project.pid === "number") candidates.add(project.pid);
+  if (typeof project.pid === "number" && processLiveness(project.pid, project.pidSignature) === "live") candidates.add(project.pid);
   const control = readControl(project.stateDir);
-  if (control && Number.isSafeInteger(control.pid)) candidates.add(control.pid!);
+  if (control && Number.isSafeInteger(control.pid) && processLiveness(control.pid, control.pidSignature) === "live") candidates.add(control.pid!);
   try {
     const pid = Number(readFileSync(join(project.stateDir, "hub.pid"), "utf8").trim());
     if (Number.isSafeInteger(pid) && pid > 0) candidates.add(pid);
@@ -1020,7 +1023,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     // The prefix tells a concurrent reset's claim from a daemon's.
     const claim = `reset-${randomUUID()}`;
     try {
-      if (!registry.claim(project.id, claim, process.pid)) {
+      if (!registry.claim(project.id, claim, process.pid, processSignature(process.pid))) {
         const holder = registry.get(project.id);
         throw new Error(holder?.instanceId?.startsWith("reset-") ? `another ahub reset of this project is running (pid ${holder.pid}); nothing was reset` : "a hub started after the stop; nothing was reset, run ahub reset again");
       }

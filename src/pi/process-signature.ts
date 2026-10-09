@@ -27,6 +27,9 @@ export type Liveness = "live" | "gone" | "unknown";
  * identity cannot be read is unknown. Without one (records written by 0.12.20 and older) the pid probe answers as it
  * always did: live, gone on ESRCH, unknown otherwise. Unknown is never gone.
  */
+// ponytail: `ps lstart` is derived from boot time plus the process's age; a wall-clock step on Linux can change it for a
+// live process, which then reads as gone (a second hub could take its claim). Upgrade path: a boot-id or start-tick
+// (Linux /proc/<pid>/stat field 22) component in the signature.
 export function processLiveness(pid: unknown, signature?: string | null, identity: (pid: number) => string | undefined = processSignature): Liveness {
   if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return "unknown";
   if (signature) {
