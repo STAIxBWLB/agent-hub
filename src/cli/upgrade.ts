@@ -52,6 +52,8 @@ export interface ProjectProgress {
   releaseRequested?: boolean;
   /** #215: peers the operator moved to a fresh session, with the session or thread id whose continuity is lost. */
   fresh?: Record<string, { lost: string; reason: string; at: number }>;
+  /** #215: set before the commit request is sent; from then on the source may have committed (abort is not offered). */
+  commitSent?: boolean;
 }
 export interface RecoveryOperation {
   schema: 1;
@@ -91,7 +93,25 @@ function hasDispose(sourceRoot: string): boolean {
 /** Effects anywhere in the operation: a project past `prepared` or any terminal receipt. Abort needs none. */
 export const hasEffects = (op: RecoveryOperation) => op.projects.some((p) => !["pending", "prepared"].includes(p.phase) || Object.keys(p.terminals).length > 0);
 /** Abort is offered only where the receipt shows it can succeed: no effects, and no commit that may have been sent. */
-const abortable = (op: RecoveryOperation) => !hasEffects(op) && !op.projects.some((p) => p.phase === "prepared" && op.step === `committing:${p.id}`);
+const abortable = (op: RecoveryOperation) => !hasEffects(op) && !op.projects.some((p) => p.commitSent);
+
+/**
+ * #215: what the person can do now, in the receipt table's order: resume (it also launches a failed peer again),
+ * abort where it can succeed, a fresh session for a failed Codex or Claude restoration, and stop-and-archive last.
+ * `status` and every error that names choices use this one list.
+ */
+export function nextActions(op: RecoveryOperation, runnerPid?: number): string[] {
+  if (op.phase === "completed" || op.phase === "cancelled") return [];
+  if (runnerPid) return [`wait: runner ${runnerPid} is working; ${recoveryCommand(op, "status")}`];
+  if (op.disposition) return [`rerun ${recoveryCommand(op, "dispose", STOP)} once its runtimes have settled`];
+  const failed = [...new Set(op.projects.flatMap((p) => Object.entries(p.terminals).filter(([key, value]) => key.startsWith("restored:") && key !== "restored:pi" && value === "failed" && !p.fresh?.[key.slice("restored:".length)]).map(([key]) => key.slice("restored:".length))))];
+  return [
+    `${recoveryCommand(op, "resume")}${op.error ? " (after the next action in error)" : ""}`,
+    ...(abortable(op) ? [recoveryCommand(op, "abort")] : []),
+    ...failed.map((peer) => recoveryCommand(op, "dispose", `--fresh-session ${peer} --reason <text>`)),
+    recoveryCommand(op, "dispose", STOP),
+  ];
+}
 
 /** Registry reads for planning must not create a registry or run migrations. */
 export function registeredProjects(home = hubHome()): Project[] {
@@ -197,6 +217,9 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     // The lock this operation holds refuses a new upgrade until the operation is cancelled.
     throw new Error(`source conversation or active peer membership changed; next action: ${recoveryCommand(op, "abort")}, then make a new plan`);
   };
+  // A changed source cannot be planned again while this operation holds the lock: cancel it (abort leaves a running
+  // replacement alone) or, once anything was done, end it.
+  const wayOut = () => hasEffects(op) ? recoveryCommand(op, "dispose", STOP) : `${recoveryCommand(op, "abort")}, then make a new plan`;
   // Prepare, or after an expired lease re-prepare, the planned source and wait until it is quiet.
   const prepareSource = async (planned: PlannedProject, progress: ProjectProgress, again = false) => {
     const project = planned.project, instance = planned.source.instanceId!;
@@ -204,8 +227,8 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     const deadline = driver.now() + idleTimeoutMs;
     for (;;) {
       const live = await driver.inspect(project);
-      if (live.instanceId !== instance) throw new Error("source daemon changed during preparation");
-      if (live.recovery?.operationId !== id) throw new Error("preparation expired or belongs to another operation");
+      if (live.instanceId !== instance) throw new Error(`${project.id}: source daemon changed during preparation; next action: ${wayOut()}`);
+      if (live.recovery?.operationId !== id) throw new Error(`${project.id}: the preparation expired or another operation holds the source; next action: ${recoveryCommand(op, "resume")} prepares it again, or ${wayOut()}`);
       if (live.recovery.ready) return sourceRoster(live, planned, progress, again);
       if (driver.now() >= deadline) {
         await driver.abort(project, id, instance);
@@ -228,7 +251,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       if (progress.phase !== "pending") continue;
       const live = await driver.inspect(planned.project);
       if (live.state !== "running" || live.instanceId !== planned.source.instanceId || live.version !== planned.source.version) {
-        throw new Error(`${planned.project.id}: source runtime changed; make a new plan`);
+        throw new Error(`${planned.project.id}: source runtime changed; next action: ${wayOut()}`);
       }
       sourceRoster(live, planned, progress);
     }
@@ -257,7 +280,8 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
             sourceRoster(live, planned, progress, true);
           }
           await driver.closeTerminals(planned, progress, op, save);
-          step(`committing:${project.id}`); // from here the source may have committed (status and abort tell this apart)
+          // Durable, unlike `step`: from here the source may have committed, which status and abort must not forget.
+          progress.commitSent = true; save();
           await driver.commit(project, id, planned.source.instanceId!);
           const deadline = driver.now() + 30_000;
           do {
@@ -325,16 +349,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
 /** Receipts and runner state only (#215): ids, phases and effects, never task or message text. */
 export function publicOperation(op: RecoveryOperation, runnerPid?: number) {
   const effect = (value: unknown) => value === "pending" || value === "failed" ? value : "done";
-  const failed = [...new Set(op.projects.flatMap((p) => Object.entries(p.terminals).filter(([key, value]) => key.startsWith("restored:") && key !== "restored:pi" && value === "failed" && !p.fresh?.[key.slice("restored:".length)]).map(([key]) => key.slice("restored:".length))))];
-  const open = op.phase !== "completed" && op.phase !== "cancelled";
-  // The order and the texts follow the receipt table in the recovery spec; stop-and-archive is always allowed, last.
-  const next = !open ? [] : runnerPid ? [`wait: runner ${runnerPid} is working; ${recoveryCommand(op, "status")}`]
-    : op.disposition ? [`rerun ${recoveryCommand(op, "dispose", STOP)} once its runtimes have settled`] : [
-    `${recoveryCommand(op, "resume")}${op.error ? " (after the next action in error)" : ""}`,
-    ...(abortable(op) ? [recoveryCommand(op, "abort")] : []),
-    ...failed.map((peer) => recoveryCommand(op, "dispose", `--fresh-session ${peer} --reason <text>`)),
-    recoveryCommand(op, "dispose", STOP),
-  ];
+  const next = nextActions(op, runnerPid);
   return { id: op.id, phase: op.phase, step: op.step, version: op.plan.version, updatedAt: op.updatedAt,
     runner: runnerPid ? { state: "running", pid: runnerPid } : { state: "none" },
     ...(op.phase === "running" && !runnerPid ? { stale: "the receipt says running but no runner holds the operation: its last runner stopped mid-step" } : {}),

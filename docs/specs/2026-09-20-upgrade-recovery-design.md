@@ -309,7 +309,12 @@ the runner (refusing while one is alive) and append to the receipt's audit:
 #### Receipts, evidence and next actions
 
 Resume, abort, dispose, the `next` list of `status` and every error follow this
-table. `<c>` is the operation's own coordinator, printed in full as
+table; `status` and every error that lists choices build them with one function
+(`nextActions`), in this order: resume (which also launches a failed peer
+again), abort where it can succeed, a fresh session for each failed Codex or
+Claude restoration, stop-and-archive. Errors about a changed source name abort
+when nothing was done yet and stop-and-archive otherwise, never "make a new
+plan" alone: this operation's lock refuses a new one. `<c>` is the operation's own coordinator, printed in full as
 `bun <preserved source>/src/cli/main.js`: during an upgrade the global `ahub`
 may still be the older release, whose `recovery` lacks these commands.
 "Effects" means any project past `prepared` or any terminal receipt in the whole
@@ -320,7 +325,9 @@ entry; the rows give what else applies.
 A recorded launcher is the `terminal-recovery.json` row for that peer on the
 target instance. It is live when its process signature matches, gone when the
 pid no longer exists (ESRCH) or now belongs to another process, and unknown when
-the pid exists but its identity cannot be read. Unknown is never treated as gone.
+the pid exists but its identity cannot be read. Unknown is never treated as gone. At planning, an
+unknown Claude launcher blocks: whether the attached session is managed cannot
+be told.
 An attached session is the target's report of that peer online with a thread
 (Codex) or session (Claude, Pi) id.
 
@@ -332,7 +339,7 @@ An attached session is the target's report of that peer online with a thread
 | project `prepared`, hold lapsed (same source instance) | roster as planned | re-prepare, check roster, close, commit | abort if no effects | none |
 | project `prepared`, hold lapsed | roster changed | as the two rows above | as above | as above |
 | project `prepared` | source replaced or held by another operation | blocks, nothing touched | abort if no effects (cancels and leaves that daemon or hold alone), dispose | `<c> recovery status <id>` and stop-and-archive |
-| project `prepared`, receipt step `committing:<project>` (set right before the commit request) | source stopping or stopped (the commit may have been sent) | continues from the commit | dispose | `<c> recovery resume <id>` (abort refuses: the source may have committed) |
+| project `prepared` with `commitSent` (a per-project receipt flag written right before the commit request; `step` is rewritten on every resume and is not evidence) | any (the commit may have been sent) | continues from the commit | dispose; abort is not offered and refuses while the source is not running | `<c> recovery resume <id>` |
 | disposition recorded, first act not finished | any | refused | abort refused, stop-and-archive only | as the disposition row below |
 | `closed:<peer>` `pending` | Orca still lists the terminal | blocks | dispose | `close Orca terminal <handle> (the login shell it runs in) by hand, then <c> recovery resume <id>` |
 | `closed:<peer>` done | peer attached again | blocks | dispose | `end that <peer> session, then <c> recovery resume <id>` |

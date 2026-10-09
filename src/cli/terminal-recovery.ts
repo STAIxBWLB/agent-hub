@@ -303,13 +303,7 @@ async function liveRecords(stateDir: string, projectRoot: string, instanceId: st
   return checks.filter((item): item is RecordedTerminalLaunch => item !== undefined);
 }
 
-/** The live launcher recorded for `peer` against this daemon instance, if any: what makes a native session managed (#206). */
-export async function recordedLauncher(peer: TerminalPeer, projectRoot: string, options?: TerminalRecoveryOptions): Promise<RecordedTerminalLaunch | undefined> {
-  const launch = await launcherOf(peer, projectRoot, options);
-  return launch?.state === "live" ? launch.record : undefined;
-}
-
-/** #215: the launcher recorded for `peer` on this instance (one row per peer and instance) and its state. */
+/** #215: the launcher recorded for `peer` on this instance (one row per peer and instance) and its state; managed means live. */
 export async function launcherOf(peer: TerminalPeer, projectRoot: string, options?: TerminalRecoveryOptions): Promise<{ record: RecordedTerminalLaunch; state: LauncherState } | undefined> {
   const config = normalizeOptions(options);
   if (!config.stateDir || !config.instanceId) return undefined;

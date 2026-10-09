@@ -1215,8 +1215,9 @@ next actions").
   @staix/agent-hub@<version> ahub up`), since it may have changed the task
   database. The global CLI was not promoted.
 - Both choices are for a person in a terminal; an agent shell is refused, and
-  the reason is kept in the operation's audit. Run them with the same release
-  that ran the upgrade.
+  the reason is kept in the operation's audit. Run each with the command
+  `next` or the error prints: the operation's own coordinator, or, for
+  `dispose` when that coordinator predates it, the release you are running.
 
 ### After an unplanned stop
 

@@ -596,10 +596,10 @@ test("abort cancels around a replaced source but not one that may have committed
 
   const committing = fixture();
   committing.operation.projects[0]!.phase = "prepared";
-  Object.assign(committing.operation, { step: "committing:alpha" }); // the commit request may have been sent
-  expect(publicOperation(committing.operation).next).not.toContain(`${C} abort ${committing.operation.id}`);
-  Object.assign(committing.operation, { step: "commit:alpha" }); // stopped before it, e.g. a terminal not idle
+  Object.assign(committing.operation, { step: "commit:alpha" }); // stopped before the request, e.g. a terminal not idle
   expect(publicOperation(committing.operation).next).toContain(`${C} abort ${committing.operation.id}`);
+  committing.operation.projects[0]!.commitSent = true; // the commit request may have been sent
+  expect(publicOperation(committing.operation).next).not.toContain(`${C} abort ${committing.operation.id}`);
 });
 
 // #215 review: an operation an older coordinator started is resumed by it, but disposed of by a release that has dispose.
@@ -619,4 +619,29 @@ test("stop-and-archive records its disposition before acting, and abort refuses 
   await expect(abortRecovery(f.operation.id, f.driver, f.home)).rejects.toThrow("stop-and-archive of this operation is partway");
   expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toContain("stop-and-archive of this operation is partway");
   expect(recoveryLock(f.home)).toBe(f.operation.id);
+});
+
+// #215 review: `step` is rewritten on every resume; whether a commit may have been sent must survive it.
+test("a sent commit stays on record across a failing resume, so abort is never offered for a source that may have committed", async () => {
+  const f = fixture();
+  f.driver.commit = async (p) => { f.calls.push(`commit:${p.id}`); f.states.set(p.id, { state: "stopping", peers: [], blockers: [] }); throw new Error("commit reply lost"); };
+  const first = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(first.phase).toBe("blocked");
+  expect(first.projects[0]!.commitSent).toBe(true);
+  expect(publicOperation(first).next).not.toContain(`${C} abort ${f.operation.id}`);
+  f.driver.stage = async () => { throw new Error("staging failed"); };
+  const second = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(second.step).toBe("stage");
+  expect(publicOperation(second).next).not.toContain(`${C} abort ${f.operation.id}`);
+  await expect(abortRecovery(f.operation.id, f.driver, f.home)).rejects.toThrow("may have committed");
+});
+
+// #215 review: "make a new plan" is impossible while this operation holds the lock.
+test("a changed untouched source names abort, and stop-and-archive once another project has effects", async () => {
+  const f = fixture();
+  f.states.get("alpha")!.instanceId = "replacement";
+  expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toBe(`alpha: source runtime changed; next action: ${C} abort ${f.operation.id}, then make a new plan`);
+  f.operation.projects[1]!.phase = "verified";
+  writeOperation(f.operation.id, f.operation, f.home);
+  expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toBe(`alpha: source runtime changed; next action: ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
 });

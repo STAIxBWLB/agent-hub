@@ -7,8 +7,8 @@ import { awaitStopped, inspectProject } from "../hub/lifecycle.ts";
 import type { Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
 import { packageDigest, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
-import { inspectTerminals, closeTerminal, createTerminal, launcherOf, recordedLauncher, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
-import { planFingerprint, recoveryCommand, registeredProjects, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
+import { inspectTerminals, closeTerminal, createTerminal, launcherOf, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
+import { nextActions, planFingerprint, recoveryCommand, registeredProjects, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
 import { readEvents } from "../hub/events.ts";
 import { refreshManager } from "../hub/manager.ts";
 import { abandonRestartSnapshot, waiveRecoveryPeers } from "../hub/restart.ts";
@@ -166,7 +166,14 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
         // that launch. Anything else cannot be bound to the attached session, so its record never becomes a target.
         // ponytail: the channel's hello carries no launch id, so a plain `claude` that took the peer id from a live
         // managed session reads as managed; send the launch id at hello (a protocol bump) if that case shows up.
-        const launcher = await recordedLauncher("claude", project.root, { ...terminalOptions(run), stateDir: project.stateDir, instanceId: source.instanceId });
+        const recorded = await launcherOf("claude", project.root, { ...terminalOptions(run), stateDir: project.stateDir, instanceId: source.instanceId });
+        if (recorded?.state === "unknown") {
+          // An unreadable launcher is never gone (#215): whether the session is managed cannot be told.
+          delete peer.sessionId;
+          blockers.push(`claude: the launcher recorded in terminal ${recorded.record.handle} cannot be read, so whether the attached session is managed is unknown; manual-required; next action: make that process readable (or end it and close the terminal), then make a new plan`);
+          continue;
+        }
+        const launcher = recorded?.state === "live" ? recorded.record : undefined;
         if (!launcher) {
           delete peer.sessionId;
           if (source.protocol === PROTOCOL) reconnectOnly.push("claude");
@@ -400,9 +407,11 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         };
         const launcher = () => launcherOf(original.peer, planned.project.root, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId });
         const resume = recoveryCommand(op, "resume");
+        // The choices come from the same list as `status` (nextActions); resume comes first and launches a failed peer
+        // again, which helps once its cause (a transient Orca create failure, a fixed store) is gone.
         const notRestored = (why: string) => new Error(fresh()
-          ? `${original.peer}: ${why}; next action: read that terminal in Orca for the launcher's error and fix its cause, then ${resume}; or ${recoveryCommand(op, "dispose", "--stop-and-archive --reason <text>")}`
-          : `${original.peer}: ${why}; session ${original.sessionId} was not restored; choices: ${recoveryCommand(op, "dispose", `--fresh-session ${original.peer} --reason <text>`)} starts a new ${original.peer} session and records this one as lost, or ${recoveryCommand(op, "dispose", "--stop-and-archive --reason <text>")} abandons the upgrade`);
+          ? `${original.peer}: ${why}; read that terminal in Orca for the launcher's error and fix its cause; next actions: ${nextActions(op).join(" | ")}`
+          : `${original.peer}: ${why}; session ${original.sessionId} was not restored; resume launches it again once the cause is fixed; next actions: ${nextActions(op).join(" | ")}`);
         const receipt = progress.terminals[key];
         if (receipt && receipt !== "pending" && receipt !== "failed") {
           progress.terminals[key] = await revalidateTerminal(planned, progress, receipt as TerminalBinding, true); save();
@@ -442,11 +451,11 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         if (transcript() === "unknown") throw new Error(`${unresumable(original)}; no terminal was created; next action: make that store readable, then ${resume}`);
         if (transcript() === "missing" && !fresh()) {
           progress.terminals[key] = "failed"; save();
-          throw notRestored(unresumable(original));
+          throw notRestored(unresumable(original).slice("codex: ".length));
         }
         // Never create beside a live launch.
         const running = await launcher();
-        if (attachedSession(live) || (running && running.state !== "gone")) {
+        if (attachedSession(await inspectRecovery(planned.project)) || (running && running.state !== "gone")) { // read now, not at restore start
           throw new Error(`${original.peer}: a ${original.peer} launch is live on the target although this operation recorded none${running ? ` (terminal ${running.record.handle})` : ""}; no terminal was created; next action: end that ${original.peer} launch and close its terminal, then ${resume}`);
         }
         if (fresh()) {
