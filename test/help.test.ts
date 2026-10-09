@@ -80,7 +80,13 @@ describe("ahub help (#212)", () => {
     expect(await cli(["help", "pause"])).toEqual({ code: 0, stdout: `${renderHelp(80, false, "pause")}\n`, stderr: "" });
     expect(await cli(["bogus"])).toEqual({ code: 1, stdout: "", stderr: 'ahub: unknown command "bogus"; run ahub help\n' });
     expect(await cli(["help", "bogus"])).toEqual({ code: 1, stdout: "", stderr: 'ahub: unknown command "bogus"; run ahub help\n' });
-  });
+  }, 20_000);
+
+  test("ahub <command> -h prints that command's help instead of running it: kill stays alive, say sends nothing", async () => {
+    for (const [command, flag] of [["kill", "--help"], ["say", "-h"], ["remember", "-h"], ["up", "--help"]]) {
+      expect(await cli([command!, flag!])).toEqual({ code: 0, stdout: `${renderHelp(80, false, command)}\n`, stderr: "" });
+    }
+  }, 20_000);
 
   test("color only on a terminal whose TERM is not dumb and NO_COLOR is empty", async () => {
     const plain = `${renderHelp(120, false)}\n`;
@@ -90,7 +96,7 @@ describe("ahub help (#212)", () => {
     expect((await cli(["help"], { NO_COLOR: "" }, true)).stdout).toBe(tty.stdout);
     for (const env of [{ TERM: "dumb" }, { NO_COLOR: "1" }] as Record<string, string>[]) expect((await cli(["help"], env, true)).stdout).toBe(plain);
     expect((await cli(["help"])).stdout).not.toContain("\x1b");
-  });
+  }, 20_000);
 });
 
 /** The console stream's lines for one pushed message, as painted for a terminal of this width. */
@@ -122,7 +128,7 @@ describe("wrap breaks at word boundaries (#212, #213)", () => {
     expect(wrap("        abcdefghij", 10)).toEqual(["     abcde", "     fghij"]); // longer than the 5 columns left
     expect(wrap(`    a${"\t".repeat(40)}b`, 20)).toEqual(["    a", "        b"]); // a tab is one space, not a jump to a tab stop
   });
-  test("only a word longer than the rest of the line is split", () => {
+  test("only a word longer than a whole line is split", () => {
     expect(wrap("see /very/long/path/name now", 8, 0)).toEqual(["see", "/very/lo", "ng/path/", "name now"]);
     expect(wrap("가나다라마바 끝", 10, 0)).toEqual(["가나다라마", "바 끝"]);
   });

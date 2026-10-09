@@ -59,8 +59,11 @@ if (argv[0] === "--project") {
   selector = argv.shift();
   if (!selector || selector.startsWith("--")) fail("--project needs a path or project ID");
 }
-const [given = "help", ...args] = argv;
-const cmd = given === "--help" || given === "-h" ? "help" : given;
+const [given = "help", ...rest] = argv;
+// `ahub <command> -h` asks for that command's help instead of running it; only claude and codex pass their arguments on.
+const asksHelp = (a: string | undefined) => a === "--help" || a === "-h";
+const cmd = asksHelp(given) || (given !== "claude" && given !== "codex" && rest.some(asksHelp)) ? "help" : given;
+const args = cmd === "help" && given !== "help" && !asksHelp(given) ? [given] : rest;
 let selected: { root: string; stateDir: string };
 try {
   if (selector) {
@@ -347,7 +350,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
   help: () => {
     const color = resolveColor(undefined, { isTTY: !!process.stdout.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR }) === true;
-    const topic = args[0] === "--help" || args[0] === "-h" ? undefined : args[0];
+    const topic = asksHelp(args[0]) ? undefined : args[0];
     const text = renderHelp(process.stdout.columns ?? 80, color, topic);
     if (!text) fail(`unknown command "${topic}"; run ahub help`);
     console.log(text);

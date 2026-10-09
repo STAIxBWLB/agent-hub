@@ -76,7 +76,7 @@ export function fit(value: unknown, columns: number): string {
 /**
  * A source line keeps its indent and its continuations hang `hang` columns deeper, both capped at half the width, so
  * below that cap wrapped untrusted text never starts where its source line, or a hub line at that indent, starts. Breaks fall
- * at whitespace, which they drop; only a word longer than the rest of the line is split. A tab counts as one space.
+ * at whitespace, which they drop; only a word longer than a whole line is split. A tab counts as one space.
  * Lines come out sanitized: a width counts the `> ` that sanitize() puts before a line starting like a hub header.
  */
 export function wrap(value: unknown, columns: number, hang = 4): string[] {
