@@ -1183,9 +1183,16 @@ next actions").
   `ahub pi` has recorded itself there and its process is gone, or Orca no longer
   lists that terminal at all, the restoration failed (found within one 5-second
   wait). A launcher whose process cannot be read counts as running, never as
-  gone. One that dies before recording itself is found only after the 10-minute
-  wait, or when `resume` finds neither a live launcher nor an attached session.
-  The receipt then says `restored:<peer>` `failed`; it never counts as restored.
+  gone. One that dies before recording itself leaves no record to read, and
+  what happens next depends on whether Orca reports the bare login shell it
+  returned to as TUI-idle, which is not verified. If it does, the coordinator
+  stops at once with "original session restoration needs manual verification"
+  (the terminal cannot be mapped to the session). If it does not, it stops with
+  the same error after the 10-minute wait. Either way the receipt stays
+  `pending`; close that terminal in Orca (or wait, if the session may still
+  attach), then `resume`: with no live launcher and no attached session it
+  records `restored:<peer>` `failed` and lists the failed-restoration choices.
+  A `failed` receipt never counts as restored.
   `resume` settles a `pending` or `failed` receipt by what is live: the planned
   session attached is the restoration, a launcher still running is waited for,
   and no second terminal is opened while one may run.

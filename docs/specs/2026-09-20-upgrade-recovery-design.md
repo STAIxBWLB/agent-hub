@@ -234,8 +234,11 @@ and is waited for, never taken as gone. A handle Orca reports
 `terminal_handle_stale` means the terminal is gone only when no recorded
 launcher may still run and Orca no longer lists the terminal's incarnation;
 otherwise the create stays uncertain. A launcher that died before recording
-itself is not distinguished from a slow one: it waits out the 10-minute
-readiness bound. Resume settles a `pending` or `failed` receipt by what is live
+itself is not distinguished from a slow one, and whether Orca reports the bare
+login shell as TUI-idle is not verified: if it does, the create stops at once as
+not mappable to the session; if not, after the 10-minute readiness bound. Either
+way it blocks as needing manual verification with the receipt `pending`, and the
+next resume, finding no live launcher and no attached session, records `failed`. Resume settles a `pending` or `failed` receipt by what is live
 (the table below): an attached planned (or accepted) session is the
 restoration, a launcher that may run is waited for, and only nothing live makes
 it `failed` or, for `failed`, launches again. No terminal is created while a
