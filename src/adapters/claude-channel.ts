@@ -20,11 +20,11 @@ const peerId = process.env.AGENTHUB_PEER_ID ?? "claude";
 /** tools mode: the same server, run by Kimi (ACP mcpServers) or Codex (mcp_servers override). Their messages arrive through their own adapters, so no channel here. */
 const toolsOnly = process.env.AGENTHUB_MODE === "tools";
 /**
- * Channel evidence (issue #205): `ahub claude` sets AGENTHUB_CHANNEL beside the development-channel flag. Without the
+ * Channel evidence (issue #205): `ahub claude` sets AGENTHUB_CHANNEL=1 beside the development-channel flag. Without the
  * flag Claude Code drops channel notifications without an error, so a session without the marker attaches tools-only:
  * no channel capability, its messages wait at the hub for hub_inbox, and it never reports a delivery `accepted`.
  */
-const channel = !toolsOnly && !!process.env.AGENTHUB_CHANNEL;
+const channel = !toolsOnly && process.env.AGENTHUB_CHANNEL === "1";
 
 function roles(): Record<string, string[]> {
   // The machine's own file overrides the shared one, as in loadConfig (issue #17).
@@ -159,7 +159,12 @@ async function connectLoop(): Promise<void> {
     try {
       const client = await ControlClient.connect(stateDir, { role: toolsOnly ? "tools" : "peer", peer: peerId, ...(toolsOnly ? {} : { channel }),
         ...(process.env.AGENTHUB_PROJECT_DIR ? { projectRoot } : {}) });
-      client.onPush = (msg) => channel && msg.t === "deliver" && void push(msg.envs ?? [msg.env], msg.deliveryId, msg.generation);
+      client.onPush = (msg) => {
+        if (msg.t !== "deliver") return;
+        if (channel) return void push(msg.envs ?? [msg.env], msg.deliveryId, msg.generation);
+        // A push this session cannot show is handed back for review, never accepted and never silently dropped.
+        if (msg.deliveryId) void client.request({ t: "delivery_receipt", deliveryId: msg.deliveryId, generation: msg.generation, state: "needs_review", reason: "this session cannot show channel pushes" });
+      };
       hub = client;
       attempt = -1;
       standingBy = false;
@@ -197,7 +202,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           text: { type: "string", minLength: 1, maxLength: 8000 },
           to: { type: "array", items: { type: "string" }, description: "Peer ids, e.g. [\"codex\"]. Omit to broadcast." },
-          reply_to: { type: "string", description: "message_id of the channel message this answers." },
+          reply_to: { type: "string", description: "id of the message this answers (meta.message_id, or the id in its [agent-hub message from ...] header)." },
         },
         required: ["text"],
         additionalProperties: false,
@@ -241,7 +246,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const res = await hub.request({ t: "inbox" });
     if (!res.ok) return text(`not read: ${res.error}`);
     const envs = res.envs as Envelope[];
-    return text(envs.length ? envs.map(frame).join("\n\n") : "(no queued hub messages)");
+    const more = res.waiting ? `\n\n(${res.waiting} more waiting: call hub_inbox again)` : "";
+    return text(envs.length ? envs.map(frame).join("\n\n") + more : "(no queued hub messages)");
   }
   if (name === "hub_inbox") {
     const out = inbox.splice(0);

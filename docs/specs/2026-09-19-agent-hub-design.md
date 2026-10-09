@@ -1548,7 +1548,8 @@ push `accepted` and show none of them.
   `AGENTHUB_CHANNEL=1` in Claude's environment (`nativeLaunchEnv`);
   `peerChildEnv` removes the marker from every other native child. The plugin's
   MCP server inherits Claude Code's environment, as it already does for
-  `AGENTHUB_STATE_DIR` and `AGENTHUB_PEER_ID`. With the marker the server keeps
+  `AGENTHUB_STATE_DIR` and `AGENTHUB_PEER_ID`. Only the value `1` counts. With
+  the marker the server keeps
   the push and settlement contract of "Live channel settlement" unchanged.
   Without it (a plain `claude`, an IDE session, or the flag passed by hand) the
   session attaches tools-only.
@@ -1572,24 +1573,34 @@ push `accepted` and show none of them.
     session started with the flag by hand reads as tools-only and is pointed to
     `ahub claude`.
 - Tools-only attach: the server declares tools only, sends `channel: false` in
-  its `peer` hello, lists `hub_inbox` but not `hub_delivery_done`, and ignores
-  any `deliver`, so it never sends a `delivery_receipt`. The daemon attaches its
-  `WsPeer` as `pullOnly`; the bus never drains a pull-only peer, so its messages
-  stay queued and count as `queued`. Board routing still treats the peer as
-  attached.
-- `hub_inbox` sends `inbox`. The daemon refuses it for a session with pushes.
+  its `peer` hello and lists `hub_inbox` but not `hub_delivery_done`. It never
+  reports `accepted`: a `deliver` it is handed anyway goes back as a
+  `needs_review` receipt. The daemon attaches its `WsPeer` as `pullOnly`; a
+  push drain needs the peer deliverable (`Bus.deliverable`: not held, idle, not
+  pull-only), checked at each loop and again after condensation, so a plain
+  session that takes the peer while a push is condensed gets nothing. Its
+  messages stay queued and count as `queued`. Board routing still treats the
+  peer as attached.
+- `hub_inbox` sends `inbox`. The daemon answers "not attached yet; retry"
+  between welcome and attach, and refuses it for a session with pushes.
   `Bus.pull` is held by exactly what holds a drain (`Bus.held`: recovery, an
   uncertain delivery, a console, budget or conductor pause); a held pull
-  journals nothing and the refusal names the hold. Otherwise it hands over the preface and the whole
-  queue (after the stale-notice check) and records them as one journal row
-  `completed`, reason `read through hub_inbox`, in the same transaction as the
-  bus snapshot: the tool result that returns them is the readback, so nothing
-  waits in `accepted`. A pull is not a native turn and is not counted as
-  supervision. A reply lost between the hub and the plugin after that write
-  loses its batch (a `ponytail:` ceiling in `Bus.pull`).
-- A later `ahub claude` session claims the peer as before; attach clears
-  `pullOnly` and the waiting queue is pushed to it. The replaced plain session
-  stands by (close 4000).
+  journals nothing and the refusal names the hold. Otherwise it takes what one
+  push delivery would (the preface, then `take`'s batch of at most ten,
+  important first; the reply says how many still wait) and checkpoints it like
+  a push, so queued journal rows of the same envelopes (an operator retry) are
+  grouped into it, then marks it `completed`, reason `read through hub_inbox`,
+  in the same transaction: the tool result that returns them is the readback,
+  so nothing waits in `accepted`. A pull is not a native turn and is not
+  counted as supervision. A reply lost between the hub and the plugin after
+  that write loses its batch (a `ponytail:` ceiling in `Bus.pull`).
+- Who holds the peer: an `ahub claude` session takes it from a plain session
+  as any newer hello does; attach clears `pullOnly`, the waiting queue is
+  pushed to it, and the plain session stands by (close 4000). A plain session
+  never takes it from a session with pushes, attached or still arriving: its
+  hello is closed with 4000 and it stands by the same way, so an IDE or plain
+  `claude` with the user-scope plugin cannot strand the channel session's
+  unsettled deliveries. It attaches once that session leaves.
 - Status: `status.json` peers carry `toolsOnly`, a line naming the state and the
   next action (`ahub claude`); `ahub status`, the console footer and the
   dashboard show it.

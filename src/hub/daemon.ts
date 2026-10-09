@@ -308,17 +308,23 @@ class WsPeer extends BasePeer {
   private nativeActive = false;
   /** The attached session said it cannot show channel pushes (issue #205): the bus keeps its queue for `inbox`. */
   pullOnly = false;
+  private claimedPullOnly = false;
   /** Called at hello, before the async preface: the newest hello wins even if an older one's recall finishes last. */
-  claim(sock: Sock): void {
+  claim(sock: Sock, pullOnly = false): void {
     this.claimGeneration = crypto.randomUUID();
     this.claimed = sock;
+    this.claimedPullOnly = pullOnly;
+  }
+  /** A session that shows pushes holds the peer or is arriving: a session without them must not take it (issue #205). */
+  get channelHeld(): boolean {
+    return (!!this.sock && !this.pullOnly) || (this.claiming && !this.claimedPullOnly);
   }
   /** A hello that has not finished its preface yet. The peer reads as offline until then, and a session standing by
    *  for the id must not take it from a claimant that is still arriving. */
   get claiming(): boolean {
     return !!this.claimed && this.claimed !== this.sock && this.claimed.readyState === WebSocket.OPEN;
   }
-  attach(sock: Sock, pullOnly = false): void {
+  attach(sock: Sock): void {
     if (sock !== this.claimed) return void sock.close(4000, "replaced"); // a newer session said hello meanwhile
     if (this.sock) this.setState("offline"); // unresolved work belongs to the previous connection
     this.sock?.close(4000, "replaced");
@@ -327,7 +333,7 @@ class WsPeer extends BasePeer {
     this.delivered.clear();
     this.nativeSession = undefined;
     this.nativeActive = false;
-    this.pullOnly = pullOnly; // before idle: the idle transition drains
+    this.pullOnly = this.claimedPullOnly; // before idle: the idle transition drains
     this.setState("idle");
   }
   detach(sock: Sock): void {
@@ -2493,10 +2499,12 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!peer) bus.add((peer = new WsPeer(c.peer)));
         if (!(peer instanceof WsPeer)) return sock.close(4409, "peer id is taken by a hub-managed adapter");
         const ws = peer;
-        ws.claim(sock);
+        // Without pushes it stands by, as a replaced session does, and never strands a channel session's deliveries.
+        if (msg.channel === false && ws.channelHeld) return sock.close(4000, "a session with channel pushes holds this peer");
+        ws.claim(sock, msg.channel === false);
         writeStatus(); // the claim has to be visible before the preface, or a standing-by session takes the id back
         void ensurePreface(c.peer).finally(() => {
-          if (sock.readyState === WebSocket.OPEN) ws.attach(sock, msg.channel === false);
+          if (sock.readyState === WebSocket.OPEN) ws.attach(sock);
         });
       }
       return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: PROTOCOL });
@@ -2531,12 +2539,13 @@ export async function startDaemon(opts: DaemonOptions) {
       case "inbox": {
         // A Claude session that cannot show channel pushes reads its queue here; nothing it reads is ever `accepted` (issue #205).
         const peer = c.peer ? bus.peers.get(c.peer) : undefined;
-        if (c.role !== "peer" || !(peer instanceof WsPeer) || !peer.owns(sock) || !peer.pullOnly) return void reply({ ok: false, error: "messages are pushed to this session; hub_inbox only drains failed pushes" });
+        if (c.role !== "peer" || !(peer instanceof WsPeer) || !peer.owns(sock)) return void reply({ ok: false, error: "not attached to the hub yet; retry hub_inbox in a moment" });
+        if (!peer.pullOnly) return void reply({ ok: false, error: "messages are pushed to this session; hub_inbox only drains failed pushes" });
         try {
           const envs = bus.pull(peer.id);
           if (!envs) return void reply({ ok: false, error: queueHold(peer.id) ?? (bus.isRecoveryHeld ? "recovery is holding deliveries" : pauseReason(peer.id)) });
           if (envs.length) log(`${peer.id} read ${envs.length} queued message(s) through hub_inbox`);
-          return void reply({ ok: true, envs });
+          return void reply({ ok: true, envs, waiting: bus.queued(peer.id) });
         } catch { return void reply({ ok: false, error: "delivery journal unavailable" }); }
       }
       case "delivery_complete": {

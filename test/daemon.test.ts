@@ -76,13 +76,13 @@ async function dashboardClient(console_: ControlClient) {
   return { origin, post };
 }
 
-/** A fake Claude Code: an MCP client that spawns the channel server and records channel pushes. `channelEvidence`: launched like `ahub claude` (#205). */
-async function fakeClaude(stateDir: string, channelEvidence = true) {
+/** A fake Claude Code: an MCP client that spawns the channel server and records channel pushes. `channelEvidence`: AGENTHUB_CHANNEL, "1" as `ahub claude` sets it, null for none (#205). */
+async function fakeClaude(stateDir: string, channelEvidence: string | null = "1") {
   const client = new Client({ name: "fake-claude", version: "0" }, { capabilities: {} });
   const channel: any[] = [];
   client.fallbackNotificationHandler = async (n) => void channel.push(n);
   const env: Record<string, string> = { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: stateDir };
-  if (channelEvidence) env.AGENTHUB_CHANNEL = "1"; else delete env.AGENTHUB_CHANNEL;
+  if (channelEvidence === null) delete env.AGENTHUB_CHANNEL; else env.AGENTHUB_CHANNEL = channelEvidence;
   await client.connect(
     new StdioClientTransport({
       command: "bun",
@@ -142,7 +142,7 @@ test("claude channel: declares the capability, receives pushes with meta.source,
 
 test("claude without channel evidence attaches tools-only: nothing is pushed or accepted, hub_inbox reads the queue, an ahub claude session takes it back (#205)", async () => {
   const { stateDir, daemon, console_ } = await hub();
-  const plain = await fakeClaude(stateDir, false);
+  const plain = await fakeClaude(stateDir, "0"); // only "1" is evidence
   expect(plain.client.getServerCapabilities()?.experimental?.["claude/channel"]).toBeUndefined();
   const tools = (await plain.client.listTools()).tools.map((t) => t.name);
   expect(tools).toContain("hub_inbox");
@@ -174,7 +174,7 @@ test("claude without channel evidence attaches tools-only: nothing is pushed or 
 
 test("a paused tools-only claude reads nothing through hub_inbox: the budget pause and the console pause name themselves and nothing is journaled (#205)", async () => {
   const { stateDir, daemon, console_ } = await hub();
-  const plain = await fakeClaude(stateDir, false);
+  const plain = await fakeClaude(stateDir, null);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
   const inbox = async () => ((await plain.client.callTool({ name: "hub_inbox", arguments: {} })) as any).content[0].text as string;
   const unread = () => daemon.bus.queueList("claude").every((row) => row.state === "queued");
@@ -195,6 +195,40 @@ test("a paused tools-only claude reads nothing through hub_inbox: the budget pau
   expect((await console_.request({ t: "resume", peer: "claude" })).ok).toBe(true);
   expect(await inbox()).toContain("while over budget");
   expect(daemon.bus.queueList("claude").map((row) => row.state)).toEqual(["completed"]);
+});
+
+test("a claude session without pushes never takes the peer from one with them: it stands by and attaches once that session leaves (#205)", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  const flagged = await fakeClaude(stateDir);
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "channel attach");
+  const plain = await fakeClaude(stateDir, null);
+  await Bun.sleep(1500); // past the plain side's first retry
+  expect((daemon.bus.peers.get("claude") as any).pullOnly).toBe(false);
+  await console_.request({ t: "send", body: "for the channel session", to: ["claude"] });
+  await until(() => flagged.channel.length === 1, "push still reaches the channel session");
+  expect(((await plain.client.callTool({ name: "hub_inbox", arguments: {} })) as any).content[0].text).toStartWith('another session is attached to the hub as "claude"');
+  await flagged.client.close();
+  for (let i = 0; i < 800 && !(daemon.bus.peers.get("claude") as any)?.pullOnly; i++) await Bun.sleep(10); // its standby backoff
+  expect((daemon.bus.peers.get("claude") as any).pullOnly).toBe(true);
+  expect((await console_.request({ t: "status" })).status.peers.claude.toolsOnly).toContain("ahub claude");
+}, 30_000);
+
+test("hub_inbox is held by a needs_review delivery and reads the operator's retry once, leaving no open journal row (#205)", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  const flagged = await fakeClaude(stateDir);
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "channel attach");
+  await console_.request({ t: "send", body: "pushed then lost", to: ["claude"] });
+  await until(() => flagged.channel.length === 1, "push");
+  await flagged.client.close(); // accepted and never settled: the disconnect leaves it needs_review
+  await until(() => daemon.bus.queueList("claude").some((row) => row.state === "needs_review"), "needs_review");
+  const plain = await fakeClaude(stateDir, null);
+  await until(() => (daemon.bus.peers.get("claude") as any)?.pullOnly === true, "plain attach");
+  const inbox = async () => ((await plain.client.callTool({ name: "hub_inbox", arguments: {} })) as any).content[0].text as string;
+  expect(await inbox()).toStartWith("not read: held by needs_review");
+  const row = daemon.bus.queueList("claude").find((r) => r.state === "needs_review")!;
+  expect((await console_.request({ t: "queue", op: "resolve", id: row.id, revision: row.revision, action: "retry", reason: "not shown" })).ok).toBe(true);
+  expect(await inbox()).toContain("pushed then lost");
+  expect(daemon.bus.queueList("claude").filter((r) => ["queued", "dispatching", "accepted", "needs_review"].includes(r.state))).toEqual([]);
 });
 
 test("claude and an ACP peer talk through the daemon in both directions", async () => {
@@ -438,9 +472,14 @@ test("a hello that has not finished its preface is reported as claiming, not as 
   const peerOf = () => JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).peers?.claude;
 
   const ws = new WebSocket(`ws://127.0.0.1:${daemon.port}`);
+  const replies: any[] = [];
+  ws.onmessage = (ev) => replies.push(JSON.parse(String(ev.data)));
   await new Promise<void>((r) => (ws.onopen = () => (ws.send(JSON.stringify({ t: "hello", v: PROTOCOL, token, role: "peer", peer: "claude", rid: 1 })), r())));
   await until(() => injects > 0, "recall started");
   expect(peerOf()).toMatchObject({ state: "offline", claiming: true }); // arriving: a standing-by session must wait
+  ws.send(JSON.stringify({ t: "inbox", rid: 2 })); // #205: before attach, hub_inbox is told to retry, not that pushes reach it
+  await until(() => replies.some((m) => m.rid === 2), "inbox reply");
+  expect(replies.find((m) => m.rid === 2).error).toBe("not attached to the hub yet; retry hub_inbox in a moment");
   slow = false;
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "attached");
   expect(peerOf().claiming).toBeUndefined();

@@ -62,6 +62,52 @@ test("a pull-only peer is never handed a delivery: its queue is counted, then re
   durable.close();
 });
 
+test("a push being condensed when a session without pushes takes the peer is not handed over, and stays pullable (#205)", async () => {
+  let release!: () => void;
+  let condensing = false;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const { bus, durable } = setupBus({ condense: async (envs) => { condensing = true; await pending; return envs; } });
+  const peer = new FakePeer("claude"); bus.add(peer);
+  const env = newEnvelope("user", "first", { to: ["claude"], priority: "status" });
+  bus.publish(env);
+  await waitFor(() => condensing, "condensation");
+  Object.assign(peer, { pullOnly: true }); // what attach does for a plain session's hello
+  peer.setState("offline"); peer.setState("idle");
+  release();
+  await Bun.sleep(10);
+  expect(peer.deliveries).toHaveLength(0);
+  expect(durable.list("claude").filter((r) => r.state !== "completed")).toEqual([]);
+  expect(bus.pull("claude")!.map((e) => e.id)).toEqual([env.id]);
+  durable.close();
+});
+
+test("a pull groups the queued row an operator retry left, so no journal row stays queued (#205)", async () => {
+  const { bus, durable } = setupBus();
+  const peer = new FakePeer("claude", async () => { throw new Error("socket disappeared"); }); bus.add(peer);
+  const env = newEnvelope("user", "lost", { to: ["claude"] });
+  bus.publish(env);
+  await waitFor(() => durable.list("claude").some((r) => r.state === "needs_review"), "uncertain delivery");
+  Object.assign(peer, { pullOnly: true });
+  const row = durable.list("claude").find((r) => r.state === "needs_review")!;
+  bus.resolveDelivery(row.id, row.revision, "retry", "not shown");
+  expect(durable.list("claude").filter((r) => r.state === "queued").map((r) => r.id)).toEqual([`${row.id}:retry:1`]);
+  expect(bus.pull("claude")!.map((e) => e.id)).toEqual([env.id]);
+  expect(durable.list("claude").filter((r) => r.state === "queued")).toEqual([]);
+  expect(durable.list("claude").find((r) => r.reason === "read through hub_inbox")).toMatchObject({ state: "completed", previousId: `${row.id}:retry:1` });
+  durable.close();
+});
+
+test("one pull takes what one push delivery would, and the rest keep waiting (#205)", () => {
+  const { bus, durable } = setupBus();
+  bus.add(Object.assign(new FakePeer("claude"), { pullOnly: true }));
+  for (let i = 0; i < 12; i++) bus.publish(newEnvelope("user", `m${i}`, { to: ["claude"], priority: "status" }));
+  expect(bus.pull("claude")).toHaveLength(10);
+  expect(bus.queued("claude")).toBe(2);
+  expect(bus.pull("claude")!.map((e) => e.body)).toEqual(["m10", "m11"]);
+  expect(durable.list("claude").map((r) => r.state)).toEqual(["completed", "completed"]);
+  durable.close();
+});
+
 test("an async condensation cannot checkpoint away a batch when another publish persists the bus", async () => {
   let release!: () => void;
   const pending = new Promise<void>((resolve) => { release = resolve; });
