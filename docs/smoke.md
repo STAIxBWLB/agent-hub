@@ -4,43 +4,89 @@
 
 ## Operator console and conductor candidate (#190, #191, #193-#195)
 
-Candidate 0.12.17, protocol 15, observed on 2026-10-09 KST:
+Candidate 0.12.17, protocol 15, observed on 2026-10-09 KST. The final Claude
+observer runs used immutable source `20ad5e6`; their native completion receipts
+and actual console effects were checked independently. The Kimi new-tool leg
+remains quota-blocked, as recorded below.
 
-- The actual Codex 0.146.0 TUI, selecting `gpt-5.5`, started the real local and
-  headless Pi peers in a disposable git project. It proposed exactly two tasks
-  owned by local, reassigned the second to Pi, and placed and released its own
-  holds. Real CLI calls retained the `codex` actor; a queue-inspection command
-  was refused as human-only. A separate native MCP `hub_status` call completed
-  under workspace-write with an independent daemon action audit.
-- The person authorized `alpha.txt = ALPHA` and `beta.txt = BETA` in chat, and
-  the operator forwarded separate selection and confirmation keys to the actual
-  console PTY. The daemon recorded allow-once answers from the console. The
-  original ten-minute harness deadline included human waiting and interrupted
-  Beta's additional read check. After independently checking the written bytes,
-  the operator reconciled that stopped delivery; Pi then performed its own
-  read/check and `hub_task_done`. Codex independently inspected both files and
-  approved both tasks. No board state or task completion was fabricated.
-- The cumulative feed-off baseline, including interruption and continuation,
-  contains six logical Codex turns and 49 measured native token increments
-  totalling 1,979,016 tokens. These are whole-turn counters, including cached
-  input, and are not a causal estimate of feed overhead. Local's recorded
-  gateway usage totals 39,982 tokens; Pi's native increments total 154,930.
-- An actual open console in stream mode, 120x40, with two pending approval
-  cards and no input, used 0.07 CPU seconds over 40.018 wall seconds (0.175% of
-  one CPU), measured from the console process's cumulative `ps` CPU time.
-- The actual Claude 2.1.295 TUI attached through the candidate channel, but
-  its account reached the five-hour session limit before delegation. The native
-  UI reported reset at 09:10 KST, and the daemon kept its quota pause. Claude
-  task completion, both feed-on repetitions, remaining vendor probes and panel
-  CPU measurement are still pending; attachment alone does not establish them.
+- Actual Codex 0.146.0 (`gpt-5.5`) and Claude 2.1.295 (Opus 5.5) TUIs started
+  real local and headless Pi peers, proposed exactly two tasks owned initially
+  by local, reassigned Beta to Pi, and placed and released their own holds.
+  The real owners checked their outputs and called `hub_task_done`; the native
+  conductor independently read the exact files before approving both tasks.
+  Real CLI calls retained the agent actor, and human-only queue/permission
+  actions were refused from an agent shell.
+- The person authorized `alpha.txt = ALPHA` (5 bytes) and `beta.txt = BETA`
+  (4 bytes), both without a newline. Separate selection and confirmation keys
+  reached the actual console PTY and produced allow-once console audit records.
+  Out-of-scope directory-list commands were cancelled. The final Claude own
+  run used three allow-once answers because Pi combined its exact write and
+  bounded byte checks in one approved command; it also recorded two cancelled
+  local directory-list requests. No permission or task completion was fabricated.
+- The final Claude own run recorded nine completed native turns and nine
+  matching daemon Stop records, 27 unique native usage records, and
+  1,888,242 tokens including cached input. Eight completed native turns contained
+  supervision, with 1,292,922 recorded tokens. Its final message UUID/id,
+  `end_turn`, `turn_duration`, instance/session/launcher and opaque Stop receipt
+  matched; native idle and an empty pending delivery queue were verified before
+  owned-process cleanup. Local recorded three turns and 72,046 gateway tokens;
+  Pi recorded two turns and 47,177 native tokens.
+- A read-only Claude feed-off continuation on the final observer preserved the
+  existing approved tasks and exact files. It verified one completed native turn,
+  four usage records and 263,413 cached-inclusive tokens, with matching daemon
+  Stop, native idle and delivery settlement. An obsolete review hold was first
+  discarded through the authenticated public operator API after fresh approved
+  task/history and exact BETA readback. That discard is not native execution.
+- A real console with two pending cards and no operator input consumed 0.07 CPU
+  seconds over 40.018 wall seconds in stream mode (0.175% of one CPU). A separate
+  actual Peers panel, 120x40, with two pending cards and no operator input used
+  0.07 CPU seconds over 40.012 wall seconds (0.175%). These are cumulative `ps`
+  process CPU samples in distinct modes/runs, not whole-host idle measurements.
+- In a plain Claude TUI without the development-channel flag, one actual
+  `hub_status` MCP call succeeded and the daemon audited the Claude status
+  action. A unique directed operator push was accepted by the bridge, but no
+  pushed native user row or answer appeared in the observed 20.075-second window.
+  This proves tool access separately from the bounded negative push observation.
+  The real channel-enabled runs above received actual review and supervision
+  pushes. The plain probe and cleanup completed in 56.724 seconds, with no model
+  file, shell, task or settings actions.
+- Real Kimi Code CLI 2.1.1 completed ACP initialization and `session/new`, then
+  rejected the single prompt with HTTP 403 for its weekly account usage limit.
+  No requested native tool event or role-refusal result occurred. The reset time
+  was not supplied. The owning CLI listed only the managed OAuth Kimi provider
+  (four models, default `kimi-code/k3`), so no configured alternative provider was
+  found. This is an incomplete external prerequisite, not a new-tool pass. No
+  purchase, provider/configuration change or model retry was performed; owned
+  processes were stopped after 3.142 seconds.
 
-The native harness uses actual Python PTYs. Its explicit operator-file-input
-mode forwards chat-authorized keys and avoids the outer resource runner's
-background-terminal job control. Fixture children discard inherited Orca
-terminal ownership so a disposable PTY cannot claim the caller's worktree.
-Original and continuation captures remain separate. No approval is generated
-automatically by the harness. The source evidence and bounded native shell/MCP
-observations are in [the identity T0 ledger](verification/2026-10-09-agent-shell-t0.md).
+Earlier captures remain part of the evidence:
+
+- Codex feed-off included an interrupted original and read-only continuation:
+  six logical native turns, 49 increments and 1,979,016 tokens. Codex feed-own
+  recorded nine turns, 34 increments and 1,399,470 tokens. Their journals were
+  independently checked after cleanup. The first baseline interruption and
+  operator reconciliation are preserved; neither native task completion nor
+  board approval was substituted by the harness.
+- The original Claude runs approved the actual files but an early idle-based
+  harness stopped their final review answers. Subsequent `da2ebbc` feed-off
+  completed five native turns and 1,451,782 tokens but certified only one daemon
+  Stop. A `6034dd9` read-only continuation completed another native turn and
+  261,483 tokens, while its Stop remained unavailable during the native hook.
+  Both incomplete observer captures are preserved alongside raw and audited
+  summaries. The final post-ACK observer above closes the fresh completion proof;
+  it does not retroactively certify the earlier missed Stop records.
+
+All token totals describe whole native/model turns, including cached input and
+other work. Operator waiting, cancelled requests, marker probes, interrupted
+continuations and differing source revisions make these observations unsuitable
+for a causal feed-overhead or model-efficiency comparison. Unknown measurements
+and the Kimi prerequisite remain explicit.
+
+The harness uses real Python PTYs. Operator-file-input forwards only
+chat-authorized keys, removes inherited Orca terminal ownership from fixture
+children, and generates no approval automatically. Private original and
+continuation captures remain separate. The shell-marker probes and vendor
+limits are recorded in [the identity T0 ledger](verification/2026-10-09-agent-shell-t0.md).
 
 ## Approval race live reproduction and candidate verification (#98)
 

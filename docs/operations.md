@@ -73,11 +73,24 @@ and directs the conductor to ask the person. A completed task set emits one
 round notice until a new task joins. Removing the role or switching the feed
 off withdraws pending feed notices.
 
+For a Claude conductor, `ahub claude` also observes native session and turn
+boundaries when facts injection and task-idle sweeps are off. Keep the managed
+hooks enabled to measure completion and supervision usage. Passing your own
+`--settings` takes precedence and produces a warning when it replaces that
+observation. The launcher records its private session identity in ordinary
+terminals too; this does not grant terminal-recovery authority.
+
 `ahub report` records conductor actions and completed native turns containing
 supervision. Tokens describe the whole measured turn, which may also contain
 other work; they are not a per-notice cost estimate. Missing measurements stay
 unknown. Use the live smoke ledger to assess observed turns and tokens per
 approved task before choosing `all`; an unmeasured run is not a cost benchmark.
+Claude turn counts use authenticated native completion events. Older logical
+state counts are labelled; an idle channel or approved task alone does not prove
+that the native answer finished.
+The Stop hook acknowledgement is not a counted completion. The daemon checks the
+native transcript after the hook can return; missing or changed-session evidence
+stays unknown.
 
 ## Install and start
 
