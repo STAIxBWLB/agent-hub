@@ -4,9 +4,11 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Add semantic colors to console stream headers, footer and panels with `--color=auto|always|never`; keep plain-text Unicode geometry, sanitize incoming controls before the fixed palette, and restore terminal attributes on exit. Tail, logs, JSON and polling remain unchanged (#201).
+## 0.12.18
 
 - Attribute token increments, provider usage and completed turns to task ids by delivery or a single open task; add `ahub report --by task` with task/class totals, explicit unknown counters, unattributed shares and a separate historical bucket. Preserve PII id-only exports and derive no prices (#200).
+- Add semantic colors to console stream headers, footer and panels with `--color=auto|always|never`; keep plain-text Unicode geometry, sanitize incoming controls before the fixed palette, and restore terminal attributes on exit. Tail, logs, JSON and polling remain unchanged (#201).
+- Control protocol stays 15 and events schema stays 1; a running 0.12.17 hub upgrades with the 0.12.18 coordinator.
 
 ## 0.12.17
 
