@@ -1371,9 +1371,15 @@ palette: cyan information, bold cyan active/selected labels, green availability
 and success, yellow attention/waiting, red failure/intervention, and restrained
 bright-black metadata. Offline peers, ordinary titles, action details and body
 lines use the default foreground. Existing labels, selection markers and
-confirmation prompts remain sufficient without color. Stream headers use event
-structure for their tone; body text is never parsed for meaning or passed
-through as terminal styling. Denial requests and observed expiry/cancellation
+confirmation prompts remain sufficient without color. Console stream headers
+color meaningful tokens only (#239): a fixed peer map (Claude magenta, Codex cyan,
+Kimi blue, Pi green, local yellow, hub bright green, other peers red), bright magenta
+`task`, bright blue numbers/percentages/times, bright cyan issue references and
+bright yellow task references following `task`. All use basic 16-color ANSI;
+there is no hashing or user theme. Ordinary words remain default foreground.
+Event arrows and attention markers retain their structured event tone. Header
+text crosses `terminalText` before tokenization; bodies are never parsed for
+meaning or passed through as terminal styling. Denial requests and observed expiry/cancellation
 are red; an answered remote closure lacks option-kind metadata and is not
 guessed to be a denial.
 

@@ -105,11 +105,18 @@ management or the final reset. Invalid values fail before connecting.
 | Waiting and attention | Yellow | Busy/paused peer, pending approval, confirmation, review/ready task, important priority |
 | Failure and intervention | Red | Failed/check-failed task, undeliverable/overflow, `needs_review` queue, denial request or expired/cancelled approval |
 | Metadata | Bright black | Ages, remaining approval time and rules |
+| Stream peer names | Claude magenta, Codex cyan, Kimi blue, Pi green, local yellow, hub bright green, other peers red | Fixed map, no hashing or themes |
+| Stream `task` keyword | Bright magenta | Task event keyword |
+| Stream numbers | Bright blue | Percentages, durations and measured times |
+| Stream issue references | Bright cyan | `#232` |
+| Stream task references | Bright yellow | `#1` following `task` |
 
 Offline peers, primary titles, action details and message body lines keep the
 terminal's default foreground. Labels and prompts remain readable without
-color. Stream styling applies only to the header, using structured event data;
-message text cannot choose a color. A local denial is shown as requested, not
+color. Stream styling applies only to meaningful tokens in the first line: peer names,
+`task`, numbers and references. Ordinary words keep the default foreground.
+Task references following `task` differ from issue references; event arrows and
+attention markers retain their structured event tone. Body lines stay plain. A local denial is shown as requested, not
 as a confirmed receipt; a remote answered closure has no option-kind metadata
 and is not guessed to be a denial. A fixed palette is applied after terminal
 control sanitization. Width, clipping, wrapping and cursor placement use plain

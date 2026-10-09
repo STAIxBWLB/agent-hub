@@ -1,5 +1,5 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
-import { initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, terminalText, parseConsoleCommand, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
+import { initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, terminalText, parseConsoleCommand, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
 import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
 import { contextLine } from "../src/cli/status-lines.ts";
 import { renderTailEvent } from "../src/cli/tail-render.ts";
@@ -159,6 +159,45 @@ describe("console colors", () => {
     expect(resolveColor("rainbow", { isTTY: true })).toBeInstanceOf(Error);
     expect(resolveColor("", { isTTY: true })).toBeInstanceOf(Error);
   });
+  test("stream token tones distinguish peers, task keyword, values and both reference kinds", () => {
+    const examples = [
+      "codex: context 7% (fresh, codex_token_usage, measured 6:51:38 AM)",
+      "claude: context 21% (fresh, claude_statusline, measured 6:51:38 AM)",
+      "* task #1 Fix #232 and #233: loopback freePort in tests, faster sealed-study export fixture accepted by codex",
+    ];
+    for (const text of examples) {
+      const spans = streamTokens(text);
+      expect(paint(spans, false)).toBe(text);
+      expect(terminalText(paint(spans, true))).toBe(text);
+      expect(spans.filter(s => s.tone).every(s => !s.text.includes("context") && !s.text.includes("fixture"))).toBe(true);
+    }
+    const task = streamTokens(examples[2]!);
+    expect(task.find(s => s.text === "task")?.tone).toBe("taskKeyword");
+    expect(task.find(s => s.text === "#1")?.tone).toBe("taskRef");
+    expect(task.find(s => s.text === "#232")?.tone).toBe("issueRef");
+    expect(streamTokens(examples[0]!).find(s => s.text === "6:51:38 AM")?.tone).toBe("number");
+    const peerTones = ["claude", "codex", "kimi", "pi", "local", "hub", "custom"].map(peer => streamTokens(`${peer}: context 21%`, peer)[0]!.tone!);
+    expect(new Set(peerTones).size).toBe(7);
+    const tones = [...peerTones, "taskKeyword", "number", "issueRef", "taskRef"] as (keyof typeof PALETTE)[];
+    expect(new Set(tones.map(tone => PALETTE[tone])).size).toBe(tones.length);
+    const attack = streamTokens("codex\x1b[31m: 21%\x1b]52;c;secret\x07 #232");
+    expect(terminalText(paint(attack, true))).toBe("codex: 21% #232");
+    expect(paint(attack, true)).not.toContain("secret");
+  });
+  for (const [columns, rows] of [[80, 24], [120, 40], [200, 60]]) {
+    test(`token colors preserve stream wrapping and cursor geometry ${columns}x${rows}`, async () => {
+      const outputs: string[] = [];
+      for (const color of [false, true]) {
+        const f = fixture(columns); f.terminal.rows = rows!;
+        const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color });
+        f.client.onPush({ t: "context", peer: "codex", reading: { percent: 21, measuredAt: NOW, source: "codex_token_usage", freshness: "fresh" } });
+        f.client.onPush({ t: "notice", line: "task #1 Fix #232 and #233 한국어 ".repeat(12) + " accepted by claude" });
+        f.signal(); await running;
+        outputs.push(f.output.join("").replace(/\x1b\[[0-9;]*m/g, ""));
+      }
+      expect(outputs[1]).toBe(outputs[0]);
+    });
+  }
   test("semantic tones come from structured states and events, never body text", () => {
     expect(stateTone("idle")).toBe("success"); expect(stateTone("approved")).toBe("success");
     for (const s of ["busy", "paused", "in_review", "changes_requested", "ready"]) expect(stateTone(s)).toBe("attention");
@@ -226,7 +265,7 @@ describe("console colors", () => {
       f.client.onPush({ t: "event", e: { t: "envelope", env: newEnvelope("pi", "body line", { priority: "important" }) } });
       f.signal(); await running;
       const out = f.output.join("");
-      if (color) { expect(out).toContain(PALETTE.attention); expect(out).toContain("\x1b[0m\n    body line\n"); }
+      if (color) { expect(out).toContain(PALETTE.attention); expect(out).toContain("\n    body line\n"); }
       else expect(out).not.toContain("\x1b");
       expect(f.raw).toEqual([]);
     }
