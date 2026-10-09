@@ -9,7 +9,7 @@ import { formatReport, summarize } from "../src/hub/report.ts";
 import { buildLaunch, claudeObservationHooks } from "../src/cli/launch.ts";
 import { HUB, newEnvelope } from "../src/hub/envelope.ts";
 import { nativeHookIdentity } from "../src/cli/facts-hook.ts";
-import { claudeReportedTokens } from "../src/hub/usage.ts";
+import { claudeReportedTokens, readClaudeTranscriptUsage } from "../src/hub/usage.ts";
 
 const cleanup: Array<() => unknown> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -67,7 +67,27 @@ test("managed Claude launcher and genuine command hooks register a non-Orca sess
   await hook("Stop"); expect(daemon.bus.stateOf("claude")).toBe("busy");
   expect(readEvents(join(stateDir, "events.jsonl")).some(event => event.type === "native_turn_end" || event.type === "supervision_turn")).toBe(false);
   writeFileSync(transcript, JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id: "completed-message", stop_reason: "end_turn", usage: { input_tokens: 3, output_tokens: 2 } } }) + "\n");
-  await hook("Stop"); expect(daemon.bus.stateOf("claude")).toBe("idle");
+  const beforeStopLog = readFileSync(join(stateDir, "hub.log"), "utf8").length;
+  await hook("Stop");
+  if (daemon.bus.stateOf("claude") !== "idle") {
+    const json = (file: string): Record<string, unknown> | undefined => { try { return JSON.parse(readFileSync(join(stateDir, file), "utf8")); } catch { return undefined; } };
+    const marker = json("claude-launch.json"), metadata = json("claude-session.json");
+    const suffix = readFileSync(join(stateDir, "hub.log"), "utf8").slice(beforeStopLog);
+    const classes = ["current native turn start unavailable", "completed transcript message unavailable", "completion predates current native turn"];
+    const refusals = classes.filter(reason => suffix.includes(`native Stop refused for claude: ${reason}`));
+    // This fixture is synthetic. Print only fixed classes/binding booleans, never IDs, paths, transcript/tool text.
+    console.error("native Stop synthetic fixture diagnostics: " + JSON.stringify({ refusals,
+      markerInstanceMatches: marker ? marker.instanceId === registered.instanceId : null,
+      markerLaunchMatches: marker ? marker.launchId === registered.launchId : null,
+      sessionMatches: metadata ? metadata.sessionId === sessionId : null,
+      sessionLaunchMatches: metadata ? metadata.launchId === registered.launchId : null,
+      transcriptMatches: metadata ? metadata.transcriptPath === transcript : null,
+      completedRecordAvailable: readClaudeTranscriptUsage(sessionId, transcript).some(record => record.completedTurn),
+      clockAhead: Date.now() - new Date().getTime() > 1000,
+      controlOperationFailed: suffix.includes("control operation failed"),
+    }));
+  }
+  expect(daemon.bus.stateOf("claude")).toBe("idle");
   await hook("Stop"); const events = readEvents(join(stateDir, "events.jsonl"));
   expect(events.filter(event => event.type === "native_turn_end" && event.peer === "claude")).toHaveLength(1);
   expect(events.filter(event => event.type === "supervision_turn" && event.peer === "claude")).toHaveLength(1);

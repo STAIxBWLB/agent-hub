@@ -28,8 +28,13 @@ class FakePeer extends BasePeer {
   }
 }
 const cleanup: (() => unknown)[] = [];
+const clockCleanup: (() => void)[] = [];
 afterEach(() => {
-  for (const fn of cleanup.splice(0)) fn();
+  try { for (const fn of cleanup.splice(0)) fn(); }
+  finally {
+    // Clock overrides can nest when one test creates several rigs; unwind only those in ownership order.
+    for (const restore of clockCleanup.splice(0).reverse()) restore();
+  }
 });
 const tick = () => new Promise((r) => setTimeout(r, 15));
 const until = async (cond: () => boolean) => {
@@ -1301,7 +1306,7 @@ async function turnFreeRig(extra: Partial<ConstructorParameters<typeof Tasks>[0]
   const realNow = Date.now;
   let offset = 0;
   Date.now = () => realNow() + offset;
-  cleanup.push(() => (Date.now = realNow));
+  clockCleanup.push(() => { Date.now = realNow; });
   const later = (ms = 3000) => (offset += ms);
   return { ...ctx, tasks, told, state, stop, work, later };
 }
