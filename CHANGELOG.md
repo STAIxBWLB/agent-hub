@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- `ahub help` groups the commands into sections, starts every description at one column and wraps at word boundaries to the terminal width (80 to 100 columns), colored with the console palette only on a terminal without `TERM=dumb` or `NO_COLOR`. `--help`, `-h` and `help <command>` work; an unknown command prints a one-line hint instead of the full list. Console wrapping (help overlay, approval titles, details, stream lines) breaks at word boundaries too (#212).
+- `ahub help` groups the commands into sections, starts every description at one column and wraps at word boundaries to the terminal width (80 to 100 columns), colored with the console palette only on a terminal without `TERM=dumb` or `NO_COLOR`. `--help`, `-h` and `help <command>` work; an unknown command prints a one-line hint instead of the full list. The console shares the word-aware wrapping, which also covers the wrapping item of #213: the help overlay, approval titles, details and stream lines break at word boundaries, and every wrapped line keeps its source line's indent, so a peer's body cannot wrap onto a header's column (#212).
 
 ## 0.12.19
 

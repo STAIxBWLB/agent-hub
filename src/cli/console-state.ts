@@ -73,21 +73,28 @@ export function fit(value: unknown, columns: number): string {
   for (const char of text) { if (Bun.stringWidth(result + char) > columns - marker.length) break; result += char; }
   return result + marker;
 }
-/** Break at whitespace, which the break drops; split only a word longer than the line. */
+/**
+ * Every line wrapped from a source line starts at that line's indent (at most half the width), so wrapped
+ * untrusted text never reaches a column its source did not, such as a header's column 0. Breaks fall at
+ * whitespace, which they drop; only a word longer than the rest of the line is split. A tab counts as one space.
+ */
 export function wrap(value: unknown, columns: number): string[] {
   const lines: string[] = [];
-  for (const part of terminalText(value).split("\n")) {
-    let line = "";
-    for (const token of part.match(/\s+|\S+/g) ?? []) {
+  for (const part of terminalText(value).replace(/\t/g, " ").split("\n")) {
+    const indent = /^\s*/.exec(part)![0];
+    const pad = " ".repeat(Math.min(Bun.stringWidth(indent), Math.floor(columns / 2)));
+    const first = lines.length;
+    let line = pad;
+    for (const token of part.slice(indent.length).match(/\s+|\S+/g) ?? []) {
       if (Bun.stringWidth(line + token) <= columns) { line += token; continue; }
-      if (/^\s/.test(token)) { if (line) lines.push(line); line = ""; continue; }
-      if (line.trim()) { lines.push(line.trimEnd()); line = ""; }
+      if (line !== pad) { lines.push(line.trimEnd()); line = pad; }
+      if (/^\s/.test(token)) continue;
       for (const char of token) {
-        if (line && Bun.stringWidth(line + char) > columns) { lines.push(line); line = ""; }
+        if (line !== pad && Bun.stringWidth(line + char) > columns) { lines.push(line); line = pad; }
         line += char;
       }
     }
-    lines.push(line);
+    if (line !== pad || lines.length === first) lines.push(line.trimEnd());
   }
   return lines;
 }

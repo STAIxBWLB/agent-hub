@@ -19,7 +19,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub console [--panels] [--color=auto|always|never]", "enter the human console, leaving the daemon running on exit"],
     ["ahub status", "the hub, its peers, model backends and task counts"],
     ["ahub status --all", "show every registered project"],
-    ["ahub logs [-f]", "the last 100 lines of hub.log; -f follows it"],
+    ["ahub logs [-f]", "the last 100 lines of hub.log; -f shows the last 10 and follows it"],
     ["ahub doctor", "check the tools, daemon, plugin, gateway, models and memory worker this project uses"],
     ["ahub doctor --orphans [--kill]", "list registrations whose project root is gone; --kill stops their daemons (SIGTERM, then SIGKILL) only after the process identity checks out"],
     ["ahub kill", "stop this project's hub"],

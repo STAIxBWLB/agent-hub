@@ -347,8 +347,9 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
   help: () => {
     const color = resolveColor(undefined, { isTTY: !!process.stdout.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR }) === true;
-    const text = renderHelp(process.stdout.columns ?? 80, color, args[0]);
-    if (!text) fail(`unknown command "${args[0]}"; run ahub help`);
+    const topic = args[0] === "--help" || args[0] === "-h" ? undefined : args[0];
+    const text = renderHelp(process.stdout.columns ?? 80, color, topic);
+    if (!text) fail(`unknown command "${topic}"; run ahub help`);
     console.log(text);
   },
   "--version": () => console.log(VERSION),
