@@ -1521,3 +1521,16 @@ to a task; both buckets appear even when empty. A zero denominator has unknown
 share. Export carries the new fields without task text. No prices or savings
 counterfactuals are derived. These additive fields retain events schema 1 and
 the existing control protocol. Plain `ahub report` remains unchanged.
+
+## Amendment: Pi "always" approvals (issue #209)
+
+Pi's `write`, `edit`, `bash` and `git` write calls ask with three options:
+`allow` (`allow_once`), `always` (`allow_always`, named `Always allow <tool>
+until Pi restarts`) and `deny` (`reject_once`). `always` allows the call and
+every later call of the same hub tool by that Pi start without asking. The grant
+is held in memory by the Pi start: stopping or replacing Pi, or restarting the
+hub, drops it, and nothing is persisted. A granted call is logged by tool name
+only. The path guard, denylist and sandbox still apply to each call; the
+dashboard still offers Pi only deny; unattended mode still picks `allow_once`;
+the local worker keeps allow and deny. The console and `ahub permit` already
+handle more than one allow option, so the control protocol is unchanged.

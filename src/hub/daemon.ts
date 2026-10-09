@@ -1979,11 +1979,22 @@ export async function startDaemon(opts: DaemonOptions) {
       });
       piReceipts ??= new PiToolReceipts(join(opts.stateDir, "hub.db"));
       let piReply: Envelope | undefined;
+      // Tools the person allowed "always" for this Pi start; a new start gets a new set (#209).
+      const piAlways = new Set<string>();
+      const piPermit = async (title: string, tool: string): Promise<boolean> => {
+        if (piAlways.has(tool)) log(`permission auto-allowed for pi: ${tool} (granted until Pi restarts)`); // the name only, never the arguments
+        else {
+          const picked = await onPermission({ peer: "pi", title, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "always", name: `Always allow ${tool} until Pi restarts`, kind: "allow_always" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] });
+          if (picked === "always") piAlways.add(tool);
+          else if (picked !== "allow") return false;
+        }
+        return pi.acceptingTools && bus.peers.get("pi") === pi;
+      };
       const ctx: ToolContext = {
         cwd: opts.cwd, deny: config.local.deny,
         sandboxProfile: profile(opts.cwd, sandboxNetwork, config.local.read_allow, config.local.deny),
         sandboxEnv: { ...proxyEnv(sandboxNetwork), AGENTHUB_PEER_ID: "pi" },
-        permit: (title) => onPermission({ peer: "pi", title, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] }).then((picked) => picked === "allow" && pi.acceptingTools && bus.peers.get("pi") === pi),
+        permit: async () => false, // Pi's calls ask through piPermit in executeTool, which knows the tool's name
         send: (text, to) => {
           if (to?.some((id) => !bus.peers.has(id) && id !== USER)) return "error: unknown peer";
           const refused = pi.onMessage?.(text, { inReplyTo: piReply, ...(to?.length ? { to } : {}) });
@@ -2005,12 +2016,12 @@ export async function startDaemon(opts: DaemonOptions) {
             if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "error: invalid tool arguments";
             const nativeTurn = pi.observationTurn;
             const output = TASK_TOOLS.some((t) => t.name === name) || CONDUCTOR_TOOL_NAMES.has(name) ? await taskOp("pi", name, raw as Record<string, unknown>, true) : await runTool(name, JSON.stringify(raw), { ...ctx, signal, permit: async title => {
-              if (!signal) return ctx.permit(title);
+              if (!signal) return piPermit(title, name);
               if (signal.aborted) return false;
               return new Promise<boolean>((resolve, reject) => {
                 const finish = (allowed: boolean) => { signal.removeEventListener("abort", aborted); resolve(allowed && !signal.aborted); };
                 const aborted = () => finish(false); signal.addEventListener("abort", aborted, { once: true });
-                Promise.resolve(ctx.permit(title)).then(finish, error => { signal.removeEventListener("abort", aborted); reject(error); });
+                piPermit(title, name).then(finish, error => { signal.removeEventListener("abort", aborted); reject(error); });
               });
             } });
             if (!signal?.aborted && bus.peers.get("pi") === pi) {
