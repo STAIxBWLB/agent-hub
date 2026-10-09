@@ -101,6 +101,8 @@ export function recoveryRunner(id: string, home = hubHome()): number | "unknown"
   try {
     db = new Database(path, { readonly: true });
     db.run("PRAGMA busy_timeout = 3000"); // a claim in progress must not read as no runner
+    // A crash between creating the file and its table leaves no runner; claimRunner creates the table and claims.
+    if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runner'").get()) return undefined;
     const row = db.query("SELECT pid FROM runner WHERE slot = 1").get() as { pid: number } | null;
     if (!row) return undefined;
     if (!Number.isSafeInteger(row.pid) || row.pid < 1) return "unknown";

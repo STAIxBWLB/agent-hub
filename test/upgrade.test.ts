@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -681,6 +682,13 @@ test("an unreadable runner record reads as unknown in status and blocks nothing 
   const status = publicOperation(f.operation, recoveryRunner(f.operation.id, f.home));
   expect(status).toMatchObject({ runner: { state: "unknown" }, next: [`${C} status ${f.operation.id} again: whether a runner holds the operation could not be read (resume, abort and dispose are refused until it can)`] });
   expect(status.stale).toBeUndefined();
+  // A crash between creating the file and its table leaves no runner, as claimRunner (which creates the table) agrees.
+  const path = `${join(f.home, "recovery", f.operation.id)}.json.runner.db`;
+  rmSync(path);
+  const empty = new Database(path);
+  empty.run("PRAGMA user_version = 1"); empty.close();
+  expect(recoveryRunner(f.operation.id, f.home)).toBeUndefined();
+  claimRunner(f.operation.id, f.home)();
 });
 
 // #215 review: the disposition is on record before its first act, and abort defers to it.
@@ -957,4 +965,39 @@ test("a final staging refusal is recorded and next no longer offers resume", asy
   expect(blocked.error).toBe(`target protocol requires a newer coordinator; staged package retained, runtimes unchanged; next actions: ${C} abort ${f.operation.id} | ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`);
   await abortRecovery(f.operation.id, f.driver, f.home);
   expect((readOperation(f.operation.id, f.home) as { phase: string }).phase).toBe("cancelled");
+});
+
+// #215 review: the protocol and waiver checks belong to the staged bytes. A probe that does not answer (killed: exit 1)
+// is retried before the first staging, never recorded final, and is not run again once these bytes were staged.
+test("a failing staging probe is retried, and never run again once the target was staged", async () => {
+  const f = fixture("restart");
+  const version = JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version;
+  f.operation.sourceRoot = PACKAGE_ROOT;
+  Object.assign(f.plan, { sourceRoot: PACKAGE_ROOT, version, sourceDigest: packageDigest(PACKAGE_ROOT) });
+  const { fingerprint: _ignored, ...body } = f.plan;
+  f.plan.fingerprint = planFingerprint(body);
+  writeOperation(f.operation.id, f.operation, f.home);
+  const answered = { code: 0, stdout: `${PROTOCOL}\n`, stderr: "" }, killed = { code: 1, stdout: "", stderr: "" };
+  let probe = killed, probes = 0;
+  const real = makeRecoveryDriver(async () => { probes++; return probe; });
+  f.driver.stage = real.stage;
+  const first = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(first.error).toStartWith("the staged target's control protocol could not be read (probe exit 1)");
+  expect(first.final).toBeUndefined();
+  expect(nextActions(first, undefined, await liveProjects(first, f.driver.inspect)).some((line) => line.startsWith(`${C} resume `))).toBe(true);
+
+  // Staged once (the runner records the digest), and a project is far along: a killed probe cannot refuse it now.
+  probe = answered;
+  const target = await real.stage(first);
+  Object.assign(first, { targetRoot: target.root, targetDigest: target.digest });
+  Object.assign(first.projects[0]!, { phase: "peers-restored", commitSent: true, instanceId: "new-alpha" });
+  first.projects[1]!.phase = "verified";
+  writeOperation(f.operation.id, first, f.home);
+  f.states.set("alpha", { state: "running", instanceId: "new-alpha", version, protocol: PROTOCOL, peers: [], blockers: [], recovery: { operationId: f.operation.id, phase: "restored", ready: true } });
+  probe = killed;
+  const before = probes;
+  const done = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(done.phase).toBe("completed");
+  expect(done.final).toBeUndefined();
+  expect(probes).toBe(before);
 });

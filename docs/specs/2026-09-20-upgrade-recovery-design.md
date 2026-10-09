@@ -346,7 +346,8 @@ with a failed Codex restoration, peers restored, a partway stop-and-archive)
 crossed with ten live states (as planned, replaced, held by another operation,
 crashed, crashed with the snapshot kept, unavailable, starting, stopping,
 incompatible, missing); the older coordinator's operation is run there by the
-current runner. Abort, stop-and-archive and `--fresh-session codex` are offered
+current runner, and its fakes never fail start, restore or verify (terminals,
+Orca and peers are covered by their own tests, not by this one). Abort, stop-and-archive and `--fresh-session codex` are offered
 exactly when the command accepts them on a twin fixture, and where resume is
 offered it makes progress or its error names a step a person takes first. An error gives only its own step (the
 last column below) and the runner ends it with that list (`next actions: ...`),
@@ -406,7 +407,8 @@ An attached session is the target's report of that peer online with a thread
 | project `started` or `peers-restored` | target stopped (a crash or reboot after it started), with or without its snapshot | blocks; not offered: restarting it is not supported in this release | dispose; no fresh session | `the target stopped after it started; restarting it is not supported in this release` |
 | project `stopped` | target stopped without this operation's snapshot (never committed) | blocks; not offered | dispose | `the target is stopped and this operation's restart snapshot is gone` |
 | project `stopped`, `started` or `peers-restored` | target running unfenced, as another instance or another version | blocks; not offered | dispose | `daemon is not owned by this recovery operation` (or `daemon instance changed`, `target daemon version mismatch`) |
-| any, at staging | target protocol, recovery waivers, preserved source or staged target refused | blocks; recorded as `final`, so resume is never offered again | abort if no effects, dispose | the refusal |
+| any, at staging | preserved source or staged target changed, or (first staging of these bytes only) target protocol or recovery waivers refused | blocks; recorded as `final`, so resume is never offered again | abort if no effects, dispose | the refusal |
+| any, at staging | the protocol probe did not answer (killed, exit 1) before the first staging | blocks, not final | dispose; abort if no effects | `resume again once it can run`; once staged, the checks are not run again |
 | disposition recorded, first act not finished | any | refused | abort refused; stop-and-archive where `disposeRefusal` allows it | as the disposition row below |
 | `closed:<peer>` `pending` | Orca still lists the terminal | blocks | dispose | `close Orca terminal <handle> (the login shell it runs in) by hand, then <c> recovery resume <id>` |
 | `closed:<peer>` done | peer attached again | blocks | dispose | `end that <peer> session, then <c> recovery resume <id>` |

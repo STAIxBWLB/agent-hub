@@ -782,6 +782,50 @@ test("a relaunch whose launcher exits while the target stops answering stays pen
   }
 });
 
+// #215 review: when the launcher exits, an attached session is settled as the pending row settles it: a new session the
+// operator chose (or the plan accepted) is the restoration, never "end that session".
+test("a launcher that exits after an accepted new session attached is settled as restored", async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-exit-accepted-")));
+  const stateDir = join(temp, "state");
+  mkdirSync(stateDir);
+  let attached: string | undefined;
+  const server = fakeHub(temp, stateDir, "i-target", () => ({ operationId: "op-215", phase: "restored", ready: true,
+    peers: attached ? { codex: { id: "codex", state: "idle", threadId: attached } } : {} }));
+  const ended = Bun.spawnSync(["true"]).pid;
+  const replacement = { handle: "term-new", incarnationId: "inc-new", worktreeId: "wt", worktreePath: temp, agentIdentity: "codex", sessionId: "thread-new", connected: true };
+  let waits = 0;
+  const run = async (argv: string[]) => {
+    if (argv[2] === "create") {
+      // The new session attaches, then its launcher exits.
+      writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify([{ peer: "codex", projectRoot: temp, stateDir, instanceId: "i-target", launcherPid: ended,
+        launcherSignature: "ended", launchId: "l-new", handle: "term-new", incarnationId: "inc-new", worktreeId: "wt", env: {} }]));
+      attached = "thread-new";
+      return { code: 0, stdout: JSON.stringify({ ok: true, result: { terminal: { handle: "term-new", incarnationId: "inc-new", worktreeId: "wt" } } }), stderr: "" };
+    }
+    if (argv[2] === "wait") return waits++ === 0 ? { code: 1, stdout: JSON.stringify({ ok: false, error: { code: "timeout" } }), stderr: "" }
+      : { code: 0, stdout: JSON.stringify({ ok: true, result: { satisfied: true } }), stderr: "" };
+    return { code: 0, stdout: JSON.stringify({ ok: true, result: argv[2] === "show" ? { terminal: replacement } : { terminals: [replacement] } }), stderr: "" };
+  };
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: {} };
+  const planned: PlannedProject = {
+    project: { id: "p-215", root: temp, stateDir, instanceId: "i-target", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: "codex", state: "idle", threadId: "thread-T" }], blockers: [] },
+    terminals: [{ peer: "codex", handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", projectRoot: temp, sessionId: "thread-T", launch, launchMetadata: launch }], blockers: [],
+  };
+  const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "started", terminals: { "closed:codex": true }, fresh: { codex: { lost: "thread-T", reason: "rollout gone", at: 1 } } };
+  const op = { id: "op-215", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "home");
+  try {
+    await makeRecoveryDriver(run).restore(planned, progress, op, "native", () => {});
+    expect(progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", sessionId: "thread-new" });
+    expect(readRecoveryWaivers(stateDir, "op-215")).toEqual({ codex: "fresh-session" });
+  } finally {
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+    server.stop(true); rmSync(temp, { recursive: true, force: true });
+  }
+});
+
 // #215 review: a pending close is settled only by an inventory Orca answered in full. A failed, not-ok, truncated or
 // non-JSON list shows nothing: the receipt stays pending and the error says the list could not be read.
 test("a pending terminal close stays pending when Orca's terminal list cannot be read", async () => {
