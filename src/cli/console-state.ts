@@ -73,13 +73,19 @@ export function fit(value: unknown, columns: number): string {
   for (const char of text) { if (Bun.stringWidth(result + char) > columns - marker.length) break; result += char; }
   return result + marker;
 }
+/** Break at whitespace, which the break drops; split only a word longer than the line. */
 export function wrap(value: unknown, columns: number): string[] {
   const lines: string[] = [];
   for (const part of terminalText(value).split("\n")) {
     let line = "";
-    for (const char of part) {
-      if (Bun.stringWidth(line + char) > columns) { lines.push(line); line = ""; }
-      line += char;
+    for (const token of part.match(/\s+|\S+/g) ?? []) {
+      if (Bun.stringWidth(line + token) <= columns) { line += token; continue; }
+      if (/^\s/.test(token)) { if (line) lines.push(line); line = ""; continue; }
+      if (line.trim()) { lines.push(line.trimEnd()); line = ""; }
+      for (const char of token) {
+        if (line && Bun.stringWidth(line + char) > columns) { lines.push(line); line = ""; }
+        line += char;
+      }
     }
     lines.push(line);
   }

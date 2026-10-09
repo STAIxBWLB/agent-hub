@@ -40,6 +40,7 @@ import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, peerCommandRef
 import { recordCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { resolveColor } from "./console-state.ts";
+import { renderHelp } from "./help.ts";
 import { renderTailEvent } from "./tail-render.ts";
 
 /** `--since 7d|24h|<iso>` for export and report; everything when absent. */
@@ -51,62 +52,6 @@ const since = (): number => {
   return t;
 };
 
-const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one project directory
-
-  ahub --project <path|id> <command>  select a repository or worktree explicitly
-  ahub projects [--json]         list registered projects and live status
-  ahub projects remove <id>      forget a stopped registration (keeps project files)
-  ahub status --all              show every registered project
-  ahub ui --all [--no-open]      open the unified project dashboard
-  ahub ui --all --stop           stop only the dashboard manager
-  ahub setup [--yes]            install or update the Claude Code channel plugin from this package, then run doctor
-  ahub init [--dry-run --json]   preview or write .agenthub/config.json and the AGENTS.md marker block (drops a legacy CLAUDE.md block)
-  ahub up [--unattended] [--no-console]  start the daemon; interactive terminals enter console
-  ahub console [--panels] [--color=auto|always|never]  enter the human console, leaving the daemon running on exit
-  ahub upgrade --to <version> [--dry-run] [--yes]   review and upgrade running projects
-  ahub restart [--dry-run] [--yes]                 recover this project's runtime
-  ahub recovery status|resume|abort <operation-id> inspect, resume or cancel a preflight
-  ahub claude [--print-command] [args...]         launch Claude Code with the hub channel   [--unattended]
-  ahub codex [--print-command] [args...]          start the Codex adapter and attach the TUI [--unattended]
-  ahub kimi [--print-command] [--model <alias>]   start Kimi headless under ACP
-  ahub pi [--print-command] [--mode headless|tui] [--backend auto|dgx|mlx] [--session-id <id>] [--session-file <path>]  start Pi
-  ahub models setup|status|start|stop  prepare or inspect local Ollama MLX (legacy stop is explicit)
-  ahub local [--route <id> | --model <id>]
-                               start the hub-native worker on the self-hosted models (routing.toml)
-  ahub say [@peer ...] <text>   send as the console user (no @peer = broadcast); delivered at once,
-                               start the text with [STATUS] to let it batch or [FYI] for the record only
-  ahub pause|resume <peer>      hold a peer's deliveries in its queue / release them
-  ahub budget execution configure <config.json> | status [id] | disable <id>
-  ahub budget                   quota windows per peer, and who is paused until when
-  ahub budget set <peer> <0..1> [--resets-in 30m] [--window 5h|week]   feed a reading by hand (also: test the relay)
-  ahub budget resume <peer>     override a budget pause; readings are ignored for that peer until the window resets
-  ahub board [state | --ready]  the task board; --ready: proposed tasks with nothing left to wait for
-  ahub task propose [--class <c> | <class>] <title...> [--owner <peer>] [--path <p>]... [--after <id>]... [--urgent] [--detail <text>]
-  ahub task show|escalate <id>  full task with history (PII text included) / hand it to the next peer in escalate_to
-  ahub task assign <id> <peer>  give a task to a peer yourself
-  ahub review <id> approved|changes_requested [note...] [--unmet <item>]...
-  ahub remember <text...>       save a note to the memory all agents share
-  ahub ask [--remember] <question...>   answer from the task board, shared memory and this run's log, with the ids it rests on
-  ahub route explain <id>       why a task went where it went
-  ahub route explain --class <c> <title...>   what would happen to such a task now
-  ahub ui [--no-open]           open the local dashboard (or print its one-time link)
-  ahub tail                     live stream of messages, states and permission requests
-  ahub permit <id> <option>     answer a permission request shown by tail ("deny" cancels)
-  ahub queue list [--peer <id>] [--json]       inspect durable deliveries
-  ahub queue show <delivery-id>               inspect one delivery and revision
-  ahub queue resolve <delivery-id> --action completed|retry|discard --reason <text>
-  ahub status | logs [-f] | doctor | kill
-  ahub export [--since 7d|<iso>]  structured events (events.jsonl) as JSON lines; never message bodies
-  ahub report [--since 7d|<iso>] [--by task] [--json]  turns, tokens, messages, overlaps and task events per period
-  ahub check-path <file> [--peer <id>]  other owners' open tasks that claim or changed a file
-  ahub check-path --hook        the same as a Claude Code PreToolUse hook (templates/claude-hooks.json); never blocks
-  ahub facts --hook             turn-free facts as a Claude Code PreToolUse, PostToolUse and Stop hook (issue #108); never blocks
-  ahub turns [peer] [--limit N]  recent turns and the files each changed (a git work tree only)
-  ahub undo <turn> [--yes] [--context]  put back the files a turn changed; refuses files changed since.
-                               Without --yes it only lists them; --context also drops a Codex turn from its conversation
-  ahub doctor --orphans [--kill]  list registrations whose project root is gone; --kill stops their
-                               daemons (SIGTERM, then SIGKILL) only after the process identity checks out`;
-
 const argv = process.argv.slice(2);
 let selector: string | undefined;
 if (argv[0] === "--project") {
@@ -114,7 +59,8 @@ if (argv[0] === "--project") {
   selector = argv.shift();
   if (!selector || selector.startsWith("--")) fail("--project needs a path or project ID");
 }
-const [cmd = "help", ...args] = argv;
+const [given = "help", ...args] = argv;
+const cmd = given === "--help" || given === "-h" ? "help" : given;
 let selected: { root: string; stateDir: string };
 try {
   if (selector) {
@@ -399,7 +345,12 @@ const commands: Record<string, () => Promise<void> | void> = {
     const result = await runRecovery(args[0]!, makeRecoveryDriver());
     if (result.phase !== "completed") process.exitCode = 1;
   },
-  help: () => console.log(USAGE),
+  help: () => {
+    const color = resolveColor(undefined, { isTTY: !!process.stdout.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR }) === true;
+    const text = renderHelp(process.stdout.columns ?? 80, color, args[0]);
+    if (!text) fail(`unknown command "${args[0]}"; run ahub help`);
+    console.log(text);
+  },
   "--version": () => console.log(VERSION),
   version: () => console.log(VERSION),
 
@@ -1040,7 +991,7 @@ async function runConductorCommand(): Promise<void> {
   }
   console.log(await taskOp(op, input));
 }
-const run = identity.role === "tools" && commandAccess === "conductor" ? runConductorCommand : commands[cmd] ?? (() => fail(`unknown command "${cmd}"\n\n${USAGE}`));
+const run = identity.role === "tools" && commandAccess === "conductor" ? runConductorCommand : commands[cmd] ?? (() => fail(`unknown command "${cmd}"; run ahub help`));
 try {
   await run();
 } catch (e) {

@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- `ahub help` groups the commands into sections, starts every description at one column and wraps at word boundaries to the terminal width (80 to 100 columns), colored with the console palette only on a terminal without `TERM=dumb` or `NO_COLOR`. `--help`, `-h` and `help <command>` work; an unknown command prints a one-line hint instead of the full list. Console wrapping (help overlay, approval titles, details, stream lines) breaks at word boundaries too (#212).
+
 ## 0.12.19
 
 - Pi's write, edit, bash and git write approvals offer `Always allow <tool> until Pi restarts`: later calls of that tool by the running Pi skip the prompt, still under the path guard and sandbox. The grant is in memory only, logged by tool name, and the dashboard can still only deny (#209).
