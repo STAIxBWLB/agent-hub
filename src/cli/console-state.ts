@@ -40,9 +40,9 @@ export type Tone = "info" | "strong" | "success" | "attention" | "failure" | "mu
 export interface Span { text: string; tone?: Tone }
 export const PALETTE: Readonly<Record<Tone, string>> = Object.freeze({
   info: "\x1b[36m", strong: "\x1b[1;36m", success: "\x1b[32m", attention: "\x1b[33m", failure: "\x1b[31m", muted: "\x1b[90m",
-  peerClaude: "\x1b[95m", peerCodex: "\x1b[96m", peerKimi: "\x1b[94m", peerPi: "\x1b[92m",
-  peerLocal: "\x1b[93m", peerHub: "\x1b[91m",
-  taskKeyword: "\x1b[1;35m", number: "\x1b[1;34m", issueRef: "\x1b[1;31m", taskRef: "\x1b[1;33m",
+  peerClaude: "\x1b[94m", peerCodex: "\x1b[96m", peerKimi: "\x1b[94m", peerPi: "\x1b[96m",
+  peerLocal: "\x1b[94m", peerHub: "\x1b[96m",
+  taskKeyword: "\x1b[35m", number: "\x1b[32m", issueRef: "\x1b[33m", taskRef: "\x1b[1m",
 });
 export function paint(line: Span[], color: boolean): string {
   return line.map(span => {
@@ -52,13 +52,13 @@ export function paint(line: Span[], color: boolean): string {
   }).join("");
 }
 /** Console stream headers only. Tokenize sanitized text; bodies and command output stay plain. */
-export function streamTokens(value: string, peer?: string, eventTone?: Tone, kind?: string): Span[] {
+export function streamTokens(value: string, eventTone?: Tone, kind?: string): Span[] {
   const text = terminalText(value);
   if (kind === "command" || kind === "console") return [{ text }];
   const peers: Readonly<Record<string, Tone>> = { claude: "peerClaude", codex: "peerCodex", kimi: "peerKimi", pi: "peerPi", local: "peerLocal", hub: "peerHub" };
   // Hub-written peer slots only; words such as local/pi/hub in a title do not identify a speaker.
   const peerSlots = new Set<number>();
-  const leading = text.match(/^\s*(?:[.?*!]\s+)?([A-Za-z_][A-Za-z_0-9-]*)(?=:| is | asks permission )/);
+  const leading = text.match(/^\s*(?:[.?*!]\s+)?([A-Za-z_][A-Za-z_0-9-]*)(?=:| is | asks permission:)/);
   if (leading) peerSlots.add(leading[0].lastIndexOf(leading[1]!));
   const route = text.match(/^\s*(?:[0-9:]+ (?:AM|PM) )?([A-Za-z_][A-Za-z_0-9-]*) -> ([A-Za-z_][A-Za-z_0-9,-]*|\*)/);
   if (route) {
@@ -75,7 +75,7 @@ export function streamTokens(value: string, peer?: string, eventTone?: Tone, kin
   const state = kind === "state" ? text.match(/ is ([A-Za-z_]+)$/) : undefined;
   const stateAt = state ? state.index! + 4 : -1;
   const out: Span[] = []; let end = 0; let afterTask = false;
-  for (const match of text.matchAll(/(?<![\p{L}\p{N}_#:-])(?:#[0-9]+|[0-9]+(?::[0-9]+)+(?: AM| PM)?|[0-9]+(?:\.[0-9]+)?(?:%|ms|s|m|h)?)(?![\p{L}\p{N}_:-])|[A-Za-z_][A-Za-z_0-9-]*|->|[.?*!]/gu)) {
+  for (const match of text.matchAll(/(?<![\p{L}\p{N}_#-])#[0-9]+(?![\p{L}\p{N}_-])|(?<![\p{L}\p{N}_#.:-])(?:[0-9]+(?::[0-9]+)+(?: AM| PM)?|[0-9]+(?:\.[0-9]+)?(?:%|ms|s|m|h)?)(?![\p{L}\p{N}_%.:-])|[A-Za-z_][A-Za-z_0-9-]*|->|[.?*!]/gu)) {
     const token = match[0]; const start = match.index;
     const gap = text.slice(end, start);
     if (gap) out.push({ text: gap });
@@ -94,8 +94,8 @@ export function streamTokens(value: string, peer?: string, eventTone?: Tone, kin
   return out;
 }
 /** Wrap plain text first, then project original token spans onto it, preserving trusted slots across continuations. */
-export function wrapStreamTokens(value: string, columns: number, peer?: string, tone?: Tone, kind?: string): Span[][] {
-  const spans = streamTokens(value, peer, tone, kind);
+export function wrapStreamTokens(value: string, columns: number, tone?: Tone, kind?: string): Span[][] {
+  const spans = streamTokens(value, tone, kind);
   const text = spans.map(s => s.text).join("");
   let cursor = 0;
   return wrap(text, columns).map(line => {

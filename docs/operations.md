@@ -105,11 +105,11 @@ management or the final reset. Invalid values fail before connecting.
 | Waiting and attention | Yellow | Busy/paused peer, pending approval, confirmation, review/ready task, important priority |
 | Failure and intervention | Red | Failed/check-failed task, undeliverable/overflow, `needs_review` queue, denial request or expired/cancelled approval |
 | Metadata | Bright black | Ages, remaining approval time and rules |
-| Stream peer names | Bright magenta Claude, bright cyan Codex, bright blue Kimi, bright green Pi, bright yellow local, bright red hub; others default | Fixed map, no hashing or themes |
-| Stream `task` keyword | Bold magenta | Task event keyword |
-| Stream numbers | Bold blue | Percentages, durations and measured times |
-| Stream issue references | Bold red | `#232` |
-| Stream task references | Bold yellow | `#1` following `task` |
+| Stream peer names | Bright blue Claude/Kimi/local, bright cyan Codex/Pi/hub; others default | Fixed map, no hashing or themes |
+| Stream `task` keyword | Magenta | Task event keyword |
+| Stream numbers | Green | Percentages, durations and measured times |
+| Stream issue references | Yellow | `#232` |
+| Stream task references | Bold default foreground | `#1` following `task` |
 
 Offline peers, primary titles, action details and message body lines keep the
 terminal's default foreground. Labels and prompts remain readable without
@@ -117,8 +117,10 @@ color. Stream styling applies only to meaningful tokens in the first line: peer 
 `task`, numbers and references. Ordinary words keep the default foreground.
 Task references following `task` differ from issue references. Legacy notices
 have no typed reference ranges: other `#N` tokens (including assign/which notices)
-use the issue tone until notices carry structured spans. Peer tones never reuse
-state tones; only hub-written peer slots are colored, not title words. State
+use the issue tone until notices carry structured spans. Peer SGR codes never reuse
+state codes. Peer hues use blue/cyan, token hues use magenta/green/yellow and
+bold default foreground; red remains reserved for failures. Bold default keeps
+task references readable on light and dark backgrounds without reusing peer hues; only hub-written peer slots are colored, not title words. State
 words and structural markers retain their event tone. Ordinary identifiers,
 message bodies and every command-output line stay plain. Wrapped spans preserve
 the source classification. A local denial is shown as requested, not

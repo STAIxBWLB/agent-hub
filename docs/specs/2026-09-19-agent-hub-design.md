@@ -1372,11 +1372,14 @@ and success, yellow attention/waiting, red failure/intervention, and restrained
 bright-black metadata. Offline peers, ordinary titles, action details and body
 lines use the default foreground. Existing labels, selection markers and
 confirmation prompts remain sufficient without color. Console stream headers
-color meaningful tokens only (#239): a fixed peer map (bright magenta Claude,
-bright cyan Codex, bright blue Kimi, bright green Pi, bright yellow local, bright
-red hub; others default), bold magenta `task`, bold blue numbers/percentages/times,
-bold red issue references and bold yellow task references following `task`.
-Peer codes differ from state codes. All use basic 16-color ANSI and emphasis;
+color meaningful tokens only (#239): a fixed peer map (bright blue Claude/Kimi/local,
+bright cyan Codex/Pi/hub; others default), magenta `task`, green numeric values,
+yellow issue references and bold default foreground task references following
+`task`. Claude and Codex differ; other peer names may share their fixed hues.
+Peer SGR codes differ from state codes. Token hues never use peer blue/cyan,
+even on terminals that promote bold foreground colors to bright colors. Red
+remains reserved for failures. Bold default preserves task-reference contrast
+on both light and dark backgrounds. All use basic 16-color ANSI and emphasis;
 there is no hashing or user theme. Ordinary words remain default foreground.
 Only hub-written peer slots, state words and structural markers receive their
 semantic tones; title words and markers cannot choose them. Numeric tokens have

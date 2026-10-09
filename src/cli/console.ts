@@ -76,7 +76,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   let pendingStream: ConsoleEvent[] = []; let droppedStream = 0;
   const notice = (text: string) => notify(state, text, Date.now());
   const safeWrite = (text: string) => terminal.write(paint([{ text }], color));
-  const streamLines = (event: ConsoleEvent) => terminalText(event.text).split("\n").flatMap((text, index) => index === 0 ? wrapStreamTokens(text, columns, event.peer, event.tone, event.kind) : wrap(text, columns).map(line => [{ text: line }]));
+  const streamLines = (event: ConsoleEvent) => terminalText(event.text).split("\n").flatMap((text, index) => index === 0 ? wrapStreamTokens(text, columns, event.tone, event.kind) : wrap(text, columns).map(line => [{ text: line }]));
   const writeStream = (event: ConsoleEvent) => {
     terminal.write(`\x1b[${rows - 4};1H`); // the scroll region ends above the rule and the three footer lines
     for (const line of streamLines(event)) { terminal.write(paint(line, color)); terminal.write("\r\n"); }
@@ -86,7 +86,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     if (record) state.events = [...state.events, { ...event, text: terminalText(event.text) }].slice(-1000);
     if (plain) {
       const [header, ...body] = terminalText(event.text).split("\n");
-      terminal.write(paint([...streamTokens(header ?? "", event.peer, event.tone, event.kind), ...body.map(text => ({ text: "\n" + text }))], color) + "\n");
+      terminal.write(paint([...streamTokens(header ?? "", event.tone, event.kind), ...body.map(text => ({ text: "\n" + text }))], color) + "\n");
     }
     else if (state.mode === "stream") writeStream(event);
     else { pendingStream.push(event); if (pendingStream.length > 1000) { pendingStream.shift(); droppedStream++; } }
