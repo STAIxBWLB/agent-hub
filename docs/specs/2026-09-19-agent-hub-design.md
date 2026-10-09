@@ -1387,6 +1387,28 @@ polling or redraw triggers are added. Tail, logs and machine-readable output
 remain unchanged. Native light/dark readability and idle-CPU observations are
 separate smoke evidence, not inferred from fake-terminal tests.
 
+Console layout (issue #213) separates the panel header (the project root's
+directory name, since the registry id is a hash, then the tabs), the body and
+the footer with ASCII `-` rules, and puts one rule above the stream footer; the
+console emits no box-drawing or other ambiguous-width glyph. The active tab is
+bracketed; the Approvals and Queue tabs count pending requests and
+`needs_review` deliveries. Peers, Approvals, Tasks and Queue are tables: a
+header row, columns two spaces apart sized with `Bun.stringWidth` from every
+row (at most a third of the width), the last column taking the rest. Peers' LINK
+column reads `tools-only` when the optional `toolsOnly` status field (#205) is
+present. Zero counters read `-`, durations `45s`, `12m`, `3h05m` or `2d03h`, and
+resets and pauses are relative. Detail views and the Approvals panel's request
+block put labels at column 0 and every value line one column past the longest
+label, so untrusted text never starts where a label does; values show no JSON,
+epoch milliseconds or ISO times, and a cut approval title is marked in the label
+column. The footer hint lists only the keys valid in the mode, panel and state,
+and `?` shows a key table grouped by panel (printed into the stream in stream
+mode). A notice clears at the next key, or once 10 s have passed when the
+existing 1 s tick redraws. In the stream, `v` prints the selected request with
+the push's framing, and `:` command output lines start at column 4. `fit`
+measures a cut line as `paint` prints it, so a cut that ends a span in
+`[agent-hub` cannot widen the line with a `> ` marker.
+
 Agent shell CLI calls connect as the detected peer in tools mode. Hub launches
 set `AGENTHUB_PEER_ID`; the pinned installed Codex shell injects
 `CODEX_THREAD_ID` after environment filtering, and Claude uses `CLAUDECODE`.

@@ -1,10 +1,11 @@
+import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 import type { ControlClient } from "../hub/control-client.ts";
 import { contextLine } from "./status-lines.ts";
 import { renderTailEvent } from "./tail-render.ts";
-import { initialConsoleState, paint, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, terminalText, wrap } from "./console-state.ts";
-import type { ConsoleEffect, ConsoleEvent, Tone } from "./console-state.ts";
+import { initialConsoleState, paint, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, terminalText, wrap } from "./console-state.ts";
+import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
 
 export interface ConsoleTerminal {
@@ -56,11 +57,16 @@ function nativeTerminal(): ConsoleTerminal {
     onSignal: listener => { process.on("SIGINT", listener); process.on("SIGTERM", listener); return () => { process.off("SIGINT", listener); process.off("SIGTERM", listener); }; },
   };
 }
+/** `task_show` text as labeled fields; a message that is not a task stays text. */
+function labeled(text: string): Detail {
+  try { const value = JSON.parse(text); return value && typeof value === "object" && !Array.isArray(value) ? value : String(value); }
+  catch { return text; }
+}
 /** One terminal client, no daemon ownership. All text crosses terminalText before writing. */
 export async function runConsole(options: ConsoleOptions): Promise<void> {
   const { client } = options; const terminal = options.terminal ?? nativeTerminal();
   const color = options.color ?? resolveColor(undefined, { isTTY: terminal.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR }) === true;
-  let state = initialConsoleState(!!options.panels);
+  let state = initialConsoleState(!!options.panels); state.project = basename(options.cwd);
   let columns = options.columns ?? terminal.columns; let rows = options.rows ?? terminal.rows;
   let active = true; let inAlternate = false; let plain = !terminal.isTTY || columns < 80 || rows < 24;
   let polling = false; let childRunning = false; let cancelChild: (() => void) | undefined;
@@ -68,10 +74,11 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   const removers: (() => void)[] = []; const timers: ReturnType<typeof setInterval>[] = [];
   let resolveDone: () => void = () => {}; const done = new Promise<void>(resolve => { resolveDone = resolve; });
   let pendingStream: ConsoleEvent[] = []; let droppedStream = 0;
+  const notice = (text: string) => { state.notice = text; state.noticeAt = Date.now(); };
   const safeWrite = (text: string) => terminal.write(paint([{ text }], color));
   const streamLines = (event: ConsoleEvent) => terminalText(event.text).split("\n").flatMap((text, index) => wrap(text, columns).map(line => [{ text: line, ...(index === 0 && event.tone ? { tone: event.tone } : {}) }]));
   const writeStream = (event: ConsoleEvent) => {
-    terminal.write(`\x1b[${rows - 3};1H`);
+    terminal.write(`\x1b[${rows - 4};1H`); // the scroll region ends above the rule and the three footer lines
     for (const line of streamLines(event)) { terminal.write(paint(line, color)); terminal.write("\r\n"); }
   };
   const stream = (event: ConsoleEvent) => {
@@ -87,14 +94,14 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     if (!active || plain) return;
     if (state.mode === "panels" && !inAlternate) { terminal.write("\x1b[r\x1b[?1049h\x1b[2J"); inAlternate = true; }
     else if (state.mode === "stream" && inAlternate) {
-      terminal.write(`\x1b[?1049l\x1b[1;${rows - 3}r`); inAlternate = false;
-      if (droppedStream) writeStream({ text: `${droppedStream} older panel-mode events omitted from console memory; inspect hub.log for the full stream.` });
+      terminal.write(`\x1b[?1049l\x1b[1;${rows - 4}r`); inAlternate = false;
+      if (droppedStream) writeStream({ text: `${plural(droppedStream, "older panel-mode event")} omitted from console memory; inspect hub.log for the full stream.` });
       for (const event of pendingStream) writeStream(event);
       pendingStream = []; droppedStream = 0;
     }
-    terminal.write(state.mode === "stream" ? `\x1b[1;${rows - 3}r` : "\x1b[r");
+    terminal.write(state.mode === "stream" ? `\x1b[1;${rows - 4}r` : "\x1b[r");
     const lines = renderConsoleLines(state, columns, rows);
-    const start = state.mode === "stream" ? rows - 2 : 1;
+    const start = rows - lines.length + 1;
     for (const [index, line] of lines.entries()) { terminal.write(`\x1b[${start + index};1H\x1b[2K`); terminal.write(paint(line, color)); }
     terminal.write(`\x1b[${rows};${Math.min(columns, Bun.stringWidth(paint(lines.at(-1) ?? [], false)) + 1)}H\x1b[?25h`);
   };
@@ -129,9 +136,9 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
           state.tasks = parsed.map(task => ({ ...task, ready: readyIds.has(task.id) }));
         } }
       if (queue?.ok && state.mode === "panels" && Array.isArray(queue.deliveries)) state.queue = queue.deliveries;
-      const error = replies.find(reply => reply.ok === false)?.error; if (error) state.notice = String(error);
+      const error = replies.find(reply => reply.ok === false)?.error; if (error) notice(String(error));
       draw();
-    } catch (error) { if (active) { state.notice = String((error as Error).message); draw(); } }
+    } catch (error) { if (active) { notice(String((error as Error).message)); draw(); } }
     finally { polling = false; }
   };
   const run = options.runCommand ?? ((args, output, finished) => {
@@ -153,27 +160,29 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (!action.option) stream({ text: `  ! denial requested for permission ${action.id}`, kind: "permission", tone: "failure" });
       return;
     }
+    if (action.type === "print") return stream({ text: action.text, kind: action.kind, ...(action.tone ? { tone: action.tone } : {}) });
     if (action.type === "show") {
       const result = await client.request(action.panel === 3 ? { t: "task", op: "task_show", args: { id: action.id } } : { t: "queue", op: "show", id: action.id }, 3000);
       if (!active) return;
       state.detailOffset = 0;
-      state.detail = result.ok === false ? String(result.error) : action.panel === 3 ? String(result.text) : JSON.stringify(result.delivery, null, 2);
+      state.detail = result.ok === false ? String(result.error) : action.panel === 3 ? labeled(String(result.text)) : result.delivery ?? "delivery not found";
       draw(); return;
     }
-    if (childRunning) { state.notice = "a command is already running"; draw(); return; }
+    if (childRunning) { notice("a command is already running"); draw(); return; }
     childRunning = true;
     stream({ text: `> ${action.args.join(" ")}`, kind: "command" });
     try {
-      cancelChild = run(action.args, text => { if (active) { stream({ text, kind: "command" }); draw(); } }, () => { childRunning = false; cancelChild = undefined; if (active) void refresh(); });
-    } catch (error) { childRunning = false; state.notice = String((error as Error).message); draw(); }
+      // Output lines sit at column 4, as message bodies do: what a command prints can carry peer text, and columns 0 and 2 are the hub's.
+      const output = (text: string) => { if (active) { stream({ text: text.replace(/\n$/, "").replace(/^/gm, "    "), kind: "command" }); draw(); } };
+      cancelChild = run(action.args, output, () => { childRunning = false; cancelChild = undefined; if (active) void refresh(); });
+    } catch (error) { childRunning = false; notice(String((error as Error).message)); draw(); }
   };
   const handle = (key: string) => {
     if (!active) return;
     const result = reduceConsole(state, key); state = result.state;
-    if (state.mode === "panels" && (plain || columns < 80 || rows < 24)) { state.mode = "stream"; state.notice = "panels need at least 80x24"; }
+    if (state.mode === "panels" && (plain || columns < 80 || rows < 24)) { state.mode = "stream"; notice("panels need at least 80x24"); }
     for (const action of result.effects) void effect(action).catch(error => stop(`Console error: ${String(error.message)}`));
     draw();
-    if (key === "v" && state.detail && state.mode === "stream") { stream({ text: state.detail, kind: "permission" }); state.detail = undefined; draw(); }
     if (key === "\t") void refresh();
   };
   client.onPush = msg => {
@@ -183,7 +192,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       else if (msg.t === "context") stream({ text: `  ${msg.peer}: ${contextLine(msg.reading)}`, peer: msg.peer, kind: "context" });
       else if (msg.t === "notice") stream({ text: `  * ${msg.line}`, kind: "notice" });
       else if (msg.t === "permission") {
-        stream({ text: `  ? ${msg.peer} asks permission: ${String(msg.title).replace(/\n/g, "\n      | ")}\n    answer with: ahub permit ${msg.id} <${msg.options.map((o: any) => `${o.optionId} (${o.name})`).join(", ")}> | deny`, peer: msg.peer, kind: "permission", tone: "attention" });
+        stream({ text: permissionText(msg), peer: msg.peer, kind: "permission", tone: "attention" });
         if (typeof msg.expiresAt === "number" && msg.expiresAt > Date.now() && !state.approvals.some(a => a.id === msg.id)) state.approvals.push(msg);
       } else if (msg.t === "permission_closed") {
         state.approvals = state.approvals.filter(a => a.id !== msg.id); state = pruneApprovals(state, Date.now());
@@ -208,7 +217,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
         columns = terminal.columns; rows = terminal.rows; plain = columns < 80 || rows < 24;
         if (plain) {
           if (inAlternate) { terminal.write("\x1b[?1049l"); inAlternate = false; }
-          terminal.write("\x1b[r"); state.mode = "stream"; state.notice = "panels need at least 80x24";
+          terminal.write("\x1b[r"); state.mode = "stream"; notice("panels need at least 80x24");
           safeWrite("\nTerminal below 80x24; showing the plain stream.\n");
         }
         draw();

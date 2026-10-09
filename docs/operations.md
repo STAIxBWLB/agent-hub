@@ -40,11 +40,41 @@ asking, under the same path guard and sandbox; a Pi restart or replacement, or a
 hub restart, drops it. The hub log records each granted call by tool name only.
 The dashboard can only deny Pi's requests.
 
-Tab toggles stream and panels; `ahub console --panels` starts in panels. Peers,
-Approvals, Tasks, Queue and Events support arrow keys or j/k, Enter for detail,
-Escape to return and `?` for help. `:` enters a command. Assignment, delivery
-resolution and allow decisions require confirmation; delivery resolution requires
-a reason. Tasks use the same public redaction as the board. Panels need at least
+Tab toggles stream and panels; `ahub console --panels` starts in panels. A panel
+screen has a header (the project's directory name, then the tabs), the panel and
+a three-line footer, separated by ASCII `-` rules; the stream has one rule above
+its footer. The active tab is bracketed, as in `[2 Approvals]`, so it reads
+without color. The Approvals tab counts pending requests and the Queue tab
+counts `needs_review` deliveries, in the attention and failure tones.
+
+Peers, Approvals, Tasks and Queue are tables with a header row. A column is as
+wide as its widest cell, up to a third of the terminal; the last column takes
+the rest and is cut with `...`.
+
+| Panel | Columns |
+|---|---|
+| Peers | PEER STATE LINK Q ! REVIEW PAUSE QUOTA MODEL |
+| Approvals | ID PEER LEFT TITLE |
+| Tasks | ID STATE OWNER REVIEWER CLASS AGE TITLE |
+| Queue | ID PEER STATE REV AGE |
+
+Zero counters and unknown values read `-`. Durations read `45s`, `12m`, `3h05m`
+or `2d03h`; quota resets and budget pauses read `in 2h13m`, and a pause by the
+console user reads `user`. LINK reads `tools-only` for a Claude session attached
+without channel pushes (#205). Below the Approvals table, a rule and the selected
+request: its title, its allow options numbered as `a` offers them, and `d deny`.
+A title too long for the panel is marked `(more)` in the label column; Enter
+shows it whole.
+
+Arrow keys or j/k move, Enter opens a detail of labeled fields (relative times,
+never JSON), Escape returns, and `?` shows the keys grouped by panel; in the
+stream, `?` prints that table and `v` prints the selected request as its push
+showed it. The footer's last line lists only the keys that act in the current
+mode, panel and state. A notice, such as a refused command, a request error or
+the size refusal, shows in the failure tone on the footer's second line until
+the next key or for about ten seconds. `:` enters a command; its output lines
+start at column 4, as message bodies do. Assignment, delivery resolution and
+allow decisions require confirmation; delivery resolution requires a reason. Tasks use the same public redaction as the board. Panels need at least
 80 columns by 24 rows; smaller terminals stay in stream mode. Task and queue
 polling runs only while the corresponding panel is visible. Leaving restores
 the terminal and returning from panels replays the bounded stream buffer.
@@ -62,7 +92,7 @@ management or the final reset. Invalid values fail before connecting.
 | Success and availability | Green | Idle peer, approved task |
 | Waiting and attention | Yellow | Busy/paused peer, pending approval, confirmation, review/ready task, important priority |
 | Failure and intervention | Red | Failed/check-failed task, undeliverable/overflow, `needs_review` queue, denial request or expired/cancelled approval |
-| Metadata | Bright black | Ages and remaining approval time |
+| Metadata | Bright black | Ages, remaining approval time and rules |
 
 Offline peers, primary titles, action details and message body lines keep the
 terminal's default foreground. Labels and prompts remain readable without
