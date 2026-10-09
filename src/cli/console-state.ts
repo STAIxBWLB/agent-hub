@@ -8,7 +8,11 @@ export interface ConsoleEvent { text: string; peer?: string; kind?: string; tone
 export interface ConsoleState {
   mode: "stream" | "panels"; panel: number; selection: number;
   /** The selected request, by id: a, d and v act on it alone, and it is cleared, never moved, when the request closes. */
-  approvalId?: string; requestDetail?: boolean;
+  approvalId?: string;
+  /** The request whose detail is open: always the selected one (see `bound`). */
+  requestDetail?: string;
+  /** A request was selected on arrival once; after that only [ ], j or k select, so a closed selection never moves. */
+  autoSelected?: boolean;
   input: string; editing: boolean; history: string[]; historyIndex: number;
   approvals: Approval[]; events: ConsoleEvent[]; peers: Record<string, any>; budget: Record<string, any>;
   tasks: any[]; queue: any[]; detail?: Detail; detailOffset: number; help: boolean; notice: string; noticeAt?: number;
@@ -120,7 +124,7 @@ export function duration(ms: number): string {
 }
 /** A moment as `in 2h13m` or `12m ago`. */
 export const relative = (at: number, now: number) => at > now ? `in ${duration(at - now)}` : `${duration(now - at)} ago`;
-const WORD = /^[\p{L}\p{N}][\p{L}\p{N}_./:@#+-]*$/u;
+const WORD = /^\p{L}[\p{L}\p{N}_./:@#+-]*$/u; // a letter first: `1 2` must not read as two numbers
 /**
  * An agent-written string inside hub-built text (a detail below its field, an option name in a prompt): a plain word as
  * it is, anything else JSON-quoted, so no `;`, `,`, `)`, quote or newline in it can end it and pass for hub structure.
@@ -171,9 +175,9 @@ export function permissionText(a: Pick<Approval, "id" | "peer" | "title" | "opti
   return `  ? ${a.peer} asks permission: ${String(a.title).replace(/\n/g, "\n      | ")}\n    answer with: ahub permit ${a.id} <${a.options.map(o => `${quoted(o.optionId)} (${quoted(o.name)})`).join(", ")}> | deny`;
 }
 const KEYS: [string, string[]][] = [
-  ["Everywhere", ["Tab stream/panels", "1-5 panel", ": command", "? keys", "Esc back", "q quit"]],
+  ["Everywhere", ["Tab stream/panels", ": command", "? keys", "Esc back", "q quit"]],
   ["Command", ["Enter run", "Esc cancel", "Up/Down history", "Ctrl-U clear"]],
-  ["Lists", ["j/k or arrows move", "Enter view", "j/k scroll a view"]],
+  ["Panels", ["1-5 panel", "j/k or arrows move", "Enter view", "j/k scroll a view"]],
   ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select"]],
   ["Peers", ["p pause", "r resume"]],
   ["Tasks", ["a assign (then y)", "r review"]],
@@ -195,10 +199,19 @@ export function pruneApprovals(s: ConsoleState, now: number): ConsoleState {
   const approvals = s.approvals.filter(a => a.expiresAt > now);
   const live = (id: string) => approvals.some(a => a.id === id);
   const gone = s.approvalId !== undefined && !live(s.approvalId);
-  return { ...s, approvals,
-    ...(gone ? { approvalId: undefined, requestDetail: false, notice: `request ${s.approvalId} closed${approvals.length ? "; [ ] selects another" : ""}`, noticeAt: now } : {}),
-    ...(s.confirm?.type === "permission" && !live(s.confirm.id) ? { confirm: undefined } : {}),
-    ...(s.optionChoice && !live(s.optionChoice) ? { optionChoice: undefined } : {}) };
+  return bound({ ...s, approvals,
+    ...(gone ? { approvalId: undefined, notice: `request ${s.approvalId} closed${approvals.length ? "; [ ] selects another" : ""}`, noticeAt: now } : {}) });
+}
+/**
+ * Everything pending on a request belongs to the selected one: a choice or confirmation for any other request is
+ * dropped, and an open detail follows the selection from its top (it closes when nothing is selected). Every reducer
+ * exit and every prune passes through here, so no key can act on a request other than the one shown.
+ */
+function bound(s: ConsoleState): ConsoleState {
+  if (s.optionChoice && s.optionChoice !== s.approvalId) s.optionChoice = undefined;
+  if (s.confirm?.type === "permission" && s.confirm.id !== s.approvalId) s.confirm = undefined;
+  if (s.requestDetail && s.requestDetail !== s.approvalId) { s.requestDetail = s.approvalId; s.detailOffset = 0; }
+  return s;
 }
 const COMMANDS = new Set(["status", "board", "task", "review", "say", "pause", "resume", "budget", "queue", "permit", "ask", "remember", "route", "turns", "undo", "check-path", "report"]);
 /** A tiny argv parser, never a shell. Quotes group arguments; backslash escapes one character. */
@@ -237,8 +250,8 @@ const selection = (s: ConsoleState) => s.panel === 2 ? s.approvals.findIndex(a =
 export function reduceConsole(state: ConsoleState, key: string, now = Date.now()): { state: ConsoleState; effects: ConsoleEffect[] } {
   // A notice answers the key before this one; one that pruning raises now stays.
   let s = pruneApprovals({ ...state, notice: "" }, now); const effects: ConsoleEffect[] = [];
-  const done = () => ({ state: s, effects });
-  const answered = (id: string) => { s.approvals = s.approvals.filter(a => a.id !== id); if (s.approvalId === id) { s.approvalId = undefined; s.requestDetail = false; } };
+  const done = () => ({ state: bound(s), effects });
+  const answered = (id: string) => { s.approvals = s.approvals.filter(a => a.id !== id); if (s.approvalId === id) s.approvalId = undefined; };
   if (key === "\x03") { effects.push({ type: "exit" }); return done(); }
   if (s.confirm) {
     const confirm = s.confirm; s.confirm = undefined;
@@ -275,15 +288,16 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     return done();
   }
   if (key === "q") { effects.push({ type: "exit" }); return done(); }
-  if (key === "\t") { s.mode = s.mode === "panels" ? "stream" : "panels"; s.detail = undefined; s.requestDetail = false; return done(); }
+  if (s.help && s.mode === "panels" && key !== "?" && key !== "\x1b") return done(); // the key table is modal
+  if (key === "\t") { s.mode = s.mode === "panels" ? "stream" : "panels"; s.detail = undefined; s.requestDetail = undefined; return done(); }
   if (key === ":") { s.editing = true; return done(); }
-  if (s.mode === "panels" && /^[1-5]$/.test(key) && !s.optionChoice) { s.panel = Number(key); s.selection = 0; s.detail = undefined; s.requestDetail = false; return done(); }
+  if (s.mode === "panels" && /^[1-5]$/.test(key) && !s.optionChoice) { s.panel = Number(key); s.selection = 0; s.detail = undefined; s.requestDetail = undefined; return done(); }
   if (key === "?") {
     if (s.mode === "stream") effects.push({ type: "keys" });
     else s.help = !s.help;
     return done();
   }
-  if (key === "\x1b") { s.detail = undefined; s.requestDetail = false; s.help = false; s.optionChoice = undefined; return done(); }
+  if (key === "\x1b") { s.detail = undefined; s.requestDetail = undefined; s.help = false; s.optionChoice = undefined; return done(); }
   if (s.mode === "panels" && ["j", "k", "\x1b[A", "\x1b[B"].includes(key)) {
     if (s.detail !== undefined || s.requestDetail) { s.detailOffset = Math.max(0, s.detailOffset + (["j", "\x1b[B"].includes(key) ? 1 : -1)); return done(); }
     s.selection = Math.max(0, Math.min(panelRows(s).length - 1, selection(s) + (["j", "\x1b[B"].includes(key) ? 1 : -1)));
@@ -314,13 +328,13 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       return done();
     }
     if (key === "v" && s.mode === "stream") { effects.push({ type: "print", text: permissionText(approval), kind: "permission", tone: "attention" }); return done(); }
-    if (key === "v") { s.requestDetail = true; s.detailOffset = 0; return done(); }
+    if (key === "v") { s.requestDetail = approval.id; s.detailOffset = 0; return done(); }
   }
   const row = panelRows(s)[selection(s)];
   if (s.mode === "panels" && row) {
     if (key === "\r" || key === "\n") {
       if (s.panel === 3 || s.panel === 4) effects.push({ type: "show", panel: s.panel, id: String(row.id) });
-      else if (s.panel === 2) { s.requestDetail = true; s.detailOffset = 0; } // the row is the selected request
+      else if (s.panel === 2) { s.requestDetail = row.id; s.detailOffset = 0; } // the row is the selected request
       else { s.detail = s.panel === 5 ? String(row.text) : { ...row }; s.detailOffset = 0; }
       return done();
     }
@@ -423,7 +437,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   if (s.confirm?.type === "permission") prompt = `allow ${quoted(s.confirm.option)} for ${s.confirm.peer} (request ${s.confirm.id})? y/N`;
   if (s.confirm?.type === "command") prompt = `${s.confirm.args.join(" ")}? y/N`;
   const choice = s.optionChoice ? s.approvals.find(a => a.id === s.optionChoice) : undefined;
-  if (choice) prompt = `allow with: ${allowOptions(choice).map((o, i) => `${i + 1} ${quoted(o.name)}`).join("  ")}  Esc cancel`;
+  if (choice) prompt = `allow request ${choice.id} (${choice.peer}) with: ${allowOptions(choice).map((o, i) => `${i + 1} ${quoted(o.name)}`).join("  ")}  Esc cancel`;
   const summary: Span[] = [];
   for (const [id, p] of Object.entries(s.peers)) {
     if (summary.length) summary.push(span(" "));

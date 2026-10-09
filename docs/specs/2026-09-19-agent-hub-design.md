@@ -1404,16 +1404,22 @@ newlines, wrapped continuations) starts two columns deeper, so untrusted text
 passes neither for a label nor for an item. Only a field's own string shows as
 written: every agent-written string below it (nested pairs and lists, list
 items) and every option name or id in the Approvals block, the prompts and the
-stream's permission line is JSON-quoted unless it is a plain word, so `;`,
+stream's permission line is JSON-quoted unless it is a plain word starting with
+a letter, so `;`,
 `,`, `)`, quotes and newlines in it cannot pass for hub structure. Values show
 no JSON objects, epoch milliseconds or ISO times. Allow options keep one line
 each; `d deny` always stays in view, options that do not fit are counted on a
 `(more)` line, table rows give way, and a cut title is marked `(more)` in the
-label column. The selected request is tracked by id: a request is selected when
-it arrives and none is, `[`, `]` and j/k move the selection, `a`, `d` and `v`
-act on it alone, and its detail is rendered from the live request. When it
-closes, the selection and its detail clear with a notice; `a`, `d` and `v` act
-on nothing until another request is selected. Offline peers keep the default foreground, also
+label column. The selected request is tracked by id: only the first request is
+selected on arrival, `[`, `]` and j/k move the selection, `a`, `d` and `v` act on
+it alone, and its detail is rendered from the live request. When it closes, the
+selection and its detail clear with a notice; `a`, `d` and `v` act on nothing
+until `[`, `]` or j/k select again, so a request that arrives as the person
+reacts is never acted on. Everything pending on a request belongs to the
+selected one, checked after every key and every prune: an option choice or
+confirmation for another request is dropped, an open detail follows the
+selection from its top, and the option prompt names the request. The key table
+is modal: only `?`, Escape and `q` act under it. Offline peers keep the default foreground, also
 when selected, and a tab counts as one space when a line is cut. The footer
 hint lists only the keys valid in the mode, panel and state, and `?` shows a
 key table grouped by panel (in stream mode it is printed into the stream, as

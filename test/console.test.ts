@@ -1,5 +1,5 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
-import { initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, terminalText, parseConsoleCommand, fit, pruneApprovals, panelRows, duration, relative } from "../src/cli/console-state.ts";
+import { initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, terminalText, parseConsoleCommand, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
 import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
 import { contextLine } from "../src/cli/status-lines.ts";
 import { renderTailEvent } from "../src/cli/tail-render.ts";
@@ -397,10 +397,12 @@ describe("console layout (#213)", () => {
     expect(stream.effects).toEqual([{ type: "keys" }]);
   });
   test("? in the stream packs the key table to the terminal's width", async () => {
-    for (const columns of [80, 120]) {
+    for (const columns of [60, 80]) { // below 80 the plain stream prints it
       const f = fixture(columns); const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
       f.input("?");
-      expect(streamed(f.output)[0]).toBe(`Everywhere  Tab stream/panels   1-5 panel   : command   ? keys   Esc back${columns > 80 ? "   q quit" : ""}`);
+      const everywhere = "Everywhere  Tab stream/panels   : command   ? keys";
+      if (columns === 60) expect(f.output.join("")).toContain(`${everywhere}\n            Esc back   q quit\nCommand`);
+      else expect(streamed(f.output)[0]).toBe(`${everywhere}   Esc back   q quit`);
       f.input("q"); await running;
     }
   });
@@ -485,7 +487,7 @@ describe("console layout (#213)", () => {
       expect(view.filter(line => /^ *(?:- )?[23] (?:Allow|Deny)/.test(line))).toEqual([]);
     }
     const choosing = reduceConsole(s, "a", NOW).state;
-    expect(renderConsole(choosing, 120, 24, NOW).at(-1)).toBe(`allow with: 1 ${name}  2 Always  Esc cancel`);
+    expect(renderConsole(choosing, 120, 24, NOW).at(-1)).toBe(`allow request first (pi) with: 1 ${name}  2 Always  Esc cancel`);
     expect(renderConsole(reduceConsole(choosing, "1", NOW).state, 120, 24, NOW).at(-1)).toBe("allow allow for pi (request first)? y/N");
     const f = fixture(); const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
     f.client.onPush({ t: "permission", ...s.approvals[0], expiresAt: Date.now() + 10_000 });
@@ -543,7 +545,7 @@ describe("console layout (#213)", () => {
     expect(renderConsole(s, 80, 24, NOW).join("\n")).toContain("request  first");
     const denied = reduceConsole(s, "d", NOW);
     expect(denied.effects).toEqual([{ type: "permit", id: "first" }]);
-    expect([denied.state.approvalId, denied.state.requestDetail]).toEqual([undefined, false]);
+    expect([denied.state.approvalId, denied.state.requestDetail]).toEqual([undefined, undefined]);
     expect(renderConsole(denied.state, 80, 24, NOW).join("\n")).not.toContain("request  first");
     const again = reduceConsole(denied.state, "d", NOW);
     expect(again.effects).toEqual([]);
@@ -559,12 +561,65 @@ describe("console layout (#213)", () => {
     expect(s.approvalId).toBe("B");
     const later = NOW + 2_000; // A has expired while B is selected
     expect(reduceConsole(s, "d", later).effects).toEqual([{ type: "permit", id: "B" }]);
-    s = reduceConsole(s, "\r", NOW).state; expect(s.requestDetail).toBe(true);
+    s = reduceConsole(s, "\r", NOW).state; expect(s.requestDetail).toBe("B");
     s.approvals = s.approvals.filter(a => a.id !== "B"); // B answered on another console while its detail is open
     const closed = pruneApprovals(s, later);
-    expect([closed.approvalId, closed.requestDetail, closed.notice]).toEqual([undefined, false, "request B closed; [ ] selects another"]);
+    expect([closed.approvalId, closed.requestDetail, closed.notice]).toEqual([undefined, undefined, "request B closed; [ ] selects another"]);
     expect(renderConsole(closed, 80, 24, later).join("\n")).toContain("request B closed");
     expect(reduceConsole(closed, "d", later).effects).toEqual([]);
+  });
+  test("a pending choice belongs to its request: j, ] or the request closing cancels it, and the prompt names the request", () => {
+    const options = [{ optionId: "once", name: "Allow", kind: "allow_once" }, { optionId: "always", name: "Always", kind: "allow_always" }];
+    const two = (panels: boolean) => {
+      const s = state(panels); s.panel = 2;
+      s.approvals = ["A", "B"].map(id => ({ ...s.approvals[0]!, id, options })); s.approvalId = "A";
+      return reduceConsole(s, "a", NOW).state;
+    };
+    expect(renderConsole(two(true), 80, 24, NOW).at(-1)).toBe("allow request A (pi) with: 1 Allow  2 Always  Esc cancel");
+    const closedA = two(false); closedA.approvals = closedA.approvals.filter(a => a.id !== "A");
+    for (const [s, key] of [[two(true), "j"], [two(false), "]"], [closedA, undefined]] as const) {
+      const moved = key ? reduceConsole(s, key, NOW).state : pruneApprovals(s, NOW);
+      expect([moved.approvalId, moved.optionChoice]).toEqual([key ? "B" : undefined, undefined]);
+      expect(renderConsole(moved, 80, 24, NOW).at(-1)).not.toContain("allow request");
+      const pressed = reduceConsole(moved, "2", NOW);
+      expect([pressed.effects, pressed.state.confirm]).toEqual([[], undefined]);
+      expect(reduceConsole(pressed.state, "y", NOW).effects).toEqual([]);
+    }
+    let s = two(true); s = reduceConsole(s, "\x1b", NOW).state; s = reduceConsole(s, "\r", NOW).state; s.detailOffset = 5;
+    s = reduceConsole(s, "]", NOW).state; // an open detail follows the selection, from its top
+    expect([s.requestDetail, s.detailOffset]).toEqual(["B", 0]);
+    expect(renderConsole(s, 80, 24, NOW).join("\n")).toContain("request  B");
+  });
+  test("only the first request is selected on arrival: after a selection ends, d acts on nothing until [ ] selects", async () => {
+    const f = fixture(); const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
+    const push = (id: string) => f.client.onPush({ t: "permission", ...state().approvals[0], id, expiresAt: Date.now() + 10_000 });
+    push("A"); f.input("d");
+    push("B"); f.input("d");
+    expect(f.sent.filter(msg => msg.t === "permit").map(msg => msg.id)).toEqual(["A"]);
+    expect(f.output.join("")).toContain("no request selected; [ ] selects one");
+    f.input("]"); f.input("d");
+    expect(f.sent.filter(msg => msg.t === "permit").map(msg => msg.id)).toEqual(["A", "B"]);
+    f.input("q"); await running;
+  });
+  test("an option name that starts with a digit is quoted", () => {
+    expect([quoted("2"), quoted("5h"), quoted("src/a.ts"), quoted("한국어")]).toEqual(['"2"', '"5h"', "src/a.ts", "한국어"]);
+    const s = state(true); s.panel = 2;
+    s.approvals[0]!.options = [{ optionId: "once", name: "2", kind: "allow_once" }, { optionId: "always", name: "Once", kind: "allow_always" }];
+    expect(renderConsole(s, 80, 24, NOW).join("\n")).toContain('a allow  - 1 "2"\n         - 2 Once');
+    expect(renderConsole(reduceConsole(s, "a", NOW).state, 80, 24, NOW).at(-1)).toBe('allow request first (pi) with: 1 "2"  2 Once  Esc cancel');
+  });
+  test("the key table is modal: only ?, Esc and q act under it", () => {
+    let s = state(true); s.panel = 2; s.peers = { pi: { state: "idle" } };
+    s.approvals.push({ ...s.approvals[0]!, id: "second" });
+    s = reduceConsole(s, "?", NOW).state;
+    expect(renderConsole(s, 80, 24, NOW).join("\n")).toContain("Panels      1-5 panel   j/k or arrows move");
+    for (const key of ["d", "a", "j", "]", "\r", "1", "\t", ":"]) {
+      const next = reduceConsole(s, key, NOW);
+      expect([next.effects, next.state.approvalId, next.state.panel, next.state.mode, next.state.editing, next.state.help]).toEqual([[], "first", 2, "panels", false, true]);
+    }
+    expect(reduceConsole(s, "\x1b", NOW).state.help).toBe(false);
+    expect(reduceConsole(s, "?", NOW).state.help).toBe(false);
+    expect(reduceConsole(s, "q", NOW).effects).toEqual([{ type: "exit" }]);
   });
   test("the key table and a viewed request print to the stream but stay out of Events", async () => {
     const f = fixture(); const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });

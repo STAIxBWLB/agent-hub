@@ -66,12 +66,15 @@ console user reads `user`. When a peer's status carries #205's optional
 request: its title, its allow options numbered as `a` offers them, and `d deny`.
 A title too long for the panel is marked `(more)` in the label column; Enter
 shows it whole. `d deny` always shows; options that do not fit are counted on a
-`(more)` line. A new request is selected when none is, and `[` and `]` (or j/k
-in the panel) select another. `a`, `d` and `v` act on the selected request
+`(more)` line. The first request is selected when it arrives; `[` and `]` (or
+j/k in the panel) select another. `a`, `d` and `v` act on the selected request
 only: when it closes, the selection clears with a notice instead of moving to
-another request. Agent-written text below a field, and option names in prompts,
-are quoted unless they are a single word, so punctuation or a newline in them
-cannot imitate the console's own structure.
+another request, and a request that arrives later waits for `[` or `]`. Moving
+the selection cancels a pending allow choice or confirmation; the choice prompt
+names its request. Agent-written text below a field, and option names in
+prompts, are quoted unless they are a single word starting with a letter, so
+punctuation, a newline or a bare number in them cannot imitate the console's own
+structure. Under the `?` key table only `?`, Escape and `q` act.
 
 Arrow keys or j/k move, Enter opens a detail of labeled fields (relative times,
 never JSON), Escape returns, and `?` shows the keys grouped by panel; in the

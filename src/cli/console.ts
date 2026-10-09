@@ -195,8 +195,12 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       else if (msg.t === "notice") stream({ text: `  * ${msg.line}`, kind: "notice" });
       else if (msg.t === "permission") {
         stream({ text: permissionText(msg), peer: msg.peer, kind: "permission", tone: "attention" });
-        // A request is selected when it arrives and nothing is; a closed selection is never moved to another request.
-        if (typeof msg.expiresAt === "number" && msg.expiresAt > Date.now() && !state.approvals.some(a => a.id === msg.id)) { state.approvals.push(msg); state.approvalId ??= msg.id; }
+        // Only the first request is selected on arrival: once a selection has ended, a request that arrives as the person
+        // reacts must not take its place, so from then on only [ ], j or k select.
+        if (typeof msg.expiresAt === "number" && msg.expiresAt > Date.now() && !state.approvals.some(a => a.id === msg.id)) {
+          state.approvals.push(msg);
+          if (!state.autoSelected) { state.approvalId = msg.id; state.autoSelected = true; }
+        }
       } else if (msg.t === "permission_closed") {
         state.approvals = state.approvals.filter(a => a.id !== msg.id); state = pruneApprovals(state, Date.now());
         if (msg.reason === "expired" || msg.outcome === "cancelled" || msg.outcome?.startsWith("reject")) stream({ text: `  ! ${msg.peer} permission ${msg.id} ${msg.reason ?? msg.outcome}`, peer: msg.peer, kind: "permission", tone: "failure" });
