@@ -1839,3 +1839,57 @@ acts on the stopped state directory.
 - Output says that claude-mem is not touched and that attached Claude Code
   sessions must be relaunched with `ahub claude`. The control protocol is
   unchanged: reset never talks to a running hub except to inspect and stop it.
+
+## Amendment: model-based PII screen (issue #198)
+
+- `routing.toml` `[signals] pii_screen = "off" | "local"`, default `off`; any other
+  value fails the load like a bad pattern. With `off`, or with `constraints.pii =
+  "off"`, nothing changes and no screen call is made.
+- Order. With `local`, `Tasks.propose` screens the task's title, detail and plan
+  text right after the pattern check and before triage. "Held as private" is met
+  by holding the task back entirely: until the verdict it is not on the board, so
+  no envelope, notice, triage call, brief or memory call can read it. Writing it as
+  a PII task first was rejected: a PII task opening lifts every silent turn-free
+  cohort for good and switches facts off (#107, #108), so every proposal would do
+  that. The proposal's tool call waits for the verdict, as it already waits for
+  triage.
+- The screener (`screenPii`, `src/hub/inference.ts`): the on-device model when
+  `mlx.enabled` and it can be had (`ensureMlx`, loopback only; a legacy MLX runtime
+  is started the way Pi's relay starts it), else the gateway's `local.fixed_model` only while the
+  daemon's `onCampus()` holds, with `onCampusOnly` so the client refuses an Access
+  host once more before transport; never the Switchyard sidecar. One call per item,
+  a 15 s deadline over the whole call, the on-device generation slot acquired under
+  that deadline, `max_tokens` 32, temperature 0 and thinking off on device. The
+  prompt frames the text as data and carries Korean and English examples and hard
+  negatives. The answer must be exactly `clear` or `pii <category>` with a category
+  from `name, student_id, phone, address, grade, health, other`.
+- Fail closed: an answer outside that form, a timeout, a failed or missing model,
+  an off-campus gateway, or text over 6000 characters (the 8k on-device context at
+  one token per character) is `unknown`. `pii` and `unknown` add the `pii` signal,
+  so the task takes the whole existing PII path (local or nobody, user review,
+  private envelopes, redacted views, no claude-mem). A pattern match is PII without
+  a call. The source is recorded as a `screened` history entry (`pii: regex`,
+  `pii: screen, <category>`, `pii: unknown, <reason>`, `clear`) and a `pii_screen`
+  event; an unknown verdict is a console and hub.log line with the task id and the
+  closed reason only. `route explain` on a draft does not call the screen and adds
+  a trace line saying a proposal would.
+- Free text (#69): the done summary (at `hub_task_done`, before anything else
+  reads the board), the review note with its unmet items, a handoff (budget relay
+  or escalation context) and a `hub_remember` note go through the same screen on
+  an ordinary task when they match no pattern. `pii` or `unknown` withholds the
+  item exactly as a pattern match does (stubs, no memory note, no summary line in
+  completed-change or integration notices; `hub_remember` is refused). The board
+  keeps the text and marks the history entry `withheld: true`, so public views,
+  later reviewers, held cohort notices and `ahub ask` keep withholding it after a
+  restart without another call. A plan given at accept and context checkpoint
+  summaries stay pattern-only.
+- Calibration (AC4): `test/fixtures/pii-screen.json` holds synthetic Korean and
+  English positives across the categories and hard negatives (roles,
+  placeholders, field and function names, ports, codes); none is copied from the
+  prompt. `bun scripts/pii-screen-eval.ts [--project <dir>] [--out <file>]` screens
+  each item once, in order, through `screenPii` with the project's configuration
+  and reports recall, recall as handled (pii or unknown), precision, the unknown
+  rate, held negatives, category agreement and latency. The bound, fixed here
+  before any measurement: the model itself labels at least 90% of the positives
+  `pii` (an unknown verdict counts as a miss). The report goes to
+  `docs/verification/`; the script exits 1 under the bound.
