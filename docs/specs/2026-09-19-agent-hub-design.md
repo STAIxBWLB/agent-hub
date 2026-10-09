@@ -1761,7 +1761,8 @@ task list polling does not. `hub_status` stays conductor-only.
 
 `ahub reset [--all] [--yes]` returns a project's hub to a clean state. It is
 human-only (the CLI identity gate refuses it from an agent shell) and a dry run
-unless `--yes`: the dry run reads `hub.db` read-only and prints delivery ids,
+unless `--yes`: the dry run reads `hub.db` read-only (with `immutable=1` when
+`hub.db-wal` or `-shm` is absent, so it creates neither) and prints delivery ids,
 peer names and counts per category, never task or message text. With `--yes`
 it stops a running hub through `stopProject`, the path `ahub kill` takes, then
 acts on the stopped state directory.

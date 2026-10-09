@@ -106,7 +106,13 @@ test("AC1: the dry run lists ids and counts, no task or message text, and change
   const { base, root, stateDir, project } = fixture();
   try {
     const queuedOnly = seed(stateDir, project);
+    // As on Linux, where the last writer's close checkpoints and removes them: hub.db alone, with no -wal or -shm.
+    const db = new Database(join(stateDir, "hub.db"));
+    db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+    db.close();
+    for (const suffix of ["-wal", "-shm"]) rmSync(join(stateDir, `hub.db${suffix}`), { force: true });
     const before = contents(stateDir);
+    const files = readdirSync(stateDir).sort();
     for (const args of [["reset"], ["reset", "--all"]]) {
       const result = await cli(root, args);
       expect(result.code, result.stderr).toBe(0);
@@ -121,6 +127,7 @@ test("AC1: the dry run lists ids and counts, no task or message text, and change
       expect(result.stdout).toContain("nothing was changed; add --yes to apply");
       expect(result.stdout).not.toContain(SECRET);
       expect(contents(stateDir)).toEqual(before);
+      expect(readdirSync(stateDir).sort()).toEqual(files); // no -wal or -shm either
     }
     expect(existsSync(join(root, ".agenthub", "archive"))).toBe(false);
   } finally { rmSync(base, { recursive: true, force: true }); }

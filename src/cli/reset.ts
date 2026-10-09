@@ -52,7 +52,12 @@ export function planReset(stateDir: string, projectId: string): ResetPlan {
     sessionPointers: SESSION_POINTERS.filter((name) => existsSync(join(stateDir, name))), entries: existsSync(stateDir) ? readdirSync(stateDir).length : 0 };
   const file = join(stateDir, "hub.db");
   if (!existsSync(file)) return plan;
-  const db = new Database(file, { readonly: true });
+  // A read-only open of a WAL database creates hub.db-wal and -shm when the last writer's close removed them (Linux),
+  // and fails without them on macOS. Without them no writer is mid-transaction, so `immutable` reads hub.db alone and
+  // writes nothing. ponytail: a -wal left without its -shm (deleted by hand) is ignored then, and commits still in
+  // it go unlisted; open plainly in that corner if it ever matters.
+  const quiet = !existsSync(`${file}-wal`) || !existsSync(`${file}-shm`);
+  const db = quiet ? new Database(`file:${file.replace(/[%?#]/g, (c) => `%${c.charCodeAt(0).toString(16)}`)}?immutable=1`, { readonly: true }) : new Database(file, { readonly: true });
   try {
     const has = (table: string) => !!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
     const peers = (table: string) => has(table) ? (db.query(`SELECT peer FROM ${table} ORDER BY peer`).all() as { peer: string }[]).map((row) => row.peer) : [];
