@@ -111,6 +111,9 @@ export function detectSignals(task: Pick<Task, "title" | "detail" | "refs">, rou
   return out;
 }
 
+/** A peer's entry in a peer-indexed map: own keys only, so a peer named `constructor` is never an inherited Object member. */
+export const peerEntry = <T>(map: Readonly<Record<string, T>> | undefined, peer: string): T | undefined => (map && Object.hasOwn(map, peer) ? map[peer] : undefined);
+
 export interface Assignment {
   owner?: PeerId;
   reviewer?: PeerId;
@@ -161,11 +164,12 @@ export function assign(
   const pii = task.signals.includes("pii") && routing.constraints.pii === "local_only";
 
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {
-    if (!(peer in states)) return "not attached";
+    if (!Object.hasOwn(states, peer)) return "not attached";
     if (opts.exclude?.includes(peer)) return "excluded (declined or replaced)";
     if (states[peer] === "offline") return "offline";
     if (states[peer] === "paused" && routing.constraints.budget_paused === "skip_peer") return "paused";
-    if (opts.failing?.[peer]) return `failing: ${opts.failing[peer]}`;
+    const failing = peerEntry(opts.failing, peer);
+    if (failing) return `failing: ${failing}`;
     if (pii && peer !== LOCAL) return "pii: on-prem peers only";
     if (peer === LOCAL && policy?.local_allowed === false) return "local_allowed = false for this class";
     if (peer === PI && policy?.local_allowed === false) return "local_allowed = false also excludes pi for this class";
@@ -180,7 +184,7 @@ export function assign(
 
   /** Quota that resets soonest gets used first: headroom per hour left in the window, at least 15 min (a task assigned that close to a reset mostly runs after it). */
   const drain = (p: PeerId): number | undefined => {
-    const q = opts.quota?.[p];
+    const q = peerEntry(opts.quota, p);
     return q?.resetsAt === undefined ? undefined : q.headroom / Math.max((q.resetsAt - (opts.now ?? 0)) / 3_600_000, 0.25);
   };
   /** Peers with readings swap places among themselves by drain rate; peers without (local, pi) keep theirs. */
@@ -197,11 +201,11 @@ export function assign(
   /** Demoted peers go behind the rest for this class (owners only); each group is then ordered by quota. */
   /** Reviewers with enough recorded reviews of this owner's work swap places by how those reviews held up. */
   const byRecord = (list: PeerId[], owner: PeerId | undefined): PeerId[] => {
-    const record = owner ? opts.reviews?.[owner] : undefined;
+    const record = owner ? peerEntry(opts.reviews, owner) : undefined;
     if (!record || !Object.keys(record).length) return list;
     trace.push(`  review record with ${owner} in ${task.class}: ${Object.entries(record).map(([r, s]) => `${r} ${s.n} reviews, ${Math.round(s.score * 100)}% held`).join("; ")}${opts.adaptive ? "" : " (review.adaptive is off)"}`);
     if (!opts.adaptive) return list;
-    const known = (p: PeerId) => (record[p] && record[p].n >= opts.adaptive!.min ? record[p].score : undefined);
+    const known = (p: PeerId) => { const r = peerEntry(record, p); return r && r.n >= opts.adaptive!.min ? r.score : undefined; };
     const slots = list.flatMap((p, i) => (known(p) === undefined ? [] : [i]));
     const sorted = slots.map((i) => list[i]!).sort((a, b) => known(b)! - known(a)!);
     const out = [...list];
@@ -209,7 +213,7 @@ export function assign(
     return out;
   };
   const rank = (ok: PeerId[], role: "owner" | "reviewer", owner?: PeerId): PeerId[] => {
-    const down = role === "owner" ? ok.filter((p) => opts.demoted?.[p]) : [];
+    const down = role === "owner" ? ok.filter((p) => peerEntry(opts.demoted, p)) : [];
     if (down.length) trace.push(`  demoted for ${task.class}: ${down.map((p) => `${p} (${opts.demoted![p]!.toFixed(1)} recent failures)`).join(", ")}`);
     const ranked = [...byDrain(ok.filter((p) => !down.includes(p))), ...byDrain(down)];
     // The review record comes after quota, so it decides among reviewers that have one: idle, then record, then quota.
@@ -225,7 +229,7 @@ export function assign(
     }
     const ranked = rank(ok, role, not);
     // Demotion applies to local and Pi too: a demoted one loses its place ahead of the cloud peers.
-    const localTier = ranked.filter((p) => (p === LOCAL || p === PI) && !(role === "owner" && opts.demoted?.[p]));
+    const localTier = ranked.filter((p) => (p === LOCAL || p === PI) && !(role === "owner" && peerEntry(opts.demoted, p)));
     if (localTier.length) return localTier.find((p) => states[p] === "idle") ?? localTier[0]; // local/Pi stays ahead of an idle cloud peer
     return ranked.find((p) => states[p] === "idle") ?? ranked[0];
   };
@@ -237,7 +241,8 @@ export function assign(
   const wanted = reserved && !unreserved ? [reserved] : opts.candidates ?? policy?.peers ?? [];
   const owner = pick(wanted, "owner");
   trace.push(owner ? `owner: ${owner}` : "owner: none available, task stays proposed (ahub task assign <id> <peer>)");
-  if (owner && opts.held?.[owner]) trace.push(`  hold: ${owner}'s queue is held: ${opts.held[owner]} (it receives the task once the hold is resolved)`);
+  const ownerHold = owner ? peerEntry(opts.held, owner) : undefined;
+  if (ownerHold) trace.push(`  hold: ${owner}'s queue is held: ${ownerHold} (it receives the task once the hold is resolved)`);
 
   let reviewer: PeerId | undefined;
   if (task.class !== "review") {
@@ -249,7 +254,8 @@ export function assign(
       trace.push(`  reviewer candidates: [classes.review] peers ${classPeers.join(", ") || "none"}${rolePeers.length ? `; reviewer role ${rolePeers.join(", ")}` : ""}`);
       reviewer = pick([...new Set([...classPeers, ...rolePeers])], "reviewer", owner ?? opts.notReviewer);
       trace.push(reviewer ? `reviewer: ${reviewer}` : "reviewer: none, done will approve directly");
-      if (reviewer && opts.held?.[reviewer]) trace.push(`  hold: ${reviewer}'s queue is held: ${opts.held[reviewer]} (it receives the review once the hold is resolved)`);
+      const reviewerHold = reviewer ? peerEntry(opts.held, reviewer) : undefined;
+      if (reviewerHold) trace.push(`  hold: ${reviewer}'s queue is held: ${reviewerHold} (it receives the review once the hold is resolved)`);
     }
   }
   const route = policy?.route ?? routing.local.route;

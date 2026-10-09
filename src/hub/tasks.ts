@@ -4,7 +4,7 @@ import type { MemoryClient } from "../memory/client.ts";
 import { CLASSES, OUTCOMES_KEPT_MS, PLAN_KEYS, TASK_MOVE_REASONS, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
-import { assign, detectSignals, LOCAL, PI, predictSplit, type Assignment, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
+import { assign, detectSignals, LOCAL, peerEntry, PI, predictSplit, type Assignment, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 import { realPath } from "./project.ts";
@@ -206,7 +206,7 @@ export class Tasks {
 
   private sweepAvailable(peer: PeerId): boolean {
     const bus = this.d.bus;
-    return bus.stateOf(peer) === "idle" && (this.d.idle?.(peer) ?? true) && !this.d.held?.()[peer] && !bus.queueSummary(peer).heldBy && !bus.queued(peer) && !bus.hasInFlight(peer);
+    return bus.stateOf(peer) === "idle" && (this.d.idle?.(peer) ?? true) && !peerEntry(this.d.held?.(), peer) && !bus.queueSummary(peer).heldBy && !bus.queued(peer) && !bus.hasInFlight(peer);
   }
 
   private sweepNotice(task: Task, peer: PeerId, body: string): void {
@@ -258,7 +258,7 @@ export class Tasks {
     const noReview = task.class !== "review" && !task.reviewer && OPEN.includes(task.state) && !this.waitsFor(task).length
       ? this.noReviewer(assign(task, this.states(), this.d.routing(), { candidates: task.owner ? [task.owner] : [], notReviewer: task.owner ?? undefined, ...this.weights(task.class) }))
       : undefined;
-    const held = task.owner ? this.d.held?.()[task.owner] : undefined;
+    const held = task.owner ? peerEntry(this.d.held?.(), task.owner) : undefined;
     const holdText = held ? `${task.owner}'s queue is held (${held}); it receives the task once the hold is resolved` : undefined;
     return [base, noReview, holdText].filter(Boolean).join("; ");
   }
@@ -391,7 +391,7 @@ export class Tasks {
       // delivered) or in which it claimed it: the routed peer this very task, the other owner the overlapped one while it
       // is not started. Busy otherwise, it is at work on something else (#109, #115; a routing or cohort record is taken
       // before the task is sent, so a busy candidate is not available then).
-      available: Object.fromEntries(peers.map((p) => [p, !failing[p] && (states[p] === "idle" || taking(p))])),
+      available: Object.fromEntries(peers.map((p) => [p, !peerEntry(failing, p) && (states[p] === "idle" || taking(p))])),
     });
   }
 
@@ -711,7 +711,7 @@ export class Tasks {
 
   private announceRouting(task: Task, a: Assignment): void {
     if (task.class !== "review" && !a.reviewer) this.d.notify(`task ${this.publicTitle(task)}: ${this.noReviewer(a)}`);
-    const hold = a.owner ? this.d.held?.()[a.owner] : undefined;
+    const hold = a.owner ? peerEntry(this.d.held?.(), a.owner) : undefined;
     if (hold) this.d.notify(`task ${this.publicTitle(task)}: ${a.owner}'s queue is held (${hold}); the task arrives once the hold is resolved`);
   }
 
