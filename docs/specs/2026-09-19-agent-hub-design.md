@@ -1418,7 +1418,10 @@ text is never included in those requests or events.
 A genuine native Stop requires the current daemon/launcher binding and an actual
 assistant end_turn transcript message at or after the native turn's first start,
 distinct from the completed-message baseline recorded at that start. Later tool
-activity does not move this turn-start boundary. Its opaque
+activity does not move this turn-start boundary. Missing start evidence or a
+start from another session, launch or channel claim leaves completion unknown.
+The live harness also binds its final receipt to the current private launch id.
+Its opaque
 deduplication id binds session, launch and message; transport replacement or new
 activity cannot turn a replay into another completion. Unbound or idless legacy
 Stop events cannot certify completion or finish supervision. A current private

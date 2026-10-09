@@ -50,6 +50,10 @@ test("managed Claude launcher and genuine command hooks register a non-Orca sess
   for (let n = 0; n < 100 && !deliveries.length; n++) await Bun.sleep(5);
   expect(deliveries).toHaveLength(1);
   expect((await native.request({ t: "delivery_receipt", deliveryId: deliveries[0].deliveryId, generation: deliveries[0].generation, state: "accepted" })).ok).toBe(true);
+  writeFileSync(transcript, JSON.stringify({ type: "assistant", sessionId, timestamp: "2026-01-01T00:00:00.000Z", message: { id: "historical-message", stop_reason: "end_turn" } }) + "\n");
+  await hook("Stop");
+  expect(readEvents(join(stateDir, "events.jsonl")).some(event => event.type === "native_turn_end" || event.type === "supervision_turn")).toBe(false);
+  expect(summarize(readEvents(join(stateDir, "events.jsonl"))).peers.claude?.turns).toBeNull();
   await hook("UserPromptSubmit"); expect(daemon.bus.stateOf("claude")).toBe("busy");
   await hook("PreToolUse"); await hook("PostToolUse");
   await native.request({ t: "task", op: "hub_task_list", args: {} }); await native.request({ t: "send", body: "[FYI] tool finished" });
@@ -74,6 +78,9 @@ test("managed Claude launcher and genuine command hooks register a non-Orca sess
   expect(readEvents(join(stateDir, "events.jsonl")).filter(event => event.type === "native_turn_end")).toHaveLength(1);
   const replacement = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" }); cleanup.push(() => replacement.close());
   for (let n = 0; n < 100 && daemon.bus.stateOf("claude") !== "idle"; n++) await Bun.sleep(5);
+  appendFileSync(transcript, JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id: "unobserved-start-completion", stop_reason: "end_turn" } }) + "\n");
+  await hook("Stop");
+  expect(readEvents(join(stateDir, "events.jsonl")).filter(event => event.type === "native_turn_end")).toHaveLength(1); // a new receiver cannot reuse the old generation's start
   await hook("UserPromptSubmit"); await hook("PreToolUse"); await hook("Stop");
   expect(daemon.bus.stateOf("claude")).toBe("busy");
   expect(readEvents(join(stateDir, "events.jsonl")).filter(event => event.type === "native_turn_end")).toHaveLength(1);

@@ -150,6 +150,8 @@ function claudeNative(stateDir: string, fixture: string, instanceId: string, sin
   try {
     const session = JSON.parse(readFileSync(join(stateDir, "claude-session.json"), "utf8"));
     if (session.instanceId !== instanceId || typeof session.sessionId !== "string" || typeof session.transcriptPath !== "string") return undefined;
+    const launch = JSON.parse(readFileSync(join(stateDir, "claude-launch.json"), "utf8"));
+    if (launch.instanceId !== instanceId || typeof launch.launchId !== "string" || !launch.launchId || session.launchId !== launch.launchId) return undefined;
     const projects = realPath(join(env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects"));
     const transcript = realPath(session.transcriptPath);
     const expected = join(projects, fixture.replace(/[^a-zA-Z0-9]/g, "-"), `${session.sessionId}.jsonl`);
@@ -179,7 +181,7 @@ function claudeNative(stateDir: string, fixture: string, instanceId: string, sin
       finalMessageUuid: lastAssistant?.uuid ?? null, finalMessageId: lastAssistant?.message?.id ?? null,
       finalStopReason: lastAssistant?.message?.stop_reason ?? null, finalTurnDurationAt: finalDuration?.timestamp ?? null,
       finalTurnDurationMs: finalDuration?.durationMs ?? null,
-      transcript, sessionId: session.sessionId, instanceId, usageRecords: usage.length, knownUsageRecords: known.length,
+      transcript, sessionId: session.sessionId, instanceId, launchId: launch.launchId, usageRecords: usage.length, knownUsageRecords: known.length,
       tokens: known.length === usage.length && known.length ? known.reduce((sum, n) => sum + n, 0) : null };
   } catch { return undefined; }
 }
