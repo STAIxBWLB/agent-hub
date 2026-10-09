@@ -485,3 +485,52 @@ test("stop-and-archive gives a project whose directory is gone a true outcome in
   expect(op.disposition?.projects.alpha).toContain("project directory is missing; nothing was stopped or archived");
   expect(op.phase).toBe("cancelled");
 });
+
+// #215 review: a restored hub refills a Pi start from its recorded resume, so a "fresh" Pi would quietly resume.
+test("--fresh-session pi is refused and never offered", async () => {
+  const f = failedRestore();
+  f.operation.projects[0]!.terminals["restored:pi"] = "failed";
+  writeOperation(f.operation.id, f.operation, f.home);
+  await expect(disposeRecovery(f.operation.id, { fresh: "pi" }, "lost", f.driver, f.home)).rejects.toThrow("pi: --fresh-session is not supported");
+  const next = publicOperation(readOperation(f.operation.id, f.home)).next;
+  expect(next).toContain(`ahub recovery dispose ${f.operation.id} --fresh-session codex --reason <text>`);
+  expect(next.some((line) => line.includes("--fresh-session pi"))).toBe(false);
+});
+
+// #215 review: no effects, an expired hold and a changed roster used to loop between "make a new plan" (refused by
+// this operation's lock), "resume it instead" and abort's refusal.
+test("a changed roster after an expired hold with no effects names abort, and abort cancels the lapsed preparation", async () => {
+  const f = fixture();
+  f.plan.projects[0]!.source.peers = [{ id: "codex", state: "idle", threadId: "t1" }];
+  const { fingerprint: _ignored, ...body } = f.plan;
+  f.plan.fingerprint = planFingerprint(body);
+  f.operation.projects[0]!.phase = "prepared";
+  writeOperation(f.operation.id, f.operation, f.home);
+  f.states.get("alpha")!.peers = [{ id: "codex", state: "idle", threadId: "t1" }, { id: "kimi", state: "idle" }];
+  const blocked = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(blocked.error).toBe(`source conversation or active peer membership changed; next action: ahub recovery abort ${f.operation.id}, then make a new plan`);
+  expect(publicOperation(blocked).next).toContain(`ahub recovery abort ${f.operation.id}`);
+  delete f.states.get("alpha")!.recovery; // the re-prepared hold lapses again before the operator acts
+  await abortRecovery(f.operation.id, f.driver, f.home);
+  expect((readOperation(f.operation.id, f.home) as { phase: string }).phase).toBe("cancelled");
+  expect(recoveryLock(f.home)).toBeUndefined();
+  expect(f.calls).not.toContain("commit:alpha");
+});
+
+test("a session that joined after the plan, with effects recorded, is to be ended, not restored", async () => {
+  const f = expiredLease();
+  f.states.get("alpha")!.peers.push({ id: "kimi", state: "idle" });
+  const result = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(result.error).toContain("kimi changed while terminal effects of this operation are recorded, so a new plan cannot replace it; next action: end that kimi session, then ahub recovery resume");
+});
+
+test("staging refuses a target that cannot read recovery waivers when a reconnect-only session is planned", async () => {
+  const f = fixture("restart");
+  f.operation.sourceRoot = PACKAGE_ROOT;
+  Object.assign(f.operation.plan, { sourceRoot: PACKAGE_ROOT, version: JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version, sourceDigest: packageDigest(PACKAGE_ROOT) });
+  f.operation.plan.projects[0]!.reconnectOnly = ["claude"];
+  const driver = makeRecoveryDriver(async (argv) => ({ code: 0, stdout: argv[2]!.includes("readRecoveryWaivers") ? "undefined\n" : `${PROTOCOL}\n`, stderr: "" }));
+  await expect(driver.stage(f.operation)).rejects.toThrow("predates recovery waivers");
+  const current = makeRecoveryDriver(async (argv) => ({ code: 0, stdout: argv[2]!.includes("readRecoveryWaivers") ? "function\n" : `${PROTOCOL}\n`, stderr: "" }));
+  expect((await current.stage(f.operation)).root).toBe(PACKAGE_ROOT);
+});

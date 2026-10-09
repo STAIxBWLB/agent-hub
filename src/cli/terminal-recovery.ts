@@ -64,7 +64,8 @@ export interface RecoveryBlocker {
     | "terminal-unready"
     | "command-error"
     | "ambiguous-create"
-    | "launcher-exited";
+    | "launcher-exited"
+    | "terminal-gone";
   message: string;
   peer?: TerminalPeer;
   handle?: string;
@@ -147,7 +148,7 @@ export interface RecordedTerminalLaunch {
 
 const MAX_WAIT_MS = 10 * 60 * 1000;
 const MAX_COMMAND_MS = 30_000;
-/** #215: a replacement's readiness is awaited in slices this long, asking between them whether its launcher exited. */
+/** #215: a replacement's readiness is awaited in slices this long, checking between them whether its launcher still runs. */
 const EXIT_SLICE_MS = 5_000;
 const ALLOWED_ENV = ["CODEX_HOME", "CLAUDE_CONFIG_DIR"] as const;
 type AllowedEnvName = (typeof ALLOWED_ENV)[number];
@@ -185,7 +186,11 @@ function runnerFailure(argv: readonly string[], result: CommandResult): Recovery
 
 async function run(runner: CommandRunner, argv: readonly string[]): Promise<unknown> {
   const result = await runner(argv);
-  if (commandStatus(result) !== 0) throw new OrcaCommandError(runnerFailure(argv, result));
+  if (commandStatus(result) !== 0) {
+    // Orca 1.4.223 answers a handle whose terminal was removed with `{"ok":false,"error":{"code":"terminal_handle_stale"}}`.
+    if (object(object(decoded(result)).error).code === "terminal_handle_stale") throw new OrcaCommandError({ code: "terminal-gone", message: `Orca terminal ${argv[argv.indexOf("--terminal") + 1] ?? ""} no longer exists` });
+    throw new OrcaCommandError(runnerFailure(argv, result));
+  }
   const value = decoded(result);
   const root = object(value);
   const payload = responseResult(value);
@@ -411,6 +416,7 @@ function blocker(code: RecoveryBlocker["code"], message: string, peer?: Terminal
     code === "ambiguous-create" ? "inspect the existing terminal and attach the original session before resuming" :
     code === "terminal-unready" ? "finish or cancel the active terminal turn, then resume recovery" :
     code === "launcher-exited" ? "read ahub recovery status for the recorded choices; the session was not restored" :
+    code === "terminal-gone" ? "the terminal was closed; inspect the project's terminals in Orca before resuming recovery" :
     "inspect the named terminal and resume recovery after the identity is verified";
   return { code, message, ...(peer ? { peer } : {}), ...(handle ? { handle, terminalReference: handle } : {}), nextAction };
 }
@@ -514,8 +520,8 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
  * One bounded Orca wait. Orca 1.4.223 answers a wait that timed out with exit 1 and `{"ok":false,"error":{"code":"timeout"}}`:
  * that is "not satisfied", not a failure. Any other failure still throws.
  */
-async function waitSatisfied(runner: CommandRunner, handle: string, condition: "tui-idle" | "exit", timeoutMs: number): Promise<boolean> {
-  const argv = ["terminal", "wait", "--terminal", handle, "--for", condition, "--timeout-ms", String(timeoutMs), "--json"];
+async function waitSatisfied(runner: CommandRunner, handle: string, timeoutMs: number): Promise<boolean> {
+  const argv = ["terminal", "wait", "--terminal", handle, "--for", "tui-idle", "--timeout-ms", String(timeoutMs), "--json"];
   const result = await runner(argv);
   const timedOut = (text: string | Uint8Array | undefined) => { try { return object(object(JSON.parse(bytes(text))).error).code === "timeout"; } catch { return false; } };
   if (commandStatus(result) !== 0 && (object(object(decoded(result)).error).code === "timeout" || timedOut(result.stderr))) return false;
@@ -529,7 +535,7 @@ export async function waitForIdle(binding: TerminalBinding, timeoutMs: number, o
   const timeout = Number.isFinite(timeoutMs) && timeoutMs >= 0 ? Math.min(Math.floor(timeoutMs), MAX_WAIT_MS) : 0;
   try {
     await showBinding(binding, config);
-    const satisfied = await waitSatisfied(config.runner, binding.handle, "tui-idle", timeout);
+    const satisfied = await waitSatisfied(config.runner, binding.handle, timeout);
     const blockers = satisfied ? [] : [blocker("terminal-unready", `terminal ${binding.handle} did not become idle before the bounded wait`, binding.peer, binding.handle)];
     return { satisfied, manualRequired: !satisfied, blockers };
   } catch (error) {
@@ -592,23 +598,34 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
       created = listed[0]!;
     }
     let replacement: TerminalBinding = { ...binding, handle: createdHandle, incarnationId: nestedString(created, ["incarnationId"])!, worktreeId, launch: binding.launch, launchMetadata: binding.launch };
-    // #215: a launcher that exits (a resume that finds no saved session) never becomes TUI-idle, so readiness is awaited
-    // in slices and Orca is asked between them whether it exited: one slice bounds the detection, not the whole wait.
+    // The launch record `ahub <peer>` writes in the new terminal, with whether its process still runs.
+    const launches = async () => {
+      const possible = readLaunchRecords(config.stateDir).filter((item) => item.instanceId === config.instanceId && item.peer === binding.peer && item.projectRoot === binding.projectRoot && item.handle === createdHandle && item.worktreeId === replacement.worktreeId && item.incarnationId === replacement.incarnationId);
+      return { possible, live: (await Promise.all(possible.map(async (item) => await launcherMatches(item, config.processIdentity) ? item : undefined))).find((item): item is RecordedTerminalLaunch => item !== undefined) };
+    };
+    // #215: Orca types the command into a login shell that outlives it, so the terminal never exits with the launcher.
+    // Readiness is awaited in slices, and between them the launcher's own record says whether it still runs: one that
+    // recorded itself and is gone, or a terminal Orca no longer has, failed. One that never recorded itself is
+    // left to the readiness bound and to the coordinator's reconciliation of its pending receipt.
+    const exited = (why: string) => ({ created: true, ready: false, manualRequired: true, blockers: [blocker("launcher-exited", `the ${binding.peer} restoration launcher in terminal ${createdHandle} ${why} before its TUI was ready`, binding.peer, createdHandle)] });
     const deadline = Date.now() + Math.min(timeoutMs, MAX_WAIT_MS);
     let idle = await waitForIdle(replacement, Math.min(EXIT_SLICE_MS, timeoutMs), config);
-    while (!idle.satisfied && idle.blockers[0]?.code === "terminal-unready") {
-      if (await waitSatisfied(config.runner, createdHandle, "exit", 1)) {
-        return { created: true, ready: false, manualRequired: true, blockers: [blocker("launcher-exited", `the ${binding.peer} restoration launcher in terminal ${createdHandle} exited before its TUI was ready`, binding.peer, createdHandle)] };
-      }
+    for (;;) {
+      if (idle.blockers[0]?.code === "terminal-gone") return exited("lost its terminal");
+      if (idle.satisfied || idle.blockers[0]?.code !== "terminal-unready") break;
+      const launch = await launches();
+      if (launch.possible.length && !launch.live) return exited("exited");
       if (Date.now() >= deadline) break;
       idle = await waitForIdle(replacement, Math.min(EXIT_SLICE_MS, deadline - Date.now()), config);
     }
     if (!idle.satisfied) return { created: true, ready: false, manualRequired: true, blockers: idle.blockers };
+    // An idle terminal may be the login shell the launcher returned to.
+    const launch = await launches();
+    if (launch.possible.length && !launch.live) return exited("exited");
     const shown = await showBinding(replacement, config);
     const identity = identityFrom(shown);
     const session = sessionFrom(shown);
-    const possibleRecords = readLaunchRecords(config.stateDir).filter((item) => item.instanceId === config.instanceId && item.peer === binding.peer && item.projectRoot === binding.projectRoot && item.handle === createdHandle && item.worktreeId === replacement.worktreeId && item.incarnationId === replacement.incarnationId);
-    const recorded = (await Promise.all(possibleRecords.map(async (item) => await launcherMatches(item, config.processIdentity) ? item : undefined))).find((item): item is RecordedTerminalLaunch => item !== undefined);
+    const recorded = launch.live;
     const same = (value: string | undefined) => anySession || value === binding.sessionId;
     if ((identity !== binding.peer || !same(session)) && !(recorded && (identity === undefined || identity === binding.peer) && (session === undefined || same(session)))) {
       return { created: true, ready: true, manualRequired: true, blockers: [blocker("ambiguous-create", `created terminal ${createdHandle} cannot be mapped to the original ${binding.peer} session`, binding.peer, createdHandle)] };

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -306,38 +306,61 @@ test("the default launcher signature is stable across the reading invocation's t
   }
 });
 
-// #215: `codex resume <id>` that finds no saved session exits; its terminal never becomes TUI-idle. Orca answers
-// every wait that times out with exit 1 and error code "timeout".
-test("a restoration launcher that exits is recognized within one wait slice; a slow live one is still awaited", async () => {
+// #215: `codex resume <id>` that finds no saved session exits, but Orca typed the command into a login shell that
+// outlives it: the terminal never exits and never reads TUI-idle. Only the launcher's own record says it is gone.
+// Orca answers every wait that times out with exit 1 and error code "timeout", and a removed terminal's handle as stale.
+test("a restoration launcher that exits is recognized by its own record within one wait slice; a slow live one is still awaited", async () => {
   const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js codex resume session-1", argv: [], env: {} };
   const binding: TerminalBinding = { peer: "codex", handle: "term-old", incarnationId: "inc-old", worktreeId, projectRoot: root, sessionId: session, launch, launchMetadata: launch };
   const replacement = terminal({ handle: "term-new", incarnationId: "inc-new" });
-  const scenario = (exits: boolean) => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-launcher-exit-"));
+  const emptyState = mkdtempSync(join(tmpdir(), "ahub-launcher-none-"));
+  // What `ahub codex` writes in the new terminal before it execs codex.
+  writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify([{ peer: "codex", projectRoot: root, stateDir, instanceId: "i-target", launcherPid: 4242,
+    launcherSignature: "launcher-start", launchId: "launch-new", handle: "term-new", incarnationId: "inc-new", worktreeId, env: {} }]));
+  const scenario = (opts: { launcher: "live" | "gone"; gone?: boolean; idleAfter?: number }) => {
     let idleWaits = 0;
-    return fake((argv) => {
+    const commands = fake((argv) => {
       if (argv[1] === "create") return { result: { terminal: { handle: "term-new", incarnationId: "inc-new", worktreeId } } };
-      if (argv[1] === "show") return { result: { terminal: replacement } };
-      if (argv[1] === "wait" && argv.includes("exit")) return exits ? { result: { wait: { satisfied: true } } } : waitTimedOut;
-      if (argv[1] === "wait") return exits || idleWaits++ < 2 ? waitTimedOut : { result: { wait: { satisfied: true } } };
+      if (argv[1] === "show") return opts.gone ? { status: 1, stdout: JSON.stringify({ ok: false, error: { code: "terminal_handle_stale" } }) } : { result: { terminal: replacement } };
+      if (argv[1] === "wait") return idleWaits++ < (opts.idleAfter ?? Infinity) ? waitTimedOut : { result: { wait: { satisfied: true } } };
       throw new Error("unexpected command");
     });
+    return { ...commands, options: { runner: commands.runner, stateDir, instanceId: "i-target", processIdentity: () => opts.launcher === "live" ? "launcher-start" : undefined } };
   };
-  const exited = scenario(true);
-  const started = Date.now();
-  const result = await createTerminal(binding, exited.runner);
-  expect(Date.now() - started).toBeLessThan(5_000);
-  expect(result).toMatchObject({ created: true, ready: false, manualRequired: true });
-  expect(result.newBinding).toBeUndefined();
-  expect(result.blockers[0]?.code).toBe("launcher-exited");
-  const waits = exited.calls.filter((argv) => argv[1] === "wait");
-  expect(waits.map((argv) => [argv[argv.indexOf("--for") + 1], argv[argv.indexOf("--timeout-ms") + 1]])).toEqual([["tui-idle", "5000"], ["exit", "1"]]);
+  try {
+    const exited = scenario({ launcher: "gone" });
+    const started = Date.now();
+    const result = await createTerminal(binding, exited.options);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(result).toMatchObject({ created: true, ready: false, manualRequired: true });
+    expect(result.newBinding).toBeUndefined();
+    expect(result.blockers[0]?.code).toBe("launcher-exited");
+    expect(exited.calls.filter((argv) => argv[1] === "wait").map((argv) => argv[argv.indexOf("--timeout-ms") + 1])).toEqual(["5000"]);
+    expect(exited.calls.some((argv) => argv.includes("exit"))).toBe(false); // terminal exit is never the evidence
 
-  // A live launcher whose TUI needs more than one slice: both timeouts read as "not yet", never as a failure.
-  const slow = scenario(false);
-  const ready = await createTerminal(binding, slow.runner);
-  expect(ready.manualRequired).toBe(false);
-  expect(ready.newBinding?.handle).toBe("term-new");
-  expect(slow.calls.filter((argv) => argv[1] === "wait").map((argv) => argv[argv.indexOf("--for") + 1])).toEqual(["tui-idle", "exit", "tui-idle", "exit", "tui-idle"]);
+    // The shell the launcher returned to may read idle: a dead launcher still means it exited.
+    const idleShell = scenario({ launcher: "gone", idleAfter: 0 });
+    expect((await createTerminal(binding, idleShell.options)).blockers[0]?.code).toBe("launcher-exited");
+
+    // A terminal Orca no longer has (stale handle) is gone too, never a command error.
+    const removed = scenario({ launcher: "gone", gone: true });
+    const gone = await createTerminal(binding, removed.options);
+    expect(gone.blockers[0]?.code).toBe("launcher-exited");
+    expect(gone.blockers[0]?.message).toContain("lost its terminal");
+
+    // A live launcher whose TUI needs more than one slice: each timeout reads as "not yet", never as a failure.
+    const slow = scenario({ launcher: "live", idleAfter: 2 });
+    const ready = await createTerminal(binding, slow.options);
+    expect(ready.manualRequired).toBe(false);
+    expect(ready.newBinding?.handle).toBe("term-new");
+    expect(slow.calls.filter((argv) => argv[1] === "wait")).toHaveLength(3);
+
+    // No record yet (the launcher died before recording itself, or is slow): left to the bound, not called failed.
+    const unrecorded = scenario({ launcher: "gone" });
+    const bounded = await createTerminal(binding, { ...unrecorded.options, stateDir: emptyState }, 50);
+    expect(bounded.blockers[0]?.code).toBe("terminal-unready");
+  } finally { for (const dir of [stateDir, emptyState]) rmSync(dir, { recursive: true, force: true }); }
 });
 
 // #215: a fresh session the operator chose maps to the replacement under its new id; without the choice it is refused.

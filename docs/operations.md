@@ -1122,7 +1122,9 @@ closed or relaunched, a `claude-session.json` left by an earlier launch is never
 used as its target, and the plan does not show that record's id. Its plugin
 reconnects to the new hub by itself (the coordinator waits up to 90 seconds) and
 keeps the plugin version it started with until that Claude session restarts.
-Across a control-protocol change it cannot reconnect; the plan then names a
+The target release must read recovery waivers; staging refuses one that does
+not, before any runtime changes. Across a control-protocol change it cannot
+reconnect; the plan then names a
 blocker: end the session, or relaunch it with `ahub claude` in Orca, and make a
 new plan. A refused `--yes`, and every dry-run, prints each blocker on its own
 `ahub: blocker:` line before the final one.
@@ -1148,19 +1150,28 @@ start a second runner while one is alive.
   source again and checks its peers again, keeping the receipts, so no terminal
   is closed twice. It refuses, naming the next step, when the source daemon was
   replaced, when another operation holds it, or when a peer changed: a peer whose
-  terminal the operation closed must stay closed, every other one must keep its
-  conversation.
+  terminal the operation closed must stay closed, a session that joined since
+  must end, every other one must keep its conversation. With nothing closed yet,
+  `abort` cancels the operation (also once its hold has lapsed) so a new plan
+  can be made.
 - A Codex conversation comes back only when a rollout file naming its thread
   exists under `sessions/` of the store the restored terminal uses (the
   recorded `CODEX_HOME`, else `~/.codex`). The plan blocks on one that does not,
   the coordinator checks again before closing the terminal and before creating
-  the new one, and a restored terminal whose launcher exits is recognized
-  within one 5-second wait slice (an Orca wait that times out only means "not
-  yet"). To continue without such a conversation, end that Codex session and
-  close its Orca terminal, then `resume`. Either way the receipt says
-  `restored:codex` `failed`; it never counts as restored.
+  the new one. To continue without such a conversation, end that Codex session
+  and close its Orca terminal, then `resume`; it stops at restoring Codex, where
+  `--fresh-session codex` below is the way on.
+- A restored terminal runs its launch in a login shell, so the coordinator
+  watches the launcher, not the terminal: once `ahub codex`, `ahub claude` or
+  `ahub pi` has recorded itself there and its process is gone, or Orca no longer
+  has the terminal, the restoration failed (found within one 5-second wait). A
+  launcher that dies before recording itself is found only after the 10-minute
+  wait, or when `resume` finds neither a live launcher nor an attached session.
+  The receipt then says `restored:<peer>` `failed`; it never counts as restored,
+  and no second terminal is opened while a launcher for that peer still runs.
 - `ahub recovery dispose <operation-id> --fresh-session <peer> --reason <text>`
-  applies to a peer whose restoration failed. It records the lost session or
+  applies to a Codex or Claude peer whose restoration failed (Pi is refused: a
+  restored hub resumes Pi's recorded session). It records the lost session or
   thread id (status shows it under `lostContinuity`) and resumes: the peer
   starts without its old conversation, and the rest is verified as usual.
 - `ahub recovery dispose <operation-id> --stop-and-archive --reason <text>`

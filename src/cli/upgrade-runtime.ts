@@ -49,13 +49,13 @@ function terminalOptions(run: RunCommand = runCommand): TerminalRecoveryOptions 
   } };
 }
 
-/** `fresh` (#215, the operator's explicit choice) starts the peer without resuming its recorded session. */
+/** `fresh` (#215, the operator's explicit choice) starts Codex or Claude without resuming its recorded session. */
 export function restoredTerminalArgv(entrypoint: string, projectRoot: string, binding: TerminalBinding, fresh = false): string[] {
   if (binding.peer === "codex") return [process.execPath, entrypoint, "--project", projectRoot, "codex", ...(fresh ? [] : ["resume", binding.sessionId])];
   if (binding.peer === "claude") return [process.execPath, entrypoint, "--project", projectRoot, "claude", ...(fresh ? [] : ["--resume", binding.sessionId])];
   return [process.execPath, entrypoint, "--project", projectRoot, "pi", "--mode", "tui",
     ...(binding.backend ? ["--backend", binding.backend] : []), ...(binding.model ? ["--model", binding.model] : []),
-    ...(fresh ? [] : binding.sessionFile ? ["--session-file", binding.sessionFile] : ["--session-id", binding.sessionId])];
+    ...(binding.sessionFile ? ["--session-file", binding.sessionFile] : ["--session-id", binding.sessionId])];
 }
 
 async function rpc(project: Project, message: Record<string, unknown>, protocol = PROTOCOL): Promise<any> {
@@ -250,6 +250,11 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
     if (session !== saved.sessionId) throw new Error(`${saved.peer}: daemon session changed during terminal revalidation; manual-required`);
     return current;
   };
+  // Reconnect-only (#206) and fresh sessions (#215) need a target hub that reads recovery-waivers.json.
+  const waiversSupported = async (root: string) => {
+    const probe = await run([process.execPath, "-e", `import { readRecoveryWaivers } from ${JSON.stringify(join(root, "src/hub/restart.ts"))}; console.log(typeof readRecoveryWaivers)`]);
+    return probe.code === 0 && probe.stdout.trim() === "function";
+  };
   const attachedId = async (planned: PlannedProject, peer: string, op: RecoveryOperation): Promise<string> => {
     for (const deadline = now() + RECONNECT_WAIT_MS; ;) {
       const current = (await inspectRecovery(planned.project)).peers.find((p) => p.id === peer && p.state !== "offline");
@@ -267,6 +272,9 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         : await stageRelease(op.plan.version, op.plan.integrity!, run);
       const protocol = await run([process.execPath, "-e", `import { PROTOCOL } from ${JSON.stringify(join(target.root, "src/hub/control-client.ts"))}; console.log(PROTOCOL)`]);
       if (protocol.code !== 0 || Number(protocol.stdout.trim()) !== PROTOCOL) throw new Error("target protocol requires a newer coordinator; staged package retained, runtimes unchanged");
+      if (op.plan.projects.some((p) => p.reconnectOnly?.length) && !(await waiversSupported(target.root))) {
+        throw new Error(`target ${op.plan.version} predates recovery waivers, so its hub could never release a reconnect-only Claude session; staged package retained, runtimes unchanged; next action: ahub recovery abort ${op.id}, then end that Claude session or choose a newer target`);
+      }
       return target;
     },
     prepare: (p, id, instance) => control(p, "prepare", id, instance),
@@ -303,7 +311,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         }
         // #215: check resume viability again right before the destructive effect.
         if (binding.peer === "codex" && !codexTranscriptExists(binding)) {
-          throw new Error(`${unresumable(binding)}; no terminal was closed; next action: ahub recovery dispose ${op.id} --stop-and-archive --reason <text> releases the source with its sessions still open, or end that Codex session, close its Orca terminal ${binding.handle} and ahub recovery resume ${op.id} to continue without its conversation`);
+          throw new Error(`${unresumable(binding)}; no terminal was closed; next action: ahub recovery dispose ${op.id} --stop-and-archive --reason <text> releases the source with its sessions still open, or end that Codex session, close its Orca terminal ${binding.handle} and ahub recovery resume ${op.id}; resume then stops at restoring codex, where ahub recovery dispose ${op.id} --fresh-session codex --reason <text> is the explicit way to continue without its conversation`);
         }
         const idle = await waitForIdle(binding, 600_000, terminalOptions(run));
         if (!idle.satisfied) throw new Error(`${binding.peer}: terminal is not verified idle; source retained`);
@@ -349,8 +357,14 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         if ((original.peer === "claude") !== (group === "claude")) continue;
         const key = `restored:${original.peer}`;
         const fresh = !!progress.fresh?.[original.peer];
-        // #215: a failed launch left no attached session, so launching again is no duplicate. A thread that is
-        // still not resumable fails again below with the same choices.
+        // What runs for this peer on the target: an attached session, or a launcher recorded here whose process lives.
+        const attachedSession = (inspection: Inspection) => {
+          const peer = inspection.peers.find((p) => p.id === original.peer && p.state !== "offline");
+          return original.peer === "codex" ? peer?.threadId : peer?.sessionId;
+        };
+        const liveLauncher = () => recordedLauncher(original.peer, planned.project.root, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId });
+        // #215: a failed receipt is launched again below, never beside a live launch (the guard before create); a
+        // thread that is still not resumable fails again with the same choices.
         if (progress.terminals[key] === "failed") { delete progress.terminals[key]; save(); }
         const notRestored = (why: string) => new Error(fresh
           ? `${original.peer}: ${why}; next action: read that terminal in Orca for the launcher's error and fix its cause, then ahub recovery resume ${op.id}; or ahub recovery dispose ${op.id} --stop-and-archive --reason <text>`
@@ -361,6 +375,11 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         }
         if (progress.terminals[key] === "pending") {
           const observed = await inspectRecovery(planned.project);
+          // #215: a create whose launcher no longer runs and whose session never attached left nothing to reconcile.
+          if (!attachedSession(observed) && !(await liveLauncher())) {
+            progress.terminals[key] = "failed"; save();
+            throw notRestored(`its launcher no longer runs and no ${original.peer} session attached`);
+          }
           const peer = observed.peers.find((p) => p.id === original.peer);
           const attached = original.peer === "codex" ? peer?.threadId : peer?.sessionId;
           let expected = original;
@@ -381,8 +400,15 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           progress.terminals[key] = "failed"; save();
           throw notRestored(unresumable(original));
         }
-        // The restored daemon must accept the new session the operator chose instead of the recorded one.
-        if (fresh) waiveRecoveryPeers(planned.project.stateDir, op.id, { [original.peer]: "fresh-session" });
+        // Never create beside a live launch: a failed or reconciled receipt says nothing ran when it was written.
+        if (attachedSession(live) || await liveLauncher()) {
+          throw new Error(`${original.peer}: a ${original.peer} session or launcher is live on the target although none was restored; no terminal was created; next action: inspect the project's ${original.peer} terminal in Orca, end it if it is not the restored session, then ahub recovery resume ${op.id}`);
+        }
+        if (fresh) {
+          if (!(await waiversSupported(op.targetRoot!))) throw new Error(`${original.peer}: target ${op.plan.version} predates recovery waivers, so it cannot accept a fresh session; next action: ahub recovery dispose ${op.id} --stop-and-archive --reason <text>`);
+          // The restored daemon must accept the new session the operator chose instead of the recorded one.
+          waiveRecoveryPeers(planned.project.stateDir, op.id, { [original.peer]: "fresh-session" });
+        }
         const entrypoint = join(op.targetRoot!, "src/cli/main.js");
         const argv = restoredTerminalArgv(entrypoint, planned.project.root, original, fresh);
         const assignments = { ...original.launch.env, AGENTHUB_HOME: hubHome(), AGENTHUB_RECOVERY_OPERATION: op.id };
@@ -394,7 +420,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         const exited = restored.blockers.find((b) => b.code === "launcher-exited");
         if (exited) {
           progress.terminals[key] = "failed"; save();
-          throw notRestored(`its ${fresh ? "fresh" : "restoration"} launcher in terminal ${exited.handle} exited before the session was ready`);
+          throw notRestored(exited.message);
         }
         if (restored.manualRequired || !restored.newBinding) throw new Error(`${original.peer}: original session restoration needs manual verification`);
         // The daemon's id is authoritative: a fresh session is recorded under the id it reports once attached.

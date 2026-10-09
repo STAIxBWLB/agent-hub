@@ -217,15 +217,27 @@ file naming it exists under `sessions/` of the store its restoration uses (the
 launcher's captured `CODEX_HOME`, else `~/.codex`); an app-server thread id
 alone proves nothing. The plan blocks a Codex peer without one, the coordinator
 checks again before closing its terminal (closing nothing when it fails) and
-before creating the replacement. A replacement launcher is awaited in 5-second
-slices of Orca's `tui-idle` wait; between slices `terminal wait --for exit`
-is asked, so a launcher that exited is recognized within one slice instead of
-after the 10-minute readiness bound. Orca (1.4.223) answers a wait that timed
-out with exit 1 and `{"ok":false,"error":{"code":"timeout"}}`; that counts as
-not yet satisfied, while any other failure stops the wait. Such a launch, or a thread found not
-resumable before the launch, is receipted `restored:<peer>` = `failed` and never
-counts as restored. Claude's zero-turn rule is unchanged; Pi resume viability is
-not checked.
+before creating the replacement.
+
+Launcher failure. Orca's `terminal create --command` types the command into a
+login shell, which outlives it, so the terminal never exits with the launcher
+and its exit is no evidence. The evidence is the hub's own: `ahub codex`,
+`ahub claude` and `ahub pi --mode tui` record their launcher (pid and process
+signature) in `terminal-recovery.json` for the terminal they run in, before
+they start the native agent. A replacement is awaited in 5-second slices of
+Orca's `tui-idle` wait (Orca 1.4.223 answers a timed-out wait with exit 1 and
+`{"ok":false,"error":{"code":"timeout"}}`, which counts as not yet). Between
+slices, and once the terminal reads idle (an idle terminal may be the shell the
+launcher returned to), a recorded launcher whose process is gone, or a handle
+Orca reports `terminal_handle_stale`, means the launch failed, recognized within
+one slice. A launcher that died before recording itself is not distinguished
+from a slow one: it waits out the 10-minute readiness bound, and its `pending`
+receipt is reconciled on resume, where no live recorded launcher and no attached
+session for that peer on the target means `failed`. No terminal is created while
+a recorded launcher for the peer lives on the target or its session is attached.
+A launch that failed, or a thread found not resumable before the launch, is
+receipted `restored:<peer>` = `failed` and never counts as restored. Claude's
+zero-turn rule is unchanged; Pi resume viability is not checked.
 
 Failed restoration. The operation blocks naming the peer, its session or thread
 id and the choices. `resume` launches a failed peer again once its cause is
@@ -245,7 +257,11 @@ an ordinary terminal (agent shells are refused by the CLI identity gate), claim
 the runner (refusing while one is alive) and append to the receipt's audit:
 
 - `ahub recovery dispose <id> --fresh-session <peer> --reason <text>` applies
-  only to a peer whose restoration is receipted `failed`. Per affected project
+  only to a Codex or Claude peer whose restoration is receipted `failed`; Pi is
+  refused, because a restored hub refills a Pi start from its recorded resume.
+  Like reconnect-only (#206), it needs a target that reads
+  `recovery-waivers.json`: staging refuses a target without it when a
+  reconnect-only session is planned, and the fresh launch is refused on one. Per affected project
   it records the lost session or thread id (`fresh`) and schedules `resume`,
   which writes an operation-fenced waiver so the restored daemon accepts a new
   session for that peer, launches the peer without a resume id in a new
@@ -278,4 +294,7 @@ the runner (refusing while one is alive) and append to the receipt's audit:
   target ran is started again with the target's CLI. The archived reset proposed
   in #214 can follow: no lock or replayable snapshot is left in its way.
 - `abort` stays the escape for a preflight without effects; its refusal names
-  the disposition.
+  the disposition. It also cancels a prepared project whose source still runs as
+  the same instance after its hold lapsed, which was never committed. A roster
+  change found while no effects are recorded names `abort` (this operation's lock
+  refuses a new upgrade until it is cancelled).

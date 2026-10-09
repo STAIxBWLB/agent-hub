@@ -363,13 +363,20 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
   let attachedThread: string | undefined;
   const server = fakeHub(temp, stateDir, "i-target", () => ({ operationId: "op-215", phase: "restored", ready: true,
     peers: attachedThread ? { codex: { id: "codex", state: "idle", threadId: attachedThread } } : {} }));
-  let exits = true;
+  const ended = Bun.spawnSync(["true"]).pid;
+  // What `ahub codex` writes in the terminal it runs in, before it execs codex.
+  const record = (live: boolean, handle = "term-new") => writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify([{ peer: "codex", projectRoot: temp, stateDir, instanceId: "i-target",
+    launcherPid: live ? process.pid : ended, launcherSignature: live ? processSignature(process.pid) : "ended-launcher", launchId: `launch-${handle}`, handle, incarnationId: "inc-new", worktreeId: "wt", env: {} }]));
+  let resumes = false; // whether the launched codex finds its session
   const replacement = { handle: "term-new", incarnationId: "inc-new", worktreeId: "wt", worktreePath: temp, agentIdentity: "codex", sessionId: "thread-new", connected: true };
   const calls: string[][] = [];
   const run = async (argv: string[]) => {
     calls.push(argv);
-    // Orca answers a wait that timed out with exit 1 and error code "timeout".
-    if (argv[2] === "wait" && argv.includes("exit") !== exits) return { code: 1, stdout: JSON.stringify({ ok: false, error: { code: "timeout" } }), stderr: "" };
+    if (argv[1] === "-e") return { code: 0, stdout: "function\n", stderr: "" }; // the target reads recovery waivers
+    if (argv[2] === "create") { record(resumes); if (resumes) attachedThread = "thread-new"; }
+    // The launch was typed into a login shell that outlives it: a codex that exits leaves a terminal that never
+    // reads TUI-idle, and Orca answers each timed-out wait with exit 1 and error code "timeout".
+    if (argv[2] === "wait" && !resumes) return { code: 1, stdout: JSON.stringify({ ok: false, error: { code: "timeout" } }), stderr: "" };
     const result = argv[2] === "create" ? { terminal: { handle: "term-new", incarnationId: "inc-new", worktreeId: "wt" } }
       : argv[2] === "show" ? { terminal: replacement }
       : argv[2] === "wait" ? { wait: { satisfied: true } } : { terminals: [replacement] };
@@ -381,23 +388,34 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
     source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: "codex", state: "idle", threadId: "thread-T" }], blockers: [] },
     terminals: [{ peer: "codex", handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", projectRoot: temp, sessionId: "thread-T", launch, launchMetadata: launch }], blockers: [],
   };
-  const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "started", terminals: { "closed:codex": true } };
+  const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "started", terminals: { "closed:codex": true, "restored:codex": "pending" } };
   const op = { id: "op-215", targetRoot: "/target", plan: { version: VERSION } } as RecoveryOperation;
   const previousHome = process.env.AGENTHUB_HOME;
   process.env.AGENTHUB_HOME = join(temp, "home");
   try {
     const driver = makeRecoveryDriver(run);
+    // A pending create with no live launcher and no attached session left nothing to reconcile: failed.
+    await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("its launcher no longer runs and no codex session attached");
+    expect(progress.terminals["restored:codex"]).toBe("failed");
+
     await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("--fresh-session codex --reason <text>");
     expect(progress.terminals["restored:codex"]).toBe("failed");
-    expect(calls).toEqual([]); // found before any terminal was created
+    expect(calls).toEqual([]); // no rollout: found before any terminal was created
 
     writeFileSync(join(sessions, "rollout-2026-10-09T00-00-00-thread-T.jsonl"), "{}\n");
-    await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("its restoration launcher in terminal term-new exited before the session was ready");
+    await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("the codex restoration launcher in terminal term-new exited before its TUI was ready");
     expect(progress.terminals["restored:codex"]).toBe("failed");
     expect(calls.filter((argv) => argv[2] === "create")).toHaveLength(1);
+    expect(calls.some((argv) => argv.includes("exit"))).toBe(false);
+
+    // A launcher still live here is never doubled, whatever the receipt says.
+    record(true, "term-elsewhere");
+    await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("is live on the target although none was restored; no terminal was created");
+    expect(calls.filter((argv) => argv[2] === "create")).toHaveLength(1);
+    record(false);
 
     progress.fresh = { codex: { lost: "thread-T", reason: "test", at: 1 } };
-    exits = false; attachedThread = "thread-new";
+    resumes = true;
     await driver.restore(planned, progress, op, "native", () => {});
     expect((progress.terminals["restored:codex"] as { sessionId: string }).sessionId).toBe("thread-new");
     const create = calls.filter((argv) => argv[2] === "create").at(-1)!;

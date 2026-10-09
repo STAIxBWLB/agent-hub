@@ -161,15 +161,19 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     const closed = (peer: string) => progress.terminals[`closed:${peer}`] === true;
     const expected = planned.source.peers.filter((p) => p.state !== "offline");
     const active = live.peers.filter((p) => p.state !== "offline");
-    const changed = active.find((p) => !expected.some((peer) => peer.id === p.id)) ?? expected.find((peer) => {
+    const extra = active.find((p) => !expected.some((peer) => peer.id === p.id));
+    const changed = extra ?? expected.find((peer) => {
       const current = active.find((p) => p.id === peer.id);
       if (closed(peer.id)) return !!current;
       if (!current) return !again;
       return !planned.reconnectOnly?.includes(peer.id) && (current.threadId !== peer.threadId || current.sessionId !== peer.sessionId);
     });
     if (!changed) return;
-    if (Object.keys(progress.terminals).length) throw new Error(`${planned.project.id}: ${changed.id} changed while terminal effects of this operation are recorded, so a new plan cannot replace it; next action: restore ${changed.id}'s original session (or end it if this operation closed its terminal), then ahub recovery resume ${id}; or ahub recovery dispose ${id} --stop-and-archive --reason <text>`);
-    throw new Error("source conversation or active peer membership changed; make a new plan");
+    // A session that is not in the plan, or whose terminal this operation closed, has no original to restore.
+    const fix = extra || closed(changed.id) ? `end that ${changed.id} session` : `restore ${changed.id}'s original session`;
+    if (Object.keys(progress.terminals).length) throw new Error(`${planned.project.id}: ${changed.id} changed while terminal effects of this operation are recorded, so a new plan cannot replace it; next action: ${fix}, then ahub recovery resume ${id}; or ahub recovery dispose ${id} --stop-and-archive --reason <text>`);
+    // The lock this operation holds refuses a new upgrade until the operation is cancelled.
+    throw new Error(`source conversation or active peer membership changed; next action: ahub recovery abort ${id}, then make a new plan`);
   };
   // Prepare, or after an expired lease re-prepare, the planned source and wait until it is quiet.
   const prepareSource = async (planned: PlannedProject, progress: ProjectProgress, again = false) => {
@@ -295,7 +299,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
 /** Receipts and runner state only (#215): ids, phases and effects, never task or message text. */
 export function publicOperation(op: RecoveryOperation, runnerPid?: number) {
   const effect = (value: unknown) => value === "pending" || value === "failed" ? value : "done";
-  const failed = [...new Set(op.projects.flatMap((p) => Object.entries(p.terminals).filter(([key, value]) => key.startsWith("restored:") && value === "failed" && !p.fresh?.[key.slice("restored:".length)]).map(([key]) => key.slice("restored:".length))))];
+  const failed = [...new Set(op.projects.flatMap((p) => Object.entries(p.terminals).filter(([key, value]) => key.startsWith("restored:") && key !== "restored:pi" && value === "failed" && !p.fresh?.[key.slice("restored:".length)]).map(([key]) => key.slice("restored:".length))))];
   const effects = op.projects.some((p) => !["pending", "prepared"].includes(p.phase) || Object.keys(p.terminals).length);
   const open = op.phase !== "completed" && op.phase !== "cancelled";
   const next = !open ? [] : runnerPid ? [`wait: runner ${runnerPid} is working; ahub recovery status ${op.id}`]
@@ -339,7 +343,9 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
       if (live.recovery?.operationId === id) {
         if (live.instanceId !== planned.source.instanceId || !["preparing", "prepared"].includes(live.recovery.phase ?? "")) throw new Error("recovery has progressed; resume it instead");
         await driver.abort(planned.project, id, planned.source.instanceId!);
-      } else if (op.projects.find((p) => p.id === planned.project.id)?.phase === "prepared") {
+      } else if (op.projects.find((p) => p.id === planned.project.id)?.phase === "prepared" &&
+          // #215: the same source still running with its hold lapsed (an expired lease) was never committed.
+          !(live.state === "running" && live.instanceId === planned.source.instanceId && (!live.recovery?.operationId || live.recovery.phase === "released"))) {
         throw new Error("prepared source outcome is uncertain; resume it instead");
       }
     }
@@ -364,6 +370,8 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
     if (op.phase === "completed" || op.phase === "cancelled") throw new Error(`operation is already ${op.phase}`);
     const at = driver.now();
     if ("fresh" in choice) {
+      // `ahub pi` sends no fresh flag, and a restored hub refills a Pi start from its recorded resume (daemon startPeer).
+      if (choice.fresh === "pi") throw new Error(`pi: --fresh-session is not supported: a restored hub resumes Pi's recorded session, so a fresh one cannot be guaranteed; next action: ahub recovery dispose ${id} --stop-and-archive --reason <text>`);
       if (op.disposition) throw new Error(`a stop-and-archive of this operation is partway; finish it with ahub recovery dispose ${id} --stop-and-archive --reason <text>`);
       const peer = choice.fresh;
       const failed = op.projects.filter((p) => p.terminals[`restored:${peer}`] === "failed");
@@ -410,7 +418,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
       }
     } catch (error) {
       op.phase = "blocked"; op.updatedAt = driver.now();
-      op.error = `stop-and-archive stopped partway and keeps the lock: ${error instanceof Error ? error.message : "disposition failed"}; finish it with ahub recovery dispose ${id} --stop-and-archive --reason <text>`;
+      op.error = `stop-and-archive stopped partway and keeps the lock: ${error instanceof Error ? error.message : "disposition failed"}; rerun ahub recovery dispose ${id} --stop-and-archive --reason <text> once its runtimes have settled (a committed source stops by itself)`;
       writeOperation(id, op, home);
       throw error;
     }
