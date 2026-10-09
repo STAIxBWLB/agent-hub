@@ -156,6 +156,7 @@ describe("console colors", () => {
     const s = state(true); s.panel = 3;
     s.tasks = [{ id: 1, state: "in_progress", title: "retry the failed check", class: "implement", history: [{ event: "check failed", at: NOW }] }];
     expect(renderConsoleLines(s, 80, 24, NOW)[2]!.some(span => span.text === "in_progress" && span.tone === "failure")).toBe(true);
+    expect(renderConsole(s, 80, 24, NOW)[2]).toContain("in_progress check failed");
   });
   for (const [columns, rows] of [[80, 24], [120, 40], [200, 60]]) {
     test(`painted and plain geometry match ${columns}x${rows} including long Korean text`, () => {

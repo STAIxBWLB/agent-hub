@@ -264,7 +264,8 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
         const last = row.history?.at(-1);
         const at = last?.at ?? row.updated ?? row.created;
         const tone = last?.event === "check failed" || last?.event === "failed" ? "failure" : stateTone(row.state);
-        line.push(span(`#${row.id}`, selected ? "strong" : "info"), span(" "), span(row.state, tone), span(row.ready ? " ready" : "", "attention"),
+        const failure = tone === "failure" && row.state !== last?.event ? ` ${last?.event ?? ""}` : "";
+        line.push(span(`#${row.id}`, selected ? "strong" : "info"), span(" "), span(row.state, tone), span(failure, "failure"), span(row.ready ? " ready" : "", "attention"),
           span(` ${row.owner ?? "-"} review:${row.reviewer ?? "-"} ${row.class} `), span(`age:${at ? Math.max(0, Math.floor((now - at) / 1000)) + "s" : "?"}`, "muted"), span(` ${row.title}`));
       } else if (s.panel === 4) line.push(span(row.id, selected ? "strong" : "info"), span(` ${row.peer} `), span(row.state, stateTone(row.state)), span(` rev:${row.revision} `), span(`age:${row.createdAt ? Math.max(0, Math.floor((now - row.createdAt) / 1000)) + "s" : "?"}`, "muted"));
       else { const [header, ...body] = String(row.text).split("\n"); line.push(span(header, row.tone)); if (body.length) line.push(span("\n" + body.join("\n"))); }
