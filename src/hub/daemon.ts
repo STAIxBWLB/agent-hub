@@ -835,6 +835,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // never a delivery acknowledgement. Cohorts record them as they happen (`Cohorts.turnEnded`), so a later turn of the
   // same peer cannot undo a settlement.
   const turnEnded = new Map<PeerId, number>();
+  const nativeCompletedAt = new Map<PeerId, number>();
   const nativeStopsSeen = new Set(readEvents(join(opts.stateDir, "events.jsonl")).flatMap(event => event.type === "native_turn_end" && event.id ? [event.id] : []));
   const activeAt = new Map<PeerId, number>();
   /** Every Claude hook call's own start-up and the hub's time for it, summed per turn (issue #108): reported at Stop. */
@@ -1294,14 +1295,18 @@ export async function startDaemon(opts: DaemonOptions) {
     try {
       const value = JSON.parse(readFileSync(join(opts.stateDir, "claude-session.json"), "utf8"));
       if (value.instanceId !== instanceId) return {};
+      let currentLauncher = false;
       try {
         const launch = JSON.parse(readFileSync(join(opts.stateDir, "claude-launch.json"), "utf8"));
-        if (launch.instanceId === instanceId && launch.launchId && value.launchId !== launch.launchId) return {};
+        if (launch.instanceId === instanceId && typeof launch.launchId === "string" && launch.launchId) {
+          currentLauncher = true;
+          if (value.launchId !== launch.launchId) return {};
+        }
       } catch { /* older/manual launches retain the existing instance fence */ }
       try {
         const records = JSON.parse(readFileSync(join(opts.stateDir, "terminal-recovery.json"), "utf8"));
         const current = Array.isArray(records) ? records.find((row) => row?.peer === "claude" && row?.projectRoot === opts.cwd && row?.instanceId === instanceId) : undefined;
-        if (current?.launchId && value.launchId !== current.launchId) return {};
+        if (!currentLauncher && current?.launchId && value.launchId !== current.launchId) return {};
       } catch { /* no managed terminal record: the instance fence is still enforced */ }
       return {
         ...(typeof value.launchId === "string" ? { launchId: value.launchId } : {}),
@@ -1649,7 +1654,7 @@ export async function startDaemon(opts: DaemonOptions) {
           if (changed.length) afterTurn = () => detectConflicts(e.peer, open.id, open.start, changed);
         }
         // A lost Claude channel/watchdog is not native completion; only its real Stop closes a counted turn.
-        if (e.peer !== "claude" || (turnEnded.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}) });
+        if (e.peer !== "claude" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start) event({ type: "turn_end", peer: e.peer, turn: open.id, ms: Date.now() - open.start, ...(open.tokens ? { tokens: open.tokens } : {}), ...(files !== undefined ? { files, snapshotMs } : {}) });
         if (e.peer !== "claude") { // Claude's native turn end is its Stop hook
           if ((bus.peers.get(e.peer)?.state ?? e.state) === "idle") queueMicrotask(() => finishSupervisionTurn(e.peer));
           turnEnded.set(e.peer, Date.now());
@@ -2581,16 +2586,21 @@ export async function startDaemon(opts: DaemonOptions) {
             let nativeStopId: string | undefined;
             if (nativeClaude) {
               const session = claudeSession();
-              const latest = session.sessionId && session.transcriptPath ? readClaudeTranscriptUsage(session.sessionId, session.transcriptPath).at(-1)?.id : undefined;
-              nativeStopId = createHash("sha256").update(`${sessionId}:${latest ?? "unavailable"}:${nativePeer instanceof WsPeer ? nativePeer.sessionGeneration : "detached"}:${activeAt.get(peer) ?? "unobserved"}`).digest("hex");
+              const latest = session.sessionId && session.transcriptPath ? readClaudeTranscriptUsage(session.sessionId, session.transcriptPath).filter(record => record.completedTurn).at(-1) : undefined;
+              // Completion belongs to the immutable native message, not the receiver's active state/generation.
+              if (!latest?.at || Date.parse(latest.at) < (activeAt.get(peer) ?? 0)) return void reply({ t: "facts", ok: false });
+              nativeStopId = createHash("sha256").update(`${sessionId}:${session.launchId ?? "legacy"}:${latest.id}`).digest("hex");
               if (nativeStopsSeen.has(nativeStopId)) return void reply({ t: "facts", ok: true });
               nativeStopsSeen.add(nativeStopId);
             }
-            collectClaudeUsage();
-            finishSupervisionTurn(peer);
+            if (nativeClaude) {
+              collectClaudeUsage();
+              finishSupervisionTurn(peer);
+              nativeCompletedAt.set(peer, Date.now());
+              event({ type: "native_turn_end", peer, id: nativeStopId! });
+            }
             turnEnded.set(peer, Date.now());
             tasks.cohorts.turnEnded(peer);
-            event({ type: "native_turn_end", peer, ...(nativeStopId ? { id: nativeStopId } : {}) });
             tally(peer);
             const st = hookStats.get(peer)!;
             event({ type: "hook_stats", peer, n: st.n, startupMs: Math.round(st.startupMs), hubMs: Math.round(st.hubMs), maxStartupMs: Math.round(st.maxStartupMs) });

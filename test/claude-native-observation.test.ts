@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient, stateDirFor } from "../src/hub/control-client.ts";
@@ -7,13 +7,14 @@ import { startDaemon } from "../src/hub/daemon.ts";
 import { readEvents } from "../src/hub/events.ts";
 import { formatReport, summarize } from "../src/hub/report.ts";
 import { buildLaunch, claudeObservationHooks } from "../src/cli/launch.ts";
+import { HUB, newEnvelope } from "../src/hub/envelope.ts";
 
 const cleanup: Array<() => unknown> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 test("managed Claude launcher and genuine command hooks register a non-Orca session and count only native Stop", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ahub-native-hooks-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
-  writeFileSync(join(dir, ".agenthub/config.json"), JSON.stringify({ roles: { claude: ["conductor", "reviewer"] }, conductor: { feed: "off" }, memory: { enabled: false }, inference: { enabled: false }, mlx: { enabled: false }, task_sweep: { enabled: false } }));
+  writeFileSync(join(dir, ".agenthub/config.json"), JSON.stringify({ roles: { claude: ["conductor", "reviewer"] }, conductor: { feed: "own" }, memory: { enabled: false }, inference: { enabled: false }, mlx: { enabled: false }, task_sweep: { enabled: false } }));
   const configDir = join(dir, "claude-config"), projects = join(configDir, "projects", "fixture"); mkdirSync(projects, { recursive: true });
   const previous = process.env.CLAUDE_CONFIG_DIR; process.env.CLAUDE_CONFIG_DIR = configDir;
   cleanup.push(() => { if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = previous; });
@@ -23,6 +24,8 @@ test("managed Claude launcher and genuine command hooks register a non-Orca sess
   for (let n = 0; n < 100 && daemon.bus.stateOf("claude") !== "idle"; n++) await Bun.sleep(5);
   const bin = join(dir, "bin"); mkdirSync(bin);
   const capture = join(dir, "native-launch.json");
+  const oldRecovery = JSON.stringify([{ peer: "claude", projectRoot: dir, instanceId: JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).instanceId, launchId: "previous-orca-launch", handle: "preserved-orca-handle", worktreeId: "preserved-worktree", incarnationId: "preserved-incarnation", launcherPid: 1, launcherSignature: "preserved-signature" }]);
+  writeFileSync(join(stateDir, "terminal-recovery.json"), oldRecovery);
   writeFileSync(join(bin, "claude"), `#!${process.execPath}\nimport {writeFileSync} from "node:fs"; writeFileSync(${JSON.stringify(capture)}, JSON.stringify({args:process.argv.slice(2),instanceId:process.env.AGENTHUB_INSTANCE_ID,launchId:process.env.AGENTHUB_LAUNCH_ID,peer:process.env.AGENTHUB_PEER_ID,stateDir:process.env.AGENTHUB_STATE_DIR}));\n`, { mode: 0o700 });
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: configDir };
   for (const key of Object.keys(env)) if (key.startsWith("ORCA_") || key.startsWith("AGENTHUB_") || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete (env as any)[key];
@@ -30,7 +33,7 @@ test("managed Claude launcher and genuine command hooks register a non-Orca sess
   const launchError = await new Response(launch.stderr).text(); expect(await launch.exited).toBe(0); expect(launchError).not.toContain("cannot run");
   const registered = JSON.parse(readFileSync(capture, "utf8")); expect(registered.peer).toBe("claude"); expect(registered.instanceId).toBeDefined(); expect(registered.launchId).toBeDefined();
   expect(JSON.parse(readFileSync(join(stateDir, "claude-launch.json"), "utf8")).launchId).toBe(registered.launchId);
-  expect(existsSync(join(stateDir, "terminal-recovery.json"))).toBe(false);
+  expect(readFileSync(join(stateDir, "terminal-recovery.json"), "utf8")).toBe(oldRecovery); // ordinary replacement preserves unrelated recovery authority
   const settings = JSON.parse(registered.args[registered.args.indexOf("--settings") + 1]);
   for (const kind of ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]) expect(settings.hooks[kind]).toBeDefined();
   const sessionId = "native-session", transcript = join(projects, `${sessionId}.jsonl`); writeFileSync(transcript, "");
@@ -40,17 +43,41 @@ test("managed Claude launcher and genuine command hooks register a non-Orca sess
     await new Response(process_.stdout).text(); await new Response(process_.stderr).text(); expect(await process_.exited).toBe(0);
   };
   await hook("SessionStart"); expect(JSON.parse(readFileSync(join(stateDir, "claude-session.json"), "utf8"))).toMatchObject({ sessionId, instanceId: registered.instanceId, launchId: registered.launchId, transcriptPath: transcript });
+  const deliveries: any[] = []; native.onPush = msg => { if (msg.t === "deliver") deliveries.push(msg); };
+  daemon.bus.publish(newEnvelope(HUB, "test supervision", { to: ["claude"], kind: "task", priority: "important", refs: { supervision: true, supervisionKey: "supervision:claude:test" } }));
+  for (let n = 0; n < 100 && !deliveries.length; n++) await Bun.sleep(5);
+  expect(deliveries).toHaveLength(1);
+  expect((await native.request({ t: "delivery_receipt", deliveryId: deliveries[0].deliveryId, generation: deliveries[0].generation, state: "accepted" })).ok).toBe(true);
   await hook("UserPromptSubmit"); expect(daemon.bus.stateOf("claude")).toBe("busy");
   await hook("PreToolUse"); await hook("PostToolUse");
   await native.request({ t: "task", op: "hub_task_list", args: {} }); await native.request({ t: "send", body: "[FYI] tool finished" });
   expect(daemon.bus.stateOf("claude")).toBe("busy"); expect(readEvents(join(stateDir, "events.jsonl")).some(event => event.type === "native_turn_end")).toBe(false);
+  await native.request({ t: "facts", phase: "stop", sessionId, transcriptPath: transcript });
+  const unbound = readEvents(join(stateDir, "events.jsonl"));
+  expect(unbound.some(event => event.type === "native_turn_end" || event.type === "supervision_turn")).toBe(false);
+  expect(summarize(unbound).peers.claude?.turns).toBeNull(); expect(daemon.bus.stateOf("claude")).toBe("busy");
   await hook("Stop", { AGENTHUB_LAUNCH_ID: "stale-launch" }); expect(daemon.bus.stateOf("claude")).toBe("busy");
+  writeFileSync(transcript, JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id: "intermediate-tool-message", stop_reason: "tool_use" } }) + "\n");
+  await hook("Stop"); expect(daemon.bus.stateOf("claude")).toBe("busy");
+  expect(readEvents(join(stateDir, "events.jsonl")).some(event => event.type === "native_turn_end" || event.type === "supervision_turn")).toBe(false);
   writeFileSync(transcript, JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id: "completed-message", stop_reason: "end_turn", usage: { input_tokens: 3, output_tokens: 2 } } }) + "\n");
   await hook("Stop"); expect(daemon.bus.stateOf("claude")).toBe("idle");
   await hook("Stop"); const events = readEvents(join(stateDir, "events.jsonl"));
   expect(events.filter(event => event.type === "native_turn_end" && event.peer === "claude")).toHaveLength(1);
+  expect(events.filter(event => event.type === "supervision_turn" && event.peer === "claude")).toHaveLength(1);
   expect(summarize(events).peers.claude).toMatchObject({ turns: 1, turnSource: "native-stop", tokens: 5 });
   expect(JSON.stringify(events)).not.toContain("UNTRANSFERRED-PRIVATE-PROMPT");
+  await hook("UserPromptSubmit"); await hook("PreToolUse"); expect(daemon.bus.stateOf("claude")).toBe("busy");
+  await hook("Stop"); expect(daemon.bus.stateOf("claude")).toBe("busy");
+  expect(readEvents(join(stateDir, "events.jsonl")).filter(event => event.type === "native_turn_end")).toHaveLength(1);
+  const replacement = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" }); cleanup.push(() => replacement.close());
+  for (let n = 0; n < 100 && daemon.bus.stateOf("claude") !== "idle"; n++) await Bun.sleep(5);
+  await hook("UserPromptSubmit"); await hook("PreToolUse"); await hook("Stop");
+  expect(daemon.bus.stateOf("claude")).toBe("busy");
+  expect(readEvents(join(stateDir, "events.jsonl")).filter(event => event.type === "native_turn_end")).toHaveLength(1);
+  appendFileSync(transcript, JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id: "completed-message-2", stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } } }) + "\n");
+  await hook("Stop"); expect(daemon.bus.stateOf("claude")).toBe("idle");
+  expect(summarize(readEvents(join(stateDir, "events.jsonl"))).peers.claude).toMatchObject({ turns: 2, turnSource: "native-stop", tokens: 7 });
 }, 20_000);
 
 test("conductor native hooks preserve explicit caller settings and report missing completion as unknown", () => {
@@ -75,4 +102,6 @@ test("Claude report uses unique native Stops over logical ends and labels legacy
   const legacy = summarize([{ v: 1, at, type: "turn_end", peer: "claude", turn: "old-logical", ms: 1000 }]);
   expect(legacy.peers.claude).toMatchObject({ turns: 1, turnSource: "logical-state" });
   expect(formatReport(legacy).join("\n")).toContain("logical state, native completion unobserved");
+  const unbound = summarize([{ v: 1, at, type: "state", peer: "claude", state: "idle" }, { v: 1, at, type: "native_turn_end", peer: "claude" }]);
+  expect(unbound.peers.claude?.turns).toBeNull(); expect(unbound.peers.claude?.turnSource).toBe("unknown");
 });

@@ -163,7 +163,9 @@ function claudeNative(stateDir: string, fixture: string, instanceId: string, sin
     const endedAt = lastAssistant?.message?.stop_reason === "end_turn" ? Date.parse(lastAssistant.timestamp) : NaN;
     const lastActivity = Math.max(...active.map(row => Date.parse(row.timestamp)).filter(Number.isFinite));
     const durations = rows.filter(row => row.type === "system" && row.subtype === "turn_duration" && Date.parse(row.timestamp) >= sinceMs);
-    const complete = Number.isFinite(endedAt) && lastActivity <= endedAt && durations.some(row => Date.parse(row.timestamp) >= endedAt);
+    const finalDuration = durations.find(row => Date.parse(row.timestamp) >= endedAt);
+    const complete = Number.isFinite(endedAt) && lastActivity <= endedAt && !!finalDuration
+      && typeof lastAssistant?.uuid === "string" && typeof lastAssistant?.message?.id === "string";
     const usage = readClaudeTranscriptUsage(session.sessionId, transcript);
     const totals = usage.map(row => {
       const u = row.usage;
@@ -174,6 +176,9 @@ function claudeNative(stateDir: string, fixture: string, instanceId: string, sin
     });
     const known = totals.filter((n): n is number => n !== undefined);
     return { complete, endedAt: Number.isFinite(endedAt) ? endedAt : null, completedTurns: durations.length,
+      finalMessageUuid: lastAssistant?.uuid ?? null, finalMessageId: lastAssistant?.message?.id ?? null,
+      finalStopReason: lastAssistant?.message?.stop_reason ?? null, finalTurnDurationAt: finalDuration?.timestamp ?? null,
+      finalTurnDurationMs: finalDuration?.durationMs ?? null,
       transcript, sessionId: session.sessionId, instanceId, usageRecords: usage.length, knownUsageRecords: known.length,
       tokens: known.length === usage.length && known.length ? known.reduce((sum, n) => sum + n, 0) : null };
   } catch { return undefined; }

@@ -1413,7 +1413,14 @@ The daemon fences observations to its current instance and launcher, validates
 the session transcript, and rejects stale stop/post observations. Native prompt
 text is never included in those requests or events.
 
-A genuine native Stop records an opaque deduplication id. Claude turn reports
+A genuine native Stop requires the current daemon/launcher binding and an actual
+assistant end_turn transcript message at or after current activity. Its opaque
+deduplication id binds session, launch and message; transport replacement or new
+activity cannot turn a replay into another completion. Unbound or idless legacy
+Stop events cannot certify completion or finish supervision. A current private
+launcher marker takes precedence over an older terminal-recovery launch id for
+native observation, while preserving the recovery records and their authority.
+Claude turn reports
 prefer unique native Stop events; historical logical-state counts are labelled
 as such, and an unobserved completion remains unknown. Channel idle, watchdog
 expiry, board approval and a tool reply do not independently establish native

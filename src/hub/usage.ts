@@ -4,6 +4,8 @@ import { normalizeUsage, safeModelLabel, type NormalizedUsage } from "../omnirou
 
 export interface UsageRecord {
   id: string;
+  /** True only for a native assistant end_turn row, never a tool-use/compaction message. */
+  completedTurn?: boolean;
   at?: string;
   usage?: NormalizedUsage;
   requestedModel?: string;
@@ -30,7 +32,7 @@ export function readClaudeTranscriptUsage(sessionId: string, transcriptPath: str
       // Signal unavailable coverage with a stable opaque id; a repeated poll dedupes in the report.
       return [{ id: opaqueId(sessionId, "transcript-too-large") }];
     }
-    const latest = new Map<string, { usage?: NormalizedUsage; at?: string; servedModel?: string }>();
+    const latest = new Map<string, { usage?: NormalizedUsage; at?: string; servedModel?: string; completedTurn?: boolean }>();
     for (const line of readFileSync(transcriptPath, "utf8").split("\n")) {
       if (!line.trim()) continue;
       try {
@@ -43,7 +45,7 @@ export function readClaudeTranscriptUsage(sessionId: string, transcriptPath: str
         const usage = supportedStopReason ? normalizeUsage(message.usage) : undefined;
         const at = typeof row.timestamp === "string" && Number.isFinite(Date.parse(row.timestamp)) ? new Date(row.timestamp).toISOString() : undefined;
         const servedModel = safeModelLabel(message.model);
-        latest.set(message.id, { ...(usage ? { usage } : {}), ...(at ? { at } : {}), ...(servedModel ? { servedModel } : {}) });
+        latest.set(message.id, { ...(usage ? { usage } : {}), ...(at ? { at } : {}), ...(servedModel ? { servedModel } : {}), ...(message.stop_reason === "end_turn" ? { completedTurn: true } : {}) });
       } catch {
         // A streaming or crash-truncated line is not a record.
       }

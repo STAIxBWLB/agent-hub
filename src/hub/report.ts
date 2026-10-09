@@ -88,7 +88,7 @@ export function summarize(events: StampedEvent[]): Report {
   const r: Report = { peers: {}, conduct: {}, supervision: {}, usage: { peers: {}, totals: { inputTokens: 0, inputRecords: 0, outputTokens: 0, outputRecords: 0, cacheReadTokens: 0, cacheReadRecords: 0, cacheWriteTokens: 0, cacheWriteRecords: 0, totalTokens: 0, totalRecords: 0 }, unknownPeers: [], completeCoverage: true }, messages: { total: 0, dropped: {}, overflow: 0, undeliverable: 0, perTask: 0 }, overlaps: { warnings: 0, pairs: 0 }, conflicts: 0, tasks: {}, quota: { readings: 0, hard: 0 } };
   const supervisor = (id: string) => (r.supervision[id] ??= { turns: null, tokens: null, measuredTokens: null, knownTokenTurns: 0, unknownTokenTurns: 0 });
   const peer = (id: string) => (r.peers[id] ??= { turns: 0, busyMinutes: 0, tokens: 0 });
-  const claudeNativeStops = events.some(event => event.type === "native_turn_end" && event.peer === "claude");
+  const claudeNativeStops = events.some(event => event.type === "native_turn_end" && event.peer === "claude" && !!event.id);
   const seenNativeStops = new Set<string>();
   const usagePeer = (id: string) => (r.usage.peers[id] ??= emptyUsage());
   const pairs = new Set<string>();
@@ -135,9 +135,9 @@ export function summarize(events: StampedEvent[]): Report {
         peer(e.peer).busyMinutes += e.ms / 60_000;
         break;
       case "native_turn_end":
-        if (e.peer === "claude") {
-          if (e.id && seenNativeStops.has(e.id)) break;
-          if (e.id) seenNativeStops.add(e.id);
+        if (e.peer === "claude" && e.id) {
+          if (seenNativeStops.has(e.id)) break;
+          seenNativeStops.add(e.id);
           peer(e.peer).turns = (peer(e.peer).turns ?? 0) + 1;
         }
         break;
