@@ -856,6 +856,8 @@ starts, including recovery, in `.agenthub/config.json`:
 An omitted peer defaults to `ask`; invalid modes or unsupported peer keys fail
 config loading. This setting replaces the proposed `kimi_mode` in #240. A hub
 restart reapplies these defaults rather than saving the last runtime selection.
+Non-default permission_modes is machine-local: a config file tracked by git
+cannot relax approvals, and its block is ignored with a diagnostic.
 
 | Peer | `ask-when-needed` | `never-ask` | Returning to `ask` |
 |------|-------------------|-------------|--------------------|
@@ -868,9 +870,14 @@ Kimi's mode is set after both a new and a resumed ACP session, before a prompt.
 If the session does not offer the requested id or refuses the change, startup
 fails with the mode named; it does not silently fall back. A non-`ask` Kimi start
 logs a warning. The `yolo`/`auto` mapping follows Kimi 2.1.1's UI labels and CLI
-flags, whose ACP descriptions disagree. Its live behavior remains unverified;
-see [the live smoke record](smoke.md). Exact-name auto-approval for the hub's own
+flags, whose ACP descriptions disagree. The benign 2026-10-10 live check
+completed file edits and harmless shells in both modes without ACP approval
+requests; risky-action behavior remains unverified. See [the smoke record](smoke.md). Exact-name auto-approval for the hub's own
 Kimi tools remains `allow_once`, and any requests Kimi still sends use the console.
+A resumed session reporting a non-default mode is reset to default when the
+project policy is ask. Claude does not override non-file tools in
+ask-when-needed, so its existing rules may already allow harmless shells;
+this mode does not force a new prompt for an already allowed action.
 
 Codex's native `on-request` policy decides when it needs a prompt; it is not a
 hub-enforced read/edit allowlist. Switching a mode affects subsequent turns,

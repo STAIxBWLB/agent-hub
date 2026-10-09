@@ -797,7 +797,8 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   permission-mode mutation path.
 - `.agenthub/config.json` `permission_modes` maps claude, codex, kimi and pi to
   these modes; absent values mean `ask`, invalid values or unsupported keys fail
-  load. This generalizes #240's proposed `kimi_mode`. Defaults are applied on
+  load. The opt-in block is machine-local, ignored from a tracked config.
+  This generalizes #240's proposed `kimi_mode`. Defaults are applied on
   peer startup, including recovery. Runtime choices stay in memory until hub
   shutdown and are not restored as configuration after a hub restart.
 - Kimi: `ask-when-needed` maps to ACP `yolo`, `never-ask` to `auto`, and an

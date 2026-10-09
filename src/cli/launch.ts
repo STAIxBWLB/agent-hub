@@ -90,7 +90,7 @@ export function sessionSettings(tee?: StatusLineTee, facts?: FactsHook): string 
   const settings = (tee ? JSON.parse(statusLineSettings(tee)) : {}) as Record<string, unknown>;
   if (facts) {
     const hooks = [{ type: "command", command: `AGENTHUB_STATE_DIR=${sh(facts.stateDir)} bun ${sh(facts.script)}`, timeout: 5 }];
-    settings.hooks = { PreToolUse: [{ matcher: "*", hooks }], ...(facts.purpose !== "permission" ? { PostToolUse: [{ matcher: "*", hooks }], Stop: [{ hooks }] } : {}) };
+    settings.hooks = { PreToolUse: [{ matcher: "*", hooks }], Stop: [{ hooks }], ...(facts.purpose !== "permission" ? { PostToolUse: [{ matcher: "*", hooks }] } : {}) };
     if (facts.observeNative) Object.assign(settings.hooks as object, { SessionStart: [{ matcher: "*", hooks }], UserPromptSubmit: [{ hooks }] });
   }
   return JSON.stringify(settings);
@@ -156,6 +156,7 @@ export function buildLaunch(
   return {
     cmd: ctx.codexBin ?? "codex",
     args: ["--enable", "tui_app_server", "--remote", ctx.proxyUrl, ...(unattended ? ["--dangerously-bypass-approvals-and-sandbox"] : []), ...passthrough],
+    unattended,
     ...warning,
   };
 }

@@ -44,7 +44,8 @@ test("advisory and unattended launches install the permission hook without globa
     const launch = buildLaunch("claude", [], { unattended, facts });
     expect(launch).toMatchObject({ permissionHook: true, unattended });
     const settings = JSON.parse(launch.args[launch.args.indexOf("--settings") + 1]!);
-    expect(Object.keys(settings.hooks)).toEqual(["PreToolUse"]);
+    expect(Object.keys(settings.hooks).sort()).toEqual(["PreToolUse", "Stop"]);
+    expect(settings.hooks.Stop[0].hooks).toEqual(settings.hooks.PreToolUse[0].hooks);
     expect(settings).not.toHaveProperty("statusLine");
   }
   expect(() => buildLaunch("claude", ["--settings", "/missing/settings.json"], { unattended: false, facts })).toThrow("permission hook must be installed");
@@ -67,4 +68,13 @@ test("facts-only launches inject managed settings and hook metadata reflects ins
   expect(() => buildLaunch("claude", ["--settings", JSON.stringify({ disableAllHooks: true })], { unattended: false, facts })).toThrow("disableAllHooks prevents the required hub permission hook");
   const unmanaged = buildLaunch("claude", [], { unattended: false });
   expect(unmanaged.args).not.toContain("--settings"); expect(unmanaged.permissionHook).toBe(false);
+});
+
+
+test("Codex launch metadata preserves unattended mode from either CLI or environment", () => {
+  for (const [args, configured, expected] of [[[], false, false], [["--unattended"], false, true], [[], true, true]] as const) {
+    const launch = buildLaunch("codex", [...args], { unattended: configured, proxyUrl: "ws://fixture" });
+    expect(launch.unattended).toBe(expected);
+    expect(launch.args.includes("--dangerously-bypass-approvals-and-sandbox")).toBe(expected);
+  }
 });

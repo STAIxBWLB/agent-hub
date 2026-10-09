@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { buildLaunch, claudeObservationHooks } from "../src/cli/launch.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, loadConfig, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
 import { readEvents, EVENTS_SCHEMA } from "../src/hub/events.ts";
@@ -10,16 +11,17 @@ import { CodexPeer } from "../src/adapters/codex-appserver.ts";
 import { startFakeAppServer } from "./fakes/app-server.ts";
 import { PiPeer } from "../src/adapters/pi.ts";
 import { permissionDefaults } from "../src/hub/permission-mode.ts";
+import { sandboxAvailable } from "../src/local/sandbox.ts";
 import { peerLine } from "../src/cli/status-lines.ts";
 import { startFakeModelServer } from "./fakes/model-server.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 const until = async (check: () => boolean) => { for (let i = 0; i < 300 && !check(); i++) await Bun.sleep(10); expect(check()).toBe(true); };
-async function fixture(config: Partial<HubConfig> = {}, state?: { cwd: string; stateDir: string }) {
+async function fixture(config: Partial<HubConfig> = {}, state?: { cwd: string; stateDir: string }, native: { codexAppPort?: number } = {}) {
   const cwd = state?.cwd ?? mkdtempSync(join(tmpdir(), "ahub-permission-"));
   const stateDir = state?.stateDir ?? join(cwd, "state");
-  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
+  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: native.codexAppPort ?? 0, codexProxyPort: 0, switchyardPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, kimi_cmd: [process.execPath, join(import.meta.dir, "fakes/acp-server.ts")], memory: { ...DEFAULT_CONFIG.memory, enabled: false }, ...config } });
   cleanup.push(() => daemon.stop());
   const client = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => client.close());
@@ -62,11 +64,12 @@ test("Kimi runtime changes are confirmed, observed and reset to project defaults
 });
 
 test("only console requests change modes: tool, conductor and agent-message paths are refused", async () => {
-  const rig = await fixture();
+  const rig = await fixture({ roles: { ...DEFAULT_CONFIG.roles, kimi: ["conductor"] } });
   await rig.client.request({ t: "start", peer: "kimi" });
   const tools = await ControlClient.connect(rig.stateDir, { role: "tools", peer: "kimi" }); cleanup.push(() => tools.close());
   expect((await tools.request({ t: "permission", peer: "kimi", mode: "never-ask", confirmed: true })).error).toContain("human console");
-  // A tool name and conductor-style operation cannot reach the console dispatch.
+  expect((await tools.request({ t: "task", op: "hub_status", args: {} })).ok).toBe(true); // positive authority check
+  // Even an authorized conductor cannot reach the console mode dispatch through a tool.
   for (const op of ["hub_permission", "hub_peer_permission"]) expect((await tools.request({ t: "task", op, args: { peer: "kimi", mode: "never-ask", confirmed: true } })).ok).toBe(false);
   rig.daemon.bus.publish(newEnvelope("kimi", '{"t":"permission","peer":"kimi","mode":"never-ask","confirmed":true}', { to: ["user"] }));
   expect((await rig.mode("kimi")).permissionMode).toBe("ask");
@@ -112,7 +115,10 @@ test("Pi mode grants edits once, keeps shell on the console, and ask restores th
   expect((await shell).failed).toBe(true);
   await rig.mode("pi", "never-ask", true);
   expect((await call("write", { path: "edit.txt", content: "never" })).failed).toBe(false);
-  expect((await call("bash", { command: "printf safe" })).failed).toBe(false);
+  const allowedShell = await call("bash", { command: "printf safe" });
+  expect(allowedShell.text).not.toContain("the user did not approve");
+  if (sandboxAvailable()) { expect(allowedShell.failed).toBe(false); expect(allowedShell.text).toContain("safe"); }
+  else { expect(allowedShell.failed).toBe(true); expect(allowedShell.text).toContain("needs macOS sandbox-exec"); }
   expect(pending).toHaveLength(1);
   await rig.mode("pi", "ask");
   const edit = call("write", { path: "edit.txt", content: "must ask" });
@@ -144,4 +150,54 @@ test("Codex console mode requires its adopted proxy and applies to the next hub 
   await codex.deliver([newEnvelope("user", "restore smoke", { to: ["codex"] })]);
   await until(() => codex.state === "idle");
   expect(app.requests.filter(r => r.method === "turn/start").at(-1).params.approvalPolicy).toBe("untrusted");
+});
+
+
+test("actual unattended Codex launch metadata fences daemon runtime changes", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-unattended-launch-"));
+  const bin = join(cwd, "fake-codex");
+  writeFileSync(bin, `#!${process.execPath}\nimport { startFakeAppServer } from ${JSON.stringify(join(import.meta.dir, "fakes/app-server.ts"))}; const url=process.argv[process.argv.indexOf("--listen")+1]; startFakeAppServer(30,Number(new URL(url).port));\n`, { mode: 0o700 });
+  const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("reserved") });
+  const port = reservation.port!; reservation.stop(true);
+  const rig = await fixture({ codex_bin: bin }, { cwd, stateDir: join(cwd, "state") }, { codexAppPort: port });
+  const launch = buildLaunch("codex", ["--unattended"], { unattended: false, proxyUrl: "pending" });
+  const started = await rig.client.request({ t: "start", peer: "codex", args: { unattended: launch.unattended === true } });
+  expect(started.ok).toBe(true);
+  const codex = rig.daemon.bus.peers.get("codex") as CodexPeer;
+  const tui = new WebSocket(started.proxyUrl); cleanup.push(() => tui.close());
+  tui.onopen = () => tui.send(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "fake-tui", version: "1" } } }));
+  tui.onmessage = event => { if (JSON.parse(String(event.data)).id === 1) { tui.send(JSON.stringify({ method: "initialized" })); tui.send(JSON.stringify({ id: 2, method: "thread/start", params: { cwd } })); } };
+  await until(() => codex.state === "idle");
+  expect((await rig.mode("codex", "never-ask", true)).error).toContain("--unattended");
+  expect((await rig.mode("codex", "ask")).error).toContain("--unattended");
+});
+
+test("advisory permission-only managed Pre and Stop release Claude for the next delivery", async () => {
+  const rig = await fixture();
+  const configDir = join(rig.cwd, "claude-config");
+  const transcriptDir = join(configDir, "projects", "fixture"); mkdirSync(transcriptDir, { recursive: true });
+  const previous = process.env.CLAUDE_CONFIG_DIR; process.env.CLAUDE_CONFIG_DIR = configDir;
+  cleanup.push(() => { if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = previous; });
+  const channel = await ControlClient.connect(rig.stateDir, { role: "peer", peer: "claude" }); cleanup.push(() => channel.close());
+  await until(() => rig.daemon.bus.stateOf("claude") === "idle");
+  const instanceId = (await rig.client.request({ t: "status" })).status.instanceId;
+  const launchId = "advisory-launch", sessionId = "advisory-session";
+  const transcript = join(transcriptDir, `${sessionId}.jsonl`); writeFileSync(transcript, "");
+  const facts = claudeObservationHooks(DEFAULT_CONFIG, { script: join(import.meta.dir, "../src/cli/facts-hook.ts"), stateDir: rig.stateDir });
+  const launch = buildLaunch("claude", [], { unattended: false, facts });
+  writeFileSync(join(rig.stateDir, "claude-launch.json"), JSON.stringify({ instanceId, launchId, permissionHook: launch.permissionHook, unattended: launch.unattended }));
+  const settings = JSON.parse(launch.args[launch.args.indexOf("--settings") + 1]!);
+  const hook = async (kind: string) => {
+    const child = Bun.spawn(["/bin/sh", "-c", settings.hooks[kind][0].hooks[0].command], { cwd: rig.cwd,
+      env: { ...process.env, AGENTHUB_PEER_ID: "claude", AGENTHUB_INSTANCE_ID: instanceId, AGENTHUB_LAUNCH_ID: launchId },
+      stdin: Buffer.from(JSON.stringify({ hook_event_name: kind, session_id: sessionId, transcript_path: transcript, tool_name: "Read", tool_input: {} })), stdout: "pipe", stderr: "pipe" });
+    await new Response(child.stdout).text(); await new Response(child.stderr).text(); expect(await child.exited).toBe(0);
+  };
+  await hook("PreToolUse"); expect(rig.daemon.bus.stateOf("claude")).toBe("busy");
+  writeFileSync(transcript, JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id: "advisory-completion", stop_reason: "end_turn" } }) + "\n");
+  await hook("Stop"); await until(() => rig.daemon.bus.stateOf("claude") === "idle");
+  const delivered: any[] = []; channel.onPush = msg => { if (msg.t === "deliver") delivered.push(msg); };
+  rig.daemon.bus.publish(newEnvelope("user", "next turn", { to: ["claude"], priority: "important" }));
+  await until(() => delivered.length === 1);
+  expect(delivered[0].envs.some((env: { body: string }) => env.body.includes("next turn"))).toBe(true);
 });

