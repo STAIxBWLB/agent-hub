@@ -15,6 +15,8 @@ function project(permit = true) {
   writeFileSync(join(cwd, ".maru", "secrets", "token"), "t0ken");
   mkdirSync(join(cwd, ".agenthub", "state"), { recursive: true });
   writeFileSync(join(cwd, ".agenthub", "state", "control-token"), "c0ntrol");
+  mkdirSync(join(cwd, ".agenthub", "archive", "state-20261009T000000Z"), { recursive: true });
+  writeFileSync(join(cwd, ".agenthub", "archive", "state-20261009T000000Z", "hub.db"), "arch1ved");
   const asked: string[] = [];
   const ctx: ToolContext = { cwd, deny: ["private/"], sandboxProfile: profile(cwd, false, [], ["private/"]), permit: async (t) => (asked.push(t), permit), send: (t, to) => `sent ${t} to ${to ?? "*"}` };
   return { cwd, ctx, asked };
@@ -31,7 +33,7 @@ test("paths: traversal, absolute outside paths, symlink escapes and denylisted n
   for (const p of ["../x", "/etc/passwd", "link/x", "link/new-file", join(homedir(), ".ssh/id_rsa")]) {
     expect(() => guardPath(ctx, p, "read")).toThrow(/outside the project/);
   }
-  for (const p of [".env.local", ".maru/secrets/token", ".agenthub/state/control-token", "certs/server.pem", "deploy.key", "keys/id_ed25519.pub", "private/notes.md"]) {
+  for (const p of [".env.local", ".maru/secrets/token", ".agenthub/state/control-token", ".agenthub/archive/state-20261009T000000Z/hub.db", "certs/server.pem", "deploy.key", "keys/id_ed25519.pub", "private/notes.md"]) {
     expect(() => guardPath(ctx, p, "read")).toThrow(/denylist/);
   }
   for (const p of [".git/hooks/pre-commit", ".agenthub/routing.toml"]) expect(() => guardPath(ctx, p, "write")).toThrow(/not writable/);
@@ -112,13 +114,14 @@ test.skipIf(!sandboxAvailable())("sandbox: writes stay in the project, credentia
       "(bun --version >/dev/null 2>&1 && git --version >/dev/null 2>&1 && cat a.txt >/dev/null) && echo toolchains-ok || echo TOOLCHAINS-BROKEN",
       "(cat .env.local 2>/dev/null | grep -q SECRET) && echo READ-ENV || echo blocked-env",
       "(cat .agenthub/state/control-token 2>/dev/null | grep -q c0ntrol) && echo READ-TOKEN || echo blocked-token",
+      "(cat .agenthub/archive/state-20261009T000000Z/hub.db 2>/dev/null | grep -q arch1ved) && echo READ-ARCHIVE || echo blocked-archive",
       "(echo 'echo pwned' > .git/hooks/pre-commit) 2>/dev/null && echo WROTE-HOOK || echo blocked-hook",
       "(curl -s -m 3 http://example.com >/dev/null 2>&1) && echo NETWORK || echo blocked-network",
       'echo "key=[$OMNIROUTE_API_KEY]"',
     ].join("; "),
   });
   delete process.env.OMNIROUTE_API_KEY;
-  for (const expected of ["wrote-inside", "blocked-outside", "blocked-ssh", "blocked-home", "blocked-home-listing", "toolchains-ok", "blocked-env", "blocked-token", "blocked-hook", "blocked-network", "key=[]", "(exit 0)"]) {
+  for (const expected of ["wrote-inside", "blocked-outside", "blocked-ssh", "blocked-home", "blocked-home-listing", "toolchains-ok", "blocked-env", "blocked-token", "blocked-archive", "blocked-hook", "blocked-network", "key=[]", "(exit 0)"]) {
     expect(out).toContain(expected);
   }
   expect(readFileSync(join(cwd, "made-by-bash.txt"), "utf8")).toBe("inside\n");

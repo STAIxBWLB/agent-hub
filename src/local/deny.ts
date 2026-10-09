@@ -4,7 +4,8 @@ import { basename, sep } from "node:path";
  * The one denylist. tools.ts checks paths against it, sandbox.ts turns it into seatbelt rules, capture.ts keeps
  * matching calls out of memory. Two lists would drift, and the gap is where a secret leaks.
  */
-export const DENY_SEGMENTS = [".maru/secrets", ".agenthub/state"];
+// `.agenthub/archive` holds the state directories `ahub reset --all` moved there: hub.db with task text, PII included.
+export const DENY_SEGMENTS = [".maru/secrets", ".agenthub/state", ".agenthub/archive"];
 /** Regex sources, matched against a file's basename. */
 export const DENY_NAMES = ["^\\.env", "\\.pem$", "\\.key$", "^id_rsa", "^id_ed25519", "^credentials(\\.|$)", "^auth\\.json$", "^\\.netrc$", "^\\.npmrc$", "^\\.pypirc$"];
 

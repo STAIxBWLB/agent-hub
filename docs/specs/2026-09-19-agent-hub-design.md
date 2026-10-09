@@ -1757,3 +1757,85 @@ task list polling does not. `hub_status` stays conductor-only.
   proposer as the actor with reason `manual` (on the `reassigned` or `reserved`
   entry), and writes no conduct audit event; during a PII turn it is refused
   like the conductor's.
+## Amendment: ahub reset (issue #214)
+
+`ahub reset [--all] [--yes]` returns a project's hub to a clean state. It is
+human-only (the CLI identity gate refuses it from an agent shell) and a dry run
+unless `--yes`: the dry run reads `hub.db` read-only (with `immutable=1` when
+`hub.db-wal` or `-shm` is absent, so it creates neither) and prints delivery ids,
+peer names and counts per category, never task or message text. With `--yes`
+it stops a running hub through `stopProject`, the path `ahub kill` takes, then
+acts on the stopped state directory.
+
+- Refusals, each before anything changes: the machine's recovery lock is held
+  (`recoveryLock()` read directly: a reset is never part of an operation, so
+  `AGENTHUB_RECOVERY_OPERATION` does not let it through as it lets the
+  operation's own processes through `assertLifecycleAvailable`); no
+  registration matches this root and state directory, running or not (`ahub
+  up` registers a stopped project; when this root is registered with another
+  state directory the error names `ahub --project <id> reset` instead, since
+  `ahub up` would register the default directory and orphan that state); the
+  hub's ownership is not verified (any inspection state other than stopped, running
+  or stopping); a running hub reports a recovery operation whose phase is not
+  `released`; `--all` with a state directory other than the literal
+  `<root>/.agenthub/state` (an override or symlink elsewhere would cross file
+  systems or pull outside state into the tree); `--all` when `.agenthub` or
+  the state directory is not a real directory of this user, when
+  `.agenthub/archive` exists as anything else (a symlink could carry hub.db,
+  PII included, out of the project), or when its `.gitignore` is not a regular
+  file (a symlink would truncate the file it names). These are checked before
+  the stop and again right before the rename (`archiveProblem`); a hard-linked
+  `.gitignore` is replaced by a temp file and rename, never written through.
+  Checked, then renamed by path: a symlink swapped in between still wins
+  (marked `ponytail:`; `renameat` on a held descriptor would close it).
+- Between stop and act: after `stopProject` the CLI takes the project's
+  registry claim (`Registry.claim` with its own pid), the claim a daemon must
+  hold to run, and checks that no manifest names a daemon whose pid is alive
+  or uncertain (`processAlive`, the rule `inspectProject` uses); either failing
+  means a hub started in between and nothing is reset. A reset's claim carries
+  the instance prefix `reset-`, so losing the claim to a concurrent reset says
+  so. A crashed daemon's manifest (`status.json`, `control-token`, `hub.pid`
+  with a dead pid, after SIGKILL or the forced shutdown exit; an empty or
+  garbled `hub.pid` beside a dead `status.json` included) does not count: the runtime reset
+  removes it and `--all` archives it. With the claim held, the CLI checks the
+  machine's recovery lock again, so an upgrade or recovery that took it in
+  between does not run beside the reset. The claim is released when the reset
+  ends; a reset that dies leaves a dead pid, which the next claim takes over.
+- Failures: the plan is read only for the dry run, so `--all --yes` archives a
+  state directory it cannot read as it is (its dry run says what it could not
+  read). A failure after the stop says how far it got. A runtime reset that
+  cannot read the state (a corrupt `hub.db`, malformed JSON or valid JSON of
+  the wrong shape, which `planReset` checks as the journal would, a journal the
+  constructor refuses: root mismatch, corrupt metadata, too many rows) fails
+  the same way on a rerun, so its error points to `--all`; any other runtime
+  failure is finished by a rerun, every step being idempotent. `--all` prints
+  the archive path as soon as the rename happened; a failure before it says
+  the hub is stopped and nothing was moved. JSON and SQLite errors are printed
+  by class and code only (`failureText`): a parser's message can quote the
+  data it choked on, envelope bodies and task text included.
+- Runtime scope (default): the CLI opens the journal as a new instance, which
+  turns the stopped run's dispatching and accepted rows into `needs_review`,
+  and settles every `queued` and `needs_review` entry of `Bus.queueList`,
+  including queue entries without a row, with `resolveDelivery(..., "discard",
+  "reset")`: one `resolution_history` entry each. It clears manual holds
+  through the bus, deletes the `budget_pauses` and `conductor_holds` rows and
+  removes `sessions.json`, `claude-session.json` and `claude-context.json`,
+  and a crashed run's manifest.
+  The board, turns and touches, execution budgets, logs, `events.jsonl`,
+  `cli-audit/`, recovery records, `pi-sessions/` and configuration stay.
+- Full scope (`--all`): the state directory is renamed, unchanged, to
+  `<root>/.agenthub/archive/state-<YYYYMMDDTHHMMSSZ>/` (0700); an existing
+  target refuses the move. The archive directory gets a `.gitignore` of `*`
+  (checked on every `--all` and rewritten when it differs) because `hub.db`
+  holds task text, PII included; turn snapshots exclude `**/.agenthub/archive/**`
+  as they exclude the state directory, also when the user's index tracks it or
+  the `.gitignore` is gone; and `.agenthub/archive` is a
+  `DENY_SEGMENTS` entry (`src/local/deny.ts`), so the local worker's and Pi's
+  path guard, seatbelt profile and memory capture refuse it like
+  `.agenthub/state`. A new 0700 state directory (created with `recursive`, as
+  the status line tee may have re-created it) holds only a copy of
+  `project.json`; the project id is the hash of its root,
+  so the registration and id are unchanged. Archives are never pruned.
+- Output says that claude-mem is not touched and that attached Claude Code
+  sessions must be relaunched with `ahub claude`. The control protocol is
+  unchanged: reset never talks to a running hub except to inspect and stop it.

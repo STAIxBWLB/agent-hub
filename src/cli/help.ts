@@ -23,6 +23,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub doctor", "check the tools, daemon, plugin, gateway, models and memory worker this project uses"],
     ["ahub doctor --orphans [--kill]", "list registrations whose project root is gone; --kill stops their daemons (SIGTERM, then SIGKILL) only after the process identity checks out"],
     ["ahub kill", "stop this project's hub"],
+    ["ahub reset [--all] [--yes]", "list, then with --yes stop the hub and discard every queued and needs_review delivery, clear holds and pauses and drop session pointers; --all moves the state directory to .agenthub/archive instead"],
     ["ahub restart [--dry-run] [--yes]", "recover this project's runtime"],
     ["ahub upgrade --to <version> [--dry-run] [--yes]", "review and upgrade running projects"],
     ["ahub recovery status|resume|abort <operation-id>", "inspect, resume or cancel a preflight"],

@@ -60,11 +60,12 @@ export function snapshot(repo: Repo): string | undefined {
       copyFileSync(index, env.GIT_INDEX_FILE);
       utimesSync(env.GIT_INDEX_FILE, atime, mtime);
     }
-    if (git(repo.top, ["add", "-A", "--", scope(repo), ":(exclude,glob)**/.agenthub/state/**"], env).status !== 0) return undefined;
+    // `ahub reset --all` archives hub.db (task text, PII included) under .agenthub/archive: never copy it either.
+    if (git(repo.top, ["add", "-A", "--", scope(repo), ":(exclude,glob)**/.agenthub/state/**", ":(exclude,glob)**/.agenthub/archive/**"], env).status !== 0) return undefined;
     // The copy starts from the user's index: hub state somebody tracked or staged is still in it, and the exclude above
     // only keeps `add` from touching it. Take it out explicitly; -f because staged state the hub has rewritten since
     // matches neither HEAD nor the file, which `rm --cached` otherwise refuses. Only the copy changes.
-    if (git(repo.top, ["rm", "-r", "-f", "--cached", "--quiet", "--ignore-unmatch", "--", ":(glob)**/.agenthub/state/**"], env).status !== 0) return undefined;
+    if (git(repo.top, ["rm", "-r", "-f", "--cached", "--quiet", "--ignore-unmatch", "--", ":(glob)**/.agenthub/state/**", ":(glob)**/.agenthub/archive/**"], env).status !== 0) return undefined;
     const r = git(repo.top, ["write-tree"], env);
     return r.status === 0 ? r.stdout.trim() : undefined;
   } finally {
