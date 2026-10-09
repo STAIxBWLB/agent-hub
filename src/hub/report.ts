@@ -207,3 +207,112 @@ export function formatReport(r: Report): string[] {
   lines.push(`quota readings: ${r.quota.readings} (${r.quota.hard} hard limits)`);
   return lines;
 }
+
+const usageCounters = ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "totalTokens"] as const;
+const usageCounts = ["inputRecords", "outputRecords", "cacheReadRecords", "cacheWriteRecords", "totalRecords"] as const;
+type TaskUsage = Omit<UsageCoverage, typeof usageCounters[number]> & Record<typeof usageCounters[number], number | null>;
+export interface TaskPeerReport { tokens: number | null; usage: TaskUsage }
+export interface TaskTotals { turns: number; peers: Record<string, TaskPeerReport> }
+export interface TaskSummary extends TaskTotals { class: string | null; outcome: string | null; wallMs: number | null; pii?: true }
+export interface TaskReport {
+  from?: string;
+  to?: string;
+  tasks: Record<string, TaskSummary>;
+  classes: Record<string, TaskTotals>;
+  totals: { tokens: number; usageRecords: number };
+  unattributed: TaskTotals & { tokens: number; usageRecords: number; tokenShare: number | null; usageShare: number | null };
+  beforeAttribution: TaskTotals & { tokens: number; usageRecords: number };
+}
+
+const taskTotals = (): TaskTotals => ({ turns: 0, peers: {} });
+const taskPeer = (group: TaskTotals, id: string): TaskPeerReport => group.peers[id] ??= {
+  tokens: null, usage: { ...emptyUsage(), inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, totalTokens: null },
+};
+
+function addTaskUsage(peer: TaskPeerReport, e: Extract<StampedEvent, { type: "usage" }>): void {
+  const known = emptyUsage();
+  recordUsage(known, e);
+  const u = peer.usage;
+  u.records += known.records; u.withUsage += known.withUsage; u.withoutUsage += known.withoutUsage;
+  for (let i = 0; i < usageCounters.length; i++) {
+    const field = usageCounters[i]!, count = usageCounts[i]!;
+    if (known[count]) u[field] = (u[field] ?? 0) + known[field];
+    u[count] += known[count];
+  }
+}
+
+/** Task identities and history come only from telemetry. Historical usage is never reassigned. */
+export function summarizeByTask(events: StampedEvent[]): TaskReport {
+  const r: TaskReport = { tasks: {}, classes: {}, totals: { tokens: 0, usageRecords: 0 },
+    unattributed: { ...taskTotals(), tokens: 0, usageRecords: 0, tokenShare: null, usageShare: null },
+    beforeAttribution: { ...taskTotals(), tokens: 0, usageRecords: 0 } };
+  const task = (id: number) => r.tasks[String(id)] ??= { ...taskTotals(), class: null, outcome: null, wallMs: null };
+  const starts = new Map<number, number>(), approvals = new Map<number, number>();
+  const seenUsage = new Set<string>();
+  // Resolve latest class/outcome before rolling usage up: usage may precede the task's history in a slice.
+  for (const e of events) {
+    r.from ??= e.at; r.to = e.at;
+    if (e.type !== "task") continue;
+    const t = task(e.id);
+    t.class = e.class; t.outcome = e.state;
+    if (e.pii) t.pii = true;
+    const at = Date.parse(e.at);
+    if (!Number.isFinite(at)) continue;
+    if (e.state === "in_progress" && !starts.has(e.id)) starts.set(e.id, at);
+    if (e.state === "approved" && !approvals.has(e.id)) approvals.set(e.id, at);
+  }
+  for (const [id, t] of Object.entries(r.tasks)) {
+    const start = starts.get(Number(id)), end = approvals.get(Number(id));
+    if (t.outcome === "approved" && start !== undefined && end !== undefined && end >= start) t.wallMs = end - start;
+    r.classes[t.class ?? "unknown"] ??= taskTotals();
+  }
+  for (const e of events) {
+    if (e.type !== "tokens" && e.type !== "usage" && e.type !== "turn_end") continue;
+    if (e.type === "usage") {
+      const key = `${e.peer}\0${e.source}\0${e.id}`;
+      if (seenUsage.has(key)) continue;
+      seenUsage.add(key);
+      r.totals.usageRecords++;
+    } else if (e.type === "tokens") r.totals.tokens += e.n;
+    let groups: TaskTotals[];
+    if (e.attribution === undefined) {
+      groups = [r.beforeAttribution];
+      if (e.type === "tokens") r.beforeAttribution.tokens += e.n;
+      if (e.type === "usage") r.beforeAttribution.usageRecords++;
+    } else if (e.attribution === "unattributed" || e.task === undefined) {
+      groups = [r.unattributed];
+      if (e.type === "tokens") r.unattributed.tokens += e.n;
+      if (e.type === "usage") r.unattributed.usageRecords++;
+    } else {
+      const t = task(e.task);
+      if (e.pii) t.pii = true;
+      groups = [t, r.classes[t.class ?? "unknown"] ??= taskTotals()];
+    }
+    for (const group of groups) {
+      const p = taskPeer(group, e.peer);
+      if (e.type === "turn_end") group.turns++;
+      else if (e.type === "tokens") p.tokens = (p.tokens ?? 0) + e.n;
+      else addTaskUsage(p, e);
+    }
+  }
+  r.unattributed.tokenShare = r.totals.tokens ? r.unattributed.tokens / r.totals.tokens : null;
+  r.unattributed.usageShare = r.totals.usageRecords ? r.unattributed.usageRecords / r.totals.usageRecords : null;
+  return r;
+}
+
+export function formatTaskReport(r: TaskReport): string[] {
+  const lines = [`period: ${r.from ?? "-"} .. ${r.to ?? "-"}`];
+  const peers = (group: TaskTotals) => Object.entries(group.peers).sort(([a], [b]) => a.localeCompare(b)).map(([id, p]) => {
+    const u = p.usage;
+    const counts = usageCounters.map((field, i) => `${field} ${u[field] ?? "unknown"} (${u[usageCounts[i]!]}/${u.records} known)`).join(", ");
+    return `  peer ${id}: tokens ${p.tokens ?? "unknown"}; ${counts}`;
+  });
+  for (const [id, t] of Object.entries(r.tasks).sort(([a], [b]) => Number(a) - Number(b))) {
+    lines.push(`task #${id}${t.pii ? " [pii]" : ""}: class ${t.class ?? "unknown"}, outcome ${t.outcome ?? "unknown"}, turns ${t.turns}, wall ${t.wallMs === null ? "unknown" : `${t.wallMs} ms`}`, ...peers(t));
+  }
+  for (const [name, group] of Object.entries(r.classes).sort(([a], [b]) => a.localeCompare(b))) lines.push(`class ${name}: turns ${group.turns}`, ...peers(group));
+  const share = (value: number | null) => value === null ? "unknown" : `${(value * 100).toFixed(1)}%`;
+  lines.push(`unattributed: tokens ${r.unattributed.tokens}/${r.totals.tokens} (${share(r.unattributed.tokenShare)}), usage records ${r.unattributed.usageRecords}/${r.totals.usageRecords} (${share(r.unattributed.usageShare)}), turns ${r.unattributed.turns}`, ...peers(r.unattributed));
+  lines.push(`before attribution: tokens ${r.beforeAttribution.tokens}, usage records ${r.beforeAttribution.usageRecords}, turns ${r.beforeAttribution.turns}`, ...peers(r.beforeAttribution));
+  return lines;
+}

@@ -30,9 +30,9 @@ marked `private: true`, and PII tasks `pii: true`.
 | `split` | `task`, `where` (`routing`: routing chose the first owner of a task overlapping another owner's task not started yet, not an escalation, relay or reassignment, the record calibration reads; `cohort`: an overlap formed or changed a cohort), `verdict` (`split`, `single`, `unknown`), `single` (the peer that would finish both units alone soonest), `splitS`, `singleS`, `reason` (for `unknown`), `trace` (the inputs and steps: peer names, their profiles of versions and coordination, and numbers only): a shadow split prediction; it never changes the assignment (issue #109) |
 | `state` | `peer`, `state` |
 | `turn_start` | `peer`, `turn` (`<peer>#<hub run>.<n>`, unique across restarts). A turn follows the adapter: pausing a busy peer does not end it |
-| `turn_end` | `peer`, `turn`, `ms`, `tokens` (when the adapter reported any during the turn), `files` and `snapshotMs` (when snapshots are on: how many files the turn changed, and the time both snapshots took) |
-| `tokens` | `peer`, `n` (tokens added since the previous report) |
-| `usage` | `peer`, `source`, opaque `id`, optional `measuredAt` (provider/source time), requested/served model and provider labels, and any provider-reported input/output/cache/total counters. Missing counters stay unknown. |
+| `turn_end` | `peer`, `turn`, `ms`, `tokens` (when the adapter reported any during the turn), `files` and `snapshotMs` (when snapshots are on: how many files the turn changed, and the time both snapshots took); optional numeric `task`, `attribution` (`delivery`, `single_open`, `unattributed`) frozen at turn start, `pii: true` for an attributed PII task |
+| `tokens` | `peer`, `n` (tokens added since the previous report), optional numeric `task`, `attribution` (`delivery`, `single_open`, `unattributed`), `pii: true` for an attributed PII task |
+| `usage` | `peer`, `source`, opaque `id`, optional `measuredAt` (provider/source time), requested/served model and provider labels, and any provider-reported input/output/cache/total counters; optional numeric `task`, `attribution` (`delivery`, `single_open`, `unattributed`), `pii: true` for an attributed PII task. Missing counters stay unknown. |
 | `task` | `id`, `event` (the board history event, e.g. `proposed`, `assigned`, `done`, `check failed`, `blocked`, `ready`), `by`, `state`, `owner`, `reviewer`, `class`, `pii` |
 | `overlap` | `task`, `owner`, `others` (`task`, `owner`, `paths`, and `symbols` when plans name the same symbol; a name that matches a PII pattern is left out, so either list can be empty), the structured twin of the console notice |
 | `quota` | `peer`, `windows` (`id`, `used`, `resetsAt`), `hard`, `measuredAt` (when the reading was taken, if not when it arrived: Claude's numbers come through a file) |
@@ -49,6 +49,40 @@ Token usage by adapter:
 - The local worker records optional counters returned by OmniRoute. Requested route/model and gateway-reported served model/provider are separate fields; an alias is never treated as a served model.
 - `ahub report` deduplicates usage records by peer, source and id. Coverage counts distinguish calls with provider usage from calls where usage was absent. Token counters are provider-reported values; the report never derives a price or treats missing spend as zero. Estimated price and measured provider spend remain unknown unless a future source reports them.
 - Usage telemetry has no prompt, completion, task text, credential, Access header, session id or transcript path.
+
+## Per-task usage reports
+
+`ahub report --by task` (also `--json` and `--since`) reads only `events.jsonl`.
+It reports task ids, the latest recorded class/outcome, completed logical turns,
+and wall time from the first `in_progress` task event to the first `approved`
+event. Wall time is unknown if either boundary is absent or the latest outcome
+is not approved. Each task and class rollup includes per-peer native token
+increments and provider-reported input/output/cache/total counters. Usage is
+deduplicated by peer, source and id; missing counters are `null` in JSON and
+`unknown` in text, with known-record counts alongside measured subsets. A
+missing task history has unknown class/outcome and belongs to the unknown class
+rollup. PII tasks have ids and a `pii: true` flag, never titles. No prices are derived.
+
+At write time, the first applicable attribution rule wins:
+
+- `delivery`: the current turn's original delivery names exactly one distinct positive task id, including work by a peer that does not own it.
+- `single_open`: otherwise the peer owns exactly one `in_progress` task.
+- `unattributed`: otherwise no task is assigned to the record.
+
+`Bus.onDeliver` observes originals immediately before `peer.deliver` starts the
+turn. Pending task identity is consumed at turn start and cleared on delivery
+admission/failure, so later user-started native turns do not inherit it. Usage
+and token events apply the rule at write time; `turn_end` keeps the start-time
+attribution. Local usage uses its request-bound route policy task when present.
+The existing relay has no task-bearing route usage event; this change adds no
+new usage source. Schema version 1 and the control protocol are unchanged.
+
+The unattributed share is always printed for token increments and deduplicated
+usage records, against all recorded increments/usage records. A zero denominator
+has unknown share. Records with no `attribution` field belong to a separate
+`before attribution` bucket displayed beside the share, even if a task field is
+present. Neither bucket is redistributed. `ahub export` preserves these fields
+as raw JSON lines; plain `ahub report` keeps its existing behavior.
 
 The file is local and never uploaded. It grows without rotation; delete it to start
 over (the hub recreates it).

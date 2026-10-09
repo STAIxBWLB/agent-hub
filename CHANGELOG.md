@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Attribute token increments, provider usage and completed turns to task ids by delivery or a single open task; add `ahub report --by task` with task/class totals, explicit unknown counters, unattributed shares and a separate historical bucket. Preserve PII id-only exports and derive no prices (#200).
+
 ## 0.12.17
 
 - Add an operator console with confirmed approvals, bounded status polling and optional peer, approval, task, queue and event panels; open it from interactive `up` and preserve the tail renderer (#190, #191).
