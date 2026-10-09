@@ -35,6 +35,8 @@ export interface HistoryEntry {
   reason?: TaskMoveReason;
   /** Persisted task-idle ladder; never counted as fresh task activity (#186). */
   sweep?: SweepRecord;
+  /** The PII screen did not clear this entry's note (#198): only the console reads it. */
+  withheld?: true;
 }
 export interface Task {
   id: number;
@@ -132,17 +134,17 @@ export class Board {
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from"> = {}): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "withheld"> = {}): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (patch.state && patch.state !== task.state && !MOVES[task.state].includes(patch.state)) {
       throw new Error(`task #${id} is ${task.state}: cannot move to ${patch.state}`);
     }
     const next = { ...task, ...patch, refs: { ...task.refs, ...patch.refs } };
-    const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}) }];
+    const history = [...task.history, { at: Date.now(), by, event, ...(note ? { note } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.withheld && note ? { withheld: true as const } : {}) }];
     this.db
-      .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, history = ?, updated = ? WHERE id = ?")
-      .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(history), Date.now(), id);
+      .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, updated = ? WHERE id = ?")
+      .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), Date.now(), id);
     const updated = this.get(id)!;
     this.changed(updated, history.at(-1)!);
     return updated;

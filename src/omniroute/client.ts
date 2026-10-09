@@ -158,7 +158,7 @@ export class OmniRoute {
     }
   }
 
-  async chat(body: { model: string; messages: ChatMessage[]; tools?: unknown[]; max_tokens?: number }, opts: ChatOptions = {}): Promise<ChatResult> {
+  async chat(body: { model: string; messages: ChatMessage[]; tools?: unknown[]; max_tokens?: number; temperature?: number; reasoning_effort?: string }, opts: ChatOptions = {}): Promise<ChatResult> {
     const base = opts.via ?? (await this.base());
     if (!base) throw new Error("no model gateway is configured or reachable (omniroute.urls in .agenthub/config.json; see ahub doctor)");
     if (opts.onCampusOnly && (opts.via || this.isAccessHost(base))) throw new Error("PII model calls require the confirmed campus gateway");

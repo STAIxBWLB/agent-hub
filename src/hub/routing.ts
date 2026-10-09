@@ -31,7 +31,8 @@ export interface Routing {
   stay_switch: StaySwitchMode;
   max_switch_prefill_tokens: number;
   classes: Partial<Record<TaskClass, ClassPolicy>>;
-  signals: { pii_patterns: string[]; long_context_tokens: number };
+  /** `pii_screen` (issue #198): `local` adds the on-device or on-campus model screen to the patterns. */
+  signals: { pii_patterns: string[]; long_context_tokens: number; pii_screen: "off" | "local" };
   constraints: { pii: "local_only" | "off"; long_context: "skip_local" | "off"; budget_paused: "skip_peer" | "off" };
   /** `efficient_wait_ms`, opt-in (#199): how long a hub/auto request waits for a busy MLX slot before it moves to dgx/fast; absent, nothing moves for load. */
   pi: { dgx_max_context_tokens: number; mlx_max_context_tokens: number; efficient_wait_ms?: number };
@@ -51,8 +52,9 @@ export function loadRouting(cwd: string): Routing {
   }
   const raw = Bun.TOML.parse(text) as Partial<Routing>;
   if (!raw.local?.fixed_model) throw new Error("routing.toml: [local] fixed_model is required (the path that works without Switchyard)");
-  const signals = { pii_patterns: [], long_context_tokens: 120_000, ...raw.signals };
+  const signals = { pii_patterns: [], long_context_tokens: 120_000, pii_screen: "off" as const, ...raw.signals };
   for (const p of signals.pii_patterns) new RegExp(p); // a bad pattern fails here, at load, not in the middle of an assignment
+  if (signals.pii_screen !== "off" && signals.pii_screen !== "local") throw new Error('routing.toml: [signals] pii_screen must be "off" or "local"');
   const classes = raw.classes ?? {};
   for (const [name, policy] of Object.entries(classes)) {
     if (policy?.pi_backend !== undefined && policy.pi_backend !== "dgx" && policy.pi_backend !== "mlx") throw new Error(`routing.toml: [classes.${name}] pi_backend must be "dgx" or "mlx"`);

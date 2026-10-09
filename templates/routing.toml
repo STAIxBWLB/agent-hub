@@ -52,6 +52,7 @@ target = "dsv4f"
 [signals]
 pii_patterns = ["\\b\\d{6}-\\d{7}\\b"]   # Korean resident registration numbers; add your own, e.g. "@your-org\\.example" for staff mail addresses
 long_context_tokens = 120000
+pii_screen = "off"            # "local": a model on this machine (MLX/Ollama), or the gateway only on campus, screens new tasks and free text too; no verdict counts as PII
 
 [constraints]
 pii = "local_only"            # hard: a PII task is owned by `local` or nobody, and nothing about it leaves the hub

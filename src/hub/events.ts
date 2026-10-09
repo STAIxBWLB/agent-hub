@@ -1,6 +1,7 @@
 import { appendFileSync, closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import type { TaskAttribution } from "./attribution.ts";
 import type { SwitchTrace } from "../models/route/stage.ts";
+import type { ScreenRecord } from "./inference.ts";
 
 /** Bumped whenever a field changes meaning or goes away; new fields and new types do not bump it. */
 export const EVENTS_SCHEMA = 1;
@@ -39,6 +40,8 @@ export type HubEvent =
   | ({ type: "usage"; peer: string; source: "omniroute" | "claude_transcript"; id: string; measuredAt?: string; requestedModel?: string; servedModel?: string; provider?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; totalTokens?: number } & Partial<TaskAttribution>)
   | { type: "task"; id: number; event: string; by: string; state: string; owner: string | null; reviewer: string | null; class: string; pii: boolean }
   | { type: "overlap"; task: number; owner: string; others: { task: number; owner: string; paths: string[]; symbols?: string[] }[] }
+  /** A PII screen verdict (issue #198): what was screened and the closed label, source and category, never the text. */
+  | ({ type: "pii_screen" } & ScreenRecord)
   | { type: "conflict"; peer: string; task?: number; other: number; owner: string; paths: string[]; concurrent: boolean; turns?: [string, string] }
   | { type: "context_pressure"; peer: string; source: string; measuredAt: number; used: number; window: number | null }
   | { type: "quota"; peer: string; windows: { id: string; used: number; resetsAt?: number }[]; hard: boolean; measuredAt?: string };

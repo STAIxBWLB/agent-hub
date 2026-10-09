@@ -1839,3 +1839,94 @@ acts on the stopped state directory.
 - Output says that claude-mem is not touched and that attached Claude Code
   sessions must be relaunched with `ahub claude`. The control protocol is
   unchanged: reset never talks to a running hub except to inspect and stop it.
+
+## Amendment: model-based PII screen (issue #198)
+
+- `routing.toml` `[signals] pii_screen = "off" | "local"`, default `off`; any other
+  value fails the load like a bad pattern. With `off`, or with `constraints.pii =
+  "off"`, nothing changes and no screen call is made.
+- Order. With `local`, `Tasks.propose` screens the task's title, detail and plan
+  text right after the pattern check and before triage. "Held as private" is met
+  by holding the task back entirely: until the verdict it is not on the board, so
+  no envelope, notice, triage call, brief or note of the hub's can read it. The
+  local worker's claude-mem capture of its own tool calls is outside this: in an
+  ordinary turn it sends a proposal's arguments whatever the verdict (an existing
+  gap for every hub tool, not closed here). Writing it as
+  a PII task first was rejected: a PII task opening lifts every silent turn-free
+  cohort for good and switches facts off (#107, #108), so every proposal would do
+  that. The proposal's tool call waits for the verdict, as it already waits for
+  triage: for an ordinary task at worst the screen (8 s), triage (8 s) and a brief
+  (2 x 2 s), 20 s; for a task the screen marked PII, triage first runs its own
+  on-campus probe (two 4 s rounds when the gateway stalls), so about 24 s. Both
+  stay under the plugin's 30 s control timeout. `hub_task_done` and `hub_review`
+  put the screen (8 s) ahead of their existing waits, such as the briefs
+  `releaseDependents` fetches for the tasks an approval releases.
+- The screener (`screenPii`, `src/hub/inference.ts`): the on-device model when
+  `mlx.enabled` and it can be had (`ensureMlx`, loopback only; a legacy MLX runtime
+  is started the way Pi's relay starts it and keeps running until `ahub models
+  stop`), else the gateway's `local.fixed_model` only while the
+  daemon's `onCampus()` holds, with `onCampusOnly` so the client refuses an Access
+  host once more before transport; never the Switchyard sidecar. One call per item,
+  an 8 s deadline over the whole call, and a generation slot of its own: it asks
+  for one without waiting (`acquire(abort.signal, 0)`: one look, then
+  `MlxBusyError`); with all taken (Pi generating, another screen) it uses the
+  campus gateway when `onCampus()` holds and otherwise waits for the slot under the
+  deadline. On campus the device gets 60% of the deadline: an error reply or a
+  device still loading then hands over to the gateway within the rest; off campus
+  it keeps the whole deadline. `max_tokens` 32, temperature 0 and `reasoning_effort: "none"` on both
+  paths, so a reasoning model does not spend the budget thinking. The
+  prompt frames the text as data and carries Korean and English examples and hard
+  negatives. The answer must be exactly `clear` or `pii <category>` with a category
+  from `name, student_id, phone, address, grade, health, other`.
+- Fail closed: an answer outside that form, a timeout, a failed or missing model,
+  an off-campus gateway, or text over 6000 UTF-8 bytes (every token is at least a
+  byte, so text and prompt fit the 8k on-device context; Ollama could otherwise
+  judge cut input) is `unknown`. `pii` and `unknown` add the `pii` signal,
+  so the task takes the whole existing PII path (local or nobody, user review,
+  private envelopes, redacted views, no claude-mem). A pattern match is PII without
+  a call. The source is recorded as a `screened` history entry (`pii: regex`,
+  `pii: screen, <category>`, `pii: unknown, <reason>`, `clear`) and a `pii_screen`
+  event; an unknown verdict is a console and hub.log line with the task id and the
+  closed reason only. `route explain` on a draft does not call the screen and adds
+  a trace line saying a proposal would. The cost of `unknown` is the cost of any PII
+  task, even if a re-screen clears it later: it lifts every silent turn-free cohort
+  for good and turns facts off while open, and off campus triage is not asked, so a
+  classless proposal that is not a claim is refused with an error naming that.
+- Re-screen. Off campus with the device slot taken, the verdict is `unknown`. A
+  task whose last `screened` entry is `pii: unknown` (not `too long`, which a
+  second look cannot change), that is still `proposed` and that no peer ever owned
+  (no history entry carries an owner) has had nothing private sent anywhere, so
+  `Tasks.rescreen()`, on the daemon's 60 s release timer (one task per tick, the
+  least tried first, at most 10 tries per task in a hub run, in memory), screens it
+  again. `clear` lifts the `pii` signal through `Board.update` (a `screened` entry
+  `clear, screened again`), notifies by task, and routes it through the class
+  peers (a named owner or a claim is not remembered; a reserved owner, #207, is
+  offered first as `assign()` always does); `pii` settles it; another `unknown`
+  changes only the event record. A task an owner took (`local`) keeps its PII path,
+  also after it was declined back to nobody: its review notes, summary and decline
+  reason were never screened.
+- Free text (#69): the done summary, the review note with its unmet items, a
+  budget hand-off (once per hand-off, however many tasks it moves) and a
+  `hub_remember` note go through the same screen on an ordinary task when they
+  match no pattern; a match is recorded as a `regex` verdict without a call. The
+  call's cheap checks (owner, state, verdict, a running check, memory enabled) run
+  first, then the screen, then the checks again on a fresh read. An escalation's
+  reason is the hub's own text and stays pattern-only. `pii` or `unknown` withholds the
+  item exactly as a pattern match does (stubs, no memory note, no summary line in
+  completed-change or integration notices; `hub_remember` is refused). The board
+  keeps the text and marks the history entry `withheld: true`, so public views,
+  later reviewers, held cohort notices and `ahub ask` keep withholding it after a
+  restart without another call. The check output tail of a done note, a plan given
+  at accept, a decline reason, refs (paths, branch) and context checkpoint
+  summaries stay pattern-only.
+- Calibration (AC4): `test/fixtures/pii-screen.json` holds synthetic Korean and
+  English positives across the categories and hard negatives (roles,
+  placeholders, field and function names, ports, codes); none is copied from the
+  prompt, and its account, passport and resident numbers have impossible lengths
+  or dates. `bun scripts/pii-screen-eval.ts [--project <dir>] [--out <file>]` screens
+  each item once, in order, through `screenPii` with the project's configuration
+  and reports recall, recall as handled (pii or unknown), precision, the unknown
+  rate, held negatives, category agreement and latency. The bound, fixed here
+  before any measurement: the model itself labels at least 90% of the positives
+  `pii` (an unknown verdict counts as a miss). The report goes to
+  `docs/verification/`; the script exits 1 under the bound.

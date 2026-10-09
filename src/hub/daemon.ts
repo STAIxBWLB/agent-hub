@@ -18,7 +18,7 @@ import { AcpPeer, type PermissionRequest } from "../adapters/acp.ts";
 import { CodexPeer } from "../adapters/codex-appserver.ts";
 import { PiPeer } from "../adapters/pi.ts";
 import { startModelRelay, type ModelRelay } from "../models/relay.ts";
-import type { MlxOptions } from "../models/mlx.ts";
+import { ensureMlx, type MlxOptions } from "../models/mlx.ts";
 import { PiToolReceipts } from "../pi/tool-receipts.ts";
 import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
@@ -42,7 +42,7 @@ import { SupervisionFeed } from "./supervision.ts";
 import { drainCliAudits } from "../cli/identity-audit.ts";
 import { launcherPreview } from "../cli/preview.ts";
 import { Tasks } from "./tasks.ts";
-import { DEFAULT_INFERENCE, DIGEST, Inference, type InferenceConfig } from "./inference.ts";
+import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig } from "./inference.ts";
 import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, detectSignals } from "./routing.ts";
 import { Bus } from "./bus.ts";
@@ -673,6 +673,9 @@ export async function startDaemon(opts: DaemonOptions) {
       }
     },
     triage: { classify: (title, detail) => inference?.triage(title, detail) ?? Promise.resolve(undefined), onCampus: () => onCampus() },
+    // The PII screen (issue #198): the model on this machine when MLX/Ollama is enabled, else the gateway on campus only.
+    piiScreen: (text) => screenPii(text, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => currentRouting(opts.cwd, log).local.fixed_model }),
+    recordScreen: (record) => event({ type: "pii_screen", ...record }),
     quota: (): ReturnType<Budget["headroom"]> => budget.headroom(), // budget is built below; this runs at assignment time
     review: config.review,
     sweep: taskSweepConfig(config.task_sweep),
@@ -1516,6 +1519,7 @@ export async function startDaemon(opts: DaemonOptions) {
     releasing = true;
     try {
       await tasks.releaseReady(); // #34: dependents a stop cut off between an approval and their assignment
+      await tasks.rescreen().catch((e: Error) => log(`PII re-screen failed: ${e.message}`)); // #198: no verdict yet, nobody has it
       if (limit > 0) await releaseOwners(limit);
     } finally {
       releasing = false;

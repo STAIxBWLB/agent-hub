@@ -164,3 +164,14 @@ test("MLX generation identity survives a timezone change between invocations", a
   first();
   second();
 });
+
+test("a generation slot asked for without waiting is refused at once while all are taken (#198)", async () => {
+  const runtimeDir = mkdtempSync(join(tmpdir(), "agenthub-mlx-busy-"));
+  cleanup.push(() => rmSync(runtimeDir, { recursive: true, force: true }));
+  const held = await acquireGeneration(runtimeDir, 1);
+  const t0 = Date.now();
+  await expect(acquireGeneration(runtimeDir, 1, undefined, undefined, 0)).rejects.toThrow("MLX generation is busy");
+  expect(Date.now() - t0).toBeLessThan(1000);
+  held();
+  (await acquireGeneration(runtimeDir, 1, undefined, undefined, 0))();
+});

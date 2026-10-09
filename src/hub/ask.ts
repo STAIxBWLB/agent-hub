@@ -87,7 +87,7 @@ export async function gather(question: string, d: AskDeps): Promise<{ evidence: 
   const tasks = d.board.list().sort((a, b) => hit(b.title) - hit(a.title) || b.updated - a.updated).slice(0, MAX_TASKS);
   // An ordinary task's last note is model-written (a summary, a review note): one that matches a PII pattern is shown
   // only on campus, like a PII task (#69).
-  const notePii = (t: (typeof tasks)[number]) => !d.isPii(t) && !!t.history.at(-1)?.note && (d.isPiiText?.(t.history.at(-1)!.note!) ?? false);
+  const notePii = (t: (typeof tasks)[number]) => !d.isPii(t) && !!t.history.at(-1)?.note && (!!t.history.at(-1)!.withheld || (d.isPiiText?.(t.history.at(-1)!.note!) ?? false));
   const anyPii = tasks.some((t) => d.isPii(t) || notePii(t));
   const showPii = anyPii ? await onCampus() : false;
   let piiShown = false;
