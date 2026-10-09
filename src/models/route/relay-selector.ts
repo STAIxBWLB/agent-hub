@@ -5,7 +5,7 @@ import { selectStage, stayOrSwitch, type StageState, type SwitchTrace, type Tier
 import { SessionState } from "./state.ts";
 
 type RelaySelectorOptions = Pick<ModelRelayOptions, "mlx" | "selectBackend" | "routeSessionKey" | "allowedDGXmodels" | "staySwitch"> & { dgxMaxInputTokens: number };
-type RouteSource = "override" | "dimensions" | "hold" | "classifier" | "default" | "load" | "cooldown";
+type RouteSource = "override" | "dimensions" | "hold" | "classifier" | "default" | "load" | "cooldown" | "pin";
 /** `stateless`: the request carried no session key, so the planner saw a new session on every call. */
 export type RelayRouteEvent = { route: "hub/auto"; tier: string; source: RouteSource; score: number; ms: number; stateless?: boolean } & Partial<SwitchTrace>;
 type EstimateInputTokens = (messages: RelayRequest["messages"], tools?: unknown[]) => number;
@@ -14,7 +14,7 @@ type AutoState = { stage: StageState; pin?: { tier: Tier; alias: string } };
  * A `hub/auto` decision (#199). `backend` is the stage backend; the relay only reorders it with its fallback, trying
  * `prefer` (an enforced tool loop's pinned backend) first when that is the fallback, and reports a reorder through `moved`.
  */
-export interface AutoChoice { backend: ModelBackend; route: RelayRouteEvent; movable: boolean; prefer?: string; moved: (alias: string, source?: "load" | "cooldown") => void }
+export interface AutoChoice { backend: ModelBackend; route: RelayRouteEvent; movable: boolean; prefer?: string; moved: (alias: string, source: "load" | "cooldown" | "pin") => void }
 
 /** Stage selection for the relay's virtual `hub/auto` model. */
 export class AutoRouteSelector {
@@ -78,7 +78,7 @@ export class AutoRouteSelector {
     const route: RelayRouteEvent = { route: "hub/auto", tier: this.aliasOf(backend), source, score, ms: Math.max(0, performance.now() - started), ...trace, ...(sessionKey ? {} : { stateless: true }) };
     return { backend, route, movable, ...(prefer ? { prefer } : {}), moved: (alias, moveSource) => {
       route.tier = alias;
-      if (moveSource) route.source = moveSource;
+      route.source = moveSource;
       if (next?.pin) next.pin.alias = alias;
     } };
   }

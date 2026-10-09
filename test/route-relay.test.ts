@@ -376,7 +376,7 @@ test("#199 enforced, a tool loop neither moves for load nor leaves the backend a
   await route(relay, short("other", user));
   later(busy, 150);
   await route(relay, short("other", [...loop.slice(0, 1), ...toolStep("l2", "bash", { command: "ls" }, "a.ts")] as RelayRequest["messages"]));
-  expect(events.map((e) => `${e.tier} ${e.source} ${e.turnType}`)).toEqual(["mlx/fast default user", "dgx/fast load user", "dgx/fast default tool_result", "dgx/fast load user", "dgx/fast default tool_result"]);
+  expect(events.map((e) => `${e.tier} ${e.source} ${e.turnType}`)).toEqual(["mlx/fast default user", "dgx/fast load user", "dgx/fast pin tool_result", "dgx/fast load user", "dgx/fast pin tool_result"]);
 
   const waiting = await startModelRelay({ omni: omni(gateway()), allowedDGXmodels: { "dgx/fast": "fast", "dgx/coding": "coding" }, enableHubAuto: true, token: "wait",
     mlx: local.mlx, fallbackDGXAlias: "dgx/fast", efficientWaitMs: 20, routeSessionKey: (request) => request.session_key as string, staySwitch: () => ({ stay_switch: "enforce", max_switch_prefill_tokens: 32_000 }) });
@@ -578,7 +578,7 @@ test("#199 review: an enforced loop pinned to dgx/fast by a load move falls back
   await route(relay, short("pi", loop(1))); // the pin is tried first, fails, MLX serves
   const probes = g.probes;
   await route(relay, short("pi", loop(2))); // dgx/fast just failed: no longer preferred
-  expect(events.map((e) => `${e.tier} ${e.source} ${e.turnType}`)).toEqual(["mlx/fast default user", "dgx/fast load user", "dgx/fast default tool_result", "mlx/fast default tool_result"]);
+  expect(events.map((e) => `${e.tier} ${e.source} ${e.turnType}`)).toEqual(["mlx/fast default user", "dgx/fast load user", "dgx/fast pin tool_result", "mlx/fast default tool_result"]);
   expect(local.counts.chat).toBe(chats + 2);
   expect(g.probes).toBe(probes);
 });
@@ -784,4 +784,22 @@ test("#199 review: an Ollama check that fails during the load probe is reported 
   await route(relay, short()); // the probe gets the slot, Ollama's check fails; MLX fails once and dgx/fast serves
   expect(local.counts.tags - tags).toBe(1);
   expect(relay.requests().slice(-2).map((r) => `${r.alias} ${r.outcome}`)).toEqual(["mlx/fast failed", "dgx/fast completed"]);
+});
+
+test("#199 review: a client that disconnects mid-stream does not mark the backend failing", async () => {
+  const open = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(new ReadableStream<Uint8Array>({ start(controller) {
+    controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'));
+  } }), { headers: { "content-type": "text/event-stream" } }) });
+  cleanup.push(() => open.stop(true));
+  const relay = await startModelRelay({ omni: omni(`http://127.0.0.1:${open.port}/v1`), allowedDGXmodels: { "dgx/fast": "fast" }, token: "disconnect" });
+  cleanup.push(relay.close);
+  const client = new AbortController();
+  const response = await fetch(`${relay.url}/chat/completions`, { method: "POST", signal: client.signal, headers: { authorization: `Bearer ${relay.token}`, "content-type": "application/json" }, body: JSON.stringify({ model: "dgx/fast", messages: [{ role: "user", content: "short" }] }) });
+  const reader = response.body!.getReader();
+  await reader.read();
+  client.abort();
+  await reader.read().catch(() => undefined);
+  for (let i = 0; i < 100 && relay.requests().length === 0; i++) await Bun.sleep(5);
+  expect(relay.requests()[0]?.outcome).not.toBe("completed");
+  expect(relay.status().backends.find((b) => b.alias === "dgx/fast")).not.toHaveProperty("failingUntil");
 });

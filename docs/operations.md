@@ -1137,7 +1137,7 @@ cooling down (route event `source: "cooldown"`). Load moves are opt-in until the
 measured: with `[pi] efficient_wait_ms` set (0 to 119999; 0 tries once; read when the hub
 first starts Pi, like `dgx_max_context_tokens`, so a change takes a hub restart), a request
 whose MLX slot is still busy after that wait goes to `dgx/fast` first (`source: "load"`), and
-so does an enforced tool loop pinned to it; without it nothing moves for load. `dgx/fast`
+so does an enforced tool loop pinned to it (`source: "pin"`); without it nothing moves for load. `dgx/fast`
 never goes first while it is cooling down, or while its own last dispatch failed in any way,
 an error status or a failed stream included, until it succeeds or 30 s pass (`ahub status`:
 `last dispatch failed, no load moves until ...`). No load move or pin happens while the request
@@ -1145,7 +1145,11 @@ runs under an execution budget, and enforced, a load move happens only at a user
 attempt gets 15 s to its response headers after the gateway lookup (OmniRoute's own probe,
 up to two 4 s rounds when no gateway is cached) and is then abandoned for MLX, which serves
 with the usual slot wait. The bound ends with the headers: a stream that stalls or fails
-after them is not retried on MLX, and a failed one marks `dgx/fast` failing. After three
+after them is not retried on MLX, and a failed one marks `dgx/fast` failing (a client that
+disconnects does not). Each backend is tried once per request, so with moves on, a moved attempt
+cut at 15 s followed by an MLX slot that stays busy past 120 s fails the request (502), where
+without moves the request would have waited for MLX and then had `dgx/fast` with its full
+deadline; this is part of what the opt-in accepts until #199 AC5 measures it. After three
 consecutive transport or startup failures outside a cooldown (a failure more than 10 min after
 the last counted one starts the count over), a relay alias cools down for 30 s, doubling up to
 5 min. A busy MLX slot and timeouts cut short by an execution budget never count; any HTTP

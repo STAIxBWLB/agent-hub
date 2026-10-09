@@ -662,7 +662,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       const candidates: ModelBackend[] = [own, ...(own.kind === "mlx" && options.fallbackDGXAlias ? [{ kind: "dgx", alias: options.fallbackDGXAlias } as ModelBackend] : [])];
       const second = candidates[1];
       let moved: "optional" | "cooldown" | undefined;
-      const swap = (source?: "load" | "cooldown") => { candidates.reverse(); moved = source === "cooldown" ? "cooldown" : "optional"; auto?.moved(aliasOf(candidates[0]!, mlxAlias), source); };
+      const swap = (source: "load" | "cooldown" | "pin") => { candidates.reverse(); moved = source === "cooldown" ? "cooldown" : "optional"; auto?.moved(aliasOf(candidates[0]!, mlxAlias), source); };
       // A load move or pin is only an optimization: opt-in (`efficientWaitMs`) until #199 AC5 measures it, bounded by its
       // first-byte deadline, and never under an execution budget, where it could spend the model call or the time MLX
       // needs after it (a throw counts as a budget).
@@ -672,7 +672,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       let pre: Probe | undefined;
       if (auto && second && !cooldowns.failing(aliasOf(second, mlxAlias)) && !cooldowns.cooling(aliasOf(second, mlxAlias))) {
         if (cooldowns.cooling(aliasOf(own, mlxAlias))) swap("cooldown");
-        else if (auto.prefer === aliasOf(second, mlxAlias) && room) swap();
+        else if (auto.prefer === aliasOf(second, mlxAlias) && room) swap("pin");
         else if (auto.movable && mlx && room) {
           try {
             const held = await mlx.acquire(controller.signal, efficientWaitMs);
@@ -734,8 +734,9 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       for (const [i, candidate] of candidates.entries()) {
         try {
           const { result, release, journalEntry, onUsage } = await dispatch(candidate, i ? { ...body, model: aliasOf(candidate, mlxAlias) } : body, i ? undefined : pre, i === 0 && moved === "optional" ? moveFirstByteMs : undefined);
-          // A stream that fails after its headers cannot fall back; it still marks the alias failing, so no move follows.
-          const close = (outcome: RelayRequestRecord["outcome"]) => { journalEntry.close(outcome); if (outcome === "failed") cooldowns.failed(journalEntry.record.alias, false); };
+          // A stream that fails after its headers cannot fall back; it still marks the alias failing, so no move follows. A
+          // client that went away can fail the pending read before the cancel arrives: that says nothing about the backend.
+          const close = (outcome: RelayRequestRecord["outcome"]) => { journalEntry.close(outcome); if (outcome === "failed" && !controller.signal.aborted) cooldowns.failed(journalEntry.record.alias, false); };
           return sseResponse(result.response, release, result.onModel, (cancel) => { record.cancel = cancel; }, close, onUsage);
         } catch (error) {
           record.closeRecord?.(controller.signal.aborted ? "cancelled" : "failed");
