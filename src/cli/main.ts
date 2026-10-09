@@ -39,6 +39,7 @@ import { pathWarnings } from "../hub/conflicts.ts";
 import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, peerCommandRefusal } from "./identity.ts";
 import { recordCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
+import { resolveColor } from "./console-state.ts";
 import { renderTailEvent } from "./tail-render.ts";
 
 /** `--since 7d|24h|<iso>` for export and report; everything when absent. */
@@ -61,7 +62,7 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub setup [--yes]            install or update the Claude Code channel plugin from this package, then run doctor
   ahub init [--dry-run --json]   preview or write .agenthub/config.json and the AGENTS.md marker block (drops a legacy CLAUDE.md block)
   ahub up [--unattended] [--no-console]  start the daemon; interactive terminals enter console
-  ahub console [--panels]      enter the human console, leaving the daemon running on exit
+  ahub console [--panels] [--color=auto|always|never]  enter the human console, leaving the daemon running on exit
   ahub upgrade --to <version> [--dry-run] [--yes]   review and upgrade running projects
   ahub restart [--dry-run] [--yes]                 recover this project's runtime
   ahub recovery status|resume|abort <operation-id> inspect, resume or cancel a preflight
@@ -491,8 +492,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   console: async () => {
-    if (args.some(arg => arg !== "--panels")) fail("usage: ahub console [--panels]");
-    await runConsole({ client: await connect(), cwd, stateDir, panels: args.includes("--panels") });
+    if (args.some(arg => arg !== "--panels" && !arg.startsWith("--color=")) || args.filter(arg => arg.startsWith("--color=")).length > 1) fail("usage: ahub console [--panels] [--color=auto|always|never]");
+    const color = resolveColor(args.find(arg => arg.startsWith("--color="))?.slice("--color=".length), { isTTY: !!process.stdin.isTTY && !!process.stdout.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR });
+    if (color instanceof Error) return fail(color.message);
+    await runConsole({ client: await connect(), cwd, stateDir, panels: args.includes("--panels"), color });
   },
 
   up: async () => {
