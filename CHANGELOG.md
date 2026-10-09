@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Pi's write, edit, bash and git write approvals offer `Always allow <tool> until Pi restarts`: later calls of that tool by the running Pi skip the prompt, still under the path guard and sandbox. The grant is in memory only, logged by tool name, and the dashboard can still only deny (#209).
+
 ## 0.12.18
 
 - Attribute token increments, provider usage and completed turns to task ids by delivery or a single open task; add `ahub report --by task` with task/class totals, explicit unknown counters, unattributed shares and a separate historical bucket. Preserve PII id-only exports and derive no prices (#200).

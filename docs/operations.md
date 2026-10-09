@@ -17,6 +17,12 @@ approval titles are terminal-only; expiry and answers from another console remov
 the pending item. Approval audit records contain id, peer, option kind, response
 time and answering surface, without the title.
 
+Pi's write, edit, bash and git write requests also offer `Always allow <tool>
+until Pi restarts`. It allows later calls of that tool by the running Pi without
+asking, under the same path guard and sandbox; a Pi restart or replacement, or a
+hub restart, drops it. The hub log records each granted call by tool name only.
+The dashboard can only deny Pi's requests.
+
 Tab toggles stream and panels; `ahub console --panels` starts in panels. Peers,
 Approvals, Tasks, Queue and Events support arrow keys or j/k, Enter for detail,
 Escape to return and `?` for help. `:` enters a command. Assignment, delivery

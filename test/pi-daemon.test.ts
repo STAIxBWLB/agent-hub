@@ -113,6 +113,61 @@ test("Pi tools use hub path guards and approval denial, with persisted call rece
   expect((await call("write", { path: "different.txt", content: "denied" }, "write1")).text).toContain("different arguments");
 });
 
+test("Pi's 'always' answer allows later calls of that tool until Pi restarts, and the dashboard cannot give it (#209)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-always-"));
+  const stateDir = mkdtempSync(join(tmpdir(), "agenthub-pi-daemon-"));
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] }, memory: { ...DEFAULT_CONFIG.memory, enabled: false } };
+  const daemon = await startDaemon({ cwd: stateDir, permissionTimeoutMs: 10_000, projectId: "pi-project", instanceId: `pi-instance-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
+  cleanup.push(() => daemon.stop());
+  const console_ = await ControlClient.connect(stateDir, { role: "console" });
+  cleanup.push(() => console_.close());
+  const asks: any[] = [];
+  console_.onPush = (m) => { if (m.t === "permission") asks.push(m); };
+  console_.send({ t: "tail" });
+  const asked = async (n: number) => { for (let i = 0; i < 300 && asks.length < n; i++) await Bun.sleep(10); expect(asks.length).toBe(n); return asks[n - 1]; };
+  const start = async (model: string) => {
+    expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless", model } })).ok).toBe(true);
+    for (let i = 0; i < 100 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(10);
+    const launch = (daemon.bus.peers.get("pi") as any).tuiLaunch;
+    return async (name: string, args: unknown, toolCallId: string) => ((await (await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, {
+      method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ name, args, toolCallId }),
+    })).json()) as { text: string }).text;
+  };
+  let call = await start("dgx/fast");
+
+  const first = call("write", { path: "one.txt", content: "one" }, "w1");
+  const ask = await asked(1);
+  expect(ask.options.map((o: any) => [o.optionId, o.kind])).toEqual([["allow", "allow_once"], ["always", "allow_always"], ["deny", "reject_once"]]);
+  expect(ask.options[1].name).toBe("Always allow write until Pi restarts");
+  const opened = await console_.request({ t: "ui" });
+  const url = new URL(opened.url);
+  const headers: Record<string, string> = { origin: url.origin, "content-type": "application/json" };
+  const session = await fetch(`${url.origin}/session`, { method: "POST", headers, body: JSON.stringify({ ticket: url.hash.slice(1) }) });
+  headers.cookie = session.headers.get("set-cookie")!.split(";")[0]!;
+  const ui = await (await fetch(`${url.origin}/action`, { method: "POST", headers, body: JSON.stringify({ action: "permit", id: ask.id, option: "always" }) })).json() as any;
+  expect(ui.ok).toBe(false);
+  expect((await console_.request({ t: "permit", id: ask.id, option: "always", surface: "console" })).ok).toBe(true);
+  expect(await first).toBe("wrote one.txt");
+
+  expect(await call("write", { path: "two.txt", content: "two" }, "w2")).toBe("wrote two.txt");
+  expect(asks.length).toBe(1);
+  const log = readFileSync(join(stateDir, "hub.log"), "utf8");
+  expect(log).toContain("permission auto-allowed for pi: write (granted until Pi restarts)");
+  expect(log).not.toContain("two.txt");
+  const edit = call("edit", { path: "two.txt", old: "two", new: "2" }, "e1");
+  expect((await asked(2)).options[1].name).toBe("Always allow edit until Pi restarts");
+  expect((await console_.request({ t: "permit", id: asks[1].id, surface: "console" })).ok).toBe(true);
+  expect(await edit).toContain("did not approve");
+
+  call = await start("dgx/coding");
+  const again = call("write", { path: "three.txt", content: "three" }, "w3");
+  await asked(3);
+  expect((await console_.request({ t: "permit", id: asks[2].id, surface: "console" })).ok).toBe(true);
+  expect(await again).toContain("did not approve");
+  expect(existsSync(join(stateDir, "three.txt"))).toBe(false);
+});
+
 test.skipIf(process.platform !== "darwin")("idle Pi user_bash keeps the managed route without opt-in budgets and charges only run scope when enabled", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-user-bash-"));
   const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
