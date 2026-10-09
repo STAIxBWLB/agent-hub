@@ -36,13 +36,13 @@ export function terminalText(value: unknown): string {
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/\x1b[^\n]?/g, "").replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, ""));
 }
-export type Tone = "info" | "strong" | "success" | "attention" | "failure" | "muted" | "peerClaude" | "peerCodex" | "peerKimi" | "peerPi" | "peerLocal" | "peerHub" | "peerOther" | "taskKeyword" | "number" | "issueRef" | "taskRef";
+export type Tone = "info" | "strong" | "success" | "attention" | "failure" | "muted" | "peerClaude" | "peerCodex" | "peerKimi" | "peerPi" | "peerLocal" | "peerHub" | "taskKeyword" | "number" | "issueRef" | "taskRef";
 export interface Span { text: string; tone?: Tone }
 export const PALETTE: Readonly<Record<Tone, string>> = Object.freeze({
   info: "\x1b[36m", strong: "\x1b[1;36m", success: "\x1b[32m", attention: "\x1b[33m", failure: "\x1b[31m", muted: "\x1b[90m",
-  peerClaude: "\x1b[35m", peerCodex: "\x1b[36m", peerKimi: "\x1b[34m", peerPi: "\x1b[32m",
-  peerLocal: "\x1b[33m", peerHub: "\x1b[92m", peerOther: "\x1b[31m",
-  taskKeyword: "\x1b[95m", number: "\x1b[94m", issueRef: "\x1b[96m", taskRef: "\x1b[93m",
+  peerClaude: "\x1b[95m", peerCodex: "\x1b[96m", peerKimi: "\x1b[94m", peerPi: "\x1b[92m",
+  peerLocal: "\x1b[93m", peerHub: "\x1b[91m",
+  taskKeyword: "\x1b[1;35m", number: "\x1b[1;34m", issueRef: "\x1b[1;31m", taskRef: "\x1b[1;33m",
 });
 export function paint(line: Span[], color: boolean): string {
   return line.map(span => {
@@ -51,27 +51,67 @@ export function paint(line: Span[], color: boolean): string {
     return color && sgr && text ? sgr + text + "\x1b[0m" : text;
   }).join("");
 }
-/** Console stream headers only. Tokenize sanitized text; bodies never supply semantics. */
-export function streamTokens(value: string, peer?: string, eventTone?: Tone): Span[] {
+/** Console stream headers only. Tokenize sanitized text; bodies and command output stay plain. */
+export function streamTokens(value: string, peer?: string, eventTone?: Tone, kind?: string): Span[] {
   const text = terminalText(value);
+  if (kind === "command" || kind === "console") return [{ text }];
   const peers: Readonly<Record<string, Tone>> = { claude: "peerClaude", codex: "peerCodex", kimi: "peerKimi", pi: "peerPi", local: "peerLocal", hub: "peerHub" };
+  // Hub-written peer slots only; words such as local/pi/hub in a title do not identify a speaker.
+  const peerSlots = new Set<number>();
+  const leading = text.match(/^\s*(?:[.?*!]\s+)?([A-Za-z_][A-Za-z_0-9-]*)(?=:| is | asks permission )/);
+  if (leading) peerSlots.add(leading[0].lastIndexOf(leading[1]!));
+  const route = text.match(/^\s*(?:[0-9:]+ (?:AM|PM) )?([A-Za-z_][A-Za-z_0-9-]*) -> ([A-Za-z_][A-Za-z_0-9,-]*|\*)/);
+  if (route) {
+    const start = route[0].indexOf(route[1]!); peerSlots.add(start);
+    let at = route[0].lastIndexOf(route[2]!);
+    for (const recipient of route[2]!.split(",")) { peerSlots.add(at); at += recipient.length + 1; }
+  }
+  if (kind === "notice" || /^\s*\* task #/.test(text)) {
+    const owner = text.match(/(?:accepted by|assigned to) ([A-Za-z_][A-Za-z_0-9-]*)$/);
+    if (owner) peerSlots.add(owner.index! + owner[0].lastIndexOf(owner[1]!));
+  }
+  const marker = text.match(/^\s*([.?*!])/);
+  const markerAt = marker ? marker[0].length - 1 : -1;
+  const state = kind === "state" ? text.match(/ is ([A-Za-z_]+)$/) : undefined;
+  const stateAt = state ? state.index! + 4 : -1;
   const out: Span[] = []; let end = 0; let afterTask = false;
-  for (const match of text.matchAll(/#[0-9]+|[0-9]+(?::[0-9]+)+(?: AM| PM)?|[0-9]+(?:\.[0-9]+)?(?:%|ms|s|m|h)?|[A-Za-z_][A-Za-z_0-9-]*|->|!/g)) {
+  for (const match of text.matchAll(/(?<![\p{L}\p{N}_#:-])(?:#[0-9]+|[0-9]+(?::[0-9]+)+(?: AM| PM)?|[0-9]+(?:\.[0-9]+)?(?:%|ms|s|m|h)?)(?![\p{L}\p{N}_:-])|[A-Za-z_][A-Za-z_0-9-]*|->|[.?*!]/gu)) {
     const token = match[0]; const start = match.index;
     const gap = text.slice(end, start);
     if (gap) out.push({ text: gap });
     let tone: Tone | undefined;
+    // ponytail: explicit `task #N` is a task reference; other #N tokens are issue refs.
+    // Ceiling: legacy notice text has no typed ref ranges. Upgrade to structured notice spans to classify assign/which refs.
     if (token.startsWith("#")) tone = afterTask && /^\s*$/.test(gap) ? "taskRef" : "issueRef";
-    else if (token === "task") tone = "taskKeyword";
+    else if (token === "task" && /^\s*\*?\s*$/.test(text.slice(0, start))) tone = "taskKeyword";
     else if (/^[0-9]/.test(token)) tone = "number";
-    else if (Object.hasOwn(peers, token)) tone = peers[token];
-    else if (token === peer) tone = "peerOther";
-    else if (token === "->" || token === "!") tone = eventTone;
+    else if (peerSlots.has(start) && Object.hasOwn(peers, token)) tone = peers[token];
+    else if (start === markerAt || start === stateAt || (route && token === "->" && start < route[0].length)) tone = eventTone;
     out.push({ text: token, ...(tone ? { tone } : {}) });
     afterTask = token === "task"; end = start + token.length;
   }
   if (end < text.length) out.push({ text: text.slice(end) });
   return out;
+}
+/** Wrap plain text first, then project original token spans onto it, preserving trusted slots across continuations. */
+export function wrapStreamTokens(value: string, columns: number, peer?: string, tone?: Tone, kind?: string): Span[][] {
+  const spans = streamTokens(value, peer, tone, kind);
+  const text = spans.map(s => s.text).join("");
+  let cursor = 0;
+  return wrap(text, columns).map(line => {
+    const content = line.trimStart();
+    const start = text.indexOf(content, cursor);
+    if (!content || start < 0) return [{ text: line }];
+    const end = start + content.length; cursor = end;
+    const out: Span[] = [{ text: line.slice(0, line.length - content.length) }];
+    let at = 0;
+    for (const span of spans) {
+      const next = at + span.text.length;
+      if (next > start && at < end) out.push({ ...span, text: span.text.slice(Math.max(0, start - at), Math.min(span.text.length, end - at)) });
+      at = next;
+    }
+    return out;
+  });
 }
 export function resolveColor(flag: string | undefined, env: { isTTY: boolean; TERM?: string; NO_COLOR?: string }): boolean | Error {
   if (flag === "always") return true;

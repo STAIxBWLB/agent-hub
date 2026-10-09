@@ -1372,14 +1372,20 @@ and success, yellow attention/waiting, red failure/intervention, and restrained
 bright-black metadata. Offline peers, ordinary titles, action details and body
 lines use the default foreground. Existing labels, selection markers and
 confirmation prompts remain sufficient without color. Console stream headers
-color meaningful tokens only (#239): a fixed peer map (Claude magenta, Codex cyan,
-Kimi blue, Pi green, local yellow, hub bright green, other peers red), bright magenta
-`task`, bright blue numbers/percentages/times, bright cyan issue references and
-bright yellow task references following `task`. All use basic 16-color ANSI;
+color meaningful tokens only (#239): a fixed peer map (bright magenta Claude,
+bright cyan Codex, bright blue Kimi, bright green Pi, bright yellow local, bright
+red hub; others default), bold magenta `task`, bold blue numbers/percentages/times,
+bold red issue references and bold yellow task references following `task`.
+Peer codes differ from state codes. All use basic 16-color ANSI and emphasis;
 there is no hashing or user theme. Ordinary words remain default foreground.
-Event arrows and attention markers retain their structured event tone. Header
-text crosses `terminalText` before tokenization; bodies are never parsed for
-meaning or passed through as terminal styling. Denial requests and observed expiry/cancellation
+Only hub-written peer slots, state words and structural markers receive their
+semantic tones; title words and markers cannot choose them. Numeric tokens have
+whole-token boundaries, so UUIDs and ISO identifiers stay plain. Legacy notices
+lack typed reference ranges: the explicit `task #N` heuristic is bounded by a
+`ponytail:` comment; other `#N` tokens use the issue tone until structured notice
+spans classify assign/which references. Header text crosses `terminalText` before
+tokenization. Wrapped spans retain the source classification. Bodies and every
+command-output line stay plain. Denial requests and observed expiry/cancellation
 are red; an answered remote closure lacks option-kind metadata and is not
 guessed to be a denial.
 

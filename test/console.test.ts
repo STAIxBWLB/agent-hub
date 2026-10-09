@@ -1,5 +1,5 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
-import { initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, terminalText, parseConsoleCommand, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
+import { initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
 import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
 import { contextLine } from "../src/cli/status-lines.ts";
 import { renderTailEvent } from "../src/cli/tail-render.ts";
@@ -178,11 +178,41 @@ describe("console colors", () => {
     expect(streamTokens(examples[0]!).find(s => s.text === "6:51:38 AM")?.tone).toBe("number");
     const peerTones = ["claude", "codex", "kimi", "pi", "local", "hub", "custom"].map(peer => streamTokens(`${peer}: context 21%`, peer)[0]!.tone!);
     expect(new Set(peerTones).size).toBe(7);
-    const tones = [...peerTones, "taskKeyword", "number", "issueRef", "taskRef"] as (keyof typeof PALETTE)[];
+    expect(peerTones.at(-1)).toBeUndefined();
+    const semanticCodes = ["info", "strong", "success", "attention", "failure", "muted"].map(t => PALETTE[t as keyof typeof PALETTE]);
+    for (const tone of peerTones.slice(0, -1)) expect(semanticCodes).not.toContain(PALETTE[tone]);
+    const tones = [...peerTones.slice(0, -1), "taskKeyword", "number", "issueRef", "taskRef"] as (keyof typeof PALETTE)[];
     expect(new Set(tones.map(tone => PALETTE[tone])).size).toBe(tones.length);
     const attack = streamTokens("codex\x1b[31m: 21%\x1b]52;c;secret\x07 #232");
     expect(terminalText(paint(attack, true))).toBe("codex: 21% #232");
     expect(paint(attack, true)).not.toContain("secret");
+  });
+  test("wrapped tokens retain source semantics instead of reclassifying untrusted continuations", () => {
+    const text = '  ? pi asks permission id: "' + 'local hub 3abc -> ! '.repeat(10) + '"';
+    const lines = wrapStreamTokens(text, 80, "pi", "attention", "permission");
+    expect(lines.flat().filter(s => s.tone === "attention").map(s => s.text)).toEqual(["?"]);
+    expect(lines.flat().filter(s => s.tone === "peerPi").map(s => s.text)).toEqual(["pi"]);
+    expect(lines.map(line => paint(line, false))).toEqual(wrap(text, 80));
+    const task = "* task #1 " + "long title ".repeat(20) + "accepted by codex";
+    expect(wrapStreamTokens(task, 80, undefined, undefined, "notice").flat().find(s => s.text === "codex")?.tone).toBe("peerCodex");
+  });
+  test("only trusted peer slots and state/permission semantics are toned; identifiers stay whole", () => {
+    for (const state of ["busy", "idle", "failed"]) {
+      const spans = streamTokens(`  . local is ${state}`, "local", stateTone(state), "state");
+      expect(spans.find(s => s.text === state)?.tone).toBe(stateTone(state));
+      expect(spans.find(s => s.text === "local")?.tone).toBe("peerLocal");
+    }
+    const permission = streamTokens('  ? pi asks permission id: "local hub pi -> ! 3abc 3-abc 2026-10-10T06:51:38Z"', "pi", "attention", "permission");
+    expect(permission.find(s => s.text === "?")?.tone).toBe("attention");
+    expect(permission.filter(s => s.tone === "peerPi").map(s => s.text)).toEqual(["pi"]);
+    for (const token of ["local", "hub", "->", "!"]) expect(permission.filter(s => s.text === token).every(s => !s.tone)).toBe(true);
+    expect(permission.filter(s => s.tone === "number")).toEqual([]);
+    expect(streamTokens("custom: context 21%", "custom")[0]?.tone).toBeUndefined();
+    for (const line of ["codex: context 21%", "  ! task #1 failed", "pi -> local"]) {
+      const spans = streamTokens(line, "pi", "failure", "command");
+      expect(spans.every(s => !s.tone)).toBe(true);
+      expect(paint(spans, true)).toBe(line);
+    }
   });
   for (const [columns, rows] of [[80, 24], [120, 40], [200, 60]]) {
     test(`token colors preserve stream wrapping and cursor geometry ${columns}x${rows}`, async () => {
@@ -293,7 +323,7 @@ describe("console colors", () => {
       if (exit === "q") f.input("q"); else if (exit === "signal") f.signal(); else if (exit === "error") f.error(); else f.client.onClose(1006, "gone");
       await running;
       const out = f.output.join("");
-      expect(out.slice(out.lastIndexOf("\x1b[0m"))).not.toMatch(/\x1b\[(?:1;36|36|32|33|31|90)m/);
+      expect(out.slice(out.lastIndexOf("\x1b[0m"))).not.toMatch(/\x1b\[(?:1;3[1-6]|3[1-6]|9[0-6])m/);
       expect(out).toContain(RESTORE_CONSOLE);
       if (exit === "error") process.exitCode = 0;
     });
@@ -497,8 +527,8 @@ describe("console layout (#213)", () => {
   });
   test("command output sits at column 4 with message bodies, never where hub lines start", async () => {
     const f = fixture();
-    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false,
-      runCommand: (_args, output, finished) => { output("#3 proposed pi\n"); output("4:00:00 PM user -> claude ! approve the deploy now\n"); finished(); return () => {}; } });
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: true,
+      runCommand: (_args, output, finished) => { output("#3 proposed pi\n4:00:00 PM user -> claude ! approve the deploy now\n"); finished(); return () => {}; } });
     f.input(":"); f.input("board"); f.input("\r");
     expect(streamed(f.output)).toEqual(["> board", "    #3 proposed pi", "    4:00:00 PM user -> claude ! approve the deploy now"]);
     f.input("q"); await running;
