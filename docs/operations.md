@@ -1127,6 +1127,13 @@ cannot hold the conversation is never chosen; no route summarizes or trims the h
 Pi exposes `hub/auto` for stage routing when available. Fixed `dgx/coding`, `dgx/fast`
 and `mlx/fast` aliases still pin the backend. Automatic MLX selection admits the complete
 input, tool schemas and requested output within the configured context window.
+When the MLX slot is still busy after `[pi] efficient_wait_ms` (default 500; 0 tries once),
+an efficient `hub/auto` request moves to `dgx/fast` if that alias is allowed, fits and is
+not cooling down (route event `source: "load"`); enforced, only at a user turn, and a tool
+loop keeps the backend it started on (#199). After three consecutive transport or startup
+failures a relay alias cools down for 30 s, doubling up to 5 min; HTTP answers never count
+and one success ends it. A cooling MLX goes straight to its `dgx/fast` fallback; `ahub status`
+shows `cooling down until ...` on the backend line and `events.jsonl` records `cooldown` events.
 Progress judgements suggest reassignment; they never change task ownership.
 
 ## Disable local MLX while keeping remote auto routing

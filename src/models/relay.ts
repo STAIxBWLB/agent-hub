@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import type { OmniRoute, ChatMessage } from "../omniroute/client.ts";
-import { ensureMlx, type MlxHandle, type MlxOptions, type MlxStatus } from "./mlx.ts";
-import { AutoRouteSelector, type RelayRouteEvent } from "./route/relay-selector.ts";
+import { ensureMlx, MlxBusyError, type MlxHandle, type MlxOptions, type MlxStatus } from "./mlx.ts";
+import { AutoRouteSelector, type AutoChoice, type RelayRouteEvent } from "./route/relay-selector.ts";
 import type { StaySwitchPolicy } from "./route/stage.ts";
 
 export type ModelBackend = { kind: "mlx"; alias?: string } | { kind: "dgx"; alias: string };
@@ -24,6 +24,9 @@ export interface RelayBackendStatus {
   provider?: string;
   active: number;
   lastError?: string;
+  /** While the alias cools down after consecutive transport or startup failures (#199). */
+  coolingUntil?: string;
+  failures?: number;
 }
 
 export interface ModelRelayStatus {
@@ -157,6 +160,12 @@ export interface ModelRelayOptions {
   onRoute?: (event: RelayRouteEvent) => void;
   /** Read on every `hub/auto` call (#197); absent is the shadow default. */
   staySwitch?: () => StaySwitchPolicy | undefined;
+  /** How long a `hub/auto` request waits for a busy MLX slot before it moves to `dgx/fast` (#199, default 500). */
+  efficientWaitMs?: number;
+  /** A backend alias's cooldown starts or ends. */
+  onCooldown?: (event: RelayCooldownEvent) => void;
+  /** Cooldown clock; tests inject one. */
+  now?: () => number;
   allowedDGXmodels: Record<string, string>;
   /** Trusted physical model expectations by backend alias. Gateway identifiers can include a provider
    *  prefix or route name that differs from the model reported by generation. Omission preserves the
@@ -185,6 +194,43 @@ export interface ModelRelay {
   /** Closed request records, oldest first, bounded to the last 1000. */
   readonly requests: () => RelayRequestRecord[];
   readonly close: () => Promise<void>;
+}
+
+export interface RelayCooldownEvent { alias: string; event: "start" | "end"; failures: number; ms?: number }
+
+// ponytail: fixed policy, 3 failures and 30 s doubling up to 5 min; routing.toml keys if a backend needs other values.
+const COOLDOWN_FAILURES = 3, COOLDOWN_MS = 30_000, COOLDOWN_CAP_MS = 300_000;
+
+/** Per-alias cooldowns after consecutive transport or startup failures (#199). HTTP answers never count; one success clears it. */
+export class BackendCooldowns {
+  private readonly entries = new Map<string, { failures: number; until?: number }>();
+  constructor(private readonly now: () => number = Date.now, private readonly notify: (event: RelayCooldownEvent) => void = () => {}) {}
+
+  /** The alias's cooldown while it lasts. Its end is recorded when it is first seen to have passed, or at a success. */
+  cooling(alias: string): { until: number; failures: number } | undefined {
+    const entry = this.entries.get(alias);
+    if (entry?.until === undefined) return undefined;
+    if (this.now() < entry.until) return { until: entry.until, failures: entry.failures };
+    entry.until = undefined;
+    this.notify({ alias, event: "end", failures: entry.failures });
+    return undefined;
+  }
+
+  failed(alias: string): void {
+    const entry = this.entries.get(alias) ?? { failures: 0 };
+    this.entries.set(alias, entry);
+    entry.failures++;
+    if (entry.failures < COOLDOWN_FAILURES || this.cooling(alias)) return;
+    const ms = Math.min(COOLDOWN_CAP_MS, COOLDOWN_MS * 2 ** (entry.failures - COOLDOWN_FAILURES));
+    entry.until = this.now() + ms;
+    this.notify({ alias, event: "start", failures: entry.failures, ms });
+  }
+
+  succeeded(alias: string): void {
+    const entry = this.entries.get(alias);
+    this.entries.delete(alias);
+    if (entry?.until !== undefined) this.notify({ alias, event: "end", failures: entry.failures });
+  }
 }
 
 interface RequestJournalEntry {
@@ -340,7 +386,9 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
   const dgxMaxInputTokens = options.dgxMaxInputTokens ?? 262_144;
   const defaultBackend = options.defaultBackend ?? (options.mlx ? { kind: "mlx", alias: mlxAlias } : { kind: "dgx", alias: "dgx/coding" });
   const models = relayModelIds(options);
-  const autoRoute = options.enableHubAuto ? new AutoRouteSelector({ ...options, dgxMaxInputTokens }, defaultBackend, mlxAlias, estimateInputTokens) : undefined;
+  const efficientWaitMs = options.efficientWaitMs ?? 500;
+  const cooldowns = new BackendCooldowns(options.now, (event) => { try { options.onCooldown?.(event); } catch { /* observation cannot fail routing */ } });
+  const autoRoute = options.enableHubAuto ? new AutoRouteSelector({ ...options, dgxMaxInputTokens, cooling: (alias) => !!cooldowns.cooling(alias) }, defaultBackend, mlxAlias, estimateInputTokens) : undefined;
   let mlx: MlxHandle | undefined;
   let mlxStarting: Promise<MlxHandle> | undefined;
   const states = new Map<string, RelayBackendStatus>();
@@ -406,20 +454,21 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
     states.set(alias, { ...state(backend), ...patch, alias, kind: backend.kind });
   };
 
-  const resolve = async (body: RelayRequest): Promise<ModelBackend> => {
+  const resolve = async (body: RelayRequest): Promise<{ backend: ModelBackend; auto?: AutoChoice }> => {
     const requested = typeof body.model === "string" ? body.model : undefined;
     const automatic = options.enableHubAuto === true && requested === "hub/auto";
     if (requested && !models.includes(requested)) throw new Error("model alias is not allowed");
-    if (requested === mlxAlias && options.mlx) return { kind: "mlx", alias: mlxAlias };
-    if (requested && requested in options.allowedDGXmodels) return { kind: "dgx", alias: requested };
-    if (automatic) return autoRoute!.select(body);
+    if (requested === mlxAlias && options.mlx) return { backend: { kind: "mlx", alias: mlxAlias } };
+    if (requested && requested in options.allowedDGXmodels) return { backend: { kind: "dgx", alias: requested } };
+    if (automatic) { const auto = await autoRoute!.select(body); return { backend: auto.backend, auto }; }
     const selected = options.selectBackend ? await options.selectBackend(body) : defaultBackend;
     if (selected.kind === "mlx" && !options.mlx) throw new Error("MLX backend is not configured");
     if (selected.kind === "dgx" && !(selected.alias in options.allowedDGXmodels)) throw new Error("DGX model alias is not allowed");
-    return selected;
+    return { backend: selected };
   };
 
-  const upstream = async (request: RelayRequest, backend: ModelBackend, signal: AbortSignal, journalEntry: RequestJournalEntry): Promise<{ response: Response; release: () => void; onModel?: (model: string) => void }> => {
+  /** `slot`: an MLX generation slot the caller already holds; released exactly once by whoever ends the request. */
+  const upstream = async (request: RelayRequest, backend: ModelBackend, signal: AbortSignal, journalEntry: RequestJournalEntry, slot?: () => void): Promise<{ response: Response; release: () => void; onModel?: (model: string) => void }> => {
     const alias = aliasOf(backend, mlxAlias);
     let base: string;
     let model: string;
@@ -439,7 +488,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       if (options.mlx?.provider === "ollama" && options.mlxModel && options.mlxModel !== handle.model) throw new Error("Ollama model override does not match the validated model");
       model = options.mlxModel ?? handle.model;
       if (signal.aborted) throw new Error("request was cancelled before MLX generation started");
-      release = await handle.acquire(signal);
+      release = slot ?? await handle.acquire(signal);
     } else {
       base = (await options.omni.base()) ?? (() => { throw new Error("DGX gateway is unavailable"); })();
       model = options.allowedDGXmodels[backend.alias]!;
@@ -527,24 +576,41 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
         activeRequests.delete(record);
         return Response.json({ error: error instanceof Error ? error.message : "invalid request" }, { status: 400 });
       }
-      let backend: ModelBackend;
-      try { backend = await resolve(body); } catch (error) {
+      let backend: ModelBackend, auto: AutoChoice | undefined;
+      try { ({ backend, auto } = await resolve(body)); } catch (error) {
         record.cleanup();
         activeRequests.delete(record);
         return Response.json({ error: error instanceof Error ? error.message : "backend unavailable" }, { status: 400 });
       }
-      const inputBudget = backend.kind === "mlx" ? (options.mlx?.maxInputTokens ?? (options.mlx?.provider === "ollama" ? 6000 : 16_000)) : dgxMaxInputTokens;
       const inputTokens = estimateInputTokens(body.messages, body.tools);
+      // #199: a cooling MLX goes straight to its fallback; a busy MLX slot moves a movable hub/auto request to dgx/fast.
+      // Both stay in the efficient tier. Before this relay first started MLX, its startup decides as before.
+      const move = (alias: string, source: "load" | "cooldown"): ModelBackend => { auto?.moved(alias, source); return { kind: "dgx", alias }; };
+      let slot: (() => void) | undefined;
+      if (backend.kind === "mlx" && options.fallbackDGXAlias && cooldowns.cooling(aliasOf(backend, mlxAlias))) backend = move(options.fallbackDGXAlias, "cooldown");
+      else if (auto?.movable && backend.kind === "mlx" && mlx && "dgx/fast" in options.allowedDGXmodels && inputTokens <= dgxMaxInputTokens && !cooldowns.cooling("dgx/fast")) {
+        try {
+          const held = await mlx.acquire(controller.signal, efficientWaitMs);
+          let holding = true;
+          slot = () => { if (holding) { holding = false; held(); } };
+        } catch (error) {
+          if (error instanceof MlxBusyError) backend = move("dgx/fast", "load"); // anything else: the dispatch acquires again and records it
+        }
+      }
+      if (auto) try { options.onRoute?.(auto.route); } catch { /* observation cannot fail routing */ }
+      const inputBudget = backend.kind === "mlx" ? (options.mlx?.maxInputTokens ?? (options.mlx?.provider === "ollama" ? 6000 : 16_000)) : dgxMaxInputTokens;
       const ollama = backend.kind === "mlx" && options.mlx?.provider === "ollama";
       const contextWindow = ollama ? (options.mlx?.contextWindow ?? 8192) : undefined;
       const configuredMaxTokens = ollama ? (options.mlx?.maxTokens ?? 2048) : undefined;
       const requestedMaxTokens = body.max_tokens === undefined ? configuredMaxTokens : body.max_tokens;
       if (ollama && (!Number.isInteger(requestedMaxTokens) || (requestedMaxTokens as number) < 1 || (requestedMaxTokens as number) > configuredMaxTokens! || inputTokens + (requestedMaxTokens as number) > contextWindow!)) {
+        slot?.();
         record.cleanup();
         activeRequests.delete(record);
         return Response.json({ error: "input and max_tokens exceed the Ollama context budget" }, { status: 400 });
       }
       if (inputTokens > inputBudget) {
+        slot?.();
         record.cleanup();
         activeRequests.delete(record);
         return Response.json({ error: "input exceeds the model context budget" }, { status: 400 });
@@ -552,7 +618,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
       const fallback = backend.kind === "mlx" && options.fallbackDGXAlias ? { kind: "dgx", alias: options.fallbackDGXAlias } as ModelBackend : undefined;
       const dispatchGroupId = randomUUID();
       let primaryDispatchId: string | undefined;
-      const dispatch = async (selected: ModelBackend, body: RelayRequest) => {
+      const dispatch = async (selected: ModelBackend, body: RelayRequest, slot?: () => void) => {
         const journalEntry = openRequestRecord(aliasOf(selected, mlxAlias), dispatchGroupId);
         // The surface is a property of the request as admitted: even a failed dispatch keeps what the
         // native published. A request without a tools array carries no observation, never an empty one.
@@ -568,11 +634,15 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
         record.closeRecord = journalEntry.close;
         let result: Awaited<ReturnType<typeof upstream>>;
         try {
-          result = await upstream(body, selected, controller.signal, journalEntry);
+          result = await upstream(body, selected, controller.signal, journalEntry, slot);
         } catch (error) {
+          slot?.();
           journalEntry.record.failureClass ??= controller.signal.aborted ? "cancelled" : error instanceof ExecutionAdmissionError ? "admission" : "startup";
+          const failure = journalEntry.record.failureClass;
+          if (!controller.signal.aborted && !(error instanceof ExecutionAdmissionError) && (failure === "transport" || failure === "startup")) cooldowns.failed(journalEntry.record.alias);
           throw error;
         }
+        cooldowns.succeeded(journalEntry.record.alias);
         let released = false;
         const release = () => {
           if (released) return;
@@ -586,7 +656,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
         return { result, release, journalEntry, onUsage };
       };
       try {
-        const { result, release, journalEntry, onUsage } = await dispatch(backend, body);
+        const { result, release, journalEntry, onUsage } = await dispatch(backend, body, slot);
         return sseResponse(result.response, release, result.onModel, (cancel) => { record.cancel = cancel; }, journalEntry.close, onUsage);
       } catch (error) {
         record.closeRecord?.(controller.signal.aborted ? "cancelled" : "failed");
@@ -608,7 +678,10 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
     },
   });
   const url = `http://${host}:${server.port}/v1`;
-  const status = (): ModelRelayStatus => ({ url, models, backends: [...states.values()].map((value) => ({ ...value })) });
+  const status = (): ModelRelayStatus => ({ url, models, backends: [...states.values()].map((value) => {
+    const cooling = cooldowns.cooling(value.alias);
+    return { ...value, ...(cooling ? { coolingUntil: new Date(cooling.until).toISOString(), failures: cooling.failures } : {}) };
+  }) });
   const requests = (): RelayRequestRecord[] => journal.map(copyRecord);
   return { url, token, models, status, requests, close: async () => {
     const closing = [...activeRequests].map(async (request) => {

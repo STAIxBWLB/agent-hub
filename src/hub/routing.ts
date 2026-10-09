@@ -33,7 +33,8 @@ export interface Routing {
   classes: Partial<Record<TaskClass, ClassPolicy>>;
   signals: { pii_patterns: string[]; long_context_tokens: number };
   constraints: { pii: "local_only" | "off"; long_context: "skip_local" | "off"; budget_paused: "skip_peer" | "off" };
-  pi: { dgx_max_context_tokens: number; mlx_max_context_tokens: number };
+  /** `efficient_wait_ms`: how long a hub/auto request waits for a busy MLX slot before it moves to dgx/fast (#199). */
+  pi: { dgx_max_context_tokens: number; mlx_max_context_tokens: number; efficient_wait_ms: number };
 }
 
 const TEMPLATE = join(import.meta.dir, "..", "..", "templates", "routing.toml");
@@ -56,8 +57,9 @@ export function loadRouting(cwd: string): Routing {
   for (const [name, policy] of Object.entries(classes)) {
     if (policy?.pi_backend !== undefined && policy.pi_backend !== "dgx" && policy.pi_backend !== "mlx") throw new Error(`routing.toml: [classes.${name}] pi_backend must be "dgx" or "mlx"`);
   }
-  const pi = { dgx_max_context_tokens: 262_144, mlx_max_context_tokens: 16_000, ...(raw as any).pi };
+  const pi = { dgx_max_context_tokens: 262_144, mlx_max_context_tokens: 16_000, efficient_wait_ms: 500, ...(raw as any).pi };
   if (!(Number.isSafeInteger(pi.dgx_max_context_tokens) && pi.dgx_max_context_tokens > 0) || !(Number.isSafeInteger(pi.mlx_max_context_tokens) && pi.mlx_max_context_tokens > 0)) throw new Error("routing.toml: [pi] context limits must be positive integers");
+  if (!(Number.isSafeInteger(pi.efficient_wait_ms) && pi.efficient_wait_ms >= 0)) throw new Error("routing.toml: [pi] efficient_wait_ms must be a non-negative integer");
   const { stay_switch, max_switch_prefill_tokens } = { ...DEFAULT_STAY_SWITCH, ...(raw as any) };
   if (!["off", "shadow", "enforce"].includes(stay_switch)) throw new Error('routing.toml: stay_switch must be "off", "shadow" or "enforce" (a top-level key, before any table)');
   if (!(Number.isSafeInteger(max_switch_prefill_tokens) && max_switch_prefill_tokens > 0)) throw new Error("routing.toml: max_switch_prefill_tokens must be a positive integer");

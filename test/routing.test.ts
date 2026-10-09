@@ -38,6 +38,9 @@ test("#197 stay_switch defaults to shadow and rejects unknown modes and bounds",
   expect(loadRouting(write('stay_switch = "enforce"\nmax_switch_prefill_tokens = 4000')).stay_switch).toBe("enforce");
   expect(() => loadRouting(write('stay_switch = "always"'))).toThrow(/stay_switch/);
   expect(() => loadRouting(write("max_switch_prefill_tokens = 0"))).toThrow(/max_switch_prefill_tokens/);
+  expect(routing.pi.efficient_wait_ms).toBe(500); // #199
+  expect(loadRouting(write("[pi]\nefficient_wait_ms = 0")).pi.efficient_wait_ms).toBe(0);
+  expect(() => loadRouting(write("[pi]\nefficient_wait_ms = -1"))).toThrow(/efficient_wait_ms/);
 });
 
 // issue #36: quota that resets soonest is used first; demoted peers go behind the rest.

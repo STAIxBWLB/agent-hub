@@ -2,7 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startModelRelay, type RelayRequest } from "../src/models/relay.ts";
+import { acquireGeneration } from "../src/models/mlx.ts";
+import { BackendCooldowns, startModelRelay, type RelayCooldownEvent, type RelayRequest } from "../src/models/relay.ts";
 import { HubRouteRuntime, type RouteEvent } from "../src/models/route/runtime.ts";
 import type { StaySwitchPolicy } from "../src/models/route/stage.ts";
 
@@ -269,4 +270,130 @@ test("#197 a PII local route records the planner without the conversation size",
   expect(tiers(events)).toEqual(RECORDED);
   expect(events[0]).toMatchObject({ turnType: "user", plan: "stay", reason: "new_pin" });
   expect(events.some((e) => "prefillTokens" in e)).toBe(false);
+});
+
+// #199: load-aware efficient tier and backend cooldowns.
+test("#199 cooldowns start after three transport or startup failures, double up to a cap, and end on expiry or one success", () => {
+  let clock = 0;
+  const events: RelayCooldownEvent[] = [];
+  const cooldowns = new BackendCooldowns(() => clock, (event) => events.push(event));
+  cooldowns.failed("mlx/fast"); cooldowns.failed("mlx/fast");
+  expect(cooldowns.cooling("mlx/fast")).toBeUndefined();
+  cooldowns.failed("mlx/fast");
+  expect(cooldowns.cooling("mlx/fast")).toEqual({ until: 30_000, failures: 3 });
+  clock = 30_000;
+  expect(cooldowns.cooling("mlx/fast")).toBeUndefined();
+  cooldowns.failed("mlx/fast"); // the first try after a cooldown fails again: twice as long
+  expect(cooldowns.cooling("mlx/fast")?.until).toBe(90_000);
+  for (let i = 0; i < 6; i++) { clock = cooldowns.cooling("mlx/fast")!.until; cooldowns.failed("mlx/fast"); }
+  expect(cooldowns.cooling("mlx/fast")!.until - clock).toBe(300_000);
+  cooldowns.succeeded("mlx/fast");
+  expect(cooldowns.cooling("mlx/fast")).toBeUndefined();
+  cooldowns.failed("mlx/fast");
+  expect(cooldowns.cooling("mlx/fast")).toBeUndefined(); // the success reset the count
+  expect(events.slice(0, 3)).toEqual([{ alias: "mlx/fast", event: "start", failures: 3, ms: 30_000 }, { alias: "mlx/fast", event: "end", failures: 3 }, { alias: "mlx/fast", event: "start", failures: 4, ms: 60_000 }]);
+  expect(events.at(-1)).toEqual({ alias: "mlx/fast", event: "end", failures: 10 });
+});
+
+/** A fake Ollama MLX endpoint: `ready` false fails its startup check, `status` answers chat with that HTTP status. */
+function ollama(state: { ready: boolean; status?: number }) {
+  const runtimeDir = mkdtempSync(join(tmpdir(), "agenthub-route-load-"));
+  const model = "agenthub-fast-mlx:4b-8k", counts = { tags: 0, chat: 0 };
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async (request) => {
+    const path = new URL(request.url).pathname;
+    if (path === "/api/tags") { counts.tags++; return state.ready ? Response.json({ models: [{ name: model }] }) : new Response("down", { status: 503 }); }
+    if (path === "/api/show") return Response.json({ parameters: "num_ctx 8192\nnum_predict 2048\n" });
+    if (path === "/api/ps") return Response.json({ models: [] });
+    counts.chat++;
+    if (state.status) return new Response("refused", { status: state.status });
+    return new Response(`data: {"model":"${model}","choices":[{"delta":{"content":"mlx"}}]}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+  } });
+  cleanup.push(() => server.stop(true), () => rmSync(runtimeDir, { recursive: true, force: true }));
+  return { runtimeDir, counts, mlx: { provider: "ollama" as const, host: "127.0.0.1", port: server.port, model, runtimeDir, contextWindow: 8192, maxInputTokens: 6000, maxTokens: 2048, maxConcurrency: 1 } };
+}
+
+const short = (session_key = "s", messages: RelayRequest["messages"] = [{ role: "user", content: "short" }]) => ({ model: "hub/auto", max_tokens: 512, messages, session_key }) as RelayRequest;
+
+test("#199 a busy MLX slot past efficient_wait_ms moves hub/auto to dgx/fast, a free slot keeps MLX, and one efficient backend waits as before", async () => {
+  const local = ollama({ ready: true });
+  const events: RouteEvent[] = [];
+  const relay = await startModelRelay({ omni: omni(gateway()), allowedDGXmodels: { "dgx/fast": "fast", "dgx/coding": "coding" }, enableHubAuto: true, token: "load",
+    mlx: local.mlx, fallbackDGXAlias: "dgx/fast", efficientWaitMs: 20, onRoute: (event) => events.push(event as RouteEvent) });
+  cleanup.push(relay.close);
+  await route(relay, short());
+  const held = await acquireGeneration(local.runtimeDir, 1);
+  await route(relay, short());
+  held();
+  await route(relay, short());
+  expect(events.map((e) => `${e.tier} ${e.source}`)).toEqual(["mlx/fast default", "dgx/fast load", "mlx/fast default"]);
+  expect(local.counts.chat).toBe(2);
+  expect(relay.requests().map((r) => r.alias)).toEqual(["mlx/fast", "dgx/fast", "mlx/fast"]); // a load move journals no MLX attempt
+
+  const only = await startModelRelay({ omni: omni(gateway()), allowedDGXmodels: { "dgx/coding": "coding" }, enableHubAuto: true, token: "only", mlx: local.mlx, efficientWaitMs: 20 });
+  cleanup.push(only.close);
+  await route(only, short());
+  const busy = await acquireGeneration(local.runtimeDir, 1);
+  setTimeout(busy, 150);
+  await route(only, short());
+  expect(local.counts.chat).toBe(4);
+});
+
+test("#199 enforced, a tool loop neither moves for load nor leaves the backend a load move pinned", async () => {
+  const local = ollama({ ready: true });
+  const events: RouteEvent[] = [];
+  const relay = await startModelRelay({ omni: omni(gateway()), allowedDGXmodels: { "dgx/fast": "fast", "dgx/coding": "coding" }, enableHubAuto: true, token: "pin",
+    mlx: local.mlx, efficientWaitMs: 20, routeSessionKey: (request) => request.session_key as string, staySwitch: () => ({ stay_switch: "enforce", max_switch_prefill_tokens: 32_000 }),
+    onRoute: (event) => events.push(event as RouteEvent) });
+  cleanup.push(relay.close);
+  const user = [{ role: "user", content: "List the files." }] as RelayRequest["messages"];
+  const loop = [...user, ...toolStep("l1", "bash", { command: "ls" }, "a.ts b.ts")] as RelayRequest["messages"];
+  await route(relay, short("warm"));
+  const held = await acquireGeneration(local.runtimeDir, 1);
+  await route(relay, short("pi", user));
+  held();
+  await route(relay, short("pi", loop)); // the slot is free again, but the loop stays where it started
+  const busy = await acquireGeneration(local.runtimeDir, 1);
+  await route(relay, short("other", user));
+  setTimeout(busy, 150);
+  await route(relay, short("other", [...loop.slice(0, 1), ...toolStep("l2", "bash", { command: "ls" }, "a.ts")] as RelayRequest["messages"]));
+  expect(events.map((e) => `${e.tier} ${e.source} ${e.turnType}`)).toEqual(["mlx/fast default user", "dgx/fast load user", "dgx/fast default tool_result", "dgx/fast load user", "dgx/fast default tool_result"]);
+
+  const waiting = await startModelRelay({ omni: omni(gateway()), allowedDGXmodels: { "dgx/fast": "fast", "dgx/coding": "coding" }, enableHubAuto: true, token: "wait",
+    mlx: local.mlx, efficientWaitMs: 20, routeSessionKey: (request) => request.session_key as string, staySwitch: () => ({ stay_switch: "enforce", max_switch_prefill_tokens: 32_000 }) });
+  cleanup.push(waiting.close);
+  await route(waiting, short("w", user));
+  const chats = local.counts.chat;
+  const slot = await acquireGeneration(local.runtimeDir, 1);
+  setTimeout(slot, 150);
+  await route(waiting, short("w", loop)); // pinned to MLX inside the loop: it waits for the slot instead of moving
+  expect(local.counts.chat).toBe(chats + 1);
+});
+
+test("#199 three MLX startup failures skip MLX until the cooldown passes, a success ends it, and 4xx answers never start one", async () => {
+  const state: { ready: boolean; status?: number } = { ready: false };
+  const local = ollama(state);
+  let clock = 1_000_000;
+  const events: RouteEvent[] = [], cooldowns: RelayCooldownEvent[] = [];
+  const relay = await startModelRelay({ omni: omni(gateway()), allowedDGXmodels: { "dgx/fast": "fast", "dgx/coding": "coding" }, enableHubAuto: true, token: "cool",
+    mlx: local.mlx, fallbackDGXAlias: "dgx/fast", now: () => clock, onRoute: (event) => events.push(event as RouteEvent), onCooldown: (event) => cooldowns.push(event) });
+  cleanup.push(relay.close);
+  for (let i = 0; i < 3; i++) await route(relay, short());
+  expect(cooldowns).toEqual([{ alias: "mlx/fast", event: "start", failures: 3, ms: 30_000 }]);
+  const tags = local.counts.tags;
+  await route(relay, short());
+  expect(local.counts.tags).toBe(tags); // skipped, not tried
+  expect(events.at(-1)).toMatchObject({ tier: "dgx/fast", source: "cooldown" });
+  expect(relay.status().backends.find((b) => b.alias === "mlx/fast")).toMatchObject({ coolingUntil: new Date(clock + 30_000).toISOString(), failures: 3 });
+  state.ready = true;
+  clock += 30_000;
+  await route(relay, short());
+  expect(events.at(-1)).toMatchObject({ tier: "mlx/fast", source: "default" });
+  expect(cooldowns.at(-1)).toEqual({ alias: "mlx/fast", event: "end", failures: 3 });
+  expect(relay.status().backends.find((b) => b.alias === "mlx/fast")).not.toHaveProperty("coolingUntil");
+  expect(JSON.stringify([events, cooldowns])).not.toContain("short");
+
+  state.status = 400;
+  for (let i = 0; i < 4; i++) await route(relay, short());
+  expect(cooldowns).toHaveLength(2);
+  expect(relay.status().backends.find((b) => b.alias === "mlx/fast")).not.toHaveProperty("coolingUntil");
 });

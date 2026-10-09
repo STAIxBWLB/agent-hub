@@ -1992,6 +1992,11 @@ export async function startDaemon(opts: DaemonOptions) {
         routeSessionKey: () => { const session = bus.peers.get("pi")?.recoveryMetadata?.().sessionId; return typeof session === "string" ? session : undefined; },
         staySwitch: () => currentRouting(opts.cwd, log),
         onRoute: record => event({ type: "route", peer: "pi", ...record }),
+        efficientWaitMs: currentRouting(opts.cwd, log).pi.efficient_wait_ms,
+        onCooldown: record => {
+          log(`model ${record.alias}: ${record.event === "start" ? `cooling down for ${Math.round(record.ms! / 1000)} s after ${record.failures} transport or startup failures` : "cooldown ended"}`);
+          event({ type: "cooldown", peer: "pi", ...record });
+        },
       });
       piReceipts ??= new PiToolReceipts(join(opts.stateDir, "hub.db"));
       let piReply: Envelope | undefined;

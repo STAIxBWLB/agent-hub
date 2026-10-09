@@ -2,7 +2,7 @@ import type { ContextView } from "../hub/context-window.ts";
 // What `ahub status` prints for a peer and for a model backend, kept pure so it can be checked.
 
 export interface PeerRow { context?: ContextView; state?: string; queued?: number; queuedImportant?: number; needsReview?: number; heldBy?: string; holdNote?: string; liveAccepted?: string[]; oldestQueuedAt?: number; attached?: boolean; toolsOnly?: string; paused?: string; servedBy?: string; requestedModel?: string }
-export interface BackendRow { kind?: string; alias?: string; state?: string; active?: number; requestedModel?: string; actualModel?: string; provider?: string }
+export interface BackendRow { kind?: string; alias?: string; state?: string; active?: number; requestedModel?: string; actualModel?: string; provider?: string; coolingUntil?: string; failures?: number }
 
 /** Aliases are already namespaced ("dgx/coding"); only an alias that is not gets its kind in front of it. */
 export function backendLabel(backend: BackendRow): string {
@@ -37,5 +37,6 @@ export function backendLine(backend: BackendRow): string {
   return `  model    ${backendLabel(backend)} ${backend.state ?? "unknown"} active ${backend.active ?? 0}` +
     (backend.requestedModel ? ` requested ${backend.requestedModel}` : "") +
     (backend.actualModel ? ` actual ${backend.actualModel}` : "") +
-    (backend.provider ? ` provider ${backend.provider}` : "");
+    (backend.provider ? ` provider ${backend.provider}` : "") +
+    (backend.coolingUntil ? ` cooling down until ${backend.coolingUntil} after ${backend.failures ?? "?"} failures` : "");
 }
