@@ -1064,3 +1064,83 @@ test("a dispose rerun moves a disposition 0.12.20 recorded at schema 1 on an old
   expect(readOperation<RecoveryOperation>(f.operation.id, f.home).schema).toBe(2);
   expect(f.calls).toEqual([]);
 });
+
+// #225: a target that stopped after it started (a crash, an OOM kill, a reboot) is started again from the operation's
+// snapshot by resume, once per resume, and its peers' done restorations are retired, never revalidated against it.
+function crashedAfterStart(phase: "started" | "peers-restored") {
+  const f = fixture("upgrade", ["alpha"]);
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: {} };
+  const binding = { peer: "codex" as const, handle: "term-codex", incarnationId: "inc", worktreeId: "wt", projectRoot: "/alpha", sessionId: "t1", launch, launchMetadata: launch };
+  f.plan.projects[0]!.terminals = [binding];
+  const { fingerprint: _ignored, ...body } = f.plan;
+  f.plan.fingerprint = planFingerprint(body);
+  f.operation.plan = f.plan;
+  Object.assign(f.operation, { phase: "blocked", targetRoot: PACKAGE_ROOT, targetDigest: "target-digest", pluginInstalled: false });
+  Object.assign(f.operation.projects[0]!, { phase, instanceId: "dead-alpha", commitSent: true,
+    terminals: { "closed:codex": true, "restored:codex": { ...binding, handle: "term-restored", incarnationId: "inc-restored" } },
+    fresh: { claude: { lost: "s-old", reason: "kept", at: 1 } } });
+  f.states.set("alpha", { state: "stopped", peers: [], blockers: [], snapshot: f.operation.id }); // the target died, its snapshot kept
+  writeOperation(f.operation.id, f.operation, f.home);
+  return f;
+}
+
+test("resume restarts a target that stopped after it started, from the operation's snapshot, and records the restart", async () => {
+  for (const phase of ["started", "peers-restored"] as const) {
+    const f = crashedAfterStart(phase);
+    const op = readOperation<RecoveryOperation>(f.operation.id, f.home);
+    expect(nextActions(op, undefined, await liveProjects(op, f.driver.inspect))[0]).toBe(`${C} resume ${op.id}`);
+    let retiredAtStart: unknown;
+    const start = f.driver.start;
+    f.driver.start = async (p, o) => { retiredAtStart = readOperation<RecoveryOperation>(o.id, f.home).projects[0]!.terminals; await start(p, o); };
+    const done = await runRecovery(f.operation.id, f.driver, f.home);
+    expect(done.phase, done.error).toBe("completed");
+    const progress = done.projects[0]!;
+    expect(progress.restarts).toEqual([{ instanceId: "dead-alpha", at: expect.any(Number) }]);
+    expect(progress.instanceId).toBe("new-alpha");
+    // Recorded before the new target started: the dead instance's done restoration is retired, the source close kept.
+    expect(retiredAtStart).toMatchObject({ "closed:codex": true, "retired:codex": { handle: "term-restored" } });
+    expect((retiredAtStart as Record<string, unknown>)["restored:codex"]).toBeUndefined();
+    expect(progress).toMatchObject({ commitSent: true, fresh: { claude: { lost: "s-old" } } });
+    expect(done).toMatchObject({ pluginInstalled: true, globalInstalled: true });
+    expect(f.calls.filter((c) => c.startsWith("start:"))).toEqual(["start:alpha"]);
+    expect(f.calls).toContain("native:alpha");
+  }
+});
+
+test("without the snapshot the stopped target is not restarted: resume is not offered, stop-and-archive is", async () => {
+  const f = crashedAfterStart("peers-restored");
+  f.states.set("alpha", { state: "stopped", peers: [], blockers: [] });
+  const op = readOperation<RecoveryOperation>(f.operation.id, f.home);
+  const next = nextActions(op, undefined, await liveProjects(op, f.driver.inspect));
+  expect(next.some((line) => line.includes(" resume "))).toBe(false);
+  expect(next.at(-1)).toBe(`${C} dispose ${op.id} --stop-and-archive --reason <text>`);
+  const after = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(after.error).toContain("this operation's restart snapshot is gone");
+  expect(after.projects[0]!.restarts).toBeUndefined();
+  expect(f.calls.filter((c) => c.startsWith("start:"))).toEqual([]);
+});
+
+test("a target that stops again after its restart blocks with the count; one resume never restarts a project twice", async () => {
+  const f = crashedAfterStart("peers-restored");
+  const restore = f.driver.restore;
+  // The restarted target dies again once its native peers are back (after it started, as the first one did).
+  f.driver.restore = async (p, progress, o, group, save) => { await restore(p, progress, o, group, save); if (group === "native") f.states.set("alpha", { state: "stopped", peers: [], blockers: [], snapshot: o.id }); };
+  const first = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(first.phase).toBe("blocked");
+  expect(first.error).toContain("alpha: the target stopped again after restart 1 in this resume");
+  expect(f.calls.filter((c) => c.startsWith("start:"))).toEqual(["start:alpha"]);
+  // The person resumes again: one more restart, recorded as the second.
+  f.driver.restore = restore;
+  const second = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(second.phase, second.error).toBe("completed");
+  expect(second.projects[0]!.restarts?.length).toBe(2);
+});
+
+test("an operation whose coordinator cannot restart a target is not offered resume for one that stopped after it started", async () => {
+  const f = crashedAfterStart("started");
+  f.operation.sourceRoot = "/releases/source-older";
+  writeOperation(f.operation.id, f.operation, f.home);
+  const op = readOperation<RecoveryOperation>(f.operation.id, f.home);
+  const next = nextActions(op, undefined, await liveProjects(op, f.driver.inspect));
+  expect(next.some((line) => line.includes(" resume "))).toBe(false);
+});

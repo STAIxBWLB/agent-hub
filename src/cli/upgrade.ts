@@ -56,6 +56,11 @@ export interface ProjectProgress {
   fresh?: Record<string, { lost: string; reason: string; at: number }>;
   /** #215: set before the commit request is sent; from then on the source may have committed (abort is not offered). */
   commitSent?: boolean;
+  /**
+   * #225: each restart of a target that stopped after it started, recorded before the new one starts: the dead
+   * instance and when. Status and audit read it; restore reads the launch records of every instance listed here.
+   */
+  restarts?: { instanceId: string; at: number }[];
 }
 export interface RecoveryOperation {
   /**
@@ -96,6 +101,37 @@ const STOP = "--stop-and-archive --reason <text>";
  */
 export function targetReadsWaivers(op: { targetRoot?: string }): boolean {
   try { return !!op.targetRoot && readFileSync(join(op.targetRoot, "src/hub/restart.ts"), "utf8").includes("export function readRecoveryWaivers"); } catch { return false; }
+}
+
+/**
+ * #225: whether an operation's coordinator restarts a target that stopped after it started. Resume runs the operation's
+ * own runner, so an older one keeps refusing and `next` must not offer resume for that row.
+ * ponytail: a text sniff of its upgrade.ts, like targetReadsWaivers and coordinatorCurrent; a rename reads as "cannot
+ * restart" (the safe side). Upgrade path: the capability list those two name.
+ */
+export function coordinatorRestarts(op: { sourceRoot?: string }): boolean {
+  if (!op.sourceRoot) return true;
+  try { return readFileSync(join(op.sourceRoot, "src/cli/upgrade.ts"), "utf8").includes("export function recordRestart"); } catch { return false; }
+}
+
+/**
+ * #225: record the restart of a target that stopped after it started, before the new one starts: the dead instance and
+ * the time stay for status and audit. Each done `restored:<peer>` binding of the dead instance is retired
+ * (`retired:<peer>`): restore closes its terminal (or finds it absent) before that peer is relaunched, and never
+ * revalidates it against the new instance. `closed:<peer>`, `commitSent`, `fresh`, waivers and the install flags stay.
+ * The project goes back to `stopped`, whose path starts the target from this operation's snapshot.
+ */
+export function recordRestart(progress: ProjectProgress, at: number): void {
+  (progress.restarts ??= []).push({ instanceId: progress.instanceId ?? "unknown", at });
+  for (const [key, value] of Object.entries(progress.terminals)) {
+    if (!key.startsWith("restored:") || !value || typeof value !== "object") continue;
+    const peer = key.slice("restored:".length);
+    progress.terminals[`retired:${peer}`] = value;
+    delete progress.terminals[`closedRetired:${peer}`]; // a newer binding to close: its own receipt starts over
+    delete progress.terminals[key];
+  }
+  delete progress.instanceId;
+  progress.phase = "stopped";
 }
 
 /** Effects anywhere in the operation: a project past `prepared` or any terminal receipt. Abort needs none. */
@@ -148,9 +184,9 @@ export function resumeBlocked(op: RecoveryOperation, live: Record<string, Inspec
     if (state.state !== "stopped") continue;
     if (p.phase === "pending") return `${p.id}: the source stopped before it was prepared`;
     if (p.phase === "prepared" && !p.commitSent && !old) return `${p.id}: the source stopped while prepared, with no commit request`;
-    // ponytail: a target that dies after it started is not restarted; that needs its peers relaunched against the new
-    // instance (CodexPeer is created only by start, launcher records are keyed by instance). Follow-up issue.
-    if (p.phase === "started" || p.phase === "peers-restored") return `${p.id}: the target stopped after it started; restarting it is not supported in this release`;
+    // #225: a target that stopped after it started is restarted from this operation's snapshot (the line below), by a
+    // coordinator that can; an older one's runner refuses it.
+    if ((p.phase === "started" || p.phase === "peers-restored") && !coordinatorRestarts(op)) return `${p.id}: the target stopped after it started; this operation's coordinator cannot restart it`;
     if (state.snapshot !== op.id) return `${p.id}: its hub stopped without this operation's restart snapshot`;
   }
   return undefined;
@@ -321,8 +357,12 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
   } catch (error) { releaseRunner(); throw error; }
   const save = () => { op.updatedAt = driver.now(); writeOperation(id, op, home); };
   const step = (value: string) => { op.step = value; save(); };
+  // #225: one restart per project per resume, so a target that keeps dying never spins unattended.
+  const restarted = new Set<string>();
+  const stoppedAgain = (progress: ProjectProgress) => `the target stopped again after restart ${progress.restarts?.length ?? 0} in this resume`;
   const identity = (observed: Inspection, planned: PlannedProject, progress: ProjectProgress) => {
-    if (observed.state === "stopped") throw new Error(progress.phase !== "stopped" ? `${planned.project.id}: the target stopped after it started (a crash or a reboot); restarting it is not supported in this release`
+    if (observed.state === "stopped") throw new Error(restarted.has(progress.id) ? `${planned.project.id}: ${stoppedAgain(progress)}; read its hub.log before resuming again`
+      : progress.phase !== "stopped" ? `${planned.project.id}: the target stopped after it started (a crash or a reboot)${observed.snapshot === id ? "; resume restarts it from this operation's snapshot" : " and this operation's restart snapshot is gone, so nothing can start it"}`
       : `${planned.project.id}: the target is stopped${observed.snapshot === id ? "" : " and this operation's restart snapshot is gone, so nothing can start it"}`);
     if (observed.state === "missing") throw new Error(`${planned.project.id}: the project directory is missing`);
     if (observed.state !== "running") throw new Error(`${planned.project.id}: the target reads as ${observed.state}; wait until it answers`);
@@ -400,6 +440,16 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     }
     for (let i = 0; i < op.projects.length; i++) {
       const progress = op.projects[i]!, planned = op.plan.projects[i]!, project = planned.project;
+      if (progress.phase === "started" || progress.phase === "peers-restored") {
+        // #225: a target that stopped after it started, with this operation's snapshot, starts again from it.
+        const live = await driver.inspect(project);
+        if (live.state === "stopped") {
+          if (restarted.has(progress.id)) throw new Error(`${project.id}: ${stoppedAgain(progress)}; read its hub.log before resuming again`);
+          if (live.snapshot !== id) throw new Error(`${project.id}: the target stopped after it started and this operation's restart snapshot is gone, so nothing can start it`);
+          step(`restart:${project.id}`);
+          recordRestart(progress, driver.now()); restarted.add(progress.id); save();
+        }
+      }
       if (progress.phase === "verified" || progress.phase === "peers-restored") continue;
       if (progress.phase === "pending") {
         step(`prepare:${project.id}`);
@@ -505,7 +555,8 @@ export function publicOperation(op: RecoveryOperation, runnerPid?: number | "unk
     runner: runnerPid === "unknown" ? { state: "unknown" } : runnerPid ? { state: "running", pid: runnerPid } : { state: "none" },
     ...(op.phase === "running" && !runnerPid ? { stale: "the receipt says running but no runner holds the operation: its last runner stopped mid-step" } : {}),
     projects: op.projects.map((p) => ({ id: p.id, phase: p.phase, ...(Object.keys(p.terminals).length ? { effects: Object.fromEntries(Object.entries(p.terminals).map(([key, value]) => [key, effect(value)])) } : {}),
-      ...(p.fresh ? { lostContinuity: Object.fromEntries(Object.entries(p.fresh).map(([peer, f]) => [peer, f.lost])) } : {}) })),
+      ...(p.fresh ? { lostContinuity: Object.fromEntries(Object.entries(p.fresh).map(([peer, f]) => [peer, f.lost])) } : {}),
+      ...(p.restarts?.length ? { restarts: p.restarts.length } : {}) })),
     pluginInstalled: !!op.pluginInstalled, globalInstalled: !!op.globalInstalled,
     ...(!targetReadsWaivers(op) && op.projects.some((p) => failedPeers(op, p).length) ? { freshSession: `not offered: target ${op.plan.version} cannot read recovery waivers, so it could not release a new session` } : {}),
     ...(op.error ? { error: op.error } : {}), ...(op.disposition ? { disposition: op.disposition } : {}), ...(op.audit ? { audit: op.audit } : {}), next };

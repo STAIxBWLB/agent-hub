@@ -338,11 +338,11 @@ missing project directory, a hub that speaks another control protocol, a
 runtime other than the one the receipt expects (a replaced source; a target not
 fenced to this operation, another instance or another version), a stopped
 pending source, a prepared source of a #215 coordinator that stopped with no
-commit request, a target that stopped after it started (restarting it is not
-supported in this release: its peers would have to be relaunched against the
-new instance), or any other stopped runtime without this operation's unreleased
-restart snapshot to start from (unavailable, starting or stopping is waited
-for). Then abort where `abortRefusal` allows it; a fresh session for each failed
+commit request, a target that stopped after it started when the operation's
+coordinator predates #225, or any other stopped runtime without this operation's
+unreleased restart snapshot to start from (unavailable, starting or stopping is
+waited for). A target that stopped after it started, with that snapshot, is
+started again by resume (#225, below). Then abort where `abortRefusal` allows it; a fresh session for each failed
 Codex or Claude restoration, only where resume is offered (resume launches the
 new session, and dispose refuses `--fresh-session` on the same predicate); and
 last stop-and-archive where `disposeRefusal` allows it, or else `wait until
@@ -431,7 +431,9 @@ An attached session is the target's report of that peer online with a thread
 | project `prepared`, no `commitSent`, operation of a #215 coordinator | source stopped (crashed before any commit request) | blocks; the phase stays `prepared` (nothing was committed, so there is nothing to start from); not offered | abort if no effects, dispose | `<c> recovery abort <id>` without effects, else stop-and-archive (the lock refuses starting that hub by hand) |
 | project `prepared` | source unavailable, starting, stopping or not inspected | as above when it reads again | none: abort (its hold may still stand) and stop-and-archive are refused until it reads | `<c> recovery status <id>` once it answers |
 | project `prepared`, operation of an older coordinator (no `commitSent` written) | source not running, or not inspected | as its own runner does | dispose once it reads running, stopped or missing; abort neither offered nor accepted (it may have committed) | `<c> recovery status <id>` |
-| project `started` or `peers-restored` | target stopped (a crash or reboot after it started), with or without its snapshot | blocks; not offered: restarting it is not supported in this release | dispose; no fresh session | `the target stopped after it started; restarting it is not supported in this release` |
+| project `started` or `peers-restored` | target stopped (a crash or reboot after it started), this operation's snapshot kept | records the restart (dead instance, time), retires the dead instance's done `restored:<peer>` receipts, moves the project back to `stopped` and starts the target from the snapshot; once per resume | dispose | `the target stopped after it started; resume restarts it from this operation's snapshot` (`stopped again after restart <n> in this resume` when it stops again) |
+| project `started` or `peers-restored` | target stopped, snapshot gone | blocks; not offered | dispose | `this operation's restart snapshot is gone, so nothing can start it` |
+| `retired:<peer>` (a done restoration of a dead target instance) | Orca lists its terminal, or cannot be read | closed under the close receipt rules (`closedRetired:<peer>` `pending` until Orca no longer lists it); an unreadable inventory changes nothing | dispose | `close Orca terminal <handle> by hand` or `check it in Orca`, `then <c> recovery resume <id>` |
 | project `stopped` | target stopped without this operation's snapshot (never committed) | blocks; not offered | dispose | `the target is stopped and this operation's restart snapshot is gone` |
 | project `stopped`, `started` or `peers-restored` | target running unfenced, as another instance or another version | blocks; not offered | dispose | `daemon is not owned by this recovery operation` (or `daemon instance changed`, `target daemon version mismatch`) |
 | any, at staging | preserved source or staged target changed, or (first staging of these bytes only) target protocol or recovery waivers refused | blocks; recorded as `final`, so resume is never offered again | abort if no effects, dispose | the refusal |
@@ -476,6 +478,24 @@ disposition, and the next abort or dispose that holds the runner claim moves a
 schema-1 disposition 0.12.20 recorded on an older coordinator's operation to 2. A recovery launch of `ahub codex` records its launcher before the hub's
 `start` round trip; an ordinary launch records it after, so a refused start never
 replaces the record of a Codex already running.
+
+#225: a target that stopped after it started is restarted only while its state
+directory holds this operation's unreleased snapshot. The runner records the restart
+in the project's receipt (`restarts`: the dead instance and the time) before acting,
+moves each done `restored:<peer>` binding to `retired:<peer>`, clears the instance
+and moves the project back to `stopped`, whose path starts the target from the
+snapshot; the journal imports the snapshot only at revision 0, so the second start
+continues from what the first wrote. `closed:<peer>`, `commitSent`, `fresh`, waivers
+and the install flags stay. Restore closes each retired terminal (or finds it
+absent) before relaunching that peer, and a peer whose retired session was an
+accepted new one (fresh choice, fresh start, zero-turn Claude) is relaunched by that
+id, which the operation-fenced waiver already covers. Evidence reads the launch
+records of every instance the operation started for the project, the dead ones
+included, and a peer attached to the new instance without a session id is a session
+of unknown identity, never "nothing attached". One restart per project per resume:
+a target that stops again blocks with the restart count, so a crash loop never
+spins unattended. Operations whose coordinator predates #225 keep refusing (their
+own runner does), with stop-and-archive as the way out.
 
 A Codex thread with no rollout is not blocked at the plan only when the hub saw
 Codex start it (`native_thread` with `fresh`, logged by the adapter when it
