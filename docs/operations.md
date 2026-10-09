@@ -770,8 +770,9 @@ but cannot show pushes, so it attaches tools-only (protocol 16, issue #205):
 - The session reads them with `hub_inbox`. Each read is one `completed` delivery
   (`read through hub_inbox` in `ahub queue list`); nothing is ever `accepted`,
   and the session has no `hub_delivery_done`.
-- A queue held by `needs_review` stays held for `hub_inbox` too: resolve it with
-  `ahub queue resolve` first.
+- Whatever holds pushes holds `hub_inbox` too (`needs_review`, recovery,
+  `ahub pause`, a budget pause, a conductor hold): it reads nothing and says
+  which hold applies.
 - Restarting Claude with `ahub claude` takes the peer over and pushes what still
   waits; the plain session stands by.
 

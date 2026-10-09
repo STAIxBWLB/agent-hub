@@ -49,7 +49,12 @@ test("a pull-only peer is never handed a delivery: its queue is counted, then re
   await Bun.sleep(10);
   expect(peer.deliveries).toHaveLength(0);
   expect(bus.queued("claude")).toBe(1);
-  expect(bus.pull("claude").map((e) => [e.from, e.kind])).toEqual([["hub", "presence"], ["user", env.kind]]);
+  bus.pause("claude"); // the console, budget and conductor holds all pause the bus
+  expect(bus.pull("claude")).toBeUndefined();
+  expect(durable.list("claude")).toEqual([]);
+  bus.resume("claude");
+  expect(peer.deliveries).toHaveLength(0);
+  expect(bus.pull("claude")!.map((e) => [e.from, e.kind])).toEqual([["hub", "presence"], ["user", env.kind]]);
   expect(bus.queued("claude")).toBe(0);
   expect(bus.pull("claude")).toEqual([]);
   expect(durable.list("claude").map((r) => [r.state, r.reason])).toEqual([["completed", "read through hub_inbox"]]);

@@ -172,6 +172,31 @@ test("claude without channel evidence attaches tools-only: nothing is pushed or 
   expect((await console_.request({ t: "status" })).status.peers.claude.toolsOnly).toBeUndefined();
 });
 
+test("a paused tools-only claude reads nothing through hub_inbox: the budget pause and the console pause name themselves and nothing is journaled (#205)", async () => {
+  const { stateDir, daemon, console_ } = await hub();
+  const plain = await fakeClaude(stateDir, false);
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
+  const inbox = async () => ((await plain.client.callTool({ name: "hub_inbox", arguments: {} })) as any).content[0].text as string;
+  const unread = () => daemon.bus.queueList("claude").every((row) => row.state === "queued");
+
+  // Nothing queued and no open work: the budget coordinator pauses without asking for a checkpoint.
+  expect((await console_.request({ t: "budget", set: { peer: "claude", used: 0.95, resetsInMs: 3_600_000 } })).ok).toBe(true);
+  await until(() => daemon.bus.stateOf("claude") === "paused", "budget pause");
+  await console_.request({ t: "send", body: "while over budget", to: ["claude"] });
+  expect(await inbox()).toStartWith("not read: paused by the budget coordinator");
+  expect(daemon.bus.queued("claude")).toBe(1);
+  expect(unread()).toBe(true);
+
+  expect((await console_.request({ t: "budget", resume: "claude" })).ok).toBe(true);
+  expect((await console_.request({ t: "pause", peer: "claude" })).ok).toBe(true);
+  expect(await inbox()).toBe("not read: paused by the console user; ahub resume claude");
+  expect(unread()).toBe(true);
+
+  expect((await console_.request({ t: "resume", peer: "claude" })).ok).toBe(true);
+  expect(await inbox()).toContain("while over budget");
+  expect(daemon.bus.queueList("claude").map((row) => row.state)).toEqual(["completed"]);
+});
+
 test("claude and an ACP peer talk through the daemon in both directions", async () => {
   const { stateDir, daemon, console_ } = await hub();
   const { client, channel } = await fakeClaude(stateDir);

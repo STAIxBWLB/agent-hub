@@ -1577,9 +1577,10 @@ push `accepted` and show none of them.
   `WsPeer` as `pullOnly`; the bus never drains a pull-only peer, so its messages
   stay queued and count as `queued`. Board routing still treats the peer as
   attached.
-- `hub_inbox` sends `inbox`. The daemon refuses it for a session with pushes,
-  and, with the hold text, while the peer's queue is held (`needs_review`) or
-  recovery holds deliveries. `Bus.pull` hands over the preface and the whole
+- `hub_inbox` sends `inbox`. The daemon refuses it for a session with pushes.
+  `Bus.pull` is held by exactly what holds a drain (`Bus.held`: recovery, an
+  uncertain delivery, a console, budget or conductor pause); a held pull
+  journals nothing and the refusal names the hold. Otherwise it hands over the preface and the whole
   queue (after the stale-notice check) and records them as one journal row
   `completed`, reason `read through hub_inbox`, in the same transaction as the
   bus snapshot: the tool result that returns them is the readback, so nothing

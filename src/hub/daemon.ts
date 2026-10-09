@@ -1284,6 +1284,11 @@ export async function startDaemon(opts: DaemonOptions) {
     const r = budget.record(id); // one read per peer: status.json is rewritten on every bus event
     return r ? { paused: `budget: ${r.reason}, resets ${new Date(r.resetsAt).toLocaleTimeString()}` } : manualPaused.has(id) && bus.stateOf(id) === "offline" ? { paused: "manual" } : {};
   };
+  /** Why a paused peer gets nothing; the bus pause itself is the hold. */
+  const pauseReason = (id: PeerId) => {
+    const r = budget.record(id), hold = conductorHolds.get(id);
+    return r ? `paused by the budget coordinator: ${r.reason}; to override: ahub budget resume ${id}` : manualPaused.has(id) ? `paused by the console user; ahub resume ${id}` : hold ? `held by the conductor ${hold.actor}` : "paused";
+  };
   let releasing = false; // gone-owner release (#6) and the ready sweep (#34): one run at a time, and a recovery commit waits for it
   const recoveryReady = () => {
     if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;
@@ -2527,10 +2532,9 @@ export async function startDaemon(opts: DaemonOptions) {
         // A Claude session that cannot show channel pushes reads its queue here; nothing it reads is ever `accepted` (issue #205).
         const peer = c.peer ? bus.peers.get(c.peer) : undefined;
         if (c.role !== "peer" || !(peer instanceof WsPeer) || !peer.owns(sock) || !peer.pullOnly) return void reply({ ok: false, error: "messages are pushed to this session; hub_inbox only drains failed pushes" });
-        const held = queueHold(peer.id) ?? (bus.isRecoveryHeld ? "recovery is holding deliveries" : undefined);
-        if (held) return void reply({ ok: false, error: held });
         try {
           const envs = bus.pull(peer.id);
+          if (!envs) return void reply({ ok: false, error: queueHold(peer.id) ?? (bus.isRecoveryHeld ? "recovery is holding deliveries" : pauseReason(peer.id)) });
           if (envs.length) log(`${peer.id} read ${envs.length} queued message(s) through hub_inbox`);
           return void reply({ ok: true, envs });
         } catch { return void reply({ ok: false, error: "delivery journal unavailable" }); }

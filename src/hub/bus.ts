@@ -715,15 +715,20 @@ export class Bus {
     finally { this.steering--; this.onQueues?.(); }
   }
 
+  /** Holds on a peer's queue, for a drain and a pull alike: recovery, an uncertain delivery, a pause (console, budget, conductor). */
+  private held(id: PeerId): boolean {
+    return this.recoveryHeld || this.recoveryHeldPeers.has(id) || this.paused.has(id);
+  }
+
   /**
    * A pull-only peer's whole queue, its preface first, recorded as one completed delivery: the tool result that returns
-   * it is the readback, so nothing waits for settlement and nothing is ever `accepted` (issue #205). Held like a drain.
-   * ponytail: recorded at hand-out, so a reply lost between hub and plugin loses that batch; take/confirm in two
-   * steps if that is ever observed.
+   * it is the readback, so nothing waits for settlement and nothing is ever `accepted` (issue #205). Undefined while
+   * held, like a drain. ponytail: recorded at hand-out, so a reply lost between hub and plugin loses that batch;
+   * take/confirm in two steps if that is ever observed.
    */
-  pull(id: PeerId): Envelope[] {
+  pull(id: PeerId): Envelope[] | undefined {
     if (this.storageError) throw new Error("delivery journal unavailable");
-    if (this.recoveryHeld || this.recoveryHeldPeers.has(id)) return [];
+    if (this.held(id)) return undefined;
     const queue = this.queues.get(id) ?? [];
     this.dropIrrelevant(id, queue);
     const preface = this.prefaces.get(id);
@@ -749,7 +754,7 @@ export class Bus {
     try {
       const peer = this.peers.get(id)!;
       const queue = this.queues.get(id)!;
-      while (!this.storageError && !this.recoveryHeld && !this.recoveryHeldPeers.has(id) && queue.length && this.stateOf(id) === "idle") {
+      while (!this.storageError && !this.held(id) && queue.length && this.stateOf(id) === "idle") {
         if (this.dropIrrelevant(id, queue) && !queue.length) break;
         const delay = this.wait(queue);
         if (delay > 0) { this.arm(id, delay); break; }
@@ -764,7 +769,7 @@ export class Bus {
         this.condensing += mayCondense ? 1 : 0;
         const out = mayCondense ? await this.opts.condense!(delivery).catch(() => delivery) : delivery;
         this.condensing -= mayCondense ? 1 : 0;
-        if (this.recoveryHeld || this.recoveryHeldPeers.has(id) || this.stateOf(id) !== "idle") {
+        if (this.held(id) || this.stateOf(id) !== "idle") {
           if (!this.journal) { if (preface) this.restorePreface(id, preface); queue.unshift(...batch.filter((e) => !this.withdrawn.has(e.id))); }
           break;
         }
