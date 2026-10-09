@@ -446,3 +446,36 @@ test("#199 timeouts cut short by the execution budget never start a cooldown; re
   for (let i = 0; i < 3; i++) expect(await post(refused, "dgx/fast")).toBe(502);
   expect(cooldowns).toEqual([{ alias: "dgx/fast", event: "start", failures: 3, ms: 30_000 }]);
 });
+
+test("#199 three transport failures of a DGX alias start its cooldown, a 4xx does not, and a success ends it", async () => {
+  let answer = 400;
+  const live = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => answer === 200
+    ? new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { headers: { "content-type": "text/event-stream" } })
+    : new Response("bad request", { status: answer }) });
+  cleanup.push(() => live.stop(true));
+  const closed = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
+  const refusedUrl = `http://127.0.0.1:${closed.port}/v1`;
+  closed.stop(true);
+  let base = `http://127.0.0.1:${live.port}/v1`;
+  const cooldowns: RelayCooldownEvent[] = [];
+  const relay = await startModelRelay({ omni: { base: async () => base, apiKey: () => "k", accessHeaders: () => ({}) } as any, allowedDGXmodels: { "dgx/fast": "fast" }, token: "dgx-transport", onCooldown: (event) => cooldowns.push(event) });
+  cleanup.push(relay.close);
+  const row = () => relay.status().backends.find((b) => b.alias === "dgx/fast");
+  for (let i = 0; i < 4; i++) expect(await post(relay, "dgx/fast")).toBe(502);
+  expect(relay.requests().map((r) => r.failureClass)).toEqual(["http", "http", "http", "http"]);
+  expect(cooldowns).toEqual([]);
+  expect(row()).not.toHaveProperty("coolingUntil");
+
+  base = refusedUrl;
+  for (let i = 0; i < 3; i++) expect(await post(relay, "dgx/fast")).toBe(502);
+  expect(relay.requests().slice(-3).map((r) => r.failureClass)).toEqual(["transport", "transport", "transport"]);
+  expect(cooldowns).toEqual([{ alias: "dgx/fast", event: "start", failures: 3, ms: 30_000 }]);
+  expect(row()).toMatchObject({ failures: 3 });
+  expect(row()?.coolingUntil).toBeString();
+
+  base = `http://127.0.0.1:${live.port}/v1`;
+  answer = 200;
+  expect(await post(relay, "dgx/fast")).toBe(200); // a cooling DGX alias with no same-tier alternative is still tried
+  expect(cooldowns.at(-1)).toEqual({ alias: "dgx/fast", event: "end", failures: 3 });
+  expect(row()).not.toHaveProperty("coolingUntil");
+});
