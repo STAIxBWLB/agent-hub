@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "verifiedAgainst": "c3d1e22f9b200cbe3f484c9e73d30bad046c9221",
       "paths": [
         "package.json",
         "src/",
@@ -11,14 +11,14 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "verifiedAgainst": "c3d1e22f9b200cbe3f484c9e73d30bad046c9221",
       "paths": [
         "src/",
         "templates/"
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "verifiedAgainst": "c3d1e22f9b200cbe3f484c9e73d30bad046c9221",
       "paths": [
         "package.json",
         "src/",
@@ -30,11 +30,12 @@
         ".github/workflows/check.yml",
         "scripts/ci-gates.mjs",
         "scripts/ci-reuse.mjs",
-        ".github/workflows/release.yml"
+        ".github/workflows/release.yml",
+        "scripts/smoke-conductor.ts"
       ]
     },
     "docs/quickstart.md": {
-      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "verifiedAgainst": "c3d1e22f9b200cbe3f484c9e73d30bad046c9221",
       "paths": [
         "package.json",
         "src/",
@@ -42,7 +43,7 @@
       ]
     },
     "docs/agent-notes/adapters.md": {
-      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "verifiedAgainst": "20ad5e68fd1264fa43dd7426f60cb0c8211d6555",
       "paths": [
         "src/adapters/",
         "src/pi/",
@@ -55,7 +56,7 @@
       ]
     },
     "docs/agent-notes/benchmarks.md": {
-      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "verifiedAgainst": "8b7d7254f1bb5602ec5d658e7814e236f8fb43e7",
       "paths": [
         "scripts/benchmarks/",
         "test/benchmarks/",
@@ -67,7 +68,7 @@
       ]
     },
     "docs/agent-notes/budget.md": {
-      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "verifiedAgainst": "20ad5e68fd1264fa43dd7426f60cb0c8211d6555",
       "paths": [
         "src/hub/budget.ts",
         "src/cli/statusline-tee.ts",
@@ -79,18 +80,19 @@
       ]
     },
     "docs/agent-notes/bus.md": {
-      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "verifiedAgainst": "20ad5e68fd1264fa43dd7426f60cb0c8211d6555",
       "paths": [
         "src/hub/bus.ts",
         "src/hub/envelope.ts",
         "src/hub/limits.ts",
         "src/hub/delivery-journal.ts",
         "src/hub/inference.ts",
-        "src/hub/daemon.ts"
+        "src/hub/daemon.ts",
+        "src/hub/supervision.ts"
       ]
     },
     "docs/agent-notes/daemon.md": {
-      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "verifiedAgainst": "20ad5e68fd1264fa43dd7426f60cb0c8211d6555",
       "paths": [
         "src/hub/daemon.ts",
         "src/hub/control-client.ts",
@@ -107,11 +109,16 @@
         "src/cli/recovery-package.ts",
         "src/cli/facts-hook.ts",
         "src/pi/process-signature.ts",
-        "src/hub/context-window.ts"
+        "src/hub/context-window.ts",
+        "src/hub/conductor.ts",
+        "src/cli/console.ts",
+        "src/cli/console-state.ts",
+        "src/cli/identity.ts",
+        "src/cli/identity-audit.ts"
       ]
     },
     "docs/agent-notes/local-worker.md": {
-      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "verifiedAgainst": "8b7d7254f1bb5602ec5d658e7814e236f8fb43e7",
       "paths": [
         "src/adapters/local-worker.ts",
         "src/local/",
@@ -120,7 +127,7 @@
       ]
     },
     "docs/agent-notes/models.md": {
-      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "verifiedAgainst": "8b7d7254f1bb5602ec5d658e7814e236f8fb43e7",
       "paths": [
         "src/models/",
         "src/hub/inference.ts",
@@ -129,7 +136,7 @@
       ]
     },
     "docs/agent-notes/tasks.md": {
-      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "verifiedAgainst": "c3d1e22f9b200cbe3f484c9e73d30bad046c9221",
       "paths": [
         "src/hub/tasks.ts",
         "src/hub/board.ts",
@@ -138,11 +145,13 @@
         "src/hub/task-sweep.ts",
         "src/cli/launch.ts",
         "src/cli/main.ts",
-        "src/cli/preview.ts"
+        "src/cli/preview.ts",
+        "src/hub/conductor.ts",
+        "src/hub/supervision.ts"
       ]
     },
     "docs/agent-notes/tests.md": {
-      "verifiedAgainst": "2f6274d007d47aa3db0976c4989021520c03a3ef",
+      "verifiedAgainst": "2a274289e280252b264716da3a1112f67b0c278e",
       "paths": [
         "test/",
         "scripts/check.sh",

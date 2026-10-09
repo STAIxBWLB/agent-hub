@@ -1,7 +1,15 @@
 // Launchers inject only the flags the hub owns and refuse user-supplied duplicates.
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { peerChildEnv } from "../hub/child-process.ts";
 export const CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub";
+
+/** Launch identity belongs to the native child, never to the agent that invoked the wrapper. */
+export function nativeLaunchEnv(tool: "claude" | "codex" | "pi", source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = peerChildEnv(tool, source);
+  delete env.AGENTHUB_UNATTENDED;
+  return env;
+}
 
 /** A scoped candidate MCP server can be selected without promoting the installed plugin. */
 function claudeChannel(userArgs: string[]): string {
@@ -57,13 +65,16 @@ export interface FactsHook {
   stateDir: string;
   /** The same hook transport can observe native turns without injecting facts. */
   purpose?: "facts" | "idle" | "facts-and-idle";
+  /** Observe native sessions/turns for every enabled facts, idle or conductor hook configuration. */
+  observeNative?: boolean;
 }
 
 /** Shared by actual launch and read-only preview; advisory facts remain disabled. */
-export function claudeObservationHooks(config: { coordination?: string; task_sweep?: { enabled: boolean } }, paths: Pick<FactsHook, "script" | "stateDir">): FactsHook | undefined {
+export function claudeObservationHooks(config: { coordination?: string; task_sweep?: { enabled: boolean }; roles?: Record<string, string[]> }, paths: Pick<FactsHook, "script" | "stateDir">): FactsHook | undefined {
   const facts = config.coordination === "turn-free";
   const idle = config.task_sweep?.enabled === true;
-  return facts || idle ? { ...paths, purpose: facts ? (idle ? "facts-and-idle" : "facts") : "idle" } : undefined;
+  const observeNative = facts || idle || config.roles?.claude?.includes("conductor") === true;
+  return facts || idle || observeNative ? { ...paths, purpose: facts ? (idle ? "facts-and-idle" : "facts") : "idle", ...(observeNative ? { observeNative: true } : {}) } : undefined;
 }
 
 /**
@@ -76,6 +87,7 @@ export function sessionSettings(tee: StatusLineTee, facts?: FactsHook): string {
   if (facts) {
     const hooks = [{ type: "command", command: `AGENTHUB_STATE_DIR=${sh(facts.stateDir)} bun ${sh(facts.script)}`, timeout: 5 }];
     settings.hooks = { PreToolUse: [{ matcher: "*", hooks }], PostToolUse: [{ matcher: "*", hooks }], Stop: [{ hooks }] };
+    if (facts.observeNative) Object.assign(settings.hooks as object, { SessionStart: [{ matcher: "*", hooks }], UserPromptSubmit: [{ hooks }] });
   }
   return JSON.stringify(settings);
 }
@@ -101,6 +113,7 @@ export function buildLaunch(
       ctx.statusLine && own ? "note: you passed --settings, so the hub's status line tee is off and the budget coordinator cannot see Claude's quota (ahub budget set claude <0..1> still works)." : "",
       ctx.facts && own && ctx.facts.purpose !== "idle" ? "note: you passed --settings, so the hub's turn-free facts hooks are off for this session: Claude will not see the other agents' changes at its tool calls." : "",
       ctx.facts && own && (ctx.facts.purpose === "idle" || ctx.facts.purpose === "facts-and-idle") ? "note: you passed --settings, so native idle observation hooks are off for this session: task idle sweeps cannot verify Claude between turns." : "",
+      ctx.facts?.observeNative && own ? "note: you passed --settings, so native session/turn observation hooks are off: completed turns and supervision tokens may be unavailable." : "",
     ].filter(Boolean);
     return {
       cmd: "claude",

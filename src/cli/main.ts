@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 import { currentRouting } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { ControlClient, readControl } from "../hub/control-client.ts";
@@ -11,12 +12,11 @@ import { projectContext, realPath } from "../hub/project.ts";
 import { Registry, type Project } from "../hub/registry.ts";
 import { inspectProject, startProject, stopProject, runProjectDaemon } from "../hub/lifecycle.ts";
 import { openManager, startManager, stopManager } from "../hub/manager.ts";
-import type { BusEvent } from "../hub/bus.ts";
 import { OmniRoute } from "../omniroute/client.ts";
 import { MemoryClient } from "../memory/client.ts";
 import { init, planInit } from "./init.ts";
 import { launcherPreview } from "./preview.ts";
-import { buildLaunch, claudeObservationHooks, UNATTENDED_WARNING } from "./launch.ts";
+import { buildLaunch, claudeObservationHooks, nativeLaunchEnv, UNATTENDED_WARNING } from "./launch.ts";
 import { nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
 import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
@@ -36,6 +36,10 @@ import { parseSince, readEvents } from "../hub/events.ts";
 import { formatReport, summarize } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 import { pathWarnings } from "../hub/conflicts.ts";
+import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, peerCommandRefusal } from "./identity.ts";
+import { recordCliAudit } from "./identity-audit.ts";
+import { runConsole } from "./console.ts";
+import { renderTailEvent } from "./tail-render.ts";
 
 /** `--since 7d|24h|<iso>` for export and report; everything when absent. */
 const since = (): number => {
@@ -56,7 +60,8 @@ const USAGE = `agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one
   ahub ui --all --stop           stop only the dashboard manager
   ahub setup [--yes]            install or update the Claude Code channel plugin from this package, then run doctor
   ahub init [--dry-run --json]   preview or write .agenthub/config.json and the AGENTS.md marker block (drops a legacy CLAUDE.md block)
-  ahub up [--unattended]        start the daemon for this directory
+  ahub up [--unattended] [--no-console]  start the daemon; interactive terminals enter console
+  ahub console [--panels]      enter the human console, leaving the daemon running on exit
   ahub upgrade --to <version> [--dry-run] [--yes]   review and upgrade running projects
   ahub restart [--dry-run] [--yes]                 recover this project's runtime
   ahub recovery status|resume|abort <operation-id> inspect, resume or cancel a preflight
@@ -129,10 +134,21 @@ const projectConfig = () => {
   return config;
 };
 const stateDir = selected.stateDir;
+const identity = detectCliIdentity(process.env);
+const commandLabel = cliCommandLabel(cmd, args);
+const commandAccess = classifyPeerCommand(cmd, args);
+function audit(outcome: "run" | "refused" | "invalid"): void {
+  if (identity.role === "console") return;
+  try { recordCliAudit(stateDir, identity.role === "tools" ? identity.peer : "unknown", commandLabel, outcome); }
+  catch { console.error("ahub: CLI audit could not be recorded (outbox unavailable or full)"); }
+}
+if (identity.role === "invalid") { audit("invalid"); fail(`${identity.reason}; use ahub console or a terminal with no agent markers`); }
+if (identity.role === "tools" && commandAccess === "console") { audit("refused"); fail(peerCommandRefusal(identity.peer, commandLabel)); }
+if (identity.role === "tools") audit("run");
 try { process.chdir(cwd); } catch { fail(`project directory is unavailable: ${cwd}`); }
 const unattendedEnv = process.env.AGENTHUB_UNATTENDED === "1";
 const lifecycle = { inspectProject, startProject, stopProject };
-const connect = () => ControlClient.connect(stateDir, { role: "console", projectRoot: cwd });
+const connect = () => ControlClient.connect(stateDir, identity.role === "tools" ? { role: "tools", peer: identity.peer, projectRoot: cwd } : { role: "console", projectRoot: cwd });
 
 function registeredProject(): Project {
   const registry = new Registry();
@@ -147,14 +163,15 @@ async function healthy(): Promise<boolean> {
   finally { hub?.close(); }
 }
 
-function exec(bin: string, argv: string[]): never {
-  const res = spawnSync(bin, argv, { cwd, stdio: "inherit", env: { ...childEnv(), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
+function exec(bin: string, argv: string[], tool?: "claude" | "codex"): never {
+  const env = tool ? nativeLaunchEnv(tool, childEnv()) : childEnv();
+  const res = spawnSync(bin, argv, { cwd, stdio: "inherit", env: { ...env, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
   if (res.error) fail(`cannot run ${bin}: ${res.error.message}`);
   process.exit(res.status ?? 1);
 }
 
 function execWithEnv(bin: string, argv: string[], extra: NodeJS.ProcessEnv): never {
-  const env: NodeJS.ProcessEnv = { ...extra, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
+  const env: NodeJS.ProcessEnv = { ...nativeLaunchEnv("pi", extra), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
   delete env.AGENTHUB_RECOVERY_OPERATION;
   delete env.AGENTHUB_UNATTENDED;
   const res = spawnSync(bin, argv, { cwd, stdio: "inherit", env });
@@ -284,26 +301,11 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-function render(e: BusEvent): string {
-  if (e.t === "state") return `  . ${e.peer} is ${e.state}`;
-  if (e.t === "undeliverable") return `  ! gave up delivering ${e.env.id} (from ${e.env.from}) to ${e.peer}`;
-  if (e.t === "envelope" && e.env.from === "hub" && e.env.kind !== "chat") {
-    return `${new Date(e.env.ts).toLocaleTimeString()} hub -> ${e.env.to?.join(",")} [${e.env.kind}${e.env.refs?.task ? ` #${e.env.refs.task}` : ""}]\n${e.env.body.split("\n")[0]!.replace(/^/, "    ")}`;
-  }
-  if (e.t === "overflow") return `  ! ${e.peer}'s queue is full: dropped ${e.env.id} (from ${e.env.from})`;
-  if (e.t === "stale") return `  . dropped ${e.env.id} (from ${e.env.from}) for ${e.peer}: ${e.reason}`;
-  if (e.t === "quiet") return `  . ${e.env.id} (from ${e.env.from}) not delivered to ${e.peers.join(", ")}: turn-free cohort`;
-  const { env } = e;
-  const note = e.dropped === "hop" ? " [not delivered: hop limit]" : e.dropped === "fyi" ? " [fyi: record only]" : "";
-  const head = `${env.from} -> ${env.to?.join(",") ?? "*"}${env.priority === "important" ? " !" : ""}${note}`;
-  return `${new Date(env.ts).toLocaleTimeString()} ${head}\n${env.body.replace(/^/gm, "    ")}`;
-}
-
 async function taskOp(op: string, a: Record<string, unknown>): Promise<string> {
   const hub = await connect();
   const res = await hub.request({ t: "task", op, args: a });
   hub.close();
-  if (!res.ok) fail(res.error);
+  if (!res.ok) { audit("refused"); fail(res.error); }
   return res.text;
 }
 
@@ -488,11 +490,17 @@ const commands: Record<string, () => Promise<void> | void> = {
     await runProjectDaemon(registeredProject(), unattendedEnv || args.includes("--unattended"));
   },
 
+  console: async () => {
+    if (args.some(arg => arg !== "--panels")) fail("usage: ahub console [--panels]");
+    await runConsole({ client: await connect(), cwd, stateDir, panels: args.includes("--panels") });
+  },
+
   up: async () => {
     const unattended = unattendedEnv || args.includes("--unattended");
     if (unattended) console.error(UNATTENDED_WARNING);
     const status = await startProject(registeredProject(), { unattended });
     console.log(`ahub up (ws://127.0.0.1:${status.controlPort}), state in ${stateDir}`);
+    if (process.stdin.isTTY && process.stdout.isTTY && !args.includes("--no-console")) await runConsole({ client: await connect(), cwd, stateDir });
   },
 
   claude: async () => {
@@ -504,7 +512,12 @@ const commands: Record<string, () => Promise<void> | void> = {
     const control = readControl(stateDir);
     if (control?.instanceId) {
       process.env.AGENTHUB_INSTANCE_ID = control.instanceId;
-      await recordTerminalLaunch("claude", cwd, stateDir, control.instanceId);
+      const terminal = await recordTerminalLaunch("claude", cwd, stateDir, control.instanceId);
+      if (!terminal) process.env.AGENTHUB_LAUNCH_ID = randomUUID();
+      // Native hook identity exists in an ordinary terminal too; this is not an Orca recovery record.
+      const file = join(stateDir, "claude-launch.json");
+      writeFileSync(`${file}.tmp`, JSON.stringify({ instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID }), { mode: 0o600 });
+      chmodSync(`${file}.tmp`, 0o600); renameSync(`${file}.tmp`, file);
     }
     // `--settings` outranks project and user settings, so the tee has to wrap whichever status line would have won:
     // project local, then project, then user.
@@ -520,7 +533,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const facts = claudeObservationHooks(projectConfig(), { script: join(import.meta.dir, "facts-hook.ts"), stateDir });
     const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir, ...(original ? { original } : {}) }, ...(facts ? { facts } : {}) });
     if (launch.warning) console.error(launch.warning);
-    exec(launch.cmd, launch.args);
+    exec(launch.cmd, launch.args, "claude");
   },
 
   codex: async () => {
@@ -538,7 +551,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (control?.instanceId) await recordTerminalLaunch("codex", cwd, stateDir, control.instanceId);
     const launch = buildLaunch("codex", args, { unattended: unattendedEnv, proxyUrl: res.proxyUrl, codexBin: projectConfig().codex_bin });
     if (launch0.warning) console.error(launch0.warning);
-    exec(launch.cmd, launch.args);
+    exec(launch.cmd, launch.args, "codex");
   },
 
   kimi: async () => {
@@ -663,7 +676,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   tail: async () => {
     const hub = await connect();
     hub.onPush = (msg) => {
-      if (msg.t === "event") console.log(render(msg.e));
+      if (msg.t === "event") console.log(renderTailEvent(msg.e));
       else if (msg.t === "context") console.log(`  ${msg.peer}: ${contextLine(msg.reading)}`);
       else if (msg.t === "notice") console.log(`  * ${msg.line}`);
       else if (msg.t === "permission") {
@@ -998,9 +1011,29 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 };
 
-const run = commands[cmd] ?? (() => fail(`unknown command "${cmd}"\n\n${USAGE}`));
+async function runConductorCommand(): Promise<void> {
+  let op: string;
+  let input: Record<string, unknown>;
+  if (cmd === "task") {
+    op = args[0] === "assign" ? "hub_task_assign" : "hub_task_escalate";
+    if (!args[1] || (args[0] === "assign" && !args[2]) || args.length !== (args[0] === "assign" ? 3 : 2)) fail("usage: ahub task assign <id> <peer> | escalate <id>");
+    input = { id: Number(args[1]), ...(args[0] === "assign" ? { peer: args[2] } : {}) };
+  } else if (cmd === "pause" || cmd === "resume") {
+    if (args.length !== 1) fail(`usage: ahub ${cmd} <peer>`);
+    op = cmd === "pause" ? "hub_peer_hold" : "hub_peer_release";
+    input = { peer: args[0] };
+  } else {
+    // Native TUIs return a human launch command through the daemon; an agent shell never executes it.
+    if (args.length && !(cmd === "pi" && args.length === 2 && args[0] === "--mode" && ["headless", "tui"].includes(args[1] ?? ""))) fail(`conductor starts accept no launch overrides; use ahub ${cmd}${cmd === "pi" ? " [--mode headless|tui]" : ""}`);
+    op = "hub_peer_start";
+    input = { peer: cmd, ...(cmd === "pi" ? { mode: args[1] ?? "headless" } : {}) };
+  }
+  console.log(await taskOp(op, input));
+}
+const run = identity.role === "tools" && commandAccess === "conductor" ? runConductorCommand : commands[cmd] ?? (() => fail(`unknown command "${cmd}"\n\n${USAGE}`));
 try {
   await run();
 } catch (e) {
+  audit("refused");
   fail((e as Error).message);
 }

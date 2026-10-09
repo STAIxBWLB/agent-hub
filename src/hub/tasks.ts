@@ -1,7 +1,7 @@
 import { isAbsolute, relative } from "node:path";
 import type { Briefs } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
-import { CLASSES, OUTCOMES_KEPT_MS, PLAN_KEYS, type Board, type Task, type TaskClass, type TaskPlan, type TaskRefs } from "./board.ts";
+import { CLASSES, OUTCOMES_KEPT_MS, PLAN_KEYS, TASK_MOVE_REASONS, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import { assign, detectSignals, LOCAL, PI, predictSplit, type Assignment, type Routing, type SplitObservation, type SplitPrediction } from "./routing.ts";
@@ -195,7 +195,7 @@ export class Tasks {
           const candidate = reviewer ? a.reviewer : a.owner;
           this.d.notify(`${message} ${reviewer ? "Reviewer" : "Owner"} reassignment suggestion: ${candidate ?? "no eligible peer"}.`);
           if (!reviewer && candidate && this.sweepConfig.auto_reassign && this.sweepAvailable(candidate)) {
-            await this.assignOwner(this.d.board.get(task.id)!, HUB, { candidates: [candidate], exclude: [responsible], event: "reassigned", note: `idle sweep: ${finding.kind}; from ${responsible}` });
+            await this.assignOwner(this.d.board.get(task.id)!, HUB, { candidates: [candidate], exclude: [responsible], event: "reassigned", reason: "idle", note: `idle sweep: ${finding.kind}; from ${responsible}` });
           }
         }
       }
@@ -236,9 +236,19 @@ export class Tasks {
   publicTitle = (task: Task) => (this.isPii(task) ? `#${task.id} [pii]` : `#${task.id} ${task.title}`);
 
   /** A task as a cloud peer may see it. */
-  publicView(task: Task): Record<string, unknown> {
+  publicView(task: Task, fullHistory = false): Record<string, unknown> {
     const { title, detail, history, ...rest } = task;
-    return this.isPii(task) ? { ...rest, refs: {}, plan: {}, title: "[pii]", detail: "[pii]" } : { ...rest, title, detail, history: history.slice(-5) };
+    if (this.isPii(task)) return { ...rest, refs: {}, plan: {}, title: "[pii]", detail: "[pii]" };
+    const screenHistoryText = (text: string, field: string): string => this.nameable(text) ? text : `[history ${field} withheld: it matches a PII pattern; ahub task show ${task.id}]`;
+    const publicHistory = (fullHistory ? history : history.slice(-5)).map(h => ({
+      at: h.at, by: h.by, event: h.event,
+      ...(h.note === undefined ? {} : { note: screenHistoryText(h.note, "note") }),
+      ...(h.profile === undefined ? {} : { profile: screenHistoryText(h.profile, "profile") }),
+      ...(h.owner === undefined ? {} : { owner: h.owner }),
+      ...(h.reason && TASK_MOVE_REASONS.includes(h.reason) ? { reason: h.reason } : {}),
+      ...(h.sweep ? { sweep: { kind: h.sweep.kind, activity: h.sweep.activity, step: h.sweep.step, at: h.sweep.at } } : {}),
+    }));
+    return { ...rest, title, detail, history: publicHistory };
   }
 
   /** Console results expose direct approval and delivery holds, not just the chosen peer ids. */
@@ -641,7 +651,7 @@ export class Tasks {
         if (!assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), peer], ...this.health() }).owner) continue;
         try {
           const back = task.state === "in_progress" ? this.d.board.update(task.id, HUB, "released", { state: "proposed" }, why) : task;
-          const next = await this.assignOwner(back, HUB, { exclude: [peer], event: "reassigned", note: why });
+          const next = await this.assignOwner(back, HUB, { exclude: [peer], event: "reassigned", reason: "offline", note: why });
           moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner });
           // The gone owner hears it on its next delivery, if it comes back mid-work.
           if (next.owner && next.owner !== peer) this.d.tell?.(peer, noteLine(HUB, "decision", `task #${task.id} moved to ${next.owner} while you were offline; stop working on it`));
@@ -669,6 +679,11 @@ export class Tasks {
     return assign({ class: target.class, signals: detectSignals(draft, routing, this.d.cwd) }, this.states(), routing, this.weights(target.class)).trace;
   }
 
+  /** Public read path: every generated line is screened, including profile/config-derived trace fields. */
+  publicExplain(target: number | { title: string; detail?: string; class: TaskClass; refs?: TaskRefs }): string[] {
+    return this.explain(target).map(line => this.nameable(line) ? line : "[routing explanation withheld: it matches a PII pattern]");
+  }
+
   private declined = (task: Task) => task.history.filter((h) => h.event === "declined").map((h) => h.by);
 
   /** Why the task will approve directly at done: no reviewer could be picked, and who was skipped (issue #92). */
@@ -686,7 +701,7 @@ export class Tasks {
     if (hold) this.d.notify(`task ${this.publicTitle(task)}: ${a.owner}'s queue is held (${hold}); the task arrives once the hold is resolved`);
   }
 
-  private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; claim?: boolean } = {}): Promise<Task> {
+  private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; claim?: boolean } = {}): Promise<Task> {
     const waits = this.waitsFor(task);
     const a = assign(task, this.states(), this.d.routing(), { exclude: [...this.declined(task), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class) });
 
@@ -704,7 +719,7 @@ export class Tasks {
       return task;
     }
     const profile = this.d.splitProfile?.(a.owner);
-    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}) }, opts.note ?? `to ${a.owner}`, profile ? { profile } : {});
+    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.event === "escalated" ? { rejections: 0 } : {}) }, opts.note ?? `to ${a.owner}`, { ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}) });
     // What calibration reads (issue #109): routing chose the first owner (no single named candidate, no claim; not an
     // escalation, relay or reassignment of work already begun), and the work overlaps another owner's task not started
     // yet. For the record only. Work routed back to its proposer is left out, as its observations are (by === owner).
@@ -893,7 +908,7 @@ export class Tasks {
     this.mine(task, by, "owner");
     const back = this.d.board.update(task.id, by, "declined", task.state === "in_progress" ? { state: "proposed" } : {}, reason);
     this.d.notify(`task ${this.publicTitle(back)} declined by ${by}${reason && !this.isPii(back) ? `: ${reason}` : ""}`);
-    return this.assignOwner(back, HUB, { event: "reassigned", clearOnFail: true });
+    return this.assignOwner(back, HUB, { event: "reassigned", reason: "declined", clearOnFail: true });
   }
 
   /** Tasks whose check is queued or running, and the owner it was started for. */
@@ -1182,7 +1197,7 @@ export class Tasks {
     this.contradict(rejected);
     this.note(rejected, by, "decision", `Task #${rejected.id} changes requested by ${by}: ${rejected.title}\n${note ?? ""}`);
     if (rejected.rejections >= ESCALATE_AFTER) {
-      const moved = await this.escalate(HUB, rejected.id, `${rejected.rejections} consecutive changes_requested`);
+      const moved = await this.escalate(HUB, rejected.id, `${rejected.rejections} consecutive changes_requested`, "rejections");
       if (moved.owner !== rejected.owner) return moved;
       // Nobody to escalate to: the owner still has to hear the verdict and the note.
       this.tell(moved, `Task #${moved.id}: ${by} requests changes again.${note ? ` ${this.screen(moved, note, "review note", moved.owner)}` : ""} Nobody else can take it; fix it and call hub_task_done again.`, pii);
@@ -1194,7 +1209,7 @@ export class Tasks {
   }
 
   /** Task-level escalation: the next attached peer in the class's escalate_to takes over, with the history. */
-  async escalate(by: PeerId, id: unknown, why = "by hand"): Promise<Task> {
+  async escalate(by: PeerId, id: unknown, why = "by hand", reason: TaskMoveReason | undefined = by === HUB ? undefined : "manual"): Promise<Task> {
     let task = this.need(id, true);
     const list = this.d.routing().classes[task.class]?.escalate_to ?? [];
     if (task.state === "changes_requested") task = this.d.board.update(task.id, HUB, "reopened", { state: "in_progress" });
@@ -1204,7 +1219,7 @@ export class Tasks {
     if (from && by !== HUB) this.d.board.recordOutcome(from, task.class, false);
     // Only a reviewer that asked for changes on this work saw it fail: not an escalation of unreviewed work (a Pi failure).
     if (from && task.reviewer && task.reviewer !== USER && this.requestedChanges(task).has(task.reviewer)) this.d.board.recordReview({ implementer: from, reviewer: task.reviewer, class: task.class, kind: "escalated", task: task.id });
-    const next = await this.assignOwner(task, by, { candidates: list, event: "escalated", note: `${why}; from ${from ?? "none"}`, context: why });
+    const next = await this.assignOwner(task, by, { candidates: list, event: "escalated", reason, note: `${why}; from ${from ?? "none"}`, context: why });
     if (next.owner && next.owner !== from) {
       this.d.notify(`task ${this.publicTitle(next)} escalated from ${from} to ${next.owner} (${why})`);
       this.note(next, by, "decision", `Task #${next.id} escalated from ${from} to ${next.owner}: ${why}`);
@@ -1213,9 +1228,9 @@ export class Tasks {
     return this.d.board.get(next.id)!;
   }
 
-  /** Console only. */
-  async assignTo(id: unknown, peer: PeerId): Promise<Task> {
-    return this.assignOwner(this.need(id, true), USER, { candidates: [peer], event: "reassigned" });
+  /** Caller authority is checked by the daemon; keep the real actor in task history. */
+  async assignTo(id: unknown, peer: PeerId, by: PeerId = USER): Promise<Task> {
+    return this.assignOwner(this.need(id, true), by, { candidates: [peer], event: "reassigned", reason: "manual" });
   }
 
   /**
@@ -1232,7 +1247,7 @@ export class Tasks {
         const pii = this.isPii(task);
         const candidates = [pii ? LOCAL : PI, pii ? undefined : LOCAL, ...(routing.classes[task.class]?.peers ?? []).filter((p) => p !== LOCAL && p !== PI)].filter((p): p is PeerId => !!p);
         const back = task.state === "in_progress" ? this.d.board.update(task.id, HUB, "released", { state: "proposed" }, `budget pause of ${peer}`) : task;
-        const next = await this.assignOwner(back, HUB, { candidates, exclude: [peer], event: "reassigned", note: `budget pause of ${peer}`, clearOnFail: true, ...(context ? { context } : {}) });
+        const next = await this.assignOwner(back, HUB, { candidates, exclude: [peer], event: "reassigned", reason: "budget", note: `budget pause of ${peer}`, clearOnFail: true, ...(context ? { context } : {}) });
         moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner, role: "owner" });
       } else if (task.reviewer === peer && task.state !== "approved") {
         // No owner candidates: only the reviewer is wanted, and it must be neither the paused peer nor the task's owner.

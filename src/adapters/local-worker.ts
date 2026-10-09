@@ -4,7 +4,7 @@ import type { RouteLabelEvent, RouteTurnOutcome } from "../models/route/labels.t
 import type { ToolObservation } from "../models/route/signals.ts";
 import { randomUUID } from "node:crypto";
 import { renderDigest, replyAudience, replyParent, STANDING_INSTRUCTION, USER, type Envelope, type EnvelopeOpts, type PeerId } from "../hub/envelope.ts";
-import { TASK_TOOL_NAMES, TASK_TOOLS } from "../hub/hub-tools.ts";
+import { CONDUCTOR_TOOL_NAMES, CONDUCTOR_TOOLS, TASK_TOOL_NAMES, TASK_TOOLS } from "../hub/hub-tools.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { runTool, toolResultFailed, TOOL_SCHEMAS, touchedPaths, type ToolContext } from "../local/tools.ts";
@@ -98,7 +98,7 @@ export class LocalPeer extends BasePeer {
         await this.requireBudget(envs, "model_calls");
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
         if (signal.aborted) throw new Error("turn cancelled before model request");
-        const tools = judge ? undefined : [...TOOL_SCHEMAS, ...(this.opts.taskTool ? TASK_TOOLS.map(asFunction) : [])];
+        const tools = judge ? undefined : [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...TASK_TOOLS, ...CONDUCTOR_TOOLS].map(asFunction) : [])];
         const result = await this.opts.omni.chat({ model, messages, ...(tools ? { tools } : {}), ...(judge ? { max_tokens: maxTokens ?? 2048 } : {}) }, { signal, ...(pii ? { onCampusOnly: true } : {}) });
         this.recordUsage(result, model);
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
@@ -250,7 +250,7 @@ export class LocalPeer extends BasePeer {
             await this.requireBudget(envs, "tool_calls");
             if (turnSignal.aborted) throw new ExecutionBudgetStop(this.budgetStopReason || "turn cancelled before tool execution");
           } catch (error) { clearInterval(alive); throw error; }
-          const running = TASK_TOOL_NAMES.has(name) && this.opts.taskTool ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii }).catch((e: Error) => `error: ${e.message}`) : runTool(name, call.function.arguments, ctx);
+          const running = (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) && this.opts.taskTool ? this.opts.taskTool(name, safeParse(call.function.arguments), { pii: !!policy?.pii }).catch((e: Error) => `error: ${e.message}`) : runTool(name, call.function.arguments, ctx);
           const output = await running.finally(() => clearInterval(alive));
           if (turn !== this.turn) return "";
           this.touch();
@@ -281,7 +281,7 @@ export class LocalPeer extends BasePeer {
         });
       },
       sandboxProfile: this.sandboxProfile,
-      sandboxEnv: proxyEnv(this.opts.tools.bashNetwork ?? false),
+      sandboxEnv: { ...proxyEnv(this.opts.tools.bashNetwork ?? false), AGENTHUB_PEER_ID: this.id },
       signal: turnSignal,
       send: (text, to) => {
         const refused = this.onMessage?.(text, pii ? reply : { inReplyTo: replyParent(envs), to: to?.length ? to : replyAudience(envs) });
@@ -334,7 +334,7 @@ export class LocalPeer extends BasePeer {
     // A task turn asks for its class's route; a route needs the sidecar, which exists only when the worker was started with one.
     const route = policy?.route ?? this.opts.route;
     const fixedModel = policy?.fixedModel ?? this.opts.fixedModel;
-    const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? TASK_TOOLS.map(asFunction) : [])];
+    const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...TASK_TOOLS, ...CONDUCTOR_TOOLS].map(asFunction) : [])];
     const signal = this.abort!.signal;
     const messages: ChatMessage[] = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
     const routed = await this.hubCall(route, messages, policy, signal);

@@ -11,6 +11,17 @@ export function childEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.Proces
   return env;
 }
 
+/** Every native child owns its marker; caller vendor markers must not leak across peers (#193). */
+export function peerChildEnv(peer: string, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = childEnv(source);
+  delete env.CLAUDECODE;
+  delete env.CLAUDE_CODE_SESSION_ID;
+  delete env.CODEX_THREAD_ID;
+  delete env.AGENTHUB_PEER_ID;
+  env.AGENTHUB_PEER_ID = peer;
+  return env;
+}
+
 /** One process: its identity is the pid with its start time (`lstart`, which exec keeps); group and command are evidence. */
 export interface ProcRow {
   pid: number;

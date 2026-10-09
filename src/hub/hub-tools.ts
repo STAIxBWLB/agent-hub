@@ -47,8 +47,21 @@ export const TASK_TOOLS: HubTool[] = [
 
 export const TASK_TOOL_NAMES = new Set(TASK_TOOLS.map((t) => t.name));
 
+/** Separately published: serving a schema grants no authority, only the daemon's explicit role does. */
+export const CONDUCTOR_TOOLS: HubTool[] = [
+  tool("hub_status", "Inspect public team state, holds, quota windows, task counts and pending approval peer/tool/age. Only the configured conductor may use this tool.", {}),
+  tool("hub_task_show", "Read a task's public view and history. PII tasks remain stubs. Only the conductor may use this tool.", { id }, ["id"]),
+  tool("hub_task_assign", "Move a task to another peer, as the conductor. Requires assign capability when the conductor has an explicit capabilities list.", { id, peer: str }, ["id", "peer"]),
+  tool("hub_task_escalate", "Escalate a task through the normal task flow, as the conductor. Requires assign capability when explicitly listed.", { id }, ["id"]),
+  tool("hub_peer_start", "Start local, kimi or headless pi. Claude, Codex and Pi TUI requests return a command for the person to run, without launching a terminal.", { peer: { type: "string", enum: ["local", "kimi", "pi", "claude", "codex"] }, mode: { type: "string", enum: ["headless", "tui"] } }, ["peer"]),
+  tool("hub_peer_hold", "Hold a peer's deliveries as the conductor. This hold is separate from the person's hold and budget pauses.", { peer: str }, ["peer"]),
+  tool("hub_peer_release", "Release only the conductor hold you placed. Never lifts a person's hold or a budget pause.", { peer: str }, ["peer"]),
+];
+export const CONDUCTOR_TOOL_NAMES = new Set(CONDUCTOR_TOOLS.map((t) => t.name));
+
 /** Role contracts, by role name. Shown to each peer for the roles `.agenthub/config.json` gives it. */
 export const ROLE_TEXT: Record<string, string> = {
+  conductor: "conductor: plan and split work into tasks with owners, watch the team with hub_status, move stalled work, and ensure every task is reviewed (review it yourself only if you also hold reviewer). Report results and open decisions to the person. Do not implement tasks you handed out. Never ask a peer to answer an approval; ask the person for human-only actions. You may release only holds you placed, never human holds or budget pauses.",
   planner: "planner: break work into tasks with hub_task_propose (one outcome each, the right class, paths in refs, and after: [ids] for work that must wait for other tasks) instead of doing everything yourself.",
   implementer: "implementer: accept tasks assigned to you, do them, and finish with hub_task_done (summary: what changed, why, and the check you ran with its result; refs). Decline what you cannot do. Before starting work nobody assigned you, claim it with hub_task_propose naming yourself as owner, with the paths in refs. With a claim or an accept, give a plan: the files, symbols and signatures you will change and where new code goes.",
   verifier: "verifier: run the checks a task names and report what passed and what did not in hub_task_done.",

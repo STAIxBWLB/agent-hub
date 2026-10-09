@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.16
+bun add -g github:STAIxBWLB/agent-hub#v0.12.17
 ahub setup
 ```
 
@@ -34,8 +34,8 @@ In your project directory, one terminal each:
 
 ```bash
 ahub init          # .agenthub/config.json, .agenthub/routing.toml, the marker block in AGENTS.md
-ahub up            # the daemon for this directory (loopback only)
-ahub tail          # keep open: the conversation, state changes, permission requests
+ahub up            # starts the daemon and opens the operator console in a terminal
+ahub console       # use in another terminal if up used --no-console; Tab opens panels
 ahub kimi          # Kimi, headless
 ahub codex         # Codex TUI, attached through the hub
 ahub claude        # Claude Code with the hub channel

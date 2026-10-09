@@ -2,6 +2,99 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## Operator console and conductor candidate (#190, #191, #193-#195)
+
+Candidate 0.12.17, protocol 15, observed on 2026-10-09 KST. The final Claude
+observer runs used immutable source `20ad5e6`; their native completion receipts
+and actual console effects were checked independently. The Kimi new-tool leg
+remains quota-blocked, as recorded below.
+
+- Actual Codex 0.146.0 (`gpt-5.5`) and Claude 2.1.295 (Opus 5.5) TUIs started
+  real local and headless Pi peers, proposed exactly two tasks owned initially
+  by local, reassigned Beta to Pi, and placed and released their own holds.
+  The real owners checked their outputs and called `hub_task_done`; the native
+  conductor independently read the exact files before approving both tasks.
+  Real CLI calls retained the agent actor, and human-only queue/permission
+  actions were refused from an agent shell.
+- The person authorized `alpha.txt = ALPHA` (5 bytes) and `beta.txt = BETA`
+  (4 bytes), both without a newline. Separate selection and confirmation keys
+  reached the actual console PTY and produced allow-once console audit records.
+  Out-of-scope directory-list commands were cancelled. The final Claude own
+  run used three allow-once answers because Pi combined its exact write and
+  bounded byte checks in one approved command; it also recorded two cancelled
+  local directory-list requests. No permission or task completion was fabricated.
+- The final Claude own run recorded nine completed native turns and nine
+  matching daemon Stop records, 27 unique native usage records, and
+  1,888,242 tokens including cached input. Eight completed native turns contained
+  supervision, with 1,292,922 recorded tokens. Its final message UUID/id,
+  `end_turn`, `turn_duration`, instance/session/launcher and opaque Stop receipt
+  matched; native idle and an empty pending delivery queue were verified before
+  owned-process cleanup. Local recorded three turns and 72,046 gateway tokens;
+  Pi recorded two turns and 47,177 native tokens.
+- A read-only Claude feed-off continuation on the final observer preserved the
+  existing approved tasks and exact files. It verified one completed native turn,
+  four usage records and 263,413 cached-inclusive tokens, with matching daemon
+  Stop, native idle and delivery settlement. An obsolete review hold was first
+  discarded through the authenticated public operator API after fresh approved
+  task/history and exact BETA readback. That discard is not native execution.
+- A real console with two pending cards and no operator input consumed 0.07 CPU
+  seconds over 40.018 wall seconds in stream mode (0.175% of one CPU). A separate
+  actual Peers panel, 120x40, with two pending cards and no operator input used
+  0.07 CPU seconds over 40.012 wall seconds (0.175%). These are cumulative `ps`
+  process CPU samples in distinct modes/runs, not whole-host idle measurements.
+- In a plain Claude TUI without the development-channel flag, one actual
+  `hub_status` MCP call succeeded and the daemon audited the Claude status
+  action. A unique directed operator push was accepted by the bridge, but no
+  pushed native user row or answer appeared in the observed 20.075-second window.
+  This proves tool access separately from the bounded negative push observation.
+  The real channel-enabled runs above received actual review and supervision
+  pushes. The plain probe and cleanup completed in 56.724 seconds, with no model
+  file, shell, task or settings actions.
+- Real Kimi Code CLI 2.1.1 completed ACP initialization and `session/new`, then
+  rejected the single prompt with HTTP 403 for its weekly account usage limit.
+  No requested native tool event or role-refusal result occurred. The reset time
+  was not supplied. The owning CLI listed only the managed OAuth Kimi provider
+  (four models, default `kimi-code/k3`), so no configured alternative provider was
+  found. This is an incomplete external prerequisite, not a new-tool pass. No
+  purchase, provider/configuration change or model retry was performed; owned
+  processes were stopped after 3.142 seconds.
+
+The user explicitly approved release 0.12.17 with only the Kimi native new-tool
+and ordinary-role refusal T0 evidence deferred on 2026-10-09. That native
+prerequisite remains unverified; the quota rejection is not a tool pass. This
+decision does not defer the other native/source gates or authorize a purchase,
+credentials, provider/configuration change or account retry. The same isolated
+read-only Kimi probe remains required before its native coverage is marked verified.
+
+Earlier captures remain part of the evidence:
+
+- Codex feed-off included an interrupted original and read-only continuation:
+  six logical native turns, 49 increments and 1,979,016 tokens. Codex feed-own
+  recorded nine turns, 34 increments and 1,399,470 tokens. Their journals were
+  independently checked after cleanup. The first baseline interruption and
+  operator reconciliation are preserved; neither native task completion nor
+  board approval was substituted by the harness.
+- The original Claude runs approved the actual files but an early idle-based
+  harness stopped their final review answers. Subsequent `da2ebbc` feed-off
+  completed five native turns and 1,451,782 tokens but certified only one daemon
+  Stop. A `6034dd9` read-only continuation completed another native turn and
+  261,483 tokens, while its Stop remained unavailable during the native hook.
+  Both incomplete observer captures are preserved alongside raw and audited
+  summaries. The final post-ACK observer above closes the fresh completion proof;
+  it does not retroactively certify the earlier missed Stop records.
+
+All token totals describe whole native/model turns, including cached input and
+other work. Operator waiting, cancelled requests, marker probes, interrupted
+continuations and differing source revisions make these observations unsuitable
+for a causal feed-overhead or model-efficiency comparison. Unknown measurements
+and the Kimi prerequisite remain explicit.
+
+The harness uses real Python PTYs. Operator-file-input forwards only
+chat-authorized keys, removes inherited Orca terminal ownership from fixture
+children, and generates no approval automatically. Private original and
+continuation captures remain separate. The shell-marker probes and vendor
+limits are recorded in [the identity T0 ledger](verification/2026-10-09-agent-shell-t0.md).
+
 ## Approval race live reproduction and candidate verification (#98)
 
 Measured on 2026-10-02 KST with installed 0.12.1 and the correction candidate,

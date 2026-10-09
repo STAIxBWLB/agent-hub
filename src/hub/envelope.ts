@@ -14,7 +14,7 @@ export interface Envelope {
   kind: Kind;
   priority: Priority;
   body: string; // agent conclusions only, never tool noise
-  refs?: { repo?: string; branch?: string; commit?: string; paths?: string[]; task?: string };
+  refs?: { repo?: string; branch?: string; commit?: string; paths?: string[]; task?: string; supervision?: boolean; supervisionKey?: string };
   /** The body must not be shown outside its recipients: console tail and log print a stub instead (PII tasks). */
   private?: boolean;
   ts: number;

@@ -1343,6 +1343,125 @@ whether to continue the native session or restart; this change provides no
 automatic session replacement. Status, tail and dashboard expose readings with
 source, measurement time and freshness beside quota information.
 
-The control contract is protocol 14. Recovery sources 9 through 13 remain
+Release 0.12.16 uses control protocol 14. Recovery sources 9 through 13 remain
 supported; protocol 13 identifies releases 0.12.4 through 0.12.15, while
 0.12.16 uses protocol 14.
+
+## Operator console and conductor (issues #190, #191, #193, #194, #195)
+
+`ahub console` owns one authenticated console connection. It shares tail's
+renderer, renders a DECSTBM stream and footer, and provides optional alternate
+screen panels. `up` opens it only with terminal input and output, unless
+`--no-console` is given. Tail remains a plain stream. Console commands use an
+allowlisted argv with stdin closed; lifecycle and native launches are excluded.
+Allow options require confirmation and never interpret nonempty input as an
+approval. Deny is direct. Pending requests include expiry and are withdrawn by
+`permission_closed` on any answer or cancellation. Answer audits have no title.
+Panels expose Peers, Approvals, Tasks, Queue and Events with bounded polling and
+Unicode cell widths, fall back below 80x24, and restore terminal state on exit.
+
+Agent shell CLI calls connect as the detected peer in tools mode. Hub launches
+set `AGENTHUB_PEER_ID`; the pinned installed Codex shell injects
+`CODEX_THREAD_ID` after environment filtering, and Claude uses `CLAUDECODE`.
+Malformed or conflicting markers fail closed. Console-only commands are denied
+before connecting, with no as-user escape. Refusals enter a bounded ids-only
+local audit spool which a running daemon consumes; this preserves the no-connect
+rule while making refusals visible on the console and in the log. A stopped
+daemon cannot show a live notice; it consumes remaining records on startup.
+This does not establish a security boundary against an unrestricted shell
+which can read the token. Native source evidence and live probe results remain
+separate in the smoke ledger.
+
+Exactly one explicit conductor role may be configured. Default-allow
+capabilities do not grant it; role authority is checked on each operation and
+refreshed on a subsequent connection. Shared MCP tools provide public status,
+public task history, actor-preserving assign/escalate, headless local/Kimi/Pi
+start, and conductor-owned persistent holds. TUI starts return launch commands.
+Assign/escalate need `assign` if the peer has a capabilities entry. Approval
+answers, durable queue resolution, budget overrides and lifecycle remain human
+operations. A conductor cannot release human or budget holds. Audit events are
+ids-only and report counts their actions.
+
+The conductor feed defaults to own tasks, also supports all and off, and uses
+the existing bus digest window. Repeated queued task/kind milestones replace
+the earlier pending notice; accepted or in-flight deliveries are preserved.
+Structured milestones carry public titles or PII stubs, never raw history
+notes or check output. Only aged approval summaries and needs-review delivery
+ids are important. Role/feed revocation withdraws pending feed notices. A
+completed task set produces one round notice until a new task joins; subsequent
+rounds count only newly joined tasks. Pure status supervision queues wait for
+the existing digest deadline rather than flushing at the ordinary batch-count
+threshold. Mixed traffic retains the ordinary admission behavior. The existing
+10-original digest ceiling and 200-entry queue ceiling still bound admission;
+larger windows may require multiple bounded deliveries.
+
+Supervision cost counts completed native turns that received feed notices,
+with whole-turn token readings when available. Other work may share a turn;
+these readings are not per-notice token attribution. Missing measurements are
+unknown. Native TUI conductor, sandbox and feed-on smoke results must be recorded
+as observed outcomes, separately from unit/fake protocol tests.
+
+Managed Claude launches with turn-free facts, task-idle sweeps or a conductor
+role install native observation hooks. A conductor receives them even when facts
+injection and task-idle sweeps are disabled; ordinary non-opt-in launches remain
+unchanged. SessionStart registers the native
+session and UserPromptSubmit starts observation; PreToolUse keeps a tool turn
+active and Stop closes it. Explicit caller settings remain authoritative and
+produce a warning when they replace these hooks. An ordinary terminal records a
+private launcher identity without creating an Orca terminal-recovery record.
+The facts control request accepts session/start/pre/post/stop phases and carries
+nativeInstanceId and nativeLaunchId alongside sessionId and transcriptPath.
+The command hook forwards launcher identity only for its matching state directory
+and peer; library calls targeting another hub do not inherit that identity.
+The daemon fences observations to its current instance and launcher, validates
+the session transcript, and rejects stale stop/post observations. Native prompt
+text is never included in those requests or events.
+
+A genuine native Stop requires the current daemon/launcher binding and an actual
+assistant end_turn transcript message at or after the native turn's first start,
+distinct from the completed-message baseline recorded at that start. Later tool
+activity does not move this turn-start boundary. Missing start evidence or a
+start from another session, launch or channel claim leaves completion unknown.
+Accepted completion consumes that start before the peer becomes idle, so another
+message cannot reuse it. A valid bound Stop request receives one prompt
+acknowledgement with pending=true, within the existing two-second hook deadline.
+The acknowledgement records observation only, never completion. After the hook
+can return, a deferred observer waits up to 1200 monotonic milliseconds for its
+transcript append to become visible. Each read and final consumption revalidate
+the captured start, session,
+launch, peer and claim. A seen previous-turn baseline still waits while a new
+current start exists; a consumed duplicate remains a no-op. Timeout, malformed or
+oversized evidence and superseded context leave completion unknown. This wait
+does not retry a user action or relax authority.
+The observer sends no second request reply and never changes global hook settings.
+The live harness also binds its final receipt to the current private launch id.
+Its opaque
+deduplication id binds session, launch and message; transport replacement or new
+activity cannot turn a replay into another completion. Unbound or idless legacy
+Stop events cannot certify completion or finish supervision. A current private
+launcher marker takes precedence over an older terminal-recovery launch id for
+native observation, while preserving the recovery records and their authority.
+Claude turn reports
+prefer unique native Stop events; historical logical-state counts are labelled
+as such, and an unobserved completion remains unknown. Channel idle, watchdog
+expiry, board approval and a tool reply do not independently establish native
+completion. The live harness waits for the current fixture/instance/session's
+final transcript end_turn and turn_duration after its last review before
+reporting a completed case or terminating its native TUI. It also requires the
+matching opaque native completion event, an idle peer and settled delivery rows.
+
+These additions use control protocol 15. Supported recovery sources include
+protocol 14 (0.12.16) alongside the previous source protocols.
+
+For release 0.12.17 only, the user explicitly accepted deferral of real Kimi ACP
+new-tool invocation and ordinary-role refusal T0 evidence on 2026-10-09. The
+managed OAuth account rejected its prompt with HTTP 403 for the weekly quota
+before any tool event; reset time is unknown and no configured native alternative
+was found. This prerequisite remains unverified. Actual Claude/Codex conductor
+workflows, Claude shell/channel observations, shared MCP/fake-adapter authority
+checks, real Kimi ACP initialization/session creation and full source gates are
+separately qualified. The deferral authorizes no purchase, credentials,
+provider/configuration change, account retry or authority relaxation. Once quota
+is available under an authorized account, the same isolated read-only status-tool
+and ordinary-role refusal probe must record a native tool event and daemon result
+before this Kimi prerequisite can be marked verified.

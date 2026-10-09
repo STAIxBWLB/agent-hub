@@ -1,7 +1,98 @@
 # Operations guide
 
-This guide describes ahub 0.12.16 and control protocol 14. Live verification
+This guide describes ahub 0.12.17 and control protocol 15. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
+
+## Operator console and panels
+
+`ahub console` combines the existing tail stream with peer, quota, approval-age
+and input rows. `ahub up` opens it when both input and output are terminals;
+`--no-console` and redirected input/output retain the start-only behavior.
+`ahub tail` remains available with its existing rendering.
+
+Allowing an approval requires selection and a separate confirmation. Denying
+does not. Only options the daemon supplied are selectable. Typing a command
+prevents approval shortcuts from interpreting that input as an answer. Full
+approval titles are terminal-only; expiry and answers from another console remove
+the pending item. Approval audit records contain id, peer, option kind, response
+time and answering surface, without the title.
+
+Tab toggles stream and panels; `ahub console --panels` starts in panels. Peers,
+Approvals, Tasks, Queue and Events support arrow keys or j/k, Enter for detail,
+Escape to return and `?` for help. `:` enters a command. Assignment, delivery
+resolution and allow decisions require confirmation; delivery resolution requires
+a reason. Tasks use the same public redaction as the board. Panels need at least
+80 columns by 24 rows; smaller terminals stay in stream mode. Task and queue
+polling runs only while the corresponding panel is visible. Leaving restores
+the terminal and returning from panels replays the bounded stream buffer.
+
+The command input accepts existing status, board, task, review, say, pause,
+resume, budget, queue, permit, ask, remember, route, turns, undo, check-path and
+report operations. It executes an argument vector with closed stdin. Lifecycle,
+launch, nested console, setup, UI, logs and tail commands are refused.
+
+## Conducting a team from Claude Code or Codex
+
+Start the daemon with `ahub up --no-console`, set exactly one conductor in the
+project configuration, then open `ahub console` in a split terminal for approvals:
+
+```json
+{
+  "roles": { "claude": ["planner", "reviewer", "conductor"] },
+  "conductor": { "feed": "own" }
+}
+```
+
+Launch that peer with `ahub claude` for channel pushes, or select `codex` in
+`roles` and launch `ahub codex`. The conductor splits work into owned tasks,
+observes `hub_status`, moves stalled work and obtains review before reporting
+results and open decisions. It does not implement the tasks it handed out.
+`hub_peer_start` starts local, Kimi or headless Pi; requests for native TUIs
+return the `ahub` command for the person to run, after validating it through
+the shared launcher planner. The wrapper plans again at launch when native
+endpoints are available. `hub_peer_hold` and `hub_peer_release`
+manage only holds placed by that conductor. Assignment also requires `assign`
+when the conductor has an explicit capabilities list.
+
+Check the returned owner and task state after assignment. Routing skips paused
+peers, so assign work before placing a delivery hold. Hand work out through the
+board and report to the person with `hub_send` addressed to `user`, or a `[FYI]`
+final response in the native TUI. Broadcasting implementation instructions can
+cause an otherwise unassigned owner to claim duplicate work.
+
+The person answers approvals in the console, resolves `needs_review` deliveries
+with `ahub queue resolve`, and handles budget overrides and hub lifecycle.
+Running these commands from an agent shell is refused; the CLI retains the
+agent's identity even when invoked through a shell tool.
+
+`conductor.feed` is `own` by default, `all` for all tasks, or `off`. Ordinary
+milestones share the existing digest window and collapse repeated queued
+task/kind notices. They wait behind a busy conductor. An aged approval or
+`needs_review` hold is important, contains only peer/tool-age or delivery id,
+and directs the conductor to ask the person. A completed task set emits one
+round notice until a new task joins. Removing the role or switching the feed
+off withdraws pending feed notices.
+
+For a Claude conductor, `ahub claude` also observes native session and turn
+boundaries when facts injection and task-idle sweeps are off. Keep the managed
+hooks enabled to measure completion and supervision usage. Passing your own
+`--settings` takes precedence and produces a warning when it replaces that
+observation. The launcher records its private session identity in ordinary
+terminals too; this does not grant terminal-recovery authority.
+Ordinary Claude sessions with turn-free facts or task-idle sweeps enabled get the
+same session/start observation. Other ordinary launches remain non-opt-in.
+
+`ahub report` records conductor actions and completed native turns containing
+supervision. Tokens describe the whole measured turn, which may also contain
+other work; they are not a per-notice cost estimate. Missing measurements stay
+unknown. Use the live smoke ledger to assess observed turns and tokens per
+approved task before choosing `all`; an unmeasured run is not a cost benchmark.
+Claude turn counts use authenticated native completion events. Older logical
+state counts are labelled; an idle channel or approved task alone does not prove
+that the native answer finished.
+The Stop hook acknowledgement is not a counted completion. The daemon checks the
+native transcript after the hook can return; missing or changed-session evidence
+stays unknown.
 
 ## Install and start
 
@@ -14,12 +105,11 @@ ahub setup
 cd <project>
 ahub init
 ahub up
-ahub tail
 ```
 
 `ahub init` writes the project configuration and managed instruction blocks.
 Run it after an upgrade when those blocks need refreshing. `ahub setup`
-updates the shared Claude plugin. Keep `ahub tail` open when a local worker
+updates the shared Claude plugin. Keep `ahub console` open when a local worker
 may request an approval.
 
 `.agenthub/config.json` can be committed and shared. The fields that choose
@@ -522,6 +612,13 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
 Inspect permission requests in the terminal:
 
 ```bash
+ahub console
+```
+
+Select the requested option in the console and confirm an allow decision.
+For a separate plain terminal, the existing command remains available:
+
+```bash
 ahub tail
 ahub permit <request-id> allow
 ```
@@ -647,21 +744,21 @@ Rows without a live process are stale registrations; forget them with
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15) or 14 (0.12.16), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15) 14 (0.12.16) or 15 (0.12.17), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.16 ahub upgrade --to 0.12.16 --dry-run
-bunx --package @staix/agent-hub@0.12.16 ahub upgrade --to 0.12.16 --yes
+bunx --package @staix/agent-hub@0.12.17 ahub upgrade --to 0.12.17 --dry-run
+bunx --package @staix/agent-hub@0.12.17 ahub upgrade --to 0.12.17 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 (protocol 15) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -693,14 +790,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.16 --dry-run
+ahub upgrade --to 0.12.17 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.16 --yes
+ahub upgrade --to 0.12.17 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>

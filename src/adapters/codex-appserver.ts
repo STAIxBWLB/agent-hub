@@ -3,7 +3,7 @@ import type { Server, ServerWebSocket } from "bun";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { codexContext, type ContextReading } from "../hub/context-window.ts";
-import { childEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
+import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 
 export interface CodexOptions {
   /** Port the TUI attaches to: `codex --enable tui_app_server --remote ws://127.0.0.1:<proxyPort>`. */
@@ -305,9 +305,10 @@ export class CodexPeer extends BasePeer {
       throw new Error(`port ${port} already answers /healthz: an app-server the hub does not own is running (orphan from a crashed hub?)`);
     }
     let gone = "";
+    const env = peerChildEnv("codex", { ...process.env, ...(this.opts.env ?? {}) });
     this.proc = spawn(this.opts.bin ?? "codex", ["app-server", "--listen", `ws://127.0.0.1:${port}`, ...(this.opts.extraArgs ?? [])], {
       cwd: this.opts.cwd,
-      env: childEnv({ ...process.env, ...(this.opts.env ?? {}) }),
+      env,
       stdio: ["ignore", "ignore", "pipe"],
       detached: true, // its own process group, stopped as a whole (#113): `codex` is a launcher with a native child
     });

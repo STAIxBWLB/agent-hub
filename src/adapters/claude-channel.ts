@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ControlClient, stateDirFor } from "../hub/control-client.ts";
 import { VERSION } from "../version.ts";
-import { DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS } from "../hub/hub-tools.ts";
+import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS } from "../hub/hub-tools.ts";
 import { frame, replyParent, sanitize, HUB_MESSAGE_INSTRUCTION, type Envelope } from "../hub/envelope.ts";
 
 // A native session is pinned at launch. Unlike a new CLI invocation after `cd`,
@@ -201,6 +201,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         ]),
     ...TASK_TOOLS,
+    ...CONDUCTOR_TOOLS,
   ],
 }));
 
@@ -225,7 +226,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const sent = `sent to: ${res.targets.join(", ") || "(no other peers attached)"}`;
     return text(typeof res.notice === "string" ? `${sent}; ${res.notice}` : sent);
   }
-  if (TASK_TOOL_NAMES.has(name)) {
+  if (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) {
     if (!hub) return text(offline());
     const res = await hub.request({ t: "task", op: name, args: args ?? {} });
     return text(res.ok ? res.text : `error: ${res.error}`);

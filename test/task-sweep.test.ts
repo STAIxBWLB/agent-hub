@@ -139,8 +139,9 @@ test("sweep: busy, paused, offline, native-active, dependency, check, cohort and
 test("sweep: explicit opt-in reassigns owner within routing constraints, reviewer remains suggestion", async () => {
   const f = await fixture({ sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, unaccepted_min: 1, review_min: 1, ladder_min: 1, auto_reassign: true } });
   const task = f.make();
-  const at = task.created + 60_001;
+  const at = task.history.at(-1)!.at + 60_001; // assignment, not creation, begins the inactivity threshold
   for (let step = 0; step < 3; step++) { await f.tasks.sweep(at + step * 60_000); await drain(); }
+  expect(f.board.get(task.id)!.history.flatMap(entry => entry.sweep ? [entry.sweep.step] : [])).toEqual([1, 2, 3]);
   expect(f.board.get(task.id)!.owner).toBe("local");
   f.board.update(task.id, "local", "accepted", { state: "in_progress" });
   f.board.update(task.id, "local", "done", { state: "in_review" });

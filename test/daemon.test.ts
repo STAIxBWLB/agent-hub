@@ -954,8 +954,10 @@ test("telemetry: a scripted hub's events give the known counts, match the overla
   const r = summarize(events);
   expect(r.overlaps).toEqual({ warnings: 1, pairs: 1 });
   expect(r.tasks.proposed).toBe(3);
-  expect(r.peers.kimi!.turns).toBeGreaterThanOrEqual(1);
-  expect(r.peers.kimi!.tokens).toBe(50 * r.peers.kimi!.turns); // the fake's usage_update: a session total, 50 per prompt
+  const kimiTurns = r.peers.kimi!.turns;
+  if (kimiTurns === null) throw new Error("the observed completed Kimi turn must have a known count");
+  expect(kimiTurns).toBeGreaterThanOrEqual(1);
+  expect(r.peers.kimi!.tokens).toBe(50 * kimiTurns); // the fake's usage_update: a session total, 50 per prompt
   expect(r.messages.total).toBeGreaterThanOrEqual(1);
   // The same notice the human sees, counted by scripts/overlaps.ts from hub.log.
   expect(parseOverlaps(readFileSync(join(stateDir, "hub.log"), "utf8")).length).toBe(r.overlaps.warnings);

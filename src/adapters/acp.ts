@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
-import { childEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
+import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 
 export interface PermissionOption {
   optionId: string;
@@ -135,7 +135,7 @@ export class AcpPeer extends BasePeer {
   async start(): Promise<void> {
     const [bin, ...args] = this.opts.cmd;
     // Its own process group, stopped as a whole (#115, as Codex's in #113): an agent CLI may be a launcher with a native child.
-    const proc = spawn(bin!, args, { cwd: this.opts.cwd, env: childEnv({ ...process.env, ...(this.opts.env ?? {}) }), stdio: ["pipe", "pipe", "pipe"], detached: true });
+    const proc = spawn(bin!, args, { cwd: this.opts.cwd, env: peerChildEnv(this.id, { ...process.env, ...(this.opts.env ?? {}) }), stdio: ["pipe", "pipe", "pipe"], detached: true });
     this.proc = proc;
     trackGroup(proc);
     proc.on("error", (e) => this.down(`spawn failed: ${e.message}`));

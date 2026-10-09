@@ -15291,8 +15291,8 @@ function projectContext(cwd, env = process.env) {
 function stateDirFor(cwd) {
   return projectContext(cwd).stateDir;
 }
-var PROTOCOL = 14;
-var RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, PROTOCOL];
+var PROTOCOL = 15;
+var RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, PROTOCOL];
 function readControl(stateDir) {
   try {
     const status = JSON.parse(readFileSync2(join2(stateDir, "status.json"), "utf8"));
@@ -15403,7 +15403,7 @@ class ControlClient {
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
-  version: "0.12.16",
+  version: "0.12.17",
   description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
   license: "MIT",
   type: "module",
@@ -15503,7 +15503,18 @@ var TASK_TOOLS = [
   tool("hub_remember", "Save a decision, finding, contract or fail to the memory all agents share (claude-mem); the other agents also get it with their next message. A fail is an approach you tried that does not work, and why: the most useful note, it stops the others spending their quota on it. Do not retry what a fail note rules out without new evidence. Conclusions worth recalling, not chatter.", { text: str, title: str, kind: { type: "string", enum: [...NOTE_KINDS] }, task: id }, ["text"])
 ];
 var TASK_TOOL_NAMES = new Set(TASK_TOOLS.map((t) => t.name));
+var CONDUCTOR_TOOLS = [
+  tool("hub_status", "Inspect public team state, holds, quota windows, task counts and pending approval peer/tool/age. Only the configured conductor may use this tool.", {}),
+  tool("hub_task_show", "Read a task's public view and history. PII tasks remain stubs. Only the conductor may use this tool.", { id }, ["id"]),
+  tool("hub_task_assign", "Move a task to another peer, as the conductor. Requires assign capability when the conductor has an explicit capabilities list.", { id, peer: str }, ["id", "peer"]),
+  tool("hub_task_escalate", "Escalate a task through the normal task flow, as the conductor. Requires assign capability when explicitly listed.", { id }, ["id"]),
+  tool("hub_peer_start", "Start local, kimi or headless pi. Claude, Codex and Pi TUI requests return a command for the person to run, without launching a terminal.", { peer: { type: "string", enum: ["local", "kimi", "pi", "claude", "codex"] }, mode: { type: "string", enum: ["headless", "tui"] } }, ["peer"]),
+  tool("hub_peer_hold", "Hold a peer's deliveries as the conductor. This hold is separate from the person's hold and budget pauses.", { peer: str }, ["peer"]),
+  tool("hub_peer_release", "Release only the conductor hold you placed. Never lifts a person's hold or a budget pause.", { peer: str }, ["peer"])
+];
+var CONDUCTOR_TOOL_NAMES = new Set(CONDUCTOR_TOOLS.map((t) => t.name));
 var ROLE_TEXT = {
+  conductor: "conductor: plan and split work into tasks with owners, watch the team with hub_status, move stalled work, and ensure every task is reviewed (review it yourself only if you also hold reviewer). Report results and open decisions to the person. Do not implement tasks you handed out. Never ask a peer to answer an approval; ask the person for human-only actions. You may release only holds you placed, never human holds or budget pauses.",
   planner: "planner: break work into tasks with hub_task_propose (one outcome each, the right class, paths in refs, and after: [ids] for work that must wait for other tasks) instead of doing everything yourself.",
   implementer: "implementer: accept tasks assigned to you, do them, and finish with hub_task_done (summary: what changed, why, and the check you ran with its result; refs). Decline what you cannot do. Before starting work nobody assigned you, claim it with hub_task_propose naming yourself as owner, with the paths in refs. With a claim or an accept, give a plan: the files, symbols and signatures you will change and where new code goes.",
   verifier: "verifier: run the checks a task names and report what passed and what did not in hub_task_done.",
@@ -15690,7 +15701,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         inputSchema: { type: "object", properties: { delivery_id: { type: "string" }, delivery_generation: { type: "string" } }, required: ["delivery_id", "delivery_generation"], additionalProperties: false }
       }
     ],
-    ...TASK_TOOLS
+    ...TASK_TOOLS,
+    ...CONDUCTOR_TOOLS
   ]
 }));
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
@@ -15720,7 +15732,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const sent = `sent to: ${res.targets.join(", ") || "(no other peers attached)"}`;
     return text(typeof res.notice === "string" ? `${sent}; ${res.notice}` : sent);
   }
-  if (TASK_TOOL_NAMES.has(name)) {
+  if (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) {
     if (!hub)
       return text(offline());
     const res = await hub.request({ t: "task", op: name, args: args ?? {} });
