@@ -1,6 +1,8 @@
 import { Database } from "bun:sqlite";
 import type { Task } from "./board.ts";
 import { CONDUCTOR_TOOL_NAMES } from "./hub-tools.ts";
+import { HUB, USER } from "./envelope.ts";
+import { OWNERSHIP_EVENTS } from "./tasks.ts";
 import type { HubEvent } from "./events.ts";
 import type { SupervisionFeed } from "./supervision.ts";
 import type { Budget } from "./budget.ts";
@@ -45,10 +47,14 @@ export function conductorPeer(roles: unknown): string | null {
 /** The role check always comes first; default-allow capabilities cannot grant a role. */
 export function requireConductor(peer: string, roles: unknown, capabilities: Record<string, unknown> = {}, assign = false): void {
   if (conductorPeer(roles) !== peer) throw new Error("this operation requires the explicit conductor role");
-  if (assign && Object.hasOwn(capabilities, peer)) {
-    const caps = capabilities[peer];
-    if (!Array.isArray(caps) || !caps.includes("assign")) throw new Error(`${peer} requires assign capability for this operation`);
-  }
+  if (assign) requireAssign(peer, capabilities);
+}
+
+/** A peer with an explicit capabilities list needs `assign` in it to move work. */
+function requireAssign(peer: string, capabilities: Record<string, unknown>): void {
+  if (!Object.hasOwn(capabilities, peer)) return;
+  const caps = capabilities[peer];
+  if (!Array.isArray(caps) || !caps.includes("assign")) throw new Error(`${peer} requires assign capability for this operation`);
 }
 
 export interface ConductorHold { peer: string; actor: string; since: number }
@@ -154,10 +160,35 @@ export interface ConductorHooks {
   audit(event: ConductEvent): void;
 }
 
+/** A task id as `Tasks.need()` takes it: a whole number or a digit string. */
+const taskId = (v: unknown): number | undefined => {
+  const n = typeof v === "number" ? v : typeof v === "string" && /^\s*\d+\s*$/.test(v) ? Number(v) : NaN;
+  return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+};
+
 export class Conductor {
   constructor(private readonly holds: ConductorHolds, private readonly hooks: ConductorHooks) {}
   async execute(actor: string, tool: string, args: Record<string, unknown>): Promise<unknown> {
     if (!CONDUCTOR_TOOL_NAMES.has(tool)) throw new Error("unknown conductor tool");
+    if ((tool === "hub_task_show" || tool === "hub_task_assign") && conductorPeer(this.hooks.roles()) !== actor) {
+      const id = taskId(args.id);
+      const task = id === undefined ? undefined : this.hooks.task(id);
+      // A task's current owner and reviewer read its public view without the role (#208); nobody else does.
+      if (task && tool === "hub_task_show" && (task.owner === actor || task.reviewer === actor)) return publicConductorTask(task, this.hooks.publicView);
+      // Its proposer (the first history entry) redirects it while nobody ever accepted it (#207: a decline or a release puts
+      // worked tasks back in proposed); work that waits gets a reserved owner. Never over the person: a console assign or
+      // reservation stands until the conductor or the console moves it, also once the hub carried it out (the hub's own
+      // moves are not decisions).
+      const moved = task?.history.findLast((h) => h.by !== HUB && (OWNERSHIP_EVENTS.has(h.event) || h.event === "reserved"));
+      const accepted = task?.history.some((h) => h.event === "accepted");
+      if (task && tool === "hub_task_assign" && task.history[0]?.by === actor && task.state === "proposed" && !accepted && moved?.by !== USER) {
+        const peer = peerId(args.peer);
+        if (peer !== actor) requireAssign(actor, this.hooks.capabilities());
+        await this.hooks.assign(actor, task.id, peer);
+        const updated = this.hooks.task(task.id);
+        return updated ? publicConductorTask(updated, this.hooks.publicView) : { id: task.id };
+      }
+    }
     requireConductor(actor, this.hooks.roles(), this.hooks.capabilities(), tool === "hub_task_assign" || tool === "hub_task_escalate");
     const action = tool.slice(4);
     const emit = (extra: Pick<ConductEvent, "task" | "peer"> = {}) => {
@@ -165,8 +196,9 @@ export class Conductor {
     };
     if (tool === "hub_status") { const result = publicConductorStatus(this.hooks.status()); emit(); return result; }
     if (tool.startsWith("hub_task_")) {
-      if (typeof args.id !== "number" || !Number.isSafeInteger(args.id) || args.id <= 0) throw new Error("id must be a positive integer");
-      const task = this.hooks.task(args.id);
+      const id = taskId(args.id);
+      if (id === undefined) throw new Error("id must be a positive integer");
+      const task = this.hooks.task(id);
       if (!task) throw new Error(`no task #${args.id}`);
       if (tool === "hub_task_show") { const result = publicConductorTask(task, this.hooks.publicView); emit({ task: task.id }); return result; }
       if (tool === "hub_task_assign") {

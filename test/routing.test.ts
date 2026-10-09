@@ -122,6 +122,23 @@ const splitInput = (over: Partial<SplitInput> = {}): SplitInput => ({
   ...over,
 });
 
+test("a peer named after an Object member (constructor) is attached, healthy or held only by its own entries (#207)", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-routing-")));
+  const reserved = { ...task("implement"), reserved: "constructor" };
+  const health = { failing: {}, held: {}, quota: {}, demoted: {}, reviews: {}, roles: {} };
+  // attached and healthy: the reservation is honored, not "failing: function Object()"
+  const honored = assign(reserved, { constructor: "idle", local: "idle" } as any, routing, health);
+  expect(honored.owner).toBe("constructor");
+  expect(honored.trace).toContain("reserved owner constructor: honored");
+  expect(honored.trace.join("\n")).not.toContain("hold:");
+  // not attached: passed over, never chosen, also without the health maps
+  for (const opts of [health, {}]) {
+    const away = assign(reserved, { local: "idle" } as any, routing, opts);
+    expect(away).toMatchObject({ owner: "local", unreserved: "not attached" });
+    expect(assign(task("implement"), { local: "idle" } as any, routing, { ...opts, candidates: ["constructor"] }).owner).toBeUndefined();
+  }
+});
+
 test("split prediction: equal units reproduce o_s + u_s < o_f + 2u_f both ways", () => {
   // kimi fast (10 + 2 * 25 = 60 s), codex slow (15 + 60 = 75 s): kimi alone finishes sooner.
   const single = predictSplit(splitInput());

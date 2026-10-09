@@ -148,6 +148,105 @@ test("public task history screens private done/review notes and profile while co
   }
 });
 
+test("a task's owner and reviewer read its done summary and check line; other peers are refused and PII stays a stub (#208)", async () => {
+  const f = await fixture();
+  const board = new Board(join(f.dir, "hub.db"));
+  let id: number, pii: number;
+  try {
+    id = board.propose("claude", { title: "ordinary parser task", class: "implement" }).id;
+    board.update(id, "codex", "accepted", { state: "in_progress", owner: "codex", reviewer: "kimi" });
+    board.update(id, "codex", "done (checking)", {}, "parser fixed, bun test passed");
+    board.update(id, "hub", "check passed", {}, "scripts/check.sh -> exit 0\ncheck: OK");
+    board.update(id, "codex", "done", { state: "in_review" }, "parser fixed, bun test passed\nCheck: scripts/check.sh -> exit 0");
+    pii = board.propose("claude", { title: "PRIVATE-MARKER task", detail: "PRIVATE-MARKER body", class: "implement", signals: ["pii"] }).id;
+    board.update(pii, "codex", "accepted", { state: "in_progress", owner: "codex", reviewer: "kimi" }, "PRIVATE-MARKER note");
+  } finally { board.close(); }
+  const owner = await f.connect("codex"), reviewer = await f.connect("kimi"), other = await f.connect("pi");
+  for (const client of [owner, reviewer]) {
+    const shown = await client.request({ t: "task", op: "hub_task_show", args: { id } });
+    expect(shown.ok).toBe(true);
+    const history = JSON.parse(shown.text).history as { event: string; note?: string }[];
+    expect(history.findLast(h => h.event === "done")!.note).toContain("parser fixed");
+    expect(history.find(h => h.event === "check passed")!.note).toContain("scripts/check.sh -> exit 0");
+    const stub = await client.request({ t: "task", op: "hub_task_show", args: { id: pii } });
+    expect(stub.ok).toBe(true); expect(stub.text).not.toContain("PRIVATE-MARKER");
+    expect(JSON.parse(stub.text)).toMatchObject({ title: "[pii]", detail: "[pii]", history: [] });
+  }
+  for (const target of [id, pii]) {
+    const refused = await other.request({ t: "task", op: "hub_task_show", args: { id: target } });
+    expect(refused.ok).toBe(false); expect(refused.error).toContain("explicit conductor role");
+  }
+  // A read by the task's own people is no conductor action.
+  expect(readEvents(join(f.dir, "events.jsonl")).some(e => e.type === "conduct")).toBe(false);
+});
+
+test("the proposer redirects its own unaccepted task without the role; other peers and accepted tasks stay the conductor's (#207)", async () => {
+  const f = await fixture("codex");
+  for (const name of ["kimi", "pi"]) { const peer = new QuietPeer(name); f.daemon.bus.add(peer); await peer.start(); }
+  const planner = await f.connect("claude"), kimi = await f.connect("kimi"), pi = await f.connect("pi");
+  const op = (client: ControlClient, name: string, args: Record<string, unknown>) => client.request({ t: "task", op: name, args });
+  const shown = async (id: number) => JSON.parse((await op(f.console_, "task_show", { id })).text);
+  expect((await op(planner, "hub_task_propose", { title: "first", class: "implement" })).ok).toBe(true);
+  expect((await shown(1)).owner).toBe("pi"); // the first idle peer in the class order
+  const notMine = await op(pi, "hub_task_assign", { id: 1, peer: "kimi" });
+  expect(notMine.ok).toBe(false); expect(notMine.error).toContain("explicit conductor role");
+  const redirected = await op(planner, "hub_task_assign", { id: 1, peer: "kimi" });
+  expect(redirected.ok).toBe(true); expect(JSON.parse(redirected.text)).toMatchObject({ owner: "kimi", state: "proposed" });
+  expect((await shown(1)).history.at(-1)).toMatchObject({ event: "reassigned", by: "claude", reason: "manual", owner: "kimi" });
+  expect((await op(kimi, "hub_task_accept", { id: 1 })).ok).toBe(true);
+  expect((await op(planner, "hub_task_assign", { id: 1, peer: "pi" })).ok).toBe(false); // accepted: the conductor's now
+  expect((await op(kimi, "hub_task_decline", { id: 1 })).ok).toBe(true);
+  expect(await shown(1)).toMatchObject({ state: "proposed", owner: "pi" }); // back in proposed after work began
+  expect((await op(planner, "hub_task_assign", { id: 1, peer: "kimi" })).ok).toBe(false); // still: it was accepted once
+  // A waiting task: the owner named with after is reserved, and its proposer redirects the reservation.
+  expect((await op(planner, "hub_task_propose", { title: "second", class: "implement", owner: "pi", after: [1] })).ok).toBe(true);
+  expect(await shown(2)).toMatchObject({ owner: null, reserved: "pi" });
+  expect((await op(pi, "hub_task_assign", { id: 2, peer: "pi" })).ok).toBe(false);
+  expect(JSON.parse((await op(planner, "hub_task_assign", { id: 2, peer: "kimi" })).text)).toMatchObject({ owner: null, reserved: "kimi" });
+  // The conductor still may, and only its moves are conduct events.
+  expect((await op(f.lead, "hub_task_assign", { id: 2, peer: "pi" })).ok).toBe(true);
+  expect((await shown(2)).reserved).toBe("pi");
+  expect(readEvents(join(f.dir, "events.jsonl")).filter(e => e.type === "conduct").map(e => e.peer)).toEqual(["codex"]);
+});
+
+test("a person's console assign or reservation stands against the proposer; digit-string ids reach the task's own people (#207, #208)", async () => {
+  const f = await fixture("codex");
+  for (const name of ["kimi", "pi"]) { const peer = new QuietPeer(name); f.daemon.bus.add(peer); await peer.start(); }
+  const planner = await f.connect("claude"), pi = await f.connect("pi");
+  const op = (client: ControlClient, name: string, args: Record<string, unknown>) => client.request({ t: "task", op: name, args });
+  expect((await op(planner, "hub_task_propose", { title: "first", class: "implement" })).ok).toBe(true); // routed to pi
+  expect((await op(pi, "hub_task_show", { id: "1" })).ok).toBe(true); // the owner, with the id as a digit string
+  expect((await op(f.console_, "task_assign", { id: 1, peer: "kimi" })).ok).toBe(true);
+  const refused = await op(planner, "hub_task_assign", { id: "1", peer: "pi" });
+  expect(refused.ok).toBe(false); expect(refused.error).toContain("explicit conductor role");
+  expect((await op(planner, "hub_task_propose", { title: "second", class: "implement", owner: "pi", after: [1] })).ok).toBe(true);
+  expect((await op(planner, "hub_task_assign", { id: "2", peer: "kimi" })).ok).toBe(true); // its own reservation: a digit string works
+  expect((await op(f.console_, "task_assign", { id: 2, peer: "pi" })).ok).toBe(true);
+  expect((await op(planner, "hub_task_assign", { id: 2, peer: "kimi" })).ok).toBe(false);
+  // The conductor path is unchanged, and once the conductor moved it the proposer may again.
+  expect((await op(f.lead, "hub_task_assign", { id: 2, peer: "kimi" })).ok).toBe(true);
+  expect((await op(planner, "hub_task_assign", { id: 2, peer: "pi" })).ok).toBe(true);
+  expect(JSON.parse((await op(f.console_, "task_show", { id: 2 })).text)).toMatchObject({ owner: null, reserved: "pi" });
+});
+
+test("a person's reservation carried out by the hub still stands against the proposer (#207)", async () => {
+  const f = await fixture("codex");
+  for (const name of ["kimi", "pi"]) { const peer = new QuietPeer(name); f.daemon.bus.add(peer); await peer.start(); }
+  const planner = await f.connect("claude"), pi = await f.connect("pi");
+  const op = (client: ControlClient, name: string, args: Record<string, unknown>) => client.request({ t: "task", op: name, args });
+  const shown = async (id: number) => JSON.parse((await op(f.console_, "task_show", { id })).text);
+  expect((await op(planner, "hub_task_propose", { title: "first", class: "implement" })).ok).toBe(true); // routed to pi
+  expect((await op(planner, "hub_task_propose", { title: "second", class: "implement", owner: "pi", after: [1] })).ok).toBe(true);
+  expect((await op(f.console_, "task_assign", { id: 2, peer: "kimi" })).ok).toBe(true); // the person reserves kimi
+  expect((await op(pi, "hub_task_accept", { id: 1 })).ok).toBe(true);
+  expect((await op(pi, "hub_task_done", { id: 1, summary: "done" })).ok).toBe(true); // no reviewer attached: approved
+  for (let n = 0; n < 100 && (await shown(2)).owner !== "kimi"; n++) await Bun.sleep(10);
+  expect(await shown(2)).toMatchObject({ owner: "kimi", state: "proposed" });
+  expect((await shown(2)).history.at(-1)).toMatchObject({ by: "hub", event: "assigned" });
+  const refused = await op(planner, "hub_task_assign", { id: 2, peer: "pi" });
+  expect(refused.ok).toBe(false); expect(refused.error).toContain("explicit conductor role");
+});
+
 test("peer route explain and quota reads work while quota mutations remain human-only", async () => {
   const f = await fixture();
   const peer = await f.connect("unlisted");

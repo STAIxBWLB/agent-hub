@@ -322,7 +322,10 @@ the routing configuration.
 A review request carries a checklist: map the changed signatures and call sites
 to the task's plan (without one, to its detail, which the request then
 includes), read the check result, and list what is
-unmet (`hub_review` takes `unmet`, `ahub review ... --unmet <item>`). The hub
+unmet (`hub_review` takes `unmet`, `ahub review ... --unmet <item>`). A reviewer
+that missed the request, and the owner, read the done summary and check result
+with `hub_task_show {id}`: the task's public view with its history, as the
+conductor sees it, and only a stub for a PII task. Other peers are refused. The hub
 records how each review turned out, per implementer, reviewer and class:
 approved; caught (changes were requested and the owner's redo was approved);
 contradicted (within a week, work on the same file or symbol failed its check
@@ -357,8 +360,36 @@ to the next run.
 `ahub board --ready` and
 `hub_task_list {ready: true}` list the proposed tasks with nothing left to wait
 for. Dependencies are fixed when a task is proposed and can only name tasks that
-already exist, so they cannot form a cycle. A waiting task cannot name an owner;
-use `ahub task assign` once it is ready. An owner offline longer than `tasks.release_after_min`
+already exist, so they cannot form a cycle.
+
+An owner named for a task that waits (`owner` with `after`, `--owner` with
+`--after`) is its reserved owner: the task still waits, and when it is ready
+routing offers it to that peer first, not to the first idle peer of the class.
+A reserved owner that is offline, paused, failing, not attached or excluded is
+passed over: routing proceeds as usual, the console and hub.log say which
+reservation was passed over and why, and the assignment's history note keeps
+it, unless it is no news (the reserved peer is the owner the task moves away
+from, or it already refused the task). A peer the task was declined for (by
+itself or by the console) or escalated away from after repeated
+changes_requested or by hand stays excluded on every later reroute; an owner
+released as gone, or moved by the hub after a failed delivery or inference, is
+excluded only from that move and may get the task again from its reservation
+later. Your own `ahub task assign` is not blocked by those exclusions, and it
+drops the agent's reservation. The PII constraint and capability limits
+still apply, so a PII task goes to `local` or nobody whoever was reserved.
+`ahub task assign` on a task that waits changes its reserved owner instead of
+handing it over. `ahub route explain <id>` names the reserved owner; once the
+task is ready it also says whether routing would honor the reservation now, and
+why not.
+
+The peer that proposed a task may redirect it with `hub_task_assign` while it
+is `proposed` and nobody ever accepted it, without the conductor role (handing
+it to another peer needs `assign` when the proposer has a capabilities list).
+Once it was accepted, even if a decline or release later put it back in
+`proposed`, or after a person assigned or reserved it from the console (also
+once the hub carried that out), only the conductor and the console move it.
+
+An owner offline longer than `tasks.release_after_min`
 (default 30, `0` turns it off) in `.agenthub/config.json` loses its open tasks
 to a peer routing can give them to; with nobody to take them they stay, and a
 paused peer or a hub in a recovery operation is left alone.
