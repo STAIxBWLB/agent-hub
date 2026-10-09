@@ -10,7 +10,7 @@ import { inspectRecovery, makeRecoveryDriver, makeUpgradePlan, PACKAGE_ROOT, res
 /** The test operations preserve this package as their coordinator, which has every recovery command (#215). */
 const COORD = `bun ${join(PACKAGE_ROOT, "src/cli/main.js")} recovery`;
 import { VERSION } from "../src/version.ts";
-import { nextActions, type PlannedProject, type ProjectProgress, type RecoveryOperation } from "../src/cli/upgrade.ts";
+import { liveProjects, nextActions, type PlannedProject, type ProjectProgress, type RecoveryOperation } from "../src/cli/upgrade.ts";
 import { Registry } from "../src/hub/registry.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
 import { readRecoveryWaivers } from "../src/hub/restart.ts";
@@ -421,7 +421,7 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
 
     await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("resume launches it again once the cause is fixed");
     // The runner ends the error with these choices, the same list as status.
-    expect(nextActions(op)).toEqual([`${COORD} resume op-215`, `${COORD} dispose op-215 --fresh-session codex --reason <text>`, `${COORD} dispose op-215 --stop-and-archive --reason <text>`]);
+    expect(nextActions(op, undefined, await liveProjects(op, inspectRecovery))).toEqual([`${COORD} resume op-215`, `${COORD} dispose op-215 --fresh-session codex --reason <text>`, `${COORD} dispose op-215 --stop-and-archive --reason <text>`]);
     expect(progress.terminals["restored:codex"]).toBe("failed");
     expect(calls).toEqual([]); // no rollout: found before any terminal was created
 
@@ -629,7 +629,7 @@ test("a failed Pi restoration names resume and stop-and-archive, never --fresh-s
     const driver = makeRecoveryDriver(async (argv) => { calls.push(argv); return { code: 0, stdout: "{}", stderr: "" }; });
     const failed = await driver.restore(planned, progress, op, "native", () => {}).then(() => undefined, (error: Error) => error.message);
     expect(failed).toContain("pi: its launcher no longer runs and no pi session attached");
-    expect(nextActions(op)).toEqual([`${COORD} resume op-pi`, `${COORD} dispose op-pi --stop-and-archive --reason <text>`]);
+    expect(nextActions(op, undefined, await liveProjects(op, inspectRecovery))).toEqual([`${COORD} resume op-pi`, `${COORD} dispose op-pi --stop-and-archive --reason <text>`]);
     expect(progress.terminals["restored:pi"]).toBe("failed");
 
     // The relaunch on the next resume reads what is attached right before it creates, not at restore start.
@@ -780,4 +780,31 @@ test("a relaunch whose launcher exits while the target stops answering stays pen
     if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
     server.stop(true); rmSync(temp, { recursive: true, force: true });
   }
+});
+
+// #215 review: a pending close is settled only by an inventory Orca answered in full. A failed, not-ok, truncated or
+// non-JSON list shows nothing: the receipt stays pending and the error says the list could not be read.
+test("a pending terminal close stays pending when Orca's terminal list cannot be read", async () => {
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: {} };
+  const binding = { peer: "codex", handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", projectRoot: "/p", sessionId: "thread-T", launch, launchMetadata: launch };
+  const planned = { project: { id: "p-215", root: "/p", stateDir: "/p/state", basePort: 4600 }, source: { state: "running", peers: [], blockers: [] }, terminals: [binding], blockers: [] } as unknown as PlannedProject;
+  const op = { id: "op-215", plan: { version: VERSION, projects: [planned] } } as unknown as RecoveryOperation;
+  const answers: Record<string, { code: number; stdout: string }> = {
+    failed: { code: 1, stdout: "" },
+    "not json": { code: 0, stdout: "orca: daemon restarting" },
+    "not ok": { code: 0, stdout: JSON.stringify({ ok: false, error: { code: "unavailable" } }) },
+    truncated: { code: 0, stdout: JSON.stringify({ ok: true, result: { terminals: [], truncated: true } }) },
+  };
+  for (const [name, answer] of Object.entries(answers)) {
+    const progress: ProjectProgress = { id: "p-215", phase: "prepared", terminals: { "closed:codex": "pending" } };
+    const driver = makeRecoveryDriver(async () => ({ ...answer, stderr: "" }));
+    await expect(driver.closeTerminals(planned, progress, op, () => {}), name).rejects.toThrow("codex: Orca's terminal list could not be read, so whether terminal term-codex is closed is unknown");
+    expect(progress.terminals["closed:codex"], name).toBe("pending");
+  }
+  const listed = { code: 0, stdout: JSON.stringify({ ok: true, result: { terminals: [{ handle: "term-codex", incarnationId: "inc-codex" }] } }), stderr: "" };
+  const progress: ProjectProgress = { id: "p-215", phase: "prepared", terminals: { "closed:codex": "pending" } };
+  await expect(makeRecoveryDriver(async () => listed).closeTerminals(planned, progress, op, () => {})).rejects.toThrow("Orca still lists terminal term-codex");
+  const absent = { code: 0, stdout: JSON.stringify({ ok: true, result: { terminals: [] } }), stderr: "" };
+  await makeRecoveryDriver(async () => absent).closeTerminals(planned, progress, op, () => {});
+  expect(progress.terminals["closed:codex"]).toBe(true);
 });

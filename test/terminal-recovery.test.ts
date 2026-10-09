@@ -175,6 +175,11 @@ test("recorded launch is private, allowlisted, and authenticates Orca metadata w
     const reusedPid = await inspectTerminals(root, { codex: session }, { runner, stateDir, instanceId: "instance-1", processIdentity: () => "different-process-start" });
     expect(reusedPid.manualRequired).toBe(true);
     expect(reusedPid.blockers.some((item) => item.code === "ownership-unknown")).toBe(true);
+    // #215 review: a live pid whose identity cannot be read may still be this launch; binding from Orca metadata alone
+    // would drop its CODEX_HOME, so it blocks like an unreadable record file.
+    const unidentified = await inspectTerminals(root, { codex: session }, { runner, stateDir, instanceId: "instance-1", processIdentity: () => undefined });
+    expect(unidentified).toMatchObject({ manualRequired: true, bindings: [] });
+    expect(unidentified.blockers[0]?.message).toContain("cannot be identified, so no terminal can be bound to its launch");
   } finally {
     if (previous.handle === undefined) delete process.env.ORCA_TERMINAL_HANDLE; else process.env.ORCA_TERMINAL_HANDLE = previous.handle;
     if (previous.worktree === undefined) delete process.env.ORCA_WORKTREE_ID; else process.env.ORCA_WORKTREE_ID = previous.worktree;

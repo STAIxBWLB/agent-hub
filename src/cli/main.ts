@@ -391,7 +391,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     else if (["completed", "cancelled"].includes(operation.phase)) console.log(`recovery is already ${operation.phase}`);
     // #215: an operation being abandoned is never resumed, whichever coordinator started it (an older one would).
-    else if (operation.disposition) fail(`a stop-and-archive of this operation is partway; nothing was resumed; ${nextActionsText(operation)}`);
+    else if (operation.disposition) fail(`a stop-and-archive of this operation is partway; nothing was resumed; ${nextActionsText(operation, await liveProjects(operation, makeRecoveryDriver().inspect))}`);
     else if (runner === "unknown") console.log(`whether a runner holds this operation could not be read; nothing was started; ${recoveryCommand(operation, "status")}`);
     else if (runner) console.log(`runner ${runner} is still working on this operation; ${recoveryCommand(operation, "status")}`);
     else spawnRecovery(operation);

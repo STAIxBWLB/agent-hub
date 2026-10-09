@@ -377,7 +377,8 @@ function failedRestore() {
 
 test("a failed restoration offers both dispositions; fresh-session records the lost thread and keeps the lock", async () => {
   const f = failedRestore();
-  expect(publicOperation(readOperation(f.operation.id, f.home)).next).toEqual([
+  const failed = readOperation<RecoveryOperation>(f.operation.id, f.home);
+  expect(publicOperation(failed, undefined, await liveProjects(failed, f.driver.inspect)).next).toEqual([
     `${C} resume ${f.operation.id}`,
     `${C} dispose ${f.operation.id} --fresh-session codex --reason <text>`,
     `${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`,
@@ -401,7 +402,7 @@ test("stop-and-archive stops only its own target, releases its own source hold, 
   writeOperation(f.operation.id, f.operation, f.home);
   const uncertain = structuredClone(f.states.get("beta")!);
   f.states.set("beta", { ...uncertain, state: "unavailable" });
-  await expect(disposeRecovery(f.operation.id, { stop: true }, "give up", f.driver, f.home)).rejects.toThrow("ownership cannot be verified");
+  await expect(disposeRecovery(f.operation.id, { stop: true }, "give up", f.driver, f.home)).rejects.toThrow("beta: its hub reads as unavailable, so whether this operation owns it cannot be verified");
   expect(f.calls).toEqual([]);
   expect(recoveryLock(f.home)).toBe(f.operation.id);
 
@@ -464,7 +465,7 @@ test("a stop-and-archive that fails partway records what it did, keeps the lock 
   let op = readOperation(f.operation.id, f.home) as ReturnType<typeof fixture>["operation"];
   expect(op.disposition?.projects).toEqual({ alpha: "target stopped" });
   expect(op.error).toContain("stop-and-archive stopped partway and keeps the lock");
-  expect(publicOperation(op).next).toEqual([`rerun ${C} dispose ${f.operation.id} --stop-and-archive --reason <text> once its runtimes have settled`]);
+  expect(publicOperation(op, undefined, await liveProjects(op, f.driver.inspect)).next).toEqual([`rerun ${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`]);
   expect(recoveryLock(f.home)).toBe(f.operation.id);
   await expect(disposeRecovery(f.operation.id, { fresh: "codex" }, "no", f.driver, f.home)).rejects.toThrow("stop-and-archive of this operation is partway");
   const calls = f.calls.length;
@@ -663,7 +664,8 @@ test("--fresh-session is neither offered nor accepted when the target cannot rea
   const f = failedRestore();
   f.operation.targetRoot = "/releases/target-without-waivers";
   writeOperation(f.operation.id, f.operation, f.home);
-  const next = nextActions(readOperation(f.operation.id, f.home));
+  const op = readOperation<RecoveryOperation>(f.operation.id, f.home);
+  const next = nextActions(op, undefined, await liveProjects(op, f.driver.inspect));
   expect(next.some((line) => line.includes("--fresh-session codex"))).toBe(false);
   expect(next.every((line) => line.startsWith(C))).toBe(true); // commands only; the reason is its own status field
   expect(publicOperation(readOperation(f.operation.id, f.home)).freshSession).toBe("not offered: target 0.5.0 cannot read recovery waivers, so it could not release a new session");
@@ -726,7 +728,8 @@ test("a failed planned fresh start offers resume and stop-and-archive, and refus
   const { fingerprint: _ignored, ...body } = f.plan;
   f.plan.fingerprint = planFingerprint(body);
   writeOperation(f.operation.id, f.operation, f.home);
-  expect(nextActions(readOperation(f.operation.id, f.home))).toEqual([`${C} resume ${f.operation.id}`, `${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`]);
+  const op = readOperation<RecoveryOperation>(f.operation.id, f.home);
+  expect(nextActions(op, undefined, await liveProjects(op, f.driver.inspect))).toEqual([`${C} resume ${f.operation.id}`, `${C} dispose ${f.operation.id} --stop-and-archive --reason <text>`]);
   await expect(disposeRecovery(f.operation.id, { fresh: "codex" }, "lost", f.driver, f.home)).rejects.toThrow("codex: its plan already restarts it as a new session");
 });
 
@@ -792,6 +795,7 @@ test("--fresh-session is decided per project: a planned fresh start elsewhere do
   f.plan.fingerprint = planFingerprint(body);
   Object.assign(f.operation.projects[1]!, { phase: "started", instanceId: "new-beta", terminals: { "closed:codex": true, "restored:codex": "failed" } });
   writeOperation(f.operation.id, f.operation, f.home);
+  f.states.set("beta", { state: "running", instanceId: "new-beta", version: "0.5.0", protocol: 10, peers: [], blockers: [], recovery: { operationId: f.operation.id, phase: "restored", ready: true } });
   const op = await disposeRecovery(f.operation.id, { fresh: "codex" }, "beta's thread is gone", f.driver, f.home);
   expect(op.projects[0]!.fresh).toBeUndefined();
   expect(op.projects[1]!.fresh?.codex).toMatchObject({ lost: "t-beta" });
@@ -840,33 +844,47 @@ test("a crashed prepared source read by the real inspection can be aborted or st
   expect(recoveryLock(g.home)).toBeUndefined();
 });
 
-// #215 review: the futile-resume class, closed by an invariant. Each receipt state is crossed with what its runtime
-// (the source before the commit, the target after) reads as. Wherever `next` offers resume, resuming makes progress (a
-// receipt changes or the operation completes) or its error names a step a person takes first; and whenever dispose
-// would accept stop-and-archive, it is the last entry of `next`.
-test("next offers resume only where resume can get past what is live", async () => {
+// #215 review: `next` and the commands, held together by an invariant. One project, no peers; each receipt state is
+// crossed with what its runtime (the source before the commit, the target after) reads as, and an older coordinator's
+// operation is run by this runner. Abort, stop-and-archive and --fresh-session codex are offered exactly when the
+// command accepts them on a twin fixture; where resume is offered, resuming makes progress (a receipt changes or the
+// operation completes) or its error names a step a person takes first.
+test("next offers exactly what the commands accept, and resume only where it can get past what is live", async () => {
+  const staged = (op: RecoveryOperation) => Object.assign(op, { targetRoot: PACKAGE_ROOT, targetDigest: "target-digest" });
   const receipts: Record<string, (op: RecoveryOperation) => void> = {
     pending: () => {},
     prepared: (op) => { op.projects[0]!.phase = "prepared"; },
     "prepared, commit sent": (op) => { Object.assign(op.projects[0]!, { phase: "prepared", commitSent: true }); },
     "prepared, older coordinator": (op) => { op.sourceRoot = "/releases/source-older"; op.projects[0]!.phase = "prepared"; },
     "prepared, terminal closed": (op) => { Object.assign(op.projects[0]!, { phase: "prepared", terminals: { "closed:claude": true } }); },
-    stopped: (op) => { Object.assign(op.projects[0]!, { phase: "stopped", commitSent: true }); },
-    started: (op) => { Object.assign(op.projects[0]!, { phase: "started", commitSent: true, instanceId: "new-alpha" }); },
-    "peers restored": (op) => { Object.assign(op.projects[0]!, { phase: "peers-restored", commitSent: true, instanceId: "new-alpha" }); },
+    stopped: (op) => { staged(op); Object.assign(op.projects[0]!, { phase: "stopped", commitSent: true }); },
+    started: (op) => { staged(op); Object.assign(op.projects[0]!, { phase: "started", commitSent: true, instanceId: "new-alpha" }); },
+    "started, codex restoration failed": (op) => {
+      staged(op);
+      const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: {} };
+      op.plan.projects[0]!.terminals = [{ peer: "codex", handle: "term-codex", incarnationId: "inc", worktreeId: "wt", projectRoot: "/alpha", sessionId: "t1", launch, launchMetadata: launch }];
+      const { fingerprint: _ignored, ...body } = op.plan;
+      op.plan.fingerprint = planFingerprint(body);
+      Object.assign(op.projects[0]!, { phase: "started", commitSent: true, instanceId: "new-alpha", terminals: { "closed:codex": true, "restored:codex": "failed" } });
+    },
+    "peers restored": (op) => { staged(op); Object.assign(op.projects[0]!, { phase: "peers-restored", commitSent: true, instanceId: "new-alpha" }); },
     "stop-and-archive partway": (op) => { op.disposition = { choice: "stop-and-archive", at: 0, projects: {} }; },
   };
   const source: Inspection = { state: "running", instanceId: "old-alpha", version: "0.5.0", protocol: 9, peers: [], blockers: [] };
+  const bare = (state: string, snapshot?: string): Inspection => ({ state, peers: [], blockers: [], ...(snapshot ? { snapshot } : {}) });
   const lives: Record<string, (op: RecoveryOperation) => Inspection> = {
     "as planned": (op) => ["pending", "prepared"].includes(op.projects[0]!.phase) ? source
-      : op.projects[0]!.phase === "stopped" ? { state: "stopped", peers: [], blockers: [], snapshot: op.id }
+      : op.projects[0]!.phase === "stopped" ? bare("stopped", op.id)
       : { state: "running", instanceId: "new-alpha", version: "0.5.0", protocol: 10, peers: [], blockers: [], recovery: { operationId: op.id, phase: "restored", ready: true } },
     replaced: () => ({ ...source, instanceId: "replacement" }),
     "held by another operation": () => ({ ...source, recovery: { operationId: "other-operation", phase: "prepared", ready: true } }),
-    crashed: () => ({ state: "stopped", peers: [], blockers: [] }),
-    "crashed, snapshot kept": (op) => ({ state: "stopped", peers: [], blockers: [], snapshot: op.id }),
-    unavailable: () => ({ state: "unavailable", peers: [], blockers: [] }),
-    missing: () => ({ state: "missing", peers: [], blockers: [] }),
+    crashed: () => bare("stopped"),
+    "crashed, snapshot kept": (op) => bare("stopped", op.id),
+    unavailable: () => bare("unavailable"),
+    starting: () => bare("starting"),
+    stopping: () => bare("stopping"),
+    incompatible: () => bare("incompatible"),
+    missing: () => bare("missing"),
   };
   const make = (receipt: string, live: string) => {
     const f = fixture("upgrade", ["alpha"]);
@@ -888,28 +906,45 @@ test("next offers resume only where resume can get past what is live", async () 
     };
     return f;
   };
+  const accepts = (attempt: Promise<unknown>) => attempt.then(() => true, () => false);
   const receiptsOf = (op: RecoveryOperation) => JSON.stringify([op.phase === "completed", op.projects, op.pluginInstalled, op.globalInstalled]);
   const human = (error = "") => /\b(first|before resuming|wait until|once it answers)\b/.test(error.split("; next actions: ")[0]!);
+  const verdicts: { at: string; wrong: string[] }[] = [];
   for (const receipt of Object.keys(receipts)) for (const live of Object.keys(lives)) {
-    const at = `${receipt} / ${live}`;
-    const f = make(receipt, live);
-    const initial = readOperation<RecoveryOperation>(f.operation.id, f.home);
+    const at = `${receipt} / ${live}`, wrong: string[] = [];
+    const f = make(receipt, live), id = f.operation.id;
+    const initial = readOperation<RecoveryOperation>(id, f.home);
     const next = nextActions(initial, undefined, await liveProjects(initial, f.driver.inspect));
-    const g = make(receipt, live);
-    if (await disposeRecovery(g.operation.id, { stop: true }, "invariant", g.driver, g.home).then(() => true, () => false)) {
-      expect({ at, last: next.at(-1) }).toEqual({ at, last: expect.stringContaining("--stop-and-archive") });
+    const twin = () => make(receipt, live);
+    const abort = twin(), stop = twin(), fresh = twin();
+    const offered = {
+      abort: next.includes(`${C} abort ${id}`),
+      stop: next.some((line) => line.includes(`${C} dispose ${id} --stop-and-archive`)),
+      fresh: next.includes(`${C} dispose ${id} --fresh-session codex --reason <text>`),
+    };
+    const accepted = {
+      abort: await accepts(abortRecovery(abort.operation.id, abort.driver, abort.home)),
+      stop: await accepts(disposeRecovery(stop.operation.id, { stop: true }, "invariant", stop.driver, stop.home)),
+      fresh: await accepts(disposeRecovery(fresh.operation.id, { fresh: "codex" }, "invariant", fresh.driver, fresh.home)),
+    };
+    for (const command of ["abort", "stop", "fresh"] as const) {
+      if (offered[command] !== accepted[command]) wrong.push(`${command} offered ${offered[command]}, accepted ${accepted[command]}`);
     }
+    if (offered.stop && !next.at(-1)!.includes("--stop-and-archive")) wrong.push("stop-and-archive is not the last entry");
     for (let run = 0; run < 4; run++) {
-      const op = readOperation<RecoveryOperation>(f.operation.id, f.home);
+      const op = readOperation<RecoveryOperation>(id, f.home);
       if (op.phase === "completed") break;
       if (!nextActions(op, undefined, await liveProjects(op, f.driver.inspect)).some((line) => line.startsWith(`${C} resume `))) break;
-      const after = await runRecovery(f.operation.id, f.driver, f.home);
+      const after = await runRecovery(id, f.driver, f.home);
       if (receiptsOf(after) !== receiptsOf(op)) continue;
       // Resume was offered and changed nothing: its error must name what a person does first.
-      expect({ at, error: after.error, human: human(after.error) }).toEqual({ at, error: after.error, human: true });
+      if (!human(after.error)) wrong.push(`resume offered, no progress, no human step: ${after.error}`);
       break;
     }
+    verdicts.push({ at, wrong });
   }
+  expect(verdicts).toHaveLength(Object.keys(receipts).length * Object.keys(lives).length); // every case was judged
+  expect(verdicts.filter((v) => v.wrong.length)).toEqual([]);
 });
 
 // #215 review: a staging refusal holds for every resume (the target release and preserved source are fixed), so it is

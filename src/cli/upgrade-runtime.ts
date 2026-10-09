@@ -45,8 +45,9 @@ const unresumable = (binding: TerminalBinding) => codexTranscript(binding) === "
   ? `codex: the session store ${codexSessions(binding)} cannot be read, so whether thread ${binding.sessionId} can resume is unknown`
   : `codex: thread ${binding.sessionId} has no resumable transcript under ${codexSessions(binding)}`;
 
-const closeUnsettled = (binding: TerminalBinding, op: RecoveryOperation) =>
-  `${binding.peer}: terminal close outcome needs manual reconciliation: Orca still lists terminal ${binding.handle}; close that terminal (the login shell it runs in) by hand in Orca first`;
+const closeUnsettled = (binding: TerminalBinding, seen: "listed" | "unreadable") => seen === "listed"
+  ? `${binding.peer}: terminal close outcome needs manual reconciliation: Orca still lists terminal ${binding.handle}; close that terminal (the login shell it runs in) by hand in Orca first`
+  : `${binding.peer}: Orca's terminal list could not be read, so whether terminal ${binding.handle} is closed is unknown; check it in Orca (close it by hand, with the login shell it runs in, if it is still open) first`;
 
 /**
  * #215: Codex writes a thread's rollout with its first message, so a thread this hub saw Codex start (`native_thread`
@@ -294,6 +295,15 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
    * #215: what runs for a peer on the target, the one place restore reads it. Only a running target answering as the
    * expected instance can report "gone"; an unreadable target or launcher is unknown and blocks, never gone.
    */
+  /** Whether Orca's inventory lists the terminal; a failed, not-ok, truncated or non-JSON answer shows nothing. */
+  const listed = async (binding: TerminalBinding): Promise<"listed" | "absent" | "unreadable"> => {
+    const result = await run([orcaExecutable(), "terminal", "list", "--json"]);
+    let inventory: any;
+    try { inventory = JSON.parse(result.stdout); } catch { return "unreadable"; }
+    const rows = inventory?.result?.terminals;
+    if (result.code !== 0 || inventory?.ok !== true || !Array.isArray(rows) || inventory.result?.truncated) return "unreadable";
+    return rows.some((t: any) => t.handle === binding.handle || t.incarnationId === binding.incarnationId) ? "listed" : "absent";
+  };
   const peerEvidence = async (planned: PlannedProject, progress: ProjectProgress, peer: TerminalBinding["peer"]):
       Promise<{ state: "live"; session?: string; handle?: string } | { state: "gone" } | { state: "unknown"; why: string; step?: string }> => {
     const target = await inspectRecovery(planned.project);
@@ -345,13 +355,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         const key = `closed:${binding.peer}`;
         if (progress.terminals[key] === true) continue;
         if (progress.terminals[key] === "pending") {
-          const result = await run([orcaExecutable(), "terminal", "list", "--json"]);
-          const inventory = JSON.parse(result.stdout);
-          const rows = inventory.result?.terminals;
-          if (result.code !== 0 || inventory.ok !== true || !Array.isArray(rows) || inventory.result?.truncated ||
-              rows.some((t: any) => t.handle === binding.handle || t.incarnationId === binding.incarnationId)) {
-            throw new Error(closeUnsettled(binding, op));
-          }
+          const seen = await listed(binding);
+          if (seen !== "absent") throw new Error(closeUnsettled(binding, seen)); // the receipt stays pending
           progress.terminals[key] = true; save(); continue;
         }
         // A peer whose TUI already exited left nothing to close: the source reports it
@@ -360,13 +365,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         const sourceNow = await inspectRecovery(planned.project);
         const attached = sourceNow.peers.find((item) => item.id === binding.peer);
         if (attached?.state === "offline") {
-          const result = await run([orcaExecutable(), "terminal", "list", "--json"]);
-          const inventory = JSON.parse(result.stdout);
-          const rows = inventory.result?.terminals;
-          if (result.code !== 0 || inventory.ok !== true || !Array.isArray(rows) || inventory.result?.truncated ||
-              rows.some((t: any) => t.handle === binding.handle || t.incarnationId === binding.incarnationId)) {
-            throw new Error(closeUnsettled(binding, op));
-          }
+          const seen = await listed(binding);
+          if (seen !== "absent") throw new Error(closeUnsettled(binding, seen));
           progress.terminals[key] = true; save(); continue;
         }
         // #215: check resume viability again right before the destructive effect (a planned fresh start has none to lose).
@@ -380,7 +380,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         const source = await inspectRecovery(planned.project);
         if (source.instanceId !== planned.source.instanceId || source.recovery?.operationId !== op.id || !source.recovery.ready) {
           throw new Error(`source preparation expired or changed while waiting for the terminal; no terminal was closed`);
-        }        // Refresh the same prepared lease immediately before the terminal effect. Preserve
+        }
+        // Refresh the same prepared lease immediately before the terminal effect. Preserve
         // the original peer roster, including any terminal already closed in this operation.
         await control(planned.project, "prepare", op.id, planned.source.instanceId!);
         progress.terminals[key] = "pending"; save();

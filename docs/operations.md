@@ -1174,16 +1174,18 @@ next actions").
   an older coordinator, which records no such thing, while a prepared source is
   not running), and once any project has effects the way out is
   stop-and-archive. `next` offers abort only where abort would succeed, and
-  `resume` only where it can get past what is live: not past a replaced or
-  missing source, a source that crashed before any commit request, a refusal
-  at staging (the target release or the preserved source can never change
-  back), or a stopped hub without the operation's restart snapshot.
+  `resume` (and `--fresh-session`, which resume carries out) only where it can
+  get past what is live: not past a replaced or missing source, a source that
+  crashed before any commit request, a refusal at staging (the target release
+  or the preserved source can never change back), a hub of another control
+  protocol, a target that stopped after it started, or a stopped hub without
+  the operation's restart snapshot.
   A second `resume` while its own hold still stands checks the peers again
   before it closes anything.
-- When a target hub dies after it started (a crash or a reboot) and has not
-  released, its `restart.json` is still there: `resume` starts it again from
-  that snapshot and keeps the receipts. Once the snapshot is gone (released,
-  or never written), the way out is stop-and-archive.
+- When a target hub dies after it started (a crash or a reboot), restarting it
+  from its snapshot is not supported in this release (its peers would have to
+  be relaunched against the new hub): `resume` is not offered and the way out
+  is stop-and-archive.
 - A Codex conversation comes back only when a rollout file naming its thread
   exists under `sessions/` of the store the restored terminal uses (the
   recorded `CODEX_HOME`, else `~/.codex`). Codex writes that file with the
@@ -1226,7 +1228,13 @@ next actions").
   starts without its old conversation, and the rest is verified as usual.
 - `ahub recovery dispose <operation-id> --stop-and-archive --reason <text>`
   abandons the operation. It checks every project first and refuses while a
-  runtime is starting, stopping or unreachable; a project whose directory is
+  hub is unreachable, starting, stopping or of another control protocol; `next`
+  then says `wait until <project>'s hub settles, then ... recovery status
+  <id>` instead of offering it. A hub that never answers (its pid is alive,
+  nothing replies): take the `pid` from that project's
+  `.agenthub/state/status.json`, check with `ps -p <pid> -o command=` that it
+  is that project's hub daemon, end it by hand, then run `status` again. A
+  project whose directory is
   gone is only recorded (`ahub doctor --orphans` lists a hub left running
   there). It records its decision before it acts. It releases a source hold of
   its own (that hub keeps running), stops a target hub it started and has not
