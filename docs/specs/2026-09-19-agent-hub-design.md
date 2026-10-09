@@ -1421,13 +1421,17 @@ distinct from the completed-message baseline recorded at that start. Later tool
 activity does not move this turn-start boundary. Missing start evidence or a
 start from another session, launch or channel claim leaves completion unknown.
 Accepted completion consumes that start before the peer becomes idle, so another
-message cannot reuse it. A Stop request may wait up to 1200 monotonic milliseconds
-for its transcript append to become visible, within the existing two-second hook
-request. Each read and final consumption revalidate the captured start, session,
+message cannot reuse it. A valid bound Stop request receives one prompt
+acknowledgement with pending=true, within the existing two-second hook deadline.
+The acknowledgement records observation only, never completion. After the hook
+can return, a deferred observer waits up to 1200 monotonic milliseconds for its
+transcript append to become visible. Each read and final consumption revalidate
+the captured start, session,
 launch, peer and claim. A seen previous-turn baseline still waits while a new
 current start exists; a consumed duplicate remains a no-op. Timeout, malformed or
 oversized evidence and superseded context leave completion unknown. This wait
 does not retry a user action or relax authority.
+The observer sends no second request reply and never changes global hook settings.
 The live harness also binds its final receipt to the current private launch id.
 Its opaque
 deduplication id binds session, launch and message; transport replacement or new

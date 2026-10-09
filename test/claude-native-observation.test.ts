@@ -44,6 +44,9 @@ test("managed Claude launcher and genuine command hooks register a non-Orca sess
     const process_ = Bun.spawn(["/bin/sh", "-c", command], { cwd: dir, env: { ...env, AGENTHUB_PEER_ID: "claude", AGENTHUB_INSTANCE_ID: registered.instanceId, AGENTHUB_LAUNCH_ID: registered.launchId, ...override }, stdin: Buffer.from(JSON.stringify({ hook_event_name: kind, session_id: sessionId, transcript_path: transcript, tool_name: "Read", tool_input: {}, prompt: "UNTRANSFERRED-PRIVATE-PROMPT" })), stdout: "pipe", stderr: "pipe" });
     await new Response(process_.stdout).text(); await new Response(process_.stderr).text(); expect(await process_.exited).toBe(0);
   };
+  const nativeIdle = async () => {
+    for (let n = 0; n < 400 && daemon.bus.stateOf("claude") !== "idle"; n++) await Bun.sleep(5);
+  };
   await hook("SessionStart"); expect(JSON.parse(readFileSync(join(stateDir, "claude-session.json"), "utf8"))).toMatchObject({ sessionId, instanceId: registered.instanceId, launchId: registered.launchId, transcriptPath: transcript });
   const deliveries: any[] = []; native.onPush = msg => { if (msg.t === "deliver") deliveries.push(msg); };
   daemon.bus.publish(newEnvelope(HUB, "test supervision", { to: ["claude"], kind: "task", priority: "important", refs: { supervision: true, supervisionKey: "supervision:claude:test" } }));
@@ -68,7 +71,7 @@ test("managed Claude launcher and genuine command hooks register a non-Orca sess
   expect(readEvents(join(stateDir, "events.jsonl")).some(event => event.type === "native_turn_end" || event.type === "supervision_turn")).toBe(false);
   writeFileSync(transcript, JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id: "completed-message", stop_reason: "end_turn", usage: { input_tokens: 3, output_tokens: 2 } } }) + "\n");
   const beforeStopLog = readFileSync(join(stateDir, "hub.log"), "utf8").length;
-  await hook("Stop");
+  await hook("Stop"); await nativeIdle();
   if (daemon.bus.stateOf("claude") !== "idle") {
     const json = (file: string): Record<string, unknown> | undefined => { try { return JSON.parse(readFileSync(join(stateDir, file), "utf8")); } catch { return undefined; } };
     const marker = json("claude-launch.json"), metadata = json("claude-session.json");
@@ -111,25 +114,23 @@ test("managed Claude launcher and genuine command hooks register a non-Orca sess
   expect(daemon.bus.stateOf("claude")).toBe("busy");
   expect(readEvents(join(stateDir, "events.jsonl")).filter(event => event.type === "native_turn_end")).toHaveLength(1);
   appendFileSync(transcript, JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id: "completed-message-2", stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } } }) + "\n");
-  await hook("Stop"); expect(daemon.bus.stateOf("claude")).toBe("idle");
+  await hook("Stop"); await nativeIdle(); expect(daemon.bus.stateOf("claude")).toBe("idle");
   expect(summarize(readEvents(join(stateDir, "events.jsonl"))).peers.claude).toMatchObject({ turns: 2, turnSource: "native-stop", tokens: 7 });
   await hook("UserPromptSubmit"); await hook("PreToolUse");
-  const beforeDelayed = JSON.parse(readFileSync(join(stateDir, "claude-session.json"), "utf8")).at;
-  let delayedFinished = false;
-  const delayed = hook("Stop").then(() => { delayedFinished = true; }); // baseline is an already certified completion
-  for (let n = 0; n < 100 && JSON.parse(readFileSync(join(stateDir, "claude-session.json"), "utf8")).at === beforeDelayed; n++) await Bun.sleep(5);
-  expect(JSON.parse(readFileSync(join(stateDir, "claude-session.json"), "utf8")).at).not.toBe(beforeDelayed); // the actual daemon handler reached Stop
-  await Bun.sleep(80); expect(delayedFinished).toBe(false); // a seen baseline must not bypass the wait
+  await hook("Stop"); // ACK and hook exit must release the producer before its final transcript append
+  expect(daemon.bus.stateOf("claude")).toBe("busy");
+  expect(readEvents(join(stateDir, "events.jsonl")).filter(event => event.type === "native_turn_end")).toHaveLength(2);
+  await Bun.sleep(80); // baseline is an already certified completion, still not the new turn's proof
   appendFileSync(transcript, JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id: "delayed-completed-message", stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } } }) + "\n");
-  await delayed; expect(daemon.bus.stateOf("claude")).toBe("idle");
+  await nativeIdle(); expect(daemon.bus.stateOf("claude")).toBe("idle"); // the same Stop observer certifies after hook exit
   expect(summarize(readEvents(join(stateDir, "events.jsonl"))).peers.claude).toMatchObject({ turns: 3, tokens: 9 });
   await hook("UserPromptSubmit"); await hook("PreToolUse");
-  const superseded = hook("Stop"); await Bun.sleep(100);
+  await hook("Stop"); await Bun.sleep(80);
   await hook("UserPromptSubmit"); // a new observed start invalidates the older Stop's pending wait
   appendFileSync(transcript, JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id: "new-start-completed-message", stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } } }) + "\n");
-  await superseded; expect(daemon.bus.stateOf("claude")).toBe("busy");
+  await Bun.sleep(80); expect(daemon.bus.stateOf("claude")).toBe("busy");
   expect(readEvents(join(stateDir, "events.jsonl")).filter(event => event.type === "native_turn_end")).toHaveLength(3);
-  await hook("Stop"); expect(daemon.bus.stateOf("claude")).toBe("idle");
+  await hook("Stop"); await nativeIdle(); expect(daemon.bus.stateOf("claude")).toBe("idle");
   expect(summarize(readEvents(join(stateDir, "events.jsonl"))).peers.claude).toMatchObject({ turns: 4, tokens: 11 });
 }, 20_000);
 

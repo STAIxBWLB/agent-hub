@@ -23,7 +23,7 @@ export function claudeReportedTokens(usage: NormalizedUsage | undefined): number
 }
 
 export type ClaudeCompletionWait = { record?: UsageRecord; reason: "verified" | "unavailable" | "baseline" | "before-start" | "superseded" };
-/** Native transcript appends can become visible just after Stop. The hook's whole request deadline is 2 s. */
+/** After acknowledging Stop, observe its delayed transcript append within a bounded 1200 ms window. */
 export async function waitForClaudeCompletion(read: () => UsageRecord | undefined, current: () => boolean, start: { at: number; baseline?: string }, timeoutMs = 1200): Promise<ClaudeCompletionWait> {
   const budget = Number.isFinite(timeoutMs) ? Math.min(1200, Math.max(0, timeoutMs)) : 1200;
   if (budget === 0) return { reason: "unavailable" };
