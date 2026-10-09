@@ -4,6 +4,7 @@ import type { Task, TaskClass } from "./board.ts";
 import type { PeerId, PeerState } from "./envelope.ts";
 
 import { parseHubRoutes, type HubRoute } from "../models/route/config.ts";
+import { DEFAULT_STAY_SWITCH, type StaySwitchMode } from "../models/route/stage.ts";
 
 type Table = Record<string, unknown>;
 
@@ -26,6 +27,9 @@ export interface Routing {
   targets: Record<string, Table & { id: string }>;
   routes: Record<string, Table & { type: string }>;
   hub_routes?: Record<string, HubRoute>;
+  /** Session-aware stay/switch for `hub/auto` and hub stage routes (#197). */
+  stay_switch: StaySwitchMode;
+  max_switch_prefill_tokens: number;
   classes: Partial<Record<TaskClass, ClassPolicy>>;
   signals: { pii_patterns: string[]; long_context_tokens: number };
   constraints: { pii: "local_only" | "off"; long_context: "skip_local" | "off"; budget_paused: "skip_peer" | "off" };
@@ -54,11 +58,16 @@ export function loadRouting(cwd: string): Routing {
   }
   const pi = { dgx_max_context_tokens: 262_144, mlx_max_context_tokens: 16_000, ...(raw as any).pi };
   if (!(Number.isSafeInteger(pi.dgx_max_context_tokens) && pi.dgx_max_context_tokens > 0) || !(Number.isSafeInteger(pi.mlx_max_context_tokens) && pi.mlx_max_context_tokens > 0)) throw new Error("routing.toml: [pi] context limits must be positive integers");
+  const { stay_switch, max_switch_prefill_tokens } = { ...DEFAULT_STAY_SWITCH, ...(raw as any) };
+  if (!["off", "shadow", "enforce"].includes(stay_switch)) throw new Error('routing.toml: stay_switch must be "off", "shadow" or "enforce" (a top-level key, before any table)');
+  if (!(Number.isSafeInteger(max_switch_prefill_tokens) && max_switch_prefill_tokens > 0)) throw new Error("routing.toml: max_switch_prefill_tokens must be a positive integer");
   return {
     local: raw.local,
     targets: raw.targets ?? {},
     routes: raw.routes ?? {},
     hub_routes: parseHubRoutes(raw.hub_routes),
+    stay_switch,
+    max_switch_prefill_tokens,
     classes,
     signals,
     constraints: { pii: "local_only", long_context: "skip_local", budget_paused: "skip_peer", ...raw.constraints },

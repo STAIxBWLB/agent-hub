@@ -31,6 +31,15 @@ test("Pi backend values are validated and class routing exposes MLX/DGX limits",
   expect(() => loadRouting(bad)).toThrow(/pi_backend/);
 });
 
+test("#197 stay_switch defaults to shadow and rejects unknown modes and bounds", () => {
+  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-routing-")));
+  expect([routing.stay_switch, routing.max_switch_prefill_tokens]).toEqual(["shadow", 32_000]);
+  const write = (text: string) => { const dir = mkdtempSync(join(tmpdir(), "agenthub-routing-")); mkdirSync(join(dir, ".agenthub")); writeFileSync(join(dir, ".agenthub", "routing.toml"), `${text}\n[local]\nfixed_model="m"\n`); return dir; };
+  expect(loadRouting(write('stay_switch = "enforce"\nmax_switch_prefill_tokens = 4000')).stay_switch).toBe("enforce");
+  expect(() => loadRouting(write('stay_switch = "always"'))).toThrow(/stay_switch/);
+  expect(() => loadRouting(write("max_switch_prefill_tokens = 0"))).toThrow(/max_switch_prefill_tokens/);
+});
+
 // issue #36: quota that resets soonest is used first; demoted peers go behind the rest.
 test("quota: the eligible peer whose headroom resets soonest goes first; a peer without readings keeps its place", () => {
   const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-route-")));

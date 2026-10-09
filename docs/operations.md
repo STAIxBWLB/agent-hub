@@ -441,6 +441,11 @@ ahub report --by task           # tokens, turns and wall time per task and class
 ahub export --since 24h         # the raw events as JSON lines, for your own analysis
 ```
 
+Per peer and model route, `ahub report` also counts model changes between consecutive
+decisions, how many of them landed inside tool loops and, with `stay_switch` on, sessions
+and the planner's switches (#197). With `stay_switch = "off"` session boundaries are not
+recorded; `shadow` routes exactly as `off` does, so it is the baseline to compare `enforce` with.
+
 `ahub report` counts the same overlap warnings as `scripts/overlaps.ts`, from the
 structured events instead of log lines. `--by task` uses the task each usage and
 token record was attributed to when it was written: the delivery that started the
@@ -1108,6 +1113,16 @@ REDO feedback is kept in the completed local turn history and counts toward `max
 PII calls require a positively confirmed campus gateway immediately before transport;
 PII turns never enter shared history, memory capture, or progress observation.
 The `route`, `advisor`, `progress` and `stuck` events contain identifiers and aggregates only.
+
+Session-aware stay/switch (#197) covers `hub/auto` and `stage` routes. The top-level
+`routing.toml` key `stay_switch` is `off`, `shadow` (default: route events record what the
+planner would do, routing unchanged) or `enforce`. Enforced, a hard override (compaction,
+critical failure, repeated failure) escalates at once; a tool-result turn keeps the
+session's tier; other changes wait for the next user turn, and a de-escalation whose
+conversation is larger than `max_switch_prefill_tokens` (default 32000) stays. A capable
+hold then lasts at least until the next user turn; `hold_turns` can extend it past that
+turn. A tier whose backend
+cannot hold the conversation is never chosen; no route summarizes or trims the history.
 
 Pi exposes `hub/auto` for stage routing when available. Fixed `dgx/coding`, `dgx/fast`
 and `mlx/fast` aliases still pin the backend. Automatic MLX selection admits the complete

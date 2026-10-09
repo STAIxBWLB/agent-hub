@@ -306,4 +306,13 @@ related: 261004-review-agent-hub-switchyard-comparison.md, 261004-plan-agent-hub
 - Existing sidecar routes remain optional and backward compatible; `[hub_routes]` never enters generated sidecar TOML. The sidecar retirement decision remains evidence-driven.
 - Each required phase is a separate reviewable commit and PR. No release or production configuration changes are implied.
 
+## Amendment: session-aware stay/switch (#197, 2026-10-09)
+
+- The stage tier is no longer re-decided in isolation on every call. `planSwitch(pin, fresh, turn, cost)` sits next to `selectStage` in `src/models/route/stage.ts`; `hub/auto` and local `stage` routes both reach it through `stayOrSwitch`, so they record the same trace.
+- Rules: a new session (the relay's `routeSessionKey`, the local route scope) or a compaction starts a fresh pin; a hard override escalates on any turn; a tool-result turn stays on the pinned tier; other changes wait for a user turn; a de-escalation whose conversation exceeds `max_switch_prefill_tokens` stays; a tier whose backend cannot hold the conversation is never chosen. Nothing summarizes, trims or rewrites the forwarded conversation.
+- `hold_turns` is unchanged: the stage hold still counts calls, and enforced, it can only extend past the next user turn, never end inside a tool loop.
+- `routing.toml` top-level `stay_switch = "off" | "shadow" | "enforce"`, default `shadow`, which changes no routing decision. Local routes see no context limits (OmniRoute publishes none to the hub), so only `hub/auto` filters by fit.
+- Route events gain `turnType` (the issue's `turn`: the local `turn` field already holds the turn id), `prefillTokens` (omitted on PII routes, as a private envelope omits its size), `staySwitch`, `plan` and `reason`. `ahub report` counts model changes per session and inside tool loops per peer and route; sessions are counted from pins, so they are unknown while `stay_switch` is `off`.
+- Deferred: joining provider cache counters to switches (the relay has no usage events), and switching the default to `enforce` until the measurement in #197 AC6.
+
 Implementation tracking: [#124](https://github.com/STAIxBWLB/agent-hub/issues/124), core [#125](https://github.com/STAIxBWLB/agent-hub/issues/125), local [#126](https://github.com/STAIxBWLB/agent-hub/issues/126), Pi [#127](https://github.com/STAIxBWLB/agent-hub/issues/127), observations [#128](https://github.com/STAIxBWLB/agent-hub/issues/128).

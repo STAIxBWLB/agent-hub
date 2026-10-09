@@ -2,6 +2,12 @@
 # [targets.*] and [routes.*] use Switchyard's own table shapes (v0.2.0 toml_schema): the hub copies them into the
 # sidecar config and adds the gateway client, so anything Switchyard accepts can be written here.
 
+# Top-level keys, before any table. Pi's hub/auto and the hub stage routes keep a session's model through a tool loop and
+# switch only where it pays (#197): "off", "shadow" (record in events.jsonl what the planner would do, routing unchanged)
+# or "enforce". A switch back to the efficient tier that would make it prefill more tokens than the bound stays.
+stay_switch = "shadow"
+max_switch_prefill_tokens = 32000
+
 [local]
 route = "sy/coding"                                        # Switchyard route the local worker asks for
 fixed_model = "vllm/deepseek-ai/DeepSeek-V4-Flash-0731"    # straight to OmniRoute when the sidecar is absent or unhealthy

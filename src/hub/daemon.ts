@@ -1990,6 +1990,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (problem) return { ok: false, error: problem };
       modelRelay ??= await startModelRelay({ omni, admitRequest: admitPiRequest, dgxMaxInputTokens: currentRouting(opts.cwd, log).pi.dgx_max_context_tokens, allowedDGXmodels: { "dgx/coding": config.pi.dgx_coding, "dgx/fast": config.pi.dgx_fast }, mlx: config.mlx.enabled === false ? undefined : config.mlx, mlxAlias: "mlx/fast", fallbackDGXAlias: "dgx/fast", enableHubAuto: true,
         routeSessionKey: () => { const session = bus.peers.get("pi")?.recoveryMetadata?.().sessionId; return typeof session === "string" ? session : undefined; },
+        staySwitch: () => currentRouting(opts.cwd, log),
         onRoute: record => event({ type: "route", peer: "pi", ...record }),
       });
       piReceipts ??= new PiToolReceipts(join(opts.stateDir, "hub.db"));
@@ -2134,6 +2135,7 @@ export async function startDaemon(opts: DaemonOptions) {
         ...(route ? { route } : {}),
         ...(sidecar && route && !route.startsWith("hub/") ? { sidecar } : {}),
         hubRoutes: () => currentRouting(opts.cwd, log).hub_routes ?? {},
+        staySwitch: () => currentRouting(opts.cwd, log),
         onRoute: record => event({ type: "route", peer: "local", ...record }),
         onAdvisor: record => event({ type: "advisor", peer: "local", ...record }),
         onRouteOutcome: record => event({ type: "route_outcome", peer: "local", ...record }),

@@ -2,7 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import type { OmniRoute, ChatMessage } from "../omniroute/client.ts";
 import { ensureMlx, type MlxHandle, type MlxOptions, type MlxStatus } from "./mlx.ts";
-import { AutoRouteSelector } from "./route/relay-selector.ts";
+import { AutoRouteSelector, type RelayRouteEvent } from "./route/relay-selector.ts";
+import type { StaySwitchPolicy } from "./route/stage.ts";
 
 export type ModelBackend = { kind: "mlx"; alias?: string } | { kind: "dgx"; alias: string };
 
@@ -153,7 +154,9 @@ export interface ModelRelayOptions {
   enableHubAuto?: boolean;
   /** Trusted host callback. Requests without a stable session key get stateless stage selection. */
   routeSessionKey?: (request: RelayRequest) => string | undefined;
-  onRoute?: (event: { route: "hub/auto"; tier: string; source: "override" | "dimensions" | "hold" | "classifier" | "default"; score: number; ms: number }) => void;
+  onRoute?: (event: RelayRouteEvent) => void;
+  /** Read on every `hub/auto` call (#197); absent is the shadow default. */
+  staySwitch?: () => StaySwitchPolicy | undefined;
   allowedDGXmodels: Record<string, string>;
   /** Trusted physical model expectations by backend alias. Gateway identifiers can include a provider
    *  prefix or route name that differs from the model reported by generation. Omission preserves the
@@ -337,7 +340,7 @@ export async function startModelRelay(options: ModelRelayOptions): Promise<Model
   const dgxMaxInputTokens = options.dgxMaxInputTokens ?? 262_144;
   const defaultBackend = options.defaultBackend ?? (options.mlx ? { kind: "mlx", alias: mlxAlias } : { kind: "dgx", alias: "dgx/coding" });
   const models = relayModelIds(options);
-  const autoRoute = options.enableHubAuto ? new AutoRouteSelector(options, defaultBackend, mlxAlias, estimateInputTokens) : undefined;
+  const autoRoute = options.enableHubAuto ? new AutoRouteSelector({ ...options, dgxMaxInputTokens }, defaultBackend, mlxAlias, estimateInputTokens) : undefined;
   let mlx: MlxHandle | undefined;
   let mlxStarting: Promise<MlxHandle> | undefined;
   const states = new Map<string, RelayBackendStatus>();

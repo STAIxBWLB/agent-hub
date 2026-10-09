@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startModelRelay, type RelayRequest } from "../src/models/relay.ts";
+import { HubRouteRuntime, type RouteEvent } from "../src/models/route/runtime.ts";
+import type { StaySwitchPolicy } from "../src/models/route/stage.ts";
 
 const cleanup: (() => Promise<void> | void)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -187,4 +189,84 @@ test("hub auto excludes MLX at its input cap even when the full context would fi
   await route(relay, { model: "hub/auto", max_tokens: 512, messages: [{ role: "user", content: "x".repeat(24400) }] });
   expect(calls).toBe(1);
   expect(relay.status().backends.map(row => row.alias)).toEqual(["dgx/fast"]);
+});
+
+// #197: a Pi-style session with a repeated failure, a passing test inside the tool loop, user turns and a compaction.
+const toolStep = (id: string, name: string, args: unknown, content: string, error = false) => [
+  { role: "assistant", content: "", tool_calls: [{ id, type: "function", function: { name, arguments: JSON.stringify(args) } }] },
+  { role: "tool", tool_call_id: id, content, ...(error ? { is_error: true } : {}) },
+];
+const failure = "AssertionError: expected 1 to equal 2";
+const session = [
+  [{ role: "user", content: "Fix the failing test in parser.ts." }],
+  toolStep("c1", "bash", { command: "bun test" }, failure, true),
+  toolStep("c2", "bash", { command: "bun test" }, failure, true),
+  toolStep("c3", "read", { path: "parser.ts" }, "export function parse() {}"),
+  toolStep("c4", "edit", { path: "parser.ts", old: "a", new: "b" }, "edited"),
+  toolStep("c5", "bash", { command: "bun test" }, "3 pass\n0 fail"),
+  [{ role: "assistant", content: "Fixed." }, { role: "user", content: "Thanks. Now update the README." }],
+  toolStep("c6", "write", { path: "README.md", content: "x" }, "written"),
+  toolStep("c7", "bash", { command: "ls" }, "README.md parser.ts"),
+  [{ role: "assistant", content: "Done." }, { role: "user", content: "Summarize what you changed." }],
+  [{ role: "assistant", content: "Summary." }, { role: "user", content: "This session is being continued from a previous conversation that ran out of context." }],
+  toolStep("c8", "read", { path: "parser.ts" }, "export function parse() {}"),
+].map((_, i, all) => all.slice(0, i + 1).flat()) as RelayRequest["messages"][];
+// Recorded from hub/auto and the local stage route at 15888e5, before the planner existed.
+const RECORDED = ["fast", "fast", "coding", "coding", "coding", "fast", "fast", "fast", "fast", "fast", "coding", "coding"];
+
+async function replayRelay(policy?: StaySwitchPolicy) {
+  const events: RouteEvent[] = [];
+  const relay = await startModelRelay({ omni: omni(gateway()), allowedDGXmodels: { "dgx/fast": "fast", "dgx/coding": "coding" }, enableHubAuto: true, token: "t",
+    routeSessionKey: (request) => typeof request.session_key === "string" ? request.session_key : undefined, staySwitch: () => policy, onRoute: (event) => events.push(event as RouteEvent) });
+  cleanup.push(relay.close);
+  for (const messages of session) await route(relay, { model: "hub/auto", messages, session_key: "pi-session" } as RelayRequest);
+  return events;
+}
+
+async function replayLocal(policy?: StaySwitchPolicy, pii = false) {
+  const events: RouteEvent[] = [];
+  const runtime = new HubRouteRuntime({ onCampus: async () => true, execute: async () => ({ message: { role: "assistant", content: "ok" } }), staySwitch: () => policy, onRoute: (event) => events.push(event) });
+  for (const messages of session) await runtime.call("hub/test", { type: "stage" }, messages as any, "local-session", pii, new AbortController().signal);
+  return events;
+}
+
+const tiers = (events: RouteEvent[]) => events.map((e) => e.tier.replace(/^dgx\//, ""));
+const planner = (events: RouteEvent[]) => events.map((e) => [e.turnType, e.plan, e.reason]);
+
+test("#197 shadow and off leave every hub/auto and local stage decision as recorded, and both routes record the same trace", async () => {
+  const off = { stay_switch: "off", max_switch_prefill_tokens: 32_000 } as const;
+  const relayOff = await replayRelay(off), relayShadow = await replayRelay(undefined);
+  const localOff = await replayLocal(off), localShadow = await replayLocal(undefined);
+  for (const events of [relayOff, relayShadow, localOff, localShadow]) expect(tiers(events)).toEqual(RECORDED);
+  expect(relayOff.every((e) => e.plan === undefined && e.turnType !== undefined)).toBe(true);
+  expect(relayShadow.every((e) => e.staySwitch === "shadow")).toBe(true);
+  expect(planner(relayShadow)).toEqual(planner(localShadow));
+  // The planner would have kept the capable tier through the passing test inside the tool loop.
+  expect(relayShadow[5]).toMatchObject({ turnType: "tool_result", plan: "stay", reason: "tool_loop", tier: "dgx/fast" });
+  const text = JSON.stringify([relayShadow, localShadow]);
+  for (const prompt of ["parser.ts", "AssertionError", "README", "Summarize"]) expect(text).not.toContain(prompt);
+  expect(relayShadow.every((e) => Number.isInteger(e.prefillTokens) && e.prefillTokens! > 0)).toBe(true);
+});
+
+test("#197 enforce keeps a tool loop on its tier, de-escalates at the next user turn, and honours the prefill bound", async () => {
+  const enforce = { stay_switch: "enforce", max_switch_prefill_tokens: 32_000 } as const;
+  const expected = RECORDED.map((tier, i) => i === 5 ? "coding" : tier);
+  const relay = await replayRelay(enforce), local = await replayLocal(enforce);
+  expect(tiers(relay)).toEqual(expected);
+  expect(tiers(local)).toEqual(expected);
+  expect(planner(relay)).toEqual(planner(local));
+  expect(relay[2]).toMatchObject({ turnType: "tool_result", plan: "switch", reason: "override" });
+  expect(relay[5]).toMatchObject({ turnType: "tool_result", plan: "stay", reason: "tool_loop" });
+  expect(relay[6]).toMatchObject({ turnType: "user", plan: "switch", reason: "user_turn" });
+  expect(relay[10]).toMatchObject({ turnType: "compaction", plan: "switch", reason: "compaction" });
+  const bounded = await replayRelay({ stay_switch: "enforce", max_switch_prefill_tokens: 1 });
+  expect(tiers(bounded)).toEqual(RECORDED.map((tier, i) => i < 2 ? tier : "coding"));
+  expect(bounded[6]).toMatchObject({ plan: "stay", reason: "prefill_bound" });
+});
+
+test("#197 a PII local route records the planner without the conversation size", async () => {
+  const events = await replayLocal(undefined, true);
+  expect(tiers(events)).toEqual(RECORDED);
+  expect(events[0]).toMatchObject({ turnType: "user", plan: "stay", reason: "new_pin" });
+  expect(events.some((e) => "prefillTokens" in e)).toBe(false);
 });

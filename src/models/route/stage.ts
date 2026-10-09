@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Ported to TypeScript from NVIDIA NeMo Switchyard crates/libsy/src/algorithms/util/stage.rs at c8848511, modified.
 
-import type { ToolSignals } from './signals.ts';
+import type { ToolSignals, TurnKind } from './signals.ts';
 
 export type Tier = 'capable' | 'efficient';
 export type PickerMode = 'capable_first' | 'efficient_first';
@@ -90,4 +90,46 @@ export function selectStage(signal:ToolSignals, options:StageOptions={}, state:S
     ...(note === undefined ? {} : { note }),
     state: { capableHoldTurnsRemaining: remaining },
   };
+}
+
+// Session-aware stay/switch (#197): not ported from Switchyard; the rules follow Weave Router's planner, without its
+// history summary on a switch.
+export type StaySwitchMode = 'off' | 'shadow' | 'enforce';
+/** The routing.toml keys the planner reads. */
+export interface StaySwitchPolicy { stay_switch: StaySwitchMode; max_switch_prefill_tokens: number }
+// ponytail: an unmeasured prefill bound; #197 AC6 measures prefill before enforce becomes the default.
+export const DEFAULT_STAY_SWITCH: StaySwitchPolicy = { stay_switch: 'shadow', max_switch_prefill_tokens: 32_000 };
+export type SwitchReason = 'new_pin' | 'compaction' | 'context_fit' | 'same_tier' | 'override' | 'tool_loop' | 'prefill_bound' | 'user_turn';
+export interface SwitchCost { inputTokens: number; maxSwitchPrefillTokens: number; fits: (tier: Tier) => boolean }
+export interface SwitchPlan { plan: 'stay' | 'switch'; tier: Tier; reason: SwitchReason }
+/** What a route event records about the planner; never prompt text. */
+export interface SwitchTrace { turnType: TurnKind; prefillTokens: number; staySwitch?: 'shadow' | 'enforce'; plan?: 'stay' | 'switch'; reason?: SwitchReason }
+
+/**
+ * Stay on the session's pinned tier or switch to this call's stage decision. A new session or a compaction starts a fresh
+ * pin, a hard override escalates on any turn, a tool loop keeps its tier, and other changes wait for a user turn; a
+ * de-escalation that makes the efficient backend prefill more than the bound stays. A tier whose backend cannot hold the
+ * conversation is never chosen: nothing here summarizes or trims the history to make a switch fit.
+ */
+export function planSwitch(pin: Tier | undefined, fresh: Pick<StageDecision, 'tier' | 'defaultTier' | 'source'>, turn: TurnKind, cost: SwitchCost): SwitchPlan {
+  const wanted = fresh.tier ?? fresh.defaultTier, other: Tier = wanted === 'capable' ? 'efficient' : 'capable';
+  const want = cost.fits(wanted) || !cost.fits(other) ? wanted : other;
+  const plan = (tier: Tier, reason: SwitchReason): SwitchPlan => ({ plan: pin === undefined || pin === tier ? 'stay' : 'switch', tier, reason });
+  if (pin === undefined) return plan(want, 'new_pin');
+  if (turn === 'compaction') return plan(want, 'compaction');
+  if (want !== wanted || !cost.fits(pin)) return plan(want, 'context_fit');
+  if (want === pin) return plan(pin, 'same_tier');
+  if (fresh.source === 'override') return plan(want, 'override');
+  if (turn === 'tool_result') return plan(pin, 'tool_loop');
+  if (want === 'efficient' && cost.inputTokens > cost.maxSwitchPrefillTokens) return plan(pin, 'prefill_bound');
+  return plan(want, 'user_turn');
+}
+
+/** The one place hub/auto and local stage routes apply the mode, so both record the same trace. `shadow` and `off` keep the stage tier. */
+export function stayOrSwitch(policy: StaySwitchPolicy | undefined, pin: Tier | undefined, fresh: StageDecision, turn: TurnKind, cost: Omit<SwitchCost, 'maxSwitchPrefillTokens'>): { tier: Tier; pin?: Tier; trace: SwitchTrace } {
+  const { stay_switch: mode, max_switch_prefill_tokens: maxSwitchPrefillTokens } = policy ?? DEFAULT_STAY_SWITCH;
+  const tier = fresh.tier ?? fresh.defaultTier, trace: SwitchTrace = { turnType: turn, prefillTokens: cost.inputTokens };
+  if (mode === 'off') return { tier, trace };
+  const planned = planSwitch(pin, fresh, turn, { ...cost, maxSwitchPrefillTokens });
+  return { tier: mode === 'enforce' ? planned.tier : tier, pin: planned.tier, trace: { ...trace, staySwitch: mode, plan: planned.plan, reason: planned.reason } };
 }

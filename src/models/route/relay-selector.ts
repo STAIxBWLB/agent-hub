@@ -1,17 +1,17 @@
 import type { ModelBackend, ModelRelayOptions, RelayRequest } from "../relay.ts";
 import { normalizeConversation } from "./normalize.ts";
-import { extractToolSignals } from "./signals.ts";
-import { selectStage, type StageState } from "./stage.ts";
+import { extractToolSignals, turnKind } from "./signals.ts";
+import { selectStage, stayOrSwitch, type StageState, type SwitchTrace, type Tier } from "./stage.ts";
 import { SessionState } from "./state.ts";
 
-type RelaySelectorOptions = Pick<ModelRelayOptions, "mlx" | "selectBackend" | "routeSessionKey" | "onRoute" | "allowedDGXmodels">;
+type RelaySelectorOptions = Pick<ModelRelayOptions, "mlx" | "selectBackend" | "routeSessionKey" | "onRoute" | "allowedDGXmodels" | "staySwitch"> & { dgxMaxInputTokens: number };
 type RouteSource = "override" | "dimensions" | "hold" | "classifier" | "default";
-type RelayRouteEvent = { route: "hub/auto"; tier: string; source: RouteSource; score: number; ms: number };
+export type RelayRouteEvent = { route: "hub/auto"; tier: string; source: RouteSource; score: number; ms: number } & Partial<SwitchTrace>;
 type EstimateInputTokens = (messages: RelayRequest["messages"], tools?: unknown[]) => number;
 
 /** Stage selection for the relay's virtual `hub/auto` model. */
 export class AutoRouteSelector {
-  private readonly states = new SessionState<StageState>(512, 60 * 60_000);
+  private readonly states = new SessionState<{ stage: StageState; pin?: Tier }>(512, 60 * 60_000);
 
   constructor(
     private readonly options: RelaySelectorOptions,
@@ -27,20 +27,24 @@ export class AutoRouteSelector {
       const key = this.options.routeSessionKey?.(body);
       if (typeof key === "string" && key.length > 0 && key.length <= 512) sessionKey = key;
     } catch { /* host identity lookup is fail-open */ }
-    const priorState = sessionKey ? this.states.get(sessionKey) ?? { capableHoldTurnsRemaining: 0 } : { capableHoldTurnsRemaining: 0 };
+    const prior = sessionKey ? this.states.get(sessionKey) : undefined;
 
     let backend = this.defaultBackend;
     let tier = this.aliasOf(backend);
     let source: RouteSource = "default";
     let score = 0;
+    let trace: SwitchTrace | undefined;
     try {
-      const signals = extractToolSignals(normalizeConversation(body));
-      const decision = selectStage(signals, { mode: "efficient_first", confidenceThreshold: 0.5, capableHoldTurns: 2 }, priorState);
-      if (sessionKey) this.states.set(sessionKey, decision.state);
+      const conversation = normalizeConversation(body);
+      const decision = selectStage(extractToolSignals(conversation), { mode: "efficient_first", confidenceThreshold: 0.5, capableHoldTurns: 2 }, prior?.stage ?? { capableHoldTurnsRemaining: 0 });
+      const inputTokens = this.estimateInputTokens(body.messages, body.tools);
+      const fits = (candidate: Tier) => { const staged = this.stageBackend(candidate, body); return !!staged && (staged.kind === "mlx" || inputTokens <= this.options.dgxMaxInputTokens); };
+      const staged = stayOrSwitch(this.options.staySwitch?.(), prior?.pin, decision, turnKind(conversation), { inputTokens, fits });
+      if (sessionKey) this.states.set(sessionKey, { stage: decision.state, ...(staged.pin ? { pin: staged.pin } : {}) });
+      trace = staged.trace;
       score = decision.score;
       source = this.sourceOf(decision.source);
-      const selectedTier = decision.tier ?? decision.defaultTier;
-      const stagedBackend = this.stageBackend(selectedTier, body);
+      const stagedBackend = this.stageBackend(staged.tier, body);
       if (stagedBackend) {
         backend = stagedBackend;
         tier = this.aliasOf(stagedBackend);
@@ -62,7 +66,7 @@ export class AutoRouteSelector {
       } catch { /* deterministic stage choice is the fail-open route */ }
     }
 
-    this.emit({ route: "hub/auto", tier, source, score, ms: Math.max(0, performance.now() - started) });
+    this.emit({ route: "hub/auto", tier, source, score, ms: Math.max(0, performance.now() - started), ...trace });
     return backend;
   }
 
