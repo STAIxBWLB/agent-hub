@@ -17,6 +17,7 @@ export function peerChildEnv(peer: string, source: NodeJS.ProcessEnv = process.e
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_SESSION_ID;
   delete env.CODEX_THREAD_ID;
+  delete env.AGENTHUB_CHANNEL;
   delete env.AGENTHUB_PEER_ID;
   env.AGENTHUB_PEER_ID = peer;
   return env;

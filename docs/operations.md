@@ -757,6 +757,30 @@ the system marks it `needs_review`. Establish evidence before choosing
 disconnects, cancellation, and partial effects are uncertain; do not replay
 them automatically.
 
+### Claude sessions without channel pushes
+
+Only `ahub claude` starts Claude Code with the development-channel flag. A
+Claude session started another way (plain `claude`, an IDE) keeps the hub tools
+but cannot show pushes, so it attaches tools-only (protocol 16, issue #205):
+
+- Its messages stay queued. `ahub status` shows `queued N` and `tools-only:
+  messages wait for hub_inbox; for pushes restart Claude with ahub claude`; the
+  console footer shows `tools-only: ahub claude` and the dashboard shows the
+  status line.
+- The session reads them with `hub_inbox`, at most ten messages at a time plus
+  the hub's recall note when one waits (it says how many still wait). Each read is one `completed` delivery (`read through
+  hub_inbox` in `ahub queue list`); nothing is ever `accepted`, and the session
+  has no `hub_delivery_done`. A read the model never saw (the tool call was
+  cancelled, the plugin died) cannot be retried: `ahub queue show <id>` of the
+  `completed` row prints the messages to send again.
+- Whatever holds pushes holds `hub_inbox` too (`needs_review`, recovery,
+  `ahub pause`, a budget pause, a conductor hold): it reads nothing and says
+  which hold applies.
+- Restarting Claude with `ahub claude` takes the peer over and pushes what still
+  waits; the plain session stands by. The other way round, a plain session
+  started while an `ahub claude` session holds the peer stands by and attaches
+  only after that session leaves.
+
 ## Graceful shutdown
 
 Before stopping, let active turns and approvals settle when possible:

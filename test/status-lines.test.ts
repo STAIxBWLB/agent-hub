@@ -30,6 +30,11 @@ test("a peer line marks queued messages that would interrupt on delivery", () =>
   expect(peerLine("kimi", { state: "idle", queued: 2, queuedImportant: 0 })).toBe("  kimi     idle     queued 2");
 });
 
+test("a tools-only Claude names its state and the next action (#205)", () => {
+  expect(peerLine("claude", { state: "idle", queued: 2, toolsOnly: "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude" }))
+    .toBe("  claude   idle     queued 2  tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude");
+});
+
 test("a disconnected recipient exposes pending age and uncertain work", () => {
   const line = peerLine("codex", { state: "offline", queued: 2, queuedImportant: 1, needsReview: 1, attached: false, oldestQueuedAt: Date.now() - 60000 });
   expect(line).toContain("queued 2 (1 important)");

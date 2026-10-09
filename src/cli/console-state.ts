@@ -249,6 +249,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     summary.push(span(id, p.state === "offline" ? undefined : "info"), span(":"), span(p.state, stateTone(p.state)), span(` q${p.queued ?? 0}`));
     if (p.needsReview) summary.push(span(` review${p.needsReview}`, "failure"));
     if (p.paused) summary.push(span(" paused", "attention"));
+    if (p.toolsOnly) summary.push(span(" tools-only: ahub claude", "attention"));
   }
   const quotas = Object.entries(s.budget).map(([id, b]) => `${id}:${b.windows?.map((w: any) => `${w.id} ${Math.round(w.used * 100)}%`).join("/") ?? "?"}`).join(" ");
   if (quotas) summary.push(span(` | ${quotas}`));

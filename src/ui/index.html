@@ -159,6 +159,7 @@ function render(snapshot) {
       if (peer.needsReview) row.append(el('p', peer.needsReview + ' need review: use ahub queue list', 'meta'));
       if (peer.oldestQueuedAt !== undefined) row.append(el('p', 'Oldest pending: ' + Math.max(0, Math.floor((Date.now() - peer.oldestQueuedAt) / 1000)) + 's', 'meta'));
       if (peer.attached === false) row.append(el('p', 'Disconnected recipient; work is retained.', 'meta'));
+      if (peer.toolsOnly) row.append(el('p', peer.toolsOnly, 'meta'));
       if (peer.paused) row.append(el('p', peer.paused, 'meta'));
       if (peer.requestedModel) row.append(el('p', 'Requested: ' + peer.requestedModel, 'meta'));
       for (const backend of peer.backends || []) {

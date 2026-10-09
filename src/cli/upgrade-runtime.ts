@@ -114,7 +114,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
     catch { source = { state: "unavailable", peers: [], blockers: ["source recovery metadata could not be authenticated"] }; }
     if (source.state === "stopped" || source.state === "missing") continue;
     const blockers = [...source.blockers];
-    if (!RECOVERY_SOURCE_PROTOCOLS.includes(source.protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]) || source.state !== "running") blockers.push("manual-bootstrap-required: an authenticated protocol-9, protocol-10, protocol-11, protocol-12, protocol-13, protocol-14 or protocol-15 source is required");
+    if (!RECOVERY_SOURCE_PROTOCOLS.includes(source.protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]) || source.state !== "running") blockers.push("manual-bootstrap-required: an authenticated protocol-9, protocol-10, protocol-11, protocol-12, protocol-13, protocol-14, protocol-15 or protocol-16 source is required");
     if (source.recovery?.operationId && source.recovery.phase !== "released") blockers.push(`existing recovery operation ${source.recovery.operationId} must be resolved first`);
     const sessions: { codex?: string; claude?: string; pi?: SessionRef } = {};
     for (const peer of source.peers) {

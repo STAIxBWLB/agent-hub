@@ -68,7 +68,7 @@ an N-peer message bus and attaches each agent through its native control surface
 
 | Peer | Inbound | Outbound | Busy handling |
 | --- | --- | --- | --- |
-| Claude Code | channel plugin push (`notifications/claude/channel`) | MCP tools | queued by Claude Code, grouped on next turn |
+| Claude Code | channel plugin push (`notifications/claude/channel`) under `ahub claude`; otherwise tools-only, read with `hub_inbox` | MCP tools | queued by Claude Code, grouped on next turn; tools-only: queued at the hub |
 | Codex | app-server `turn/start` (idle) / `turn/steer` (busy) | proxy intercepts `item/agentMessage` | steer or queue |
 | Kimi Code | ACP `session/prompt` | ACP `session/update` stream | queue (`turn.agent_busy`) |
 | Pi | RPC or managed native TUI extension | hub-approved tools | queued until `agent_settled` |

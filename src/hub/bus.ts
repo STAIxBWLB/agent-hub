@@ -715,13 +715,69 @@ export class Bus {
     finally { this.steering--; this.onQueues?.(); }
   }
 
+  /** Holds on a peer's queue, for a drain and a pull alike: recovery, an uncertain delivery, a pause (console, budget, conductor). */
+  private held(id: PeerId): boolean {
+    return this.recoveryHeld || this.recoveryHeldPeers.has(id) || this.paused.has(id);
+  }
+
+  /** What a peer was just handed stays resolvable for `reply_to`: moved to the newest end, the stored envelope kept. */
+  private remember(envs: Envelope[]): void {
+    for (const e of envs) { const kept = this.seen.get(e.id) ?? e; this.seen.delete(e.id); this.seen.set(e.id, kept); }
+    while (this.seen.size > SEEN_CAP) this.seen.delete(this.seen.keys().next().value as string);
+  }
+
+  /** A push may go out now: nothing holds the queue, the peer is idle, and its session shows pushes (issue #205). */
+  private deliverable(id: PeerId): boolean {
+    return !this.held(id) && this.stateOf(id) === "idle" && !this.peers.get(id)?.pullOnly;
+  }
+
+  /**
+   * What one push delivery would take (the preface, then `take`'s batch), handed to a pull-only peer and recorded as
+   * completed: the tool result that returns it is the readback, so nothing waits for settlement and nothing is ever
+   * `accepted` (issue #205). It is checkpointed like a push, so queued rows of the same envelopes (an operator retry)
+   * are grouped into it, and registered for `reply_to` like a push. Undefined while held. A failed journal write puts
+   * back only this peer's queue and preface (every pause stays) and stops the bus like any other journal failure.
+   * ponytail: recorded completed at hand-out, before anything shows the model saw it: a reply lost on the way, a tool
+   * call cancelled (Esc) or a plugin that dies loses the batch, and `ahub queue resolve --action retry` refuses a
+   * terminal row. The completed row keeps the envelopes (`ahub queue show <id>`) to resend by hand; take/confirm in two
+   * steps if loss is ever observed.
+   */
+  pull(id: PeerId): Envelope[] | undefined {
+    if (this.storageError) throw new Error("delivery journal unavailable");
+    if (this.held(id)) return undefined;
+    const queue = this.queues.get(id) ?? [];
+    this.dropIrrelevant(id, queue);
+    const preface = this.prefaces.get(id);
+    if (!preface && !queue.length) return [];
+    const queued = [...queue];
+    const batch = [...(preface ? [preface] : []), ...this.take(id, queue)];
+    this.prefaces.delete(id);
+    // Before the checkpoint, as in a drain, so the persisted snapshot carries it; on a failure the bus stops anyway.
+    this.remember(batch);
+    try {
+      const deliveryId = crypto.randomUUID();
+      this.journal?.transaction(() => {
+        this.durableHandoff(id, deliveryId, batch, batch); // its bus snapshot is the queue after this pull
+        this.journal!.transition(deliveryId, "completed", "read through hub_inbox");
+      });
+    } catch (error) {
+      queue.splice(0, queue.length, ...queued);
+      if (preface) this.prefaces.set(id, preface);
+      this.storageError = "delivery journal unavailable";
+      throw error;
+    }
+    this.failureStreak.delete(id); this.lastFailure.delete(id); // read, as a completed push receipt clears them
+    this.onQueues?.();
+    return batch;
+  }
+
   private async drain(id: PeerId): Promise<void> {
     if (this.storageError || this.draining.has(id) || !this.peers.has(id)) return;
     this.draining.add(id);
     try {
       const peer = this.peers.get(id)!;
       const queue = this.queues.get(id)!;
-      while (!this.storageError && !this.recoveryHeld && !this.recoveryHeldPeers.has(id) && queue.length && this.stateOf(id) === "idle") {
+      while (!this.storageError && queue.length && this.deliverable(id)) {
         if (this.dropIrrelevant(id, queue) && !queue.length) break;
         const delay = this.wait(queue);
         if (delay > 0) { this.arm(id, delay); break; }
@@ -736,7 +792,8 @@ export class Bus {
         this.condensing += mayCondense ? 1 : 0;
         const out = mayCondense ? await this.opts.condense!(delivery).catch(() => delivery) : delivery;
         this.condensing -= mayCondense ? 1 : 0;
-        if (this.recoveryHeld || this.recoveryHeldPeers.has(id) || this.stateOf(id) !== "idle") {
+        // A session that cannot show pushes may have taken the peer while this was condensed (issue #205).
+        if (!this.deliverable(id)) {
           if (!this.journal) { if (preface) this.restorePreface(id, preface); queue.unshift(...batch.filter((e) => !this.withdrawn.has(e.id))); }
           break;
         }
@@ -751,8 +808,7 @@ export class Bus {
           for (const env of batch) queue.splice(queue.findIndex((item) => item.id === env.id), 1);
           this.prefaces.delete(id);
         }
-        for (const e of out) if (!this.seen.has(e.id)) this.seen.set(e.id, e);
-        while (this.seen.size > SEEN_CAP) this.seen.delete(this.seen.keys().next().value as string);
+        this.remember(out);
         this.lastDelivery.set(id, { out, originals: delivery });
         this.preparing.delete(id); // from here on the transport/journal owns settlement
         const deliveryId = crypto.randomUUID();

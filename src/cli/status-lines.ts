@@ -1,7 +1,7 @@
 import type { ContextView } from "../hub/context-window.ts";
 // What `ahub status` prints for a peer and for a model backend, kept pure so it can be checked.
 
-export interface PeerRow { context?: ContextView; state?: string; queued?: number; queuedImportant?: number; needsReview?: number; heldBy?: string; holdNote?: string; liveAccepted?: string[]; oldestQueuedAt?: number; attached?: boolean; paused?: string; servedBy?: string; requestedModel?: string }
+export interface PeerRow { context?: ContextView; state?: string; queued?: number; queuedImportant?: number; needsReview?: number; heldBy?: string; holdNote?: string; liveAccepted?: string[]; oldestQueuedAt?: number; attached?: boolean; toolsOnly?: string; paused?: string; servedBy?: string; requestedModel?: string }
 export interface BackendRow { kind?: string; alias?: string; state?: string; active?: number; requestedModel?: string; actualModel?: string; provider?: string }
 
 /** Aliases are already namespaced ("dgx/coding"); only an alias that is not gets its kind in front of it. */
@@ -24,6 +24,7 @@ export function peerLine(id: string, p: PeerRow): string {
     (p.heldBy ? `  ${p.holdNote ?? `held by needs_review ${p.heldBy}; ahub queue resolve ${p.heldBy} --action completed|retry|discard --reason <text>`}` : "") +
     (p.oldestQueuedAt !== undefined ? `  oldest ${Math.max(0, Math.floor((Date.now() - p.oldestQueuedAt) / 1000))}s` : "") +
     (p.attached === false ? "  disconnected" : "") +
+    (p.toolsOnly ? `  ${p.toolsOnly}` : "") +
     (p.paused ? `  (${p.paused})` : "") +
     (p.servedBy ? `  last call: ${p.servedBy}` : "") +
     // Which backend the peer asked for on its last turn: without it, telling a Pi DGX turn from an MLX one

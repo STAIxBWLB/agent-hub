@@ -42,7 +42,7 @@ trap 'exit 143' TERM
 # A run that hangs anyway is sampled and stopped long before the CI job limit; a normal run takes about two minutes.
 # Human CLI fixtures must not inherit the coding agent running this gate. Clear the
 # runner's OS environment before Bun starts; identity tests set their own child markers.
-env -u AGENTHUB_PEER_ID -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID bun test --timeout 20000 &
+env -u AGENTHUB_PEER_ID -u AGENTHUB_CHANNEL -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID bun test --timeout 20000 &
 test_pid=$!
 scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-600}" &
 watch_pid=$!

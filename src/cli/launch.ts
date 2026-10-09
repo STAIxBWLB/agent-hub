@@ -8,6 +8,8 @@ export const CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub";
 export function nativeLaunchEnv(tool: "claude" | "codex" | "pi", source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env = peerChildEnv(tool, source);
   delete env.AGENTHUB_UNATTENDED;
+  // Channel evidence for the plugin (issue #205): set beside the development-channel flag `buildLaunch` always passes.
+  if (tool === "claude") env.AGENTHUB_CHANNEL = "1";
   return env;
 }
 

@@ -39,6 +39,129 @@ function setupBus(options: Partial<ConstructorParameters<typeof Bus>[0]> = {}) {
   return { bus, durable };
 }
 
+test("a pull-only peer is never handed a delivery: its queue is counted, then read once as one completed delivery (#205)", async () => {
+  const { bus, durable } = setupBus();
+  const peer = Object.assign(new FakePeer("claude"), { pullOnly: true }); bus.add(peer);
+  bus.preface("claude", "recall");
+  const env = newEnvelope("user", "review task #3", { to: ["claude"] });
+  bus.publish(env);
+  peer.setState("idle"); // the idle transition that drains every other peer
+  await Bun.sleep(10);
+  expect(peer.deliveries).toHaveLength(0);
+  expect(bus.queued("claude")).toBe(1);
+  bus.pause("claude"); // the console, budget and conductor holds all pause the bus
+  expect(bus.pull("claude")).toBeUndefined();
+  expect(durable.list("claude")).toEqual([]);
+  bus.resume("claude");
+  expect(peer.deliveries).toHaveLength(0);
+  const read = bus.pull("claude")!;
+  expect(read.map((e) => [e.from, e.kind])).toEqual([["hub", "presence"], ["user", env.kind]]);
+  expect(durable.snapshot().bus.seen.map((e) => e.id)).toContain(read[0]!.id); // the persisted snapshot resolves a reply to it
+  expect(bus.queued("claude")).toBe(0);
+  expect(bus.pull("claude")).toEqual([]);
+  expect(durable.list("claude").map((r) => [r.state, r.reason])).toEqual([["completed", "read through hub_inbox"]]);
+  expect(durable.snapshot().bus.queues.claude).toEqual([]);
+  durable.close();
+});
+
+test("a push being condensed when a session without pushes takes the peer is not handed over, and stays pullable (#205)", async () => {
+  let release!: () => void;
+  let condensing = false;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const { bus, durable } = setupBus({ condense: async (envs) => { condensing = true; await pending; return envs; } });
+  const peer = new FakePeer("claude"); bus.add(peer);
+  const env = newEnvelope("user", "first", { to: ["claude"], priority: "status" });
+  bus.publish(env);
+  await waitFor(() => condensing, "condensation");
+  Object.assign(peer, { pullOnly: true }); // what attach does for a plain session's hello
+  peer.setState("offline"); peer.setState("idle");
+  release();
+  await Bun.sleep(10);
+  expect(peer.deliveries).toHaveLength(0);
+  expect(durable.list("claude").filter((r) => r.state !== "completed")).toEqual([]);
+  expect(bus.pull("claude")!.map((e) => e.id)).toEqual([env.id]);
+  durable.close();
+});
+
+test("a pull groups the queued row an operator retry left, so no journal row stays queued (#205)", async () => {
+  const { bus, durable } = setupBus();
+  const peer = new FakePeer("claude", async () => { throw new Error("socket disappeared"); }); bus.add(peer);
+  const env = newEnvelope("user", "lost", { to: ["claude"] });
+  bus.publish(env);
+  await waitFor(() => durable.list("claude").some((r) => r.state === "needs_review"), "uncertain delivery");
+  Object.assign(peer, { pullOnly: true });
+  const row = durable.list("claude").find((r) => r.state === "needs_review")!;
+  bus.resolveDelivery(row.id, row.revision, "retry", "not shown");
+  expect(durable.list("claude").filter((r) => r.state === "queued").map((r) => r.id)).toEqual([`${row.id}:retry:1`]);
+  expect(bus.pull("claude")!.map((e) => e.id)).toEqual([env.id]);
+  expect(durable.list("claude").filter((r) => r.state === "queued")).toEqual([]);
+  expect(durable.list("claude").find((r) => r.reason === "read through hub_inbox")).toMatchObject({ state: "completed", previousId: `${row.id}:retry:1` });
+  durable.close();
+});
+
+test("what a pull hands over resolves as reply_to, a preface and an envelope that aged out of the seen cache included (#205)", () => {
+  const bus = new Bus({ batchMs: 0 });
+  bus.add(Object.assign(new FakePeer("claude"), { pullOnly: true }));
+  bus.preface("claude", "recall");
+  const env = newEnvelope("user", "old question", { to: ["claude"] });
+  bus.publish(env);
+  for (let i = 0; i < 2100; i++) bus.publish(newEnvelope("user", `noise ${i}`, { to: ["nobody"] }));
+  expect(bus.get(env.id)).toBeUndefined();
+  const read = bus.pull("claude")!;
+  expect(read).toHaveLength(2);
+  expect(read.map((e) => bus.get(e.id)?.id)).toEqual(read.map((e) => e.id));
+});
+
+test("a pull moves what it hands over to the newest end of the seen cache, so an envelope near eviction stays resolvable (#205)", () => {
+  const bus = new Bus({ batchMs: 0 });
+  bus.add(Object.assign(new FakePeer("claude"), { pullOnly: true }));
+  const env = newEnvelope("user", "old question", { to: ["claude"] });
+  bus.publish(env);
+  for (let i = 0; i < 2000; i++) bus.publish(newEnvelope("user", `noise ${i}`, { to: ["nobody"] }));
+  expect(bus.get(env.id)).toBeDefined(); // cached, and now the oldest entry
+  bus.pull("claude");
+  for (let i = 0; i < 100; i++) bus.publish(newEnvelope("user", `later ${i}`, { to: ["nobody"] }));
+  expect(bus.get(env.id)?.id).toBe(env.id);
+});
+
+test("a read clears the peer's delivery failure streak, as a completed push does (#205)", async () => {
+  const bus = new Bus({ batchMs: 0, batchMax: 1, retryMs: 1 });
+  const peer = new FakePeer("claude", async () => { throw new Error("socket disappeared"); }); bus.add(peer);
+  for (let i = 0; i < 3; i++) bus.publish(newEnvelope("user", `lost ${i}`, { to: ["claude"] }));
+  await waitFor(() => !!bus.failingPeers().claude, "three exhausted deliveries");
+  Object.assign(peer, { pullOnly: true });
+  bus.publish(newEnvelope("user", "read", { to: ["claude"] }));
+  expect(bus.pull("claude")!.map((e) => e.body)).toEqual(["read"]);
+  expect(bus.failingPeers()).toEqual({});
+});
+
+test("a pull whose journal write fails keeps every pause, the queue and the preface, and stops the bus (#205)", () => {
+  const { bus, durable } = setupBus();
+  bus.add(Object.assign(new FakePeer("claude"), { pullOnly: true }));
+  bus.add(new FakePeer("codex"));
+  bus.pause("codex"); // a budget or conductor pause, which the snapshot does not carry
+  bus.preface("claude", "recall");
+  const env = newEnvelope("user", "kept", { to: ["claude"] });
+  bus.publish(env);
+  durable.close();
+  expect(() => bus.pull("claude")).toThrow();
+  expect(bus.isPaused("codex")).toBe(true);
+  expect(bus.queueIds("claude")).toEqual([env.id]);
+  expect(bus.snapshot(false).prefaces.claude).toBeDefined();
+  expect(bus.storageError).toBe("delivery journal unavailable");
+});
+
+test("one pull takes what one push delivery would, and the rest keep waiting (#205)", () => {
+  const { bus, durable } = setupBus();
+  bus.add(Object.assign(new FakePeer("claude"), { pullOnly: true }));
+  for (let i = 0; i < 12; i++) bus.publish(newEnvelope("user", `m${i}`, { to: ["claude"], priority: "status" }));
+  expect(bus.pull("claude")).toHaveLength(10);
+  expect(bus.queued("claude")).toBe(2);
+  expect(bus.pull("claude")!.map((e) => e.body)).toEqual(["m10", "m11"]);
+  expect(durable.list("claude").map((r) => r.state)).toEqual(["completed", "completed"]);
+  durable.close();
+});
+
 test("an async condensation cannot checkpoint away a batch when another publish persists the bus", async () => {
   let release!: () => void;
   const pending = new Promise<void>((resolve) => { release = resolve; });
