@@ -61,6 +61,11 @@ export function loadRouting(cwd: string): Routing {
   if (!(Number.isSafeInteger(pi.dgx_max_context_tokens) && pi.dgx_max_context_tokens > 0) || !(Number.isSafeInteger(pi.mlx_max_context_tokens) && pi.mlx_max_context_tokens > 0)) throw new Error("routing.toml: [pi] context limits must be positive integers");
   if (!(Number.isSafeInteger(pi.efficient_wait_ms) && pi.efficient_wait_ms >= 0)) throw new Error("routing.toml: [pi] efficient_wait_ms must be a non-negative integer");
   const { stay_switch, max_switch_prefill_tokens } = { ...DEFAULT_STAY_SWITCH, ...(raw as any) };
+  // Written after a table header, a top-level key lands in that table and would be ignored without a word.
+  const misplaced = (table: unknown, path: string): string | undefined => !table || typeof table !== "object" || Array.isArray(table) ? undefined
+    : Object.entries(table).map(([key, value]) => key in DEFAULT_STAY_SWITCH ? `${path}${key}` : misplaced(value, `${path}${key}.`)).find(Boolean);
+  const nested = Object.entries(raw).map(([key, value]) => misplaced(value, `${key}.`)).find(Boolean);
+  if (nested) throw new Error(`routing.toml: ${nested} is inside a table; stay_switch and max_switch_prefill_tokens are top-level keys, before any table`);
   if (!["off", "shadow", "enforce"].includes(stay_switch)) throw new Error('routing.toml: stay_switch must be "off", "shadow" or "enforce" (a top-level key, before any table)');
   if (!(Number.isSafeInteger(max_switch_prefill_tokens) && max_switch_prefill_tokens > 0)) throw new Error("routing.toml: max_switch_prefill_tokens must be a positive integer");
   return {
