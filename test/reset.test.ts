@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -300,6 +300,7 @@ test("a crashed hub's manifest and dead-pid claim do not block either scope; the
     registry.close();
 
     crash();
+    writeFileSync(join(stateDir, "hub.pid"), "garbled"); // beside the dead status.json: that crash's leftover too
     const all = await cli(root, ["reset", "--all", "--yes"]);
     expect(all.code, all.stderr).toBe(0);
     expect(readdirSync(stateDir)).toEqual(["project.json"]);
@@ -338,5 +339,62 @@ test("a state the reset cannot read points to --all, which archives it as it is 
     const [name] = readdirSync(join(root, ".agenthub", "archive")).filter((entry) => entry.startsWith("state-"));
     expect(contents(join(root, ".agenthub", "archive", name!))).toEqual(before);
     expect(readdirSync(stateDir)).toEqual(["project.json"]);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+}, 60_000);
+
+test("--all refuses a symlinked archive or .gitignore before stopping anything, and replaces a hard-linked .gitignore", async () => {
+  const { base, root, stateDir, project } = fixture();
+  const archive = join(root, ".agenthub", "archive");
+  const outside = join(base, "synced"), precious = join(base, "precious.txt");
+  try {
+    seed(stateDir, project);
+    mkdirSync(outside);
+    writeFileSync(precious, "keep me\n");
+    const before = contents(stateDir);
+    symlinkSync(outside, archive);
+    for (const args of [["reset", "--all"], ["reset", "--all", "--yes"]]) {
+      const result = await cli(root, args);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(`${archive} is not a directory of this user (a symlink, or another owner's); nothing was changed`);
+    }
+    expect(readdirSync(outside)).toEqual([]);
+    rmSync(archive);
+
+    mkdirSync(archive);
+    symlinkSync(precious, join(archive, ".gitignore"));
+    const linked = await cli(root, ["reset", "--all", "--yes"]);
+    expect(linked.code).toBe(1);
+    expect(linked.stderr).toContain(`${join(archive, ".gitignore")} is not a regular file; nothing was changed`);
+    expect(readFileSync(precious, "utf8")).toBe("keep me\n");
+    expect(contents(stateDir)).toEqual(before);
+    rmSync(join(archive, ".gitignore"));
+
+    linkSync(precious, join(archive, ".gitignore"));
+    const hard = await cli(root, ["reset", "--all", "--yes"]);
+    expect(hard.code, hard.stderr).toBe(0);
+    expect(readFileSync(precious, "utf8")).toBe("keep me\n");
+    expect(readFileSync(join(archive, ".gitignore"), "utf8")).toBe("*\n");
+    expect(lstatSync(join(archive, ".gitignore")).nlink).toBe(1);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+}, 60_000);
+
+test("a parser error is named by class only: data it choked on is never printed", async () => {
+  const { base, root, stateDir, project } = fixture();
+  try {
+    seed(stateDir, project);
+    const db = new Database(join(stateDir, "hub.db"));
+    // One bare identifier: Bun's JSON error quotes it whole ("Unexpected identifier ...").
+    const token = "privatebodytoken";
+    db.query("UPDATE delivery_meta SET bus_snapshot = ?").run(`{"queues": ${token}`);
+    db.close();
+    const dry = await cli(root, ["reset"]);
+    expect(dry.code).toBe(1);
+    expect(dry.stderr).toContain("cannot read the state (SyntaxError reading hub.db); nothing was changed; ahub reset --all --yes archives it as it is");
+    const dryAll = await cli(root, ["reset", "--all"]);
+    expect(dryAll.stdout).toContain("could not read the state (SyntaxError reading hub.db); it is archived as it is");
+    const runtime = await cli(root, ["reset", "--yes"]);
+    expect(runtime.code).toBe(1);
+    expect(runtime.stderr).toContain("SyntaxError reading hub.db; the hub is stopped and the reset is incomplete");
+    for (const out of [dry, dryAll, runtime]) expect(out.stdout + out.stderr).not.toContain(token);
   } finally { rmSync(base, { recursive: true, force: true }); }
 }, 60_000);

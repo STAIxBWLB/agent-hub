@@ -951,7 +951,11 @@ changed:
 - when the hub's ownership cannot be verified, as `ahub kill` refuses it;
 - for `--all`, when the state directory is not `<root>/.agenthub/state`
   (`AGENTHUB_STATE_DIR` or a symlink elsewhere): archive such a directory by
-  hand after `ahub kill`.
+  hand after `ahub kill`;
+- for `--all`, when `.agenthub/archive` is a symlink or not your own
+  directory, or its `.gitignore` is not a regular file: anything with write
+  access to the project could otherwise send `hub.db` out of it. Inspect and
+  remove what is there, then run the reset again.
 
 After stopping the hub the reset holds the project's registry claim, the one a
 daemon takes to run, until it is done, so no hub starts under it; a hub that

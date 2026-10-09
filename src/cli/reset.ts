@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Bus } from "../hub/bus.ts";
 import { DeliveryJournal } from "../hub/delivery-journal.ts";
@@ -14,6 +14,16 @@ export const MANIFEST = ["status.json", "control-token", "hub.pid"];
 /** A state the reset cannot read the same way twice: rerunning fails alike, while `--all` archives it as it is. */
 export function damagedState(error: unknown): boolean {
   return error instanceof SyntaxError || /invalid delivery journal|not a database|malformed|corrupt/i.test((error as Error)?.message ?? "");
+}
+
+/**
+ * What may be printed about a failure: a parser's message can quote the data it choked on (envelope bodies, task text),
+ * so JSON and SQLite errors are named by class and code only. Every other message is written by the hub or the system.
+ */
+export function failureText(error: unknown): string {
+  const e = error as NodeJS.ErrnoException;
+  if (e instanceof SyntaxError || e?.name === "SQLiteError") return `${[e.name, e.code].filter(Boolean).join(" ")} reading hub.db`;
+  return e?.message ?? String(error);
 }
 
 /** Ids and peer names only: a reset never prints task or message text (#214). */
@@ -106,21 +116,48 @@ export function resetRuntime(stateDir: string, project: Project): { settled: str
 }
 
 /**
+ * Why `--all` must not move this state directory into `<root>/.agenthub/archive`, or undefined. An agent with write
+ * access to the project, or a repository that commits `.agenthub/`, could otherwise turn the archive into a symlink and
+ * have hub.db (PII) moved out of the project, or the `.gitignore` into one that truncates any file it names.
+ */
+export function archiveProblem(root: string, stateDir: string): string | undefined {
+  const uid = process.getuid?.();
+  const own = (path: string) => { const st = lstatSync(path); return st.isDirectory() && (uid === undefined || st.uid === uid); };
+  for (const dir of [join(root, ".agenthub"), stateDir]) if (!own(dir)) return `${dir} is not a directory of this user`;
+  const archive = join(root, ".agenthub", "archive");
+  if (lstatSync(archive, { throwIfNoEntry: false }) && !own(archive)) return `${archive} is not a directory of this user (a symlink, or another owner's)`;
+  const ignore = lstatSync(join(archive, ".gitignore"), { throwIfNoEntry: false });
+  if (ignore && !ignore.isFile()) return `${join(archive, ".gitignore")} is not a regular file`;
+  return undefined;
+}
+
+/**
  * Full reset, first step: the state directory moves to `.agenthub/archive/state-<UTC time>/` (0700). Nothing is
  * deleted; moving the archive back restores it. Only the default `<root>/.agenthub/state` qualifies (the caller checks).
+ * The rename is the last step: when this throws, nothing was moved.
  */
 export function archiveState(root: string, stateDir: string, now = new Date()): string {
+  const problem = archiveProblem(root, stateDir);
+  if (problem) throw new Error(problem);
   const archive = join(root, ".agenthub", "archive");
-  mkdirSync(archive, { recursive: true, mode: 0o700 });
+  if (!lstatSync(archive, { throwIfNoEntry: false })) mkdirSync(archive, { mode: 0o700 });
   // hub.db holds task text, PII included: keep the archive out of git whatever the project's .gitignore says.
   // The local worker's denylist (src/local/deny.ts) keeps it out of its tools, sandbox and memory capture.
-  // Verified, not only created: an edited or emptied one is put back. Turn snapshots exclude the archive as well.
+  // Verified, not only created: an edited, emptied or hard-linked one is replaced by a rename, never written through.
+  // Turn snapshots exclude the archive as well.
   const ignore = join(archive, ".gitignore");
-  if (!existsSync(ignore) || readFileSync(ignore, "utf8") !== "*\n") writeFileSync(ignore, "*\n");
+  const current = lstatSync(ignore, { throwIfNoEntry: false });
+  if (!current || current.nlink > 1 || readFileSync(ignore, "utf8") !== "*\n") {
+    const temporary = join(archive, `.gitignore.${randomUUID()}.tmp`);
+    try { writeFileSync(temporary, "*\n", { flag: "wx", mode: 0o600 }); renameSync(temporary, ignore); }
+    finally { rmSync(temporary, { force: true }); }
+  }
   const target = join(archive, `state-${now.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`);
-  if (existsSync(target)) throw new Error(`${target} already exists; nothing was moved`);
+  if (lstatSync(target, { throwIfNoEntry: false })) throw new Error(`${target} already exists`);
+  chmodSync(stateDir, 0o700);
+  // ponytail: checked, then renamed by path; a symlink swapped in for .agenthub/archive in the microseconds between
+  // still wins. Rename relative to a held directory descriptor (renameat) if Bun ever exposes one.
   renameSync(stateDir, target);
-  chmodSync(target, 0o700);
   return target;
 }
 
@@ -130,6 +167,8 @@ export function archiveState(root: string, stateDir: string, now = new Date()): 
  */
 export function startState(stateDir: string, archived: string): void {
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  const st = lstatSync(stateDir);
+  if (!st.isDirectory() || st.uid !== (process.getuid?.() ?? st.uid)) throw new Error(`${stateDir} was re-created as something other than a directory of this user`);
   chmodSync(stateDir, 0o700);
   if (existsSync(join(archived, "project.json"))) copyFileSync(join(archived, "project.json"), join(stateDir, "project.json"));
 }

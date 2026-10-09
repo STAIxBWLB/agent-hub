@@ -42,7 +42,7 @@ import { runConsole } from "./console.ts";
 import { resolveColor } from "./console-state.ts";
 import { renderHelp } from "./help.ts";
 import { renderTailEvent } from "./tail-render.ts";
-import { archiveState, damagedState, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
+import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
 
 /** `--since 7d|24h|<iso>` for export and report; everything when absent. */
 const since = (): number => {
@@ -118,9 +118,12 @@ const hubManifest = () => !!readControl(stateDir) || existsSync(join(stateDir, "
 /** A manifest whose daemon is alive or uncertain, by inspectProject's rule; a crashed daemon's leftovers do not count. */
 function liveManifest(): boolean {
   const control = readControl(stateDir);
-  let pid: number | undefined;
-  try { pid = Number(readFileSync(join(stateDir, "hub.pid"), "utf8").trim()); } catch { /* no pid file */ }
-  return (!!control && processAlive(control.pid) !== false) || (pid !== undefined && processAlive(pid) !== false);
+  if (control && processAlive(control.pid) !== false) return true;
+  let text: string;
+  try { text = readFileSync(join(stateDir, "hub.pid"), "utf8").trim(); } catch { return false; }
+  if (/^\d+$/.test(text)) return processAlive(Number(text)) !== false;
+  // Empty or garbled: beside a dead daemon's status it is that daemon's leftover too; alone it proves nothing.
+  return !control;
 }
 
 async function healthy(): Promise<boolean> {
@@ -933,6 +936,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     // A state directory elsewhere (AGENTHUB_STATE_DIR, or a symlink) would cross file systems or pull outside state
     // into the project tree.
     if (all && stateDir !== join(cwd, ".agenthub", "state")) fail(`--all moves only ${join(cwd, ".agenthub", "state")}; this project's state is in ${stateDir}: stop the hub and archive it by hand; nothing was changed`);
+    const unsafe = all ? archiveProblem(cwd, stateDir) : undefined;
+    if (unsafe) fail(`${unsafe}; nothing was changed`);
     const live = await inspectProject(project);
     if (!["stopped", "running", "stopping"].includes(live.state)) fail(`${live.error ?? `hub is ${live.state}`}; nothing was changed`);
     const recovery = live.status?.recovery as { operationId?: string; phase?: string } | undefined;
@@ -944,8 +949,8 @@ const commands: Record<string, () => Promise<void> | void> = {
       let plan: ResetPlan | undefined, unread: string | undefined;
       try { plan = planReset(stateDir, project.id); }
       catch (error) {
-        if (!all) fail(`cannot read ${stateDir}: ${(error as Error).message}; nothing was changed${damagedState(error) ? "; ahub reset --all --yes archives it as it is" : ""}`);
-        unread = (error as Error).message;
+        if (!all) fail(`cannot read the state (${failureText(error)}); nothing was changed${damagedState(error) ? "; ahub reset --all --yes archives it as it is" : ""}`);
+        unread = failureText(error);
       }
       console.log(`ahub reset${all ? " --all" : ""}, dry run: the hub is ${live.state}${live.state === "stopped" ? "" : "; --yes stops it first, as ahub kill does"}`);
       if (all) {
@@ -964,13 +969,20 @@ const commands: Record<string, () => Promise<void> | void> = {
     // Hold the claim a daemon takes to run: a hub started after the stop holds it (refused here), and none can start
     // while the reset acts. A reset that dies leaves a claim with a dead pid, which the next start takes over.
     const registry = new Registry();
-    const claim = randomUUID();
+    // The prefix tells a concurrent reset's claim from a daemon's.
+    const claim = `reset-${randomUUID()}`;
     try {
-      if (!registry.claim(project.id, claim, process.pid) || liveManifest()) throw new Error("a hub started after the stop; nothing was reset, run ahub reset again");
+      if (!registry.claim(project.id, claim, process.pid)) {
+        const holder = registry.get(project.id);
+        throw new Error(holder?.instanceId?.startsWith("reset-") ? `another ahub reset of this project is running (pid ${holder.pid}); nothing was reset` : "a hub started after the stop; nothing was reset, run ahub reset again");
+      }
+      if (liveManifest()) throw new Error("a hub started after the stop; nothing was reset, run ahub reset again");
       // An upgrade or recovery that took the machine's lock after the first check must not run beside the reset.
       assertLifecycleAvailable();
       if (all) {
-        const archived = archiveState(cwd, stateDir);
+        let archived: string;
+        try { archived = archiveState(cwd, stateDir); }
+        catch (error) { throw new Error(`the hub is stopped; nothing was moved: ${failureText(error)}`); }
         console.log(`moved the state directory to ${archived}`);
         try { startState(stateDir, archived); }
         catch (error) { throw new Error(`${(error as Error).message}; the state directory is archived at ${archived}: create ${stateDir} (0700) and copy project.json from the archive`); }
@@ -979,7 +991,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         let result: ReturnType<typeof resetRuntime>;
         try { result = resetRuntime(stateDir, project); }
         catch (error) {
-          throw new Error(`${(error as Error).message}; the hub is stopped and the reset is incomplete: ${damagedState(error) ? "the state cannot be read, so a rerun fails the same way; ahub reset --all --yes archives it as it is" : "run ahub reset --yes again to finish it"}`);
+          throw new Error(`${failureText(error)}; the hub is stopped and the reset is incomplete: ${damagedState(error) ? "the state cannot be read, so a rerun fails the same way; ahub reset --all --yes archives it as it is" : "run ahub reset --yes again to finish it"}`);
         }
         console.log(`settled ${result.settled.length} deliveries as discard with reason "reset"`);
         for (const line of resetLines(result.plan).slice(1)) console.log(`cleared ${line}`);

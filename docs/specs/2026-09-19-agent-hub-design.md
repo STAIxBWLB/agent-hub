@@ -1773,14 +1773,24 @@ acts on the stopped state directory.
   or stopping); a running hub reports a recovery operation whose phase is not
   `released`; `--all` with a state directory other than the literal
   `<root>/.agenthub/state` (an override or symlink elsewhere would cross file
-  systems or pull outside state into the tree).
+  systems or pull outside state into the tree); `--all` when `.agenthub` or
+  the state directory is not a real directory of this user, when
+  `.agenthub/archive` exists as anything else (a symlink could carry hub.db,
+  PII included, out of the project), or when its `.gitignore` is not a regular
+  file (a symlink would truncate the file it names). These are checked before
+  the stop and again right before the rename (`archiveProblem`); a hard-linked
+  `.gitignore` is replaced by a temp file and rename, never written through.
+  Checked, then renamed by path: a symlink swapped in between still wins
+  (marked `ponytail:`; `renameat` on a held descriptor would close it).
 - Between stop and act: after `stopProject` the CLI takes the project's
   registry claim (`Registry.claim` with its own pid), the claim a daemon must
   hold to run, and checks that no manifest names a daemon whose pid is alive
   or uncertain (`processAlive`, the rule `inspectProject` uses); either failing
-  means a hub started in between and nothing is reset. A crashed daemon's
-  manifest (`status.json`, `control-token`, `hub.pid` with a dead pid, after
-  SIGKILL or the forced shutdown exit) does not count: the runtime reset
+  means a hub started in between and nothing is reset. A reset's claim carries
+  the instance prefix `reset-`, so losing the claim to a concurrent reset says
+  so. A crashed daemon's manifest (`status.json`, `control-token`, `hub.pid`
+  with a dead pid, after SIGKILL or the forced shutdown exit; an empty or
+  garbled `hub.pid` beside a dead `status.json` included) does not count: the runtime reset
   removes it and `--all` archives it. With the claim held, the CLI checks the
   machine's recovery lock again, so an upgrade or recovery that took it in
   between does not run beside the reset. The claim is released when the reset
@@ -1792,7 +1802,10 @@ acts on the stopped state directory.
   constructor refuses: root mismatch, corrupt metadata, too many rows) fails
   the same way on a rerun, so its error points to `--all`; any other runtime
   failure is finished by a rerun, every step being idempotent. `--all` prints
-  the archive path as soon as the rename happened.
+  the archive path as soon as the rename happened; a failure before it says
+  the hub is stopped and nothing was moved. JSON and SQLite errors are printed
+  by class and code only (`failureText`): a parser's message can quote the
+  data it choked on, envelope bodies and task text included.
 - Runtime scope (default): the CLI opens the journal as a new instance, which
   turns the stopped run's dispatching and accepted rows into `needs_review`,
   and settles every `queued` and `needs_review` entry of `Bus.queueList`,
