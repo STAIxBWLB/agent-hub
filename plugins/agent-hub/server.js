@@ -15534,7 +15534,7 @@ var stateDir = process.env.AGENTHUB_STATE_DIR ?? stateDirFor(process.cwd());
 var projectRoot2 = process.env.AGENTHUB_PROJECT_DIR ?? process.cwd();
 var peerId = process.env.AGENTHUB_PEER_ID ?? "claude";
 var toolsOnly = process.env.AGENTHUB_MODE === "tools";
-var channel = !toolsOnly && !!process.env.AGENTHUB_CHANNEL;
+var channel = !toolsOnly && process.env.AGENTHUB_CHANNEL === "1";
 function roles() {
   const read = (name) => {
     try {
@@ -15655,7 +15655,14 @@ async function connectLoop() {
         ...toolsOnly ? {} : { channel },
         ...process.env.AGENTHUB_PROJECT_DIR ? { projectRoot: projectRoot2 } : {}
       });
-      client.onPush = (msg) => channel && msg.t === "deliver" && void push(msg.envs ?? [msg.env], msg.deliveryId, msg.generation);
+      client.onPush = (msg) => {
+        if (msg.t !== "deliver")
+          return;
+        if (channel)
+          return void push(msg.envs ?? [msg.env], msg.deliveryId, msg.generation);
+        if (msg.deliveryId)
+          client.request({ t: "delivery_receipt", deliveryId: msg.deliveryId, generation: msg.generation, state: "needs_review", reason: "this session cannot show channel pushes" });
+      };
       hub = client;
       attempt = -1;
       standingBy = false;
@@ -15692,7 +15699,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           text: { type: "string", minLength: 1, maxLength: 8000 },
           to: { type: "array", items: { type: "string" }, description: 'Peer ids, e.g. ["codex"]. Omit to broadcast.' },
-          reply_to: { type: "string", description: "message_id of the channel message this answers." }
+          reply_to: { type: "string", description: "id of the message this answers (meta.message_id, or the id in its [agent-hub message from ...] header)." }
         },
         required: ["text"],
         additionalProperties: false
@@ -15732,9 +15739,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     if (!res.ok)
       return text(`not read: ${res.error}`);
     const envs = res.envs;
+    const more = res.waiting ? `
+
+(${res.waiting} more waiting: call hub_inbox again)` : "";
     return text(envs.length ? envs.map(frame).join(`
 
-`) : "(no queued hub messages)");
+`) + more : "(no queued hub messages)");
   }
   if (name === "hub_inbox") {
     const out = inbox.splice(0);
