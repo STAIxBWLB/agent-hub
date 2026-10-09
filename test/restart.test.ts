@@ -72,13 +72,14 @@ test("journal recovery releases a committed offline peer without reconnecting it
   cleanup.push(() => peer.close());
   await Bun.sleep(20);
   peer.close();
-  for (let n = 0; n < 100 && first.bus.peers.get("claude")?.state !== "offline"; n++) await Bun.sleep(5);
+  // Close detection is asynchronous; a loaded runner can take longer than a few hundred ms.
+  for (const deadline = Date.now() + 5000; Date.now() < deadline && first.bus.peers.get("claude")?.state !== "offline";) await Bun.sleep(10);
   expect(first.bus.peers.get("claude")?.state).toBe("offline");
   expect((await one.request({ t: "recovery", op: "prepare", operationId: "op-offline", expectedInstanceId: "offline-source" })).recovery.phase).toBe("prepared");
   expect((await one.request({ t: "recovery", op: "commit", operationId: "op-offline", expectedInstanceId: "offline-source" })).committed).toBe(true);
   await first.stopped;
   const previous = process.env.AGENTHUB_RECOVERY_OPERATION;
-  let second;
+  let second: Awaited<ReturnType<typeof startDaemon>>;
   try {
     process.env.AGENTHUB_RECOVERY_OPERATION = "op-offline";
     second = await startDaemon({ ...options, instanceId: "offline-target" });
