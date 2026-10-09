@@ -1147,7 +1147,9 @@ commands that apply now. It shows no task or message text. `resume` does not
 start a second runner while one is alive. Every `next` entry and error names the
 operation's own coordinator, `bun <preserved source>/src/cli/main.js recovery
 ...`: in the middle of an upgrade the global `ahub` may still be the older
-release, whose `recovery` lacks these commands. Copy that command line. What
+release, whose `recovery` lacks these commands. Copy that command line. When
+an older coordinator started the operation, `dispose` is named from the running
+release, which has it. What
 each receipt allows, given what is live, is tabulated in the recovery spec
 (`docs/specs/2026-09-20-upgrade-recovery-design.md`, "Receipts, evidence and
 next actions").
@@ -1158,17 +1160,20 @@ next actions").
   replaced, when another operation holds it, or when a peer changed: a peer whose
   terminal the operation closed must stay closed, a session that joined since
   must end, every other one must keep its conversation. With nothing closed yet,
-  `abort` cancels the operation (also once its hold has lapsed) so a new plan
-  can be made; once any project has effects, the way out is stop-and-archive.
+  `abort` cancels the operation (also once its hold has lapsed, or when another
+  daemon or operation holds the source, which it leaves alone) so a new plan
+  can be made; it refuses while a source may have committed, and once any
+  project has effects the way out is stop-and-archive.
   A second `resume` while its own hold still stands checks the peers again
   before it closes anything.
 - A Codex conversation comes back only when a rollout file naming its thread
   exists under `sessions/` of the store the restored terminal uses (the
   recorded `CODEX_HOME`, else `~/.codex`). Codex writes that file with the
-  first message, so a thread on which the hub recorded no turn since Codex
-  attached is listed under `freshStart` and restarts as a new session, with
-  nothing to lose; the command says so. A thread with turns and no rollout
-  blocks the plan, and so does a store that cannot be read (unknown, not
+  first message, so a thread the hub saw Codex start, with no turn on it since,
+  is listed under `freshStart` and restarts as a new session, with nothing to
+  lose; the command says so. A thread with turns, or one whose start the hub's
+  log does not show (it was resumed, or the hub is older), blocks the plan when
+  it has no rollout, and so does a store that cannot be read (unknown, not
   missing). The coordinator checks again before closing the terminal and before
   creating the new one. To continue without such a conversation, end that Codex
   session and close its Orca terminal, then `resume`; it stops at restoring

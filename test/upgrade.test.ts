@@ -2,14 +2,15 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { abortRecovery, createOperation, disposeRecovery, planFingerprint, publicOperation, registeredProjects, runRecovery, type Inspection, type RecoveryDriver, type UpgradePlan } from "../src/cli/upgrade.ts";
+import { abortRecovery, createOperation, disposeRecovery, planFingerprint, publicOperation, recoveryCommand, registeredProjects, runRecovery, type Inspection, type RecoveryDriver, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { acquireRecoveryLock, claimRunner, readOperation, recoveryLock, releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
 import { exactVersion, packageDigest, registryRelease } from "../src/cli/recovery-package.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 import { makeRecoveryDriver, PACKAGE_ROOT } from "../src/cli/upgrade-runtime.ts";
 
 const homes: string[] = [];
-const C = "bun /retained/src/cli/main.js recovery"; // the fixture's preserved coordinator (#215)
+// The fixture preserves this package as its coordinator, which has every recovery command (#215).
+const C = `bun ${join(PACKAGE_ROOT, "src/cli/main.js")} recovery`;
 afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true }); });
 function fixture(kind: "restart" | "upgrade" = "upgrade") {
   const home = mkdtempSync(join(tmpdir(), "ahub-upgrade-test-")); homes.push(home);
@@ -22,7 +23,7 @@ function fixture(kind: "restart" | "upgrade" = "upgrade") {
       return { project: { id, root: `/${id}`, stateDir: `/${id}/state`, pid: 123, instanceId: `old-${id}`, basePort: 4600 }, source, terminals: [], blockers: [] };
     }), blockers: [] };
   const plan: UpgradePlan = { ...body, fingerprint: planFingerprint(body) };
-  const operation = createOperation(plan, "/retained", home);
+  const operation = createOperation(plan, PACKAGE_ROOT, home);
   let clock = 0;
   const driver: RecoveryDriver = {
     stage: async () => { calls.push("stage"); return { root: "/target", digest: "target-digest" }; },
@@ -568,4 +569,40 @@ test("stop-and-archive names the operation's own lapsed source as such", async (
   const op = await disposeRecovery(f.operation.id, { stop: true }, "give up after the lease", f.driver, f.home);
   expect(op.disposition?.projects.alpha).toBe("source left running (its hold had lapsed)");
   expect(f.calls).toEqual([]);
+});
+
+// #215 review: a finished operation owns no lock; refusing to dispose of it must not take one.
+test("disposing of a finished operation again leaves no lock", async () => {
+  const f = failedRestore();
+  expect((await disposeRecovery(f.operation.id, { stop: true }, "give up", f.driver, f.home)).phase).toBe("cancelled");
+  expect(recoveryLock(f.home)).toBeUndefined();
+  await expect(disposeRecovery(f.operation.id, { stop: true }, "again", f.driver, f.home)).rejects.toThrow("operation is already cancelled");
+  await expect(disposeRecovery(f.operation.id, { fresh: "codex" }, "again", f.driver, f.home)).rejects.toThrow("operation is already cancelled");
+  expect(recoveryLock(f.home)).toBeUndefined();
+});
+
+// #215 review: the table's escape for a replaced source, or one another operation holds, with no effects is abort too.
+test("abort cancels around a replaced source but not one that may have committed, and next offers it only then", async () => {
+  const f = fixture();
+  f.operation.projects[0]!.phase = "prepared";
+  writeOperation(f.operation.id, f.operation, f.home);
+  expect(publicOperation(readOperation(f.operation.id, f.home)).next).toContain(`${C} abort ${f.operation.id}`);
+  f.states.get("alpha")!.state = "stopped";
+  await expect(abortRecovery(f.operation.id, f.driver, f.home)).rejects.toThrow("alpha is stopped and may have committed");
+  f.states.set("alpha", { state: "running", instanceId: "replacement", version: "0.5.0", protocol: 9, peers: [], blockers: [], recovery: { operationId: "11111111-1111-1111-1111-111111111111", phase: "prepared", ready: true } });
+  await abortRecovery(f.operation.id, f.driver, f.home);
+  expect((readOperation(f.operation.id, f.home) as { phase: string }).phase).toBe("cancelled");
+  expect(f.calls).toEqual([]); // the replacement and the other operation's hold were left alone
+
+  const committing = fixture();
+  Object.assign(committing.operation, { step: "commit:alpha" });
+  committing.operation.projects[0]!.phase = "prepared";
+  expect(publicOperation(committing.operation).next).not.toContain(`${C} abort ${committing.operation.id}`);
+});
+
+// #215 review: an operation an older coordinator started is resumed by it, but disposed of by a release that has dispose.
+test("next actions name a release that has dispose when the operation's own coordinator lacks it", () => {
+  const op = { id: "00000000-0000-4000-8000-000000000001", sourceRoot: "/releases/source-older" };
+  expect(recoveryCommand(op, "resume")).toBe(`bun /releases/source-older/src/cli/main.js recovery resume ${op.id}`);
+  expect(recoveryCommand(op, "dispose", "--stop-and-archive --reason <text>")).toBe(`${C} dispose ${op.id} --stop-and-archive --reason <text>`);
 });

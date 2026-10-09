@@ -1930,6 +1930,8 @@ export async function startDaemon(opts: DaemonOptions) {
       const codex = new CodexPeer("codex", {
         onTokens: (added) => void addTokens("codex", added),
         onContext: (reading) => contexts.report("codex", reading, contextSession("codex")),
+        // #215: before the thread's first turn_start, so the planner can tell which turns belong to which thread.
+        onThread: (thread, fresh) => event({ type: "native_thread", peer: "codex", thread, fresh }),
         onTurn: (native) => {
           const open = turns.get("codex");
           if (open) turnLog?.native(open.id, native);

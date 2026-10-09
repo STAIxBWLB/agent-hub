@@ -331,7 +331,8 @@ An attached session is the target's report of that peer online with a thread
 | project `prepared`, hold ours | roster changed, effects | blocks, hold kept | dispose | `end that <peer> session` (joined after the plan, or its terminal was closed) or `restore <peer>'s original session`, `then <c> recovery resume <id>` |
 | project `prepared`, hold lapsed (same source instance) | roster as planned | re-prepare, check roster, close, commit | abort if no effects | none |
 | project `prepared`, hold lapsed | roster changed | as the two rows above | as above | as above |
-| project `prepared` | source replaced or held by another operation | blocks, nothing touched | dispose (leaves that daemon running) | `<c> recovery status <id>` and stop-and-archive |
+| project `prepared` | source replaced or held by another operation | blocks, nothing touched | abort if no effects (cancels and leaves that daemon or hold alone), dispose | `<c> recovery status <id>` and stop-and-archive |
+| project `prepared`, receipt step `commit:<project>` | source stopping or stopped (the commit may have been sent) | continues from the commit | dispose | `<c> recovery resume <id>` (abort refuses: the source may have committed) |
 | `closed:<peer>` `pending` | Orca still lists the terminal | blocks | dispose | `close Orca terminal <handle> (the login shell it runs in) by hand, then <c> recovery resume <id>` |
 | `closed:<peer>` done | peer attached again | blocks | dispose | `end that <peer> session, then <c> recovery resume <id>` |
 | `restored:<peer>` `pending` or `failed` | session attached with the planned id (or an accepted new one: fresh choice, planned fresh start, zero-turn Claude) | recorded as restored | none | none |
@@ -347,9 +348,17 @@ An attached session is the target's report of that peer online with a thread
 | `completed` or `cancelled` | any | nothing to do | none | none |
 
 The failed-restoration choices are `<c> recovery dispose <id> --fresh-session
-<peer> --reason <text>` (Codex or Claude; records the lost session and resumes)
-and stop-and-archive. A Codex thread with no rollout on which the hub recorded no
-turn since it attached (zero turns: Codex writes the rollout with the first
-message) is not blocked at the plan: the plan lists it under `freshStart`, says
-so, and it restarts as a new session with nothing recorded to lose. A thread
-with recorded turns and no rollout stays a plan blocker.
+<peer> --reason <text>` (Codex or Claude; records the lost session and resumes;
+if the original session attaches after all, the recorded loss is cleared) and
+stop-and-archive. When the operation's own coordinator predates `dispose`, `<c>`
+for dispose names the running release instead.
+
+A Codex thread with no rollout is not blocked at the plan only when the hub saw
+Codex start it (`native_thread` with `fresh`, logged by the adapter when it
+adopts a thread) and logged no Codex `turn_start` while it was the adopted
+thread (Codex writes the rollout with the first message). The plan then lists
+it under `freshStart`, says so, and it restarts as a new session with nothing to
+lose. Detaching forgets nothing; a thread whose start the log does not show
+(resumed, an older hub, a pruned log) is unsure and stays a plan blocker, as
+does one with turns. A planned fresh start still needs the store to show the
+rollout missing: an unreadable store blocks the close and the create.

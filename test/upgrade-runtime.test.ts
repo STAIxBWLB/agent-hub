@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
@@ -420,6 +420,12 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
     await driver.restore(planned, progress, op, "native", () => {});
     expect(progress.terminals["restored:codex"]).toMatchObject({ handle: "term-new", sessionId: "thread-T" });
     expect(calls.filter((argv) => argv[2] === "create")).toHaveLength(1);
+    // A fresh session chosen for it lost nothing when the original attaches after all.
+    progress.terminals["restored:codex"] = "failed";
+    progress.fresh = { codex: { lost: "thread-T", reason: "chosen before the original came back", at: 1 } };
+    await driver.restore(planned, progress, op, "native", () => {});
+    expect(progress.terminals["restored:codex"]).toMatchObject({ sessionId: "thread-T" });
+    expect(progress.fresh).toBeUndefined();
     progress.terminals["restored:codex"] = "failed"; replacement.sessionId = "thread-new"; attachedThread = undefined;
     record(false);
 
@@ -436,8 +442,9 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
   }
 });
 
-// #215 review: Codex writes a thread's rollout with its first message, so an attached thread with no turn has none yet.
-test("a Codex thread with no rollout restarts fresh while the hub recorded no turn on it, and blocks once it has one", async () => {
+// #215 review: Codex writes a thread's rollout with its first message, so a thread with no turn has none yet. Which
+// turns belong to which thread comes from the hub's own native_thread events; a detach forgets nothing.
+test("a Codex thread with no rollout restarts fresh only while the hub saw it start and saw no turn on it", async () => {
   const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-codex-zero-turn-")));
   mkdirSync(join(temp, "project"));
   const store = join(temp, "codex-home");
@@ -449,30 +456,69 @@ test("a Codex thread with no rollout restarts fresh while the hub recorded no tu
   registry.close();
   const daemon = await startDaemon({ cwd: project.root, stateDir: project.stateDir, projectId: project.id, instanceId: "i-zero", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [] } } });
+  let thread = "thread-Z";
   class CodexLike extends BasePeer {
     async deliver(): Promise<void> {}
     async start(): Promise<void> { this.setState("idle"); }
     async stop(): Promise<void> { this.setState("offline"); }
     turn(): void { this.setState("busy"); this.setState("idle"); }
-    recoveryMetadata(): Record<string, unknown> { return { launch: { kind: "codex" }, threadId: "thread-Z" }; }
+    recoveryMetadata(): Record<string, unknown> { return { launch: { kind: "codex" }, threadId: thread }; }
   }
+  // What the daemon logs when the Codex adapter adopts a thread (onThread), in the hub's own event log.
+  const adopt = (id: string, fresh: boolean) => appendFileSync(join(project.stateDir, "events.jsonl"), `${JSON.stringify({ v: 1, at: new Date().toISOString(), type: "native_thread", peer: "codex", thread: id, fresh })}\n`);
   const codex = new CodexLike("codex");
   daemon.bus.add(codex);
   await codex.start();
-  const shown = { handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", worktreePath: project.root, agentIdentity: "codex", sessionId: "thread-Z", connected: true, env: { CODEX_HOME: store } };
-  const run = async (argv: string[]) => ({ code: 0, stdout: JSON.stringify({ ok: true, result: argv[2] === "list" ? { terminals: [shown] } : { terminal: shown } }), stderr: "" });
+  const shown = () => ({ handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", worktreePath: project.root, agentIdentity: "codex", sessionId: thread, connected: true, env: { CODEX_HOME: store } });
+  const run = async (argv: string[]) => ({ code: 0, stdout: JSON.stringify({ ok: true, result: argv[2] === "list" ? { terminals: [shown()] } : { terminal: shown() } }), stderr: "" });
+  const plan = async () => (await makeUpgradePlan("restart", VERSION, project.root, run)).projects[0]!;
   try {
-    const plan = await makeUpgradePlan("restart", VERSION, project.root, run);
-    expect(plan.projects[0]?.freshStart).toEqual(["codex"]);
-    expect(plan.projects[0]?.blockers).toEqual([]);
+    // Never seen starting (resumed, an older hub, a pruned log): unsure counts as turned.
+    expect((await plan()).freshStart).toBeUndefined();
+    adopt("thread-Z", true);
+    expect(await plan()).toMatchObject({ freshStart: ["codex"], blockers: [] });
+
+    // A thread with history: started here, used, then the TUI detached and resumed it. Detaching forgets nothing.
+    thread = "thread-H";
+    adopt("thread-H", true);
     codex.turn();
-    const later = await makeUpgradePlan("restart", VERSION, project.root, run);
-    expect(later.projects[0]?.freshStart).toBeUndefined();
-    expect(later.projects[0]?.blockers).toEqual([expect.stringContaining("codex: thread thread-Z has no resumable transcript under")]);
-    expect(later.projects[0]?.blockers[0]).toContain("although the hub recorded turns on it");
+    await codex.stop(); await codex.start(); // the TUI detached and came back
+    adopt("thread-H", false);
+    const used = await plan();
+    expect(used.freshStart).toBeUndefined();
+    expect(used.blockers).toEqual([expect.stringContaining("codex: thread thread-H has no resumable transcript under")]);
+    expect(used.blockers[0]).toContain("the hub cannot show that no turn ran on it");
+
+    // A turn on another thread does not count against thread-Z.
+    thread = "thread-Z";
+    expect((await plan()).freshStart).toEqual(["codex"]);
   } finally {
     await daemon.stop();
     if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
     rmSync(temp, { recursive: true, force: true });
   }
+});
+
+// #215 review: a planned fresh start needs the store to show the rollout missing; an unreadable store is unknown.
+test("a planned fresh Codex start is refused while its session store cannot be read", async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-codex-unknown-")));
+  const stateDir = join(temp, "state"), sessions = join(temp, "codex-home", "sessions");
+  mkdirSync(stateDir); mkdirSync(sessions, { recursive: true });
+  const server = fakeHub(temp, stateDir, "i-target", () => ({ operationId: "op-215", phase: "restored", ready: true, peers: {} }));
+  const calls: string[][] = [];
+  const run = async (argv: string[]) => { calls.push(argv); return { code: 0, stdout: "function\n", stderr: "" }; };
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: { CODEX_HOME: join(temp, "codex-home") } };
+  const planned: PlannedProject = {
+    project: { id: "p-215", root: temp, stateDir, instanceId: "i-target", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: "codex", state: "idle", threadId: "thread-Z" }], blockers: [] },
+    terminals: [{ peer: "codex", handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", projectRoot: temp, sessionId: "thread-Z", launch, launchMetadata: launch }], blockers: [], freshStart: ["codex"],
+  };
+  const progress: ProjectProgress = { id: "p-215", instanceId: "i-target", phase: "started", terminals: { "closed:codex": true } };
+  const op = { id: "op-215", sourceRoot: "/retained", targetRoot: "/target", plan: { version: VERSION } } as RecoveryOperation;
+  chmodSync(sessions, 0);
+  try {
+    await expect(makeRecoveryDriver(run).restore(planned, progress, op, "native", () => {})).rejects.toThrow(`the session store ${sessions} cannot be read, so whether thread thread-Z can resume is unknown; no terminal was created`);
+    expect(progress.terminals).toEqual({ "closed:codex": true });
+    expect(calls).toEqual([]);
+  } finally { chmodSync(sessions, 0o700); server.stop(true); rmSync(temp, { recursive: true, force: true }); }
 });

@@ -78,14 +78,20 @@ export interface RecoveryOperation {
  * `ahub` may still be the older release, so next actions and errors never name it bare.
  */
 export function recoveryCommand(op: { id: string; sourceRoot?: string }, action: "status" | "resume" | "abort" | "dispose", flags = ""): string {
-  const entry = op.sourceRoot ? join(op.sourceRoot, "src/cli/main.js") : undefined;
+  // An operation started by an older coordinator is resumed by it, but only a release with dispose can dispose of it.
+  const entry = !op.sourceRoot ? undefined : action === "dispose" && !hasDispose(op.sourceRoot) ? join(import.meta.dir, "main.js") : join(op.sourceRoot, "src/cli/main.js");
   const cli = !entry ? "ahub" : /^[\w./@+-]+$/.test(entry) ? `bun ${entry}` : `bun '${entry.replace(/'/g, `'\\''`)}'`;
   return `${cli} recovery ${action} ${op.id}${flags ? ` ${flags}` : ""}`;
 }
 const STOP = "--stop-and-archive --reason <text>";
+function hasDispose(sourceRoot: string): boolean {
+  try { return readFileSync(join(sourceRoot, "src/cli/upgrade.ts"), "utf8").includes("export async function disposeRecovery"); } catch { return false; }
+}
 
 /** Effects anywhere in the operation: a project past `prepared` or any terminal receipt. Abort needs none. */
 export const hasEffects = (op: RecoveryOperation) => op.projects.some((p) => !["pending", "prepared"].includes(p.phase) || Object.keys(p.terminals).length > 0);
+/** Abort is offered only where the receipt shows it can succeed: no effects, and no commit that may have been sent. */
+const abortable = (op: RecoveryOperation) => !hasEffects(op) && !op.projects.some((p) => p.phase === "prepared" && op.step === `commit:${p.id}`);
 
 /** Registry reads for planning must not create a registry or run migrations. */
 export function registeredProjects(home = hubHome()): Project[] {
@@ -324,7 +330,7 @@ export function publicOperation(op: RecoveryOperation, runnerPid?: number) {
   const next = !open ? [] : runnerPid ? [`wait: runner ${runnerPid} is working; ${recoveryCommand(op, "status")}`]
     : op.disposition ? [`rerun ${recoveryCommand(op, "dispose", STOP)} once its runtimes have settled`] : [
     `${recoveryCommand(op, "resume")}${op.error ? " (after the next action in error)" : ""}`,
-    ...(hasEffects(op) ? [] : [recoveryCommand(op, "abort")]),
+    ...(abortable(op) ? [recoveryCommand(op, "abort")] : []),
     ...failed.map((peer) => recoveryCommand(op, "dispose", `--fresh-session ${peer} --reason <text>`)),
     recoveryCommand(op, "dispose", STOP),
   ];
@@ -359,13 +365,13 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
     if (fingerprint !== planFingerprint(body)) throw new Error("operation plan changed");
     for (const planned of op.plan.projects) {
       const live = await driver.inspect(planned.project);
-      if (live.recovery?.operationId === id) {
-        if (live.instanceId !== planned.source.instanceId || !["preparing", "prepared"].includes(live.recovery.phase ?? "")) throw new Error("recovery has progressed; resume it instead");
+      if (live.recovery?.operationId === id && live.recovery.phase !== "released") {
+        if (live.instanceId !== planned.source.instanceId || !["preparing", "prepared"].includes(live.recovery.phase ?? "")) throw new Error(`recovery has progressed; resume it instead (${recoveryCommand(op, "resume")})`);
         await driver.abort(planned.project, id, planned.source.instanceId!);
-      } else if (op.projects.find((p) => p.id === planned.project.id)?.phase === "prepared" &&
-          // #215: the same source still running with its hold lapsed (an expired lease) was never committed.
-          !(live.state === "running" && live.instanceId === planned.source.instanceId && (!live.recovery?.operationId || live.recovery.phase === "released"))) {
-        throw new Error("prepared source outcome is uncertain; resume it instead");
+      } else if (op.projects.find((p) => p.id === planned.project.id)?.phase === "prepared" && live.state !== "running") {
+        // #215: a source that is not running may have committed. A running one this operation does not hold (its hold
+        // lapsed, a replacement daemon, another operation's hold) was never committed by it and is left alone.
+        throw new Error(`prepared source outcome is uncertain: ${planned.project.id} is ${live.state} and may have committed; resume it instead (${recoveryCommand(op, "resume")})`);
       }
     }
     op.phase = "cancelled"; op.step = "cancelled"; op.updatedAt = driver.now();
@@ -381,12 +387,18 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
 export async function disposeRecovery(id: string, choice: { fresh: string } | { stop: true }, reason: string, driver: RecoveryDriver, home = hubHome()): Promise<RecoveryOperation> {
   let op = readOperation<RecoveryOperation>(id, home);
   validateReceipt(id, op);
+  // A finished operation owns no lock: never take one only to refuse.
+  if (op.phase === "completed" || op.phase === "cancelled") throw new Error(`operation is already ${op.phase}`);
   acquireRecoveryLock(id, home);
   const releaseRunner = claimRunner(id, home);
   try {
     op = readOperation<RecoveryOperation>(id, home);
     validateReceipt(id, op);
-    if (op.phase === "completed" || op.phase === "cancelled") throw new Error(`operation is already ${op.phase}`);
+    if (op.phase === "completed" || op.phase === "cancelled") {
+      // Another runner finished it while this one waited: leave no lock behind, as resume and abort do.
+      if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
+      throw new Error(`operation is already ${op.phase}`);
+    }
     const at = driver.now();
     if ("fresh" in choice) {
       // `ahub pi` sends no fresh flag, and a restored hub refills a Pi start from its recorded resume (daemon startPeer).

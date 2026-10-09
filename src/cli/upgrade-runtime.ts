@@ -49,20 +49,20 @@ const closeUnsettled = (binding: TerminalBinding, op: RecoveryOperation) =>
   `${binding.peer}: terminal close outcome needs manual reconciliation: Orca still lists terminal ${binding.handle}; next action: close that terminal (the login shell it runs in) by hand in Orca, then ${recoveryCommand(op, "resume")}`;
 
 /**
- * #215: Codex writes a thread's rollout with its first message, so a thread with no rollout on which this hub recorded
- * no turn since Codex attached has nothing to lose. Every Codex turn passes `busy`, which the hub records as turn_start.
- * ponytail: read from events.jsonl, so a pruned log or a turn before the last attach reads as turns (the safe side);
- * ask the adapter for the thread's own turn count if that ever blocks a plan wrongly.
+ * #215: Codex writes a thread's rollout with its first message, so a thread this hub saw Codex start (`native_thread`
+ * with `fresh`) on which no turn ran has nothing to lose. A codex turn_start belongs to the thread most recently
+ * adopted before it; detaching forgets nothing. A thread whose start the log does not show (resumed, older hub, pruned
+ * log) is unsure, and unsure counts as turned.
  */
-function codexZeroTurn(stateDir: string): boolean {
-  let attached = false, turned = false;
+function codexZeroTurn(stateDir: string, thread: string): boolean {
+  let current: string | undefined, started = false, turned = false;
   for (const e of readEvents(join(stateDir, "events.jsonl"))) {
-    if (e.type === "state" && e.peer === "codex") {
-      if (e.state === "offline") attached = turned = false;
-      else if (!attached) attached = true;
-    } else if (e.type === "turn_start" && e.peer === "codex") turned = true;
+    if (e.type === "native_thread" && e.peer === "codex") {
+      current = e.thread;
+      if (e.thread === thread && e.fresh) started = true;
+    } else if (e.type === "turn_start" && e.peer === "codex" && current === thread) turned = true;
   }
-  return attached && !turned;
+  return started && !turned;
 }
 
 function terminalOptions(run: RunCommand = runCommand): TerminalRecoveryOptions {
@@ -72,7 +72,7 @@ function terminalOptions(run: RunCommand = runCommand): TerminalRecoveryOptions 
   } };
 }
 
-/** `fresh` (#215, the operator's explicit choice) starts Codex or Claude without resuming its recorded session. */
+/** `fresh` (#215: the operator's choice, or a planned fresh start) starts Codex or Claude without resuming its recorded session. */
 export function restoredTerminalArgv(entrypoint: string, projectRoot: string, binding: TerminalBinding, fresh = false): string[] {
   if (binding.peer === "codex") return [process.execPath, entrypoint, "--project", projectRoot, "codex", ...(fresh ? [] : ["resume", binding.sessionId])];
   if (binding.peer === "claude") return [process.execPath, entrypoint, "--project", projectRoot, "claude", ...(fresh ? [] : ["--resume", binding.sessionId])];
@@ -198,10 +198,10 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
     for (const binding of terminals.bindings) if (binding.peer === "codex") {
       const transcript = codexTranscript(binding);
       if (transcript === "found") continue;
-      if (transcript === "missing" && codexZeroTurn(project.stateDir)) { freshStart.push("codex"); continue; }
+      if (transcript === "missing" && codexZeroTurn(project.stateDir, binding.sessionId)) { freshStart.push("codex"); continue; }
       blockers.push(transcript === "unknown"
         ? `${unresumable(binding)}; manual-required; next action: make that store readable, then make a new plan`
-        : `${unresumable(binding)} although the hub recorded turns on it, so its conversation cannot come back after the restart; manual-required; next action: end that Codex session and close its Orca terminal ${binding.handle} (ahub codex starts a new one later), then make a new plan`);
+        : `${unresumable(binding)}, and the hub cannot show that no turn ran on it, so its conversation may not come back after the restart; manual-required; next action: end that Codex session and close its Orca terminal ${binding.handle} (ahub codex starts a new one later), then make a new plan`);
     }
     body.projects.push({ project, source, terminals: terminals.bindings, blockers, ...(reconnectOnly.length ? { reconnectOnly } : {}), ...(freshStart.length ? { freshStart } : {}) });
   }
@@ -339,9 +339,9 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           progress.terminals[key] = true; save(); continue;
         }
         // #215: check resume viability again right before the destructive effect (a planned fresh start has none to lose).
-        const transcript = binding.peer === "codex" && !planned.freshStart?.includes("codex") ? codexTranscript(binding) : "found";
+        const transcript = binding.peer === "codex" ? codexTranscript(binding) : "found";
         if (transcript === "unknown") throw new Error(`${unresumable(binding)}; no terminal was closed; next action: make that store readable, then ${recoveryCommand(op, "resume")}`);
-        if (transcript === "missing") {
+        if (transcript === "missing" && !planned.freshStart?.includes("codex")) {
           throw new Error(`${unresumable(binding)}; no terminal was closed; next action: ${recoveryCommand(op, "dispose", "--stop-and-archive --reason <text>")} releases the source with its sessions still open, or end that Codex session, close its Orca terminal ${binding.handle} and ${recoveryCommand(op, "resume")}; resume then stops at restoring codex, where ${recoveryCommand(op, "dispose", "--fresh-session codex --reason <text>")} is the explicit way to continue without its conversation`);
         }
         const idle = await waitForIdle(binding, 600_000, terminalOptions(run));
@@ -388,8 +388,11 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         if ((original.peer === "claude") !== (group === "claude")) continue;
         const key = `restored:${original.peer}`;
         // A new session is accepted only by the operator's choice (#215 dispose --fresh-session) or a planned fresh
-        // start of a Codex thread with nothing to lose that still has no rollout.
-        const fresh = !!progress.fresh?.[original.peer] || (!!planned.freshStart?.includes(original.peer) && codexTranscript(original) !== "found");
+        // start of a Codex thread with nothing to lose that still has no rollout; an unreadable store is neither.
+        const chosen = !!progress.fresh?.[original.peer];
+        let read: ReturnType<typeof codexTranscript> | undefined;
+        const transcript = () => original.peer !== "codex" || chosen ? "found" : (read ??= codexTranscript(original));
+        const fresh = () => chosen || (!!planned.freshStart?.includes(original.peer) && transcript() === "missing");
         // What runs for this peer on the target: an attached session, and the recorded launcher with its state.
         const attachedSession = (inspection: Inspection) => {
           const peer = inspection.peers.find((p) => p.id === original.peer && p.state !== "offline");
@@ -397,7 +400,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         };
         const launcher = () => launcherOf(original.peer, planned.project.root, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId });
         const resume = recoveryCommand(op, "resume");
-        const notRestored = (why: string) => new Error(fresh
+        const notRestored = (why: string) => new Error(fresh()
           ? `${original.peer}: ${why}; next action: read that terminal in Orca for the launcher's error and fix its cause, then ${resume}; or ${recoveryCommand(op, "dispose", "--stop-and-archive --reason <text>")}`
           : `${original.peer}: ${why}; session ${original.sessionId} was not restored; choices: ${recoveryCommand(op, "dispose", `--fresh-session ${original.peer} --reason <text>`)} starts a new ${original.peer} session and records this one as lost, or ${recoveryCommand(op, "dispose", "--stop-and-archive --reason <text>")} abandons the upgrade`);
         const receipt = progress.terminals[key];
@@ -412,8 +415,13 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
             // #21: a Claude session that never got a first turn has no transcript, so `claude --resume S` can never
             // succeed and accepting its fresh attach loses nothing. Otherwise only the planned id, or a new session
             // the operator or the plan accepted, counts as restored.
-            if (attached !== original.sessionId && !fresh && !(original.peer === "claude" && !claudeTranscriptExists(original))) {
+            if (attached !== original.sessionId && !fresh() && !(original.peer === "claude" && !claudeTranscriptExists(original))) {
               throw new Error(`${original.peer}: terminal creation outcome is uncertain: session ${attached} is attached instead of ${original.sessionId}; next action: end that ${original.peer} session and close its terminal, then ${resume}`);
+            }
+            // The original came back after all: a fresh session chosen for it lost nothing.
+            if (attached === original.sessionId && progress.fresh?.[original.peer]) {
+              delete progress.fresh[original.peer];
+              if (!Object.keys(progress.fresh).length) delete progress.fresh;
             }
             progress.terminals[key] = await revalidateTerminal(planned, progress, { ...original, sessionId: attached }, false); save();
             continue;
@@ -428,9 +436,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           }
           delete progress.terminals[key]; save(); // failed, nothing live: launch again below
         }
-        const transcript = original.peer === "codex" && !fresh ? codexTranscript(original) : "found";
-        if (transcript === "unknown") throw new Error(`${unresumable(original)}; no terminal was created; next action: make that store readable, then ${resume}`);
-        if (transcript === "missing") {
+        if (transcript() === "unknown") throw new Error(`${unresumable(original)}; no terminal was created; next action: make that store readable, then ${resume}`);
+        if (transcript() === "missing" && !fresh()) {
           progress.terminals[key] = "failed"; save();
           throw notRestored(unresumable(original));
         }
@@ -439,19 +446,19 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         if (attachedSession(live) || (running && running.state !== "gone")) {
           throw new Error(`${original.peer}: a ${original.peer} launch is live on the target although this operation recorded none${running ? ` (terminal ${running.record.handle})` : ""}; no terminal was created; next action: end that ${original.peer} launch and close its terminal, then ${resume}`);
         }
-        if (fresh) {
+        if (fresh()) {
           if (!(await waiversSupported(op.targetRoot!))) throw new Error(`${original.peer}: target ${op.plan.version} predates recovery waivers, so it cannot accept a new session; next action: ${recoveryCommand(op, "dispose", "--stop-and-archive --reason <text>")}`);
           // The restored daemon must accept the new session instead of the recorded one.
           waiveRecoveryPeers(planned.project.stateDir, op.id, { [original.peer]: progress.fresh?.[original.peer] ? "fresh-session" : "fresh-start" });
         }
         const entrypoint = join(op.targetRoot!, "src/cli/main.js");
-        const argv = restoredTerminalArgv(entrypoint, planned.project.root, original, fresh);
+        const argv = restoredTerminalArgv(entrypoint, planned.project.root, original, fresh());
         const assignments = { ...original.launch.env, AGENTHUB_HOME: hubHome(), AGENTHUB_RECOVERY_OPERATION: op.id };
         const launch = { ...original.launch, packageEntrypoint: entrypoint, argv,
           command: ["env", ...Object.entries(assignments).map(([k, v]) => `${k}=${v}`), ...argv].map(shellQuote).join(" ") };
         const binding = { ...original, launch, launchMetadata: launch };
         progress.terminals[key] = "pending"; save();
-        const restored = await createTerminal(binding, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId }, undefined, fresh);
+        const restored = await createTerminal(binding, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId }, undefined, fresh());
         const exited = restored.blockers.find((b) => b.code === "launcher-exited");
         if (exited) {
           progress.terminals[key] = "failed"; save();
@@ -459,7 +466,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         }
         if (restored.manualRequired || !restored.newBinding) throw new Error(`${original.peer}: original session restoration needs manual verification`);
         // The daemon's id is authoritative: a fresh session is recorded under the id it reports once attached.
-        progress.terminals[key] = fresh ? { ...restored.newBinding, sessionId: await attachedId(planned, original.peer, op) } : restored.newBinding; save();
+        progress.terminals[key] = fresh() ? { ...restored.newBinding, sessionId: await attachedId(planned, original.peer, op) } : restored.newBinding; save();
       }
       if (group === "claude") for (const id of planned.reconnectOnly ?? []) {
         // #206: nothing is launched for an unmanaged session; its plugin reconnects by itself, within a bound.
