@@ -3,6 +3,10 @@ import { mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalPeer, type LocalOptions } from "../src/adapters/local-worker.ts";
+import { Board } from "../src/hub/board.ts";
+import { Tasks } from "../src/hub/tasks.ts";
+import { ControlClient } from "../src/hub/control-client.ts";
+import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { loadRouting } from "../src/hub/routing.ts";
@@ -482,4 +486,87 @@ test("a hub_send the bus refuses answers the model with not sent and the reason"
   ctx.bus.publish(newEnvelope("user", "work", { priority: "important" }));
   await until(() => ctx.said.some((e) => e.body.startsWith("seen:")), "answer");
   expect(ctx.said.find((e) => e.body.startsWith("seen:"))!.body).toBe("seen: not sent: rate limited: too many messages from local; retry after 20 s");
+});
+
+// #230: the real Tasks checks must remain the only memory path for hub tool text.
+test("hub tool capture cannot leak refused notes, withheld summaries or PII proposals", async () => {
+  const mem = startFakeMemWorker();
+  cleanup.push(mem.stop);
+  const secret = "patient 900101-1234567";
+  const withheld = "screen-only-private-summary";
+  const calls = [toolCall("hub_remember", { text: secret }), toolCall("hub_task_done", { id: 1, summary: withheld }), toolCall("hub_task_propose", { title: secret, class: "implement" }), toolCall("hub_task_show", { id: 1 })];
+  let tasks: Tasks;
+  const results: string[] = [];
+  const ctx = await setup((body) => body.messages.at(-1)?.role === "tool" ? { content: "finished" } : { tool_calls: calls }, {
+    capture: new Capture(new MemoryClient(mem.url), { project: "p", cwd: "/p", skip: [] }),
+    taskTool: async (name, a) => {
+      let result: string;
+      if (name === "hub_remember") result = await tasks.remember("local", a as { text: string }).catch((e: Error) => `error: ${e.message}`);
+      else if (name === "hub_task_done") result = JSON.stringify(await tasks.done("local", a.id, String(a.summary)));
+      else if (name === "hub_task_propose") result = JSON.stringify(await tasks.propose("local", a as { title: string; class: "implement" }));
+      else result = "conductor result";
+      results.push(result);
+      return result;
+    },
+  });
+  const board = new Board(join(ctx.cwd, "hub.db"));
+  cleanup.push(() => board.close());
+  const routing = loadRouting(ctx.cwd);
+  routing.signals.pii_screen = "local";
+  tasks = new Tasks({ board, bus: new Bus({ batchMs: 0 }), routing: () => routing, cwd: ctx.cwd, project: "p", memory: new MemoryClient(mem.url), notify: () => {}, piiScreen: async (text) => ({ label: text.includes(withheld) ? "pii" : "clear", ms: 0 }) });
+  const ordinary = board.propose("user", { title: "ordinary work", class: "implement" });
+  board.update(ordinary.id, "local", "accepted", { state: "in_progress", owner: "local" });
+  ctx.bus.publish(newEnvelope("user", "use the hub tools", { priority: "important" }));
+  await until(() => ctx.said.length === 1, "hub-tool answer");
+  await ctx.peer.stop();
+  expect(results[0]).toContain("not saved");
+  expect(board.get(1)!.history.some((h) => h.withheld)).toBe(true);
+  expect(tasks.isPii(board.get(2)!)).toBe(true);
+  expect(mem.calls.filter((c) => c.path.endsWith("/observations"))).toHaveLength(0);
+  expect(JSON.stringify(mem.calls)).not.toContain(secret);
+  expect(JSON.stringify(mem.calls)).not.toContain(withheld);
+});
+
+test("daemon local board lists expose PII rows only in a PII turn, never ordinary history or answers", async () => {
+  const secret = "patient 900101-1234567";
+  const mem = startFakeMemWorker();
+  const model = startFakeModelServer({ key: "k", script: (body) => {
+    if (body.messages.at(-1)?.role === "tool") return { content: String(body.messages.at(-1)?.content) };
+    return { tool_calls: [toolCall("hub_task_list", {})] };
+  } });
+  cleanup.push(mem.stop, model.stop);
+  process.env.OMNIROUTE_API_KEY = "k";
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-board-private-")));
+  const stateDir = join(cwd, "state");
+  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, omniroute: { urls: [model.url], access_hosts: [] }, memory: { enabled: true, worker_url: mem.url, inject_tokens: 40, brief_items: 8 } } });
+  cleanup.push(() => daemon.stop());
+  const client = await ControlClient.connect(stateDir, { role: "console" });
+  cleanup.push(() => client.close());
+  // Create while local is offline, so no private offer enters the ordinary test turn.
+  await client.request({ t: "task", op: "hub_task_propose", args: { title: secret, class: "implement", refs: { paths: ["private.txt"] }, plan: { signatures: ["privatePatient()"] } } });
+  const answers: Envelope[] = [];
+  daemon.bus.tap((e) => { if (e.t === "envelope" && e.env.from === "local") answers.push(e.env); });
+  await client.request({ t: "start", peer: "local", args: { model: "vllm/x" } });
+  await until(() => daemon.bus.peers.get("local")?.state === "idle", "local start");
+  daemon.bus.publish(newEnvelope("user", "read the board", { priority: "important", to: ["local"] }));
+  await until(() => answers.length === 1, "ordinary list");
+  expect(answers[0]!.body).toContain("[pii]");
+  expect(JSON.stringify(model.requests)).not.toContain(secret);
+  expect(JSON.stringify(answers)).not.toContain(secret);
+  daemon.bus.publish(newEnvelope("user", "read the board again", { priority: "important", to: ["local"] }));
+  await until(() => answers.length === 2, "later ordinary list");
+  expect(JSON.stringify(model.requests)).not.toContain(secret);
+  expect(JSON.stringify(answers)).not.toContain(secret);
+  await until(() => mem.calls.filter((c) => c.path.endsWith("/summarize")).length === 2, "both ordinary summaries");
+  expect(mem.calls.filter((c) => c.path.endsWith("/observations"))).toHaveLength(0);
+  expect(JSON.stringify(mem.calls)).not.toContain(secret);
+  const before = mem.calls.filter((c) => c.method === "POST").length;
+  daemon.bus.publish(newEnvelope("hub", secret, { kind: "task", priority: "important", to: ["local"], private: true, refs: { task: "1" } }));
+  await until(() => answers.length === 3, "PII list");
+  expect(model.requests.at(-1)!.body.messages.at(-1).content).toContain(secret);
+  expect(model.requests.at(-1)!.body.messages.at(-1).content).toContain("privatePatient()");
+  expect(answers[2]).toMatchObject({ private: true, to: ["user"] });
+  expect(mem.calls.filter((c) => c.method === "POST")).toHaveLength(before);
+  expect(JSON.stringify(mem.calls)).not.toContain(secret);
 });

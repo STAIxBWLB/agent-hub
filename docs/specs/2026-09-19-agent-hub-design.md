@@ -97,8 +97,9 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
 10. Shared memory reuses claude-mem as the single store; the hub never runs its own
     memory database. Native capture stays where it exists (Claude hooks, Codex plugin,
     Kimi transcript bridge); the hub captures only the local worker and adds
-    cross-platform recall, task-scoped briefs and explicit shared notes. The bus still
-    passes messages, never transcripts.
+    cross-platform recall, task-scoped briefs and explicit shared notes. Hub tool calls
+    are not captured; Tasks alone decides what screened tool text reaches memory.
+    The bus still passes messages, never transcripts.
 
 ## Design
 
@@ -279,8 +280,8 @@ peer. Peer ids claimed over the control WS must not be `user` or a hub-managed a
   injection is dropped for the same reason as `dynamicTools`.
 - PII (amended in M4): a task matching `signals.pii_patterns` is owned by `local` or by
   nobody; its envelopes are `private` (console tail and `hub.log` print a stub), lists show
-  `[pii]` to everyone but `local`, `ahub task show` is the one place the console reads it; the
-  reviewer is the console user; `local` answers such a turn to the console only, keeps it out
+  `[pii]` to everyone but `local` inside a PII turn; `ahub task show` is the one place
+  the console reads it. The reviewer is the console user; `local` answers such a turn to the console only, keeps it out
   of its history, refuses it when the only gateway is off campus (Cloudflare Access), and
   nothing reaches claude-mem (no brief, no note, no capture), because claude-mem's observer is
   a cloud model (verified: `/api/health` reports `ai.provider: claude`).
@@ -1856,9 +1857,8 @@ acts on the stopped state directory.
   text right after the pattern check and before triage. "Held as private" is met
   by holding the task back entirely: until the verdict it is not on the board, so
   no envelope, notice, triage call, brief or note of the hub's can read it. The
-  local worker's claude-mem capture of its own tool calls is outside this: in an
-  ordinary turn it sends a proposal's arguments whatever the verdict (an existing
-  gap for every hub tool, not closed here). Writing it as
+  local worker never captures hub tool calls (#230), so a proposal's arguments
+  cannot bypass the verdict through capture. Writing it as
   a PII task first was rejected: a PII task opening lifts every silent turn-free
   cohort for good and switches facts off (#107, #108), so every proposal would do
   that. The proposal's tool call waits for the verdict, as it already waits for

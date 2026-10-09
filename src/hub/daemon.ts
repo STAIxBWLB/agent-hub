@@ -1167,7 +1167,7 @@ export async function startDaemon(opts: DaemonOptions) {
     // Lists are redacted for everyone but the on-prem worker, and only when it calls from inside this process: over the
     // control WS anyone holding the token can claim to be "local". A board on a shared screen is a leak too, so the
     // console reads a PII task's text deliberately, with `ahub task show <id>`.
-    const onPrem = inProcess && by === "local";
+    const onPrem = inProcess && by === "local" && piiTurn;
     const line = (t: { id: number; state: string; owner: PeerId | null; reviewer: PeerId | null }) => { const task = board.get(t.id); return task && by === USER ? tasks.resultLine(task) : `task #${t.id}: ${t.state}, owner ${t.owner ?? "none"}, reviewer ${t.reviewer ?? "none"}`; };
     const need = (cap: "propose" | "assign" | "remember", what: string) => {
       if (may(by, cap)) return;
