@@ -1863,28 +1863,35 @@ acts on the stopped state directory.
   `releaseDependents` fetches for the tasks an approval releases.
 - The screener (`screenPii`, `src/hub/inference.ts`): the on-device model when
   `mlx.enabled` and it can be had (`ensureMlx`, loopback only; a legacy MLX runtime
-  is started the way Pi's relay starts it), else the gateway's `local.fixed_model` only while the
+  is started the way Pi's relay starts it and keeps running until `ahub models
+  stop`), else the gateway's `local.fixed_model` only while the
   daemon's `onCampus()` holds, with `onCampusOnly` so the client refuses an Access
   host once more before transport; never the Switchyard sidecar. One call per item,
   an 8 s deadline over the whole call, and a generation slot of its own: it asks
   for one without waiting (`acquire(abort.signal, 0)`: one look, then
   `MlxBusyError`); with all taken (Pi generating, another screen) it uses the
   campus gateway when `onCampus()` holds and otherwise waits for the slot under the
-  deadline. `max_tokens` 32, temperature 0 and `reasoning_effort: "none"` on both
+  deadline. On campus the device gets 60% of the deadline: an error reply or a
+  device still loading then hands over to the gateway within the rest; off campus
+  it keeps the whole deadline. `max_tokens` 32, temperature 0 and `reasoning_effort: "none"` on both
   paths, so a reasoning model does not spend the budget thinking. The
   prompt frames the text as data and carries Korean and English examples and hard
   negatives. The answer must be exactly `clear` or `pii <category>` with a category
   from `name, student_id, phone, address, grade, health, other`.
 - Fail closed: an answer outside that form, a timeout, a failed or missing model,
-  an off-campus gateway, or text over 6000 characters (the 8k on-device context at
-  one token per character) is `unknown`. `pii` and `unknown` add the `pii` signal,
+  an off-campus gateway, or text over 6000 UTF-8 bytes (every token is at least a
+  byte, so text and prompt fit the 8k on-device context; Ollama could otherwise
+  judge cut input) is `unknown`. `pii` and `unknown` add the `pii` signal,
   so the task takes the whole existing PII path (local or nobody, user review,
   private envelopes, redacted views, no claude-mem). A pattern match is PII without
   a call. The source is recorded as a `screened` history entry (`pii: regex`,
   `pii: screen, <category>`, `pii: unknown, <reason>`, `clear`) and a `pii_screen`
   event; an unknown verdict is a console and hub.log line with the task id and the
   closed reason only. `route explain` on a draft does not call the screen and adds
-  a trace line saying a proposal would.
+  a trace line saying a proposal would. The cost of `unknown` is the cost of any PII
+  task, even if a re-screen clears it later: it lifts every silent turn-free cohort
+  for good and turns facts off while open, and off campus triage is not asked, so a
+  classless proposal that is not a claim is refused with an error naming that.
 - Re-screen. Off campus with the device slot taken, the verdict is `unknown`. A
   task whose last `screened` entry is `pii: unknown` (not `too long`, which a
   second look cannot change), that is still `proposed` and that no peer ever owned
@@ -1910,7 +1917,8 @@ acts on the stopped state directory.
   keeps the text and marks the history entry `withheld: true`, so public views,
   later reviewers, held cohort notices and `ahub ask` keep withholding it after a
   restart without another call. The check output tail of a done note, a plan given
-  at accept and context checkpoint summaries stay pattern-only.
+  at accept, a decline reason, refs (paths, branch) and context checkpoint
+  summaries stay pattern-only.
 - Calibration (AC4): `test/fixtures/pii-screen.json` holds synthetic Korean and
   English positives across the categories and hard negatives (roles,
   placeholders, field and function names, ports, codes); none is copied from the

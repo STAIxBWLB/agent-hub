@@ -186,12 +186,14 @@ export interface PiiScreenDeps {
 
 /** With triage (8 s) and a brief (2 x 2 s), a proposal answers within 20 s, under the plugin's 30 s control timeout. */
 const SCREEN_TIMEOUT_MS = 8_000;
+/** On campus, the share of the deadline the on-device model gets before the gateway takes over (a cold load, an error). */
+const DEVICE_SHARE = 0.6;
 /**
- * The longest text the screen reads: with its prompt it fits an 8k on-device context at one token per character,
- * the worst case for Korean and digits.
+ * The longest text the screen reads, in UTF-8 bytes: every token is at least one byte, so with its prompt it fits an
+ * 8k on-device context whatever the script (about 2000 Hangul syllables). Cut input could be judged `clear`.
  * ponytail: longer text is unknown, so it is handled as PII; screen it in bounded chunks if long items are held too often.
  */
-export const SCREEN_MAX_CHARS = 6000;
+export const SCREEN_MAX_BYTES = 6000;
 
 // The examples are synthetic. Hard negatives teach that roles, placeholders and code are not a person.
 export const SCREEN_PROMPT = [
@@ -227,39 +229,53 @@ export function parseScreen(answer: string | null | undefined): Omit<PiiVerdict,
 export async function screenPii(text: string, d: PiiScreenDeps): Promise<PiiVerdict> {
   const started = performance.now();
   const verdict = (v: Omit<PiiVerdict, "ms">): PiiVerdict => ({ ...v, ms: Math.round(performance.now() - started) });
-  if (text.length > SCREEN_MAX_CHARS) return verdict({ label: "unknown", miss: "too long" });
+  if (Buffer.byteLength(text) > SCREEN_MAX_BYTES) return verdict({ label: "unknown", miss: "too long" });
   const messages: ChatMessage[] = [{ role: "system", content: SCREEN_PROMPT }, { role: "user", content: text }];
   const abort = new AbortController();
   let campus: Promise<boolean> | undefined;
   const onCampus = () => (campus ??= d.onCampus().catch(() => false));
-  const ask = async (): Promise<Omit<PiiVerdict, "ms">> => {
-    const device = await d.device?.().catch(() => undefined);
-    // A generation slot of its own. All taken (Pi generating, another screen) sends the screen to the campus gateway;
-    // off campus it waits for one under the same deadline, and a slot still taken then makes the verdict unknown.
-    let release = device ? await device.acquire(abort.signal, 0).catch(() => undefined) : undefined;
-    if (device && !release && !(await onCampus())) release = await device.acquire(abort.signal);
-    if (device && release) {
-      try {
-        const res = await fetch(`${device.url.replace(/\/$/, "")}/chat/completions`, {
-          method: "POST",
-          redirect: "error",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ model: device.model, messages, max_tokens: 32, temperature: 0, reasoning_effort: "none", stream: false }),
-          signal: abort.signal,
-        });
-        if (!res.ok) return { label: "unknown", miss: "failed" };
-        const json = (await res.json()) as { choices?: { message?: { content?: string | null } }[] };
-        return parseScreen(json.choices?.[0]?.message?.content);
-      } finally {
-        release();
-      }
-    }
+  const limit = d.timeoutMs ?? SCREEN_TIMEOUT_MS;
+  const gateway = async (): Promise<Omit<PiiVerdict, "ms">> => {
     if (!(await onCampus())) return { label: "unknown", miss: "off campus" };
     const res = await d.omni.chat({ model: d.fixedModel(), messages, max_tokens: 32, temperature: 0, reasoning_effort: "none" }, { signal: abort.signal, onCampusOnly: true });
     return parseScreen(res.message.content);
   };
+  const ask = async (): Promise<Omit<PiiVerdict, "ms">> => {
+    const device = await d.device?.().catch(() => undefined);
+    if (!device) return gateway();
+    // A generation slot of its own. All taken (Pi generating, another screen) sends the screen to the campus gateway;
+    // off campus it waits for one under the same deadline, and a slot still taken then makes the verdict unknown.
+    let release = await device.acquire(abort.signal, 0).catch(() => undefined);
+    if (!release && (await onCampus())) return gateway();
+    release ??= await device.acquire(abort.signal);
+    const own = new AbortController();
+    abort.signal.addEventListener("abort", () => own.abort(), { once: true });
+    const answer = (async () => {
+      const res = await fetch(`${device.url.replace(/\/$/, "")}/chat/completions`, {
+        method: "POST",
+        redirect: "error",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: device.model, messages, max_tokens: 32, temperature: 0, reasoning_effort: "none", stream: false }),
+        signal: own.signal,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = (await res.json()) as { choices?: { message?: { content?: string | null } }[] };
+      return parseScreen(json.choices?.[0]?.message?.content);
+    })().finally(release);
+    // A device that fails or is still loading after its share of the deadline hands over to the campus gateway; off
+    // campus there is nothing to hand over to, so it keeps the whole deadline.
+    let slow: ReturnType<typeof setTimeout> | undefined;
+    const first = await Promise.race([answer.catch(() => undefined), new Promise<"slow">((resolve) => (slow = setTimeout(() => resolve("slow"), limit * DEVICE_SHARE)))]);
+    clearTimeout(slow);
+    if (first && first !== "slow") return first;
+    if (await onCampus()) {
+      own.abort();
+      return gateway();
+    }
+    return first === "slow" ? answer : { label: "unknown", miss: "failed" };
+  };
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<Omit<PiiVerdict, "ms">>((resolve) => (timer = setTimeout(() => resolve({ label: "unknown", miss: "timeout" }), d.timeoutMs ?? SCREEN_TIMEOUT_MS)));
+  const timeout = new Promise<Omit<PiiVerdict, "ms">>((resolve) => (timer = setTimeout(() => resolve({ label: "unknown", miss: "timeout" }), limit)));
   try {
     return verdict(await Promise.race([ask().catch((): Omit<PiiVerdict, "ms"> => ({ label: "unknown", miss: "failed" })), timeout]));
   } finally {

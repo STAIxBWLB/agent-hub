@@ -196,10 +196,10 @@ export class Tasks {
   /**
    * Whether the model screen withholds free text about an ordinary task (issue #198): it is on and its verdict is not
    * `clear`. Text that matches a pattern needs no call (the #69 checks withhold it; only the record says so), and a PII
-   * task's text is private.
+   * task's text is private. Tool callers are models: anything but a string is not screened, so `off` stays as it was.
    */
-  private async withholds(item: ScreenItem, text: string | undefined, task?: Task): Promise<boolean> {
-    if (!text?.trim() || !this.screenOn() || (task && this.isPii(task))) return false;
+  private async withholds(item: ScreenItem, text: unknown, task?: Task): Promise<boolean> {
+    if (typeof text !== "string" || !text.trim() || !this.screenOn() || (task && this.isPii(task))) return false;
     if (!this.nameable(text)) return (this.recordScreen(task?.id, item, undefined), false);
     const v = await this.screenCall(text);
     this.recordScreen(task?.id, item, v);
@@ -500,16 +500,18 @@ export class Tasks {
     if (screened && screened.label !== "clear") signals.push("pii");
     let cls = given as TaskClass | undefined;
     let triaged = false;
+    let fenced = false; // a PII task off campus: triage is not asked
     if (!cls && this.d.triage) {
       // Signals first: a PII task's text may only go to a model that is reached without leaving the campus network.
       const pii = signals.includes("pii") && this.d.routing().constraints.pii === "local_only";
       if (!pii || (await this.d.triage.onCampus().catch(() => false))) cls = await this.d.triage.classify(text.title, text.detail).catch(() => undefined);
+      else fenced = true;
       triaged = !!cls;
     }
     // A claim is work the caller will do itself: without a class and a model to name one, it is implementation (#6).
     const defaulted = !cls && input.owner === by;
     if (defaulted) cls = "implement";
-    if (!cls) throw new Error(`class is required (one of ${CLASSES.join(", ")}); the hub could not name one for you`);
+    if (!cls) throw new Error(`class is required (one of ${CLASSES.join(", ")}); ${fenced ? "the task is handled as PII and the hub's model is not reached on campus, so it was not asked to name one" : "the hub could not name one for you"}`);
     const draft = { ...text, class: cls };
     let task = this.d.board.propose(by, { ...draft, plan, ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals });
     if (screening) task = this.screenedTask(task, screened);

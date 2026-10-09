@@ -62,7 +62,10 @@ if (import.meta.main) {
   const deps = { ...(device ? { device } : {}), omni, onCampus: () => omni.onCampus(), fixedModel: () => fixedModel };
   const { items } = JSON.parse(readFileSync(join(import.meta.dir, "..", "test", "fixtures", "pii-screen.json"), "utf8")) as { items: Item[] };
   const onDevice = device ? await device().then((h) => h.model, () => undefined) : undefined;
-  const path = onDevice ? `on-device model ${onDevice}` : (await omni.onCampus()) ? `campus gateway, model ${fixedModel}` : "none: off campus and no on-device model, so every verdict is unknown";
+  const campus = await omni.onCampus();
+  const path = onDevice
+    ? `on-device model ${onDevice}${campus ? `; items that find the slot taken, or the device failing or still loading, are answered by the campus gateway, model ${fixedModel}` : ""}`
+    : campus ? `campus gateway, model ${fixedModel}` : "none: off campus and no on-device model, so every verdict is unknown";
   const verdicts: PiiVerdict[] = [];
   for (const item of items) verdicts.push(await screenPii(item.text, deps)); // one at a time, like the hub's slot
   const s = score(items, verdicts);

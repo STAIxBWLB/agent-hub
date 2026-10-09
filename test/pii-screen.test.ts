@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import type { Envelope, PeerState } from "../src/hub/envelope.ts";
-import { parseScreen, PII_CATEGORIES, screenPii, SCREEN_MAX_CHARS, SCREEN_PROMPT, type PiiVerdict, type ScreenRecord } from "../src/hub/inference.ts";
+import { parseScreen, PII_CATEGORIES, screenPii, SCREEN_MAX_BYTES, SCREEN_PROMPT, type PiiVerdict, type ScreenRecord } from "../src/hub/inference.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { Tasks } from "../src/hub/tasks.ts";
@@ -36,6 +36,10 @@ afterEach(() => {
   delete process.env.OMNIROUTE_API_KEY;
 });
 const tick = () => new Promise((r) => setTimeout(r, 15));
+const until = async (cond: () => boolean) => {
+  for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
+  expect(cond()).toBe(true);
+};
 const NAME = "Minji Seo";
 const TEMPLATE = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8");
 
@@ -259,8 +263,13 @@ test("the screener: the device first, the campus gateway else, a closed answer, 
   expect(await screenPii("text", { ...deps, omni: slow.omni, onCampus: () => slow.omni.onCampus(), timeoutMs: 80 })).toMatchObject({ label: "unknown", miss: "timeout" });
   expect(Date.now() - t0).toBeLessThan(450);
   const before = on.model.requests.length;
-  expect(await screenPii("x".repeat(SCREEN_MAX_CHARS + 1), deps)).toMatchObject({ label: "unknown", miss: "too long" });
+  expect(await screenPii("x".repeat(SCREEN_MAX_BYTES + 1), deps)).toMatchObject({ label: "unknown", miss: "too long" });
+  // The cap counts UTF-8 bytes, so a multi-byte text far under the character count is too long as well.
+  expect(await screenPii("김".repeat(SCREEN_MAX_BYTES / 3 + 1), deps)).toMatchObject({ label: "unknown", miss: "too long" });
+  expect(await screenPii("🙂".repeat(SCREEN_MAX_BYTES / 4 + 1), deps)).toMatchObject({ label: "unknown", miss: "too long" });
   expect(on.model.requests).toHaveLength(before);
+  await screenPii("김".repeat(SCREEN_MAX_BYTES / 3), deps); // exactly at the cap: read
+  expect(on.model.requests).toHaveLength(before + 1);
 });
 
 test("AC4 fixtures: synthetic, both languages, ids unique, categories closed, none copied from the prompt; the scorer counts unknown as a model miss", async () => {
@@ -410,4 +419,39 @@ test("the re-screen skips a task any peer ever owned, tries the least-tried task
   const before = s.screened.length;
   for (let i = 0; i < 4; i++) await s.tasks.rescreen();
   expect(s.screened.slice(before)).toEqual(["task a\n\n", "task b\n\n", "task a\n\n", "task b\n\n"]);
+});
+
+test("a device that fails or is still loading hands over to the campus gateway within the deadline; off campus it keeps the deadline", async () => {
+  const on = gateway(() => ({ content: "pii phone" }));
+  const off = gateway(() => ({ content: "clear" }), true);
+  let mode: "fail" | "slow" = "fail";
+  const device = startFakeModelServer({ script: async () => {
+    if (mode === "fail") throw new Error("model not loaded");
+    await Bun.sleep(300);
+    return { content: "clear" };
+  } });
+  cleanup.push(device.stop);
+  const released: number[] = [];
+  const handle = { url: device.url, model: "agenthub-fast", acquire: async () => () => void released.push(1) };
+  const campus = { omni: on.omni, onCampus: () => on.omni.onCampus(), fixedModel: () => "m", device: async () => handle, timeoutMs: 400 };
+  const offCampus = { ...campus, omni: off.omni, onCampus: () => off.omni.onCampus() };
+  expect(await screenPii("call Jane", campus)).toMatchObject({ label: "pii", category: "phone" }); // HTTP 500 from the device
+  mode = "slow"; // 300 ms on the device is past its share (240 ms) of a 400 ms deadline
+  expect(await screenPii("call Jane", campus)).toMatchObject({ label: "pii", category: "phone" });
+  expect(on.model.requests).toHaveLength(2);
+  expect(await screenPii("call Jane", offCampus)).toMatchObject({ label: "clear" }); // no gateway to hand over to: it waits
+  mode = "fail";
+  expect(await screenPii("call Jane", offCampus)).toMatchObject({ label: "unknown", miss: "failed" });
+  expect(off.model.requests).toHaveLength(0);
+  await until(() => released.length === 4); // every slot taken was given back
+});
+
+test("with the screen off a summary that is not a string is stored as before; a PII task off campus says why no class was named", async () => {
+  const r = await rig("off", byName);
+  const t = await r.tasks.propose("claude", { title: "fix the parser", class: "implement", owner: "codex" });
+  expect((await r.tasks.done("codex", t.id, { text: "fixed" } as unknown as string)).state).toBe("in_review");
+  expect(r.screened).toHaveLength(0);
+  const s = await rig("local", async () => ({ label: "unknown", miss: "off campus", ms: 1 }));
+  const fenced = new Tasks({ board: s.board, bus: s.bus, routing: () => loadRouting(s.dir), cwd: s.dir, project: "agent-hub", notify: () => {}, piiScreen: async () => ({ label: "unknown", miss: "off campus", ms: 1 }), triage: { classify: async () => "implement", onCampus: async () => false } });
+  await expect(fenced.propose("claude", { title: "fix the parser" })).rejects.toThrow("the task is handled as PII and the hub's model is not reached on campus, so it was not asked to name one");
 });
