@@ -220,7 +220,9 @@ checks again before closing its terminal (closing nothing when it fails) and
 before creating the replacement. A replacement launcher is awaited in 5-second
 slices of Orca's `tui-idle` wait; between slices `terminal wait --for exit`
 is asked, so a launcher that exited is recognized within one slice instead of
-after the 10-minute readiness bound. Such a launch, or a thread found not
+after the 10-minute readiness bound. Orca (1.4.223) answers a wait that timed
+out with exit 1 and `{"ok":false,"error":{"code":"timeout"}}`; that counts as
+not yet satisfied, while any other failure stops the wait. Such a launch, or a thread found not
 resumable before the launch, is receipted `restored:<peer>` = `failed` and never
 counts as restored. Claude's zero-turn rule is unchanged; Pi resume viability is
 not checked.
@@ -251,15 +253,25 @@ the runner (refusing while one is alive) and append to the receipt's audit:
   else as before. The operation may then complete; its status keeps the lost
   continuity.
 - `ahub recovery dispose <id> --stop-and-archive --reason <text>` abandons the
-  operation. It inspects every project before acting; a runtime that is neither
-  running nor stopped refuses the whole disposition. A source this operation
-  holds and has not committed gets its hold aborted and keeps running. A target
-  this operation started and has not released is stopped through the lifecycle
-  stop, which verifies its instance and waits until its manifest and registry
-  claim are gone, and is then inspected again. A daemon this operation does not
-  own, or one already released, is left running. A stopped project's committed
+  operation. It inspects every project before acting; a runtime that is
+  starting, stopping or unreachable refuses the whole disposition, and a project
+  whose directory is gone is recorded as such (nothing to stop or archive). A
+  source this operation holds and has not committed gets its hold aborted and
+  keeps running. A target this operation started and has not released (a
+  running daemon in phase `restored` under this operation id, other than the
+  source, whether or not the receipt recorded its instance) is stopped by its
+  live instance through the lifecycle stop, which verifies the instance and
+  waits until its manifest and registry claim are gone, and is then inspected
+  again. A daemon this operation does not own, or one already released, is left
+  running. Each project's outcome is recorded as it happens; a disposition that
+  stops partway keeps the lock, and resume and `--fresh-session` then refuse
+  until `--stop-and-archive` is run again and finishes. A stopped project's committed
   snapshot of this operation moves to `restart.abandoned.<hash>.json`, which is
-  never replayed, so an ordinary `up` works again. Only then is the operation
+  never replayed, so an ordinary `up` works again. Queued envelopes are not
+  delivered from that file; a hub with a delivery journal (protocol 10 and
+  later) reloads the queues it persisted in `hub.db` on its next start.
+  Replacement terminals the operation created stay open, attached to nothing
+  until a hub runs again. Only then is the operation
   recorded `cancelled` with its disposition (per-project outcome, plugin and CLI
   state) and the lock released. It is never recorded as completed, the global
   CLI is not promoted, and terminals it closed stay closed. A project whose

@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
+import { claimRunner, writeOperation } from "../src/hub/recovery-store.ts";
 
 test("installed-layout detached restart completes in an isolated project and preserves its task board", async () => {
   const temp = mkdtempSync(join(tmpdir(), "ahub-recovery-cli-"));
@@ -120,4 +121,26 @@ test("an agent shell cannot dispose of a recovery operation", async () => {
     const [code, , err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
     expect({ code, err: err.trim() }).toEqual({ code: 1, err: "ahub: claude cannot run ahub recovery dispose; the person runs it in ahub console or a terminal" });
   } finally { rmSync(temp, { recursive: true, force: true }); }
+});
+
+// #215: resume does not start a second runner while one holds the operation; status names it.
+test("resume declines while a runner holds the operation", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "ahub-runner-cli-"));
+  mkdirSync(join(temp, "project"));
+  const root = realpathSync(join(temp, "project")), home = join(temp, "home");
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("ORCA_") || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete env[key];
+  env.AGENTHUB_HOME = home;
+  const id = "00000000-0000-4000-8000-000000000215";
+  writeOperation(id, { schema: 1, id, phase: "running", step: "restore:p", plan: { version: "0.0.0" }, projects: [], updatedAt: 1 }, home);
+  const release = claimRunner(id, home);
+  const cli = async (args: string[]) => {
+    const p = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", root, ...args], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
+    const [code, out] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    return { code, out };
+  };
+  try {
+    expect(await cli(["recovery", "resume", id])).toEqual({ code: 0, out: `runner ${process.pid} is still working on this operation; ahub recovery status ${id}\n` });
+    expect(JSON.parse((await cli(["recovery", "status", id])).out)).toMatchObject({ runner: { state: "running", pid: process.pid } });
+  } finally { release(); rmSync(temp, { recursive: true, force: true }); }
 });

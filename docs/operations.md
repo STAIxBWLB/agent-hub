@@ -1155,7 +1155,9 @@ start a second runner while one is alive.
   recorded `CODEX_HOME`, else `~/.codex`). The plan blocks on one that does not,
   the coordinator checks again before closing the terminal and before creating
   the new one, and a restored terminal whose launcher exits is recognized
-  within one 5-second wait slice. Either way the receipt says
+  within one 5-second wait slice (an Orca wait that times out only means "not
+  yet"). To continue without such a conversation, end that Codex session and
+  close its Orca terminal, then `resume`. Either way the receipt says
   `restored:codex` `failed`; it never counts as restored.
 - `ahub recovery dispose <operation-id> --fresh-session <peer> --reason <text>`
   applies to a peer whose restoration failed. It records the lost session or
@@ -1163,12 +1165,19 @@ start a second runner while one is alive.
   starts without its old conversation, and the rest is verified as usual.
 - `ahub recovery dispose <operation-id> --stop-and-archive --reason <text>`
   abandons the operation. It checks every project first and refuses while a
-  runtime is starting, stopping or unreachable. It releases a source hold of
-  its own (that hub keeps running), stops a target hub it started and has not
-  released, moves that operation's `restart.json` aside as
-  `restart.abandoned.<hash>.json` (never replayed) and leaves any other hub
-  running; only then is the operation recorded `cancelled` and the lock
-  released. Terminals it closed stay closed: start those sessions again by hand.
+  runtime is starting, stopping or unreachable; a project whose directory is
+  gone is only recorded (`ahub doctor --orphans` lists a hub left running
+  there). It releases a source hold of its own (that hub keeps running), stops
+  a target hub it started and has not released, moves that operation's
+  `restart.json` aside as `restart.abandoned.<hash>.json` and leaves any other
+  hub running; only then is the operation recorded `cancelled` and the lock
+  released. If it fails partway it keeps the lock, records what it did, and
+  `resume` refuses until you run it again. Queued messages are not delivered
+  from the archived file; a 0.7.0 or later hub reloads the queues it kept in
+  `hub.db` when it starts again. Terminals it closed stay closed: start those
+  sessions again by hand. Replacement terminals it opened stay open but have
+  no hub: Claude's plugin reconnects once a hub runs, Codex needs `ahub codex`
+  again.
   Start a project whose target ran with that release's CLI (`bunx --package
   @staix/agent-hub@<version> ahub up`), since it may have changed the task
   database. The global CLI was not promoted.

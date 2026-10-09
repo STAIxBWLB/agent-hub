@@ -368,9 +368,11 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
   const calls: string[][] = [];
   const run = async (argv: string[]) => {
     calls.push(argv);
+    // Orca answers a wait that timed out with exit 1 and error code "timeout".
+    if (argv[2] === "wait" && argv.includes("exit") !== exits) return { code: 1, stdout: JSON.stringify({ ok: false, error: { code: "timeout" } }), stderr: "" };
     const result = argv[2] === "create" ? { terminal: { handle: "term-new", incarnationId: "inc-new", worktreeId: "wt" } }
       : argv[2] === "show" ? { terminal: replacement }
-      : argv[2] === "wait" ? { satisfied: argv.includes("exit") ? exits : !exits } : { terminals: [replacement] };
+      : argv[2] === "wait" ? { wait: { satisfied: true } } : { terminals: [replacement] };
     return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
   };
   const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: { CODEX_HOME: codexHome } };
@@ -390,7 +392,7 @@ test("a Codex restoration that cannot resume is receipted failed with both choic
     expect(calls).toEqual([]); // found before any terminal was created
 
     writeFileSync(join(sessions, "rollout-2026-10-09T00-00-00-thread-T.jsonl"), "{}\n");
-    await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("its restoration launcher exited before the session was ready");
+    await expect(driver.restore(planned, progress, op, "native", () => {})).rejects.toThrow("its restoration launcher in terminal term-new exited before the session was ready");
     expect(progress.terminals["restored:codex"]).toBe("failed");
     expect(calls.filter((argv) => argv[2] === "create")).toHaveLength(1);
 

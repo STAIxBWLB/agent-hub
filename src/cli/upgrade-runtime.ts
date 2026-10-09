@@ -172,7 +172,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
     });
     blockers.push(...terminals.blockers.map((b) => `${b.message}${b.terminalReference ? ` (terminal ${b.terminalReference})` : ""}${b.nextAction ? `; next action: ${b.nextAction}` : ""}`));
     for (const binding of terminals.bindings) if (binding.peer === "codex" && !codexTranscriptExists(binding)) {
-      blockers.push(`${unresumable(binding)}, so its conversation cannot come back after the restart; manual-required; next action: end that Codex session (ahub codex starts a new one later), then make a new plan`);
+      blockers.push(`${unresumable(binding)}, so its conversation cannot come back after the restart; manual-required; next action: end that Codex session and close its Orca terminal ${binding.handle} (ahub codex starts a new one later), then make a new plan`);
     }
     body.projects.push({ project, source, terminals: terminals.bindings, blockers, ...(reconnectOnly.length ? { reconnectOnly } : {}) });
   }
@@ -303,7 +303,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         }
         // #215: check resume viability again right before the destructive effect.
         if (binding.peer === "codex" && !codexTranscriptExists(binding)) {
-          throw new Error(`${unresumable(binding)}; no terminal was closed; next action: ahub recovery dispose ${op.id} --stop-and-archive --reason <text> releases the source with its sessions still open, or end that Codex session and ahub recovery resume ${op.id} to continue without its conversation`);
+          throw new Error(`${unresumable(binding)}; no terminal was closed; next action: ahub recovery dispose ${op.id} --stop-and-archive --reason <text> releases the source with its sessions still open, or end that Codex session, close its Orca terminal ${binding.handle} and ahub recovery resume ${op.id} to continue without its conversation`);
         }
         const idle = await waitForIdle(binding, 600_000, terminalOptions(run));
         if (!idle.satisfied) throw new Error(`${binding.peer}: terminal is not verified idle; source retained`);
@@ -353,7 +353,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         // still not resumable fails again below with the same choices.
         if (progress.terminals[key] === "failed") { delete progress.terminals[key]; save(); }
         const notRestored = (why: string) => new Error(fresh
-          ? `${original.peer}: ${why}; next action: ahub recovery resume ${op.id} once ahub ${original.peer} starts in this project, or ahub recovery dispose ${op.id} --stop-and-archive --reason <text>`
+          ? `${original.peer}: ${why}; next action: read that terminal in Orca for the launcher's error and fix its cause, then ahub recovery resume ${op.id}; or ahub recovery dispose ${op.id} --stop-and-archive --reason <text>`
           : `${original.peer}: ${why}; session ${original.sessionId} was not restored; choices: ahub recovery dispose ${op.id} --fresh-session ${original.peer} --reason <text> starts a new ${original.peer} session and records this one as lost, or ahub recovery dispose ${op.id} --stop-and-archive --reason <text> abandons the upgrade`);
         if (progress.terminals[key] && progress.terminals[key] !== "pending") {
           progress.terminals[key] = await revalidateTerminal(planned, progress, progress.terminals[key] as TerminalBinding, true); save();
@@ -391,9 +391,10 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
         const binding = { ...original, launch, launchMetadata: launch };
         progress.terminals[key] = "pending"; save();
         const restored = await createTerminal(binding, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: progress.instanceId }, undefined, fresh);
-        if (restored.blockers.some((b) => b.code === "launcher-exited")) {
+        const exited = restored.blockers.find((b) => b.code === "launcher-exited");
+        if (exited) {
           progress.terminals[key] = "failed"; save();
-          throw notRestored(`its ${fresh ? "fresh" : "restoration"} launcher exited before the session was ready`);
+          throw notRestored(`its ${fresh ? "fresh" : "restoration"} launcher in terminal ${exited.handle} exited before the session was ready`);
         }
         if (restored.manualRequired || !restored.newBinding) throw new Error(`${original.peer}: original session restoration needs manual verification`);
         // The daemon's id is authoritative: a fresh session is recorded under the id it reports once attached.

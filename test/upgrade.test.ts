@@ -431,3 +431,57 @@ test("stop-and-archive never stops a daemon this operation does not hold", async
   expect(op.phase).toBe("cancelled");
   expect(recoveryLock(f.home)).toBeUndefined();
 });
+
+// #215 review: the no-rollout advice says to end the Codex session; the hold may expire meanwhile.
+test("re-preparation lets a planned peer that detached since pass; closing it is left to the terminal inventory", async () => {
+  const f = expiredLease();
+  f.states.get("alpha")!.peers[1]!.state = "offline";
+  const result = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(result.phase).toBe("completed");
+  expect(f.calls.slice(0, 4)).toEqual(["stage", "prepare:alpha", "close:codex", "commit:alpha"]);
+});
+
+test("stop-and-archive knows its target by the operation fence when the receipt never recorded the instance", async () => {
+  const f = failedRestore();
+  Object.assign(f.operation.projects[0]!, { phase: "stopped", instanceId: undefined, terminals: { "closed:codex": true } });
+  writeOperation(f.operation.id, f.operation, f.home);
+  const op = await disposeRecovery(f.operation.id, { stop: true }, "start failed after the target came up", f.driver, f.home);
+  expect(f.calls).toEqual(["stop-archive:alpha:new-alpha"]);
+  expect(op.disposition?.projects.alpha).toBe("target stopped");
+  expect(recoveryLock(f.home)).toBeUndefined();
+});
+
+test("a stop-and-archive that fails partway records what it did, keeps the lock and blocks resume until finished", async () => {
+  const f = failedRestore();
+  Object.assign(f.operation.projects[1]!, { phase: "prepared" });
+  f.states.get("beta")!.recovery = { operationId: f.operation.id, phase: "prepared", ready: true };
+  writeOperation(f.operation.id, f.operation, f.home);
+  const abort = f.driver.abort;
+  f.driver.abort = async () => { throw new Error("a committed recovery cannot be aborted"); };
+  await expect(disposeRecovery(f.operation.id, { stop: true }, "give up", f.driver, f.home)).rejects.toThrow("cannot be aborted");
+  let op = readOperation(f.operation.id, f.home) as ReturnType<typeof fixture>["operation"];
+  expect(op.disposition?.projects).toEqual({ alpha: "target stopped" });
+  expect(op.error).toContain("stop-and-archive stopped partway and keeps the lock");
+  expect(publicOperation(op).next).toEqual([`ahub recovery dispose ${f.operation.id} --stop-and-archive --reason <text>`]);
+  expect(recoveryLock(f.home)).toBe(f.operation.id);
+  await expect(disposeRecovery(f.operation.id, { fresh: "codex" }, "no", f.driver, f.home)).rejects.toThrow("stop-and-archive of this operation is partway");
+  const calls = f.calls.length;
+  expect((await runRecovery(f.operation.id, f.driver, f.home)).error).toContain("stop-and-archive of this operation is partway");
+  expect(f.calls).toHaveLength(calls);
+
+  f.driver.abort = abort;
+  op = await disposeRecovery(f.operation.id, { stop: true }, "finish", f.driver, f.home);
+  expect(op.phase).toBe("cancelled");
+  expect(op.error).toBeUndefined();
+  expect(op.disposition?.projects).toEqual({ alpha: "target stopped", beta: "source hold released; source left running" });
+  expect(op.audit?.map((entry) => entry.reason)).toEqual(["give up", "finish"]);
+  expect(recoveryLock(f.home)).toBeUndefined();
+});
+
+test("stop-and-archive gives a project whose directory is gone a true outcome instead of waiting forever", async () => {
+  const f = failedRestore();
+  f.states.set("alpha", { state: "missing", peers: [], blockers: ["project directory is missing"] });
+  const op = await disposeRecovery(f.operation.id, { stop: true }, "project removed", f.driver, f.home);
+  expect(op.disposition?.projects.alpha).toContain("project directory is missing; nothing was stopped or archived");
+  expect(op.phase).toBe("cancelled");
+});

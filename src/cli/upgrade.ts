@@ -154,22 +154,25 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     if (observed.recovery?.operationId !== id) throw new Error("daemon is not owned by this recovery operation");
     if (observed.version !== op.plan.version) throw new Error("target daemon version mismatch");
   };
-  const sourceRoster = (live: Inspection, planned: PlannedProject, progress: ProjectProgress) => {
-    // #215: a peer whose terminal this operation already closed must stay detached after a re-preparation.
+  const sourceRoster = (live: Inspection, planned: PlannedProject, progress: ProjectProgress, again = false) => {
+    // #215: a peer whose terminal this operation already closed must stay detached after a re-preparation, and a
+    // planned peer that detached since may pass it, as the daemon's readiness lets it (#21): closeTerminals then
+    // records its close only once Orca no longer lists the terminal.
     const closed = (peer: string) => progress.terminals[`closed:${peer}`] === true;
     const expected = planned.source.peers.filter((p) => p.state !== "offline");
     const active = live.peers.filter((p) => p.state !== "offline");
     const changed = active.find((p) => !expected.some((peer) => peer.id === p.id)) ?? expected.find((peer) => {
       const current = active.find((p) => p.id === peer.id);
       if (closed(peer.id)) return !!current;
-      return !current || (!planned.reconnectOnly?.includes(peer.id) && (current.threadId !== peer.threadId || current.sessionId !== peer.sessionId));
+      if (!current) return !again;
+      return !planned.reconnectOnly?.includes(peer.id) && (current.threadId !== peer.threadId || current.sessionId !== peer.sessionId);
     });
     if (!changed) return;
     if (Object.keys(progress.terminals).length) throw new Error(`${planned.project.id}: ${changed.id} changed while terminal effects of this operation are recorded, so a new plan cannot replace it; next action: restore ${changed.id}'s original session (or end it if this operation closed its terminal), then ahub recovery resume ${id}; or ahub recovery dispose ${id} --stop-and-archive --reason <text>`);
     throw new Error("source conversation or active peer membership changed; make a new plan");
   };
   // Prepare, or after an expired lease re-prepare, the planned source and wait until it is quiet.
-  const prepareSource = async (planned: PlannedProject, progress: ProjectProgress) => {
+  const prepareSource = async (planned: PlannedProject, progress: ProjectProgress, again = false) => {
     const project = planned.project, instance = planned.source.instanceId!;
     await driver.prepare(project, id, instance);
     const deadline = driver.now() + idleTimeoutMs;
@@ -177,7 +180,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       const live = await driver.inspect(project);
       if (live.instanceId !== instance) throw new Error("source daemon changed during preparation");
       if (live.recovery?.operationId !== id) throw new Error("preparation expired or belongs to another operation");
-      if (live.recovery.ready) return sourceRoster(live, planned, progress);
+      if (live.recovery.ready) return sourceRoster(live, planned, progress, again);
       if (driver.now() >= deadline) {
         await driver.abort(project, id, instance);
         throw new Error(`${project.id}: active turns, approvals or completion checks did not finish; source runtime left running`);
@@ -186,6 +189,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     }
   };
   try {
+    if (op.disposition) throw new Error(`a stop-and-archive of this operation is partway; finish it with ahub recovery dispose ${id} --stop-and-archive --reason <text>`);
     op.phase = "running"; delete op.error; save();
     step("stage");
     const target = await driver.stage(op);
@@ -220,7 +224,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
             // #215: the hold lapsed (an expired lease) after this operation may have recorded terminal effects.
             // Re-prepare the same verified source; the receipts stay, so no terminal is closed twice.
             step(`reprepare:${project.id}`);
-            await prepareSource(planned, progress);
+            await prepareSource(planned, progress, true);
             step(`commit:${project.id}`);
           }
           await driver.closeTerminals(planned, progress, op, save);
@@ -294,7 +298,8 @@ export function publicOperation(op: RecoveryOperation, runnerPid?: number) {
   const failed = [...new Set(op.projects.flatMap((p) => Object.entries(p.terminals).filter(([key, value]) => key.startsWith("restored:") && value === "failed" && !p.fresh?.[key.slice("restored:".length)]).map(([key]) => key.slice("restored:".length))))];
   const effects = op.projects.some((p) => !["pending", "prepared"].includes(p.phase) || Object.keys(p.terminals).length);
   const open = op.phase !== "completed" && op.phase !== "cancelled";
-  const next = !open ? [] : runnerPid ? [`wait: runner ${runnerPid} is working; ahub recovery status ${op.id}`] : [
+  const next = !open ? [] : runnerPid ? [`wait: runner ${runnerPid} is working; ahub recovery status ${op.id}`]
+    : op.disposition ? [`ahub recovery dispose ${op.id} --stop-and-archive --reason <text>`] : [
     `ahub recovery resume ${op.id}${op.error ? " (after the cause in error is fixed)" : ""}`,
     ...(effects ? [] : [`ahub recovery abort ${op.id}`]),
     ...failed.map((peer) => `ahub recovery dispose ${op.id} --fresh-session ${peer} --reason <text>`),
@@ -359,6 +364,7 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
     if (op.phase === "completed" || op.phase === "cancelled") throw new Error(`operation is already ${op.phase}`);
     const at = driver.now();
     if ("fresh" in choice) {
+      if (op.disposition) throw new Error(`a stop-and-archive of this operation is partway; finish it with ahub recovery dispose ${id} --stop-and-archive --reason <text>`);
       const peer = choice.fresh;
       const failed = op.projects.filter((p) => p.terminals[`restored:${peer}`] === "failed");
       if (!failed.length) throw new Error(`${peer}: no restoration of it failed in this operation; --fresh-session applies only then (ahub recovery status ${id})`);
@@ -371,30 +377,44 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
       return op;
     }
     // Inspect every project before acting on any, as the runner does before its first stop.
-    const acts = [];
+    const acts: { planned: PlannedProject; live?: Inspection; act: string }[] = [];
     for (let i = 0; i < op.projects.length; i++) {
       const progress = op.projects[i]!, planned = op.plan.projects[i]!;
       const live = progress.phase === "verified" ? undefined : await driver.inspect(planned.project);
       const ours = live?.state === "running" && live.recovery?.operationId === id && live.recovery.phase !== "released";
+      // A target is known by its operation fence, not only by the receipt: `up` may have failed, or the first
+      // identity read thrown, after the target started and before its instance was recorded.
+      const target = ours && live.instanceId !== planned.source.instanceId && live.recovery?.phase === "restored";
       const act = !live ? "released earlier; left running"
         : live.state === "stopped" ? "stopped"
+        : live.state === "missing" ? "project directory is missing; nothing was stopped or archived (ahub doctor --orphans lists a hub left running there)"
         : live.state !== "running" ? undefined
         : ours && live.instanceId === planned.source.instanceId && ["pending", "prepared"].includes(progress.phase) ? "source hold released; source left running"
-        : ours && !!progress.instanceId && live.instanceId === progress.instanceId ? "target stopped"
+        : target ? "target stopped"
         : `left running: instance ${live.instanceId ?? "unknown"} is not held by this operation`;
       if (!act) throw new Error(`${planned.project.id}: runtime is ${live!.state}, so its ownership cannot be verified; nothing was stopped or released; retry once it settles`);
-      acts.push({ planned, progress, live, act });
+      acts.push({ planned, ...(live ? { live } : {}), act });
     }
-    for (const { planned, progress, live, act } of acts) {
-      if (act.startsWith("source hold")) await driver.abort(planned.project, id, planned.source.instanceId!);
-      else if (act === "stopped" || act === "target stopped") {
-        await driver.stopAndArchive(planned.project, op, act === "target stopped" ? progress.instanceId : undefined);
-        const after = await driver.inspect(planned.project);
-        if (after.state !== "stopped") throw new Error(`${planned.project.id}: shutdown of instance ${live!.instanceId ?? "unknown"} is not verified; the lock is kept`);
-      }
-    }
+    // Each outcome is recorded as it happens, so a disposition that stops partway stays true and resume refuses it.
+    const disposition = (op.disposition ??= { choice: "stop-and-archive", at, projects: {} });
     (op.audit ??= []).push({ at, action: "stop-and-archive", reason, projects: acts.map((a) => a.planned.project.id) });
-    op.disposition = { choice: "stop-and-archive", at, projects: Object.fromEntries(acts.map((a) => [a.planned.project.id, a.act])) };
+    try {
+      for (const { planned, live, act } of acts) {
+        if (act.startsWith("source hold")) await driver.abort(planned.project, id, planned.source.instanceId!);
+        else if (act === "stopped" || act === "target stopped") {
+          await driver.stopAndArchive(planned.project, op, act === "target stopped" ? live!.instanceId : undefined);
+          if ((await driver.inspect(planned.project)).state !== "stopped") throw new Error(`${planned.project.id}: shutdown of instance ${live!.instanceId ?? "unknown"} is not verified`);
+        }
+        disposition.projects[planned.project.id] ??= act;
+        op.updatedAt = driver.now(); writeOperation(id, op, home);
+      }
+    } catch (error) {
+      op.phase = "blocked"; op.updatedAt = driver.now();
+      op.error = `stop-and-archive stopped partway and keeps the lock: ${error instanceof Error ? error.message : "disposition failed"}; finish it with ahub recovery dispose ${id} --stop-and-archive --reason <text>`;
+      writeOperation(id, op, home);
+      throw error;
+    }
+    delete op.error;
     op.phase = "cancelled"; op.step = "disposed: stop-and-archive (abandoned, not completed)"; op.updatedAt = driver.now();
     writeOperation(id, op, home); releaseRecoveryLock(id, home);
     return op;

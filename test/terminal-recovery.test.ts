@@ -17,6 +17,8 @@ import {
 const root = "/tmp/project with 'quote";
 const worktreeId = "repo::/tmp/project with 'quote";
 const session = "session-1";
+/** What Orca 1.4.223 answers for a wait that timed out (#215 review): exit 1, not `satisfied: false`. */
+const waitTimedOut = { status: 1, stdout: JSON.stringify({ ok: false, error: { code: "timeout" } }) };
 
 function terminal(overrides: Record<string, unknown> = {}) {
   return {
@@ -104,7 +106,7 @@ test("an unsatisfied bounded wait never closes the captured terminal", async () 
   };
   const { calls, runner } = fake((argv) => {
     if (argv[1] === "show") return { result: { terminal: terminal() } };
-    if (argv[1] === "wait") return { result: { satisfied: false } };
+    if (argv[1] === "wait") return waitTimedOut;
     throw new Error(`unexpected ${argv.join(" ")}`);
   });
   const idle = await waitForIdle(binding, 99_999_999, runner);
@@ -304,25 +306,38 @@ test("the default launcher signature is stable across the reading invocation's t
   }
 });
 
-// #215: `codex resume <id>` that finds no saved session exits; its terminal never becomes TUI-idle.
-test("a restoration launcher that exits is recognized within one wait slice and is not restored", async () => {
+// #215: `codex resume <id>` that finds no saved session exits; its terminal never becomes TUI-idle. Orca answers
+// every wait that times out with exit 1 and error code "timeout".
+test("a restoration launcher that exits is recognized within one wait slice; a slow live one is still awaited", async () => {
   const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js codex resume session-1", argv: [], env: {} };
   const binding: TerminalBinding = { peer: "codex", handle: "term-old", incarnationId: "inc-old", worktreeId, projectRoot: root, sessionId: session, launch, launchMetadata: launch };
   const replacement = terminal({ handle: "term-new", incarnationId: "inc-new" });
-  const { calls, runner } = fake((argv) => {
-    if (argv[1] === "create") return { result: { terminal: { handle: "term-new", incarnationId: "inc-new", worktreeId } } };
-    if (argv[1] === "show") return { result: { terminal: replacement } };
-    if (argv[1] === "wait") return { result: { satisfied: argv.includes("exit") } };
-    throw new Error("unexpected command");
-  });
+  const scenario = (exits: boolean) => {
+    let idleWaits = 0;
+    return fake((argv) => {
+      if (argv[1] === "create") return { result: { terminal: { handle: "term-new", incarnationId: "inc-new", worktreeId } } };
+      if (argv[1] === "show") return { result: { terminal: replacement } };
+      if (argv[1] === "wait" && argv.includes("exit")) return exits ? { result: { wait: { satisfied: true } } } : waitTimedOut;
+      if (argv[1] === "wait") return exits || idleWaits++ < 2 ? waitTimedOut : { result: { wait: { satisfied: true } } };
+      throw new Error("unexpected command");
+    });
+  };
+  const exited = scenario(true);
   const started = Date.now();
-  const result = await createTerminal(binding, runner);
+  const result = await createTerminal(binding, exited.runner);
   expect(Date.now() - started).toBeLessThan(5_000);
   expect(result).toMatchObject({ created: true, ready: false, manualRequired: true });
   expect(result.newBinding).toBeUndefined();
   expect(result.blockers[0]?.code).toBe("launcher-exited");
-  const waits = calls.filter((argv) => argv[1] === "wait");
+  const waits = exited.calls.filter((argv) => argv[1] === "wait");
   expect(waits.map((argv) => [argv[argv.indexOf("--for") + 1], argv[argv.indexOf("--timeout-ms") + 1]])).toEqual([["tui-idle", "5000"], ["exit", "1"]]);
+
+  // A live launcher whose TUI needs more than one slice: both timeouts read as "not yet", never as a failure.
+  const slow = scenario(false);
+  const ready = await createTerminal(binding, slow.runner);
+  expect(ready.manualRequired).toBe(false);
+  expect(ready.newBinding?.handle).toBe("term-new");
+  expect(slow.calls.filter((argv) => argv[1] === "wait").map((argv) => argv[argv.indexOf("--for") + 1])).toEqual(["tui-idle", "exit", "tui-idle", "exit", "tui-idle"]);
 });
 
 // #215: a fresh session the operator chose maps to the replacement under its new id; without the choice it is refused.

@@ -510,16 +510,26 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
   return { bindings, byPeer, blockers, manualRequired: blockers.length > 0 };
 }
 
+/**
+ * One bounded Orca wait. Orca 1.4.223 answers a wait that timed out with exit 1 and `{"ok":false,"error":{"code":"timeout"}}`:
+ * that is "not satisfied", not a failure. Any other failure still throws.
+ */
+async function waitSatisfied(runner: CommandRunner, handle: string, condition: "tui-idle" | "exit", timeoutMs: number): Promise<boolean> {
+  const argv = ["terminal", "wait", "--terminal", handle, "--for", condition, "--timeout-ms", String(timeoutMs), "--json"];
+  const result = await runner(argv);
+  const timedOut = (text: string | Uint8Array | undefined) => { try { return object(object(JSON.parse(bytes(text))).error).code === "timeout"; } catch { return false; } };
+  if (commandStatus(result) !== 0 && (object(object(decoded(result)).error).code === "timeout" || timedOut(result.stderr))) return false;
+  const root = responseResult(await run(async () => result, argv));
+  return root.satisfied === true || object(root.wait).satisfied === true;
+}
+
 /** Wait only on the captured terminal and only for Orca's supported TUI-idle condition. */
 export async function waitForIdle(binding: TerminalBinding, timeoutMs: number, options?: CommandRunner | TerminalRecoveryOptions): Promise<IdleResult> {
   const config = normalizeOptions(options);
   const timeout = Number.isFinite(timeoutMs) && timeoutMs >= 0 ? Math.min(Math.floor(timeoutMs), MAX_WAIT_MS) : 0;
   try {
     await showBinding(binding, config);
-    const value = await run(config.runner, ["terminal", "wait", "--terminal", binding.handle, "--for", "tui-idle", "--timeout-ms", String(timeout), "--json"]);
-    const root = responseResult(value);
-    const wait = object(root.wait);
-    const satisfied = root.satisfied === true || wait.satisfied === true;
+    const satisfied = await waitSatisfied(config.runner, binding.handle, "tui-idle", timeout);
     const blockers = satisfied ? [] : [blocker("terminal-unready", `terminal ${binding.handle} did not become idle before the bounded wait`, binding.peer, binding.handle)];
     return { satisfied, manualRequired: !satisfied, blockers };
   } catch (error) {
@@ -564,6 +574,7 @@ export async function closeTerminal(binding: TerminalBinding, timeoutMs = 600_00
  */
 export async function createTerminal(binding: TerminalBinding, options?: CommandRunner | TerminalRecoveryOptions, timeoutMs = 600_000, anySession = false): Promise<TerminalCreateResult> {
   const config = normalizeOptions(options);
+  let made: string | undefined; // a later failure must still report the terminal it created
   try {
     const worktreeSelector = binding.worktreeId.startsWith("id:") ? binding.worktreeId : `id:${binding.worktreeId}`;
     // The coordinator journals a pending creation before this call and reconciles
@@ -571,6 +582,7 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
     const value = await run(config.runner, ["terminal", "create", "--worktree", worktreeSelector, "--command", binding.launch.command, "--title", `${binding.peer} recovery`, "--json"]);
     let created = terminalObject(value);
     const createdHandle = nestedString(created, ["handle"]);
+    made = createdHandle;
     if (!createdHandle) return { created: false, ready: false, manualRequired: true, blockers: [blocker("ambiguous-create", "Orca create returned no terminal handle", binding.peer)] };
     const incarnationId = nestedString(created, ["incarnationId"]);
     const worktreeId = nestedString(created, ["worktreeId"]) ?? binding.worktreeId;
@@ -585,8 +597,7 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
     const deadline = Date.now() + Math.min(timeoutMs, MAX_WAIT_MS);
     let idle = await waitForIdle(replacement, Math.min(EXIT_SLICE_MS, timeoutMs), config);
     while (!idle.satisfied && idle.blockers[0]?.code === "terminal-unready") {
-      const exit = responseResult(await run(config.runner, ["terminal", "wait", "--terminal", createdHandle, "--for", "exit", "--timeout-ms", "1", "--json"]));
-      if (exit.satisfied === true || object(exit.wait).satisfied === true) {
+      if (await waitSatisfied(config.runner, createdHandle, "exit", 1)) {
         return { created: true, ready: false, manualRequired: true, blockers: [blocker("launcher-exited", `the ${binding.peer} restoration launcher in terminal ${createdHandle} exited before its TUI was ready`, binding.peer, createdHandle)] };
       }
       if (Date.now() >= deadline) break;
@@ -605,7 +616,7 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
     if (anySession && session) replacement = { ...replacement, sessionId: session };
     return { created: true, ready: true, manualRequired: false, binding: replacement, newBinding: replacement, blockers: [] };
   } catch (error) {
-    return { created: false, ready: false, manualRequired: true, blockers: [error instanceof OrcaCommandError ? error.blocker : blocker("command-error", String(error), binding.peer, binding.handle)] };
+    return { created: made !== undefined, ready: false, manualRequired: true, blockers: [error instanceof OrcaCommandError ? error.blocker : blocker("command-error", String(error), binding.peer, made ?? binding.handle)] };
   }
 }
 
