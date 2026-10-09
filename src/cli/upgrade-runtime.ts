@@ -8,10 +8,10 @@ import type { Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
 import { packageDigest, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
 import { inspectTerminals, closeTerminal, createTerminal, launcherOf, recordPath, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
-import { planFingerprint, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
+import { FinalRefusal, planFingerprint, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
 import { readEvents } from "../hub/events.ts";
 import { refreshManager } from "../hub/manager.ts";
-import { abandonRestartSnapshot, waiveRecoveryPeers } from "../hub/restart.ts";
+import { abandonRestartSnapshot, readRestartSnapshot, waiveRecoveryPeers } from "../hub/restart.ts";
 
 /** An unmanaged Claude's plugin retries with a backoff of at most 30 s; three of those bound the reconnect wait (#206). */
 const RECONNECT_WAIT_MS = 90_000;
@@ -95,11 +95,13 @@ export async function inspectRecovery(project: Project): Promise<Inspection> {
   const control = readControl(project.stateDir);
   const sourceProtocol = control?.protocol;
   const legacySupported = sourceProtocol !== undefined && RECOVERY_SOURCE_PROTOCOLS.includes(sourceProtocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number]);
+  // A stopped runtime reports whose unreleased restart snapshot it holds: only that one can start it again (#215).
+  const snapshot = base.state === "stopped" ? readRestartSnapshot(project.stateDir, { projectRoot: project.root, projectId: project.id })?.operationId : undefined;
   // A dead pid or a missing project directory is final whatever protocol its manifest names: probing it would read
   // "unavailable" forever and wedge abort, resume and stop-and-archive (#215).
   if (base.state === "stopped" || base.state === "missing" || (base.state !== "running" && !legacySupported)) return {
     state: base.state, peers: [], blockers: base.state === "stopped" ? [] : [base.state === "incompatible" ? "manual-bootstrap-required: source lacks the recovery contract; use its matching CLI" : base.error ?? base.state],
-    ...(control?.instanceId ? { instanceId: control.instanceId } : {}), ...(control?.protocol ? { protocol: control.protocol } : {}),
+    ...(control?.instanceId ? { instanceId: control.instanceId } : {}), ...(control?.protocol ? { protocol: control.protocol } : {}), ...(snapshot ? { snapshot } : {}),
   };
   let status = base.status;
   if (!status && legacySupported) {
@@ -293,10 +295,12 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
    * expected instance can report "gone"; an unreadable target or launcher is unknown and blocks, never gone.
    */
   const peerEvidence = async (planned: PlannedProject, progress: ProjectProgress, peer: TerminalBinding["peer"]):
-      Promise<{ state: "live"; session?: string; handle?: string } | { state: "gone" } | { state: "unknown"; why: string; step: string }> => {
+      Promise<{ state: "live"; session?: string; handle?: string } | { state: "gone" } | { state: "unknown"; why: string; step?: string }> => {
     const target = await inspectRecovery(planned.project);
     if (target.state !== "running" || target.instanceId !== progress.instanceId) {
-      return { state: "unknown", why: `the target hub reads as ${target.state === "running" ? `instance ${target.instanceId}, not ${progress.instanceId}` : target.state}`, step: "wait until the target answers" };
+      // Only a hub that may still answer is waited for; a stopped, missing or other one is settled by the runner's list.
+      const settled = ["running", "stopped", "missing"].includes(target.state);
+      return { state: "unknown", why: `the target hub reads as ${target.state === "running" ? `instance ${target.instanceId}, not ${progress.instanceId}` : target.state}`, ...(settled ? {} : { step: "wait until the target answers" }) };
     }
     const attached = target.peers.find((p) => p.id === peer && p.state !== "offline");
     const session = peer === "codex" ? attached?.threadId : attached?.sessionId;
@@ -321,14 +325,14 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
   return {
     now, sleep, inspect: inspectRecovery,
     stage: async (op) => {
-      if (packageDigest(op.sourceRoot) !== op.plan.sourceDigest) throw new Error("preserved source changed");
+      if (packageDigest(op.sourceRoot) !== op.plan.sourceDigest) throw new FinalRefusal("preserved source changed");
       const target = op.plan.kind === "restart" ? { root: op.sourceRoot, digest: verifyPackage(op.sourceRoot, op.plan.version) }
         : await stageRelease(op.plan.version, op.plan.integrity!, run);
       const protocol = await run([process.execPath, "-e", `import { PROTOCOL } from ${JSON.stringify(join(target.root, "src/hub/control-client.ts"))}; console.log(PROTOCOL)`]);
-      if (protocol.code !== 0 || Number(protocol.stdout.trim()) !== PROTOCOL) throw new Error("target protocol requires a newer coordinator; staged package retained, runtimes unchanged");
+      if (protocol.code !== 0 || Number(protocol.stdout.trim()) !== PROTOCOL) throw new FinalRefusal("target protocol requires a newer coordinator; staged package retained, runtimes unchanged");
       // Reconnect-only (#206) and fresh sessions (#215) need a target hub that reads recovery-waivers.json.
       if (op.plan.projects.some((p) => p.reconnectOnly?.length || p.freshStart?.length) && !targetReadsWaivers({ targetRoot: target.root })) {
-        throw new Error(`target ${op.plan.version} predates recovery waivers, so its hub could never accept a reconnect-only Claude or a fresh Codex start; staged package retained, runtimes unchanged; choose a newer target once this operation is cancelled or ended`);
+        throw new FinalRefusal(`target ${op.plan.version} predates recovery waivers, so its hub could never accept a reconnect-only Claude or a fresh Codex start; staged package retained, runtimes unchanged; choose a newer target once this operation is cancelled or ended`);
       }
       return target;
     },
@@ -427,7 +431,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           : `${original.peer}: ${why}; session ${original.sessionId} was not restored; resume launches it again once the cause is fixed`);
         // Anything live or unknown blocks a create and keeps the receipt: never decide on evidence that could not be read.
         const blocked = (evidence: Exclude<Awaited<ReturnType<typeof peerEvidence>>, { state: "gone" }>) => new Error(evidence.state === "unknown"
-          ? `${original.peer}: whether a ${original.peer} session or launcher is live cannot be told (${evidence.why}); nothing was recorded or created; ${evidence.step} first`
+          ? `${original.peer}: whether a ${original.peer} session or launcher is live cannot be told (${evidence.why}); nothing was recorded or created${evidence.step ? `; ${evidence.step} first` : ""}`
           : evidence.session
             ? `${original.peer}: session ${evidence.session} is attached instead of ${original.sessionId}; no terminal was created; end that ${original.peer} session and close its terminal first`
             : `${original.peer}: its launcher in terminal ${evidence.handle} is running but no ${original.peer} session attached yet; no terminal was created; wait until it attaches, or end it and close terminal ${evidence.handle} first`);

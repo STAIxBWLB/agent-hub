@@ -1173,9 +1173,17 @@ next actions").
   once a commit request may have been sent (or, for an operation from
   an older coordinator, which records no such thing, while a prepared source is
   not running), and once any project has effects the way out is
-  stop-and-archive. `next` offers abort only where abort would succeed.
+  stop-and-archive. `next` offers abort only where abort would succeed, and
+  `resume` only where it can get past what is live: not past a replaced or
+  missing source, a source that crashed before any commit request, a refusal
+  at staging (the target release or the preserved source can never change
+  back), or a stopped hub without the operation's restart snapshot.
   A second `resume` while its own hold still stands checks the peers again
   before it closes anything.
+- When a target hub dies after it started (a crash or a reboot) and has not
+  released, its `restart.json` is still there: `resume` starts it again from
+  that snapshot and keeps the receipts. Once the snapshot is gone (released,
+  or never written), the way out is stop-and-archive.
 - A Codex conversation comes back only when a rollout file naming its thread
   exists under `sessions/` of the store the restored terminal uses (the
   recorded `CODEX_HOME`, else `~/.codex`). Codex writes that file with the
@@ -1242,8 +1250,9 @@ next actions").
   you are running when that coordinator predates these commands (its `resume`
   still runs the old runner, and `next` says what that runner cannot do).
   `--fresh-session` is not offered when the target release cannot read recovery
-  waivers, since it could never release a new session. A runner record that
-  cannot be read shows as `unknown`.
+  waivers, since it could never release a new session; `status` says so in
+  `freshSession`. A runner record that cannot be read shows as `unknown`, and
+  `resume`, `abort` and `dispose` are refused until it can be read.
 
 ### After an unplanned stop
 

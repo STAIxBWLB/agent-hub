@@ -316,12 +316,22 @@ Resume, abort, dispose, the `next` list of `status` and every error follow this
 table. A `failed` receipt stays `failed` until the relaunch replaces it with
 `pending`, so a refusal on the way (an unreadable store, a launch found live, a
 target without waivers) keeps its choices. `--fresh-session` is neither offered
-nor accepted when the target cannot read recovery waivers. A runner record that
-cannot be read shows as `unknown` in `status`, never as no runner; `status` and every error that lists choices build them with one function
+nor accepted when the target cannot read recovery waivers; `status` then says
+why in its own `freshSession` field, since `next` holds commands only. A runner
+record that cannot be read shows as `unknown` in `status`, never as no runner;
+while it reads so, resume, abort and dispose are all refused (the runner claim
+cannot tell its owner), so `next` names only `status` again. Otherwise `status` and every error that lists choices build them with one function
 (`nextActions`), in this order: resume (which also launches a failed peer
-again), unless it can never get past (a source replaced by another instance, or
-a prepared source of a #215 coordinator that stopped with no commit request),
-abort where it can succeed, a fresh session for each failed Codex or
+again), unless it can never get past what is live: a recorded final refusal
+(staging refused the fixed target or preserved source), a missing project
+directory, a runtime other than the one the receipt expects (a replaced source;
+a target not fenced to this operation, another instance or another version), a
+stopped pending source, a prepared source of a #215 coordinator that stopped
+with no commit request, or any other stopped runtime without this operation's
+unreleased restart snapshot to start from (unavailable or stopping is waited
+for). `test/upgrade.test.ts` checks this against the runner over every receipt
+state and live state: where resume is offered, it makes progress or its error
+names a step a person takes first. Then abort where it can succeed, a fresh session for each failed Codex or
 Claude restoration, stop-and-archive. An error gives only its own step (the
 last column below) and the runner ends it with that list (`next actions: ...`),
 read from the same sources as `status`, so it names abort exactly when
@@ -331,8 +341,8 @@ read from the same sources as `status`, so it names abort exactly when
 may still be the older release, whose `recovery` lacks these commands.
 "Effects" means any project past `prepared` or any terminal receipt in the whole
 operation. Stop-and-archive (`<c> recovery dispose <id> --stop-and-archive
---reason <text>`) is allowed in every open state and is always the last `next`
-entry; the rows give what else applies.
+--reason <text>`) is allowed in every open state the runtimes can be read in and
+is then always the last `next` entry; the rows give what else applies.
 
 A recorded launcher is the `terminal-recovery.json` row for that peer on the
 target instance. It is live when its process signature matches, gone when the
@@ -353,9 +363,10 @@ inventory never shows a terminal as gone. While a stop-and-archive is recorded,
 `resume` is refused by the running release, whichever coordinator started the
 operation, and the runner keeps the disposition's own error. Abort and `next` decide with one predicate
 (`abortRefusal`). `status`, abort and the runner's errors read the same live
-state: every source not yet stopped by the operation (all of them before any
-effect). A manifest whose pid no longer exists reads as stopped, whatever
-protocol it names; probing it would read unavailable forever.
+state: every project not yet verified, its source or its target. A manifest
+whose pid no longer exists reads as stopped, whatever protocol it names; probing
+it would read unavailable forever. A stopped runtime also reports whose
+unreleased restart snapshot its state directory holds.
 An attached session is the target's report of that peer online with a thread
 (Codex) or session (Claude, Pi) id.
 
@@ -366,11 +377,18 @@ An attached session is the target's report of that peer online with a thread
 | project `prepared`, hold ours | roster changed, effects | blocks, hold kept | dispose | `end that <peer> session` (joined after the plan, or its terminal was closed) or `restore <peer>'s original session`, `then <c> recovery resume <id>` |
 | project `prepared`, hold lapsed (same source instance) | roster as planned | re-prepare, check roster, close, commit | abort if no effects | none |
 | project `prepared`, hold lapsed | roster changed | as the two rows above | as above | as above |
-| project `prepared` | source replaced or held by another operation | blocks, nothing touched | abort if no effects (cancels and leaves that daemon or hold alone), dispose | `<c> recovery status <id>` and stop-and-archive |
-| project `prepared` with `commitSent` (a per-project receipt flag written right before the commit request; `step` is rewritten on every resume and is not evidence) | any (the commit may have been sent) | continues from the commit | dispose; abort is neither offered nor accepted | `<c> recovery resume <id>` |
-| project `prepared`, no `commitSent`, operation of a #215 coordinator | source stopped (crashed before any commit request) | blocks; the phase stays `prepared` (nothing was committed, so there is nothing to start from) | abort if no effects, dispose | `<c> recovery abort <id>` without effects, else stop-and-archive (the lock refuses starting that hub by hand) |
+| project `pending` | source replaced, stopped or missing | blocks, nothing touched; not offered | abort if no effects, dispose | `source runtime changed` |
+| project `pending` or `prepared` | source unavailable or stopping | blocks until it answers | dispose; abort as `abortRefusal` decides | `wait until it answers` |
+| project `prepared` | source replaced | blocks, nothing touched; not offered | abort if no effects (cancels and leaves that daemon alone), dispose | stop-and-archive |
+| project `pending` or `prepared` | source held by another operation | blocks, nothing touched, until that operation ends | abort if no effects (leaves that hold alone), dispose | `wait until that operation ends or its hold lapses` |
+| any project not verified | project directory missing | blocks; not offered | abort as `abortRefusal` decides, dispose | `the project directory is missing` |
+| project `prepared` with `commitSent` (a per-project receipt flag written right before the commit request; `step` is rewritten on every resume and is not evidence) | any (the commit may have been sent) | continues from the commit; a stopped source starts the target only from this operation's snapshot, so without it resume is not offered | dispose; abort is neither offered nor accepted | `<c> recovery resume <id>` |
+| project `prepared`, no `commitSent`, operation of a #215 coordinator | source stopped (crashed before any commit request) | blocks; the phase stays `prepared` (nothing was committed, so there is nothing to start from); not offered | abort if no effects, dispose | `<c> recovery abort <id>` without effects, else stop-and-archive (the lock refuses starting that hub by hand) |
 | project `prepared` | source unavailable, stopping or not inspected | as above when it reads again | dispose; abort neither offered nor accepted (its hold may still stand) | `<c> recovery status <id>` once it answers |
 | project `prepared`, operation of an older coordinator (no `commitSent` written) | source not running, or not inspected | as its own runner does | dispose; abort neither offered nor accepted (it may have committed) | `<c> recovery status <id>` |
+| project `started` or `peers-restored` | target stopped (a crash or reboot after it started) with this operation's unreleased snapshot | back to `stopped` and started again from the snapshot; the receipts stay | dispose | none |
+| project `stopped`, `started` or `peers-restored` | target stopped without that snapshot (released, or never committed), or running unfenced, as another instance or another version | blocks; not offered | dispose | `the target is stopped and this operation's restart snapshot is gone` (or `daemon instance changed`) |
+| any, at staging | target protocol, recovery waivers, preserved source or staged target refused | blocks; recorded as `final`, so resume is never offered again | abort if no effects, dispose | the refusal |
 | disposition recorded, first act not finished | any | refused | abort refused, stop-and-archive only | as the disposition row below |
 | `closed:<peer>` `pending` | Orca still lists the terminal | blocks | dispose | `close Orca terminal <handle> (the login shell it runs in) by hand, then <c> recovery resume <id>` |
 | `closed:<peer>` done | peer attached again | blocks | dispose | `end that <peer> session, then <c> recovery resume <id>` |
@@ -383,7 +401,7 @@ An attached session is the target's report of that peer online with a thread
 | any, before close or create | Codex store unreadable | blocks, nothing closed or created | dispose | `make <store> readable, then <c> recovery resume <id>` |
 | `restored:<peer>` absent | the planned session attached | recorded as restored | none | none |
 | `restored:<peer>` absent | another session attached, or a recorded launcher live | blocks, no terminal created | dispose | `end that <peer> session and close its terminal` (or `wait until it attaches, or end it and close terminal <handle>`), `then <c> recovery resume <id>` |
-| any receipt being settled or launched | target hub not running as the expected instance (unavailable, stopped, another instance), or a launcher or launcher record file that cannot be read | blocks; no receipt changes, nothing created | dispose | `wait until the target answers` (or wait for / end the launcher, or inspect the record file and move it aside), `then <c> recovery resume <id>` |
+| any receipt being settled or launched | target hub not running as the expected instance (unavailable or stopping; a stopped or other target is settled by the rows above), or a launcher or launcher record file that cannot be read | blocks; no receipt changes, nothing created | dispose | `wait until the target answers` (or wait for / end the launcher, or inspect the record file and move it aside), `then <c> recovery resume <id>` |
 | `fresh` recorded for a peer | none live | launches it without a resume id, records the new id | dispose | none |
 | disposition recorded, not finished | any | refused | stop-and-archive only | `rerun <c> recovery dispose <id> --stop-and-archive --reason <text> once its runtimes have settled` |
 | `completed` or `cancelled` | any | nothing to do | none | none |

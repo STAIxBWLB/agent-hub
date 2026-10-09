@@ -24,7 +24,7 @@ import { freeText } from "./free-text.ts";
 import { createInterface } from "node:readline/promises";
 import { activeOperation, assertLifecycleAvailable, readOperation, recoveryLock, recoveryRunner } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
-import { abortRecovery, createOperation, disposeRecovery, liveSources, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
+import { abortRecovery, createOperation, disposeRecovery, liveProjects, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
 import { makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { recordTerminalLaunch } from "./terminal-recovery.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
@@ -374,7 +374,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const runner = recoveryRunner(id);
     if (action === "status") {
       // #215: abort and resume are offered by what the open sources show, read as the runner's errors read them.
-      const live = runner ? {} : await liveSources(operation, makeRecoveryDriver().inspect);
+      const live = runner ? {} : await liveProjects(operation, makeRecoveryDriver().inspect);
       console.log(JSON.stringify(publicOperation(operation, runner, live), null, 2));
     }
     else if (action === "abort") { await abortRecovery(id, makeRecoveryDriver()); console.log("preflight cancelled; no committed transition was rolled back"); }
@@ -387,7 +387,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const result = await disposeRecovery(id, stop ? { stop: true } : { fresh: one["--fresh-session"]! }, reason, makeRecoveryDriver());
       if (!stop) { console.log(`${one["--fresh-session"]}: a fresh session is accepted and the lost one is recorded; resuming`); return spawnRecovery(result); }
       console.log(JSON.stringify(publicOperation(result), null, 2));
-      console.log("upgrade abandoned, not completed; the recovery lock is released. A project whose target ran starts again with that version's CLI.");
+      console.log(`${result.plan.kind} abandoned, not completed; the recovery lock is released. A project whose target ran starts again with that version's CLI.`);
     }
     else if (["completed", "cancelled"].includes(operation.phase)) console.log(`recovery is already ${operation.phase}`);
     // #215: an operation being abandoned is never resumed, whichever coordinator started it (an older one would).
