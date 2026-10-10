@@ -406,6 +406,8 @@ export class PiPeer extends BasePeer {
   async stop(reason?: string): Promise<void> {
     if (reason !== undefined) this.requestedStopReason = reason;
     this.stopping = true; // fence new calls before withdrawing both turn and idle-shell execution
+    for (const id of this.activeDeliveryIds) this.delivery({ id, state: "needs_review", reason: reason ?? "Pi session stopped before settlement" });
+    this.activeDeliveryIds.clear();
     const settling = this.abortTools();
     let unsettled: unknown;
     if (settling.length) {
@@ -417,8 +419,6 @@ export class PiPeer extends BasePeer {
     }
     const tuiExit = this.opts.mode === "tui" && this.ownerClaimed && this.ownerPid && this.ownerSignature
       ? { ...this.exitMetadata("owner_stopped"), expected: true } : undefined;
-    for (const id of this.activeDeliveryIds) this.delivery({ id, state: "needs_review", reason: reason ?? "Pi session stopped before settlement" });
-    this.activeDeliveryIds.clear();
     this.stopping = true;
     this.clearOwnerMonitor();
     if (this.opts.mode === "tui") {
@@ -541,6 +541,7 @@ export class PiPeer extends BasePeer {
   }
 
   private handleBridgeEvent(event: any): void {
+    if (this.stopping && ["agent_start", "agent_end", "agent_settled"].includes(event.type)) return;
     if (event.type === "session_start") {
       if (!this.ownerClaimed) { this.ownerClaimed = true; this.ownerToken = String(event.ownerToken ?? ""); }
       this.approvalTurnAbort = event.approvalTurnAbort === true;

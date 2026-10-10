@@ -196,3 +196,51 @@ test("an admitted peer stop fences starts, permission changes and recovery prepa
   expect(local.state).toBe("offline");
   expect((await h.start("local")).state).toBe("idle");
 }, 30_000);
+
+test("a requested Pi stop holds its delivery before awaiting tools and ignores late native settlement (#278)", async () => {
+  const h = await rig(), pi = await h.start("pi") as PiPeer, owner = ownedGroup(pi);
+  const internals = pi as any;
+  let entered!: () => void, release!: (result: string) => void;
+  const enteredTool = new Promise<void>(resolve => { entered = resolve; });
+  const toolGate = new Promise<string>(resolve => { release = resolve; });
+  internals.opts.executeTool = async () => { entered(); return toolGate; }; // intentionally ignores cancellation until released
+  const receipts: { state: string; reason?: string }[] = [];
+  const record = pi.onDelivery;
+  pi.onDelivery = receipt => { receipts.push(receipt); record?.(receipt); };
+  const original = newEnvelope("user", "held managed tool", { to: ["pi"] });
+  h.daemon.bus.publish(original);
+  await until(() => h.daemon.bus.queueList("pi").some(row => row.state === "accepted"), "Pi delivery accepted");
+  const post = bridge(pi);
+  await post("/event", { type: "agent_start", generation: 1 });
+  const toolRequest = post("/tool", { name: "write", toolCallId: "held-stop-tool", sessionId: pi.recoveryMetadata().sessionId, generation: 1, args: { path: "never-written.txt", content: "not run" } }).then(response => response.json()).catch(() => undefined);
+  let stopRequest: Promise<any> | undefined;
+  try {
+    await enteredTool;
+    stopRequest = h.console_.request({ t: "peer_stop", peer: "pi" });
+    await until(() => internals.stopping === true, "requested Pi stop begins");
+    const held = h.daemon.bus.queueList("pi").find(row => row.originals.some(env => env.id === original.id))!;
+    expect(held.state).toBe("needs_review");
+    expect(held.reason).toContain("requested stop: ahub stop pi");
+    expect(receipts.map(receipt => receipt.state)).toEqual(["accepted", "needs_review"]);
+    expect((await post("/event", { type: "agent_end", generation: 1, text: "late native answer" })).status).toBe(200);
+    expect((await post("/event", { type: "agent_settled", generation: 1 })).status).toBe(200);
+    expect(h.answers).toHaveLength(0);
+    expect(h.daemon.bus.queueShow(held.id)!.state).toBe("needs_review");
+    expect(receipts.map(receipt => receipt.state)).toEqual(["accepted", "needs_review"]);
+    release("tool ended after cancellation");
+    await toolRequest;
+    expect(await stopRequest).toMatchObject({ ok: true, state: "offline" });
+    groupGone(owner);
+    // Buffered native callbacks can outlive the closed bridge; the adapter must ignore them too.
+    internals.handleBridgeEvent({ type: "agent_start", generation: 2 });
+    internals.handleBridgeEvent({ type: "agent_end", generation: 1, text: "after-stop answer" });
+    internals.handleBridgeEvent({ type: "agent_settled", generation: 1 });
+    expect(pi.state).toBe("offline"); expect(h.answers).toHaveLength(0);
+    expect(h.daemon.bus.queueShow(held.id)!.state).toBe("needs_review");
+    expect(receipts.map(receipt => receipt.state)).toEqual(["accepted", "needs_review"]);
+  } finally {
+    release("test cleanup after cancellation");
+    await toolRequest;
+    await stopRequest;
+  }
+}, 30_000);
