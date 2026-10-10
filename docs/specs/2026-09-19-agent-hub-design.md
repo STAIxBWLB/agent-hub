@@ -387,7 +387,13 @@ inside a peer.
   2.0.1: one update per turn, payload `{"sessionUpdate":"usage_update","used":<tokens>,
   "size":<context window>}`; `used` is the session's context occupancy against `size`
   (1M), not billed quota. ACP records this shape as context occupancy diagnostics,
-  never as cumulative consumed tokens. Only validated cumulative totals or input/output
+  never as cumulative consumed tokens. Since #285 phase 1 it is also the peer's
+  native context reading (source `acp_usage_update`), shown in `ahub status`, the
+  console and the dashboard like Claude's and Codex's; the adapter accepts the
+  update whenever it names the current session, since 2.1.1's source text emits it
+  after the prompt resolves (an order read from the source, not yet observed live
+  through the hub; docs/smoke.md). A gate crossing records the
+  event and notice for an ACP peer but sends it no checkpoint request yet. Only validated cumulative totals or input/output
   pairs feed native token readings; unsupported shapes remain unknown. `ahub budget set`
   feeds a reading by hand. `local` has no quota and is never paused.
 - Gate at `budget.gate` (default 0.9) on any fresh window; readings older than
@@ -1402,12 +1408,19 @@ Codex reports `tokenUsage.last.totalTokens / tokenUsage.modelContextWindow` in
 and [native TUI](https://github.com/openai/codex/blob/main/codex-rs/tui/src/token_usage.rs)
 distinguish the last active context from the accumulated `total`; the displayed
 raw occupancy does not apply the TUI's baseline-adjusted remaining percentage.
+The Kimi peer reports `used / size` in `usage_update` (source
+`acp_usage_update`, #285 phase 1; only Kimi is wired): the session's context
+occupancy, accepted whenever it names the adapter's current session, including
+outside a turn; 2.1.1's source text emits it after the prompt resolves (read
+from the source, not observed live), when the peer may already be idle.
 Pi's RPC state exposes no measured native counter. Its extension context API
 returns an estimate, so Pi and unsupported peers remain unknown here.
 
 Each reading records source and measurement time. Claude's status-line file is
 bound to the daemon instance, managed launcher and native session; Codex's
-notification is fenced by its owning link and native thread. Stale, invalid,
+notification is fenced by its owning link and native thread; an ACP reading is
+bound to the adapter's own session id and dropped when that is not the daemon's
+current session. Stale, invalid,
 disconnected or replaced-session readings expose unknown occupancy, never zero.
 `context.gate` defaults to 0 (off); `context.stale_min` defaults to 30.
 A valid above-gate reading emits one metadata-only `context_pressure` event
@@ -2158,6 +2171,6 @@ acts on the stopped state directory.
 - Terminal providers, in order: `terminal.open`, a machine-local argv template (`{command}` in exactly one element, plus `{title}` and `{cwd}`; a `MACHINE_LOCAL` field under config trust and on the never-editable list), then Orca (`orca terminal create --worktree id:<id> --command ...`) when the hub runs in an Orca worktree or a recorded launch of the project names one. Each template placeholder is substituted once; only `{command}` is shell-quoted. The opened terminal's environment carries no agent marker and no Orca terminal identity of the hub's own. A provider's error text is logged, not returned. With no provider the start is refused with the manual command; it never falls back to headless. Only the running product wires the real providers; a daemon constructed without them opens nothing.
 - The conductor's `hub_peer_start` no longer takes a mode: it takes the peer's start mode, and a `mode` argument that differs is refused. It may now start claude and codex through the provider, and codex headless when a person set that.
 - Recovery restores each peer in the mode its recorded session had. After an unplanned stop, `pi.auto_start` no longer starts a fresh headless Pi in place of one that ran in a terminal (with or without a recorded session file), unless headless is Pi's start mode. `peers.<id>.start_mode` may be set in the shared config file too: it is not a machine-local field.
-- Settings: `peers.pi.start_mode` and `peers.codex.start_mode` join the registry (group Start, stored in `config.local.json`, raising except to `tui`). They are the one stored setting a running hub takes up: after a settings write the hub re-reads the block, so the mode applies at that peer's next start. The dashboard gains a Start control per peer that is not attached, saying the mode and the provider (or why there is none); it offers no button when the start would be refused. An ordinary session may press it: it runs only the fixed start.
+- Settings: `peers.pi.start_mode` and `peers.codex.start_mode` join the registry (group Start, stored in `config.local.json`, raising except to `tui`). They are the one stored setting a running hub takes up: after a settings write the hub re-reads the block, so the mode applies at that peer's next start. The dashboard gains a Start control per peer that is not attached, saying the mode and the provider (or why there is none); it offers no button when the start would be refused. An ordinary session may press it: it runs only the fixed start. The page blocks repeat starts while the request is in flight and unlocks after a confirmed answer, leaving the hub's terminal reopen guard authoritative. The manager waits 35 seconds (the terminal provider cap plus its margin); a slower headless start can end unconfirmed. After an unconfirmed manager result the page holds that project/instance/peer control for `PEER_START_RETRY_MS` (the same 30-second bound as the hub's reopen guard), or until the `starts` snapshot confirms attachment, and names the retry bound. A confirmed project-local dashboard start behaves as before; no manager or settings authority changes.
 - Control protocol stays 16: `peer_start` is a new console-role request an older hub answers as unknown, and `ui_snapshot` gains the optional `starts` list.
 - Migration: Pi's default changes from headless to its TUI. `ahub settings set peers.pi.start_mode headless` (or the same key in `config.local.json`) keeps a headless auto-started Pi; scripts add `--headless`.

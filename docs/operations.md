@@ -1070,6 +1070,7 @@ A peer that has a TUI the hub attaches to starts in it by default (issue #269).
   never downgraded to headless. `ahub settings` lists each start mode, and the
   dashboard's Start control says which mode a start will use and where its
   terminal comes from.
+- **Dashboard Start:** the control is locked while its request is in flight. A confirmed answer unlocks it immediately, so a retry reaches the hub's own 30-second terminal reopen guard and shows any known refusal. The unified dashboard waits 35 seconds, covering a terminal provider's 30-second cap plus a 5-second response margin; a slower headless start can still end unconfirmed while the hub continues. Check the Peers panel before retrying. An unconfirmed unified-dashboard start holds that peer's control for the shared 30-second reopen bound, or until its `starts` snapshot confirms attachment, across redraws and project switches within the same hub instance; the row states the retry bound. The project-local dashboard keeps its usual confirmed-answer behavior. Other forwarded actions keep their 10-second wait; the manager opens no settings session.
 - The conductor cannot choose the mode: `hub_peer_start` takes the peer's own.
 - Recovery restores each peer in the mode its recorded session had. After an
   unplanned stop, a Pi that ran in a terminal is reported with its command and
@@ -2098,7 +2099,13 @@ ownership, bind servers or start agents, sidecars or models.
 `ahub status`, `ahub tail` and the dashboard show native context occupancy,
 source and measurement freshness. Claude readings come from the status-line
 tee installed by `ahub claude`; Codex readings come from its current thread's
-native token-usage updates. Pi and other unsupported surfaces show unknown.
+native token-usage updates. Kimi readings come from its ACP `usage_update`
+(`{used, size}`, source `acp_usage_update`): context occupancy, not
+consumption, so no token total is counted from it; the adapter accepts the
+update whenever it names the current session, because 2.1.1's source text
+emits it after the turn settles (read from the source, not yet observed live
+through the hub; docs/smoke.md), so the peer may already be idle.
+Pi and other unsupported surfaces show unknown.
 A stale or disconnected reading is unknown, not 0%. Codex's accumulated session
 usage is never used as context occupancy.
 
@@ -2112,8 +2119,9 @@ this to `.agenthub/config.json` and restart the daemon deliberately:
 `gate` is a fraction between 0 and 1; 0 disables checkpoint requests.
 `stale_min` must be positive. A reading at or above the threshold records a metadata-only
 event and console notice, then asks an attached Claude/Codex with active work
-for a checkpoint when no checkpoint request is already outstanding. The request
-supplies a `request_id`; include that id with
+for a checkpoint when no checkpoint request is already outstanding (an ACP peer
+such as Kimi gets the event and notice only; no checkpoint request is sent to it
+yet). The request supplies a `request_id`; include that id with
 `hub_checkpoint {summary, request_id}`. Repeated high readings do not repeat
 it until a fresh below-threshold reading or new session rearms the crossing.
 

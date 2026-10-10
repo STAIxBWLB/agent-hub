@@ -69,10 +69,10 @@ import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./li
 import { changedPaths, repoOf, snapshot, Turns, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 
-import { isStartablePeer, peerStartConfig, STARTABLE_PEERS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
+import { isStartablePeer, peerStartConfig, PEER_START_RETRY_MS, STARTABLE_PEERS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
 import type { TerminalOpener } from "./terminal-open.ts";
 import { grantablePath, isPermissionMode, permissionBoundary, permissionDefaults, permissionGrant, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
-import { ContextWindows, DEFAULT_CONTEXT, claudeContext, type ContextConfig } from "./context-window.ts";
+import { ContextWindows, DEFAULT_CONTEXT, acpContext, claudeContext, type ContextConfig } from "./context-window.ts";
 
 export interface HubConfig {
   watchdog_ms: number;
@@ -2005,7 +2005,6 @@ export async function startDaemon(opts: DaemonOptions) {
   // ponytail: one terminal per peer per 30 s, by the clock. The hub cannot see whether the terminal it opened still
   // exists, so a peer that never attaches can be opened again after that; track the provider's handle to do better.
   const opening = new Map<string, number>();
-  const OPENING_MS = 30_000;
   /** For the dashboard's Start control: what a start of each peer would do now, and for a TUI where its terminal comes from. */
   // ponytail: asks the provider on every dashboard poll (a launch-record read and a PATH lookup for Orca); cache it for a few seconds if a page feels it.
   const startPlans = () => STARTABLE_PEERS.filter(startable).map((peer) => {
@@ -2029,7 +2028,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (owner && owner.state !== "offline") return { ok: true, already: true, mode };
     const command = `ahub ${startWords(peer).join(" ")}`;
     const since = Date.now() - (opening.get(peer) ?? 0);
-    if (since < OPENING_MS) return { ok: false, error: `a terminal for ${peer} was opened ${Math.round(since / 1000)}s ago; wait for its TUI, or run ${command} yourself`, command };
+    if (since < PEER_START_RETRY_MS) return { ok: false, error: `a terminal for ${peer} was opened ${Math.round(since / 1000)}s ago; wait for its TUI, or run ${command} yourself`, command };
     // Reserved before the provider is awaited, so starts that arrive together open one terminal, not one each.
     opening.set(peer, Date.now());
     // Every word is the hub's own: its runtime, its entry point, this project and a peer from the closed list.
@@ -2169,6 +2168,20 @@ export async function startDaemon(opts: DaemonOptions) {
         autoApprove: (title) => !stopping && HUB_TOOL_TITLES.has(title),
         log,
         onTokens: onKimiTokens,
+        // Kimi's usage_update is context occupancy ({used, size}), not consumption (#167): it becomes the peer's
+        // context reading (#285 phase 1), never a tokens event or a budget window. The reading is bound to the
+        // adapter's own session id; report() drops it when that is not the daemon's current session. An invalid
+        // shape reports a null reading: unknown, not the previous value (#285).
+        onUsageDiagnostic: (observation, sessionId) => {
+          if (observation.source !== "usage_update" || observation.shape !== "context-used") return;
+          const current = contextSession("kimi");
+          if (!current) return;
+          contexts.report("kimi",
+            observation.contextUsed !== undefined && observation.contextCapacity !== undefined
+              ? acpContext({ used: observation.contextUsed, size: observation.contextCapacity }, sessionId, Date.now())
+              : { source: "acp_usage_update", sessionId, measuredAt: Date.now(), tokens: null, window: null, used: null },
+            current);
+        },
         onTurnFailure: () => { supervisionTurns.delete("kimi"); },
         mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("kimi")).map(([name, value]) => ({ name, value })) }],
         preamble: roleContract("kimi", config.roles),
