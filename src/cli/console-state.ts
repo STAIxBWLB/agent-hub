@@ -553,7 +553,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     if (p.toolsOnly) summary.push(span(" tools-only: ahub claude", "attention"));
   }
   const quotas = Object.entries(s.budget).map(([id, b]) => `${id}:${b.windows?.map((w: any) => `${w.id} ${Math.round(w.used * 100)}%`).join("/") ?? "?"}`).join(" ");
-  if (quotas) summary.push(span(` | ${quotas}`));
+  if (quotas) summary.push(span(`${summary.length ? " | " : ""}${quotas}`));
   const approvals = [span(plural(s.approvals.length, "approval"), s.approvals.length ? "attention" : undefined)];
   if (permission) approvals.push(span(` | ${permission.peer} ${permission.id}`, "attention"), span(` ${duration(permission.expiresAt - now)} left`, "muted"));
   else if (s.approvals.length) approvals.push(span(" | none selected", "muted"));
@@ -564,7 +564,10 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     const counts = s.taskCounts;
     const total = counts ? Object.values(counts).reduce((sum, value) => sum + value, 0) : 0;
     const taskCount = span(counts ? `tasks ${counts.approved ?? 0}/${total} approved` : "tasks loading...", counts ? "success" : "attention");
-    footer[0] = fitLine([taskCount, ...(summary.length ? [span(" | "), ...summary] : [])], columns);
+    const activeNotice = s.notice && now - (s.noticeAt ?? now) < NOTICE_MS;
+    if (!activeNotice && Bun.stringWidth(taskCount.text + " | " + approvals.map(s => s.text).join("")) <= columns) {
+      footer[1] = fitLine([taskCount, span(" | "), ...approvals], columns);
+    }
     return [rule, ...footer];
   }
   const progress = taskProgress(s.tasks);

@@ -868,7 +868,7 @@ describe("whole-board task progress (#246)", () => {
     for (let i = 0; i < 8; i++) await Promise.resolve();
     expect(f.output.join("")).toContain("\x1b[1;20r"); expect(f.output.join("")).not.toContain("\x1b[2;20r");
     expect(f.output.some(text => text.startsWith("tmp | tasks"))).toBe(false);
-    const at = f.output.lastIndexOf("\x1b[22;1H\x1b[2K"); expect(f.output[at + 1]).toContain("tasks 2/6 approved");
+    const at = f.output.lastIndexOf("\x1b[23;1H\x1b[2K"); expect(f.output[at + 1]).toContain("tasks 2/6 approved");
     expect(f.requests.some(msg => msg.op === "hub_task_list")).toBe(false);
     f.signal(); await running;
   });
@@ -904,6 +904,24 @@ describe("whole-board task progress (#246)", () => {
     f.signal(); await running;
     expect(screen[0]).not.toContain('tmp | tasks');
   });
+  test("five peers retain their review flag at 80 columns while task totals occupy the approval line", () => {
+    const s = initialConsoleState(); s.taskCounts = { approved: 1, proposed: 2 };
+    s.peers = Object.fromEntries(['claude','codex','kimi','pi','local'].map(peer => [peer, { state: 'idle', queued: 0, ...(peer === 'local' ? { needsReview: 2 } : {}) }]));
+    const lines = renderConsoleLines(s, 80, 24, NOW);
+    expect(paint(lines[1]!, false)).toContain('local:idle q0 review2');
+    expect(paint(lines[2]!, false)).toContain('tasks 1/3 approved');
+    s.notice = 'no request selected; [ ] selects one'; s.noticeAt = NOW;
+    const alerts = renderConsoleLines(s, 80, 24, NOW);
+    expect(paint(alerts[2]!, false)).toContain(s.notice); expect(paint(alerts[2]!, false)).not.toContain('tasks 1/3');
+    s.notice = '';
+    expect(lines.map(line => terminalText(paint(line, true)))).toEqual(lines.map(line => paint(line, false)));
+    s.peers = {}; s.budget = { pi: { windows: [{ id: '5h', used: 0.2 }] } };
+    expect(paint(renderConsoleLines(s, 80, 24, NOW)[1]!, false)).not.toContain(' | ');
+  });
+  test("only fully approved boards render a complete bar and 100 percent", () => {
+    const s = state(true); s.panel = 3; s.tasks = [{ id: 1, state: 'approved', title: 'done' }];
+    expect(paint(renderConsoleLines(s, 80, 24, NOW)[2]!, false)).toContain('[####################] 100%');
+  });
   test("partial boards never show a full bar or 100 percent, and counts drop only from the end", () => {
     for (const [done, total] of [[1, 3], [39, 40], [199, 200], [29, 100]]) {
       const s = state(true); s.panel = 3; s.tasksKnown = true;
@@ -933,7 +951,7 @@ describe("whole-board task progress (#246)", () => {
       for (const line of lines) { const text = paint(line, false); expect(Bun.stringWidth(text)).toBeLessThanOrEqual(columns!); expect(text).toMatch(/^[\x20-\x7e]*$/); }
       s.mode = "stream";
       s.taskCounts = { approved: 1, proposed: 1, changes_requested: 1 };
-      expect(paint(renderConsoleLines(s, columns!, rows!, NOW)[1]!, false)).toContain("tasks 1/3 approved");
+      expect(paint(renderConsoleLines(s, columns!, rows!, NOW)[2]!, false)).toContain("tasks 1/3 approved");
     });
   }
 });

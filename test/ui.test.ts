@@ -244,6 +244,14 @@ test("shared public progress executes in the hashed dashboard and matches consol
   expect(renderers.renderTaskStage(progress.stages[5]).attrs["aria-label"]).toBeUndefined();
   expect(renderers.renderTaskStage(progress.stages[5]).children.at(-1).textContent).toContain("Stage 2/4: changes requested (back in progress)");
   expect(target.children[1]?.attrs.preserveAspectRatio).toBe("none"); expect(target.children[1]?.attrs["aria-hidden"]).toBe("true");
+  const rectangles = target.children[1]!.children;
+  expect(rectangles).toHaveLength(6);
+  let expectedX = 0;
+  for (const [index, count] of Object.values(progress.counts).entries()) {
+    const width = Number(count) / progress.total * 100;
+    expect(Number(rectangles[index]?.attrs.x)).toBeCloseTo(expectedX); expect(Number(rectangles[index]?.attrs.width)).toBeCloseTo(width); expectedX += width;
+  }
+  expect(expectedX).toBeCloseTo(100);
   const mutations = target.mutations; renderers.renderTaskProgress(JSON.parse(JSON.stringify(progress))); expect(target.mutations).toBe(mutations);
   const nodes = new Map<string, Node>(); const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
   get('task-progress').append(new Node());
@@ -260,7 +268,7 @@ test("shared public progress executes in the hashed dashboard and matches consol
   for (const match of blocks) expect(response.headers.get("content-security-policy")).toContain(createHash("sha256").update(match[2]!).digest("base64"));
   expect(response.headers.get("content-security-policy")).not.toContain("unsafe-inline");
 });
-test("theme preference initializes before style/paint, persists choices and tolerates blocked storage", async () => {
+test("theme preference initializes before style/paint, persists choices and tolerates blocked cookie access", async () => {
   const { ui } = setup(); const html = await (await fetch(ui.origin)).text();
   const script = html.match(/<script>([\s\S]*?)<\/script>/)![1];
   expect(html.indexOf(script!)).toBeLessThan(html.indexOf("<style>"));
@@ -281,4 +289,13 @@ test("theme preference initializes before style/paint, persists choices and tole
   expect(html).toContain(':root[data-theme="dark"]');
   expect(html).toContain(':root:not([data-theme="light"]):not([data-theme="dark"])');
   expect(html).toContain('@media(prefers-color-scheme:dark)');
+});
+
+test("shared model injection treats dollar replacement patterns as literal source text", async () => {
+  const original = taskProgress.toString;
+  taskProgress.toString = () => original.call(taskProgress) + '\n/* $& */';
+  try {
+    const { ui } = setup(); const html = await (await fetch(ui.origin)).text();
+    expect(html).toContain('/* $& */');
+  } finally { taskProgress.toString = original; }
 });

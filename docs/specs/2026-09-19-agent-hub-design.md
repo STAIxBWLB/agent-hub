@@ -1386,7 +1386,12 @@ in a one-year host-scoped `SameSite=Strict` cookie through guarded access and
 follows OS CSS preference on System. Cookie port independence shares the choice
 between hub starts and projects. The shared model is injected before the page's
 own inline script/style CSP hashes, with no new control message or CLI JSON change.
-UI public rows expose public-view deps for waiting.
+UI public rows expose optional public-view deps for waiting. This is additive
+metadata enrichment of the existing ui_snapshot payload, not a changed control
+message envelope/operation, so it does not bump PROTOCOL. Unknown task states
+count in an explicit unknown bucket with stage zero; no NaN or prototype-key
+updates are permitted. Approval fraction is derived from counts/total at display
+time, avoiding a redundant floating-ratio field.
 
 Console semantic colors (issue #201) use spans with a fixed terminal-native
 palette: cyan information, bold cyan active/selected labels, green availability

@@ -99,7 +99,9 @@ returns to in progress and uses `!` plus the failure tone. Narrow panels retain
 the fraction/bar before optional counts, which appear in fixed importance order:
 changes requested, review, waiting, in progress, proposed. Narrow widths drop
 only the suffix. Bar cells and percentages round down so open tasks never imply
-completion. Stream `tasks N/M approved` lives in the fixed footer; the scroll
+completion. Stream `tasks N/M approved` lives on the approvals footer line, leaving the
+peer/queue footer line intact. Operator notices or an already-full approvals line
+temporarily take precedence over this optional count; the scroll
 region starts at row 1 to preserve terminal scrollback. All existing status state
 counts contribute to its total, including an unfamiliar state. Until a successful
 status read it says loading; later failures preserve the prior count with a notice.
