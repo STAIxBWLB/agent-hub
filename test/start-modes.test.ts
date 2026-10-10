@@ -31,6 +31,7 @@ function provider(present = true, script: (() => Promise<{ ok: true; via: string
 async function hub(config: Partial<HubConfig> = {}, terminal?: () => TerminalOpener) {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "ahub-start-modes-"))), stateDir = join(cwd, ".agenthub/state");
   mkdirSync(join(cwd, ".agenthub"));
+  writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false } })); // an initialised project: settings write only there
   const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0, ...(terminal ? { terminal } : {}),
     config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
       kimi_cmd: [process.execPath, join(import.meta.dir, "fakes/acp-server.ts")], pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: PI }, ...config } });
