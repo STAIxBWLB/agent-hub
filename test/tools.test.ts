@@ -360,3 +360,17 @@ for (const tool of ["write", "edit"]) test(`${tool} rechecks a path replaced wit
   expect(await call(ctx, tool, { path: "a.txt", content: "overwrite", old: "two", new: "2" })).toMatch(/^error: .*outside the project/);
   expect(readFileSync(target, "utf8")).toBe("OUTSIDE\n");
 });
+
+for (const tool of ["write", "edit"]) test(`${tool} refuses a canonical target retargeted into native agent config after approval`, async () => {
+  const { cwd, ctx } = project();
+  const ordinary = join(cwd, "ordinary"), protectedDir = join(cwd, ".claude"), alias = join(cwd, "editable-alias");
+  mkdirSync(ordinary); mkdirSync(protectedDir);
+  const original = join(ordinary, "policy.json"), protectedFile = join(protectedDir, "policy.json");
+  writeFileSync(original, "before"); writeFileSync(protectedFile, "before"); symlinkSync(ordinary, alias);
+  ctx.permit = async (_title, name, _signal, target) => {
+    expect(name).toBe(tool); expect(target).toBe(guardPath(ctx, "ordinary/policy.json", "write"));
+    unlinkSync(alias); symlinkSync(protectedDir, alias); return true;
+  };
+  expect(await call(ctx, tool, { path: "editable-alias/policy.json", content: "after", old: "before", new: "after" })).toContain("path target changed during approval");
+  expect(readFileSync(original, "utf8")).toBe("before"); expect(readFileSync(protectedFile, "utf8")).toBe("before");
+});

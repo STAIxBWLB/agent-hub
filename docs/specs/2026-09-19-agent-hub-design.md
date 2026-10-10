@@ -823,7 +823,8 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   Merged/generated settings are 0600 state files passed by path, never inline
   in argv. Preview writes no settings file. The owning launcher removes its settings file
   after native exit; earlier active or unknown launchers retain theirs. Verified
-  dead previous owners permit crash fallback cleanup.
+  dead wrapper and native identities permit crash fallback cleanup. Without
+  separate native identity proof, prior files remain for manual inspection.
 - Permission-only Claude PreToolUse never drives busy state. Only the former
   observation purposes retain native turn bookkeeping. Hook identity/purpose
   are launch/session bound; unverified hook status reads unverified.

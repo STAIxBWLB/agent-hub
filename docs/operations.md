@@ -847,7 +847,8 @@ Other tools retain native decisions, which may already allow a harmless shell.
 Permission-only PreToolUse never marks Claude busy; former observation hooks
 retain their native-turn role. Settings are passed as a 0600 state file retained
 until that native launch exits. Live/unknown previous launchers keep their files;
-verified dead previous launchers permit crash cleanup. Settings carry
+verified dead wrapper and native identities permit crash cleanup. Without
+separate native identity proof, old settings remain for manual inspection. Settings carry
 no inline caller values in argv. Status reports an unverified Claude hook as
 unverified. Unattended native sessions cannot take a runtime mode; restart
 without that native flag. Codex must be behind the hub proxy, and returning to

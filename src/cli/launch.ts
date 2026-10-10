@@ -68,6 +68,10 @@ export function cleanupStaleClaudeSettings(stateDir: string, previous: unknown, 
   const record = previous as Record<string, unknown>;
   if (typeof record.launcherSignature !== "string" || !record.launcherSignature) return;
   if (processLiveness(record.launcherPid, record.launcherSignature, identity) !== "gone") return;
+  // ponytail: spawnSync launch records have no independent native identity, so crash-left settings are retained.
+  // Upgrade path: record the native child's PID and processSignature before admitting crash fallback cleanup.
+  if (typeof record.nativePid !== "number" || !Number.isSafeInteger(record.nativePid) || record.nativePid <= 0 || record.nativePid === record.launcherPid || typeof record.nativeSignature !== "string" || !record.nativeSignature) return;
+  if (processLiveness(record.nativePid, record.nativeSignature, identity) !== "gone") return;
   cleanupClaudeSettings(stateDir, record.settingsFile);
 }
 

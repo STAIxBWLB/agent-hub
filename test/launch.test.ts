@@ -147,6 +147,16 @@ test("crash settings cleanup preserves live, unknown and identity-less native la
   cleanupStaleClaudeSettings(state, owner, () => undefined); expect(existsSync(launch.settingsFile!)).toBe(true);
   cleanupStaleClaudeSettings(state, { ...owner, launcherSignature: undefined }); expect(existsSync(launch.settingsFile!)).toBe(true);
   cleanupStaleClaudeSettings(state, { ...owner, launcherPid: undefined }, () => "other"); expect(existsSync(launch.settingsFile!)).toBe(true);
-  // A matching PID with a different verified signature is a reused PID; the old recorded owner is gone.
-  cleanupStaleClaudeSettings(state, owner, () => "replacement-owner-identity"); expect(existsSync(launch.settingsFile!)).toBe(false);
+  // A dead wrapper alone cannot establish that its native child ended.
+  cleanupStaleClaudeSettings(state, owner, () => "replacement-owner-identity"); expect(existsSync(launch.settingsFile!)).toBe(true);
+  const complete = { ...owner, launcherPid: process.pid + 1, nativePid: process.pid, nativeSignature: "native-owner-identity" };
+  cleanupStaleClaudeSettings(state, complete, pid => pid === complete.nativePid ? complete.nativeSignature : "replacement-wrapper");
+  expect(existsSync(launch.settingsFile!)).toBe(true); // dead wrapper, live native
+  cleanupStaleClaudeSettings(state, complete, pid => pid === complete.nativePid ? undefined : "replacement-wrapper");
+  expect(existsSync(launch.settingsFile!)).toBe(true); // dead wrapper, unreadable native identity with a live PID
+  cleanupStaleClaudeSettings(state, { ...complete, nativeSignature: undefined }, () => "replacement"); expect(existsSync(launch.settingsFile!)).toBe(true);
+  cleanupStaleClaudeSettings(state, { ...complete, nativePid: undefined }, () => "replacement"); expect(existsSync(launch.settingsFile!)).toBe(true);
+  cleanupStaleClaudeSettings(state, { ...complete, nativePid: complete.launcherPid }, () => "replacement"); expect(existsSync(launch.settingsFile!)).toBe(true);
+  // Both separately recorded owners are verified gone (their PIDs were reused).
+  cleanupStaleClaudeSettings(state, complete, () => "replacement-owner-identity"); expect(existsSync(launch.settingsFile!)).toBe(false);
 });
