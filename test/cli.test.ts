@@ -21,7 +21,7 @@ test("ahub init is idempotent, keeps text outside the markers and writes no CLAU
   const first = readFileSync(join(dir, "AGENTS.md"), "utf8");
   expect(first).toStartWith("# Mine\n\nkeep me\n\n<!-- AGENT_HUB:BEGIN");
   expect(existsSync(join(dir, "CLAUDE.md"))).toBe(false);
-  expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe(".agenthub/state/\n.agenthub/config.local.json\n");
+  expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe(".agenthub/state/\n.agenthub/config.local.json\n.agenthub/routing.local.toml\n");
   expect(init(dir)).toEqual([]);
   expect(upsertBlock(first.replace("untrusted", "EDITED"), readFileSync("templates/AGENTS.block.md", "utf8"))).toBe(first);
 });
@@ -30,7 +30,7 @@ test("ahub init adds the machine's own config to an existing .gitignore once (is
   const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
   writeFileSync(join(dir, ".gitignore"), "node_modules/\n.agenthub/state/");
   init(dir);
-  expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("node_modules/\n.agenthub/state/\n.agenthub/config.local.json\n");
+  expect(readFileSync(join(dir, ".gitignore"), "utf8")).toBe("node_modules/\n.agenthub/state/\n.agenthub/config.local.json\n.agenthub/routing.local.toml\n");
   expect(init(dir)).toEqual([]);
 });
 

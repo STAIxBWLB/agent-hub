@@ -64,8 +64,8 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; modelUrl?:
   return { stateDir, daemon, console_, events, pushes };
 }
 
-async function dashboardClient(console_: ControlClient) {
-  const opened = await console_.request({ t: "ui" });
+async function dashboardClient(console_: ControlClient, settings = false) {
+  const opened = await console_.request({ t: "ui", ...(settings ? { settings: true } : {}) });
   expect(opened.ok).toBe(true);
   const url = new URL(opened.url);
   const origin = url.origin;
@@ -1080,6 +1080,13 @@ test("dashboard hides local permission contents, refuses allow and can deny", as
   expect(pending.terminalOnly).toBe(true);
   expect(pending.options.map((o: any) => o.optionId)).toEqual(["deny"]);
   expect(await ui.post("action", { action: "permit", id: pending.id, option: "allow" })).toMatchObject({ ok: false });
+  // #269: a settings session raises settings, never a tool approval: the same stub, the same refusal.
+  const raised = await dashboardClient(console_, true);
+  const raisedSnapshot = await raised.post("snapshot");
+  expect(raisedSnapshot.settings.sessionUntil).toBeGreaterThan(Date.now());
+  expect(JSON.stringify(raisedSnapshot)).not.toContain(privateValue);
+  expect(raisedSnapshot.permissions[0].options.map((o: any) => o.optionId)).toEqual(["deny"]);
+  expect(await raised.post("action", { action: "permit", id: pending.id, option: "allow" })).toMatchObject({ ok: false });
   expect(await ui.post("action", { action: "permit", id: pending.id, option: "deny" })).toMatchObject({ ok: true });
 });
 

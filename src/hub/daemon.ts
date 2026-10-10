@@ -46,11 +46,12 @@ import { launcherPreview } from "../cli/preview.ts";
 import { Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig } from "./inference.ts";
 import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
-import { currentRouting, detectSignals } from "./routing.ts";
+import { currentRouting, detectSignals, OVERLAY_FILE, parseRouting, routingText, type Routing } from "./routing.ts";
+import { checkSettingValue, ignoredLine, pendingUndo, readOverlay, restoredValue, routingCandidate, storedLocally, settingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingDef, type SettingRow, type SettingValue } from "./settings.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
-import { startDashboard } from "./ui.ts";
+import { startDashboard, type DashboardSession } from "./ui.ts";
 import { PROTOCOL, stateDirFor } from "./control-client.ts";
 import { newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
@@ -67,7 +68,7 @@ import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./li
 import { changedPaths, repoOf, snapshot, Turns, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 
-import { grantablePath, isPermissionMode, permissionDefaults, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
+import { grantablePath, isPermissionMode, permissionBoundary, permissionDefaults, permissionGrant, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
 import { ContextWindows, DEFAULT_CONTEXT, claudeContext, type ContextConfig } from "./context-window.ts";
 
 export interface HubConfig {
@@ -280,9 +281,15 @@ export function mlxLaunchProblem(config: HubConfig, args: { backend?: unknown; m
 
 /** Shipped defaults remain capability-aware; operator-written MLX pins require an explicit migration. */
 function disabledMlxPolicyProblem(config: HubConfig, cwd: string): string | undefined {
-  if (config.mlx.enabled !== false || !existsSync(join(cwd, ".agenthub", "routing.toml"))) return undefined;
-  const conflict = Object.entries(currentRouting(cwd).classes).find(([, policy]) => policy?.pi_backend === "mlx");
-  return conflict ? `routing.toml: [classes.${conflict[0]}] pi_backend=mlx conflicts with mlx.enabled=false; remove the pin for hub/auto or select dgx` : undefined;
+  if (config.mlx.enabled !== false) return undefined;
+  const project = existsSync(join(cwd, ".agenthub", "routing.toml"));
+  if (!project && !existsSync(join(cwd, ".agenthub", OVERLAY_FILE))) return undefined;
+  return mlxPinProblem(currentRouting(cwd), project);
+}
+/** A pin a person wrote, in routing.toml or the machine-local overlay (#269); the shipped template's own pins are not theirs to migrate. */
+function mlxPinProblem(routing: Routing, project: boolean): string | undefined {
+  const conflict = Object.entries(routing.classes).find(([name, policy]) => policy?.pi_backend === "mlx" && (project || routing.sources?.[`classes.${name}.pi_backend`]));
+  return conflict ? `${routing.sources?.[`classes.${conflict[0]}.pi_backend`] ?? "routing.toml"}: [classes.${conflict[0]}] pi_backend=mlx conflicts with mlx.enabled=false; remove the pin for hub/auto or select dgx` : undefined;
 }
 
 export interface DaemonOptions {
@@ -2549,7 +2556,7 @@ export async function startDaemon(opts: DaemonOptions) {
           arm: rs[0]!.header.arm, runs: rs.length, measures: benchReport(rs).overall })) } };
     } catch { return {}; } // an unreadable store never breaks the dashboard
   }
-  function uiSnapshot(after: number) {
+  function uiSnapshot(after: number, _input?: Record<string, unknown>, session?: DashboardSession) {
     const quota = budget.status();
     const peers = [...new Set([...Object.keys(quota), ...bus.knownPeers()])];
     return {
@@ -2573,12 +2580,152 @@ export async function startDaemon(opts: DaemonOptions) {
       }),
       events: uiEvents.filter((e) => e.seq > after),
       cursor: uiSequence,
+      ...settingsSnapshot(session),
       ...benchView(),
     };
   }
 
-  async function uiAction(a: Record<string, unknown>): Promise<unknown> {
+  // #269: settings. One registry (src/hub/settings.ts) serves the dashboard and `ahub settings`; nothing outside it is written.
+  let storedConfigCache: { stamp: string; config: HubConfig | undefined } | undefined;
+  /** What the config files hold now, as the loader reads them. Re-read only when a file changed: the dashboard polls. */
+  const storedConfig = (): HubConfig | undefined => {
+    const stamp = CONFIG_FILES.map((name) => { try { const s = statSync(join(opts.cwd, ".agenthub", name)); return `${s.mtimeMs}:${s.size}`; } catch { return "-"; } }).join("|");
+    if (storedConfigCache?.stamp !== stamp) {
+      let loaded: HubConfig | undefined;
+      try { loaded = loadConfig(opts.cwd); } catch { /* the rows say that the files do not load */ }
+      storedConfigCache = { stamp, config: loaded };
+    }
+    return storedConfigCache.config;
+  };
+  const settingScalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" ? value : Array.isArray(value) ? value.map(String) : null;
+  const routingValue = (routing: ReturnType<typeof currentRouting>, def: SettingDef): SettingValue =>
+    settingScalar(def.path[0] === "stay_switch" ? routing.stay_switch : (routing.classes[def.path[1] as TaskClass] as Record<string, unknown> | undefined)?.[def.path[2]!]);
+  /** For the dashboard: the rows, and until when this session may raise. A project whose files do not read still gets its dashboard. */
+  // ponytail: reads the two config files and the undo record and parses the routing files on each dashboard poll; cache by mtime if a page ever feels it.
+  function settingsSnapshot(session?: DashboardSession): { settings?: Record<string, unknown> } {
+    try { return { settings: { ...settingsView(), ...(session?.settings ? { sessionUntil: session.settingsUntil } : {}) } }; }
+    catch { return {}; }
+  }
+  function settingsView(): { rows: SettingRow[]; undo?: string } {
+    const stored = storedConfig();
+    // What the loader would say about the files as they are: an overlay that does not parse, or one that no longer
+    // merges (it names a route routing.toml dropped), leaves the last good policy in force, and the rows say why.
+    let routingProblem: string | undefined;
+    try { parseRouting(routingText(opts.cwd), readOverlay(opts.cwd)); } catch (error) { routingProblem = (error as Error).message; }
+    const rows = settingRows({
+      cwd: opts.cwd, routing: currentRouting(opts.cwd, log), ...(routingProblem ? { routingProblem } : {}), ...(stored?.ignored ? { ignored: stored.ignored } : {}),
+      running: (path) => valueAt(config, path),
+      next: stored ? (path) => valueAt(stored, path) : undefined,
+      mode: (peer) => {
+        const owner = bus.peers.get(peer), attached = !!owner && owner.state !== "offline";
+        const note = pendingPermissionDefaults.has(peer) ? "a never-ask default waits for y in ahub console" : attached ? undefined : "not attached: only ask can be set";
+        return { value: attached ? permissionDisplay(peer, owner) : permissionMode(peer), ...(note ? { note } : {}) };
+      },
+    });
+    const undo = pendingUndo(opts.stateDir);
+    return { rows, ...(undo ? { undo } : {}) };
+  }
+  /** The same announcement whatever surface made the change: events.jsonl, hub.log and every open console. */
+  const recordSetting = (key: string, from: SettingValue, to: SettingValue, source: "dashboard" | "terminal", undo = false) => {
+    event({ type: "settings", key, from, to, source, ...(undo ? { undo: true } : {}) });
+    try { notify(`setting ${key}: ${settingText(from)} -> ${settingText(to)} (${undo ? "undo, " : ""}${source})`); } catch { /* the write stands */ }
+  };
+  const settingSource = (authority: SettingAuthority) => authority === "terminal" ? "terminal" as const : "dashboard" as const;
+  /** A checked definition and value, or the refusal. Every settings write and preview starts here. */
+  function settingInput(key: unknown, raw: unknown): { def: SettingDef; value: SettingValue } | { error: string } {
+    const def = settingDef(key);
+    if (typeof def === "string") return { error: def };
+    const routing = currentRouting(opts.cwd, log);
+    try { return { def, value: checkSettingValue(def, raw, [...Object.keys(routing.routes), ...Object.keys(routing.hub_routes ?? {})]) }; }
+    catch (error) { return { error: (error as Error).message }; }
+  }
+  async function settingsSet(key: unknown, raw: unknown, authority: SettingAuthority, confirm?: unknown): Promise<Record<string, unknown>> {
+    const input = settingInput(key, raw);
+    if ("error" in input) return { ok: false, error: input.error };
+    const { def, value } = input;
+    const refusal = settingRefusal(def, value, authority);
+    if (refusal) return { ok: false, error: refusal };
+    const source = settingSource(authority);
+    const peer = def.group === "Permissions" ? def.path.at(-1)! : undefined;
+    // The console asks for y before never-ask; here the person types the peer it is for.
+    if (value === "never-ask" && confirm !== peer) return { ok: false, error: `never-ask for ${peer} needs its peer id as the confirmation; nothing was changed` };
+    if (def.store === "runtime") {
+      // The console's own request (#242): the same refusals, start reconciliation and events.
+      if (requestedPeerStops.has(peer!)) return { ok: false, error: "peer stop is in progress; wait for ahub status before changing its mode" };
+      const from = permissionMode(peer!);
+      const result = await permissionChange(peer!, () => changePermission(peer!, value, value === "never-ask"));
+      if (result.ok !== true) return result;
+      recordSetting(def.key, from, permissionMode(peer!), source);
+      return { ok: true, text: `${def.key}: ${result.permissionMode}`, ...(typeof result.note === "string" ? { note: result.note } : {}) };
+    }
+    try {
+      if (def.store === "routing") {
+        const from = routingValue(currentRouting(opts.cwd, log), def);
+        const next = writeRoutingSetting(opts.cwd, opts.stateDir, def, value, routingCheck);
+        if (!next) return { ok: true, text: `${def.key}: ${OVERLAY_FILE} already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
+        recordSetting(def.key, from, routingValue(next, def), source);
+        return { ok: true, text: `${def.key}: ${settingText(routingValue(next, def))} (in force now)` };
+      }
+      // Removing the machine-local value uncovers the shared file's: never-ask there needs the same confirmation.
+      if (peer && value === null && storedLocally(opts.cwd, def) && restoredValue(opts.cwd, opts.stateDir, def, true) === "never-ask" && confirm !== peer) return { ok: false, error: `removing the machine-local value leaves never-ask from config.json for ${peer}: it needs the peer id as the confirmation; nothing was changed` };
+      const from = settingScalar(valueAt(storedConfig(), def.path));
+      if (!writeConfigSetting(opts.cwd, opts.stateDir, def, value, (scratch) => loadConfig(scratch))) return { ok: true, text: `${def.key}: config.local.json already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
+      const to = settingScalar(valueAt(storedConfig(), def.path));
+      recordSetting(def.key, from, to, source);
+      // Config trust (#17) can drop a machine-local field at load: the write happened, and the person is told it will not count.
+      const dropped = ignoredLine(storedConfig()?.ignored, def);
+      return { ok: true, text: dropped ? `${def.key}: written, but the hub does not read it (${dropped})` : `${def.key}: ${settingText(to)} (applies at the next hub start)` };
+    } catch (error) {
+      return { ok: false, error: (error as Error).message };
+    }
+  }
+  /** A pin the hub could not start with: refused before a write or an undo puts it on disk. */
+  // As at hub start: with no project routing.toml only a pin the overlay sets counts, never the shipped template's own.
+  const routingCheck = (routing: Routing) => { const problem = config.mlx.enabled === false ? mlxPinProblem(routing, existsSync(join(opts.cwd, ".agenthub", "routing.toml"))) : undefined; if (problem) throw new Error(problem); };
+  function settingsUndo(authority: SettingAuthority): Record<string, unknown> {
+    // The previous version can hold a wider value than the one in force, so undo is never an ordinary session's.
+    if (authority === "ordinary") return { ok: false, error: "undo can put back a value that widens what agents do without asking: open a settings session with ahub ui --settings, or use ahub settings undo in a terminal" };
+    const def = settingDef(pendingUndo(opts.stateDir));
+    if (typeof def === "string") return { ok: false, error: "nothing to undo" };
+    const read = (): SettingValue => def.store === "routing" ? routingValue(currentRouting(opts.cwd, log), def) : settingScalar(valueAt(storedConfig(), def.path));
+    // never-ask is set with its confirmation, never put back by an undo that carries none.
+    if (def.group === "Permissions" && restoredValue(opts.cwd, opts.stateDir, def) === "never-ask") return { ok: false, error: `undo would put never-ask back for ${def.path.at(-1)} without its confirmation: set ${def.key} again (never-ask, or inherit where the shared file holds it) with the confirmation instead; nothing was undone` };
+    try {
+      const from = read();
+      undoSetting(opts.cwd, opts.stateDir, (scratch) => loadConfig(scratch), routingCheck);
+      recordSetting(def.key, from, read(), settingSource(authority), true);
+      return { ok: true, text: `${def.key}: put back to ${settingText(read())}` };
+    } catch (error) {
+      return { ok: false, error: (error as Error).message };
+    }
+  }
+  /** What a change would do, before it is saved: what the mode grants, or `route explain` for the open tasks before and after. */
+  function settingsPreview(key: unknown, raw: unknown): Record<string, unknown> {
+    const input = settingInput(key, raw);
+    if ("error" in input) return { ok: false, error: input.error };
+    const { def, value } = input;
+    if (def.group === "Permissions") {
+      const peer = def.path.at(-1)!;
+      return { ok: true, lines: [permissionBoundary(peer), ...(isPermissionMode(value) ? [`${value}: ${permissionGrant(peer, value)}`] : ["inherit: the shared file's default, or ask"])] };
+    }
+    if (def.store !== "routing") return { ok: true, lines: [`${def.key}: ${settingText(value)}; read at the next hub start`] };
+    try {
+      const after = parseRouting(routingText(opts.cwd), routingCandidate(readOverlay(opts.cwd), def, value));
+      const open = board.list().filter((task) => task.state !== "approved");
+      // A PII task's routing is fixed by its constraint and its text is private: it is counted, not shown.
+      const shown = open.filter((task) => !tasks.isPii(task)).slice(0, 20);
+      return { ok: true, lines: [`${def.key}: ${settingText(routingValue(currentRouting(opts.cwd, log), def))} -> ${settingText(routingValue(after, def))}`, ...(open.length ? [] : ["no open task: nothing is routed differently now"])],
+        tasks: shown.map((task) => ({ id: task.id, before: tasks.publicExplain(task.id), after: tasks.publicExplain(task.id, after) })),
+        ...(open.length > shown.length ? { hidden: open.length - shown.length } : {}) };
+    } catch (error) {
+      return { ok: false, error: (error as Error).message };
+    }
+  }
+
+  async function uiAction(a: Record<string, unknown>, session?: DashboardSession): Promise<unknown> {
     const bad = { ok: false, error: "invalid or unavailable dashboard action" };
+    // #269: a session opened by `ahub ui --settings` may raise authority while its window lasts; any other may not.
+    const authority: SettingAuthority = session?.settings ? "settings" : "ordinary";
     const text = (key: string, max: number) => typeof a[key] === "string" && (a[key] as string).length <= max;
     const peer = () => text("peer", 32) && PEER_ID.test(a.peer as string);
     const taskId = () => typeof a.id === "number" && Number.isSafeInteger(a.id) && a.id > 0;
@@ -2610,6 +2757,12 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "assign":
         return taskId() && peer() ? { ok: true, text: await taskOp(USER, "task_assign", { id: a.id, peer: a.peer }) } : bad;
+      case "setting":
+        return settingsSet(a.key, a.value, authority, a.confirm);
+      case "setting_undo":
+        return settingsUndo(authority);
+      case "setting_preview":
+        return settingsPreview(a.key, a.value);
       default:
         return bad;
     }
@@ -3160,7 +3313,9 @@ export async function startDaemon(opts: DaemonOptions) {
         try {
           dashboard ??= startDashboard({ snapshot: uiSnapshot, action: uiAction });
           writeStatus();
-          return void reply({ t: "ui", ok: true, url: dashboard.issue() });
+          // #269: `ahub ui --settings` is the same person's command; its ticket marks the session it opens.
+          if (msg.settings === true) notify("settings session opened from ahub ui --settings: for 15 minutes that dashboard session may change permission modes, routing and start settings");
+          return void reply({ t: "ui", ok: true, url: dashboard.issue(msg.settings === true), ...(msg.settings === true ? { settings: true } : {}) });
         } catch {
           return void reply({ t: "ui", ok: false, error: "could not start the dashboard" });
         }
@@ -3177,6 +3332,19 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!msg.action || typeof msg.action !== "object" || Array.isArray(msg.action)) return void reply({ ok: false, error: "invalid dashboard action" });
         void uiAction(msg.action).then((result) => reply(result as Record<string, unknown>), () => reply({ ok: false, error: "dashboard action failed; check its inputs" }));
         return;
+      case "settings_get":
+        if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
+        return void reply({ ok: true, ...settingsView() });
+      case "settings_preview":
+        if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
+        return void reply(settingsPreview(msg.key, msg.value));
+      case "settings_set":
+        if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
+        void settingsSet(msg.key, msg.value, "terminal", msg.confirm).then(reply, () => reply({ ok: false, error: "the setting could not be changed; inspect hub.log" }));
+        return;
+      case "settings_undo":
+        if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
+        return void reply(settingsUndo("terminal"));
       case "peer_stop":
         if (c.role !== "console") return void reply({ ok: false, error: "peer_stop is a console command; the person runs ahub stop in a terminal" });
         void stopPeer(msg.peer).then(reply).catch(() => reply({ ok: false, error: "peer stop failed; inspect ahub status and logs before retrying" }));

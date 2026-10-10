@@ -46,6 +46,8 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub tail", "live stream of messages, states and permission requests"],
     ["ahub permission [<peer> [ask|ask-when-needed|never-ask]] [--yes]", "human only: inspect or set a running peer mode; never-ask requires --yes; config never-ask waits for console y"],
     ["ahub permit <id> <option>", "answer a permission request shown by tail (\"deny\" cancels)"],
+    ["ahub settings [list] [--json] | get <key>", "human only: the settings the dashboard can change, each with its value, the file it comes from and when it applies"],
+    ["ahub settings set <key> <value|inherit> [--yes] [--preview] | undo", "human only: change one, written to .agenthub/config.local.json or routing.local.toml (never a tracked file); --preview shows the effect and saves nothing; undo puts back the last write"],
     ["ahub pause|resume <peer>", "hold a peer's deliveries in its queue / release them"],
     ["ahub queue list [--peer <id>] [--json]", "inspect durable deliveries"],
     ["ahub queue show <delivery-id>", "inspect one delivery and revision"],
@@ -90,6 +92,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
   ]],
   ["Dashboard", [
     ["ahub ui [--no-open]", "open the local dashboard (or print its one-time link)"],
+    ["ahub ui --settings [--no-open]", "human only: open it with a settings session, which for 15 minutes may change permission modes, routing and start settings"],
     ["ahub ui --all [--no-open]", "open the unified project dashboard"],
     ["ahub ui --all --stop", "stop only the dashboard manager"],
     ["ahub manager", "internal: the dashboard manager process that ahub ui --all starts"],

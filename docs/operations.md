@@ -956,6 +956,69 @@ permission_mode (peer/from/to) with no tool arguments under events schema 1.
 The optional control requests preserve PROTOCOL; an older hub answers unknown
 and the CLI advises upgrading.
 
+## Settings from the dashboard and the terminal
+
+The dashboard's Settings section and `ahub settings` show and change the same
+closed list of settings (issue #269). Run them from a plain terminal:
+
+```bash
+ahub settings                      # every setting: value, source file, when it applies
+ahub settings get permission.kimi
+ahub settings set routing.classes.implement.peers codex,kimi,pi --preview
+ahub settings set routing.classes.implement.peers codex,kimi,pi
+ahub settings set permission_modes.kimi ask-when-needed
+ahub settings set research.enabled inherit   # remove the machine-local value
+ahub settings undo                 # put back the file the last write changed
+ahub ui --settings                 # dashboard with a 15-minute settings session
+```
+
+| Group | Keys | Stored in | Applies |
+| --- | --- | --- | --- |
+| Permissions | `permission.<peer>` (the mode now) | the running hub only | at once |
+| Permissions | `permission_modes.<peer>` (the mode at hub start) | `config.local.json` | next hub start |
+| Start | `pi.auto_start` | `config.local.json` | next hub start |
+| Routing | `routing.stay_switch`, `routing.classes.<class>.peers`, `.escalate_to`, `.route`, `.pi_backend` | `routing.local.toml` | at once |
+| Switches | `research.enabled`, `approvals.notify`, `snapshots.enabled`, `coordination` | `config.local.json` | next hub start |
+
+- Writes go only to `.agenthub/config.local.json` and `.agenthub/routing.local.toml`,
+  the machine-local files (`ahub init` ignores both in git). The shared
+  `config.json` and the hand-written `routing.toml` are never rewritten, and a
+  machine-local file that is committed to git is refused. Each write is read by
+  the hub's own loader first and replaces the file atomically.
+- `routing.local.toml` overrides `routing.toml` key by key and may hold only the
+  routing keys in the table. `ahub route explain` and the Settings rows name the
+  file each value comes from. `--preview`, and the dashboard's Preview button,
+  show `ahub route explain` for the open tasks before and after, or what a
+  permission mode grants, and save nothing.
+- A row shows the value in force, its source file, when it applies, and for a
+  value read at hub start what the next start will read (`Pending restart`).
+- `ahub settings undo` (the dashboard's "Undo last write") puts back the one
+  previous version of the file the last write changed. It refuses when that
+  file was edited since, and when it would put a stored never-ask back (set it
+  again with its confirmation instead). A mode changed for the running hub is
+  not a file: set it again instead. Setting a value it already has, or
+  removing one that is not set, writes nothing. A project with no
+  `.agenthub/config.json` gets no first config file from a settings write
+  (any config file turns the project defaults on): run `ahub init` first.
+- A project initialised before 0.12.23 has no `.gitignore` line for
+  `.agenthub/routing.local.toml`: run `ahub init` again, or add it. A
+  `permission_modes` value is read only from a file git confirms nobody
+  committed (config trust); where the hub will not read what was written, the
+  reply and the Settings row say so.
+- Authority: a dashboard opened with `ahub ui` reads settings, lowers a mode to
+  `ask`, turns `pi.auto_start` off and changes the Switches group. Everything
+  else needs `ahub ui --settings`, whose session may raise for 15 minutes, or
+  `ahub settings` in a terminal. `never-ask` needs the peer id typed in the
+  dashboard, or `--yes` in the terminal, and a stored never-ask default still
+  waits for `y` in `ahub console` at each hub start. Tool approvals stay
+  deny-only for Pi and local in every session.
+- Commands and binaries, credential files, gateway URLs and the local worker's
+  reach are never editable here: edit `.agenthub/config.local.json` yourself.
+- Every change is announced in `hub.log` and open consoles with its source and
+  recorded as a `settings` event. `ahub settings` needs a running hub; an older
+  hub answers the request as unknown and the CLI advises upgrading. The unified
+  dashboard (`ahub ui --all`) acts as an ordinary session.
+
 ## Approvals and pauses
 
 Inspect permission requests in the terminal:
