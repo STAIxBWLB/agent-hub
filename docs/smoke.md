@@ -1363,7 +1363,8 @@ sessions or model prompts were started for this change.
 
 When admitted, inspect an empty board and a mixed board (approved, waiting,
 working, review and changes requested) at 80x24, 120x40 and 200x60. Confirm the
-stream count is above the scroll region and the Tasks summary/row meters agree
+stream count is in the footer and the scroll region starts at row 1 and the Tasks summary/row meters agree
 with the dashboard. In the dashboard select Light, Dark and System, reload each
 choice, change OS theme on System, and check text, bars, stage labels and controls.
-Repeat with browser storage disabled. Record the exact head and verdict here.
+Repeat with cookies blocked and across two dashboard ports; verify unchanged
+progress snapshots do not repeatedly announce the live region. Record the exact head and verdict here.

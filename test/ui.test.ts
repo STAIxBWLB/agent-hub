@@ -229,17 +229,22 @@ test("shared public progress executes in the hashed dashboard and matches consol
   class Node {
     children: Node[] = []; textContent = ""; className = ""; attrs: Record<string, string> = {};
     append(...nodes: Node[]) { this.children.push(...nodes); }
-    replaceChildren() { this.children = []; }
+    mutations = 0;
+    replaceChildren() { this.children = []; this.mutations++; }
     setAttribute(key: string, value: string) { this.attrs[key] = value; }
   }
   const target = new Node();
   const document = { createElement: () => new Node(), createElementNS: () => new Node() };
   const consumers = html.slice(html.indexOf("function renderTaskProgress("), html.indexOf("function render(snapshot)"));
-  const renderers = runInNewContext(`const $ = () => target; const el = (tag,text,cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = String(text); node.className = cls || ''; return node; }; ${consumers}; ({renderTaskProgress,renderTaskStage})`, { document, target });
+  const updateStart = html.indexOf("function update("); const updateSource = html.slice(updateStart, html.indexOf("\n", updateStart));
+  const renderers = runInNewContext(`const $ = () => target; const el = (tag,text,cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = String(text); node.className = cls || ''; return node; }; const signatures=new Map(); ${updateSource} ${consumers}; ({renderTaskProgress,renderTaskStage})`, { document, target });
   renderers.renderTaskProgress(progress);
-  expect(target.children[0]?.textContent).toBe("2/7 approved (29%)");
+  expect(target.children[0]?.textContent).toBe("2/7 approved (28%)");
   expect(target.children[2]?.textContent).toContain("waiting 1");
-  expect(renderers.renderTaskStage(progress.stages[5]).attrs["aria-label"]).toBe("Stage 2/4: changes requested (back in progress)");
+  expect(renderers.renderTaskStage(progress.stages[5]).attrs["aria-label"]).toBeUndefined();
+  expect(renderers.renderTaskStage(progress.stages[5]).children.at(-1).textContent).toContain("Stage 2/4: changes requested (back in progress)");
+  expect(target.children[1]?.attrs.preserveAspectRatio).toBe("none"); expect(target.children[1]?.attrs["aria-hidden"]).toBe("true");
+  const mutations = target.mutations; renderers.renderTaskProgress(JSON.parse(JSON.stringify(progress))); expect(target.mutations).toBe(mutations);
   const nodes = new Map<string, Node>(); const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
   get('task-progress').append(new Node());
   const reset = html.slice(html.indexOf('function resetView('), html.indexOf('function projectName('));
@@ -257,14 +262,19 @@ test("theme preference initializes before style/paint, persists choices and tole
   const script = html.match(/<script>([\s\S]*?)<\/script>/)![1];
   expect(html.indexOf(script!)).toBeLessThan(html.indexOf("<style>"));
   for (const saved of ["system", "light", "dark", "invalid"]) {
-    const values: string[] = []; const root = { dataset: {} as Record<string, string> };
-    const theme = runInNewContext(script + ";dashboardTheme", { document: { documentElement: root }, localStorage: { getItem: () => saved, setItem: (_key: string, value: string) => values.push(value) } });
+    let cookie = 'other=1; agent-hub-theme=' + saved; const values: string[] = []; const root = { dataset: {} as Record<string, string> };
+    const document = { documentElement: root, get cookie() { return cookie; }, set cookie(value: string) { values.push(value); cookie = value; } };
+    const theme = runInNewContext(script + ";dashboardTheme", { document });
     expect(root.dataset.theme).toBe(saved === "invalid" ? "system" : saved);
-    theme.set("dark"); expect(root.dataset.theme).toBe("dark"); expect(values).toEqual(["dark"]);
+    theme.set("dark"); expect(root.dataset.theme).toBe("dark"); expect(values[0]).toBe("agent-hub-theme=dark; Path=/; Max-Age=31536000; SameSite=Strict");
+    const otherPort = { dataset: {} as Record<string, string> };
+    runInNewContext(script + ";dashboardTheme", { document: { documentElement: otherPort, cookie } }); expect(otherPort.dataset.theme).toBe("dark");
   }
   const root = { dataset: {} as Record<string, string> };
-  const theme = runInNewContext(script + ";dashboardTheme", { document: { documentElement: root }, localStorage: { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("blocked"); } } });
+  const theme = runInNewContext(script + ";dashboardTheme", { document: { documentElement: root, get cookie() { throw new Error("blocked"); }, set cookie(_value: string) { throw new Error("blocked"); } } });
   expect(root.dataset.theme).toBe("system"); expect(() => theme.set("light")).not.toThrow();
+  expect(html).not.toContain("localStorage");
+  expect(html).toContain('.progress-waiting{fill:var(--waiting)}');
   expect(html).toContain(':root[data-theme="dark"]');
   expect(html).toContain(':root:not([data-theme="light"]):not([data-theme="dark"])');
   expect(html).toContain('@media(prefers-color-scheme:dark)');

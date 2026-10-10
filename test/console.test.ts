@@ -1,5 +1,5 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
-import { initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, renderStreamHeader, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
+import { initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
 import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
 import { contextLine } from "../src/cli/status-lines.ts";
 import { renderTailEvent } from "../src/cli/tail-render.ts";
@@ -131,11 +131,11 @@ describe("console terminal lifecycle", () => {
     f.input("\x1b"); f.input(":kill\ry"); expect(spawned).toBe(0);
     f.input("\x03"); await running;
   });
-  test("panel buffer is left when toggling; stream reads the board and only panels request queue", async () => {
+  test("panel buffer is left when toggling; stream uses status counts and only panels request board/queue", async () => {
     const f = fixture(); const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal });
     await Promise.resolve(); await Promise.resolve();
     expect(f.requests.some(msg => msg.t === "queue")).toBe(false);
-    expect(f.requests.some(msg => msg.op === "hub_task_list" && !msg.args.ready)).toBe(true);
+    expect(f.requests.some(msg => msg.op === "hub_task_list")).toBe(false);
     f.input("\t"); await Promise.resolve(); await Promise.resolve();
     expect(f.output.join("")).toContain("\x1b[?1049h");
     f.input("\t"); expect(f.output.join("")).toContain("\x1b[?1049l");
@@ -840,46 +840,99 @@ describe("whole-board task progress (#246)", () => {
     s.tasksKnown = true;
     expect(renderConsole(s, 80, 24)[2]).toContain('0/0 approved');
   });
-  test("a refused stream board read exposes an error and never confirms an empty board", async () => {
+  test("a refused status read exposes an error and never confirms an empty count", async () => {
     const f = fixture(); const original = f.client.request;
-    f.client.request = async msg => msg.op === "hub_task_list" ? { ok: false, error: "board refused" } as any : original(msg);
+    f.client.request = async msg => msg.t === "status" ? { ok: false, error: "status refused" } as any : original(msg);
     const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
     for (let i = 0; i < 8; i++) await Promise.resolve();
-    const text = f.output.join(""); expect(text).toContain("board refused"); expect(text).toContain("tasks loading..."); expect(text).not.toContain("tasks 0/0 approved");
+    const text = f.output.join(""); expect(text).toContain("status refused"); expect(text).toContain("tasks loading..."); expect(text).not.toContain("tasks 0/0 approved");
     f.signal(); await running;
   });
 
-  test("a later refused board read preserves the known progress and displays its error", async () => {
+  test("failed status refresh preserves the known footer count and displays an error", async () => {
     const f = fixture(); let failed = false; const original = f.client.request;
-    f.client.request = async msg => msg.op === "hub_task_list" ? failed ? { ok: false, error: "board unavailable" } as any : { ok: true, text: JSON.stringify([{ id: 1, state: "approved", title: "done" }]) } as any : original(msg);
+    f.client.request = async msg => msg.t === "status" ? failed ? { ok: false, error: "status unavailable" } as any : { ok: true, status: { peers: {}, tasks: { approved: 1 } } } as any : original(msg);
     const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
     for (let i = 0; i < 8; i++) await Promise.resolve();
     expect(f.output.join("")).toContain("tasks 1/1 approved"); failed = true;
     f.input("\t"); for (let i = 0; i < 8; i++) await Promise.resolve();
     f.input("\t"); for (let i = 0; i < 8; i++) await Promise.resolve();
-    expect(f.output.join("")).toContain("board unavailable");
-    expect(f.output.at(-3) || f.output.join("")).not.toContain("tasks 0/0 approved");
-    expect(f.output.join("").lastIndexOf("tasks 1/1 approved")).toBeGreaterThan(f.output.join("").indexOf("board unavailable"));
+    expect(f.output.join("")).toContain("status unavailable");
+    expect(f.output.join("").lastIndexOf("tasks 1/1 approved")).toBeGreaterThan(f.output.join("").indexOf("status unavailable"));
     f.signal(); await running;
   });
-  test("stream progress occupies row one above a scroll region starting at row two", async () => {
-    const f = fixture(); const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
-    expect(f.output.join("")).toContain("\x1b[2;20r");
-    const at = f.output.indexOf("\x1b[1;1H\x1b[2K");
-    expect(at).toBeGreaterThanOrEqual(0); expect(f.output[at + 1]).toContain("tasks loading...");
+  test("stream retains top-origin scrollback and gets footer totals from status without board requests", async () => {
+    const f = fixture(); const original = f.client.request;
+    f.client.request = async msg => msg.t === "status" ? { ok: true, status: { peers: {}, tasks: { approved: 2, proposed: 1, future_state: 3 } } } as any : original(msg);
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(f.output.join("")).toContain("\x1b[1;20r"); expect(f.output.join("")).not.toContain("\x1b[2;20r");
+    expect(f.output.some(text => text.startsWith("tmp | tasks"))).toBe(false);
+    const at = f.output.lastIndexOf("\x1b[22;1H\x1b[2K"); expect(f.output[at + 1]).toContain("tasks 2/6 approved");
+    expect(f.requests.some(msg => msg.op === "hub_task_list")).toBe(false);
     f.signal(); await running;
+  });
+  test("real stream output preserves scrolled events and leaves no persistent header after exit", async () => {
+    const f = fixture(); const screen = Array.from({ length: 24 }, () => ''); const scrollback: string[] = [];
+    let row = 0, column = 0, top = 0, bottom = 23;
+    const write = f.terminal.write;
+    f.terminal.write = (text: string) => {
+      write(text);
+      for (let i = 0; i < text.length;) {
+        const control = text.slice(i).match(/^\x1b\[([0-9;?]*)([A-Za-z])/);
+        if (control) {
+          const args = control[1]!.split(';').map(Number), op = control[2];
+          if (op === 'r') { top = (args[0] || 1) - 1; bottom = (args[1] || 24) - 1; row = 0; column = 0; }
+          if (op === 'H') { row = (args[0] || 1) - 1; column = (args[1] || 1) - 1; }
+          if (op === 'K') screen[row] = '';
+          i += control[0].length; continue;
+        }
+        const char = text[i++]!;
+        if (char === '\r') { column = 0; continue; }
+        if (char === '\n') {
+          if (row === bottom) { const gone = screen[top]!; if (top === 0) scrollback.push(gone); for (let line = top; line < bottom; line++) screen[line] = screen[line + 1]!; screen[bottom] = ''; }
+          else row = Math.min(23, row + 1);
+          continue;
+        }
+        const before = screen[row]!; screen[row] = before.padEnd(column, ' ').slice(0, column) + char + before.slice(column + 1); column++;
+      }
+    };
+    const running = runConsole({ client: f.client, cwd: '/tmp', stateDir: '/tmp', terminal: f.terminal, color: false });
+    for (let i = 0; i < 70; i++) f.client.onPush({ t: 'notice', line: 'event-' + i });
+    const saved = scrollback.filter(line => line.includes('event-'));
+    expect(saved.length).toBeGreaterThan(30); expect(saved[0]).toContain('event-0');
+    f.signal(); await running;
+    expect(screen[0]).not.toContain('tmp | tasks');
+  });
+  test("partial boards never show a full bar or 100 percent, and counts drop only from the end", () => {
+    for (const [done, total] of [[1, 3], [39, 40], [199, 200]]) {
+      const s = state(true); s.panel = 3; s.tasksKnown = true;
+      s.tasks = Array.from({ length: total! }, (_, id) => ({ id, state: id < done! ? "approved" : "proposed", title: "task" }));
+      const text = paint(renderConsoleLines(s, 200, 60, NOW)[2]!, false);
+      expect(text).not.toContain("[####################]"); expect(text).not.toContain("100%");
+      if (total === 3) expect(text).toContain("[######..............] 33%");
+    }
+    const s = state(true); s.panel = 3; s.tasks = ["approved", "proposed", "in_progress", "in_review", "changes_requested"].flatMap((state, offset) => Array.from({ length: 10 }, (_, i) => ({ id: offset * 10 + i, state, title: "task" })));
+    const order = ["changes", "review", "waiting", "in progress", "proposed"];
+    for (const width of [80, 90, 100, 120, 200]) {
+      const text = paint(renderConsoleLines(s, width, 24, NOW)[2]!, false);
+      const present = order.map(label => text.includes(`  ${label} `));
+      const omitted = present.indexOf(false);
+      if (omitted !== -1) expect(present.slice(omitted).some(Boolean)).toBe(false);
+    }
   });
   for (const [columns, rows] of [[80, 24], [120, 40], [200, 60]]) {
     test(`progress summary and stages preserve ASCII geometry ${columns}x${rows}`, () => {
       const s = state(true); s.panel = 3;
       s.tasks = [{ id: 1, state: "approved", title: "done", class: "implement" }, { id: 2, state: "proposed", deps: [3], title: "wait", class: "implement" }, { id: 3, state: "changes_requested", title: "retry", class: "implement" }];
       const lines = renderConsoleLines(s, columns!, rows!, NOW);
-      expect(paint(lines[2]!, false)).toContain("1/3 approved [#######.............] 33%");
+      expect(paint(lines[2]!, false)).toContain("1/3 approved [######..............] 33%");
       expect(lines.map(line => terminalText(paint(line, true)))).toEqual(lines.map(line => paint(line, false)));
       expect(lines.map(line => paint(line, false)).join("\n")).toContain("[#!--]");
       for (const line of lines) { const text = paint(line, false); expect(Bun.stringWidth(text)).toBeLessThanOrEqual(columns!); expect(text).toMatch(/^[\x20-\x7e]*$/); }
       s.mode = "stream";
-      expect(paint(renderStreamHeader(s, columns!), false)).toContain("tasks 1/3 approved");
+      s.taskCounts = { approved: 1, proposed: 1, changes_requested: 1 };
+      expect(paint(renderConsoleLines(s, columns!, rows!, NOW)[1]!, false)).toContain("tasks 1/3 approved");
     });
   }
 });
