@@ -2090,11 +2090,18 @@ export async function startDaemon(opts: DaemonOptions) {
         log,
         onTokens: onKimiTokens,
         // Kimi's usage_update is context occupancy ({used, size}), not consumption (#167): it becomes the peer's
-        // context reading (#285 phase 1), never a tokens event or a budget window.
-        onUsageDiagnostic: (observation) => {
-          if (observation.shape !== "context-used" || observation.contextUsed === undefined || observation.contextCapacity === undefined) return;
-          const session = contextSession("kimi");
-          if (session) contexts.report("kimi", acpContext({ used: observation.contextUsed, size: observation.contextCapacity }, session, Date.now()), session);
+        // context reading (#285 phase 1), never a tokens event or a budget window. The reading is bound to the
+        // adapter's own session id; report() drops it when that is not the daemon's current session. An invalid
+        // shape reports a null reading: unknown, not the previous value (#185).
+        onUsageDiagnostic: (observation, sessionId) => {
+          if (observation.source !== "usage_update" || observation.shape !== "context-used") return;
+          const current = contextSession("kimi");
+          if (!current) return;
+          contexts.report("kimi",
+            observation.contextUsed !== undefined && observation.contextCapacity !== undefined
+              ? acpContext({ used: observation.contextUsed, size: observation.contextCapacity }, sessionId, Date.now())
+              : { source: "acp_usage_update", sessionId, measuredAt: Date.now(), tokens: null, window: null, used: null },
+            current);
         },
         onTurnFailure: () => { supervisionTurns.delete("kimi"); },
         mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("kimi")).map(([name, value]) => ({ name, value })) }],

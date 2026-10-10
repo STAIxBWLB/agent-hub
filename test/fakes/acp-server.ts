@@ -104,16 +104,22 @@ async function prompt(id: number, text: string) {
       params: { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: part } } },
     });
   }
-  // The session's running total, as Kimi reports it: 50 tokens per prompt. OCCUPANCY instead sends Kimi 2.x's
-  // context-occupancy shape (#285): `used` against the bound model's context `size`, and no token total.
-  if (text.includes("OCCUPANCY")) {
-    send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", usage: { used: 90_000, size: 200_000 } } } });
-  } else {
+  // The session's running total, as Kimi reports it: 50 tokens per prompt, sent before the result.
+  if (!text.includes("OCCUPANCY")) {
     usageTotal += 50;
-    send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", usage: { totalTokens: usageTotal } } } });
+    send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", totalTokens: usageTotal } } });
   }
   busy = false;
   send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+  // Kimi 2.x's occupancy update (#285): flat `{used, size}` (docs/smoke.md), sent after the prompt resolves, when
+  // the adapter is already idle. OCCUPANCY is 45%, OCCUPANCY_HIGH 90% (over a 0.8 gate), OCCUPANCY_INVALID the
+  // numbers normalizeACPUsage rejects.
+  if (text.includes("OCCUPANCY_INVALID")) {
+    send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", used: -1, size: 0 } } });
+  } else if (text.includes("OCCUPANCY")) {
+    const used = text.includes("OCCUPANCY_HIGH") ? 180_000 : 90_000;
+    send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", used, size: 200_000 } } });
+  }
 }
 let usageTotal = 0;
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i < 0 ? undefined : process.argv[i + 1]; };

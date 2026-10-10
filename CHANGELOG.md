@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Kimi's ACP `usage_update` (`{used, size}`, context occupancy) becomes the peer's native context reading with the new source `acp_usage_update`, so `ahub status`, the console and the dashboard show `context N%` for Kimi like Claude's and Codex's; occupancy still writes no `tokens` event and no budget window, and a `context.gate` crossing records the event and notice for an ACP peer without sending it a checkpoint request yet (#285).
+- Kimi's ACP `usage_update` (`{used, size}`, context occupancy) becomes the peer's native context reading with the new source `acp_usage_update`, so `ahub status`, the console and the dashboard show `context N%` for Kimi like Claude's and Codex's; the adapter accepts the update whenever it names the current session (Kimi 2.1.1's source text emits it after the turn settles, when the peer is already idle — that order is verified from source, not yet observed live), an invalid update reports unknown instead of keeping the previous reading, occupancy still writes no `tokens` event and no budget window, and a `context.gate` crossing records the event and notice for an ACP peer without sending it a checkpoint request yet (#285).
 
 ## 0.12.22
 

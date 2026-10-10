@@ -1961,7 +1961,10 @@ source and measurement freshness. Claude readings come from the status-line
 tee installed by `ahub claude`; Codex readings come from its current thread's
 native token-usage updates. Kimi readings come from its ACP `usage_update`
 (`{used, size}`, source `acp_usage_update`): context occupancy, not
-consumption, so no token total is counted from it. Pi and other unsupported
+consumption, so no token total is counted from it; the adapter accepts the
+update whenever it names the current session, because 2.1.1's source text
+emits it after the turn settles — an order not yet observed live through the
+hub (docs/smoke.md). Pi and other unsupported
 surfaces show unknown.
 A stale or disconnected reading is unknown, not 0%. Codex's accumulated session
 usage is never used as context occupancy.

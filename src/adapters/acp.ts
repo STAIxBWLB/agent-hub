@@ -75,7 +75,8 @@ export interface AcpOptions {
   /** The prompt rejected or ended without normal completion, even when it streamed partial text.
    *  Same shape as Pi's onTurnFailure; a stale cancelled turn never reports. */
   onTurnFailure?: (envs: Envelope[], reason: string) => Promise<void> | void;
-  onUsageDiagnostic?: (observation: ACPUsageDiagnostic) => void;
+  /** The sessionId is the adapter's own: the daemon binds a context reading to it, not to a lookup of its own (#285). */
+  onUsageDiagnostic?: (observation: ACPUsageDiagnostic, sessionId: string) => void;
   /** Resolve with an optionId, or undefined to cancel. Absent = every request is cancelled.
    *  A request whose payload could not be resolved is titled as such and carries no session-wide allow option. */
   onPermission?: (req: PermissionRequest) => Promise<string | undefined>;
@@ -298,7 +299,7 @@ export class AcpPeer extends BasePeer {
 
   private observeUsage(value: unknown, source: ACPUsageDiagnostic["source"]): void {
     const observation = normalizeACPUsage(value, source);
-    this.opts.onUsageDiagnostic?.(observation);
+    this.opts.onUsageDiagnostic?.(observation, this.sessionId);
     if (observation.availability === "known") this.opts.onTokens?.(observation.total!, this.sessionId);
   }
 
@@ -329,9 +330,20 @@ export class AcpPeer extends BasePeer {
 
     if (msg.method === "session/update") {
       if (msg.params?.sessionId && msg.params.sessionId !== this.sessionId) return;
+      const u = msg.params?.update;
+      // Occupancy is the session's, not the turn's: Kimi 2.x emits usage_update after the prompt resolves, when the
+      // peer is already idle (#285), so a context-used update is accepted whenever it names the current session and
+      // the peer is live. Every other update stays behind the busy gate; a watchdog-cancelled turn's late chunks
+      // still lose their turn (the prompt result path is turn-fenced) — an occupancy reading carries no turn state.
+      if (u?.sessionUpdate === "usage_update" && this.state !== "offline") {
+        const observation = normalizeACPUsage(u, "usage_update");
+        if (observation.shape === "context-used") {
+          this.opts.onUsageDiagnostic?.(observation, this.sessionId);
+          return;
+        }
+      }
       if (this.state !== "busy") return;
       this.acceptDelivery();
-      const u = msg.params?.update;
       if (u?.sessionUpdate === "agent_message_chunk" && u.content?.type === "text") this.chunks.push(u.content.text);
       // The permission request that follows may carry no `rawInput` (Kimi 2.0.1 does not), and then the
       // console would be asked to approve a bare tool name. Keep what the call said it would run (issue #31).

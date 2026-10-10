@@ -52,7 +52,9 @@ Token usage by adapter:
 - Kimi (ACP `usage_update`, and the usage a `session/prompt` result carries): recorded when it holds a checked
   total or an input/output pair. The `{used, size}` shape Kimi sends is context occupancy: it is shown as the peer's
   native context reading (source `acp_usage_update`, #285 phase 1) and no `tokens` event is written from it; Kimi's
-  consumption is not recorded yet (phase 2).
+  consumption is not recorded yet (phase 2). The adapter accepts the update whenever it names the current session —
+  Kimi 2.1.1's source text emits it after the prompt resolves, when the peer is already idle; that order is not yet
+  observed live through the hub (docs/smoke.md).
 - Codex (app-server `thread/tokenUsage/updated`): recorded as the growth of the thread's running total, so
   compaction estimates, usage-limit refreshes and the replay to a reattaching connection add nothing. A thread
   started under the hub counts from zero; a resumed thread's first update is its history and only sets the
