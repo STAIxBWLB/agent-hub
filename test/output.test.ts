@@ -349,7 +349,7 @@ describe("remaining one-shot outputs", () => {
         expect(rendered.some(line => line.some(cell => cell.text.trim() === id))).toBe(true);
         for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
       }
-      for (const rendered of [renderQueueShow({ id: hold, messages: [{ id: settlement[0] }] }, columns, now), renderModelsStatus({ sessionId: settlement[0] }, columns, now)]) {
+      for (const rendered of [renderQueueShow({ id: hold, envelopeIds: [settlement[0]], messages: [{ id: settlement[0] }] }, columns, now), renderModelsStatus({ sessionId: settlement[0] }, columns, now)]) {
         expect(rendered.some(line => line.some(cell => cell.text.trim() === settlement[0]))).toBe(true);
       }
     }

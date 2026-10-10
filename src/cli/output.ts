@@ -226,7 +226,7 @@ export function renderOrphans(orphans: { project: any; pids: number[] }[], colum
     ...orphans.flatMap(({ project }) => detail("forget", `ahub projects remove ${project.id}`, columns))];
 }
 const TIME_FIELD = /^(?:at|ts|started|ended|created|updated|expires)$|(?:At|Until)$/;
-const ID_FIELD = /^(?:id|trace|previousId|sessionId|threadId|operationId|turnId)$/;
+const ID_FIELD = /^(?:id|trace|previousId|sessionId|threadId|operationId|turnId|envelopeIds)$/;
 /** Labelled scalar leaves preserve the daemon's public view without a raw document or inferred privacy changes. */
 function fields(value: unknown, columns: number | undefined, now: number, full: boolean, prefix = ""): Span[][] {
   const leaves: Span[][] = [];
