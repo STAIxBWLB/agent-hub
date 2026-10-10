@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Make status, board, budget and doctor output readable with shared tables, color policy, wrapped fields, full identifiers and JSON output; size console child output to its available width (#284).
 - Let unified dashboard peer starts wait 35 seconds for the terminal provider cap plus a response margin; slower headless starts are reported as unconfirmed. Block duplicate in-flight starts, unlock after confirmed answers, and bound an unconfirmed manager start lock by the hub's shared 30-second retry guard or earlier attachment; keep project-local confirmed-start behavior (#298).
 
 - Keep durable Codex steer replies pending through their native turn and bound unanswered replies from its end so late definitive refusals requeue safely; make coordination and recovery test waits assert their milestones and await ACP cancellation transport before the next prompt (#296).
