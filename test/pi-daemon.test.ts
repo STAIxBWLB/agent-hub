@@ -17,15 +17,17 @@ afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn()
 function fakePi(dir: string): string {
   const file = join(dir, "fake-pi.ts");
   writeFileSync(file, `import { createInterface } from "node:readline";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 const dir = process.argv[process.argv.indexOf("--session-dir") + 1];
 mkdirSync(dir, { recursive: true });
 writeFileSync(join(dir, "model-descriptors.json"), process.env.AGENTHUB_PI_MODELS ?? "[]");
-const sessionFile = join(dir, "pi-session.jsonl");
-writeFileSync(sessionFile, JSON.stringify({ type: "session", id: "pi-session-1", cwd: process.cwd() }) + "\\n");
+const resumed = process.argv.indexOf("--session");
+const sessionFile = resumed < 0 ? join(dir, "pi-session.jsonl") : process.argv[resumed + 1];
+const sessionId = resumed < 0 ? "pi-session-1" : JSON.parse(readFileSync(sessionFile, "utf8").split("\\n")[0]).id;
+if (resumed < 0) writeFileSync(sessionFile, JSON.stringify({ type: "session", id: sessionId, cwd: process.cwd() }) + "\\n");
 const out = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\\n");
-createInterface({ input: process.stdin }).on("line", (line) => { const m = JSON.parse(line); if (m.type === "get_state") out({ id: m.id, success: true, data: { sessionId: "pi-session-1", sessionFile } }); });
+createInterface({ input: process.stdin }).on("line", (line) => { const m = JSON.parse(line); if (m.type === "get_state") out({ id: m.id, success: true, data: { sessionId, sessionFile } }); });
 `);
   return file;
 }
@@ -78,7 +80,7 @@ test("enabled Pi starts headless, duplicate start is idempotent, and handover pr
   expect(tui.launch?.args).toContain("--session");
   const exits = readFileSync(join(stateDir, "hub.log"), "utf8").split("\n").filter((line) => line.includes("Pi exited"));
   expect(exits).toHaveLength(2);
-  expect(exits.every((line) => line.includes("requested replacement; the new Pi owner is starting"))).toBe(true);
+  expect(exits.every((line) => line.includes("stopped for a new Pi owner; inspect ahub status for the replacement"))).toBe(true);
   expect(exits.some((line) => line.includes("owner teardown; inspect"))).toBe(false);
 });
 
@@ -99,7 +101,7 @@ test("a handover that never reaches a replacement reports the stopped adapter as
   expect(states).toEqual(["offline"]);
 });
 
-test("Pi tools use hub path guards and approval denial, with persisted call receipts", async () => {
+test("Pi tools use hub path guards and approval expiry, with persisted call receipts", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-permit-"));
   const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
   const { stateDir, daemon, console_ } = await hub(config);
@@ -109,13 +111,13 @@ test("Pi tools use hub path guards and approval denial, with persisted call rece
   const launch = (daemon.bus.peers.get("pi") as any).tuiLaunch;
   const call = async (name: string, args: unknown, toolCallId: string) => (await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, {
     method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" },
-    body: JSON.stringify({ name, args, toolCallId }),
+    body: JSON.stringify({ name, args, toolCallId, sessionId: daemon.bus.peers.get("pi")!.recoveryMetadata!().sessionId, generation: 0 }),
   })).json() as Promise<{text: string}>;
   expect((await call("read", { path: "sample.txt" }, "read1")).text).toContain("managed read");
   const blocked = await call("read", { path: ".env" }, "read2");
   expect(blocked.text).toContain("denylist");
   expect(blocked.text).not.toContain("SECRET_MARKER");
-  expect((await call("write", { path: "output.txt", content: "denied" }, "write1")).text).toContain("did not approve");
+  expect((await call("write", { path: "output.txt", content: "denied" }, "write1")).text).toContain("approval expired");
   expect(existsSync(join(stateDir, "output.txt"))).toBe(false);
   expect((await call("write", { path: "different.txt", content: "denied" }, "write1")).text).toContain("different arguments");
 });
@@ -138,7 +140,7 @@ test("Pi's 'always' answer allows later calls of that tool until Pi restarts, an
     const launch = (daemon.bus.peers.get("pi") as any).tuiLaunch;
     return async (name: string, args: unknown, toolCallId: string) => ((await (await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, {
       method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" },
-      body: JSON.stringify({ name, args, toolCallId }),
+      body: JSON.stringify({ name, args, toolCallId, sessionId: daemon.bus.peers.get("pi")!.recoveryMetadata!().sessionId, generation: 0 }),
     })).json()) as { text: string }).text;
   };
   let call = await start("dgx/fast");
@@ -179,18 +181,23 @@ test.skipIf(process.platform !== "darwin")("idle Pi user_bash keeps the managed 
   const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-user-bash-"));
   const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
   const { stateDir, daemon, console_ } = await hub(config, true);
-  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
-  for (let i = 0; i < 100 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(10);
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "tui" } })).ok).toBe(true);
+
   const peer = daemon.bus.peers.get("pi") as any;
   const launch = peer.tuiLaunch;
-  const metadata = peer.recoveryMetadata();
+  const owner = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdout: "ignore", stderr: "ignore" });
+  cleanup.push(async () => { if (owner.exitCode === null) owner.kill(); await owner.exited; });
+  const sessionDir = join(stateDir, "pi-sessions"); mkdirSync(sessionDir, { recursive: true });
+  const sessionFile = join(sessionDir, "idle-budget.jsonl");
+  writeFileSync(sessionFile, JSON.stringify({ type: "session", id: "idle-budget", cwd: stateDir }) + "\n");
+  const metadata = { sessionId: "idle-budget", sessionFile };
   const base = launch.env.AGENTHUB_PI_BRIDGE_URL;
   const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
   const generation = 0;
-  const session = await fetch(`${base}/event`, { method: "POST", headers, body: JSON.stringify({ type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: process.pid, signature: processSignature(process.pid), sessionId: metadata.sessionId, sessionFile: metadata.sessionFile }) });
+  const session = await fetch(`${base}/event`, { method: "POST", headers, body: JSON.stringify({ type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: owner.pid, signature: processSignature(owner.pid), sessionId: metadata.sessionId, sessionFile: metadata.sessionFile }) });
   expect(session.status).toBe(200);
   const budget = async () => fetch(`${base}/budget`, { method: "POST", headers, body: JSON.stringify({ unit: "tool_calls", idleUserBash: true, generation }) });
-  const tool = async (name: string, reservation: string) => fetch(`${base}/tool`, { method: "POST", headers, body: JSON.stringify({ name: "bash", purpose: "idle_user_bash", generation, reservation, toolCallId: `user-bash-${name}`, args: { command: `printf managed > ${name}`, cwd: stateDir } }) });
+  const tool = async (name: string, reservation: string) => fetch(`${base}/tool`, { method: "POST", headers, body: JSON.stringify({ name: "bash", purpose: "idle_user_bash", sessionId: metadata.sessionId, generation, reservation, toolCallId: `user-bash-${name}`, args: { command: `printf managed > ${name}`, cwd: stateDir } }) });
 
   const unconfigured = await budget();
   expect(unconfigured.status).toBe(200);
@@ -209,7 +216,7 @@ test.skipIf(process.platform !== "darwin")("idle Pi user_bash keeps the managed 
   const staleTool = await tool("must-not-exist.txt", "missing-reservation");
   expect(staleTool.status).toBe(409);
   expect(existsSync(join(stateDir, "must-not-exist.txt"))).toBe(false);
-});
+}, 30_000);
 
 test("an unattached Pi TUI launch can be replaced without restarting the hub", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-pending-"));
@@ -339,7 +346,7 @@ test("a Pi hub_send the limits refuse returns not sent with the reason", async (
   const launch = (daemon.bus.peers.get("pi") as any).tuiLaunch;
   const call = async (name: string, args: unknown, toolCallId: string) => (await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, {
     method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" },
-    body: JSON.stringify({ name, args, toolCallId }),
+    body: JSON.stringify({ name, args, toolCallId, sessionId: daemon.bus.peers.get("pi")!.recoveryMetadata!().sessionId, generation: 0 }),
   })).json() as Promise<{ text: string }>;
   expect((await call("hub_send", { text: "build is green" }, "send1")).text).toBe("sent");
   expect((await call("hub_send", { text: "build is green" }, "send2")).text).toMatch(/^not sent: the same message went to everyone \d+ s ago$/);
@@ -423,7 +430,7 @@ async function piToolCall(peer: PiPeer, name: string, args: unknown, toolCallId:
   const launch = peer.tuiLaunch!;
   return (await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, { method: "POST", headers: {
     authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json",
-  }, body: JSON.stringify({ name, args, toolCallId }) })).json() as Promise<{ text: string; failed?: boolean }>;
+  }, body: JSON.stringify({ name, args, toolCallId, sessionId: peer.recoveryMetadata().sessionId, generation: (peer as any).budgetGeneration }) })).json() as Promise<{ text: string; failed?: boolean }>;
 }
 
 test("Pi task authority and state refusals return their exact errors as done receipts through the daemon (#254)", async () => {
@@ -728,3 +735,266 @@ for (const phase of ["startup", "active"] as const) {
     expect(exit).not.toContain("pi.auto_start is off");
   });
 }
+
+
+// Exercise the real approval registry and authenticated Pi bridge without a native model/account.
+async function approvalPi(timeout = 20, approvalTurnAbort = false) {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-approval-"));
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] }, memory: { ...DEFAULT_CONFIG.memory, enabled: false } };
+  const instanceId = `approval-${Math.random()}`;
+  const daemon = await startDaemon({ cwd: dir, stateDir: dir, projectId: "approval-project", instanceId, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, permissionTimeoutMs: timeout, config });
+  cleanup.push(() => daemon.stop());
+  const console_ = await ControlClient.connect(dir, { role: "console" });
+  cleanup.push(() => console_.close());
+  const asks: any[] = [];
+  console_.onPush = (m) => { if (m.t === "permission") asks.push(m); };
+  console_.send({ t: "tail" });
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  const pi = daemon.bus.peers.get("pi") as any;
+  const launch = pi.tuiLaunch, metadata = pi.recoveryMetadata();
+  const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
+  const bridgeUrl = launch.env.AGENTHUB_PI_BRIDGE_URL as string;
+  const post = (path: string, body: unknown) => fetch(`${bridgeUrl}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
+  expect((await post("/event", { type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: pi.proc.pid, signature: processSignature(pi.proc.pid), sessionId: metadata.sessionId, sessionFile: metadata.sessionFile, ...(approvalTurnAbort ? { approvalTurnAbort: true } : {}) })).status).toBe(200);
+  const event = (type: string, fields = {}) => post("/event", { type, sessionId: metadata.sessionId, ...fields });
+  const call = async (id: string, name = "write") => (await (await post("/tool", { name, toolCallId: id, sessionId: metadata.sessionId, generation: pi.budgetGeneration, args: name === "edit" ? { path: `${id}.txt`, old: "a", new: "b" } : { path: `${id}.txt`, content: id } })).json()) as { text: string; failed: boolean };
+  const asked = async (n: number) => { for (let i = 0; i < 200 && asks.length < n; i++) await Bun.sleep(5); expect(asks.length).toBe(n); return asks[n - 1]; };
+  const inspect = async () => (await console_.request({ t: "recovery", op: "inspect", expectedInstanceId: instanceId })).recovery;
+  const nextCommand = async () => (await (await fetch(`${bridgeUrl}/commands`, { headers })).json() as any).command;
+  return { dir, daemon, console_, pi, event, post, call, asked, asks, inspect, bridgeUrl, headers, nextCommand };
+}
+
+test("two Pi approval expiries return distinct results including the second, then stop the turn without retry", async () => {
+  const h = await approvalPi();
+  await h.event("agent_start", { generation: 1 });
+  for (const id of ["expired-first", "expired-second"]) {
+    const result = await h.call(id);
+    expect(result.failed).toBe(true);
+    expect(typeof result.text).toBe("string");
+    expect(result.text).toContain("approval expired");
+    expect(result.text).not.toContain("did not approve");
+    expect(existsSync(join(h.dir, `${id}.txt`))).toBe(false);
+  }
+  for (let i = 0; i < 200 && h.pi.state !== "offline"; i++) await Bun.sleep(10);
+  expect(h.pi.state).toBe("offline");
+  const log = readFileSync(join(h.dir, "hub.log"), "utf8");
+  expect(log).toContain("Pi turn stopped after two unanswered approvals");
+  expect(h.asks).toHaveLength(2);
+  expect(log).not.toContain("safe replay");
+}, 30_000);
+
+test("Pi tool abort withdraws only its own approval and a late always answer cannot grant future calls", async () => {
+  const h = await approvalPi(10_000);
+  await h.event("agent_start", { generation: 1 });
+  const first = h.call("abort-one"); const a = await h.asked(1);
+  const sibling = h.call("sibling"); const b = await h.asked(2);
+  // A cross-session cancellation must not remove any current request.
+  await h.post("/event", { type: "tool_abort", generation: 1, sessionId: "another-session", toolCallId: "abort-one" });
+  expect((await h.inspect()).pendingApprovals).toBe(2);
+  await h.event("tool_abort", { generation: 1, toolCallId: "abort-one" });
+  expect(await first).toMatchObject({ failed: true, text: expect.stringContaining("withdrawn") });
+  expect((await h.inspect()).pendingApprovals).toBe(1);
+  expect((await h.console_.request({ t: "permit", id: a.id, option: "always", surface: "console" })).ok).toBe(false);
+  expect((await h.console_.request({ t: "permit", id: b.id, option: "deny", surface: "console" })).ok).toBe(true);
+  expect((await sibling).text).toContain("did not approve");
+  expect((await h.inspect()).pendingApprovals).toBe(0);
+  const later = h.call("after-abort"); const c = await h.asked(3);
+  expect((await h.console_.request({ t: "permit", id: c.id, option: "deny", surface: "console" })).ok).toBe(true);
+  expect((await later).text).toContain("did not approve");
+  await h.event("agent_settled", { generation: 1 });
+  expect(h.pi.recoveryReady).toBe(true);
+  expect(existsSync(join(h.dir, "after-abort.txt"))).toBe(false);
+  // An abort arriving before the corresponding /tool call still fences that one ID.
+  await h.event("agent_start", { generation: 2 });
+  await h.event("tool_abort", { generation: 2, toolCallId: "early" });
+  expect(await h.call("early")).toMatchObject({ failed: true, text: expect.stringContaining("cancelled") });
+  expect(await h.call("early")).toMatchObject({ failed: true, text: expect.stringContaining("cancelled") });
+  expect(h.asks).toHaveLength(3);
+  await h.event("agent_settled", { generation: 2 });
+}, 30_000);
+
+
+test.skipIf(process.platform !== "darwin")("a claimed TUI person's shell bypasses hub approval and returns its actual nonzero exit", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-person-shell-"));
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { stateDir, daemon, console_ } = await hub(config); // deliberately not unattended
+  const launch = (await console_.request({ t: "start", peer: "pi", args: { mode: "tui" } })).launch;
+  const owner = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdout: "ignore", stderr: "ignore" });
+  cleanup.push(async () => { if (owner.exitCode === null) owner.kill(); await owner.exited; });
+  const sessionDir = join(stateDir, "pi-sessions"); mkdirSync(sessionDir, { recursive: true });
+  const sessionFile = join(sessionDir, "person.jsonl");
+  writeFileSync(sessionFile, JSON.stringify({ type: "session", id: "person-session", cwd: stateDir }) + "\n");
+  const post = (path: string, body: unknown) => fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}${path}`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+  expect((await post("/event", { type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: owner.pid, signature: processSignature(owner.pid), sessionId: "person-session", sessionFile })).status).toBe(200);
+  const admission = await (await post("/budget", { unit: "tool_calls", idleUserBash: true, generation: 0 })).json() as any;
+  const result = await (await post("/tool", { name: "bash", purpose: "idle_user_bash", sessionId: "person-session", generation: 0, reservation: admission.reservation, toolCallId: "human-exit-7", args: { command: "printf human; exit 7", cwd: stateDir } })).json() as any;
+  expect(result).toMatchObject({ exitCode: 7, failed: true, text: expect.stringContaining("human") });
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).not.toContain("permission requested");
+  const invalid = await post("/tool", { name: "bash", purpose: "idle_user_bash", sessionId: "person-session", generation: 0, reservation: admission.reservation, toolCallId: "reused-human", args: { command: "true", cwd: stateDir } });
+  expect(invalid.status).toBe(409);
+  // A real claimed TUI owner is stopped on handover, and the replacement keeps the recorded session.
+  const replacement = await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } });
+  expect(replacement.ok).toBe(true);
+  expect(await owner.exited).not.toBeNull();
+  expect(daemon.bus.peers.get("pi")!.recoveryMetadata!().sessionId).toBe("person-session");
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("stopped for a new Pi owner");
+}, 30_000);
+
+
+test("Pi approval expiry count resets on an answered denial and at the actual new turn", async () => {
+  const h = await approvalPi(150);
+  await h.event("agent_start", { generation: 1 });
+  expect((await h.call("reset-expiry-one")).text).toContain("approval expired");
+  const denied = h.call("reset-denial"), ask = await h.asked(2);
+  expect((await h.console_.request({ t: "permit", id: ask.id, option: "deny", surface: "console" })).ok).toBe(true);
+  expect((await denied).text).toContain("did not approve");
+  expect((await h.call("reset-expiry-two")).text).toContain("approval expired");
+  await h.event("agent_settled", { generation: 1 });
+  await h.event("agent_start", { generation: 2 });
+  expect((await h.call("new-turn-expiry")).text).toContain("approval expired");
+  await h.event("agent_settled", { generation: 2 });
+  expect(h.pi.state).toBe("idle");
+  expect(readFileSync(join(h.dir, "hub.log"), "utf8")).not.toContain("turn stopped after two unanswered approvals");
+}, 30_000);
+
+test("a person answering one of several parallel Pi requests keeps their expiries from stopping the turn", async () => {
+  const h = await approvalPi(400);
+  await h.event("agent_start", { generation: 1 });
+  const answered = h.call("parallel-answered"); const a = await h.asked(1);
+  const first = h.call("parallel-expiry-one"); await h.asked(2);
+  const second = h.call("parallel-expiry-two"); await h.asked(3);
+  expect((await h.console_.request({ t: "permit", id: a.id, option: "allow", surface: "console" })).ok).toBe(true);
+  expect((await answered).failed).toBe(false);
+  expect(existsSync(join(h.dir, "parallel-answered.txt"))).toBe(true);
+  // Both parallel expiries were pending while the person answered: neither counts toward the streak.
+  expect((await first).text).toContain("approval expired");
+  expect((await second).text).toContain("approval expired");
+  const later = h.call("parallel-later"); const l = await h.asked(4);
+  expect((await h.console_.request({ t: "permit", id: l.id, option: "deny", surface: "console" })).ok).toBe(true);
+  expect((await later).text).toContain("did not approve");
+  await h.event("agent_settled", { generation: 1 });
+  expect(h.pi.state).toBe("idle");
+  expect(readFileSync(join(h.dir, "hub.log"), "utf8")).not.toContain("turn stopped after two unanswered approvals");
+}, 30_000);
+
+test("an always-cache grant is not an answer: it does not reset the expiry streak", async () => {
+  const h = await approvalPi(400);
+  await h.event("agent_start", { generation: 1 });
+  writeFileSync(join(h.dir, "streak-expiry-one.txt"), "a");
+  writeFileSync(join(h.dir, "streak-expiry-two.txt"), "a");
+  const seed = h.call("cache-seed"); const a = await h.asked(1);
+  expect((await h.console_.request({ t: "permit", id: a.id, option: "always", surface: "console" })).ok).toBe(true);
+  expect((await seed).failed).toBe(false);
+  expect((await h.call("streak-expiry-one", "edit")).text).toContain("approval expired"); // streak 1
+  const auto = await h.call("cache-auto"); // served from the always cache: no request, no answer, streak kept
+  expect(auto.failed).toBe(false);
+  expect(existsSync(join(h.dir, "cache-auto.txt"))).toBe(true);
+  expect(h.asks).toHaveLength(2);
+  expect((await h.call("streak-expiry-two", "edit")).text).toContain("approval expired"); // streak 2: stop
+  for (let i = 0; i < 200 && h.pi.state !== "offline"; i++) await Bun.sleep(10);
+  expect(h.pi.state).toBe("offline");
+  expect(readFileSync(join(h.dir, "hub.log"), "utf8")).toContain("Pi turn stopped after two unanswered approvals");
+}, 30_000);
+
+test("two expiries abort the Pi turn through the budget path when the extension supports it; Pi stays attached", async () => {
+  const h = await approvalPi(400, true);
+  await h.event("agent_start", { generation: 1 });
+  const pending = h.nextCommand();
+  expect((await h.call("turn-abort-expiry-one")).text).toContain("approval expired");
+  expect((await h.call("turn-abort-expiry-two")).text).toContain("approval expired");
+  const command = await pending;
+  expect(command).toMatchObject({ type: "abort_budget", generation: 1, cause: "approval" });
+  expect(command.reason).toContain("no person answered");
+  await h.post("/ack", { id: command.id, ok: true });
+  await h.event("agent_end", { generation: 1, failed: true, error: command.reason });
+  for (let i = 0; i < 200 && h.pi.state !== "idle"; i++) await Bun.sleep(10);
+  expect(h.pi.state).toBe("idle");
+  expect(h.pi.state).not.toBe("offline");
+  const log = readFileSync(join(h.dir, "hub.log"), "utf8");
+  expect(log).toContain("Pi turn stopped after two unanswered approvals");
+  expect(log).not.toContain("approval turn abort unsupported");
+  // The next turn runs normally on the same attached Pi.
+  await h.event("agent_start", { generation: 2 });
+  const again = h.call("turn-abort-next-turn"); const ask = await h.asked(3);
+  expect((await h.console_.request({ t: "permit", id: ask.id, option: "allow", surface: "console" })).ok).toBe(true);
+  expect((await again).failed).toBe(false);
+  expect(existsSync(join(h.dir, "turn-abort-next-turn.txt"))).toBe(true);
+  await h.event("agent_settled", { generation: 2 });
+}, 30_000);
+
+
+test("a claimed headless owner cannot obtain or consume a person's idle TUI shell reservation", async () => {
+  const h = await approvalPi(10_000);
+  expect((await h.post("/budget", { unit: "tool_calls", idleUserBash: true, generation: 0 })).status).toBe(409);
+  // Even a reservation previously recorded in memory cannot authorize another surface.
+  h.pi.idleBashReservations.set("forged-headless", { generation: 0, expiresAt: Date.now() + 10_000 });
+  const result = await h.post("/tool", { name: "bash", purpose: "idle_user_bash", sessionId: h.pi.recoveryMetadata().sessionId, generation: 0, reservation: "forged-headless", toolCallId: "headless-bypass", args: { command: "printf bad > forbidden.txt" } });
+  expect(result.status).toBe(409);
+  expect(existsSync(join(h.dir, "forbidden.txt"))).toBe(false);
+}, 30_000);
+
+test.skipIf(process.platform !== "darwin")("hub stop cancels and settles a claimed TUI person's running sandbox command", async () => {
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true } };
+  const h = await hub(config);
+  const launch = (await h.console_.request({ t: "start", peer: "pi", args: { mode: "tui" } })).launch;
+  const owner = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdout: "ignore", stderr: "ignore" });
+  cleanup.push(async () => { if (owner.exitCode === null) owner.kill(); await owner.exited; });
+  const sessionDir = join(h.stateDir, "pi-sessions"); mkdirSync(sessionDir, { recursive: true });
+  const sessionFile = join(sessionDir, "running-person.jsonl");
+  writeFileSync(sessionFile, JSON.stringify({ type: "session", id: "running-person", cwd: h.stateDir }) + "\n");
+  const post = (path: string, body: unknown) => fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}${path}`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+  await post("/event", { type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: owner.pid, signature: processSignature(owner.pid), sessionId: "running-person", sessionFile });
+  const admission = await (await post("/budget", { unit: "tool_calls", idleUserBash: true, generation: 0 })).json() as any;
+  const pending = post("/tool", { name: "bash", purpose: "idle_user_bash", sessionId: "running-person", generation: 0, reservation: admission.reservation, toolCallId: "long-person", args: { command: "printf started > started.txt; sleep 2; printf bad > after-stop.txt" } }).then((response) => response.json()).catch(() => undefined);
+  for (let i = 0; i < 200 && !existsSync(join(h.stateDir, "started.txt")); i++) await Bun.sleep(10);
+  expect(existsSync(join(h.stateDir, "started.txt"))).toBe(true);
+  await h.daemon.stop();
+  await pending;
+  await Bun.sleep(2_100); // outlive the program's scheduled write, including after stop returned
+  expect(existsSync(join(h.stateDir, "after-stop.txt"))).toBe(false);
+}, 30_000);
+
+
+test("a delayed aborted old-generation tool cannot be rebound after a new Pi turn starts", async () => {
+  const h = await approvalPi(10_000);
+  const sessionId = h.pi.recoveryMetadata().sessionId;
+  await h.event("agent_start", { generation: 1 });
+  await h.event("tool_abort", { generation: 1, toolCallId: "cross-turn" });
+  await h.event("agent_start", { generation: 2 });
+  const old = await h.post("/tool", { name: "write", sessionId, generation: 1, toolCallId: "cross-turn", args: { path: "old-effect.txt", content: "bad" } });
+  expect(old.status).toBe(409);
+  expect((await old.json() as any).text).toContain("lineage");
+  const legacy = await h.post("/tool", { name: "write", toolCallId: "legacy", args: { path: "old-effect.txt", content: "bad" } });
+  expect(legacy.status).toBe(409);
+  expect((await legacy.json() as any).text).toContain("restart Pi");
+  expect(h.asks).toHaveLength(0);
+  expect(existsSync(join(h.dir, "old-effect.txt"))).toBe(false);
+  const current = h.call("cross-turn"), ask = await h.asked(1);
+  await h.event("tool_abort", { generation: 1, toolCallId: "cross-turn" });
+  expect((await h.inspect()).pendingApprovals).toBe(1);
+  expect((await h.console_.request({ t: "permit", id: ask.id, option: "allow", surface: "console" })).ok).toBe(true);
+  expect((await current).text).toBe("wrote cross-turn.txt");
+  expect(readFileSync(join(h.dir, "cross-turn.txt"), "utf8")).toBe("cross-turn");
+  await h.event("agent_settled", { generation: 2 });
+}, 30_000);
+
+
+test("a normal approval cannot grant after the verified OS owner dies before exit notification", async () => {
+  const h = await approvalPi(10_000);
+  await h.event("agent_start", { generation: 1 });
+  const pending = h.call("owner-died"), ask = await h.asked(1);
+  const proc = h.pi.proc;
+  const exits = proc.listeners("exit");
+  proc.removeAllListeners("exit"); // hold the notification, preserving the real OS identity boundary
+  try {
+    process.kill(proc.pid, "SIGKILL");
+    for (let i = 0; i < 200 && proc.exitCode === null && proc.signalCode === null; i++) await Bun.sleep(5);
+    expect(proc.signalCode).toBe("SIGKILL");
+    expect((await h.console_.request({ t: "permit", id: ask.id, option: "always", surface: "console" })).ok).toBe(true);
+    expect((await pending).text).toContain("withdrawn");
+    expect(existsSync(join(h.dir, "owner-died.txt"))).toBe(false);
+  } finally {
+    for (const listener of exits) listener.call(proc, proc.exitCode, proc.signalCode);
+    await pending.catch(() => undefined);
+  }
+}, 30_000);

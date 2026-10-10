@@ -377,3 +377,22 @@ for (const tool of ["write", "edit"]) test(`${tool} refuses a canonical target r
   expect(await call(ctx, tool, { path: "editable-alias/policy.json", content: "after", old: "before", new: "after" })).toContain("path target changed during approval");
   expect(readFileSync(original, "utf8")).toBe("before"); expect(readFileSync(protectedFile, "utf8")).toBe("before");
 });
+
+for (const decision of ["expired", "aborted"] as const) {
+  test(`approval ${decision} is not truthy authorization for any mutating tool (#253)`, async () => {
+    const { cwd, ctx } = project();
+    ctx.permit = async () => decision;
+    for (const [name, args] of [
+      ["write", { path: "new.txt", content: "forbidden" }],
+      ["edit", { path: "a.txt", old: "two", new: "forbidden" }],
+      ["bash", { command: "exit 0" }],
+      ["git", { args: ["add", "a.txt"] }],
+    ] as const) {
+      const result = await call(ctx, name, args);
+      expect(result).toContain(decision === "expired" ? "approval expired: no person answered" : "approval withdrawn because the turn ended");
+      expect(result).not.toContain("the user did not approve");
+    }
+    expect(existsSync(join(cwd, "new.txt"))).toBe(false);
+    expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("one\ntwo\nthree\n");
+  });
+}

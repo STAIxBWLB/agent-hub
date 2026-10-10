@@ -1,10 +1,24 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
-import { PiToolReceipts } from "../src/pi/tool-receipts.ts";
+import { packPiShellResult, PiToolReceipts, PI_TOOL_RESULT_CAP } from "../src/pi/tool-receipts.ts";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+test("a person's oversized shell result stays within the cap and keeps its trusted exit code (#253)", () => {
+  const small = packPiShellResult("human", 7);
+  expect(JSON.parse(small)).toEqual({ kind: "user-bash-result", text: "human", exitCode: 7 });
+  const packed = packPiShellResult("\0".repeat(300_000), 3);
+  expect(packed.length).toBeLessThanOrEqual(PI_TOOL_RESULT_CAP);
+  const parsed = JSON.parse(packed);
+  expect(parsed.kind).toBe("user-bash-result");
+  expect(parsed.exitCode).toBe(3); // the review's `head -c 30000 /dev/zero; exit 3` lost this
+  expect(parsed.text.endsWith("\n[output truncated]")).toBe(true);
+  const cancelled = packPiShellResult("x".repeat(200_000), null);
+  expect(cancelled.length).toBeLessThanOrEqual(PI_TOOL_RESULT_CAP);
+  expect(JSON.parse(cancelled).exitCode).toBeNull();
+});
 
 test("Pi tool receipts dedupe concurrent effects and survive a daemon restart", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-receipts-")), file = join(dir, "hub.db");

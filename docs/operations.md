@@ -1048,7 +1048,10 @@ uncertain.
 
 Shutdown is bounded: once it begins, a daemon that cannot finish within
 15 seconds exits anyway, and a peer that refuses to stop is logged rather than
-allowed to block state cleanup. A native Pi TUI owner that does not exit
+allowed to block state cleanup. A managed Pi tool that does not settle within
+the stop grace does not block the teardown either: the stop goes on
+(shutdown, owner teardown, process stop) and reports the failure at the end.
+A native Pi TUI owner that does not exit
 gracefully is terminated by its verified process identity (never a bare PID),
 so a restarted hub never launches beside a survivor. A hub whose project root
 or state directory was deleted stops itself within about 10 seconds; the
@@ -1849,8 +1852,10 @@ Pi exit records show code or signal, turn/tool activity, whether teardown was
 expected, startup status, and the last tool's name without arguments. An
 unobserved native-terminal exit records unknown OS status. The console notice
 gives the next action, usually `ahub pi`, or says why automatic start is held.
-A requested replacement says the new owner is starting; internal failure
-teardown directs session inspection rather than claiming a person requested it.
+A replacement says the owner stopped for a new Pi owner, including when the
+replacement is refused. Internal failure teardown directs session inspection
+rather than claiming a person requested it. Replacement, failed-start and
+active-turn guidance appears before automatic-start-disabled guidance.
 
 With `pi.auto_start`, an unexpectedly idle headless Pi is resumed on its
 verified persisted session once. The 60-second retry window rearms when the
@@ -1859,3 +1864,33 @@ invalid session history has no fresh fallback; inspect it before running
 `ahub pi`. Active turns/tools, failed startup, a superseded owner, native
 terminal exits, requested shutdown and recovery operations suppress this
 restart. Crash recovery's #66 recorded-session/fresh-start choices are unchanged.
+
+### Pi/local unanswered approvals
+
+An expired Pi/local request says "approval expired: no person answered". The
+worker must not retry that call; hand the task off or stop. Two consecutive
+unanswered requests end the current turn and produce a console notice. An
+expiry counts only when no person answered a request of that peer while it
+was pending, so a batch of parallel requests does not stop a worker whose
+person is answering; a grant served from the always-allow cache is not an
+answer and does not reset the count. A new turn also resets it. The turn ends
+through the same abort path an execution-budget stop uses: Pi stays attached
+and the sender is told the approval reason. A Pi whose extension cannot abort
+a turn (an older hub extension) goes offline instead; restart it with
+`ahub pi` and settle the held delivery after inspecting prior work. A
+cancelled tool withdraws
+its request immediately; a later `ahub permit` answer is refused and cannot
+create an always-allow grant. Tool requests from a previous turn or an older
+extension missing session/turn identity are refused before execution; restart
+Pi with the current hub extension rather than retrying that old call.
+
+The dashboard shows the number of waiting Pi/local requests and where to
+answer them. It remains deny-only for those private rows. Use the console or
+`ahub tail` to inspect the request, then `ahub permit` to answer it. Recovery
+stops waiting for an approval when that request is withdrawn.
+
+A person's `!command` in the managed Pi TUI runs through the managed sandbox
+without asking for another hub approval. Its reported exit code comes from
+the process, including a nonzero exit; text printed by the command does not
+set its status. This exception requires the current idle TUI owner's reserved
+request and does not apply to model-origin bash calls.

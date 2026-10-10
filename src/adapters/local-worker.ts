@@ -8,7 +8,7 @@ import { renderDigest, replyAudience, replyParent, STANDING_INSTRUCTION, USER, t
 import { CONDUCTOR_TOOL_NAMES, CONDUCTOR_TOOLS, TASK_TOOL_NAMES, TASK_TOOLS } from "../hub/hub-tools.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
-import { runTool, toolResultFailed, TOOL_SCHEMAS, touchedPaths, type ToolContext } from "../local/tools.ts";
+import { runTool, toolResultFailed, TOOL_SCHEMAS, touchedPaths, ApprovalWaitStop, type ToolApproval, type ApprovalProvenance, type ToolContext } from "../local/tools.ts";
 import type { Capture } from "../memory/capture.ts";
 import type { ChatMessage, ChatResult, OmniRoute, ToolCall } from "../omniroute/client.ts";
 import { safeModelLabel } from "../omniroute/usage.ts";
@@ -32,6 +32,7 @@ export interface LocalOptions {
   onRouteOutcome?: (event: RouteLabelEvent) => void;
   /** The daemon turn id created synchronously on busy, shared with turn_start/end. */
   turnId?: () => string | undefined;
+  onApprovalStop?: (reason: string) => void;
   onTool?: (observation: ToolObservation, task?: string) => void;
   tools: { deny: string[]; permit: ToolContext["permit"]; bashNetwork?: SandboxNetwork; readAllow?: string[] };
   capture?: Capture;
@@ -85,6 +86,9 @@ export class LocalPeer extends BasePeer {
   private abort: AbortController | undefined;
   private budgetTimer?: ReturnType<typeof setTimeout>;
   private budgetStopReason = "";
+  private approvalExpiries = 0;
+  private approvalAnswerEpoch: number | undefined;
+  private approvalStopReason = "";
   private activeDeliveryId: string | undefined;
   private readonly sandboxProfile: string; // built once: profile() spawns git and must stay off the per-call path
   /** What served the last call, for `ahub status`. */
@@ -146,6 +150,7 @@ export class LocalPeer extends BasePeer {
     }
     const turn = ++this.turn;
     this.budgetStopReason = "";
+    this.approvalExpiries = 0; this.approvalAnswerEpoch = undefined; this.approvalStopReason = "";
     clearTimeout(this.budgetTimer); this.budgetTimer = undefined;
     this.activeDeliveryId = deliveryId;
     this.abort = new AbortController();
@@ -172,6 +177,14 @@ export class LocalPeer extends BasePeer {
       })
       .catch((e: Error) => {
         if (turn !== this.turn) return; // aborted by the watchdog or stop(): nothing to report, nothing was committed
+        if (e instanceof ApprovalWaitStop) {
+          this.completeMissingToolResults(msgs, "not run: turn ended after unanswered approvals");
+          msgs.push({ role: "assistant", content: e.message });
+          if (!policy?.pii) this.commit(msgs);
+          this.onMessage?.(e.message, reply);
+          if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: e.message });
+          return; // even without effects, an unanswered approval must not trigger safe replay
+        }
         if (this.budgetStopReason && !(e instanceof ExecutionBudgetStop)) e = new ExecutionBudgetStop(this.budgetStopReason);
         this.opts.log?.(`[${this.id}] turn failed: ${e.message}`);
         if (e instanceof ExecutionBudgetStop) {
@@ -263,6 +276,7 @@ export class LocalPeer extends BasePeer {
           if (SIDE_EFFECTS.has(call.function.name) && !output.startsWith("error:")) progress.sideEffects++;
           const result: ChatMessage = { role: "tool", tool_call_id: call.id, content: output, is_error: toolResultFailed(name, output) };
           msgs.push(result); results.push(result);
+          if (this.approvalStopReason) { this.abort?.abort(); throw new ApprovalWaitStop(this.approvalStopReason); }
           this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
           // Hub tool arguments/results are not capture evidence; Tasks owns its screened memory writes.
           if (name !== "hub_send" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name)) capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
@@ -277,14 +291,31 @@ export class LocalPeer extends BasePeer {
     return {
       cwd: this.opts.cwd,
       deny: this.opts.tools.deny,
-      permit: async (title, tool, _signal, path) => {
-        if (turnSignal.aborted) return false;
-        return new Promise<boolean>((resolve, reject) => {
-          const finish = (allowed: boolean) => { turnSignal.removeEventListener("abort", onAbort); resolve(allowed); };
-          const onAbort = () => finish(false);
+      permit: async (title, tool, _signal, canonicalTarget) => {
+        if (turnSignal.aborted) return "aborted";
+        const generation = this.turn;
+        let observed = false;
+        const observe = (provenance: ApprovalProvenance) => {
+          observed = true;
+          if (generation !== this.turn || turnSignal.aborted || this.approvalStopReason) return;
+          if (this.approvalAnswerEpoch !== provenance.answerEpoch) {
+            this.approvalExpiries = 0; this.approvalAnswerEpoch = provenance.answerEpoch;
+          }
+          if (provenance.source === "person") this.approvalExpiries = 0;
+          if (provenance.source === "expired" && provenance.eligibleExpiry !== false && ++this.approvalExpiries >= 2) {
+            this.approvalStopReason = "Local turn stopped after two unanswered approvals; no person answered. Do not retry the calls; inspect prior work before handoff or stopping.";
+            try { this.opts.onApprovalStop?.(this.approvalStopReason); } catch { /* stop remains authoritative */ }
+          }
+        };
+        const picked = await new Promise<ToolApproval>((resolve, reject) => {
+          const finish = (decision: ToolApproval) => { turnSignal.removeEventListener("abort", onAbort); resolve(decision); };
+          const onAbort = () => finish("aborted");
           turnSignal.addEventListener("abort", onAbort, { once: true });
-          this.opts.tools.permit(title, tool, turnSignal, path).then(finish, (error) => { turnSignal.removeEventListener("abort", onAbort); reject(error); });
+          this.opts.tools.permit(title, tool, turnSignal, canonicalTarget, observe).then(finish, (error) => { turnSignal.removeEventListener("abort", onAbort); reject(error); });
         });
+        if (generation !== this.turn || (turnSignal.aborted && picked !== "expired")) return "aborted";
+        if (!observed && picked === "expired") observe({ source: "expired", answerEpoch: this.approvalAnswerEpoch ?? 0, eligibleExpiry: true });
+        return picked;
       },
       sandboxProfile: this.sandboxProfile,
       sandboxEnv: { ...proxyEnv(this.opts.tools.bashNetwork ?? false), AGENTHUB_PEER_ID: this.id },

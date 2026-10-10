@@ -8,7 +8,7 @@ import { BasePeer } from "../hub/peers.ts";
 import { stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { processSignature } from "../pi/process-signature.ts";
 import { realPath } from "../hub/project.ts";
-import { toolResultFailed } from "../local/tools.ts";
+import { ApprovalWaitStop, toolResultFailed, type ApprovalProvenance } from "../local/tools.ts";
 import { piToolStepCeiling, type PiToolStepCeiling } from "../pi/ceiling.ts";
 import type { ExecutionBudgetDecision, ExecutionUnit } from "../hub/execution-budget.ts";
 
@@ -25,10 +25,12 @@ export interface PiExit {
   toolActive: boolean;
   lastToolName?: string;
 }
+export interface PiToolContext { userBash: boolean; isCurrent: () => boolean; onApproval: (provenance: ApprovalProvenance) => void; }
+export interface PiToolResult { text: string; exitCode: number | null; }
 export interface PiOptions {
   cwd: string; stateDir: string; cmd?: string[]; mode: "headless" | "tui"; backend: "auto" | "dgx" | "mlx"; sessionFile?: string; sessionId?: string;
   model?: string;
-  relay: PiRelay; executeTool: (name: string, args: unknown, toolCallId: string, sessionId?: string, signal?: AbortSignal) => Promise<string>; tools: PiToolSchema[];
+  relay: PiRelay; executeTool: (name: string, args: unknown, toolCallId: string, sessionId?: string, signal?: AbortSignal, context?: PiToolContext) => Promise<string | PiToolResult>; tools: PiToolSchema[];
   preamble?: string;
   selectModel?: (envs: Envelope[]) => Promise<string | undefined>; maxSteps?: number;
   /** Atomic task/run admission immediately before provider requests or tool execution. */
@@ -40,6 +42,7 @@ export interface PiOptions {
   watchdogMs?: number; log?: (line: string) => void;
   /** Once per owner, after it is offline; a TUI owner may have unknown OS exit status. */
   onExit?: (exit: PiExit) => void;
+  onApprovalStop?: (reason: string) => void;
   /** How long stop() waits for a graceful TUI owner exit before verified teardown. Tests shrink this. */
   stopGraceMs?: number;
 }
@@ -77,8 +80,16 @@ export class PiPeer extends BasePeer {
   private persistedOnce = false;
   private activeEnvs: Envelope[] = [];
   private activeTools = 0;
+  private readonly pendingToolGenerations = new Map<string, { generation: number; abort: AbortController; settled: Promise<void> }>();
+  private readonly abortedToolIds = new Set<string>();
+  private abortIdsOverflow = false;
   private readonly activeDeliveryIds = new Set<string>();
   private agentRunning = false;
+  private approvalExpiries = 0;
+  private approvalAnswerEpoch: number | undefined;
+  private approvalTurnAbort = false;
+  private approvalAbortSent = false;
+  private approvalStopReason = "";
   private owner = randomUUID();
   private _tuiLaunch?: PiTuiLaunch;
   private requestedModel = "";
@@ -180,11 +191,18 @@ export class PiPeer extends BasePeer {
   }
   private async handleToolRequest(body: any): Promise<Response> {
     if (this.stopping || this.state === "offline") return Response.json({ text: "error: Pi owner is stopped" }, { status: 409 });
+    if (!this.verifiedOwner() || typeof body.sessionId !== "string" || !body.sessionId || body.sessionId !== this.sessionId || !Number.isSafeInteger(body.generation) || body.generation !== this.budgetGeneration) {
+      const text = "error: Pi tool lineage is missing, stale or unverified; restart Pi with the current hub extension before retrying";
+      this.opts.log?.(`[${this.id}] ${text}`);
+      return Response.json({ text, failed: true }, { status: 409 });
+    }
+    if (this.abortIdsOverflow || this.abortedToolIds.has(String(body.toolCallId))) return Response.json({ text: "error: tool call cancelled before execution", failed: true });
+    if (this.pendingToolGenerations.has(String(body.toolCallId ?? ""))) return Response.json({ text: "error: this Pi tool call is already in progress", failed: true }, { status: 409 });
     let executionSignal = this.executionAbort?.signal;
     let idleBashTimer: ReturnType<typeof setTimeout> | undefined;
     if (body.purpose === "idle_user_bash") {
       const reservation = typeof body.reservation === "string" ? this.idleBashReservations.get(body.reservation) : undefined;
-      if (!reservation || reservation.expiresAt < Date.now() || reservation.generation !== body.generation || !this.ownerClaimed || this.ownerPid === undefined || this.state !== "idle" || this.agentRunning || this.activeTools > 0 || this.activeEnvs.length > 0 || !Number.isSafeInteger(body.generation) || body.generation !== this.budgetGeneration) return Response.json({ text: "error: stale or non-idle Pi user shell request" }, { status: 409 });
+      if (this.opts.mode !== "tui" || !this.verifiedOwner() || !reservation || reservation.expiresAt < Date.now() || reservation.generation !== body.generation || !this.ownerClaimed || this.ownerPid === undefined || this.state !== "idle" || this.agentRunning || this.activeTools > 0 || this.activeEnvs.length > 0 || !Number.isSafeInteger(body.generation) || body.generation !== this.budgetGeneration) return Response.json({ text: "error: stale or non-idle Pi user shell request" }, { status: 409 });
       if (reservation.deadlineAt !== undefined && reservation.deadlineAt <= Date.now()) {
         this.idleBashReservations.delete(String(body.reservation));
         return Response.json({ text: "error: Pi user shell execution budget expired" }, { status: 409 });
@@ -195,6 +213,18 @@ export class PiPeer extends BasePeer {
       if (reservation.deadlineAt !== undefined) idleBashTimer = setTimeout(() => idleBashAbort.abort(), Math.max(0, reservation.deadlineAt - Date.now()));
     }
     this.noteActivity();
+    const generation = this.budgetGeneration;
+    const turnSignal = this.executionAbort?.signal;
+    const parentSignal = executionSignal;
+    const toolAbort = new AbortController();
+    const abortTool = () => toolAbort.abort();
+    parentSignal?.addEventListener("abort", abortTool, { once: true });
+    if (parentSignal?.aborted) abortTool();
+    executionSignal = toolAbort.signal;
+    const callId = String(body.toolCallId ?? "");
+    let settled!: () => void;
+    const settlement = new Promise<void>((resolve) => { settled = resolve; });
+    this.pendingToolGenerations.set(callId, { generation, abort: toolAbort, settled: settlement });
     const name = String(body.name);
     this.lastToolName = this.opts.tools.some((tool) => tool.name === name) && /^[a-zA-Z0-9_.-]{1,128}$/.test(name) ? name : "unknown";
     this.activeTools++;
@@ -203,11 +233,40 @@ export class PiPeer extends BasePeer {
     // `failed` is the managed-tool failure verdict (toolResultFailed, the one contract): Pi 1.0.1
     // classifies a native tool result by isError === true alone, so the extension needs the flag,
     // not just the text (#181). An older extension simply ignores the extra field.
-    try { const text = await this.opts.executeTool(String(body.name), body.args, String(body.toolCallId ?? ""), this.sessionId, executionSignal); return Response.json({ text, failed: toolResultFailed(String(body.name), text) }); }
+    try {
+      const result = await this.opts.executeTool(name, body.args, callId, this.sessionId, executionSignal, {
+        userBash: body.purpose === "idle_user_bash",
+        isCurrent: () => generation === this.budgetGeneration && !this.stopping && this.state !== "offline" && !executionSignal?.aborted && !this.approvalStopReason && this.verifiedOwner() && (body.purpose === "idle_user_bash" ? this.opts.mode === "tui" : turnSignal === this.executionAbort?.signal),
+        onApproval: (provenance) => {
+          if (!this.agentRunning || generation !== this.budgetGeneration || turnSignal !== this.executionAbort?.signal || this.approvalStopReason) return;
+          if (this.approvalAnswerEpoch !== provenance.answerEpoch) {
+            this.approvalExpiries = 0; this.approvalAnswerEpoch = provenance.answerEpoch;
+          }
+          if (provenance.source === "person") this.approvalExpiries = 0;
+          if (provenance.source === "expired" && provenance.eligibleExpiry !== false && ++this.approvalExpiries >= 2) {
+            this.approvalStopReason = "Pi turn stopped after two unanswered approvals; no person answered. Do not retry the calls; inspect prior work before handoff or stopping.";
+            try { this.opts.onApprovalStop?.(this.approvalStopReason); } catch { /* stop remains authoritative */ }
+          }
+        },
+      });
+      const text = typeof result === "string" ? result : result.text;
+      return Response.json({ text, failed: typeof result !== "string" && result.exitCode !== null ? result.exitCode !== 0 : toolResultFailed(name, text), ...(typeof result === "string" ? {} : { exitCode: result.exitCode }) });
+    }
     catch (error) { return Response.json({ text: `error: ${(error as Error).message}`, failed: true }, { status: 200 }); }
     finally {
       clearTimeout(idleBashTimer);
       this.activeTools--;
+      parentSignal?.removeEventListener("abort", abortTool);
+      if (this.pendingToolGenerations.get(callId)?.abort === toolAbort) this.pendingToolGenerations.delete(callId);
+      settled();
+      if (this.approvalStopReason && !this.approvalAbortSent) {
+        this.approvalAbortSent = true;
+        const reason = this.approvalStopReason;
+        // Finish this request's expiry reply before withdrawing siblings and aborting the native turn.
+        setTimeout(() => {
+          if (generation === this.budgetGeneration && this.approvalStopReason === reason && !this.stopping) void this.endApprovalTurn(generation, reason);
+        }, 10);
+      }
       if (this.state === "busy") {
         if (!this.activeTools && !this.agentRunning && !this.activeEnvs.length) this.setState("idle");
         else this.touch();
@@ -218,12 +277,14 @@ export class PiPeer extends BasePeer {
   private async handleBudgetRequest(body: any): Promise<Response> {
     if (!["model_calls", "tool_calls"].includes(String(body.unit))) return Response.json({ error: "invalid Pi budget unit" }, { status: 400 });
     const idleUserBash = body.idleUserBash === true;
-    const current = Number.isSafeInteger(body.generation) && body.generation === this.budgetGeneration;
-    const idleOwner = this.ownerClaimed && this.ownerPid !== undefined && this.state === "idle" && !this.agentRunning && this.activeTools === 0 && this.activeEnvs.length === 0;
-    if (!current || (idleUserBash ? !idleOwner : !this.agentRunning || this.state !== "busy")) return Response.json({ error: "stale Pi budget request" }, { status: 409 });
+    const generation = body.generation, controller = this.executionAbort, session = this.sessionId, ownerPid = this.ownerPid, ownerSignature = this.ownerSignature;
+    const current = () => Number.isSafeInteger(generation) && generation === this.budgetGeneration && controller === this.executionAbort && session === this.sessionId && ownerPid === this.ownerPid && ownerSignature === this.ownerSignature && !this.stopping && this.verifiedOwner();
+    const idleOwner = this.opts.mode === "tui" && !this.stopping && this.verifiedOwner() && this.state === "idle" && !this.agentRunning && this.activeTools === 0 && this.activeEnvs.length === 0;
+    if (!current() || (idleUserBash ? !idleOwner : !this.agentRunning || this.state !== "busy")) return Response.json({ error: "stale Pi budget request" }, { status: 409 });
     // An interactive user shell has no task delivery. It may spend an eligible run budget only.
     const envs = idleUserBash ? [] : this.budgetEnvelopes;
     const decisions = this.opts.admitBudget ? await this.opts.admitBudget(envs, body.unit as ExecutionUnit) : [];
+    if (!current() || (idleUserBash ? this.state !== "idle" || this.agentRunning || this.activeTools > 0 || this.activeEnvs.length > 0 : !this.agentRunning || this.state !== "busy")) return Response.json({ error: "Pi owner or turn changed during admission" }, { status: 409 });
     const denied = decisions.find((decision) => !decision.allowed);
     const remaining = decisions.filter((decision) => decision.unit === "elapsed_ms" && decision.remaining !== null).reduce<number | undefined>((min, decision) => min === undefined ? decision.remaining! : Math.min(min, decision.remaining!), undefined);
     let reservation: string | undefined;
@@ -249,6 +310,7 @@ export class PiPeer extends BasePeer {
   private async startImpl(): Promise<void> {
     this.stopping = false;
     this.exitReported = false; this.started = false; this.lastToolName = undefined; this.shutdownExit = undefined;
+    this.approvalExpiries = 0; this.approvalAnswerEpoch = undefined; this.approvalStopReason = ""; this.approvalAbortSent = false;
     mkdirSync(this.opts.stateDir, { recursive: true });
     const sessions = join(this.opts.stateDir, "pi-sessions");
     mkdirSync(sessions, { recursive: true, mode: 0o700 });
@@ -311,13 +373,41 @@ export class PiPeer extends BasePeer {
       throw new Error("Pi get_state session identity does not match the requested recovery session");
     }
     this.sessionId = state.data.sessionId; this.sessionFile = state.data.sessionFile;
+    // The hub spawned this headless owner and get_state proved its session. Pin the same
+    // identity a native extension claim uses, including fakes that do not load the extension.
+    if (!this.ownerClaimed) {
+      const pid = this.proc?.pid, signature = pid ? processSignature(pid) : undefined;
+      if (!pid || !signature) throw new Error("Pi headless owner process identity is not verified");
+      this.ownerPid = pid; this.ownerSignature = signature;
+      this.ownerToken = String(this._tuiLaunch?.env.AGENTHUB_PI_OWNER_TOKEN ?? ""); this.ownerClaimed = true;
+    }
     this.persistedOnce = existsSync(this.sessionFile);
     if ((this.opts.sessionId && this.sessionId !== this.opts.sessionId) || (this.opts.sessionFile && this.sessionFile !== this.opts.sessionFile)) throw new Error("Pi startup session identity mismatch");
     this.started = true;
     this.setState("idle");
   }
 
+  private verifiedOwner(): boolean {
+    return this.ownerClaimed && !!this.ownerPid && !!this.ownerSignature && processSignature(this.ownerPid) === this.ownerSignature;
+  }
+  private abortTools(): Promise<void>[] {
+    this.executionAbort?.abort();
+    this.idleBashReservations.clear();
+    const pending = [...this.pendingToolGenerations.values()];
+    for (const call of pending) call.abort.abort();
+    return pending.map((call) => call.settled);
+  }
   async stop(): Promise<void> {
+    this.stopping = true; // fence new calls before withdrawing both turn and idle-shell execution
+    const settling = this.abortTools();
+    let unsettled: unknown;
+    if (settling.length) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([Promise.all(settling), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Pi managed tools did not settle after cancellation")), this.opts.stopGraceMs ?? 5_000); })]);
+      } catch (error) { unsettled = error; } // a tool past its grace must not block the teardown (#253): stop reports it at the end
+      finally { clearTimeout(timer); }
+    }
     const tuiExit = this.opts.mode === "tui" && this.ownerClaimed && this.ownerPid && this.ownerSignature
       ? { ...this.exitMetadata("owner_stopped"), expected: true } : undefined;
     for (const id of this.activeDeliveryIds) this.delivery({ id, state: "needs_review", reason: "Pi session stopped before settlement" });
@@ -361,6 +451,7 @@ export class PiPeer extends BasePeer {
     this.server?.stop(true); this.server = undefined; this.setState("offline");
     if (failed) throw failed;
     if (tuiExit) this.reportExit(tuiExit); // the verified owner is gone; never invent an exit for an unclaimed launch
+    if (unsettled) throw unsettled;
   }
 
   /**
@@ -445,6 +536,7 @@ export class PiPeer extends BasePeer {
   private handleBridgeEvent(event: any): void {
     if (event.type === "session_start") {
       if (!this.ownerClaimed) { this.ownerClaimed = true; this.ownerToken = String(event.ownerToken ?? ""); }
+      if (event.approvalTurnAbort === true) this.approvalTurnAbort = true;
       this.sessionId = String(event.sessionId ?? ""); this.sessionFile = String(event.sessionFile ?? "");
       this.ownerPid = Number.isInteger(event.pid) ? event.pid : undefined; this.ownerSignature = typeof event.signature === "string" ? event.signature : undefined;
       if ((this.opts.sessionId && this.sessionId !== this.opts.sessionId) || (this.opts.sessionFile && this.sessionFile !== this.opts.sessionFile)) { this.opts.log?.(`[${this.id}] Pi session identity mismatch`); return; }
@@ -457,11 +549,24 @@ export class PiPeer extends BasePeer {
       this.fail(new Error("Pi session shut down before settlement"));
       if (this.opts.mode === "tui") this.reportExit(exit);
     }
+    if (event.type === "tool_abort" && this.agentRunning && this.ownerClaimed && this.ownerPid && this.ownerSignature
+      && processSignature(this.ownerPid) === this.ownerSignature && event.sessionId === this.sessionId && event.generation === this.budgetGeneration
+      && typeof event.toolCallId === "string" && event.toolCallId.length > 0 && event.toolCallId.length <= 512) {
+      const pending = this.pendingToolGenerations.get(event.toolCallId);
+      if (pending && pending.generation === event.generation) pending.abort.abort();
+      else { // a native abort may arrive before its HTTP tool request; fence that call in this generation
+        // ponytail: 64 early aborts per turn; fence further calls rather than forget a cancellation.
+        // A native per-call acknowledgement would replace this bounded early-arrival cache.
+        if (this.abortedToolIds.size >= 64 && !this.abortedToolIds.has(event.toolCallId)) this.abortIdsOverflow = true;
+        else this.abortedToolIds.add(event.toolCallId);
+      }
+    }
     if (event.type === "agent_start") {
       const generation = Number.isSafeInteger(event.generation) ? event.generation : this.budgetGeneration + 1;
       if (generation <= this.budgetGeneration) return;
       this.modelStep = 0;
-      this.usageSeen.clear(); this.idleBashReservations.clear(); this.ceilingStops.clear(); this.executionAbort = new AbortController(); this.budgetGeneration = generation; this.noteActivity(); this.agentRunning = true; this.setState("busy");
+      this.approvalExpiries = 0; this.approvalAnswerEpoch = undefined; this.approvalStopReason = ""; this.approvalAbortSent = false; this.abortedToolIds.clear(); this.abortIdsOverflow = false;
+      this.usageSeen.clear(); this.ceilingStops.clear(); this.abortTools(); this.executionAbort = new AbortController(); this.budgetGeneration = generation; this.noteActivity(); this.agentRunning = true; this.setState("busy");
     }
     // #179: the extension's tool-step ceiling signal. Only a schema-valid event bound to THIS session,
     // THIS turn generation and a running turn is stored; the first signal of a turn stands. Anything
@@ -495,7 +600,7 @@ export class PiPeer extends BasePeer {
       this.agentRunning = false;
       if (typeof event.text === "string" && event.text.trim()) this.settledText = event.text;
       const generation = Number.isSafeInteger(event.generation) ? event.generation : this.budgetGeneration;
-      const text = this.settledText.trim(); const error = this.budgetStops.get(generation) ?? this.settledError; const cancelled = !error && this.settledCancelled;
+      const text = this.settledText.trim(); const error = this.approvalStopReason || this.budgetStops.get(generation) || this.settledError; const cancelled = !error && this.settledCancelled;
       const ceiling = this.ceilingStops.get(generation);
       this.budgetStops.delete(generation);
       this.ceilingStops.delete(generation);
@@ -505,12 +610,13 @@ export class PiPeer extends BasePeer {
       const reply = { inReplyTo: this.currentReply, to: replyAudience(this.activeEnvs) };
       if (cancelled) this.onMessage?.("Pi turn cancelled; inspect any partial effects before continuing.", reply);
       else if (error?.startsWith("execution budget")) this.onMessage?.(`Pi stopped at the execution budget: ${error}. Inspect partial work before continuing.`, reply);
+      else if (this.approvalStopReason) this.onMessage?.(this.approvalStopReason, reply);
       else if (error) void this.opts.onTurnFailure?.(this.activeEnvs, error, ceiling);
       else if (text) this.onMessage?.(text, reply);
-      for (const id of this.activeDeliveryIds) this.delivery({ id, state: error || cancelled ? "needs_review" : "completed", ...(error || cancelled ? { reason: error || "Pi turn cancelled; partial effects are possible" } : {}) });
+      for (const id of this.activeDeliveryIds) this.delivery({ id, state: this.approvalStopReason ? "completed" : error || cancelled ? "needs_review" : "completed", ...(error || cancelled ? { reason: error || "Pi turn cancelled; partial effects are possible" } : {}) });
       this.activeDeliveryIds.clear();
       this.currentReply = undefined; this.activeEnvs = []; if (this.state === "busy" && !this.activeTools) this.setState("idle");
-      this.executionAbort = undefined;
+      this.executionAbort?.abort(); this.executionAbort = undefined;
     }
   }
 
@@ -560,14 +666,15 @@ export class PiPeer extends BasePeer {
   }
 
   private fail(error: Error): void {
+    this.abortTools();
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
     const envs = this.activeEnvs; this.activeEnvs = [];
     for (const id of this.activeDeliveryIds) this.delivery({ id, state: "needs_review", reason: error.message });
     this.activeDeliveryIds.clear();
     if (envs.length) {
-      this.onMessage?.("Pi turn failed; inspect its session and any partial effects before continuing.", { inReplyTo: this.currentReply });
-      void this.opts.onTurnFailure?.(envs, error.message).catch(() => this.opts.log?.("Pi failure handoff could not be completed"));
+      this.onMessage?.(this.approvalStopReason ? `${this.approvalStopReason} Pi is offline because its extension could not abort the turn; restart with ahub pi and settle the held delivery after inspecting prior work.` : "Pi turn failed; inspect its session and any partial effects before continuing.", { inReplyTo: this.currentReply });
+      if (!this.approvalStopReason && !(error instanceof ApprovalWaitStop)) void this.opts.onTurnFailure?.(envs, error.message).catch(() => this.opts.log?.("Pi failure handoff could not be completed"));
     }
     this.currentReply = undefined;
     this.setState("offline");
@@ -588,6 +695,16 @@ export class PiPeer extends BasePeer {
     this.ownerMonitor.unref?.();
   }
   private clearOwnerMonitor(): void { if (this.ownerMonitor) clearInterval(this.ownerMonitor); this.ownerMonitor = undefined; }
+  private async endApprovalTurn(generation: number, reason: string): Promise<void> {
+    this.executionAbort?.abort();
+    if (this.approvalTurnAbort) {
+      try { await this.sendTui({ type: "abort_budget", generation, cause: "approval", reason }); return; }
+      catch { if (generation !== this.budgetGeneration || !this.agentRunning) return; }
+    }
+    this.opts.log?.(`[${this.id}] approval turn abort unsupported; Pi goes offline. Restart with ahub pi and settle the held delivery after inspecting prior work.`);
+    await this.terminateFailedTurn(new ApprovalWaitStop(reason));
+  }
+
   private async terminateFailedTurn(error: Error): Promise<void> {
     const envs = this.activeEnvs.slice(), reply = this.currentReply;
     this.stopping = true;

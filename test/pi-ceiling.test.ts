@@ -90,6 +90,8 @@ test("#179 the real extension emits the validated signal at the ceiling, and ref
     const body = await req.json() as any;
     if (path === "/budget") return Response.json({ decisions: [] });
     if (path === "/tool") {
+      expect(body.sessionId).toBe("sess-ceiling");
+      expect(Number.isSafeInteger(body.generation)).toBe(true);
       toolCalls.push(String(body.toolCallId));
       // c2 fails as a tool result (#181): a failed tool call still counts as a tool-step.
       return Response.json(body.toolCallId === "c2" ? { text: "error: read denied", failed: true } : { text: "ok", failed: false });
@@ -154,6 +156,8 @@ test("#179 shared-budget admission precedes the ceiling counter and a new produc
         : { decisions: [] });
     }
     if (path === "/tool") {
+      expect(body.sessionId).toBe("sess-ceiling");
+      expect(Number.isSafeInteger(body.generation)).toBe(true);
       toolCalls.push(String(body.toolCallId));
       return Response.json(body.toolCallId === "t1-c2" ? { text: "error: read denied", failed: true } : { text: "ok", failed: false });
     }

@@ -147,7 +147,7 @@ test("an authenticated long-running tool keeps the Pi watchdog alive", async () 
     const launch = peer.tuiLaunch!;
     const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
     const url = launch.env.AGENTHUB_PI_BRIDGE_URL!;
-    const result = await fetch(`${url}/tool`, { method: "POST", headers, body: JSON.stringify({ name: "bash", args: {}, toolCallId: "long-tool" }) });
+    const result = await fetch(`${url}/tool`, { method: "POST", headers, body: JSON.stringify({ name: "bash", args: {}, toolCallId: "long-tool", sessionId: peer.recoveryMetadata().sessionId, generation: 0 }) });
     expect((await result.json() as any).text).toBe("long tool completed");
     expect(peer.state).toBe("busy");
     expect(failures).toEqual([]);
@@ -278,8 +278,9 @@ test("Pi addresses its answer to the senders of the delivery it answers", async 
 test("idle Pi user bash aborts at its elapsed deadline without reusing that signal on the next command", async () => {
   const stateDir = mkdtempSync(join(process.cwd(), ".pi-idle-budget-deadline-"));
   let admissionCount = 0, firstSignalAborted = false, executionCount = 0;
+  const owner = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdout: "ignore", stderr: "ignore" });
   const peer = new PiPeer("pi", {
-    cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx", cmd: ["bun", join(import.meta.dir, "fakes/pi-rpc.ts")],
+    cwd: process.cwd(), stateDir, mode: "tui", stopGraceMs: 100, backend: "dgx", cmd: ["bun", join(import.meta.dir, "fakes/pi-rpc.ts")],
     relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [{ id: "dgx/coding" }] }, tools: [],
     admitBudget: async (_envs, unit) => {
       admissionCount++;
@@ -300,12 +301,15 @@ test("idle Pi user bash aborts at its elapsed deadline without reusing that sign
     const base = launch.env.AGENTHUB_PI_BRIDGE_URL!;
     const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
     const post = (path: string, body: unknown) => fetch(`${base}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
-    const metadata = peer.recoveryMetadata();
-    expect((await post("/event", { type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: process.pid, signature: currentSignature(), sessionId: metadata.sessionId, sessionFile: metadata.sessionFile })).status).toBe(200);
+    const sessionDir = join(stateDir, "pi-sessions"); mkdirSync(sessionDir, { recursive: true });
+    const sessionFile = join(sessionDir, "idle.jsonl");
+    writeFileSync(sessionFile, JSON.stringify({ type: "session", id: "idle", cwd: process.cwd() }) + "\n");
+    const metadata = { sessionId: "idle", sessionFile };
+    expect((await post("/event", { type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: owner.pid, signature: currentSignature(owner.pid), sessionId: metadata.sessionId, sessionFile: metadata.sessionFile })).status).toBe(200);
     const admissionResponse = await post("/budget", { unit: "tool_calls", idleUserBash: true, generation: 0 });
     expect(admissionResponse.status).toBe(200);
     const admission = await admissionResponse.json() as { reservation: string };
-    const first = post("/tool", { name: "bash", purpose: "idle_user_bash", generation: 0, reservation: admission.reservation, toolCallId: "idle-long", args: { command: "sleep", cwd: process.cwd() } });
+    const first = post("/tool", { name: "bash", purpose: "idle_user_bash", sessionId: metadata.sessionId, generation: 0, reservation: admission.reservation, toolCallId: "idle-long", args: { command: "sleep", cwd: process.cwd() } });
     const firstResponse = await first;
     expect(firstResponse.status).toBe(200);
     expect((await firstResponse.json() as { text: string }).text).toBe("elapsed deadline reached");
@@ -314,10 +318,10 @@ test("idle Pi user bash aborts at its elapsed deadline without reusing that sign
     const nextAdmissionResponse = await post("/budget", { unit: "tool_calls", idleUserBash: true, generation: 0 });
     expect(nextAdmissionResponse.status).toBe(200);
     const nextAdmission = await nextAdmissionResponse.json() as { reservation: string };
-    const nextResponse = await post("/tool", { name: "bash", purpose: "idle_user_bash", generation: 0, reservation: nextAdmission.reservation, toolCallId: "idle-next", args: { command: "true", cwd: process.cwd() } });
+    const nextResponse = await post("/tool", { name: "bash", purpose: "idle_user_bash", sessionId: metadata.sessionId, generation: 0, reservation: nextAdmission.reservation, toolCallId: "idle-next", args: { command: "true", cwd: process.cwd() } });
     expect(nextResponse.status).toBe(200);
     expect((await nextResponse.json() as { text: string }).text).toBe("fresh command");
-  } finally { await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+  } finally { await peer.stop(); if (owner.exitCode === null) owner.kill(); await owner.exited; rmSync(stateDir, { recursive: true, force: true }); }
 });
 
 // #56 review: a native owner that ignores the graceful shutdown must not survive next to a replacement hub.
@@ -384,7 +388,7 @@ for (const outcome of [{ code: 0 }, { code: 17 }, { signal: "SIGTERM" }] as cons
       const launch = peer.tuiLaunch!;
       await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, { method: "POST", headers: {
         authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json",
-      }, body: JSON.stringify({ name: "read", args: { path: "SECRET_ARGUMENT_MARKER" }, toolCallId: "last-read" }) });
+      }, body: JSON.stringify({ name: "read", args: { path: "SECRET_ARGUMENT_MARKER" }, toolCallId: "last-read", sessionId: peer.recoveryMetadata().sessionId, generation: 0 }) });
       writeFileSync(trigger, "exit");
       for (let i = 0; i < 200 && !exits.length; i++) await Bun.sleep(5);
       expect(exits).toHaveLength(1);
@@ -431,7 +435,7 @@ test("Pi exit captures active turn and tool facts before failure cleanup (#255)"
     const launch = peer.tuiLaunch!, url = launch.env.AGENTHUB_PI_BRIDGE_URL;
     const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
     await fetch(`${url}/event`, { method: "POST", headers, body: JSON.stringify({ type: "agent_start", generation: 1 }) });
-    tool = fetch(`${url}/tool`, { method: "POST", headers, body: JSON.stringify({ name: "write", args: {}, toolCallId: "active" }) });
+    tool = fetch(`${url}/tool`, { method: "POST", headers, body: JSON.stringify({ name: "write", args: {}, toolCallId: "active", sessionId: peer.recoveryMetadata().sessionId, generation: 1 }) });
     for (let i = 0; i < 200 && !entered; i++) await Bun.sleep(5);
     expect(entered).toBe(true);
     writeFileSync(trigger, "exit");
@@ -477,3 +481,50 @@ test("stopping a never-owned TUI launch invents no exit report (#255)", async ()
   try { await peer.start(); await peer.stop(); expect(exits).toEqual([]); }
   finally { await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
 });
+
+test("a managed tool that outlives the stop grace does not block the teardown; stop reports it at the end (#253)", async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-stop-grace-test-"));
+  const peer = new PiPeer("pi", { cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx", stopGraceMs: 50,
+    cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")],
+    relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [] }, tools: [], executeTool: () => new Promise<string>(() => {}) });
+  try {
+    await peer.start();
+    const launch = peer.tuiLaunch!;
+    const post = (path: string, body: unknown) => fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}${path}`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+    await post("/event", { type: "agent_start", generation: 1 });
+    const call = post("/tool", { name: "write", toolCallId: "stuck-tool", sessionId: peer.recoveryMetadata().sessionId, generation: 1, args: { path: "stuck.txt", content: "x" } });
+    for (let i = 0; i < 100 && (peer as any).activeTools === 0; i++) await Bun.sleep(5);
+    expect((peer as any).activeTools).toBe(1);
+    await expect(peer.stop()).rejects.toThrow("Pi managed tools did not settle after cancellation");
+    expect(peer.state).toBe("offline"); // the teardown completed: shutdown, owner teardown, process stop
+    await call.catch(() => undefined);
+  } finally { await peer.stop().catch(() => undefined); rmSync(stateDir, { recursive: true, force: true }); }
+}, 30_000);
+
+
+for (const denied of [false, true]) test(`an old normal budget reply cannot change the new Pi turn (${denied ? "denied" : "remaining"})`, async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-budget-lineage-"));
+  let release!: () => void, entered = false;
+  const barrier = new Promise<void>((resolve) => { release = resolve; });
+  const peer = new PiPeer("pi", { cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx", cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")], relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [] }, tools: [], executeTool: async () => "ok",
+    admitBudget: async () => { entered = true; await barrier; return [{ allowed: !denied, reason: denied ? "exhausted" : undefined, scope: "run:lineage", unit: "elapsed_ms", used: 1, limit: 2, remaining: 1 }]; },
+  });
+  try {
+    await peer.start();
+    const launch = peer.tuiLaunch!;
+    const post = (path: string, body: unknown) => fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}${path}`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify(body) });
+    await post("/event", { type: "agent_start", generation: 1 });
+    const old = post("/budget", { unit: "model_calls", generation: 1 });
+    for (let i = 0; i < 100 && !entered; i++) await Bun.sleep(5);
+    expect(entered).toBe(true);
+    await post("/event", { type: "agent_start", generation: 2 });
+    const controller = (peer as any).executionAbort, timer = (peer as any).executionBudgetTimer;
+    release(); expect((await old).status).toBe(409);
+    expect((peer as any).executionAbort).toBe(controller);
+    expect(controller.signal.aborted).toBe(false);
+    expect((peer as any).executionBudgetTimer).toBe(timer);
+    expect((peer as any).budgetStops.size).toBe(0);
+    expect((peer as any).modelStep).toBe(0);
+    await post("/event", { type: "agent_settled", generation: 2 });
+  } finally { release(); await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+}, 30_000);

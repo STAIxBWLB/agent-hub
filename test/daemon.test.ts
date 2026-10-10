@@ -729,6 +729,28 @@ test("ahub local: a fourth peer on the hub-owned model path; writes wait for ahu
   expect(model.requests[0]!.body.model).toBe("vllm/pinned");
 });
 
+test("an aborted local call withdraws its approval: a late answer is refused and cannot run the write (#253)", async () => {
+  const model = startFakeModelServer({
+    key: "k",
+    script: (body) =>
+      body.messages.some((m) => m.role === "tool")
+        ? { content: `result: ${body.messages.at(-1)?.content}` }
+        : { tool_calls: [toolCall("write", { path: "scratch-local-abort.txt", content: "x" })] },
+  });
+  cleanup.push(model.stop);
+  process.env.OMNIROUTE_API_KEY = "k";
+  cleanup.push(() => delete process.env.OMNIROUTE_API_KEY);
+  const { daemon, console_, pushes } = await hub({ modelUrl: model.url, permissionTimeoutMs: 30_000 });
+  await console_.request({ t: "start", peer: "local", args: { model: "vllm/pinned" } });
+  await console_.request({ t: "send", body: "write the file", to: ["local"] });
+  await until(() => pushes.some((p) => p.t === "permission" && p.peer === "local"), "local approval");
+  const id = pushes.find((p) => p.t === "permission" && p.peer === "local")!.id;
+  await daemon.bus.peers.get("local")!.stop(); // aborts the turn, which withdraws the pending request
+  await until(() => pushes.some((p) => p.t === "permission_closed" && p.id === id), "approval withdrawn");
+  expect((await console_.request({ t: "permit", id, option: "allow", surface: "console" })).ok).toBe(false);
+  expect(existsSync(join(ROOT, "scratch-local-abort.txt"))).toBe(false);
+});
+
 test("task tools from every surface: Claude plugin, a tools-role client acting for kimi, the console; roles reach the instructions; the board survives a restart", async () => {
   const record = join(mkdtempSync(join(tmpdir(), "agenthub-rec-")), "session-new.json");
   process.env.FAKE_ACP_RECORD = record;
