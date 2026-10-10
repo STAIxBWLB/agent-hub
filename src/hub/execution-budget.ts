@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 
 export type ExecutionUnit = "model_calls" | "tool_calls" | "elapsed_ms" | "tokens";
 export type ExecutionBudgetLimits = Partial<Record<ExecutionUnit, number>>;
@@ -42,6 +43,7 @@ export class ExecutionBudget {
   private readonly db: Database;
   constructor(path: string) {
     this.db = new Database(path, { create: true });
+    this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     this.db.run("PRAGMA journal_mode = WAL");
     this.db.run(`CREATE TABLE IF NOT EXISTS execution_budgets (
       id TEXT PRIMARY KEY, kind TEXT NOT NULL, task_id INTEGER, peers TEXT NOT NULL,

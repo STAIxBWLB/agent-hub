@@ -8,6 +8,7 @@ import { isStartablePeer, type StartablePeer, type StartMode } from "./start-mod
 import type { HubEvent } from "./events.ts";
 import type { SupervisionFeed } from "./supervision.ts";
 import type { Budget } from "./budget.ts";
+import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 
 /** The production ProgressObserver sink forwards structured verdicts, never its observations/reasoning. */
 export function conductorProgressSink(record: (event: HubEvent) => void, feed: Pick<SupervisionFeed, "milestone">): (event: HubEvent) => void {
@@ -66,6 +67,7 @@ export class ConductorHolds {
   private readonly db: Database;
   constructor(dbPath: string, private readonly now: () => number = Date.now) {
     this.db = new Database(dbPath, { create: true });
+    this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     this.db.run("CREATE TABLE IF NOT EXISTS conductor_holds (peer TEXT PRIMARY KEY, actor TEXT NOT NULL, since INTEGER NOT NULL)");
     this.db.run("CREATE TABLE IF NOT EXISTS supervision_rounds (peer TEXT PRIMARY KEY, signature TEXT NOT NULL)");
   }

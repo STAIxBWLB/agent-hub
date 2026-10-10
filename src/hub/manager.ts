@@ -12,6 +12,7 @@ import type { ProjectInspection } from "./lifecycle.ts";
 import { MAX_COMMAND_MS } from "../cli/terminal-recovery.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 
+const MANAGER_OWNER_DB_BUSY_TIMEOUT_MS = 5000;
 export type ProjectRecord = Project;
 export type Lifecycle = {
   inspectProject(project: Project): Promise<ProjectInspection>;
@@ -48,7 +49,7 @@ async function bounded<T>(promise: Promise<T>, ms: number): Promise<T> {
 function claimOwner(path: string, instanceId: string, signature: string | undefined): Database {
   const db = new Database(path, { create: true });
   try {
-    db.run("PRAGMA busy_timeout = 5000");
+    db.run(`PRAGMA busy_timeout = ${MANAGER_OWNER_DB_BUSY_TIMEOUT_MS}`);
     db.run("CREATE TABLE IF NOT EXISTS owner (slot INTEGER PRIMARY KEY CHECK (slot = 1), instance_id TEXT NOT NULL, pid INTEGER NOT NULL, signature TEXT)");
     if (!(db.query("PRAGMA table_info(owner)").all() as { name: string }[]).some((c) => c.name === "signature")) {
       try { db.run("ALTER TABLE owner ADD COLUMN signature TEXT"); }

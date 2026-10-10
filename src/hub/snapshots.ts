@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { childEnv } from "./child-process.ts";
 import type { Touch } from "./conflicts.ts";
 import { hubGitSync } from "./git.ts";
+import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 
 /**
  * Per-turn workspace snapshots (issue #33): git tree objects written through a copy of the index, so the user's index
@@ -144,6 +145,7 @@ export class Turns {
   private readonly db: Database;
   constructor(path: string, readonly?: boolean) {
     this.db = new Database(path, readonly ? { readonly: true } : { create: true });
+    this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     if (readonly) return;
     this.db.run("PRAGMA journal_mode = WAL");
     this.db.run(`CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY, peer TEXT NOT NULL, started INTEGER NOT NULL, ended INTEGER,
