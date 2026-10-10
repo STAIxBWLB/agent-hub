@@ -154,18 +154,29 @@ test("sweep: explicit opt-in reassigns owner within routing constraints, reviewe
 
 test("sweep: an auto-reassign whose assignment cannot publish is noticed as saved-but-unconfirmed and the sweep goes on (#297)", async () => {
   const f = await fixture({ sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, unaccepted_min: 1, review_min: 1, ladder_min: 1, auto_reassign: true } });
-  const task = f.make();
-  const at = task.history.at(-1)!.at + 60_001;
+  const first = f.make();
+  // Its own path, or the overlap cohort silences the second task's sweep (turn-free coordination).
+  const m2 = f.board.propose("user", { title: "other work", class: "implement", refs: { paths: ["b.ts"] } });
+  const second = f.board.update(m2.id, HUB, "assigned", { owner: "codex", reviewer: "claude" });
+  // 100 ms of slack: the two creation times can straddle a millisecond tick, and both ladders must align.
+  const at = Math.max(first.history.at(-1)!.at, second.history.at(-1)!.at) + 60_100;
   for (let step = 0; step < 2; step++) { await f.tasks.sweep(at + step * 60_000); await drain(); }
   const publish = f.bus.publish.bind(f.bus);
-  f.bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === String(task.id)) throw new Error("delivery journal unavailable"); return publish(env); };
+  f.bus.publish = (env) => { if (env.kind === "task" && env.refs?.paths && env.refs?.task === String(first.id)) throw new Error("delivery journal unavailable"); return publish(env); };
   try {
-    await f.tasks.sweep(at + 2 * 60_000);
+    await f.tasks.sweep(at + 2 * 60_000); // first task's step 3: the assignment's write lands, the publish fails
   } finally {
     f.bus.publish = publish;
   }
+  // Accept it for its new owner, or its restarted ladder keeps noticing local and a later reassignment in the same
+  // pass reads the queue pressure.
+  f.board.update(first.id, "local", "accepted", { state: "in_progress" });
+  const recorded = await f.tasks.sweep(at + 3 * 60_000); // second task's step 3: delivers
   await drain();
-  const owner = f.board.get(task.id)!.owner!;
-  expect(owner).toBe("local");
-  expect(f.notices.some((l) => l.includes("delivery is not confirmed") && l.includes(`ahub task assign ${task.id} ${owner}`))).toBe(true);
+  expect(recorded.map((x) => x.task)).toContain(second.id); // the sweep went on after the failure
+  expect(f.board.get(first.id)!.owner).toBe("local"); // the failed one's write landed
+  expect(f.board.get(second.id)!.owner).toBe("local"); // and the later one delivered
+  expect(f.notices.filter((l) => l.includes("delivery is not confirmed"))).toHaveLength(1);
+  expect(f.notices.some((l) => l.includes(`ahub task assign ${first.id} local`))).toBe(true);
+  expect(f.peers.local!.got.filter((e) => e.kind === "task" && e.refs?.task === String(second.id))).toHaveLength(1);
 });

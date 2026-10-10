@@ -1142,7 +1142,11 @@ test("a normal approval cannot grant after the verified OS owner dies before exi
   }
 }, 30_000);
 
-test("Pi's inference-failed escalation whose assignment publish fails gets the undelivered notice, not 'could not be escalated' (#297)", async () => {
+test("the daemon's inference-failed catch stays quiet for a saved-but-undelivered move and reports other failures (#297)", async () => {
+  // This pins the daemon's catch branch only: Tasks.escalate is stubbed to throw the typed error itself, so no
+  // bus.publish runs here; AC1's literal "bus.publish fails after the write" is end-to-end for delivery_failed in
+  // test/reliability.test.ts. The notice for the typed error is printed where it is thrown (assignOwner), so the
+  // catch must add nothing, and never "could not be escalated" (the tail already said "escalated from A to B").
   const dir = mkdtempSync(join(tmpdir(), "pi-undelivered-"));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
@@ -1150,22 +1154,25 @@ test("Pi's inference-failed escalation whose assignment publish fails gets the u
   const board = new Board(join(stateDir, "hub.db")); cleanup.push(() => board.close());
   const task = board.propose("claude", { title: "pi work", class: "implement" });
   board.update(task.id, "pi", "accepted", { owner: "pi", reviewer: "claude", state: "in_progress" });
+  const plain = board.propose("claude", { title: "pi plain failure", class: "implement" });
+  board.update(plain.id, "pi", "accepted", { owner: "pi", reviewer: "claude", state: "in_progress" });
   expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
   const peer = daemon.bus.peers.get("pi") as PiPeer;
   const onTurnFailure = (peer as unknown as { opts: { onTurnFailure?: (envs: unknown[], reason: string) => Promise<void> } }).opts.onTurnFailure!;
   const escalate = Tasks.prototype.escalate;
-  Tasks.prototype.escalate = async function () {
-    // The assignment's publish fails after the board write, as with a latched journal error.
-    board.update(task.id, "hub", "escalated", { owner: "local", reviewer: null }, "pi inference failed; from pi");
-    throw new AssignmentUndeliveredError(board.get(task.id)!, new Error("delivery journal unavailable"));
+  Tasks.prototype.escalate = async function (_by: unknown, id: unknown) {
+    if (id === task.id) {
+      board.update(task.id, "hub", "escalated", { owner: "local", reviewer: null }, "pi inference failed; from pi");
+      throw new AssignmentUndeliveredError(board.get(task.id)!, new Error("delivery journal unavailable"));
+    }
+    throw new Error("no route");
   };
   try {
-    await onTurnFailure([newEnvelope("pi", "failed turn", { to: ["pi"], refs: { task: String(task.id) } })], "Pi inference failed");
+    await onTurnFailure([newEnvelope("pi", "failed turn", { to: ["pi"], refs: { task: String(task.id) } }), newEnvelope("pi", "failed turn", { to: ["pi"], refs: { task: String(plain.id) } })], "Pi inference failed");
   } finally {
     Tasks.prototype.escalate = escalate;
   }
   const logText = readFileSync(join(stateDir, "hub.log"), "utf8");
-  expect(logText).toContain("delivery is not confirmed");
-  expect(logText).toContain(`ahub task assign ${task.id} local`);
-  expect(logText).not.toContain("could not be escalated");
+  expect(logText).not.toContain(`Pi task #${task.id} could not be escalated`); // the typed error: quiet
+  expect(logText).toContain(`Pi task #${plain.id} could not be escalated`); // a plain failure: the old line
 }, 20_000);

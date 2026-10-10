@@ -383,9 +383,13 @@ the hold once, and status, task assignment and route explanations name its deliv
 Inspect it with `ahub queue show <id>` and explicitly choose `completed`, `retry` or
 `discard` through `ahub queue resolve`. Reassignment or approval of its task never
 resolves an uncertain delivery automatically. The same rule holds on every path that
-assigns a task (#297): once the move is saved on the board, a failed delivery is a
-console notice that says so ("the move is saved... delivery is not confirmed"), and the
-repair is always to look for a queued or needs_review delivery with
+assigns a task (#297): once the move is saved on the board, a failed delivery prints
+exactly one console notice ("the move is saved... delivery is not confirmed"), printed
+where the error is thrown, and the caller (a peer in its turn, or the CLI) still gets
+its error. Two exceptions, by construction: a claim is its own hand-over with no
+delivery, and a move superseded by another while the assignment was being prepared is
+the caller's error as before, with no notice naming either owner. The repair is always
+to look for a queued or needs_review delivery with
 `ahub queue list --peer <owner>` (then `ahub queue show <id>`, or the accepted entry in
 `ahub task show <id>` if the journal itself is down) and then send the assignment again
 with `ahub task assign <id> <owner>`. Nothing resends automatically: a blind resend can
