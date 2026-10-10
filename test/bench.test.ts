@@ -6,7 +6,7 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { appendBench, armRuns, measures, BENCH_SCHEMA, benchCompare, benchCsv, benchReport, CSV_COLUMNS, MIN_ATTEMPTS, parseSuite, readRuns, runFile, runSummary, sameSuite, type Attempt, type Outcome } from "../src/hub/bench.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
-import { benchPreflight, defaultIo, metricsOf, runBench, type BenchIo } from "../src/cli/bench.ts";
+import { benchPreflight, defaultIo, metricsOf, reset, runBench, type BenchIo } from "../src/cli/bench.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 
 // #251: benchmark suites, runs against the attached peers, reports and arm comparisons.
@@ -90,6 +90,22 @@ test("a reset never reaches outside the project or into .agenthub", async () => 
   const pinned = new Map<string, string>();
   await benchPreflight(variant, true, ["main"], pinned);
   expect(pinned.get("main")).toBe(git(variant, "rev-parse", "main"));
+  // A branch named like the pinned hash cannot stand in for the commit, and only the root .agenthub survives a reset.
+  const pin = pinned.get("main")!;
+  writeFileSync(join(variant, "agent.txt"), "agent work\n");
+  git(variant, "add", "agent.txt"); git(variant, "commit", "-qm", "agent commit");
+  git(variant, "branch", pin, "HEAD");
+  mkdirSync(join(variant, ".agenthub"), { recursive: true }); writeFileSync(join(variant, ".agenthub", "keep.txt"), "hub");
+  mkdirSync(join(variant, "sub", ".agenthub"), { recursive: true }); writeFileSync(join(variant, "sub", ".agenthub", "notes.txt"), "left by an agent");
+  const said: string[] = [];
+  expect(await reset(variant, pin, true, (line) => void said.push(line))).toBe(true);
+  expect(git(variant, "rev-parse", "HEAD")).toBe(pin);
+  expect(existsSync(join(variant, "agent.txt"))).toBe(false);
+  expect(existsSync(join(variant, "sub"))).toBe(false);
+  expect(readFileSync(join(variant, ".agenthub", "keep.txt"), "utf8")).toBe("hub");
+  // A step that fails says why instead of a bare "reset failed".
+  expect(await reset(variant, "0".repeat(40), true, (line) => void said.push(line))).toBe(false);
+  expect(said.join("\n")).toContain("could not check out");
 });
 
 test("a bounded command takes what it started with it, and an interrupt stops it at once", async () => {
@@ -160,6 +176,8 @@ test("a run records pass, fail and timeout with measures, resets the tree betwee
   expect(recorded!.header.fingerprint.peers.map((p) => p.id)).toEqual(expect.arrayContaining(["claude", "worker"]));
   expect(recorded!.attempts.map((a) => [a.task, a.outcome, a.error ?? null])).toEqual([["solve", "pass", null], ["wrong", "fail", null], ["hang", "fail", "verify timeout"], ["stall", "timeout", null]]);
   expect(recorded!.attempts[0]!.metrics).toMatchObject({ firstPass: true });
+  // The wait for the measures (one more poll on the fake clock) comes after the attempt's end, not inside its duration.
+  expect(Date.parse(recorded!.attempts[1]!.startedAt) - Date.parse(recorded!.attempts[0]!.endedAt)).toBeGreaterThanOrEqual(1000);
   expect(recorded!.attempts[1]!.verifyExit).toBe(1);
   expect(recorded!.end).toMatchObject({ stopped: "timeout" });
   expect(recorded!.state).toBe("stopped");

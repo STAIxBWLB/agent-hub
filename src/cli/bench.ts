@@ -53,10 +53,11 @@ export const defaultIo = (stateDir: string, cwd: string): BenchIo => ({
     }
     // The whole group, also what a finished command left behind in it: nothing may run on into the next attempt's tree.
     await stopOwnedProcess(p, { group: true, killMs: 500 }).catch((error: Error) => {
-      // ponytail: only when the stop says the exited leader's group still has members (they hold the group id, so it
-      // is still ours) is the group killed outright; any other refusal (not provably ours, an unreadable process table)
-      // leaves it alone. A leader start-time record at spawn would let stopOwnedProcess sweep it itself.
-      if (/still has members/.test(error.message)) try { process.kill(-p.pid!, "SIGKILL"); } catch { /* gone */ }
+      // ponytail: only when the stop lists the members the exited leader left (they hold the group id, so it is still
+      // ours) is the group killed outright; any other refusal (not provably ours, an unreadable process table) leaves
+      // it alone and says so. A leader start-time record at spawn would let stopOwnedProcess sweep it itself.
+      if (/still has members \(/.test(error.message)) try { process.kill(-p.pid!, "SIGKILL"); } catch { /* gone */ }
+      else console.error(`  bench: a command's process group could not be stopped and may still run in the tree (${error.message})`);
     });
     return { code: timedOut || interrupted ? null : code ?? null, timedOut, interrupted };
   },
@@ -99,12 +100,15 @@ export async function benchPreflight(cwd: string, enabled: boolean, refs: string
 }
 
 /**
- * Reset the tree to `target` (a pinned commit, or the branch to return to) and check that nothing is left. `-ff` also
- * removes a nested repository an agent created; one under an ignored path can still survive the check.
+ * Reset the tree to `target` (a pinned commit, or the branch to return to) and check that nothing is left; each step
+ * that fails says so. A pinned commit is checked out as `<hash>^{commit}` and HEAD is compared with it afterwards, so a
+ * branch someone named like the hash cannot stand in for it. `-ff` also removes a nested repository an agent created,
+ * and only the root `.agenthub` is kept.
  */
-async function reset(cwd: string, target: string, detach: boolean, log: (line: string) => void): Promise<boolean> {
-  if ((await git(cwd, ["checkout", "--quiet", "--force", ...(detach ? ["--detach"] : []), target])).code !== 0) return false;
-  if ((await git(cwd, ["clean", "-ffdxq", "-e", ".agenthub"])).code !== 0) return false;
+export async function reset(cwd: string, target: string, detach: boolean, log: (line: string) => void): Promise<boolean> {
+  if ((await git(cwd, ["checkout", "--quiet", "--force", ...(detach ? ["--detach", `${target}^{commit}`] : [target])])).code !== 0) { log(`  the reset could not check out ${target} (a stale .git/index.lock?)`); return false; }
+  if (detach && (await git(cwd, ["rev-parse", "HEAD"])).out !== target) { log(`  the reset did not land on ${target}: something else in the repository carries that name`); return false; }
+  if ((await git(cwd, ["clean", "-ffdxq", "-e", "/.agenthub"])).code !== 0) { log("  the reset could not clean the tree"); return false; }
   const left = await git(cwd, TREE);
   if (left.code === 0 && !left.out) return true;
   const paths = left.out.split("\n").filter(Boolean);
@@ -131,13 +135,15 @@ export async function metricsOf(opts: Pick<BenchOptions, "stateDir" | "settleMs"
     if (!at || !proposed || opts.stopped?.()) break;
     const ended = new Set(all.flatMap((e) => e.type === "turn_end" ? [`${e.peer}\0${e.turn}`] : []));
     const open = new Set(all.flatMap((e) => e.type === "turn_start" && e.at >= proposed && e.at <= at && !ended.has(`${e.peer}\0${e.turn}`) ? [e.peer] : []));
-    const working = await busy().catch(() => undefined);
+    // No live view means no wait when one was offered: a hub that stopped writes no more events.
+    const working = await busy().catch(() => new Set<string>());
     const waiting = [...open].filter((peer) => !working || working.has(peer));
     if (!waiting.length || io.now() >= until) break;
     if (!said) { said = true; io.log(`  waiting for ${waiting.join(", ")} to end the turn that approved task #${task}, so its cost is counted`); }
     await io.sleep(opts.pollMs ?? 2000);
   }
-  if (!opts.stopped?.()) await io.sleep(opts.pollMs ?? 2000); // the last usage of a turn lands a moment after its end
+  if (opts.stopped?.()) return null; // cut short: partial measures would read as complete
+  await io.sleep(opts.pollMs ?? 2000); // the last usage of a turn lands a moment after its end
   const all = events();
   const proposed = last(all, true, "proposed");
   const r = taskRecords(all, projectId, { version: VERSION, source: "live" }).find((x) => x.task === task && x.createdAt === proposed);
@@ -190,7 +196,12 @@ export async function runBench(opts: BenchOptions, io: BenchIo): Promise<string>
         break outer;
       }
     }
-    if (!stopped) await reset(opts.cwd, original, false, io.log); // back on the branch it started on
+    // Back on the branch it started on. A suite ref that moved during the run names different work next time.
+    if (!stopped && !(await reset(opts.cwd, original, false, io.log))) io.log(`  the tree was not returned to ${original}; check it before the next run`);
+    for (const [ref, commit] of pinned) {
+      const now = (await git(opts.cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`])).out;
+      if (now !== commit) io.log(`  suite ref ${ref} moved during the run (${commit.slice(0, 12)} to ${now.slice(0, 12) || "nothing"}); this run used ${commit.slice(0, 12)}`);
+    }
     appendBench({ schema: BENCH_SCHEMA, kind: "end", run, endedAt: new Date(io.now()).toISOString(), ...(stopped ? { stopped } : {}) }, home);
     return run;
   } finally { hub.close(); }
@@ -216,6 +227,8 @@ async function runAttempt(task: SuiteTask, commit: string, repeat: number, run: 
   let id: number;
   try {
     const reply = await hub.request({ t: "task", op: "hub_task_propose", args: { title: task.title, ...(task.detail ? { detail: task.detail } : {}), class: task.class ?? "implement", ...(task.owner ? { owner: task.owner } : {}) } }, 30_000);
+    // A request never rejects: a hub that is gone, or silent, answers `ok: false` with one of these.
+    if (!reply.ok && /hub connection is not open|no answer from the hub/.test(String(reply.error))) { io.log(`  ${task.id}: ${reply.error}`); return done("error", { error: "hub stopped" }); }
     const match = reply.ok ? /^task #(\d+)/.exec(String(reply.text ?? "")) : null;
     if (!match) { io.log(`  ${task.id}: the hub refused the task: ${reply.error ?? "no task id in its reply"}`); return done("error", { error: "propose refused" }); }
     id = Number(match[1]);
@@ -237,8 +250,10 @@ async function runAttempt(task: SuiteTask, commit: string, repeat: number, run: 
   const ended = io.now();
   if (verify.interrupted) return done("error", { error: "interrupted", hubTask: id, ended });
   const busy = async () => {
-    const peers = ((await hub.request({ t: "status" }, 5000)).status as { peers?: Record<string, { state: string }> }).peers ?? {};
-    return new Set(Object.entries(peers).flatMap(([peer, p]) => p.state === "busy" ? [peer] : []));
+    const reply = await hub.request({ t: "status" }, 5000);
+    if (!reply.status) throw new Error("no status");
+    const peers = (reply.status as { peers?: Record<string, { state: string }> }).peers ?? {};
+    return new Set(Object.entries(peers).flatMap(([peer, p]) => p.state === "busy" || p.state === "paused" ? [peer] : [])); // a paused peer's turn still runs
   };
   const metrics = await metricsOf(opts, io, projectId, id, busy);
   if (verify.timedOut) return done("fail", { error: "verify timeout", hubTask: id, metrics, ended });

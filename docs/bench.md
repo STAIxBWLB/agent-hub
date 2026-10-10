@@ -24,14 +24,17 @@ and that passes these checks before anything changes:
 - the tree is clean (`.agenthub/` aside).
 
 The reset also deletes ignored files (`git clean -x`): keep the suite file, hidden verify scripts and anything else the
-run needs outside the tree, and let `setup` recreate what an attempt needs (dependencies, local settings). Between attempts the runner runs `git checkout --force --detach <ref>`
-and `git clean -fdx -e .agenthub`; a run that finishes returns to the branch it started on, and a run that stops leaves
-the tree as its last attempt left it.
+run needs outside the tree, and let `setup` recreate what an attempt needs (dependencies, local settings).
+
+Between attempts the runner checks out the task's pinned commit (`git checkout --force --detach <commit>`), runs
+`git clean -ffdx -e /.agenthub` and confirms the tree is clean; a step that fails says why. A run that finishes returns
+to the branch it started on, and says so if a suite ref moved meanwhile; a run that stops leaves the tree as its last
+attempt left it.
 
 ## Suite file
 
-JSON, kept outside the bench project's tree (a relative path is read from the directory you run `ahub` in). Unknown fields, a missing `verify` and duplicate ids are refused with the task and
-the field named.
+JSON, kept outside the bench project's tree (a relative path is read from the directory you run `ahub` in). Unknown
+fields, a missing `verify` and duplicate ids are refused with the task and the field named.
 
 ```json
 {
@@ -82,8 +85,10 @@ the task as the console does, waits until it is approved or `timeout_s` passes, 
 - `error`: the reset, `setup` or the proposal failed, the hub stopped, or a person interrupted the run (the reason is
   one of a closed list).
 
-Ctrl-C stops the run at its next check, also inside `setup` or `verify`: the attempt in progress is recorded as `error`
-(`interrupted`), a task still open on the board is named, and the run reads `stopped`. A run whose runner died without its end record reads `interrupted`.
+Ctrl-C stops the run at its next check, also inside `setup` or `verify`: the attempt in progress is recorded as
+`error` (`interrupted`), a task still open on the board is named, and the run reads `stopped`. An interrupt after
+`verify` has finished keeps that attempt's outcome and drops its measures. A run whose runner died without its end
+record reads `interrupted`.
 
 ## Store
 
@@ -96,7 +101,7 @@ machine. Schema `agent-hub.bench/v1`:
 - `attempt`: task id, repeat, outcome, error reason, verify exit code, hub task id, start, end, duration, and, for an
   approved task, its #247 measures (tokens, wall and active time, review rounds, changes requested, failed checks, first
   pass, turns, files changed, models). They are read once the turns started since the task's proposal have ended (the
-  runner waits only while their peers are still busy, at most 10 minutes), so the turn that approved the task is
+  runner waits only while their peers are still busy or paused, at most 10 minutes), so the turn that approved the task is
   counted; that wait is not part of the attempt's duration. A timeout or an error has none.
 - `end`: end time, and `stopped` (`timeout`, `interrupted`, `error`) when the run did not finish.
 

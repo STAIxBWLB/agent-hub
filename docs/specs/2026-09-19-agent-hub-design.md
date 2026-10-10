@@ -1989,7 +1989,8 @@ acts on the stopped state directory.
 
 - `ahub bench` runs a person's suite file (tasks with a starting commit, an optional setup and a verify command)
   against the peers attached to a hub, in a project opted in with `bench.enabled`, because every attempt resets the work
-  tree (`git checkout --force --detach <commit>`, `git clean -ffdx -e .agenthub`, then a clean-tree check). Before
+  tree (`git checkout --force --detach <commit>` with HEAD checked against the pin, `git clean -ffdx -e /.agenthub`, then a
+  clean-tree check). Before
   anything changes the runner requires the project to be the root of its repository, nothing tracked under `.agenthub/`
   (in any letter case) in the tree or in any suite ref, every ref to be a commit, which it pins for the run, and a
   clean tree. The runner is a console client: it proposes each
