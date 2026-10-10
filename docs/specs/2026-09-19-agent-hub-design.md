@@ -783,66 +783,52 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
 
 ## Amendment: operator permission modes (issues #240, #242)
 
-- Common vocabulary: `ask` preserves native defaults; `ask-when-needed` allows
-  routine reads and edits using each adapter's native policy; `never-ask` removes
-  permission prompts. Modes never alter sandbox policy, path guards or denylists.
-- Human surface: `ahub permission [<peer> [ask|ask-when-needed|never-ask]] [--yes]`.
-  No arguments lists attached peers; peer-only reads its mode. The console's
-  Peers panel shows non-`ask` modes, and `m` opens a numbered chooser. CLI
-  `never-ask` needs `--yes`; the console requires a separate `y` even for a typed
-  command carrying `--yes`.
-- Only authenticated console-role control requests change modes. Native agent
-  shells are refused by the CLI identity gate, including with `--as-user` or a
-  conductor role. Hub tools, conductor capabilities and agent messages have no
-  permission-mode mutation path.
-- `.agenthub/config.json` `permission_modes` maps claude, codex, kimi and pi to
-  these modes; absent values mean `ask`, invalid values or unsupported keys fail
-  load. The opt-in block is machine-local, ignored from a tracked config.
-  This generalizes #240's proposed `kimi_mode`. Defaults are applied on
-  peer startup, including recovery. Runtime choices stay in memory until hub
-  shutdown and are not restored as configuration after a hub restart.
-- Kimi: `ask-when-needed` maps to ACP `yolo`, `never-ask` to `auto`, and an
-  explicit return to `ask` sets `default`. A non-default startup awaits
-  `session/set_mode` after `session/new` or resumed `session/load` and before any
-  prompt. Missing advertised ids or rejected changes fail startup, naming the
-  mode. The mapping follows Kimi 2.1.1's UI/CLI labels; contradictory ACP
-  descriptions differ, but the 2026-10-10 benign live check verified both ids
-  accepted, file edits and shell commands completed, and no permission requests
-  reached ACP in either mode. Routine shells may therefore run automatically;
-  risky-action behavior remains unverified. A resumed session reporting a known
-  non-default mode is reset to default when project policy is ask. Non-default
-  startup logs a warning. Exact-name hub-tool approval remains `allow_once`;
-  any remaining requests retain the console path, and PII is never sent to Kimi.
-- Codex: apply `approvalPolicy: "on-request"` or `"never"` to every outgoing
-  `turn/start`, including TUI forwarding, hub deliveries and steers. `on-request`
-  delegates prompt decisions to Codex; the hub does not implement a read/edit
-  allowlist for it. Capture the native policy from thread initialization or TUI
-  input before overriding. Returning to `ask` restores it once on a subsequent
-  turn, then removes the overlay only after a successful reply. If the native
-  policy is unknown, refuse `ask` and require a session restart. Failed
-  restoration remains pending; sandbox settings are never rewritten.
-- Claude: every `ahub claude` launch installs a PreToolUse hook. With a current
-  verified hook identity, `never-ask` returns `permissionDecision: "allow"`;
-  `ask-when-needed` does so for Read, Edit, Write, MultiEdit, NotebookEdit, Glob,
-  Grep and LS only. `ask`, an unavailable hub or a bounded hook timeout returns
-  no decision, leaving Claude's native rules in force. A session without the
-  verified hook is refused with a relaunch/run-tool instruction.
-- Pi: `never-ask` selects `allow_once` for every tool. `ask-when-needed` does so
-  only for read, edit, write, ls, find and grep; other requests use the console.
-  `ask` returns to normal approval handling, retaining any explicit per-tool
-  grant until that Pi start ends. No mode grants `allow_always` automatically.
-- Refuse local (sandbox/denylist, no permission mode), unknown or detached peers,
-  unknown modes, unattended Claude/Codex sessions and a Codex TUI outside the
-  proxy. A runtime switch governs future approval decisions or Codex turns;
-  it does not rewrite an already running native turn.
-- Control adds `{ t: "permission", peer, mode, confirmed }`, console-only;
-  `never-ask` requires `confirmed: true`. Status peers add `permissionMode` and
-  hook replies add `permission`. Protocol stays 16: unknown requests already
-  receive replies, and the CLI advises upgrading an older hub. Each successful
-  change records `permission_mode` (peer, from, to) under events schema 1 and a
-  hub.log line without tool arguments.
-- Per-agent live checks for a file edit and shell command under both non-`ask`
-  modes belong in `docs/smoke.md`; an unrun leg remains explicitly unverified.
+- Modes: ask leaves native decisions unchanged; ask-when-needed uses native
+  Kimi/Codex policies or scoped Claude/Pi/local grants; never-ask suppresses
+  prompts within each peer's existing execution boundaries.
+- Runtime CLI permission changes are refused from ordinary agent shells.
+  Never-ask needs --yes; console mode selection needs a separate y. These
+  policy/role checks do not contain a hostile same-user shell: Kimi can clear
+  markers, use --yes or read the control token and impersonate the console.
+  The security and operations guides name that boundary explicitly.
+- permission_modes defaults merge per peer across config files. Automatic
+  effects stop at ask-when-needed. Never-ask from any file remains ask until
+  a person's source-labelled console y at hub start; no boot --yes applies it.
+  Every non-ask default start logs mode and source file. Runtime changes and
+  confirmations remain daemon-local and expire on stop.
+- Kimi mapping requires the actual Kimi Code CLI identity: yolo for
+  ask-when-needed, auto for never-ask, default for ask. Another ACP agent is
+  refused a mode until its table exists. Set-mode replies precede prompts;
+  missing ids/refused startup changes fail. A timeout is unknown/offline and
+  the owned process group stops, so a late reply cannot restore a live peer.
+  Loaded non-default Kimi modes are reset for project ask.
+- Codex overlays on-request/never on every outgoing turn/start without changing
+  sandbox fields. Ask restores a known native policy once after an accepted
+  turn; rejected restoration remains pending. Unknown native baseline refuses
+  restoration. Actual native unattended flags, not broker-wide flags, govern
+  the refusal to change a bypassed session.
+- Claude ask-when-needed allows only Read/Edit/Write/MultiEdit/NotebookEdit/LS
+  and bounded Glob/Grep targets resolved with realPath beneath project root,
+  outside .agenthub/.git/.claude. Missing/nonresolving or escaping targets,
+  protected case aliases, symlinks and uncertain wildcard/filter targets yield
+  no decision. Never-ask answers allow; ask and transport errors decide nothing.
+  Merged/generated settings are 0600 state files passed by path, never inline
+  in argv. Preview writes no settings file.
+- Permission-only Claude PreToolUse never drives busy state. Only the former
+  observation purposes retain native turn bookkeeping. Hook identity/purpose
+  are launch/session bound; unverified hook status reads unverified.
+- Pi/local read never asks. Ask-when-needed grants write/edit; bash and mutating
+  git retain console approval. Never-ask grants once, retaining sandbox and
+  path guards; no mode gives allow-always. ACP tools have no hub sandbox and
+  the never-ask confirmation names that difference.
+- Console-role permission and permission_default requests are additive;
+  ordinary tools/conductor/messages cannot change or confirm modes. Status
+  includes non-ask/unverified/unknown mode state and pending defaults; facts
+  replies include permission and authenticated projectRoot. Unknown requests
+  are answered, so PROTOCOL remains unchanged. permission_mode events retain
+  schema 1 and include only peer/from/to, never tool arguments.
+- Live benign Kimi/Claude results and unverified Codex/Pi limits are recorded
+  in docs/smoke.md. No extra account prompts accompany these review corrections.
 
 ## Amendment: approval notifications and timeout (issue #5)
 

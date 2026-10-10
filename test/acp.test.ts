@@ -481,3 +481,64 @@ test("ACP resumed ask refuses a retained mode when default cannot be negotiated"
   await expect(peer.start()).rejects.toThrow("permission mode ask unavailable");
   expect(peer.state).toBe("offline");
 });
+
+for (const mode of ["ask", "ask-when-needed", "never-ask"] as const) {
+  test(`Qwen's advertised yolo/auto-edit modes cannot use the Kimi ${mode} mapping even under peer id kimi`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ahub-acp-vendor-"));
+    const record = join(dir, "protocol.jsonl");
+    try {
+      await setup({ cmd: [...FAKE, "--agent-name", "Qwen Code", "--modes", "default,auto-edit,yolo,auto", "--record-protocol", record] });
+      expect(peer!.state).toBe("idle"); // the ordinary vendor-default startup remains compatible
+      await expect(peer!.setPermissionMode(mode)).rejects.toThrow("no verified mode mapping");
+      expect(readFileSync(record, "utf8")).not.toContain("session/set_mode");
+      expect(peer!.getPermissionMode()).toBe("ask");
+    } finally { await peer?.stop(); rmSync(dir, { recursive: true, force: true }); }
+  });
+}
+
+for (const vendorArgs of [["--agent-name", "Qwen Code"], ["--agent-name", "Not Kimi Code CLI"], ["--no-agent-info"]]) {
+  test(`an unverified ACP vendor refuses a non-ask startup: ${vendorArgs.join(" ")}`, async () => {
+    peer = new AcpPeer("kimi", { cmd: [...FAKE, ...vendorArgs], cwd: process.cwd(), permissionMode: "ask-when-needed" });
+    await expect(peer.start()).rejects.toThrow("no verified mode mapping");
+    expect(peer.state).toBe("offline");
+  });
+}
+
+test("resuming a non-Kimi agent never sends a Kimi default reset", async () => {
+  peer = new AcpPeer("kimi", { cmd: [...FAKE, "--agent-name", "Qwen Code", "--loaded-mode", "yolo"], cwd: process.cwd(), resumeSessionId: "s1" });
+  await expect(peer.start()).rejects.toThrow("no verified mode mapping");
+  expect(peer.state).toBe("offline");
+});
+
+for (const startup of [false, true]) {
+  test(`ACP ${startup ? "startup" : "runtime"} mode timeout becomes unknown/offline and a late ack cannot resurrect it`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ahub-acp-mode-timeout-"));
+    const record = join(dir, "protocol.jsonl"), ack = join(dir, "ack.txt"), pidFile = join(dir, "pid.txt");
+    const states: string[] = [];
+    peer = new AcpPeer("kimi", {
+      cmd: [...FAKE, "--record-protocol", record, "--mode-delay-ms", "200", "--mode-ack-record", ack, "--ignore-term", "--record-pid", pidFile],
+      cwd: process.cwd(), permissionModeTimeoutMs: 40, ...(startup ? { permissionMode: "never-ask" as const } : {}),
+    });
+    peer.onState = (state) => states.push(state);
+    try {
+      if (startup) await expect(peer.start()).rejects.toThrow("never-ask unknown");
+      else {
+        await peer.start();
+        await expect(peer.setPermissionMode("never-ask")).rejects.toThrow("never-ask unknown");
+        expect(peer.getPermissionMode()).toBe("ask");
+      }
+      expect(peer.permissionModeState).toBe("unknown");
+      expect(peer.state).toBe("offline");
+      expect(states.slice(states.indexOf("offline"))).not.toContain("idle");
+      // Fake ignores TERM, so the ack actually arrived during the owned-group stop's grace period.
+      expect(readFileSync(ack, "utf8")).toBe("auto\n");
+      const calls = readFileSync(record, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      expect(calls.filter((call) => call.method === "session/set_mode")).toHaveLength(1);
+      expect(calls.some((call) => call.method === "session/prompt")).toBe(false);
+      const pid = Number(readFileSync(pidFile, "utf8"));
+      expect(processTable()!.some((row) => row.pid === pid || row.pgid === pid)).toBe(false);
+      await expect(peer.setPermissionMode("ask")).rejects.toThrow("unknown");
+      await expect(peer.deliver([newEnvelope("user", "must not run")])).rejects.toThrow("offline");
+    } finally { await peer?.stop(); rmSync(dir, { recursive: true, force: true }); }
+  }, 20_000);
+}

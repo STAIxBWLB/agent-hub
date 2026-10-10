@@ -34,9 +34,9 @@ test("managed Claude launcher and genuine command hooks register a non-Orca sess
   const launch = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", dir, "claude"], { cwd: dir, env, stdout: "pipe", stderr: "pipe" });
   const launchError = await new Response(launch.stderr).text(); expect(await launch.exited).toBe(0); expect(launchError).not.toContain("cannot run");
   const registered = JSON.parse(readFileSync(capture, "utf8")); expect(registered.peer).toBe("claude"); expect(registered.instanceId).toBeDefined(); expect(registered.launchId).toBeDefined();
-  expect(JSON.parse(readFileSync(join(stateDir, "claude-launch.json"), "utf8"))).toMatchObject({ launchId: registered.launchId, permissionHook: true, unattended: false });
+  expect(JSON.parse(readFileSync(join(stateDir, "claude-launch.json"), "utf8"))).toMatchObject({ launchId: registered.launchId, permissionHook: true, unattended: false, hookPurpose: "idle" });
   expect(readFileSync(join(stateDir, "terminal-recovery.json"), "utf8")).toBe(oldRecovery); // ordinary replacement preserves unrelated recovery authority
-  const settings = JSON.parse(registered.args[registered.args.indexOf("--settings") + 1]);
+  const settings = JSON.parse(readFileSync(registered.args[registered.args.indexOf("--settings") + 1], "utf8"));
   for (const kind of ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]) expect(settings.hooks[kind]).toBeDefined();
   const sessionId = "native-session", transcript = join(projects, `${sessionId}.jsonl`); writeFileSync(transcript, "");
   const hook = async (kind: string, override: Record<string, string> = {}) => {
@@ -135,11 +135,12 @@ test("managed Claude launcher and genuine command hooks register a non-Orca sess
 }, 20_000);
 
 test("conductor native hooks preserve explicit caller settings and report missing completion as unknown", () => {
-  const paths = { script: "/candidate/facts-hook.ts", stateDir: "/candidate/state" };
+  const state = mkdtempSync(join(tmpdir(), "ahub-settings-test-")); cleanup.push(() => rmSync(state, { recursive: true, force: true }));
+  const paths = { script: "/candidate/facts-hook.ts", stateDir: state };
   const hooks = claudeObservationHooks({ coordination: "advisory", roles: { claude: ["conductor"] }, task_sweep: { enabled: false } }, paths)!;
   expect(hooks.observeNative).toBe(true);
   const own = buildLaunch("claude", ["--settings", "{}"], { unattended: false, statusLine: { script: "/candidate/tee.ts", stateDir: paths.stateDir }, facts: hooks });
-  expect(own.args.filter(arg => arg === "--settings")).toHaveLength(1); expect(JSON.parse(own.args[own.args.indexOf("--settings") + 1]!).hooks.Stop).toBeDefined();
+  expect(own.args.filter(arg => arg === "--settings")).toHaveLength(1); expect(JSON.parse(readFileSync(own.args[own.args.indexOf("--settings") + 1]!, "utf8")).hooks.Stop).toBeDefined();
   const report = summarize([{ v: 1, at: "2026-10-09T00:00:00.000Z", type: "state", peer: "claude", state: "idle" }]);
   expect(report.peers.claude?.turns).toBeNull(); expect(formatReport(report).join("\n")).toContain("turns unknown");
 });
@@ -163,7 +164,7 @@ test("ordinary facts and idle opt-ins observe a managed pure-text turn without a
     const observed = claudeObservationHooks({ coordination, task_sweep: { enabled: idle }, roles: { claude: ["planner", "reviewer"] } }, paths)!;
     expect(observed.observeNative).toBe(true);
     const launch = buildLaunch("claude", [], { unattended: false, statusLine: { script: join(import.meta.dir, "../src/cli/statusline-tee.ts"), stateDir }, facts: observed });
-    const settings = JSON.parse(launch.args[launch.args.indexOf("--settings") + 1]!);
+    const settings = JSON.parse(readFileSync(launch.args[launch.args.indexOf("--settings") + 1]!, "utf8"));
     for (const kind of ["SessionStart", "UserPromptSubmit", "Stop"]) expect(settings.hooks[kind]).toBeDefined();
     const hook = async (kind: string) => {
       const child = Bun.spawn(["/bin/sh", "-c", settings.hooks[kind][0].hooks[0].command], { cwd: dir,

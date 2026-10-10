@@ -53,7 +53,7 @@ test("default previews match native builders with explicit dynamic placeholders"
     const kimi = launcherPreview("kimi", [], dir, state, false);
     expect(kimi.args).toEqual(buildKimiLaunch(["kimi", "acp"]).args);
     const claude = launcherPreview("claude", ["--settings", "{}"], dir, state, false);
-    const nativeClaude = buildLaunch("claude", ["--settings", "{}"], { unattended: false, facts: claudeObservationHooks({}, { script: join(import.meta.dir, "../src/cli/facts-hook.ts"), stateDir: state }) });
+    const nativeClaude = buildLaunch("claude", ["--settings", "{}"], { preview: true, unattended: false, facts: claudeObservationHooks({}, { script: join(import.meta.dir, "../src/cli/facts-hook.ts"), stateDir: state }) });
     expect(claude.args).toEqual(nativeClaude.args);
     const tee = launcherPreview("claude", [], dir, state, false);
     expect(tee.args.slice(0, 3)).toEqual([...nativeClaude.args.slice(0, 2), "--settings"]);
@@ -113,7 +113,7 @@ test("advisory sweep preview shares actual native hook selection and reports con
     const before = tree(dir);
     const preview = launcherPreview("claude", [], dir, stateDir, false);
     const facts = claudeObservationHooks({ coordination: "advisory", task_sweep: { enabled: true } }, { script: join(import.meta.dir, "../src/cli/facts-hook.ts"), stateDir });
-    const actual = buildLaunch("claude", [], { unattended: false, statusLine: { script: join(import.meta.dir, "../src/cli/statusline-tee.ts"), stateDir }, facts });
+    const actual = buildLaunch("claude", [], { unattended: false, statusLine: { script: join(import.meta.dir, "../src/cli/statusline-tee.ts"), stateDir }, facts, preview: true });
     expect(JSON.parse(preview.settings!).hooks).toEqual(JSON.parse(actual.args[actual.args.indexOf("--settings") + 1]!).hooks);
     expect(() => launcherPreview("claude", ["--settings", canary], dir, stateDir, false)).toThrow("permission hook must be installed");
     for (const [tool, args] of [["claude", []], ["codex", []]] as const) {

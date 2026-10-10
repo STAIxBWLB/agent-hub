@@ -1,6 +1,7 @@
 // Launchers inject only the flags the hub owns and refuse user-supplied duplicates.
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, writeFileSync, renameSync, unlinkSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { resolve, join } from "node:path";
 import { peerChildEnv } from "../hub/child-process.ts";
 export const CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub";
 
@@ -41,6 +42,7 @@ export interface Launch {
   args: string[];
   warning?: string;
   permissionHook?: boolean;
+  hookPurpose?: FactsHook["purpose"];
   unattended?: boolean;
 }
 
@@ -89,8 +91,8 @@ export function claudeObservationHooks(config: { coordination?: string; task_swe
 export function sessionSettings(tee?: StatusLineTee, facts?: FactsHook): string {
   const settings = (tee ? JSON.parse(statusLineSettings(tee)) : {}) as Record<string, unknown>;
   if (facts) {
-    const hooks = [{ type: "command", command: `AGENTHUB_STATE_DIR=${sh(facts.stateDir)} bun ${sh(facts.script)}`, timeout: 5 }];
-    settings.hooks = { PreToolUse: [{ matcher: "*", hooks }], Stop: [{ hooks }], ...(facts.purpose !== "permission" ? { PostToolUse: [{ matcher: "*", hooks }] } : {}) };
+    const hooks = [{ type: "command", command: `AGENTHUB_STATE_DIR=${sh(facts.stateDir)} AGENTHUB_HOOK_PURPOSE=${sh(facts.purpose ?? "facts")} bun ${sh(facts.script)}`, timeout: 5 }];
+    settings.hooks = { PreToolUse: [{ matcher: "*", hooks }], ...(facts.purpose !== "permission" ? { PostToolUse: [{ matcher: "*", hooks }], Stop: [{ hooks }] } : {}) };
     if (facts.observeNative) Object.assign(settings.hooks as object, { SessionStart: [{ matcher: "*", hooks }], UserPromptSubmit: [{ hooks }] });
   }
   return JSON.stringify(settings);
@@ -99,7 +101,7 @@ export function sessionSettings(tee?: StatusLineTee, facts?: FactsHook): string 
 export function buildLaunch(
   tool: "claude" | "codex",
   userArgs: string[],
-  ctx: { unattended: boolean; proxyUrl?: string; codexBin?: string; statusLine?: StatusLineTee; facts?: FactsHook },
+  ctx: { unattended: boolean; proxyUrl?: string; codexBin?: string; statusLine?: StatusLineTee; facts?: FactsHook; preview?: boolean },
 ): Launch {
   // Hub-level switches are consumed here; everything else passes through to the tool.
   const passthrough = userArgs.filter((a) => !["--unattended", "--safe", "--new"].includes(a));
@@ -113,7 +115,7 @@ export function buildLaunch(
     const own = passthrough.some((a) => a === "--settings" || a.startsWith("--settings="));
     let settingsArgs = ctx.statusLine && !own ? ["--settings", sessionSettings(ctx.statusLine, ctx.facts)] : [];
     let nativeArgs = passthrough;
-    if (ctx.facts && own) {
+    if (own) {
       if (passthrough.filter(a => a === "--settings" || a.startsWith("--settings=")).length > 1) throw new Error("pass --settings only once so the hub permission hook stays installed");
       const index = passthrough.findIndex(a => a === "--settings" || a.startsWith("--settings="));
       const arg = passthrough[index]!;
@@ -124,21 +126,35 @@ export function buildLaunch(
         caller = JSON.parse(value.trim().startsWith("{") ? value : readFileSync(resolve(value), "utf8"));
         if (!caller || typeof caller !== "object" || Array.isArray(caller)) throw new Error("not an object");
       } catch { throw new Error("cannot read --settings as a JSON object; the hub permission hook must be installed"); }
-      if (caller.disableAllHooks === true) throw new Error("--settings disableAllHooks prevents the required hub permission hook; enable hooks to launch");
+      if (ctx.facts && caller.disableAllHooks === true) throw new Error("--settings disableAllHooks prevents the required hub permission hook; enable hooks to launch");
       const injected = JSON.parse(sessionSettings(undefined, ctx.facts));
       const callerHooks = caller.hooks;
       if (callerHooks !== undefined && (!callerHooks || typeof callerHooks !== "object" || Array.isArray(callerHooks))) throw new Error("--settings hooks must be an object");
       const hooks = { ...(callerHooks as Record<string, unknown> | undefined) };
-      for (const [event, entries] of Object.entries(injected.hooks)) {
+      for (const [event, entries] of Object.entries(injected.hooks ?? {})) {
         const existing = hooks[event];
         if (existing !== undefined && !Array.isArray(existing)) throw new Error(`--settings ${event} hooks must be an array`);
         hooks[event] = [...(existing as unknown[] | undefined ?? []), ...(entries as unknown[])];
       }
-      settingsArgs = ["--settings", JSON.stringify({ ...caller, hooks })];
+      settingsArgs = ["--settings", JSON.stringify({ ...caller, ...(ctx.facts ? { hooks } : {}) })];
       nativeArgs = passthrough.filter((_, i) => i !== index && (arg !== "--settings" || i !== index + 1));
     } else if (ctx.facts && !ctx.statusLine) {
       const injected = JSON.parse(sessionSettings(undefined, ctx.facts));
       settingsArgs = ["--settings", JSON.stringify({ hooks: injected.hooks })];
+    }
+    if (settingsArgs.length && !ctx.preview) {
+      const stateDir = ctx.facts?.stateDir ?? ctx.statusLine?.stateDir;
+      if (!stateDir) throw new Error("Claude session settings require the hub state directory");
+      const file = join(stateDir, `claude-settings-${randomUUID()}.json`);
+      try {
+        mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+        writeFileSync(`${file}.tmp`, settingsArgs[1]!, { mode: 0o600, flag: "wx" });
+        renameSync(`${file}.tmp`, file);
+      } catch {
+        try { unlinkSync(`${file}.tmp`); } catch { /* no temp file was written */ }
+        throw new Error("cannot write private Claude session settings in the hub state directory");
+      }
+      settingsArgs[1] = file;
     }
     const notes = [
       unattended ? UNATTENDED_WARNING : "",
@@ -148,6 +164,7 @@ export function buildLaunch(
       cmd: "claude",
       args: ["--dangerously-load-development-channels", claudeChannel(passthrough), ...(unattended ? ["--dangerously-skip-permissions"] : []), ...settingsArgs, ...nativeArgs],
       permissionHook: !!ctx.facts,
+      ...(ctx.facts ? { hookPurpose: ctx.facts.purpose ?? "facts" } : {}),
       unattended,
       ...(notes.length ? { warning: notes.join("\n") } : {}),
     };

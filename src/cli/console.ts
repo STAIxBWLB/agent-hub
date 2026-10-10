@@ -4,7 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { ControlClient } from "../hub/control-client.ts";
 import { contextLine } from "./status-lines.ts";
 import { renderTailEvent } from "./tail-render.ts";
-import { approvalFrom, initialConsoleState, keyTable, notify, paint, panelRows, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap } from "./console-state.ts";
+import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, panelRows, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap } from "./console-state.ts";
 import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
 
@@ -131,6 +131,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (!active) return;
       const [status, budget, tasks, queue, ready] = replies;
       if (status.status?.peers) state.peers = status.status.peers;
+      if (syncPermissionDefaults(state, status.status?.permissionDefaults) && state.confirm?.type === "permission_default") stream({ text: permissionDefaultText(state.confirm), kind: "permission_default", peer: state.confirm.peer, tone: "attention" });
       if (budget.budget) state.budget = budget.budget;
       if (tasks?.ok && state.mode === "panels") { const parsed = JSON.parse(tasks.text); if (Array.isArray(parsed)) {
           const readyIds = new Set(ready?.ok ? JSON.parse(ready.text).map((task: any) => task.id) : []);
@@ -156,6 +157,15 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   });
   const effect = async (action: ConsoleEffect) => {
     if (action.type === "exit") return stop();
+    if (action.type === "permission_default") {
+      const result = await client.request({ t: "permission_default", peer: action.peer, confirmed: action.confirmed }, 3000);
+      if (!active) return;
+      if (result.ok === false) {
+        state.permissionDefaultsHandled = state.permissionDefaultsHandled.filter(peer => peer !== action.peer);
+        notice(String(result.error ?? "permission default refused"));
+      } else stream({ text: `  ${action.peer} never-ask default ${action.confirmed ? "enabled" : "cancelled for this hub"}`, kind: "permission_default", peer: action.peer, tone: "attention" });
+      await refresh(); draw(); return;
+    }
     if (action.type === "permit") {
       client.send({ t: "permit", surface: "console", id: action.id, ...(action.option ? { option: action.option } : {}) });
       if (!action.option) stream({ text: `  ! denial requested for permission ${action.id}`, kind: "permission", tone: "failure" });

@@ -44,7 +44,7 @@ import { pathWarnings } from "../hub/conflicts.ts";
 import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, peerCommandRefusal } from "./identity.ts";
 import { recordCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
-import { resolveColor } from "./console-state.ts";
+import { permissionBoundary, resolveColor } from "./console-state.ts";
 import { renderHelp } from "./help.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
@@ -557,7 +557,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (control?.instanceId) {
       // Publish only the final launch's installed hook and effective permission flags.
       const file = join(stateDir, "claude-launch.json");
-      writeFileSync(`${file}.tmp`, JSON.stringify({ instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID, permissionHook: launch.permissionHook === true, unattended: launch.unattended === true }), { mode: 0o600 });
+      writeFileSync(`${file}.tmp`, JSON.stringify({ instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, unattended: launch.unattended === true }), { mode: 0o600 });
       chmodSync(`${file}.tmp`, 0o600); renameSync(`${file}.tmp`, file);
     }
     if (launch.warning) console.error(launch.warning);
@@ -847,6 +847,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const [peer, mode] = positional;
     if (positional.length > 2 || positional.some(arg => arg.startsWith("--")) || (mode !== undefined && !isPermissionMode(mode))) fail("usage: ahub permission [<peer> [ask|ask-when-needed|never-ask]] [--yes]");
     if (mode === "never-ask" && !args.includes("--yes")) fail("never-ask requires --yes; nothing was changed");
+    if (mode === "never-ask" && peer) console.error(`never-ask: ${permissionBoundary(peer)}; approval prompts are disabled`);
     const hub = await connect();
     try {
       const reply = await hub.request({ t: "permission", ...(peer ? { peer } : {}), ...(mode ? { mode, confirmed: args.includes("--yes") } : {}) });
@@ -876,6 +877,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (args.includes("--json")) return console.log(JSON.stringify(status, null, 2));
     console.log(`hub pid ${status.pid}, control 127.0.0.1:${status.controlPort}, ${status.cwd}`);
     if (status.deliveryError) console.log(`  delivery storage: ${status.deliveryError}; dispatch is stopped`);
+    for (const pending of status.permissionDefaults ?? []) console.log(`  permission default ${pending.peer}: never-ask from ${pending.source}, stays ask until a person confirms in ahub console`);
     for (const line of (status as { crash?: string[] }).crash ?? []) console.log(`  crash recovery: ${line}`);
     const peers = Object.entries(status.peers as Record<string, PeerRow>);
     for (const [id, p] of peers) console.log(peerLine(id, { ...p, context: p.context ?? unknownContext() }));

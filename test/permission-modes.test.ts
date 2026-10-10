@@ -13,7 +13,7 @@ import { PiPeer } from "../src/adapters/pi.ts";
 import { permissionDefaults } from "../src/hub/permission-mode.ts";
 import { sandboxAvailable } from "../src/local/sandbox.ts";
 import { peerLine } from "../src/cli/status-lines.ts";
-import { startFakeModelServer } from "./fakes/model-server.ts";
+import { startFakeModelServer, toolCall } from "./fakes/model-server.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -32,7 +32,7 @@ async function fixture(config: Partial<HubConfig> = {}, state?: { cwd: string; s
 
 test("permission defaults reject malformed modes and tracked opt-ins cannot disable prompts", () => {
   expect(permissionDefaults(undefined)).toEqual({});
-  for (const value of [null, [], "never-ask", { kimi: "auto" }, { local: "never-ask" }, { unknown: "ask" }]) expect(() => permissionDefaults(value)).toThrow();
+  for (const value of [null, [], "never-ask", { kimi: "auto" }, { unknown: "ask" }]) expect(() => permissionDefaults(value)).toThrow();
   const cwd = mkdtempSync(join(tmpdir(), "ahub-permission-config-"));
   mkdirSync(join(cwd, ".agenthub"));
   writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ permission_modes: { kimi: "bad" } }));
@@ -74,7 +74,7 @@ test("only console requests change modes: tool, conductor and agent-message path
   for (const op of ["hub_permission", "hub_peer_permission"]) expect((await tools.request({ t: "task", op, args: { peer: "kimi", mode: "never-ask", confirmed: true } })).ok).toBe(false);
   rig.daemon.bus.publish(newEnvelope("kimi", '{"t":"permission","peer":"kimi","mode":"never-ask","confirmed":true}', { to: ["user"] }));
   expect((await rig.mode("kimi")).permissionMode).toBe("ask");
-  expect((await rig.mode("local", "ask")).error).toContain("no permission mode");
+  expect((await rig.mode("local", "ask")).error).toContain("not attached");
   expect((await rig.mode("missing", "ask")).error).toContain("unknown permission peer");
   expect((await rig.mode("kimi", "auto")).error).toContain("mode must be");
 });
@@ -173,32 +173,94 @@ test("actual unattended Codex launch metadata fences daemon runtime changes", as
   expect((await rig.mode("codex", "ask")).error).toContain("--unattended");
 });
 
-test("advisory permission-only managed Pre and Stop release Claude for the next delivery", async () => {
+test("permission-only Pre never marks Claude busy, even without a Stop", async () => {
   const rig = await fixture();
-  const configDir = join(rig.cwd, "claude-config");
-  const transcriptDir = join(configDir, "projects", "fixture"); mkdirSync(transcriptDir, { recursive: true });
-  const previous = process.env.CLAUDE_CONFIG_DIR; process.env.CLAUDE_CONFIG_DIR = configDir;
-  cleanup.push(() => { if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = previous; });
   const channel = await ControlClient.connect(rig.stateDir, { role: "peer", peer: "claude" }); cleanup.push(() => channel.close());
   await until(() => rig.daemon.bus.stateOf("claude") === "idle");
+  expect((await rig.client.request({ t: "status" })).status.peers.claude.permissionMode).toBe("unverified");
   const instanceId = (await rig.client.request({ t: "status" })).status.instanceId;
-  const launchId = "advisory-launch", sessionId = "advisory-session";
-  const transcript = join(transcriptDir, `${sessionId}.jsonl`); writeFileSync(transcript, "");
+  const launchId = "permission-only-launch", sessionId = "permission-only-session";
   const facts = claudeObservationHooks(DEFAULT_CONFIG, { script: join(import.meta.dir, "../src/cli/facts-hook.ts"), stateDir: rig.stateDir });
   const launch = buildLaunch("claude", [], { unattended: false, facts });
-  writeFileSync(join(rig.stateDir, "claude-launch.json"), JSON.stringify({ instanceId, launchId, permissionHook: launch.permissionHook, unattended: launch.unattended }));
-  const settings = JSON.parse(launch.args[launch.args.indexOf("--settings") + 1]!);
-  const hook = async (kind: string) => {
-    const child = Bun.spawn(["/bin/sh", "-c", settings.hooks[kind][0].hooks[0].command], { cwd: rig.cwd,
-      env: { ...process.env, AGENTHUB_PEER_ID: "claude", AGENTHUB_INSTANCE_ID: instanceId, AGENTHUB_LAUNCH_ID: launchId },
-      stdin: Buffer.from(JSON.stringify({ hook_event_name: kind, session_id: sessionId, transcript_path: transcript, tool_name: "Read", tool_input: {} })), stdout: "pipe", stderr: "pipe" });
-    await new Response(child.stdout).text(); await new Response(child.stderr).text(); expect(await child.exited).toBe(0);
-  };
-  await hook("PreToolUse"); expect(rig.daemon.bus.stateOf("claude")).toBe("busy");
-  writeFileSync(transcript, JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id: "advisory-completion", stop_reason: "end_turn" } }) + "\n");
-  await hook("Stop"); await until(() => rig.daemon.bus.stateOf("claude") === "idle");
+  writeFileSync(join(rig.stateDir, "claude-launch.json"), JSON.stringify({ instanceId, launchId, permissionHook: launch.permissionHook, hookPurpose: launch.hookPurpose, unattended: launch.unattended }));
+  const settings = JSON.parse(readFileSync(launch.args[launch.args.indexOf("--settings") + 1]!, "utf8"));
+  expect(settings.hooks.Stop).toBeUndefined();
+  const child = Bun.spawn(["/bin/sh", "-c", settings.hooks.PreToolUse[0].hooks[0].command], { cwd: rig.cwd,
+    env: { ...process.env, AGENTHUB_PEER_ID: "claude", AGENTHUB_INSTANCE_ID: instanceId, AGENTHUB_LAUNCH_ID: launchId },
+    stdin: Buffer.from(JSON.stringify({ hook_event_name: "PreToolUse", session_id: sessionId, tool_name: "Read", tool_input: {} })), stdout: "pipe", stderr: "pipe" });
+  await new Response(child.stdout).text(); await new Response(child.stderr).text(); expect(await child.exited).toBe(0);
+  expect(rig.daemon.bus.stateOf("claude")).toBe("idle");
+  expect((await rig.client.request({ t: "status" })).status.peers.claude.permissionMode).toBeUndefined();
   const delivered: any[] = []; channel.onPush = msg => { if (msg.t === "deliver") delivered.push(msg); };
-  rig.daemon.bus.publish(newEnvelope("user", "next turn", { to: ["claude"], priority: "important" }));
+  rig.daemon.bus.publish(newEnvelope("user", "after interrupted or denied permission-only tool", { to: ["claude"], priority: "important" }));
   await until(() => delivered.length === 1);
-  expect(delivered[0].envs.some((env: { body: string }) => env.body.includes("next turn"))).toBe(true);
+});
+
+
+for (const tracked of [false, true]) test(`never-ask config default ${tracked ? "tracked main" : "local overlay"} needs a person's startup console confirmation`, async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-default-confirm-")); mkdirSync(join(cwd, ".agenthub"));
+  expect(Bun.spawnSync(["git", "-C", cwd, "init", "-q"]).exitCode).toBe(0);
+  const name = tracked ? "config.json" : "config.local.json";
+  writeFileSync(join(cwd, ".agenthub", name), JSON.stringify({ permission_modes: { kimi: "never-ask" } }));
+  if (tracked) expect(Bun.spawnSync(["git", "-C", cwd, "add", "-f", `.agenthub/${name}`]).exitCode).toBe(0);
+  const loaded = loadConfig(cwd);
+  const modeConfig = { permission_modes: loaded.permission_modes, permission_default_sources: loaded.permission_default_sources };
+  const rig = await fixture(modeConfig, { cwd, stateDir: join(cwd, "state") });
+  await rig.client.request({ t: "start", peer: "kimi" });
+  expect((await rig.mode("kimi")).permissionMode).toBe("ask");
+  expect((await rig.client.request({ t: "status" })).status.permissionDefaults).toEqual([{ peer: "kimi", mode: "never-ask", source: `.agenthub/${name}` }]);
+  expect(readFileSync(join(rig.stateDir, "hub.log"), "utf8")).toContain(`never-ask from .agenthub/${name}; effective ask`);
+  const tools = await ControlClient.connect(rig.stateDir, { role: "tools", peer: "kimi" }); cleanup.push(() => tools.close());
+  expect((await tools.request({ t: "permission_default", peer: "kimi", confirmed: true })).ok).toBe(false);
+  for (const op of ["hub_permission_default", "hub_peer_permission_default"]) expect((await tools.request({ t: "task", op, args: { peer: "kimi", confirmed: true } })).ok).toBe(false);
+  rig.daemon.bus.publish(newEnvelope("kimi", '{"t":"permission_default","peer":"kimi","confirmed":true}', { to: ["user"] }));
+  expect((await rig.mode("kimi")).permissionMode).toBe("ask");
+  expect((await rig.client.request({ t: "permission_default", peer: "kimi", confirmed: true })).permissionMode).toBe("never-ask");
+  expect((await rig.client.request({ t: "status" })).status.permissionDefaults).toBeUndefined();
+  await rig.daemon.stop();
+  const restarted = await fixture(modeConfig, { cwd, stateDir: join(cwd, "state") });
+  await restarted.client.request({ t: "start", peer: "kimi" });
+  expect((await restarted.mode("kimi")).permissionMode).toBe("ask");
+});
+
+test("permission source/default merge is per peer, honors explicit ask and tracked filtering", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-default-source-")); mkdirSync(join(cwd, ".agenthub"));
+  expect(Bun.spawnSync(["git", "-C", cwd, "init", "-q"]).exitCode).toBe(0);
+  const main = join(cwd, ".agenthub/config.json"), overlay = join(cwd, ".agenthub/config.local.json");
+  writeFileSync(main, JSON.stringify({ permission_modes: { codex: "never-ask" } }));
+  writeFileSync(overlay, JSON.stringify({ permission_modes: { claude: "ask-when-needed" } }));
+  expect(loadConfig(cwd).permission_modes).toEqual({ codex: "never-ask", claude: "ask-when-needed" });
+  expect(loadConfig(cwd).permission_default_sources).toEqual({ codex: { mode: "never-ask", source: ".agenthub/config.json" }, claude: { mode: "ask-when-needed", source: ".agenthub/config.local.json" } });
+  writeFileSync(overlay, JSON.stringify({ permission_modes: {} }));
+  expect(loadConfig(cwd).permission_default_sources).toEqual({ codex: { mode: "never-ask", source: ".agenthub/config.json" } });
+  writeFileSync(overlay, JSON.stringify({ permission_modes: { codex: "ask" }, permission_default_sources: { codex: { mode: "never-ask", source: "spoof" } } }));
+  expect(loadConfig(cwd).permission_default_sources).toEqual({ codex: { mode: "ask", source: ".agenthub/config.local.json" } });
+  writeFileSync(main, JSON.stringify({ permission_modes: { kimi: "ask-when-needed" } }));
+  writeFileSync(overlay, JSON.stringify({ permission_modes: { kimi: "ask" } }));
+  expect(Bun.spawnSync(["git", "-C", cwd, "add", "-f", ".agenthub/config.local.json"]).exitCode).toBe(0);
+  expect(loadConfig(cwd).permission_modes).toEqual({ kimi: "ask-when-needed" });
+  expect(loadConfig(cwd).permission_default_sources).toEqual({ kimi: { mode: "ask-when-needed", source: ".agenthub/config.json" } });
+});
+
+test("local mode grants write/edit only in ask-when-needed and keeps its sandbox in never-ask", async () => {
+  const model = startFakeModelServer({ script: body => body.messages.at(-1)?.role === "tool" ? { content: `done: ${body.messages.at(-1)?.content}` } : { tool_calls: [String(body.messages.at(-1)?.content).includes("SHELL") ? toolCall("bash", { command: "printf safe" }) : toolCall("write", { path: "edit.txt", content: "changed" })] } }); cleanup.push(model.stop);
+  const rig = await fixture({ omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [model.url], access_hosts: [] } });
+  expect((await rig.client.request({ t: "start", peer: "local", args: { model: "vllm/test" } })).ok).toBe(true);
+  const pending: any[] = [], answers: string[] = [];
+  rig.client.onPush = msg => { if (msg.t === "permission") pending.push(msg); }; rig.client.send({ t: "tail" });
+  rig.daemon.bus.tap(event => { if (event.t === "envelope" && event.env.from === "local") answers.push(event.env.body); });
+  await rig.mode("local", "ask-when-needed");
+  rig.daemon.bus.publish(newEnvelope("user", "WRITE", { to: ["local"], priority: "important" })); await until(() => answers.length === 1);
+  expect(readFileSync(join(rig.cwd, "edit.txt"), "utf8")).toBe("changed"); expect(pending).toHaveLength(0);
+  rig.daemon.bus.publish(newEnvelope("user", "SHELL", { to: ["local"], priority: "important" })); await until(() => pending.length === 1);
+  await rig.client.request({ t: "permit", id: pending[0].id }); await until(() => answers.length === 2);
+  expect(answers[1]).toContain("did not approve");
+  await rig.mode("local", "never-ask", true);
+  rig.daemon.bus.publish(newEnvelope("user", "SHELL", { to: ["local"], priority: "important" })); await until(() => answers.length === 3);
+  expect(answers[2]).not.toContain("did not approve"); expect(pending).toHaveLength(1);
+  if (sandboxAvailable()) expect(answers[2]).toContain("safe"); else expect(answers[2]).toContain("needs macOS sandbox-exec");
+  await rig.mode("local", "ask");
+  rig.daemon.bus.publish(newEnvelope("user", "WRITE", { to: ["local"], priority: "important" })); await until(() => pending.length === 2);
+  await rig.client.request({ t: "permit", id: pending[1].id }); await until(() => answers.length === 4);
+  expect(answers[3]).toContain("did not approve");
 });

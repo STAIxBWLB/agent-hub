@@ -5,6 +5,7 @@ export interface Approval {
   id: string; peer: string; title: string; expiresAt: number;
   options: { optionId: string; name: string; kind: string }[];
 }
+export interface PermissionDefault { peer: string; mode: "never-ask"; source: string }
 export interface ConsoleEvent { text: string; peer?: string; kind?: string; tone?: Tone }
 export interface ConsoleState {
   mode: "stream" | "panels"; panel: number; selection: number;
@@ -18,17 +19,41 @@ export interface ConsoleState {
   approvals: Approval[]; events: ConsoleEvent[]; peers: Record<string, any>; budget: Record<string, any>;
   tasks: any[]; queue: any[]; detail?: Detail; detailOffset: number; help: boolean; notice: string; noticeAt?: number; noticeTone?: Tone;
   peerFilter?: string; kindFilter?: string; project?: string;
-  confirm?: { type: "permission"; id: string; option: string; peer: string } | { type: "command"; args: string[] };
+  confirm?: { type: "permission"; id: string; option: string; peer: string } | { type: "command"; args: string[] } | { type: "permission_default"; peer: string; source: string };
   optionChoice?: string;
   modeChoice?: string;
+  permissionDefaults: PermissionDefault[];
+  permissionDefaultsHandled: string[];
 }
 /** A detail view: text as the stream shows it, or labeled fields. */
 export type Detail = string | Record<string, unknown>;
 export type ConsoleEffect = { type: "exit" } | { type: "permit"; id: string; option?: string } |
-  { type: "command"; args: string[] } | { type: "show"; panel: number; id: string } | { type: "print"; text: string; kind: string; tone?: Tone } | { type: "keys" };
+  { type: "permission_default"; peer: string; confirmed: boolean } | { type: "command"; args: string[] } | { type: "show"; panel: number; id: string } | { type: "print"; text: string; kind: string; tone?: Tone } | { type: "keys" };
 export function initialConsoleState(panels = false): ConsoleState {
   return { mode: panels ? "panels" : "stream", panel: 1, selection: 0,
-    input: "", editing: false, history: [], historyIndex: 0, approvals: [], events: [], peers: {}, budget: {}, tasks: [], queue: [], detailOffset: 0, help: false, notice: "" };
+    input: "", editing: false, history: [], historyIndex: 0, approvals: [], events: [], peers: {}, budget: {}, tasks: [], queue: [], permissionDefaults: [], permissionDefaultsHandled: [], detailOffset: 0, help: false, notice: "" };
+}
+/** Approval frequency does not create a common sandbox across native peers. */
+export function permissionBoundary(peer: string): string {
+  if (peer === "pi" || peer === "local") return `${peer}: inside hub sandbox, path guard and denylist`;
+  if (peer === "claude" || peer === "codex") return `${peer}: native vendor bounds; no hub sandbox`;
+  return `${peer}: runs its own tools; NO hub sandbox`;
+}
+/** Offer one file default only when no other keyboard decision or edit is active. */
+export function syncPermissionDefaults(s: ConsoleState, rows: unknown): boolean {
+  if (!Array.isArray(rows)) rows = [];
+  s.permissionDefaults = (rows as unknown[]).filter((row): row is PermissionDefault => !!row && typeof row === "object" &&
+    typeof (row as PermissionDefault).peer === "string" && (row as PermissionDefault).mode === "never-ask" && typeof (row as PermissionDefault).source === "string");
+  const pending = s.confirm;
+  if (pending?.type === "permission_default" && !s.permissionDefaults.some(row => row.peer === pending.peer && row.source === pending.source)) s.confirm = undefined;
+  if (s.confirm || s.editing || s.input || s.modeChoice || s.optionChoice || s.help) return false;
+  const next = s.permissionDefaults.find(row => !s.permissionDefaultsHandled.includes(row.peer));
+  if (!next) return false;
+  s.confirm = { type: "permission_default", peer: next.peer, source: next.source };
+  return true;
+}
+export function permissionDefaultText(row: Pick<PermissionDefault, "peer" | "source">): string {
+  return `never-ask default for ${row.peer} from ${quoted(row.source)}\n${permissionBoundary(row.peer)}\nUntil you answer y, this default stays ask. y enables; n cancels for this hub.`;
 }
 /** Strip terminal controls before any daemon or child output reaches a terminal. Preserve printable Unicode. */
 export function terminalText(value: unknown): string {
@@ -346,6 +371,11 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   if (key === "\x03") { effects.push({ type: "exit" }); return done(); }
   if (s.confirm) {
     const confirm = s.confirm; s.confirm = undefined;
+    if (confirm.type === "permission_default") {
+      s.permissionDefaultsHandled = [...s.permissionDefaultsHandled, confirm.peer];
+      effects.push({ type: "permission_default", peer: confirm.peer, confirmed: key === "y" });
+      return done();
+    }
     if (key === "y") {
       if (confirm.type === "command") effects.push({ type: "command", args: confirm.args[0] === "permission" && confirm.args[2] === "never-ask" ? [...confirm.args.filter(arg => arg !== "--yes"), "--yes"] : confirm.args });
       else if (s.approvals.some(a => a.id === confirm.id && allowOptions(a).some(o => o.optionId === confirm.option))) {
@@ -449,8 +479,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     if (s.panel === 1 && key === "m") {
       const peer = String(item);
       const info = s.peers[peer];
-      if (peer === "local") notify(s, "local permission mode is not applicable: its sandbox bounds it", now);
-      else if (!info || info.state === "offline") notify(s, `${peer} is not attached`, now);
+      if (!info || info.state === "offline") notify(s, `${peer} is not attached`, now);
       else s.modeChoice = peer;
       return done();
     }
@@ -573,12 +602,18 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   if (permission) approvals.push(span(` | ${permission.peer} ${permission.id}`, "attention"), span(` ${duration(permission.expiresAt - now)} left`, "muted"));
   else if (s.approvals.length) approvals.push(span(" | none selected", "muted"));
   if (s.notice && now - (s.noticeAt ?? now) < NOTICE_MS) approvals.push(span(" | "), span(s.notice, s.noticeTone ?? "failure"));
-  const footer = [fitLine(summary, columns), fitLine(approvals, columns), fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
+  const neverPeer = s.confirm?.type === "permission_default" ? s.confirm.peer : s.confirm?.type === "command" && s.confirm.args[0] === "permission" && s.confirm.args[2] === "never-ask" ? s.confirm.args[1] : undefined;
+  const defaultSource = s.confirm?.type === "permission_default" ? s.confirm.source : undefined;
+  if (s.confirm?.type === "permission_default") prompt = `enable never-ask default for ${s.confirm.peer}? y/N`;
+  const footer = [fitLine(neverPeer ? [span(permissionBoundary(neverPeer), "attention")] : summary, columns),
+    fitLine(defaultSource !== undefined ? [span(`source ${quoted(defaultSource.split(/[\\/]/).at(-1))}; stays ask until y`, "attention")] : approvals, columns),
+    fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
   const rule = [span("-".repeat(Math.max(0, columns)), "muted")];
   if (s.mode === "stream") return [rule, ...footer];
   const height = rows - 6; // header, rule, body, rule, three footer lines
   const lines: Span[][] = [];
-  if (s.help) lines.push(...keyTable(columns));
+  if (s.confirm?.type === "permission_default") lines.push(...fieldLines([["default", `${s.confirm.peer} never-ask`], ["source", s.confirm.source], ["bounds", permissionBoundary(s.confirm.peer)], ["decision", "y enables; n cancels for this hub; until then ask"]], columns, now).flat());
+  else if (s.help) lines.push(...keyTable(columns));
   else if (s.detail !== undefined || (s.requestDetail && permission)) {
     const detail = s.detail !== undefined ? detailLines(s.detail, columns, now) : fieldLines(approvalFields(permission!), columns, now).flat();
     lines.push(...detail.slice(Math.min(s.detailOffset, Math.max(0, detail.length - height))));

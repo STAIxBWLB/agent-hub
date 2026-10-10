@@ -38,7 +38,7 @@ export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi", raw: s
     }
     // Build with original inputs so channel selection and owned-flag validation match normal launch.
     const facts = claudeObservationHooks(config, { script: join(import.meta.dir, "facts-hook.ts"), stateDir });
-    launch = buildLaunch(tool, args, { unattended, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir, ...(original ? { original: { command: original.command ? REDACTED : "", ...(typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}), ...(typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {}) } } : {}) }, ...(facts ? { facts } : {}) });
+    launch = buildLaunch(tool, args, { preview: true, unattended, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir, ...(original ? { original: { command: original.command ? REDACTED : "", ...(typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}), ...(typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {}) } } : {}) }, ...(facts ? { facts } : {}) });
     // Merged caller settings change the native argument count. Rebuild a redacted preview,
     // retaining the managed hooks but never serializing caller settings or their file path.
     const safeArgs = args.map((arg, i) => {
@@ -47,7 +47,7 @@ export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi", raw: s
       if (["--unattended", "--safe", "--new"].includes(arg)) return arg;
       return publicArg(arg);
     });
-    const publicLaunch = buildLaunch(tool, safeArgs, { unattended, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir,
+    const publicLaunch = buildLaunch(tool, safeArgs, { preview: true, unattended, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir,
       ...(original ? { original: { command: original.command ? REDACTED : "", ...(typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}), ...(typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {}) } } : {}) }, facts });
     publicLaunch.args.splice(0, 2, ...launch.args.slice(0, 2)); // channel selection was verified against the original MCP config
     launch = publicLaunch;

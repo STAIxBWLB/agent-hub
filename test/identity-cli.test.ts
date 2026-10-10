@@ -130,6 +130,12 @@ test("permission CLI validates confirmation, lists and shows modes, and guides a
       expect(result.code, result.stderr).toBe(0); expect(result.stdout).toContain(`pi: ${mode}`);
       expect(requests.at(-1)).toMatchObject({ t: "permission", peer: "pi", mode, confirmed: mode === "never-ask" });
     }
+    for (const [peer, boundary] of [["local", "inside hub sandbox, path guard and denylist"], ["kimi", "NO hub sandbox"], ["codex", "native vendor bounds"]]) {
+      const runtime = await cli(root, ["permission", peer!, "never-ask", "--yes"]);
+      expect(runtime.code, runtime.stderr).toBe(0); expect(runtime.stderr).toContain(boundary!);
+      expect(requests.at(-1)).toMatchObject({ t: "permission", peer, mode: "never-ask", confirmed: true });
+      expect(requests.some(row => row.t === "permission_default")).toBe(false);
+    }
     const refused = await cli(root, ["permission", "unsupported", "ask"]);
     expect(refused.code).toBe(1); expect(refused.stderr).toContain("relaunch behind the proxy");
     const missing = await cli(root, ["permission", "missing"]);

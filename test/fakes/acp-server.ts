@@ -114,13 +114,16 @@ let usageTotal = 0;
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i < 0 ? undefined : process.argv[i + 1]; };
 const modes = { currentModeId: "default", availableModes: (arg("--modes") ?? "default,yolo,auto").split(",").map((id) => ({ id, name: id })) };
 let modePending = false;
+if (process.argv.includes("--ignore-term")) process.on("SIGTERM", () => {});
+const pidRecord = arg("--record-pid");
+if (pidRecord) await Bun.write(pidRecord, String(process.pid));
 
 
 createInterface({ input: process.stdin }).on("line", (line) => {
   const msg = JSON.parse(line);
   const record = arg("--record-protocol");
   if (record) appendFileSync(record, `${JSON.stringify(msg)}\n`);
-  if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } });
+  if (msg.method === "initialize") send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true }, ...(process.argv.includes("--no-agent-info") ? {} : { agentInfo: { name: arg("--agent-name") ?? "Kimi Code CLI", version: "2.1.1" } }) } });
   else if (msg.method === "session/load") {
     modes.currentModeId = arg("--loaded-mode") ?? "default";
     const record = process.argv.indexOf("--record-load");
@@ -138,9 +141,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     modePending = true;
     setTimeout(() => {
       modePending = false;
+      const ackRecord = arg("--mode-ack-record");
+      if (ackRecord) appendFileSync(ackRecord, `${msg.params.modeId}\n`);
       if (process.argv.includes("--refuse-mode")) send({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "mode disabled" } });
       else { modes.currentModeId = msg.params.modeId; send({ jsonrpc: "2.0", id: msg.id, result: {} }); }
-    }, 40);
+    }, Number(arg("--mode-delay-ms") ?? 40));
   }
   else if (msg.method === "session/cancel") cancel?.();
   else if (msg.method === "session/prompt") {

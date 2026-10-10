@@ -1,5 +1,5 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
-import { initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
+import { syncPermissionDefaults, permissionBoundary, initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
 import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
 import { contextLine } from "../src/cli/status-lines.ts";
 import { renderTailEvent } from "../src/cli/tail-render.ts";
@@ -865,8 +865,10 @@ describe("console permission modes (#242)", () => {
       expect(reduceConsole(entered.state, "y", NOW).effects).toEqual([{ type: "command", args: ["permission", "pi", "never-ask", "--yes"] }]);
     }
   });
-  test("unsupported local and detached peers cannot open chooser", () => {
-    for (const [peer, info, reason] of [["local", { state: "idle" }, "not applicable"], ["pi", { state: "offline" }, "not attached"]] as const) {
+  test("local opens chooser and detached peers cannot open chooser", () => {
+    const local = initialConsoleState(true); local.peers = { local: { state: "idle" } };
+    expect(reduceConsole(local, "m", NOW).state.modeChoice).toBe("local");
+    for (const [peer, info, reason] of [["pi", { state: "offline" }, "not attached"]] as const) {
       const s = initialConsoleState(true); s.peers = { [peer]: info };
       const result = reduceConsole(s, "m", NOW);
       expect(result.state.modeChoice).toBeUndefined(); expect(result.state.notice).toContain(reason); expect(result.effects).toEqual([]);
@@ -888,4 +890,64 @@ test("Peers mode chooser executes through the console CLI effect only after expl
   f.input("y");
   expect(commands).toEqual([["permission", "pi", "never-ask", "--yes"]]);
   f.input("\x03"); await running;
+});
+
+
+describe("human confirmation for never-ask config defaults (#242)", () => {
+  const defaults = [{ peer: "kimi", mode: "never-ask" as const, source: ".agenthub/config.json" }, { peer: "local", mode: "never-ask" as const, source: ".agenthub/config.local.json" }];
+  test("a default offers before attachment, names the source and bounds, and waits for y", () => {
+    for (const panels of [false, true]) {
+      const s = initialConsoleState(panels);
+      expect(syncPermissionDefaults(s, defaults)).toBe(true);
+      expect(s.peers).toEqual({});
+      const view = renderConsole(s, 80, 24, NOW).join("\n");
+      expect(view).toContain("NO hub sandbox"); expect(view).toContain("config.json"); expect(view).toContain("y/N");
+      expect(reduceConsole(s, "y", NOW).effects).toEqual([{ type: "permission_default", peer: "kimi", confirmed: true }]);
+      for (const key of ["n", "\r", "\x1b"]) expect(reduceConsole(s, key, NOW).effects).toEqual([{ type: "permission_default", peer: "kimi", confirmed: false }]);
+    }
+  });
+  test("one confirmation at a time, cancellation is not reoffered, edits are not interrupted", () => {
+    const s = initialConsoleState(true); s.editing = true; s.input = "status";
+    expect(syncPermissionDefaults(s, defaults)).toBe(false); expect(s.confirm).toBeUndefined();
+    s.editing = false; s.input = ""; expect(syncPermissionDefaults(s, defaults)).toBe(true);
+    const declined = reduceConsole(s, "n", NOW).state;
+    expect(syncPermissionDefaults(declined, defaults)).toBe(true);
+    expect(declined.confirm).toMatchObject({ type: "permission_default", peer: "local" });
+    const view = renderConsole(declined, 80, 24, NOW).join("\n");
+    expect(view).toContain("config.local.json"); expect(view).toContain("hub sandbox, path guard and denylist");
+    const done = reduceConsole(declined, "y", NOW).state;
+    expect(syncPermissionDefaults(done, defaults)).toBe(false);
+    const restarted = initialConsoleState(); expect(syncPermissionDefaults(restarted, defaults)).toBe(true);
+  });
+  test("runtime never-ask confirmation describes each peer's effective boundary", () => {
+    for (const peer of ["kimi", "pi", "local", "claude", "codex"]) {
+      const s = initialConsoleState(true); s.peers = { [peer]: { state: "idle" } };
+      const chosen = reduceConsole(s, "m", NOW).state;
+      const pending = reduceConsole(chosen, "3", NOW).state;
+      const view = renderConsole(pending, 80, 24, NOW);
+      expect(view.join("\n")).toContain(permissionBoundary(peer));
+      for (const line of view) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
+      expect(reduceConsole(pending, "y", NOW).effects).toEqual([{ type: "command", args: ["permission", peer, "never-ask", "--yes"] }]);
+    }
+  });
+  test("console startup uses the dedicated RPC; --yes in typed runtime commands cannot answer defaults", async () => {
+    const f = fixture(120, 24); let pending = [...defaults]; const commands: string[][] = [];
+    f.client.request = async (msg: any) => {
+      f.requests.push(msg);
+      if (msg.t === "permission_default") pending = pending.filter(row => row.peer !== msg.peer);
+      return { ok: true, status: { peers: {}, permissionDefaults: pending }, budget: {}, text: "[]", deliveries: [] };
+    };
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, runCommand: args => { commands.push(args); return () => {}; } });
+    await Promise.resolve(); await Promise.resolve();
+    expect(f.output.join("")).toContain("config.json");
+    expect(f.requests.filter(row => row.t === "permission_default")).toEqual([]);
+    f.input("y");
+    for (let n = 0; n < 6; n++) await Promise.resolve();
+    expect(f.requests.filter(row => row.t === "permission_default")).toEqual([{ t: "permission_default", peer: "kimi", confirmed: true }]);
+    f.input("n");
+    for (let n = 0; n < 6; n++) await Promise.resolve();
+    expect(f.requests.filter(row => row.t === "permission_default")).toEqual([{ t: "permission_default", peer: "kimi", confirmed: true }, { t: "permission_default", peer: "local", confirmed: false }]);
+    expect(commands).toEqual([]);
+    f.input("\x03"); await running;
+  });
 });
