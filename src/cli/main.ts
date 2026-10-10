@@ -34,7 +34,7 @@ import { setupOllamaModel } from "./models-setup.ts";
 import { unknownContext } from "../hub/context-window.ts";
 import { backendLine, contextLine, peerLine, type BackendRow, type PeerRow } from "./status-lines.ts";
 import { parseSince, readEvents } from "../hub/events.ts";
-import { appendRecords, formatResearch, LABELS, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
+import { appendRecords, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
 import { formatReport, summarize, formatTaskReport, summarizeByTask } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 import { pathWarnings } from "../hub/conflicts.ts";
@@ -782,11 +782,10 @@ const commands: Record<string, () => Promise<void> | void> = {
       const id = Number(rest[0]), label = rest[1] as Label;
       if (rest.length !== 2 || !/^[1-9]\d*$/.test(rest[0]!) || !Number.isSafeInteger(id) || !(LABELS as readonly string[]).includes(label)) fail(`usage: ahub task label <id> ${LABELS.join("|")}`);
       const project = researchProject();
-      // The label binds to the latest record of that id: after `ahub reset --all` an id names a new task.
-      const record = readStores(project.id).filter((r): r is TaskRecord => r.kind === "task" && r.task === id).sort((a, b) => a.approvedAt.localeCompare(b.approvedAt)).at(-1)
-        ?? fail(`no research record for task #${id} in this project (only approved tasks have one; ahub research backfill builds them from older events)`);
-      appendRecords(project.id, [{ schema: RESEARCH_SCHEMA, kind: "label", project: projectKey(project.id), task: id, createdAt: record.createdAt ?? record.approvedAt, label, at: new Date().toISOString() }]);
-      return console.log(`task #${id} (approved ${record.approvedAt}) labelled ${label} in the research records`);
+      let record: TaskRecord;
+      try { record = labelTarget(readStores(project.id), readEvents(join(stateDir, "events.jsonl")), id); } catch (error) { fail((error as Error).message); }
+      appendRecords(project.id, [{ schema: RESEARCH_SCHEMA, kind: "label", project: projectKey(project.id), task: id, createdAt: record!.createdAt!, label, at: new Date().toISOString() }]);
+      return console.log(`task #${id} (approved ${record!.approvedAt}) labelled ${label} in the research records`);
     }
     if (sub !== "propose" || rest.length < 1) fail("usage: ahub task propose [<class>] <title...> | show <id> | assign <id> <peer> | escalate <id>");
     // `--class` is the explicit form. A first word that is a class name is still taken as the class (the documented

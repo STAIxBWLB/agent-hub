@@ -403,14 +403,15 @@ export async function startDaemon(opts: DaemonOptions) {
   const log = (line: string) => { try { appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* the state dir is gone; the watchdog is stopping the hub */ } };
   const event = eventLog(join(opts.stateDir, "events.jsonl"));
   /**
-   * #247: the approved task's research record, built from events.jsonl exactly as `ahub research backfill` builds it, so
-   * the two agree. Never blocks or fails the task flow: a write error is one hub.log line per hub run.
+   * #247: the approved task's research record, built from events.jsonl with the function `ahub research backfill` uses.
+   * Never blocks or fails the task flow: a write error is one hub.log line per hub run.
    * ponytail: reads the whole events file at each approval; an incremental per-task index if that file grows large.
    */
   let researchLogged = false;
   // The approving turn ends after the approval and its usage arrives later still, so a record waits until no open turn
   // is attributed to the task, checking every grace period. ponytail: polling with a 30 min cap, a turn_end hook if the
-  // wait ever matters; a hub that stops first writes what it has, and backfill rebuilds from the full events later.
+  // wait ever matters. The first record written for a task is final (the store keeps one per task), so a hub that stops
+  // first writes once its peers have stopped and their turns ended.
   const researchGraceMs = opts.researchGraceMs ?? 10_000;
   const researchPending = new Map<number, { since: number; timer: ReturnType<typeof setTimeout> }>();
   const writeResearch = (taskId: number) => {
@@ -2956,7 +2957,7 @@ export async function startDaemon(opts: DaemonOptions) {
       await egress?.close();
       await piReceipts?.close();
       collectClaudeUsage();
-      for (const id of [...researchPending.keys()]) writeResearch(id); // the turns are over now; backfill can redo it
+      for (const id of [...researchPending.keys()]) writeResearch(id); // the peers have stopped, so their turns have ended
       budget.close();
       conductorHolds.close();
       executionBudget.close();

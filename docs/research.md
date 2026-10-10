@@ -26,7 +26,7 @@ directory, so `ahub research --all` can compare them. `ahub reset --all` does no
 When a task is approved (a review approves it, or its owner reports a task without a reviewer done), the hub waits
 until no open turn is attributed to the task (the turn that approved it ends after the approval, and its usage arrives
 later still), checking every 10 s for at most 30 minutes, then appends one task record built from that project's events.
-A hub that stops first writes what it has. Approval is final on the board, so each task has one record. A failing write
+A hub that stops first writes it once its peers have stopped. The first record written for a task is final. Approval is final on the board, so each task has one record. A failing write
 is one `hub.log` line per hub run and never changes the task flow.
 
 `ahub research backfill` builds the same records from a project's existing `events.jsonl` (marked
@@ -45,10 +45,10 @@ while the store keeps the older records.
 | `createdAt`, `startedAt`, `approvedAt` | proposal, first `in_progress`, approval (ISO) |
 | `wallMs` | from `startedAt` to `approvedAt`, null when the start is not in the events |
 | `activeMs`, `turns`, `filesChanged` | sums over the turns attributed to the task (`turn_end`), the ones ending after the approval included |
-| `owners`, `reviewer` | the owners in the order they held the task; the last reviewer |
+| `owners`, `reviewer` | the owners in the order they held the task (an owner who gets it back appears again; reports by owner count the task once per owner); the last reviewer |
 | `reviewRounds`, `changesRequested`, `dones` | times it went to review, was sent back, was reported done |
 | `checkPassed`, `checkFailed` | check results; a check that fails produces no done, so dones without a check are `dones - checkPassed` |
-| `reassignments`, `reassignedBy` | owner changes after the first owner, and the same by the board's move reason (`declined`, `idle`, `offline`, `budget`, `rejections`, `manual`, ...) |
+| `reassignments`, `reassignedBy` | owner changes after the first owner, and the same by the board's move reason (`declined`, `idle`, `offline`, `budget`, `rejections`, `manual`, ...; `none` when the board recorded no reason) |
 | `firstPass` | approved on its first review with no failed check and no changes requested |
 | `stuck`, `overlaps`, `conflicts` | escalation verdicts, overlap warnings and file conflicts about the task |
 | `tests` | route outcomes that ran tests: `pass`, `fail` counts |
@@ -61,9 +61,10 @@ while the store keeps the older records.
 ## Label record (`kind: "label"`)
 
 `ahub task label <id> ok|regressed|reverted|incomplete|wrong|abandoned` appends `{ project, task, createdAt, label, at }`:
-a person's later verdict (a revert next week, a regression found later, work given up) on the latest record with that
-id, which `createdAt` pins, so a later task with the same id after a reset does not inherit it. A task with no record
-yet is refused. Only a person can run it (agent shells are refused), and only while research is on. The latest label
+a person's later verdict (a revert next week, a regression found later, work given up) on the current board's task with
+that id (its proposal in `events.jsonl` pins `createdAt`), so a label never lands on an earlier task with the same id
+after a reset. A task with no record yet (not approved, or its record still waiting for the turns that approved it) is
+refused; labels mark approved tasks only. Only a person can run it (agent shells are refused), and only while research is on. The latest label
 wins.
 
 ## Measures

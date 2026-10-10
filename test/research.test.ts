@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { readEvents, type StampedEvent } from "../src/hub/events.ts";
-import { appendRecords, CSV_COLUMNS, formatResearch, projectKey, readStore, readStores, RESEARCH_SCHEMA, researchFile, researchReport, taskRecords, toCsv, type TaskRecord } from "../src/hub/research.ts";
+import { appendRecords, CSV_COLUMNS, formatResearch, labelTarget, projectKey, readStore, readStores, RESEARCH_SCHEMA, researchFile, researchReport, taskRecords, toCsv, type TaskRecord } from "../src/hub/research.ts";
+import { newEnvelope, USER } from "../src/hub/envelope.ts";
 import { classifyPeerCommand as cliClass } from "../src/cli/identity.ts";
 
 // #247: opt-in research records of each approved task, built only from events.jsonl.
@@ -104,6 +105,25 @@ test("measures count each task once, a label binds to its task and not to a late
   expect(rows.find((row) => row.task === "1" && row.tokens === "100")).toMatchObject({ project: projectKey("alpha"), checkPassed: "1", checkFailed: "2", owners: "codex", label: "" });
 });
 
+test("an owner who gets a task back counts it once; a move without a reason is none; a label binds only to the current board's task", () => {
+  const bounce = [
+    task(1, "proposed", "proposed"), task(1, "assigned", "in_progress", { owner: "codex" }),
+    task(1, "reassigned", "in_progress", { owner: "kimi", reason: "offline" }), task(1, "assigned", "in_progress", { owner: "codex" }),
+    task(1, "done", "approved", { owner: "codex" }),
+  ];
+  const [r] = taskRecords(bounce, "p", writer);
+  expect(r).toMatchObject({ owners: ["codex", "kimi", "codex"], reassignments: 2, reassignedBy: { offline: 1, none: 1 } });
+  expect(researchReport([r!]).byOwner.codex!.tasks).toBe(1);
+  // Two tasks #1 in one file (an events file that kept both): both get a record.
+  const again = [...bounce, task(1, "proposed", "proposed"), task(1, "accepted", "in_progress", { owner: "claude" }), task(1, "done", "approved", { owner: "claude" })];
+  const both = taskRecords(again, "p", writer);
+  expect(both.map((x) => x.owners.at(-1))).toEqual(["codex", "claude"]);
+  // A label goes to the current board's #1 (its proposal in the events), never the earlier one; no record yet is refused.
+  expect(labelTarget(both, again, 1)).toBe(both[1]!);
+  expect(() => labelTarget(both.slice(0, 1), again, 1)).toThrow("task #1 has no research record yet");
+  expect(() => labelTarget(both, again, 7)).toThrow("task #7 is not in this hub's events");
+});
+
 test("labelling a task is a person's; reading the research measures is not", () => {
   expect(cliClass("task", ["label", "3", "reverted"])).toBe("console");
   expect(cliClass("research", ["backfill"])).toBe("console");
@@ -188,3 +208,53 @@ test("with research off nothing is written, and a store that cannot be written l
   expect(log.match(/research record not written/g)?.length).toBe(1);
   expect(await g.op(g.claude, "hub_task_list", {})).toContain("approved");
 });
+
+async function daemonWithKimi(home: string, delayMs: number) {
+  const root = temp("project-kimi"), stateDir = join(root, "state");
+  mkdirSync(stateDir);
+  const previous = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = home;
+  cleanup.push(() => { if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous; });
+  const daemon = await startDaemon({ cwd: root, stateDir, projectId: "p-research", instanceId: "i-research", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, researchGraceMs: 30,
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, research: { enabled: true },
+      kimi_cmd: ["env", `FAKE_ACP_DELAY_MS=${delayMs}`, "bun", join(import.meta.dir, "fakes/acp-server.ts")] } });
+  let stopped = false;
+  const stop = async () => { if (!stopped) { stopped = true; await daemon.stop(); } };
+  cleanup.push(stop);
+  const worker = await ControlClient.connect(stateDir, { role: "peer", peer: "worker" });
+  cleanup.push(() => worker.close());
+  for (let i = 0; i < 100 && daemon.bus.peers.get("worker")?.state !== "idle"; i++) await Bun.sleep(10);
+  const tools = await ControlClient.connect(stateDir, { role: "tools", peer: "worker" });
+  cleanup.push(() => tools.close());
+  const console_ = await ControlClient.connect(stateDir, { role: "console" });
+  cleanup.push(() => console_.close());
+  expect((await console_.request({ t: "start", peer: "kimi" })).ok).toBe(true);
+  for (let i = 0; i < 300 && daemon.bus.peers.get("kimi")?.state !== "idle"; i++) await Bun.sleep(10);
+  // The worker's own plan task is approved by its done while Kimi's turn about the same task is still open.
+  const approve = async () => {
+    const op = async (name: string, args: Record<string, unknown>) => { const r = await tools.request({ t: "task", op: name, args }); if (!r.ok) throw new Error(r.error); return r.text as string; };
+    await op("hub_task_propose", { title: "outline", class: "plan", owner: "worker" });
+    daemon.bus.publish(newEnvelope(USER, "help with it", { to: ["kimi"], refs: { task: "1" } }));
+    for (let i = 0; i < 300 && daemon.bus.peers.get("kimi")?.state !== "busy"; i++) await Bun.sleep(5);
+    expect(await op("hub_task_done", { id: 1, summary: "done" })).toContain("approved");
+  };
+  return { stop, approve, file: researchFile("p-research", home) };
+}
+
+test("the live record waits for an open turn attributed to the approved task and counts it", async () => {
+  const f = await daemonWithKimi(temp("home-wait"), 800);
+  await f.approve();
+  await Bun.sleep(200);
+  expect(existsSync(f.file)).toBe(false); // Kimi's turn is still open
+  for (let i = 0; i < 300 && !existsSync(f.file); i++) await Bun.sleep(10);
+  expect(readStore(f.file)).toMatchObject([{ task: 1, turns: 1, owners: ["worker"] }]);
+});
+
+test("a hub that stops with a record pending writes it once its peers have stopped", async () => {
+  const f = await daemonWithKimi(temp("home-stop"), 10_000);
+  await f.approve();
+  await Bun.sleep(100);
+  expect(existsSync(f.file)).toBe(false);
+  await f.stop();
+  expect(readStore(f.file)).toMatchObject([{ task: 1, turns: 1 }]);
+}, 20_000);

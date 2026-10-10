@@ -72,17 +72,17 @@ const bump = (counts: Record<string, number>, key: string, n = 1) => { counts[ke
  * writer therefore waits for those turns (daemon `recordResearch`); backfill reads to the end of the file.
  */
 export function taskRecords(events: StampedEvent[], projectId: string, writer: TaskRecord["writer"]): TaskRecord[] {
-  const tasks = new Map<number, Acc>();
+  const tasks = new Map<number, Acc>(), earlier: Acc[] = [];
   const acc = (id: number) => { let a = tasks.get(id); if (!a) tasks.set(id, a = blank(id)); return a; };
   const seenUsage = new Set<string>();
   for (const e of events) {
     if (e.type === "task") {
       // Ids restart after `ahub reset --all` archives the events, but a file that kept both starts the task anew.
-      if (e.event === "proposed" && tasks.get(e.id)?.createdAt) tasks.delete(e.id);
+      if (e.event === "proposed" && tasks.get(e.id)?.createdAt) { earlier.push(tasks.get(e.id)!); tasks.delete(e.id); }
       const a = acc(e.id);
       a.class = e.class; if (e.pii) a.pii = true;
       if (e.owner && e.owner !== a.owners.at(-1)) {
-        if (a.owners.length) { a.reassignments++; bump(a.reassignedBy, e.reason ?? e.event); }
+        if (a.owners.length) { a.reassignments++; bump(a.reassignedBy, e.reason ?? "none"); }
         a.owners.push(e.owner);
       }
       if (e.reviewer) a.reviewer = e.reviewer;
@@ -120,7 +120,7 @@ export function taskRecords(events: StampedEvent[], projectId: string, writer: T
     else if (e.type === "conflict") a.conflicts++;
   }
   const out: TaskRecord[] = [];
-  for (const a of tasks.values()) {
+  for (const a of [...earlier, ...tasks.values()]) {
     if (!a.approvedAt) continue;
     const { approvedAt, lastState: _state, models, ...rest } = a;
     const start = a.startedAt ? Date.parse(a.startedAt) : NaN, end = Date.parse(approvedAt);
@@ -158,6 +158,18 @@ export function appendRecords(projectId: string, records: ResearchRecord[], home
   appendFileSync(file, added.map((r) => JSON.stringify(r)).join("\n") + "\n", { mode: 0o600 });
   chmodSync(file, 0o600);
   return added.length;
+}
+
+/**
+ * The record a person's label is for: the current board's task with that id, found by its proposal in `events`, so a
+ * label never lands on an earlier task with the same id after `ahub reset --all`. Throws why there is none.
+ */
+export function labelTarget(records: ResearchRecord[], events: StampedEvent[], task: number): TaskRecord {
+  const proposed = events.filter((e) => e.type === "task" && e.id === task && e.event === "proposed").at(-1);
+  if (!proposed) throw new Error(`task #${task} is not in this hub's events (after ahub reset --all, label it from its archive's events with backfill first)`);
+  const record = records.find((r): r is TaskRecord => r.kind === "task" && r.task === task && r.createdAt === proposed.at);
+  if (!record) throw new Error(`task #${task} has no research record yet: it is not approved, or its record waits until the turns that approved it end`);
+  return record;
 }
 
 const pct = (n: number, d: number) => d ? n / d : null;
@@ -199,7 +211,7 @@ export function researchReport(records: ResearchRecord[], since = 0): ResearchRe
     for (const r of all) for (const k of keys(r)) (out[k] ??= []).push(r);
     return Object.fromEntries(Object.entries(out).sort(([a], [b]) => a.localeCompare(b)).map(([k, rs]) => [k, measures(rs, labels)]));
   };
-  return { overall: measures(all, labels), byClass: group((r) => [r.class ?? "unknown"]), byOwner: group((r) => r.owners.length ? r.owners : ["none"]),
+  return { overall: measures(all, labels), byClass: group((r) => [r.class ?? "unknown"]), byOwner: group((r) => r.owners.length ? [...new Set(r.owners)] : ["none"]),
     byProject: group((r) => [r.project]), byModel: group((r) => r.models.length ? r.models : ["unknown"]) };
 }
 
