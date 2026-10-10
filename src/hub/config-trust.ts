@@ -26,6 +26,7 @@ export const MACHINE_LOCAL = [
   "local.read_allow",
   "local.bash_network",
   "local.network_allow", // the hosts the egress proxy opens (#65)
+  "terminal.open", // the command a hub-made TUI start runs to open a terminal (#269)
 ] as const;
 
 /**
@@ -35,17 +36,28 @@ export const MACHINE_LOCAL = [
  * spellings git keeps apart (letter case, and folds such as "ſ" for "s").
  */
 export function configRefusal(cwd: string, name: string): string | undefined {
+  const tracked = configTracked(cwd, name);
+  return tracked === undefined ? `git could not confirm that .agenthub/${name} is untracked` : tracked ? `.agenthub/${name} is committed to git` : undefined;
+}
+
+/** Whether git tracks `.agenthub/<name>` (or `.agenthub` itself); undefined when git cannot say. */
+export function configTracked(cwd: string, name: string): boolean | undefined {
   const r = spawnSync("git", ["-C", cwd, "ls-files", "-s", "-z", "--", ":(icase).agenthub"], { encoding: "utf8", env: childEnv(process.env) });
-  if (r.status !== 0) return `git could not confirm that .agenthub/${name} is untracked`;
+  if (r.status !== 0) return undefined;
   let opened: { dev: number; ino: number } | undefined;
   try {
     opened = statSync(join(cwd, ".agenthub", name));
   } catch {
     // not there: only the directory entry can still matter
   }
-  const tracked = r.stdout.split("\0").filter(Boolean).some((row) => {
+  return r.stdout.split("\0").filter(Boolean).some((row) => {
     const path = row.slice(row.indexOf("\t") + 1);
     if (path.toLowerCase() === ".agenthub") return true;
+    // A file that is not there has no identity to match: the index entry of this exact name is the one a write would
+    // change. Another spelling is another file where the disk keeps them apart.
+    // ponytail: on a disk that folds names, an entry tracked under another spelling and deleted from the work tree is
+    // not seen here; probe the disk's folding and compare folded names if that case ever matters.
+    if (!opened) return path === `.agenthub/${name}`;
     try {
       const s = statSync(join(cwd, path));
       return !!opened && s.dev === opened.dev && s.ino === opened.ino;
@@ -53,7 +65,6 @@ export function configRefusal(cwd: string, name: string): string | undefined {
       return false;
     }
   });
-  return tracked ? `.agenthub/${name} is committed to git` : undefined;
 }
 
 const valueAt = (o: unknown, path: string): unknown => path.split(".").reduce<unknown>((v, k) => (v && typeof v === "object" ? (v as Record<string, unknown>)[k] : undefined), o);

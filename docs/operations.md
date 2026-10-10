@@ -199,10 +199,12 @@ Launch that peer with `ahub claude` for channel pushes, or select `codex` in
 `roles` and launch `ahub codex`. The conductor splits work into owned tasks,
 observes `hub_status`, moves stalled work and obtains review before reporting
 results and open decisions. It does not implement the tasks it handed out.
-`hub_peer_start` starts local, Kimi or headless Pi; requests for native TUIs
-return the `ahub` command for the person to run, after validating it through
-the shared launcher planner. The wrapper plans again at launch when native
-endpoints are available. `hub_peer_hold` and `hub_peer_release`
+`hub_peer_start` starts a peer in the start mode a person set for it (see
+"Start modes"): local, Kimi and a headless Pi or Codex start at once; for a
+TUI peer the hub opens a terminal running the fixed `ahub <peer>` command,
+after validating it through the shared launcher planner, and when it cannot
+open one the call fails with that command for the person to run. The
+conductor cannot choose the mode. `hub_peer_hold` and `hub_peer_release`
 manage only holds placed by that conductor. Assignment also requires `assign`
 when the conductor has an explicit capabilities list.
 
@@ -351,7 +353,7 @@ Managed launchers attach native peers to the project daemon:
 ahub claude
 ahub codex
 ahub kimi
-ahub pi --mode headless --backend auto
+ahub pi                 # its TUI; --headless for the background peer
 ahub local
 ahub local --model <served-model-id>
 ```
@@ -955,6 +957,128 @@ Status shows non-ask modes and pending defaults, and each runtime change emits
 permission_mode (peer/from/to) with no tool arguments under events schema 1.
 The optional control requests preserve PROTOCOL; an older hub answers unknown
 and the CLI advises upgrading.
+
+## Settings from the dashboard and the terminal
+
+The dashboard's Settings section and `ahub settings` show and change the same
+closed list of settings (issue #269). Run them from a plain terminal:
+
+```bash
+ahub settings                      # every setting: value, source file, when it applies
+ahub settings get permission.kimi
+ahub settings set routing.classes.implement.peers codex,kimi,pi --preview
+ahub settings set routing.classes.implement.peers codex,kimi,pi
+ahub settings set permission_modes.kimi ask-when-needed
+ahub settings set research.enabled inherit   # remove the machine-local value
+ahub settings undo                 # put back the file the last write changed
+ahub ui --settings                 # dashboard with a 15-minute settings session
+```
+
+| Group | Keys | Stored in | Applies |
+| --- | --- | --- | --- |
+| Permissions | `permission.<peer>` (the mode now) | the running hub only | at once |
+| Permissions | `permission_modes.<peer>` (the mode at hub start) | `config.local.json` | next hub start |
+| Start | `peers.pi.start_mode`, `peers.codex.start_mode` (`tui` or `headless`) | `config.local.json` | that peer's next start |
+| Start | `pi.auto_start` | `config.local.json` | next hub start |
+| Routing | `routing.stay_switch`, `routing.classes.<class>.peers`, `.escalate_to`, `.route`, `.pi_backend` | `routing.local.toml` | at once |
+| Switches | `research.enabled`, `approvals.notify`, `snapshots.enabled`, `coordination` | `config.local.json` | next hub start |
+
+- Writes go only to `.agenthub/config.local.json` and `.agenthub/routing.local.toml`,
+  the machine-local files (`ahub init` ignores both in git). The shared
+  `config.json` and the hand-written `routing.toml` are never rewritten, and a
+  machine-local file that is committed to git is refused. Each write is read by
+  the hub's own loader first and replaces the file atomically.
+- `routing.local.toml` overrides `routing.toml` key by key and may hold only the
+  routing keys in the table. `ahub route explain` and the Settings rows name the
+  file each value comes from. `--preview`, and the dashboard's Preview button,
+  show `ahub route explain` for the open tasks before and after, or what a
+  permission mode grants, and save nothing.
+- A row shows the value in force, its source file, when it applies, and for a
+  value read at hub start what the next start will read (`Pending restart`).
+- `ahub settings undo` (the dashboard's "Undo last write") puts back the one
+  previous version of the file the last write changed. It refuses when that
+  file was edited since, and when it would put a stored never-ask back (set it
+  again with its confirmation instead). A mode changed for the running hub is
+  not a file: set it again instead. Setting a value it already has, or
+  removing one that is not set, writes nothing. A project with no
+  `.agenthub/config.json` gets no first config file from a settings write
+  (any config file turns the project defaults on): run `ahub init` first.
+- A project initialised before 0.12.23 has no `.gitignore` line for
+  `.agenthub/routing.local.toml`: run `ahub init` again, or add it. A
+  `permission_modes` value is read only from a file git confirms nobody
+  committed (config trust); where the hub will not read what was written, the
+  reply and the Settings row say so.
+- Authority: a dashboard opened with `ahub ui` reads settings, lowers a mode to
+  `ask`, turns `pi.auto_start` off and changes the Switches group. Everything
+  else needs `ahub ui --settings`, whose session may raise for 15 minutes, or
+  `ahub settings` in a terminal. `never-ask` needs the peer id typed in the
+  dashboard, or `--yes` in the terminal, and a stored never-ask default still
+  waits for `y` in `ahub console` at each hub start. Tool approvals stay
+  deny-only for Pi and local in every session.
+- Commands and binaries, credential files, gateway URLs and the local worker's
+  reach are never editable here: edit `.agenthub/config.local.json` yourself.
+- Every change is announced in `hub.log` and open consoles with its source and
+  recorded as a `settings` event. `ahub settings` needs a running hub; an older
+  hub answers the request as unknown and the CLI advises upgrading. The unified
+  dashboard (`ahub ui --all`) acts as an ordinary session.
+
+## Start modes: TUI by default, headless as opt-in
+
+A peer that has a TUI the hub attaches to starts in it by default (issue #269).
+
+| Peer | Default | Headless |
+| --- | --- | --- |
+| pi | `tui` | `ahub pi --headless` (or `--mode headless`), or `peers.pi.start_mode: headless` |
+| codex | `tui` (`ahub codex`) | `peers.codex.start_mode: headless`: a hub-made start runs the app-server only |
+| claude | `tui` (`ahub claude`) | none |
+| kimi | headless (ACP) | it has no TUI the hub attaches to |
+| local | headless (hub-native) | not applicable |
+
+- **You type the command:** `ahub pi` opens Pi's TUI in that terminal.
+  `--headless` and the start mode setting are the two ways to ask for the
+  background peer. `ahub settings set peers.pi.start_mode headless` writes the
+  setting; it applies at Pi's next start.
+- **The hub starts the peer** (the dashboard's Start control, `pi` typed in
+  `ahub console`, the conductor's `hub_peer_start`, `pi.auto_start`): it
+  follows the peer's start mode. For `tui` it opens a terminal running the
+  fixed command `ahub <peer>`, through a terminal provider:
+  1. `terminal.open` in `.agenthub/config.local.json`, an argv in which one
+     element holds `{command}` (the quoted command line to run); `{title}` and
+     `{cwd}` are replaced too. Examples:
+     `["tmux", "new-window", "-n", "{title}", "{command}"]`,
+     `["wezterm", "start", "--cwd", "{cwd}", "--", "sh", "-c", "{command}"]`.
+     Only a config file nobody committed may set it, and it is not a setting
+     the dashboard or `ahub settings` can write. It is read at hub start.
+     `{command}` is quoted for a POSIX shell; `{title}` and `{cwd}` are raw,
+     so give each an argv element of its own.
+  2. Orca, when the hub runs in an Orca worktree or an earlier `ahub <peer>`
+     launch of this project recorded one (the path recovery uses).
+- **No provider:** the start is refused with the command to run by hand. It is
+  never downgraded to headless. `ahub settings` lists each start mode, and the
+  dashboard's Start control says which mode a start will use and where its
+  terminal comes from.
+- The conductor cannot choose the mode: `hub_peer_start` takes the peer's own.
+- Recovery restores each peer in the mode its recorded session had. After an
+  unplanned stop, a Pi that ran in a terminal is reported with its command and
+  is not replaced by a headless one unless headless is its start mode.
+
+### Migration from 0.12.22 and earlier
+
+Pi's default changes from headless to its TUI.
+
+- `ahub pi` in a terminal now opens the TUI. For the background peer run
+  `ahub pi --headless`.
+- A project with `"pi": { "auto_start": true }` used to get a headless Pi at
+  every hub start. To keep that, set the start mode once:
+  `ahub settings set peers.pi.start_mode headless` (or add
+  `"peers": { "pi": { "start_mode": "headless" } }` to
+  `.agenthub/config.local.json`). Without it the hub opens Pi's TUI in a
+  terminal at start, or, with no terminal provider, says
+  `pi.auto_start did not start Pi` with the command to run.
+- Scripts and the console's `pi` command: without a terminal, `ahub pi` asks
+  the hub to open one. Add `--headless` where a headless Pi is meant.
+- A conductor's `hub_peer_start` no longer takes a mode. A call that passes one
+  is refused unless it repeats the peer's start mode.
 
 ## Approvals and pauses
 
@@ -1648,8 +1772,9 @@ crash of one is not reported this way.
   spends no cloud quota), and on a fresh session if that fails, keeping the
   recorded backend and model; the report says which. Malformed records in
   `sessions.json` are skipped. A Pi that ran in a terminal (`--mode tui`) is never started on its
-  recorded session by the hub; the report gives the command, and with
-  `pi.auto_start` a fresh headless Pi starts instead.
+  recorded session by the hub; the report gives the command. With
+  `pi.auto_start` a fresh headless Pi starts instead only when Pi's start mode
+  is headless; with the default (tui) nothing is started in its place.
 - Codex's app-server died with the hub; run `ahub codex` again. Claude Code's
   plugin reconnects by itself while that session is open.
 
@@ -1930,7 +2055,8 @@ sequential seeded-guard job. Main and release jobs reuse only a successful full
 PR or push check with the identical Git tree and all three successful jobs. An absent or
 unreadable result runs the main gate again and refuses release. A manual
 `prepare_bundle` dispatch builds reviewable plugin assets without publishing;
-it is never accepted as full-gate evidence.
+it is never accepted as full-gate evidence. A `timing_runs=20` dispatch runs only the daemon, PII screen and ACP
+test files twenty times on macOS, in its own concurrency group; it does not replace the full gate.
 
 ## Preview initialization and native launch
 

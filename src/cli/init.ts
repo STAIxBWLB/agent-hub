@@ -57,7 +57,7 @@ function changes(cwd: string): PlannedWrite[] {
   }
   const ignore = join(cwd, ".gitignore");
   let lines = existsSync(ignore) ? readFileSync(ignore, "utf8") : "";
-  for (const entry of [".agenthub/state/", ".agenthub/config.local.json"]) {
+  for (const entry of [".agenthub/state/", ".agenthub/config.local.json", ".agenthub/routing.local.toml"]) {
     if (!lines.split("\n").includes(entry)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${entry}\n`;
   }
   write(ignore, lines, "ignore runtime state and machine-local configuration");

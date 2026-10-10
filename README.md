@@ -83,17 +83,19 @@ an N-peer message bus and attaches each agent through its native control surface
 ## Pi with DGX and MLX
 
 Pi is optional. Install Pi separately and set `pi.enabled` to `true` in
-`.agenthub/config.json`. Set `pi.auto_start` to `true` to start its background
-peer with the hub. The project uses its existing OmniRoute connection for DGX;
+`.agenthub/config.json`. Set `pi.auto_start` to `true` to start it with the hub.
+Pi starts in its TUI by default; `ahub pi --headless`, or the start mode
+setting (`ahub settings set peers.pi.start_mode headless`), asks for the
+background peer instead. The project uses its existing OmniRoute connection for DGX;
 `pi.dgx_coding` and `pi.dgx_fast` select the gateway's configured model IDs.
 
 ```bash
 ahub models setup       # prepare bounded Qwen3.5 4B MLX in an existing Ollama service
 ahub models start       # verify loopback Ollama/model readiness (no daemon spawn)
 ahub models status
-ahub pi --mode headless --backend auto
+ahub pi --headless --backend auto
 ahub say @pi "Read the project and summarize the next small implementation task"
-ahub pi --mode tui     # switch the idle session to its native terminal
+ahub pi                # its TUI in this terminal; an idle headless session moves into it
 ```
 
 The default routing template assigns implementation, bulk edits and tests to

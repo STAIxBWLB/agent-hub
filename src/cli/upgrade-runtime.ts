@@ -503,6 +503,9 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           if (current && current.state !== "offline") continue;
           const args = [peer.id];
           for (const key of ["mode", "backend", "model", "route"]) if (typeof peer.args?.[key] === "string") args.push(`--${key}`, peer.args[key]!);
+          // #269: `ahub pi` without a mode now takes Pi's start mode (tui by default). This Pi ran headless (a terminal
+          // one is filtered out above), so a snapshot that recorded no mode still restores it headless.
+          if (peer.id === "pi" && typeof peer.args?.mode !== "string") args.push("--mode", "headless");
           if (peer.id === "pi") {
             const sessionFile = peer.sessionFile ?? peer.args?.sessionFile;
             if (typeof sessionFile === "string") args.push("--session-file", sessionFile);
