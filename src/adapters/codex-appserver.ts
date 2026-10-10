@@ -386,6 +386,12 @@ export class CodexPeer extends BasePeer {
 
   getPermissionMode(): PermissionMode { return this.permissionMode; }
 
+  /** Reconcile the daemon's current choice after startup, before the returned proxy URL has a TUI. */
+  setStartupPermissionMode(mode: PermissionMode): void {
+    if (this.link || this.state !== "offline" || this.approvalOverridden) throw new Error("codex startup mode reconciliation requires a fresh unattached proxy");
+    this.permissionMode = mode;
+  }
+
   async setPermissionMode(mode: PermissionMode): Promise<void> {
     if (!this.link || this.link.up.readyState !== WebSocket.OPEN) throw new Error("codex permission mode unavailable: attach the TUI through ahub codex first");
     if (mode === "ask" && this.approvalOverridden && this.nativeApprovalPolicy === undefined) throw new Error("codex cannot restore ask: native approval policy unavailable; restart the Codex session");

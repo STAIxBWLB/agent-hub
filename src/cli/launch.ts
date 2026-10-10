@@ -1,7 +1,8 @@
 // Launchers inject only the flags the hub owns and refuse user-supplied duplicates.
-import { mkdirSync, writeFileSync, renameSync, unlinkSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, renameSync, unlinkSync, lstatSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { resolve, join } from "node:path";
+import { resolve, join, basename, dirname, isAbsolute } from "node:path";
+import { realPath } from "../hub/project.ts";
 import { peerChildEnv } from "../hub/child-process.ts";
 export const CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub";
 
@@ -43,7 +44,21 @@ export interface Launch {
   warning?: string;
   permissionHook?: boolean;
   hookPurpose?: FactsHook["purpose"];
+  settingsFile?: string;
   unattended?: boolean;
+}
+
+/** Retire only our prior private Claude settings file, after the replacement launch record is committed. */
+export function cleanupClaudeSettings(stateDir: string, previous: unknown): void {
+  if (typeof previous !== "string" || !isAbsolute(previous) || !/^claude-settings-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/.test(basename(previous))) return;
+  try {
+    const root = realPath(stateDir);
+    if (realPath(dirname(previous)) !== root) return;
+    const stat = lstatSync(previous);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600 || !process.getuid || stat.uid !== process.getuid()) return;
+    if (realPath(previous) !== join(root, basename(previous))) return;
+    unlinkSync(previous);
+  } catch { /* Missing or unverifiable files remain untouched. */ }
 }
 
 export interface StatusLineTee {
@@ -115,6 +130,7 @@ export function buildLaunch(
     const own = passthrough.some((a) => a === "--settings" || a.startsWith("--settings="));
     let settingsArgs = ctx.statusLine && !own ? ["--settings", sessionSettings(ctx.statusLine, ctx.facts)] : [];
     let nativeArgs = passthrough;
+    let settingsFile: string | undefined;
     if (own) {
       if (passthrough.filter(a => a === "--settings" || a.startsWith("--settings=")).length > 1) throw new Error("pass --settings only once so the hub permission hook stays installed");
       const index = passthrough.findIndex(a => a === "--settings" || a.startsWith("--settings="));
@@ -155,6 +171,7 @@ export function buildLaunch(
         throw new Error("cannot write private Claude session settings in the hub state directory");
       }
       settingsArgs[1] = file;
+      settingsFile = file;
     }
     const notes = [
       unattended ? UNATTENDED_WARNING : "",
@@ -163,6 +180,7 @@ export function buildLaunch(
     return {
       cmd: "claude",
       args: ["--dangerously-load-development-channels", claudeChannel(passthrough), ...(unattended ? ["--dangerously-skip-permissions"] : []), ...settingsArgs, ...nativeArgs],
+      ...(settingsFile ? { settingsFile } : {}),
       permissionHook: !!ctx.facts,
       ...(ctx.facts ? { hookPurpose: ctx.facts.purpose ?? "facts" } : {}),
       unattended,

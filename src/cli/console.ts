@@ -231,6 +231,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
         // Under the modal key table it does nothing at all.
         if (Array.from(text).length > 1 && !["\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"].includes(text)) {
           if (state.help && state.mode === "panels") return;
+          if (state.confirm?.type === "permission_default") { draw(); return; }
           state.confirm = undefined; state.optionChoice = undefined; state.editing = true;
           state.input += terminalText(text.replace(/\x1b\[20[01]~/g, "")).replace(/\n/g, " "); draw();
         } else handle(text);

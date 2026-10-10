@@ -52,7 +52,7 @@ the console. Merged and generated Claude settings live in 0600 state files and
 are passed by path, keeping caller settings out of process argv.
 
 Claude ask-when-needed grants only resolving project file targets outside
-.agenthub, .git and .claude. Symlink escapes, protected aliases, traversal and
+.agenthub, .git, .claude, .codex, .qwen, .kimi, .pi and .mcp.json. Symlink escapes, protected aliases, traversal and
 unresolved wildcard targets receive no decision. Native rules then apply;
 this is a grant filter, not a filesystem sandbox.
 

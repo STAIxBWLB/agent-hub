@@ -1,8 +1,8 @@
 import { afterEach, test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, readdirSync, existsSync, chmodSync, symlinkSync, linkSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildLaunch, claudeObservationHooks, CLAUDE_CHANNEL } from "../src/cli/launch.ts";
+import { buildLaunch, cleanupClaudeSettings, claudeObservationHooks, CLAUDE_CHANNEL } from "../src/cli/launch.ts";
 
 const states: string[] = [];
 afterEach(() => { for (const dir of states.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -109,4 +109,30 @@ test("merged caller settings are private files rather than native argv and previ
     }
     expect(readdirSync(dir).filter(name => name.endsWith(".tmp"))).toEqual([]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test("retiring private Claude settings preserves arbitrary paths, links and previews", () => {
+  const state = fixtureState(), outside = fixtureState();
+  const facts = claudeObservationHooks({}, { script: "/candidate/facts-hook.ts", stateDir: state });
+  const old = buildLaunch("claude", [], { unattended: false, facts });
+  expect(old.settingsFile).toBe(old.args[old.args.indexOf("--settings") + 1]);
+  const before = readdirSync(state);
+  const draft = buildLaunch("claude", [], { unattended: false, facts, preview: true });
+  expect(draft.settingsFile).toBeUndefined(); expect(readdirSync(state)).toEqual(before); expect(existsSync(old.settingsFile!)).toBe(true);
+  const next = buildLaunch("claude", [], { unattended: false, facts });
+  cleanupClaudeSettings(state, old.settingsFile); expect(existsSync(old.settingsFile!)).toBe(false); expect(existsSync(next.settingsFile!)).toBe(true);
+  const name = "claude-settings-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.json";
+  const outsideFile = join(outside, name); writeFileSync(outsideFile, "outside", { mode: 0o600 });
+  const arbitrary = join(state, "important.json"); writeFileSync(arbitrary, "preserve", { mode: 0o600 });
+  cleanupClaudeSettings(state, outsideFile); cleanupClaudeSettings(state, arbitrary);
+  expect(existsSync(outsideFile)).toBe(true); expect(existsSync(arbitrary)).toBe(true);
+  const symlink = join(state, name); symlinkSync(outsideFile, symlink); cleanupClaudeSettings(state, symlink);
+  expect(existsSync(symlink)).toBe(true); expect(readFileSync(outsideFile, "utf8")).toBe("outside");
+  const nonPrivate = buildLaunch("claude", [], { unattended: false, facts }).settingsFile!;
+  chmodSync(nonPrivate, 0o644); cleanupClaudeSettings(state, nonPrivate); expect(existsSync(nonPrivate)).toBe(true);
+  const linked = buildLaunch("claude", [], { unattended: false, facts }).settingsFile!;
+  linkSync(linked, join(outside, "linked-copy")); cleanupClaudeSettings(state, linked); expect(existsSync(linked)).toBe(true);
+  cleanupClaudeSettings(state, undefined); cleanupClaudeSettings(state, { settingsFile: next.settingsFile });
+  expect(existsSync(next.settingsFile!)).toBe(true);
 });

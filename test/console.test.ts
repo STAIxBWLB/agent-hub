@@ -1,7 +1,7 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
 import { syncPermissionDefaults, permissionBoundary, initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
 import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
-import { contextLine } from "../src/cli/status-lines.ts";
+import { peerLine, contextLine } from "../src/cli/status-lines.ts";
 import { renderTailEvent } from "../src/cli/tail-render.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import type { ConsoleTerminal } from "../src/cli/console.ts";
@@ -901,9 +901,14 @@ describe("human confirmation for never-ask config defaults (#242)", () => {
       expect(syncPermissionDefaults(s, defaults)).toBe(true);
       expect(s.peers).toEqual({});
       const view = renderConsole(s, 80, 24, NOW).join("\n");
-      expect(view).toContain("NO hub sandbox"); expect(view).toContain("config.json"); expect(view).toContain("y/N");
+      expect(view).toContain("NO hub sandbox"); expect(view).toContain("config.json"); expect(view).toContain("y/n");
       expect(reduceConsole(s, "y", NOW).effects).toEqual([{ type: "permission_default", peer: "kimi", confirmed: true }]);
-      for (const key of ["n", "\r", "\x1b"]) expect(reduceConsole(s, key, NOW).effects).toEqual([{ type: "permission_default", peer: "kimi", confirmed: false }]);
+      expect(reduceConsole(s, "n", NOW).effects).toEqual([{ type: "permission_default", peer: "kimi", confirmed: false }]);
+      for (const key of ["\r", "\x1b", "j", "q", " ", "N"]) {
+        const untouched = reduceConsole(s, key, NOW);
+        expect(untouched.effects).toEqual([]); expect(untouched.state.confirm).toEqual(s.confirm);
+        expect(untouched.state.permissionDefaultsHandled).toEqual([]);
+      }
     }
   });
   test("one confirmation at a time, cancellation is not reoffered, edits are not interrupted", () => {
@@ -941,6 +946,11 @@ describe("human confirmation for never-ask config defaults (#242)", () => {
     await Promise.resolve(); await Promise.resolve();
     expect(f.output.join("")).toContain("config.json");
     expect(f.requests.filter(row => row.t === "permission_default")).toEqual([]);
+    for (const input of ["\r", "\x1b", "j", "\x1b[200~ny\x1b[201~"]) {
+      f.input(input);
+      expect(f.requests.filter(row => row.t === "permission_default")).toEqual([]);
+      expect(f.output.join("")).toContain("other keys wait");
+    }
     f.input("y");
     for (let n = 0; n < 6; n++) await Promise.resolve();
     expect(f.requests.filter(row => row.t === "permission_default")).toEqual([{ t: "permission_default", peer: "kimi", confirmed: true }]);
@@ -950,4 +960,21 @@ describe("human confirmation for never-ask config defaults (#242)", () => {
     expect(commands).toEqual([]);
     f.input("\x03"); await running;
   });
+});
+
+
+test("permission status preserves unverified, unmanaged and unknown in every console view (#242 F7)", () => {
+  for (const permissionMode of ["unverified", "unmanaged", "unknown"]) {
+    const s = initialConsoleState(true); s.peers = { claude: { state: "idle", permissionMode } };
+    expect(renderConsole(s, 160, 24, NOW).join("\n")).toContain(permissionMode);
+    expect(peerLine("claude", s.peers.claude)).toContain(`permission: ${permissionMode}`);
+    s.mode = "stream"; expect(renderConsole(s, 160, 24, NOW).join("\n")).toContain(permissionMode);
+    s.mode = "panels";
+    const refused = reduceConsole(s, "m", NOW);
+    expect(refused.state.modeChoice).toBeUndefined(); expect(refused.state.notice).toContain(permissionMode); expect(refused.effects).toEqual([]);
+    const managed = initialConsoleState(true); managed.peers = { claude: { state: "idle", permissionMode: "ask" } };
+    const choosing = reduceConsole(managed, "m", NOW).state;
+    choosing.peers = s.peers;
+    expect(reduceConsole(choosing, "2", NOW).effects).toEqual([]);
+  }
 });

@@ -182,7 +182,8 @@ export class AcpPeer extends BasePeer {
       // A recovered session can retain a previous runtime opt-in. An advertised non-default mode
       // must be reset for the configured ask default before any prompt; a fresh ask session stays untouched.
       const resetResumed = this.opts.resumeSessionId && typeof session.modes?.currentModeId === "string" && session.modes.currentModeId !== KIMI_MODE_IDS.ask;
-      if (this.permissionMode !== "ask" || resetResumed) await this.setPermissionMode(this.permissionMode);
+      // Other ACP vendors retain their native policy, including reported non-default modes on resume.
+      if (this.kimiAgent && (this.permissionMode !== "ask" || resetResumed)) await this.setPermissionMode(this.permissionMode);
     } catch (e) {
       this.setState("offline");
       if (this.proc === proc) {
@@ -194,10 +195,12 @@ export class AcpPeer extends BasePeer {
   }
 
   getPermissionMode(): PermissionMode { return this.permissionMode; }
-  get permissionModeState(): PermissionMode | "unknown" { return this.modeUnknown ? "unknown" : this.permissionMode; }
+  get permissionModeState(): PermissionMode | "unknown" | "unmanaged" {
+    return !this.kimiAgent ? "unmanaged" : this.modeUnknown ? "unknown" : this.permissionMode;
+  }
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {
-    if (!this.kimiAgent) throw new Error(`${this.id} permission mode ${mode} unavailable: this ACP agent has no verified mode mapping; use Kimi Code CLI or add an agent-specific mapping`);
+    if (!this.kimiAgent) throw new Error(`${this.id} permission mode ${mode} unmanaged: this ACP agent has no verified mode mapping; use Kimi Code CLI or add an agent-specific mapping`);
     if (this.modeUnknown) throw new Error(`${this.id} permission mode unknown after an unanswered change; restart the peer before changing modes`);
     const id = KIMI_MODE_IDS[mode];
     if (!this.sessionId || !this.proc || !this.availableModes.has(id)) throw new Error(`${this.id} permission mode ${mode} unavailable: session does not offer ${id}`);

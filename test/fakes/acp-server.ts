@@ -133,6 +133,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     send({ jsonrpc: "2.0", id: msg.id, result: { modes } });
   }
   else if (msg.method === "session/new") {
+    modes.currentModeId = arg("--new-mode") ?? "default";
     if (process.env.FAKE_ACP_RECORD) Bun.write(process.env.FAKE_ACP_RECORD, JSON.stringify(msg.params));
     if (process.env.FAKE_ACP_ENV_RECORD) Bun.write(process.env.FAKE_ACP_ENV_RECORD, JSON.stringify({ recovery: process.env.AGENTHUB_RECOVERY_OPERATION, codex: process.env.CODEX_HOME, claude: process.env.CLAUDE_CONFIG_DIR, state: process.env.AGENTHUB_STATE_DIR }));
     send({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s1", modes } });

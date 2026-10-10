@@ -54,6 +54,24 @@ test("ask-when-needed file grants stay within canonical project paths and exclud
       for (const file of [join(outside, "outside.ts"), "../outside.ts", "missing.ts", "escape/outside.ts", "alias/config", ".git/config", ".GIT/config", ".claude/config", ".agenthub/config"]) expect(projectFileTool(tool, { file_path: file }, dir)).toBe(false);
       expect(projectFileTool(tool, {}, dir)).toBe(false);
     }
+    for (const directory of [".codex", ".qwen", ".kimi", ".pi"]) {
+      mkdirSync(join(dir, directory)); writeFileSync(join(dir, directory, "settings.json"), "fixture");
+      symlinkSync(join(dir, directory), join(dir, `alias-${directory.slice(1)}`));
+      for (const path of [`${directory}/settings.json`, `alias-${directory.slice(1)}/settings.json`]) {
+        expect(projectFileTool("Write", { file_path: path }, dir)).toBe(false);
+        expect(projectFileTool("Grep", { glob: path }, dir)).toBe(false);
+      }
+    }
+    writeFileSync(join(dir, ".mcp.json"), "fixture"); symlinkSync(join(dir, ".mcp.json"), join(dir, "alias-mcp.json"));
+    for (const path of [".mcp.json", "alias-mcp.json"]) {
+      expect(projectFileTool("Edit", { file_path: path }, dir)).toBe(false);
+      expect(projectFileTool("Glob", { pattern: path }, dir)).toBe(false);
+    }
+    for (const name of [".CODEX", ".QWEN", ".KIMI", ".PI"]) {
+      mkdirSync(join(dir, name), { recursive: true }); writeFileSync(join(dir, name, "config"), "fixture");
+      expect(projectFileTool("Read", { file_path: `${name}/config` }, dir)).toBe(false);
+    }
+    writeFileSync(join(dir, ".MCP.JSON"), "fixture"); expect(projectFileTool("Read", { file_path: ".MCP.JSON" }, dir)).toBe(false);
     expect(projectFileTool("NotebookEdit", { notebook_path: "file.ts" }, dir)).toBe(true);
     expect(projectFileTool("NotebookEdit", { notebook_path: "escape/outside.ts" }, dir)).toBe(false);
     expect(projectFileTool("LS", { path: dir }, dir)).toBe(true); expect(projectFileTool("LS", {}, dir)).toBe(false);

@@ -24,7 +24,7 @@ export function projectFileTool(tool: unknown, input: unknown, projectRoot: unkn
   if (!optional && args[key] === undefined) return false;
   try {
     const root = realPath(projectRoot);
-    const protectedPath = (path: string) => path.split(/[\\/]/).some(part => [".agenthub", ".git", ".claude"].includes(part.toLowerCase()));
+    const protectedPath = (path: string) => path.split(/[\\/]/).some(part => [".agenthub", ".git", ".claude", ".codex", ".qwen", ".kimi", ".pi", ".mcp.json"].includes(part.toLowerCase()));
     const safe = (path: string) => {
       const requested = resolve(root, path), lexical = relative(root, requested);
       if (protectedPath(lexical)) return false;

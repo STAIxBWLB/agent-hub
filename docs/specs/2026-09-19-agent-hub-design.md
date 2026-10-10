@@ -792,13 +792,16 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   markers, use --yes or read the control token and impersonate the console.
   The security and operations guides name that boundary explicitly.
 - permission_modes defaults merge per peer across config files. Automatic
-  effects stop at ask-when-needed. Never-ask from any file remains ask until
+  effects stop at ask-when-needed. Never-ask from an applied untracked config remains ask until
   a person's source-labelled console y at hub start; no boot --yes applies it.
-  Every non-ask default start logs mode and source file. Runtime changes and
+  Git-tracked mode defaults are ignored and never offered for confirmation.
+  Every non-ask start logs mode and source (config file or runtime choice). Successful
+  runtime changes clear pending config confirmations; startup choices are reconciled
+  under the peer fence before a new adapter is exposed to bus delivery. Runtime changes and
   confirmations remain daemon-local and expire on stop.
 - Kimi mapping requires the actual Kimi Code CLI identity: yolo for
-  ask-when-needed, auto for never-ask, default for ask. Another ACP agent is
-  refused a mode until its table exists. Set-mode replies precede prompts;
+  ask-when-needed, auto for never-ask, default for ask. Another ACP agent starts fresh or resumed as unmanaged: its reported mode is
+  untouched, and runtime changes are refused until its table exists. Set-mode replies precede prompts;
   missing ids/refused startup changes fail. A timeout is unknown/offline and
   the owned process group stops, so a late reply cannot restore a live peer.
   Loaded non-default Kimi modes are reset for project ask.
@@ -809,7 +812,7 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   the refusal to change a bypassed session.
 - Claude ask-when-needed allows only Read/Edit/Write/MultiEdit/NotebookEdit/LS
   and bounded Glob/Grep targets resolved with realPath beneath project root,
-  outside .agenthub/.git/.claude. Missing/nonresolving or escaping targets,
+  outside .agenthub/.git/.claude/.codex/.qwen/.kimi/.pi/.mcp.json. Missing/nonresolving or escaping targets,
   protected case aliases, symlinks and uncertain wildcard/filter targets yield
   no decision. Never-ask answers allow; ask and transport errors decide nothing.
   Merged/generated settings are 0600 state files passed by path, never inline

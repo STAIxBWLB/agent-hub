@@ -491,24 +491,43 @@ for (const mode of ["ask", "ask-when-needed", "never-ask"] as const) {
       expect(peer!.state).toBe("idle"); // the ordinary vendor-default startup remains compatible
       await expect(peer!.setPermissionMode(mode)).rejects.toThrow("no verified mode mapping");
       expect(readFileSync(record, "utf8")).not.toContain("session/set_mode");
-      expect(peer!.getPermissionMode()).toBe("ask");
+      expect(peer!.permissionModeState).toBe("unmanaged");
     } finally { await peer?.stop(); rmSync(dir, { recursive: true, force: true }); }
   });
 }
 
-for (const vendorArgs of [["--agent-name", "Qwen Code"], ["--agent-name", "Not Kimi Code CLI"], ["--no-agent-info"]]) {
-  test(`an unverified ACP vendor refuses a non-ask startup: ${vendorArgs.join(" ")}`, async () => {
-    peer = new AcpPeer("kimi", { cmd: [...FAKE, ...vendorArgs], cwd: process.cwd(), permissionMode: "ask-when-needed" });
-    await expect(peer.start()).rejects.toThrow("no verified mode mapping");
-    expect(peer.state).toBe("offline");
+// #245 F5: a non-Kimi vendor's reported native mode and the configured hub mode never affect startup.
+for (const resume of [false, true]) for (const configured of ["ask", "ask-when-needed", "never-ask"] as const) for (const reported of ["default", "auto-edit", "yolo", "unrecognized-native-mode"]) {
+  test(`non-Kimi ACP ${resume ? "resume" : "fresh"} is unmanaged with configured ${configured} and native ${reported}`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ahub-acp-unmanaged-"));
+    const record = join(dir, "protocol.jsonl");
+    try {
+      const { bus, said } = await setup({
+        cmd: [...FAKE, "--agent-name", "Qwen Code", "--modes", "default,auto-edit,yolo", resume ? "--loaded-mode" : "--new-mode", reported, "--record-protocol", record],
+        permissionMode: configured, ...(resume ? { resumeSessionId: "s1" } : {}),
+      });
+      expect(peer!.state).toBe("idle");
+      expect(peer!.permissionModeState).toBe("unmanaged");
+      bus.publish(newEnvelope("user", "ping", { to: ["kimi"] }));
+      await until(() => said.length === 1);
+      expect(said[0]!.body).toBe("echo: ping");
+      await expect(peer!.setPermissionMode("ask")).rejects.toThrow("add an agent-specific mapping");
+      expect(peer!.permissionModeState).toBe("unmanaged");
+      const calls = readFileSync(record, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      expect(calls.map((call) => call.method)).toEqual(["initialize", resume ? "session/load" : "session/new", "session/prompt"]);
+    } finally { await peer?.stop(); rmSync(dir, { recursive: true, force: true }); }
   });
 }
 
-test("resuming a non-Kimi agent never sends a Kimi default reset", async () => {
-  peer = new AcpPeer("kimi", { cmd: [...FAKE, "--agent-name", "Qwen Code", "--loaded-mode", "yolo"], cwd: process.cwd(), resumeSessionId: "s1" });
-  await expect(peer.start()).rejects.toThrow("no verified mode mapping");
-  expect(peer.state).toBe("offline");
-});
+for (const vendorArgs of [["--agent-name", "Not Kimi Code CLI"], ["--no-agent-info"]]) {
+  test(`an unverified ACP vendor starts unmanaged despite a configured non-ask mode: ${vendorArgs.join(" ")}`, async () => {
+    peer = new AcpPeer("kimi", { cmd: [...FAKE, ...vendorArgs], cwd: process.cwd(), permissionMode: "ask-when-needed" });
+    await peer.start();
+    expect(peer.state).toBe("idle");
+    expect(peer.permissionModeState).toBe("unmanaged");
+    await expect(peer.setPermissionMode("never-ask")).rejects.toThrow("no verified mode mapping");
+  });
+}
 
 for (const startup of [false, true]) {
   test(`ACP ${startup ? "startup" : "runtime"} mode timeout becomes unknown/offline and a late ack cannot resurrect it`, async () => {

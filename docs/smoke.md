@@ -1370,8 +1370,8 @@ unrelated rsync jobs; a later attempt admitted the sequential fixture run.
 | Kimi | never-ask (`auto`) | `file-edit-ok` read back | `shell-ok` read back | 0 ACP permission requests |
 | Codex | ask-when-needed | Unverified, no file produced | Unverified, no file produced | Proxy turn emitted userMessage but no tool/completion within 180 s; 0 approval requests |
 | Codex | never-ask | Not run, unverified | Not run, unverified | Omitted after the first bounded failure, preserving prompt quota |
-| Claude | ask-when-needed | edit.txt changed to after | shell.txt read back shell-ok | Bound native hook identity recorded; 0 native permission_denials |
-| Claude | never-ask | edit.txt changed to after | shell.txt read back shell-ok | Bound native hook identity recorded; 0 native permission_denials |
+| Claude | ask-when-needed | edit.txt changed to after | shell.txt read back shell-ok | Historical earlier policy: bound native hook identity; 0 denials. Current scoped policy unverified |
+| Claude | never-ask | edit.txt changed to after | shell.txt read back shell-ok | Historical earlier policy: bound native hook identity; 0 denials. Current scoped policy unverified |
 | Pi | ask-when-needed | Unverified, no tool ran | Unverified, no tool ran | Fixture had no model gateway configured; RPC prompt accepted but no model/tool execution |
 | Pi | never-ask | Unverified, no tool ran | Unverified, no tool ran | Same missing fixture gateway; no successful model/tool execution |
 
@@ -1395,8 +1395,10 @@ permission_denials array is not evidence that an interactive dialog appeared.
 The hook's matching instance/launch metadata confirms its transport ran.
 
 No additional native prompts were sent for the subsequent launcher metadata
-and balanced Stop fixes; their behavior is pinned by focused daemon/launcher
+and permission-only idle fixes; their behavior is pinned by focused daemon/launcher
 regressions. Pi's missing gateway was a fixture configuration limitation, not
 evidence of an account outage or a permission-mode failure. Codex's timeout
 cause remains undiagnosed. These legs remain unverified rather than being
 replaced with fake evidence. Fixture process groups were stopped afterward.
+
+The historical Claude benign checks above used the earlier hook policy. The current scoped-path policy, expanded native configuration exclusions, startup reconciliation, and private settings retirement are covered by fixtures but remain native unverified. No additional account prompts were used for the second review corrections.

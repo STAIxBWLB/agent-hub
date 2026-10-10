@@ -5,6 +5,7 @@ export function startFakeAppServer(
   onRevert?: (params: { threadId: string; beforeTurnId: string }) => void,
   usedPercent = 93,
   reportApprovalPolicy = true,
+  onRequest?: (msg: any) => void,
 ) {
   let turnSeq = 0;
   let threadTotal = 0; // the thread's running token total, as Codex keeps it
@@ -24,7 +25,7 @@ export function startFakeAppServer(
     websocket: {
       async message(ws, data) {
         const msg = JSON.parse(String(data));
-        requests.push(msg);
+        requests.push(msg); onRequest?.(msg);
         const reply = (result: unknown) => void ws.send(JSON.stringify({ id: msg.id, result }));
         const note = (method: string, params: unknown) => void ws.send(JSON.stringify({ method, params }));
         if (msg.method === "initialize") return reply({ userAgent: "fake-codex/0.154.0" });

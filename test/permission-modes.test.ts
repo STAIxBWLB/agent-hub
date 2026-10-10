@@ -45,6 +45,55 @@ test("slow native default confirmation refuses competing decline, duplicate appr
   expect((await rig.mode("kimi", "ask")).permissionMode).toBe("ask");
 });
 
+for (const peer of ["kimi", "codex"]) test(`startup console y reconciles ${peer}'s captured mode before its first native turn`, async () => {
+  let contexts = 0, release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const memory = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
+    if (new URL(req.url).pathname === "/api/context/inject") { contexts++; await gate; return new Response("# [fixture] recent context\n### today\nreference"); }
+    return Response.json({ status: "ok" });
+  } }); cleanup.push(() => { release(); memory.stop(true); });
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-startup-mode-"));
+  const record = join(cwd, "requests.jsonl"), bin = join(cwd, "fake-codex");
+  const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("reserved") });
+  const port = reservation.port!; reservation.stop(true);
+  writeFileSync(bin, `#!${process.execPath}\nimport { appendFileSync } from "node:fs"; import { startFakeAppServer } from ${JSON.stringify(join(import.meta.dir, "fakes/app-server.ts"))}; const url=process.argv[process.argv.indexOf("--listen")+1]; startFakeAppServer(30,Number(new URL(url).port),undefined,0,true,msg=>appendFileSync(${JSON.stringify(record)},JSON.stringify(msg)+"\\n"));\n`, { mode: 0o700 });
+  const rig = await fixture({ codex_bin: bin, permission_modes: { [peer]: "never-ask" }, memory: { ...DEFAULT_CONFIG.memory, enabled: true, worker_url: `http://127.0.0.1:${memory.port}` } },
+    { cwd, stateDir: join(cwd, "state") }, { codexAppPort: port });
+  const started = rig.client.request({ t: "start", peer });
+  await until(() => contexts > 0);
+  expect((await rig.client.request({ t: "permission_default", peer, confirmed: true })).permissionMode).toBe("never-ask");
+  release(); const ready = await started; expect(ready).toMatchObject({ ok: true });
+  const owner = rig.daemon.bus.peers.get(peer) as CodexPeer | import("../src/adapters/acp.ts").AcpPeer;
+  expect(owner.getPermissionMode()).toBe("never-ask");
+  expect((await rig.client.request({ t: "status" })).status.peers[peer].permissionMode).toBe("never-ask");
+  if (peer === "codex") {
+    const tui = new WebSocket(ready.proxyUrl); cleanup.push(() => tui.close());
+    tui.onopen = () => tui.send(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "fake-tui", version: "1" } } }));
+    tui.onmessage = event => { if (JSON.parse(String(event.data)).id === 1) { tui.send(JSON.stringify({ method: "initialized" })); tui.send(JSON.stringify({ id: 2, method: "thread/start", params: { cwd: rig.cwd } })); } };
+    await until(() => owner.state === "idle");
+    rig.daemon.bus.publish(newEnvelope("user", "one turn", { to: [peer], priority: "important" }));
+    const requests = () => { try { return readFileSync(record, "utf8").trim().split("\n").map(row => JSON.parse(row)); } catch { return []; } };
+    await until(() => requests().some(r => r.method === "turn/start"));
+    expect(requests().find(r => r.method === "turn/start").params.approvalPolicy).toBe("never");
+  }
+});
+
+for (const selected of ["ask", "ask-when-needed", "never-ask"]) test(`runtime ${selected} supersedes a pending config default and rejects stale y/n`, async () => {
+  const rig = await fixture({ permission_modes: { kimi: "never-ask" } });
+  await rig.client.request({ t: "start", peer: "kimi" });
+  expect((await rig.mode("kimi", selected, true)).permissionMode).toBe(selected);
+  expect((await rig.client.request({ t: "status" })).status.permissionDefaults).toBeUndefined();
+  for (const confirmed of [true, false]) expect((await rig.client.request({ t: "permission_default", peer: "kimi", confirmed })).ok).toBe(false);
+  expect((await rig.mode("kimi")).permissionMode).toBe(selected);
+  const log = readFileSync(join(rig.stateDir, "hub.log"), "utf8");
+  expect(log).not.toContain("confirmed by the console"); expect(log).not.toContain("declined; effective ask");
+  if (selected !== "ask") {
+    await rig.daemon.bus.peers.get("kimi")!.stop();
+    await rig.client.request({ t: "start", peer: "kimi" });
+    expect(readFileSync(join(rig.stateDir, "hub.log"), "utf8")).toContain(`permission start kimi: ${selected} from human runtime command`);
+  }
+});
+
 test("permission defaults reject malformed modes and tracked opt-ins cannot disable prompts", () => {
   expect(permissionDefaults(undefined)).toEqual({});
   for (const value of [null, [], "never-ask", { kimi: "auto" }, { unknown: "ask" }]) expect(() => permissionDefaults(value)).toThrow();
@@ -212,7 +261,7 @@ test("permission-only Pre never marks Claude busy, even without a Stop", async (
 });
 
 
-for (const tracked of [false, true]) test(`never-ask config default ${tracked ? "tracked main" : "local overlay"} needs a person's startup console confirmation`, async () => {
+for (const tracked of [false, true]) test(`never-ask config default ${tracked ? "tracked main is ignored" : "local overlay needs startup confirmation"}`, async () => {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-default-confirm-")); mkdirSync(join(cwd, ".agenthub"));
   expect(Bun.spawnSync(["git", "-C", cwd, "init", "-q"]).exitCode).toBe(0);
   const name = tracked ? "config.json" : "config.local.json";
@@ -223,6 +272,13 @@ for (const tracked of [false, true]) test(`never-ask config default ${tracked ? 
   const rig = await fixture(modeConfig, { cwd, stateDir: join(cwd, "state") });
   await rig.client.request({ t: "start", peer: "kimi" });
   expect((await rig.mode("kimi")).permissionMode).toBe("ask");
+  if (tracked) {
+    expect(loaded.permission_default_sources).toEqual({});
+    expect((await rig.client.request({ t: "status" })).status.permissionDefaults).toBeUndefined();
+    expect((await rig.client.request({ t: "permission_default", peer: "kimi", confirmed: true })).ok).toBe(false);
+    expect(readFileSync(join(rig.stateDir, "hub.log"), "utf8")).not.toContain("never-ask from .agenthub/config.json");
+    return;
+  }
   expect((await rig.client.request({ t: "status" })).status.permissionDefaults).toEqual([{ peer: "kimi", mode: "never-ask", source: `.agenthub/${name}` }]);
   expect(readFileSync(join(rig.stateDir, "hub.log"), "utf8")).toContain(`never-ask from .agenthub/${name}; effective ask`);
   const tools = await ControlClient.connect(rig.stateDir, { role: "tools", peer: "kimi" }); cleanup.push(() => tools.close());

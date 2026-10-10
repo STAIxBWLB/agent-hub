@@ -111,7 +111,7 @@ test("permission CLI validates confirmation, lists and shows modes, and guides a
       const msg = JSON.parse(String(raw));
       if (msg.t === "hello") { ws.send(JSON.stringify({ t: "welcome", rid: msg.rid, ok: true, cwd: root, protocol: PROTOCOL })); return; }
       requests.push(msg);
-      const reply = oldHub ? { ok: false, error: 'this hub does not know "permission" (restart it: ahub kill && ahub up)' } : msg.peer === "missing" ? { ok: false, error: "unknown permission peer" } : msg.peer === "unsupported" ? { ok: false, error: "peer unsupported cannot change permission mode: relaunch behind the proxy" } : msg.peer ? { ok: true, peer: msg.peer, permissionMode: msg.mode ?? "ask" } : { ok: true, peers: { pi: "ask-when-needed", codex: "ask" } };
+      const reply = msg.t === "status" ? { ok: true, status: { pid: 1, controlPort: server.port, cwd: root, peers: { claude: { state: "idle", permissionMode: "unverified" }, kimi: { state: "idle", permissionMode: "unmanaged" }, local: { state: "idle", permissionMode: "unknown" } } } } : oldHub ? { ok: false, error: 'this hub does not know "permission" (restart it: ahub kill && ahub up)' } : msg.peer === "missing" ? { ok: false, error: "unknown permission peer" } : msg.peer === "unsupported" ? { ok: false, error: "peer unsupported cannot change permission mode: relaunch behind the proxy" } : msg.peer ? { ok: true, peer: msg.peer, permissionMode: msg.mode ?? (msg.peer === "claude" ? "unverified" : msg.peer === "kimi" ? "unmanaged" : msg.peer === "local" ? "unknown" : "ask") } : { ok: true, peers: { pi: "ask-when-needed", codex: "ask", claude: "unverified", kimi: "unmanaged", local: "unknown" } };
       ws.send(JSON.stringify({ t: "reply", rid: msg.rid, ...reply }));
     } } });
   writeFileSync(join(stateDir, "status.json"), JSON.stringify({ cwd: root, controlPort: server.port, protocol: PROTOCOL }));
@@ -123,6 +123,14 @@ test("permission CLI validates confirmation, lists and shows modes, and guides a
     }
     const list = await cli(root, ["permission"]);
     expect(list.code, list.stderr).toBe(0); expect(list.stdout).toContain("pi: ask-when-needed");
+    for (const [peer, display] of [["claude", "unverified"], ["kimi", "unmanaged"], ["local", "unknown"]] as const) {
+      expect(list.stdout).toContain(`${peer}: ${display}`);
+      const shown = await cli(root, ["permission", peer]);
+      expect(shown.code, shown.stderr).toBe(0); expect(shown.stdout).toContain(`${peer}: ${display}`);
+    }
+    const status = await cli(root, ["status"]);
+    expect(status.code, status.stderr).toBe(0);
+    for (const display of ["unverified", "unmanaged", "unknown"]) expect(status.stdout).toContain(`permission: ${display}`);
     const show = await cli(root, ["permission", "pi"]);
     expect(show.code, show.stderr).toBe(0); expect(show.stdout).toContain("pi: ask");
     for (const mode of ["ask", "ask-when-needed", "never-ask"]) {

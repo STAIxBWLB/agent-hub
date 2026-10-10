@@ -827,11 +827,13 @@ denylist (Pi and local), or native vendor boundaries (Claude and Codex).
 | --- | --- | --- | --- |
 | Kimi Code CLI | ACP yolo | ACP auto | ACP default |
 | Codex | on-request for every outgoing turn/start | never for every outgoing turn/start | Restore the known native policy once, then stop overriding |
-| Claude | Allow resolving project file tools outside .agenthub/.git/.claude | Hook allow for every tool | No hook decision |
+| Claude | Allow resolving project file tools outside .agenthub/.git/.claude/.codex/.qwen/.kimi/.pi/.mcp.json | Hook allow for every tool | No hook decision |
 | Pi and local | Grant write/edit; read never asks; bash and mutating git retain console approval | Grant each tool once within the existing sandbox/guard | Normal approval handling |
 
 Kimi's map applies only to the actual Kimi Code CLI identity, not another ACP
-agent configured in kimi_cmd. Qwen and other ACP agents need their own map.
+agent configured in kimi_cmd. Qwen and other ACP agents start fresh/resumed
+unmanaged without mode changes or mode-based startup refusals; runtime changes
+are refused until their own map exists.
 A set_mode timeout leaves the peer offline with mode unknown; inspect and
 restart before using it. Missing ids and refused startup changes name the mode.
 The benign Kimi live check verifies file edits and harmless shells in both
@@ -853,10 +855,11 @@ Project defaults use permission_modes in .agenthub/config.json or
 .agenthub/config.local.json. Keys merge per peer; a local ask overrides the
 same peer's earlier default, while an empty local block preserves it. Every
 non-ask default start logs its mode and contributing filename. Automatic
-config effects stop at ask-when-needed. Never-ask from any file starts in ask
+config effects stop at ask-when-needed. Git-tracked defaults are ignored and never
+offered for confirmation. Never-ask from an applied untracked file starts in ask
 and appears as a pending source-labelled console question at hub start.
 Only its separate console y enables that default; there is no boot --yes
-bypass. Declining keeps ask for that hub. Runtime choices expire when the hub
+bypass. Only explicit n declines and keeps ask for that hub; Enter/Esc keep the prompt. A successful runtime change removes that pending default. Runtime choices expire when the hub
 stops, and a later restart asks again for a never-ask config default.
 
 The CLI marker and console-role checks are operating policy, not a hostile-agent
@@ -1812,3 +1815,5 @@ invalid session history has no fresh fallback; inspect it before running
 `ahub pi`. Active turns/tools, failed startup, a superseded owner, native
 terminal exits, requested shutdown and recovery operations suppress this
 restart. Crash recovery's #66 recorded-session/fresh-start choices are unchanged.
+
+Permission mode starts reconcile the current operator choice after native startup before bus delivery. Each non-ask start logs the mode and its config or runtime source. Dropped git-tracked defaults never appear as startup confirmations. Non-Kimi ACP peers run unmanaged, preserving their native fresh/resumed mode; permission commands refuse changes until a vendor map exists.

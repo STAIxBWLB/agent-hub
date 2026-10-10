@@ -39,6 +39,12 @@ export function permissionBoundary(peer: string): string {
   if (peer === "claude" || peer === "codex") return `${peer}: native vendor bounds; no hub sandbox`;
   return `${peer}: runs its own tools; NO hub sandbox`;
 }
+function permissionModeRefusal(peer: string, mode: unknown): string | undefined {
+  if (mode === "unmanaged") return `${peer} permission mode is unmanaged; use its native controls`;
+  if (mode === "unverified") return `${peer} permission mode is unverified; start with ahub ${peer} and run a tool first`;
+  if (mode === "unknown") return `${peer} permission mode is unknown; inspect or reconnect its native session`;
+  return undefined;
+}
 /** Offer one file default only when no other keyboard decision or edit is active. */
 export function syncPermissionDefaults(s: ConsoleState, rows: unknown): boolean {
   if (!Array.isArray(rows)) rows = [];
@@ -372,6 +378,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   if (s.confirm) {
     const confirm = s.confirm; s.confirm = undefined;
     if (confirm.type === "permission_default") {
+      if (key !== "y" && key !== "n") { s.confirm = confirm; return done(); }
       s.permissionDefaultsHandled = [...s.permissionDefaultsHandled, confirm.peer];
       effects.push({ type: "permission_default", peer: confirm.peer, confirmed: key === "y" });
       return done();
@@ -392,6 +399,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     if (/^[1-3]$/.test(key) && mode) {
       s.modeChoice = undefined;
       if (!s.peers[peer] || s.peers[peer].state === "offline") notify(s, `${peer} is no longer attached`, now);
+      else if (permissionModeRefusal(peer, s.peers[peer].permissionMode)) notify(s, permissionModeRefusal(peer, s.peers[peer].permissionMode)!, now);
       else if (mode === "never-ask") s.confirm = { type: "command", args: ["permission", peer, mode] };
       else effects.push({ type: "command", args: ["permission", peer, mode] });
     }
@@ -480,6 +488,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       const peer = String(item);
       const info = s.peers[peer];
       if (!info || info.state === "offline") notify(s, `${peer} is not attached`, now);
+      else if (permissionModeRefusal(peer, info.permissionMode)) notify(s, permissionModeRefusal(peer, info.permissionMode)!, now);
       else s.modeChoice = peer;
       return done();
     }
@@ -604,7 +613,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   if (s.notice && now - (s.noticeAt ?? now) < NOTICE_MS) approvals.push(span(" | "), span(s.notice, s.noticeTone ?? "failure"));
   const neverPeer = s.confirm?.type === "permission_default" ? s.confirm.peer : s.confirm?.type === "command" && s.confirm.args[0] === "permission" && s.confirm.args[2] === "never-ask" ? s.confirm.args[1] : undefined;
   const defaultSource = s.confirm?.type === "permission_default" ? s.confirm.source : undefined;
-  if (s.confirm?.type === "permission_default") prompt = `enable never-ask default for ${s.confirm.peer}? y/N`;
+  if (s.confirm?.type === "permission_default") prompt = `enable never-ask default for ${s.confirm.peer}? y/n (other keys wait)`;
   const footer = [fitLine(neverPeer ? [span(permissionBoundary(neverPeer), "attention")] : summary, columns),
     fitLine(defaultSource !== undefined ? [span(`source ${quoted(defaultSource.split(/[\\/]/).at(-1))}; stays ask until y`, "attention")] : approvals, columns),
     fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
