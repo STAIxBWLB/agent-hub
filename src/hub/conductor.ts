@@ -3,6 +3,7 @@ import type { Task } from "./board.ts";
 import { CONDUCTOR_TOOL_NAMES } from "./hub-tools.ts";
 import { HUB, USER } from "./envelope.ts";
 import { OWNERSHIP_EVENTS } from "./tasks.ts";
+import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import type { HubEvent } from "./events.ts";
 import type { SupervisionFeed } from "./supervision.ts";
 import type { Budget } from "./budget.ts";
@@ -45,16 +46,16 @@ export function conductorPeer(roles: unknown): string | null {
 }
 
 /** The role check always comes first; default-allow capabilities cannot grant a role. */
-export function requireConductor(peer: string, roles: unknown, capabilities: Record<string, unknown> = {}, assign = false): void {
-  if (conductorPeer(roles) !== peer) throw new Error("this operation requires the explicit conductor role");
-  if (assign) requireAssign(peer, capabilities);
+export function requireConductor(peer: string, roles: unknown, capabilities: Record<string, unknown> = {}, assign = false, preEffect = false): void {
+  if (conductorPeer(roles) !== peer) throw new (preEffect ? PreEffectToolRefusal : Error)("this operation requires the explicit conductor role");
+  if (assign) requireAssign(peer, capabilities, preEffect);
 }
 
 /** A peer with an explicit capabilities list needs `assign` in it to move work. */
-function requireAssign(peer: string, capabilities: Record<string, unknown>): void {
+function requireAssign(peer: string, capabilities: Record<string, unknown>, preEffect = false): void {
   if (!Object.hasOwn(capabilities, peer)) return;
   const caps = capabilities[peer];
-  if (!Array.isArray(caps) || !caps.includes("assign")) throw new Error(`${peer} requires assign capability for this operation`);
+  if (!Array.isArray(caps) || !caps.includes("assign")) throw new (preEffect ? PreEffectToolRefusal : Error)(`${peer} requires assign capability for this operation`);
 }
 
 export interface ConductorHold { peer: string; actor: string; since: number }
@@ -169,7 +170,7 @@ const taskId = (v: unknown): number | undefined => {
 export class Conductor {
   constructor(private readonly holds: ConductorHolds, private readonly hooks: ConductorHooks) {}
   async execute(actor: string, tool: string, args: Record<string, unknown>): Promise<unknown> {
-    if (!CONDUCTOR_TOOL_NAMES.has(tool)) throw new Error("unknown conductor tool");
+    if (!CONDUCTOR_TOOL_NAMES.has(tool)) throw new PreEffectToolRefusal("unknown conductor tool");
     if ((tool === "hub_task_show" || tool === "hub_task_assign") && conductorPeer(this.hooks.roles()) !== actor) {
       const id = taskId(args.id);
       const task = id === undefined ? undefined : this.hooks.task(id);
@@ -183,13 +184,13 @@ export class Conductor {
       const accepted = task?.history.some((h) => h.event === "accepted");
       if (task && tool === "hub_task_assign" && task.history[0]?.by === actor && task.state === "proposed" && !accepted && moved?.by !== USER) {
         const peer = peerId(args.peer);
-        if (peer !== actor) requireAssign(actor, this.hooks.capabilities());
+        if (peer !== actor) requireAssign(actor, this.hooks.capabilities(), true);
         await this.hooks.assign(actor, task.id, peer);
         const updated = this.hooks.task(task.id);
         return updated ? publicConductorTask(updated, this.hooks.publicView) : { id: task.id };
       }
     }
-    requireConductor(actor, this.hooks.roles(), this.hooks.capabilities(), tool === "hub_task_assign" || tool === "hub_task_escalate");
+    requireConductor(actor, this.hooks.roles(), this.hooks.capabilities(), tool === "hub_task_assign" || tool === "hub_task_escalate", true);
     const action = tool.slice(4);
     const emit = (extra: Pick<ConductEvent, "task" | "peer"> = {}) => {
       try { this.hooks.audit({ kind: "conduct", actor, action, ...extra }); } catch { /* never throw after a task or hold write */ }
@@ -197,9 +198,9 @@ export class Conductor {
     if (tool === "hub_status") { const result = publicConductorStatus(this.hooks.status()); emit(); return result; }
     if (tool.startsWith("hub_task_")) {
       const id = taskId(args.id);
-      if (id === undefined) throw new Error("id must be a positive integer");
+      if (id === undefined) throw new PreEffectToolRefusal("id must be a positive integer");
       const task = this.hooks.task(id);
-      if (!task) throw new Error(`no task #${args.id}`);
+      if (!task) throw new PreEffectToolRefusal(`no task #${args.id}`);
       if (tool === "hub_task_show") { const result = publicConductorTask(task, this.hooks.publicView); emit({ task: task.id }); return result; }
       if (tool === "hub_task_assign") {
         const peer = peerId(args.peer);
@@ -215,10 +216,10 @@ export class Conductor {
       emit({ peer: start.peer }); return start;
     }
     const peer = peerId(args.peer);
-    if (!this.hooks.known(peer)) throw new Error(`unknown peer: ${peer}`);
+    if (!this.hooks.known(peer)) throw new PreEffectToolRefusal(`unknown peer: ${peer}`);
     if (tool === "hub_peer_hold") { this.holds.hold(peer, actor); this.hooks.pause(peer); }
     else {
-      if (this.holds.get(peer)?.actor !== actor) throw new Error("you may release only a conductor hold you placed");
+      if (this.holds.get(peer)?.actor !== actor) throw new PreEffectToolRefusal("you may release only a conductor hold you placed");
       await this.hooks.validateRelease?.(peer);
       requireConductor(actor, this.hooks.roles(), this.hooks.capabilities());
       this.holds.release(peer, actor); this.hooks.release(peer);

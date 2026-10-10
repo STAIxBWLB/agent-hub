@@ -15,6 +15,16 @@ import type { ExecutionBudgetDecision, ExecutionUnit } from "../hub/execution-bu
 export interface PiModelDescriptor { id: string; name?: string; contextWindow?: number; maxTokens?: number; reasoning?: boolean; }
 export interface PiToolSchema { name: string; description?: string; parameters: Record<string, unknown>; }
 export interface PiRelay { url: string; token: string; models: PiModelDescriptor[]; }
+export interface PiExit {
+  cause: "process_exit" | "spawn_error" | "session_shutdown" | "owner_lost";
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  expected: boolean;
+  started: boolean;
+  turnActive: boolean;
+  toolActive: boolean;
+  lastToolName?: string;
+}
 export interface PiOptions {
   cwd: string; stateDir: string; cmd?: string[]; mode: "headless" | "tui"; backend: "auto" | "dgx" | "mlx"; sessionFile?: string; sessionId?: string;
   model?: string;
@@ -28,6 +38,8 @@ export interface PiOptions {
   /** `ceiling` is the validated, session/turn-bound tool-step ceiling signal (#179), present only when the trusted extension emitted one for this turn. */
   onTurnFailure?: (envs: Envelope[], reason: string, ceiling?: PiToolStepCeiling) => Promise<void>;
   watchdogMs?: number; log?: (line: string) => void;
+  /** Once per owner, after it is offline; a TUI owner may have unknown OS exit status. */
+  onExit?: (exit: PiExit) => void;
   /** How long stop() waits for a graceful TUI owner exit before verified teardown. Tests shrink this. */
   stopGraceMs?: number;
 }
@@ -74,6 +86,10 @@ export class PiPeer extends BasePeer {
   private ownerClaimed = false;
   private ownerToken = "";
   private stopping = true;
+  private exitReported = false;
+  private started = false;
+  private lastToolName?: string;
+  private shutdownExit?: PiExit;
   private ownerPid?: number;
   private ownerSignature?: string;
   private ownerMonitor?: ReturnType<typeof setInterval>;
@@ -179,6 +195,8 @@ export class PiPeer extends BasePeer {
       if (reservation.deadlineAt !== undefined) idleBashTimer = setTimeout(() => idleBashAbort.abort(), Math.max(0, reservation.deadlineAt - Date.now()));
     }
     this.noteActivity();
+    const name = String(body.name);
+    this.lastToolName = this.opts.tools.some((tool) => tool.name === name) && /^[a-zA-Z0-9_.-]{1,128}$/.test(name) ? name : "unknown";
     this.activeTools++;
     if (this.state === "idle") this.setState("busy");
     if (this.state === "busy") this.touch();
@@ -230,6 +248,7 @@ export class PiPeer extends BasePeer {
 
   private async startImpl(): Promise<void> {
     this.stopping = false;
+    this.exitReported = false; this.started = false; this.lastToolName = undefined; this.shutdownExit = undefined;
     mkdirSync(this.opts.stateDir, { recursive: true });
     const sessions = join(this.opts.stateDir, "pi-sessions");
     mkdirSync(sessions, { recursive: true, mode: 0o700 });
@@ -275,8 +294,17 @@ export class PiPeer extends BasePeer {
     trackGroup(this.proc);
     this.proc.stdout.on("data", (chunk) => this.onOutput(String(chunk)));
     this.proc.stderr.on("data", (chunk) => this.opts.log?.(`[${this.id}] ${String(chunk).trimEnd()}`));
-    this.proc.on("error", (error) => this.fail(error));
-    this.proc.on("exit", (code) => { if (code !== 0) this.fail(new Error(`pi exited with code ${code}`)); else this.setState("offline"); });
+    const proc = this.proc;
+    proc.on("error", (error) => {
+      const exit = this.exitMetadata("spawn_error");
+      this.fail(error);
+      this.reportExit(exit);
+    });
+    proc.on("exit", (code, signal) => {
+      const exit = { ...(this.shutdownExit ?? this.exitMetadata("process_exit")), code, signal };
+      this.fail(new Error(`pi exited with ${signal ? `signal ${signal}` : `code ${code}`}`));
+      this.reportExit(exit);
+    });
     const state = await this.waitRpc("get_state", 15_000);
     if (state.success !== true || typeof state.data?.sessionId !== "string" || typeof state.data?.sessionFile !== "string" || !state.data.sessionId || !state.data.sessionFile) throw new Error("Pi get_state did not prove session identity");
     if ((this.opts.sessionId && state.data.sessionId !== this.opts.sessionId) || (this.opts.sessionFile && state.data.sessionFile !== this.opts.sessionFile)) {
@@ -285,6 +313,7 @@ export class PiPeer extends BasePeer {
     this.sessionId = state.data.sessionId; this.sessionFile = state.data.sessionFile;
     this.persistedOnce = existsSync(this.sessionFile);
     if ((this.opts.sessionId && this.sessionId !== this.opts.sessionId) || (this.opts.sessionFile && this.sessionFile !== this.opts.sessionFile)) throw new Error("Pi startup session identity mismatch");
+    this.started = true;
     this.setState("idle");
   }
 
@@ -416,9 +445,15 @@ export class PiPeer extends BasePeer {
       this.sessionId = String(event.sessionId ?? ""); this.sessionFile = String(event.sessionFile ?? "");
       this.ownerPid = Number.isInteger(event.pid) ? event.pid : undefined; this.ownerSignature = typeof event.signature === "string" ? event.signature : undefined;
       if ((this.opts.sessionId && this.sessionId !== this.opts.sessionId) || (this.opts.sessionFile && this.sessionFile !== this.opts.sessionFile)) { this.opts.log?.(`[${this.id}] Pi session identity mismatch`); return; }
-      this.startOwnerMonitor(); if (this.opts.mode === "tui") this.setState("idle");
+      this.startOwnerMonitor(); if (this.opts.mode === "tui") { this.started = true; this.setState("idle"); }
     }
-    if (event.type === "session_shutdown") { this.stopping = true; this.ownerClaimed = false; this.clearOwnerMonitor(); this.resolveTuiExit?.(); this.resolveTuiExit = undefined; this.fail(new Error("Pi session shut down before settlement")); }
+    if (event.type === "session_shutdown") {
+      const exit = this.exitMetadata("session_shutdown");
+      this.shutdownExit ??= exit; // headless waits for the OS exit, retaining the pre-cleanup turn and stop facts
+      this.stopping = true; this.ownerClaimed = false; this.clearOwnerMonitor(); this.resolveTuiExit?.(); this.resolveTuiExit = undefined;
+      this.fail(new Error("Pi session shut down before settlement"));
+      if (this.opts.mode === "tui") this.reportExit(exit);
+    }
     if (event.type === "agent_start") {
       const generation = Number.isSafeInteger(event.generation) ? event.generation : this.budgetGeneration + 1;
       if (generation <= this.budgetGeneration) return;
@@ -507,6 +542,20 @@ export class PiPeer extends BasePeer {
     try { return await Promise.race([this.sendRpc({ type: command }), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`Pi ${command} timed out`)), timeout); })]); }
     finally { clearTimeout(timer); }
   }
+  private exitMetadata(cause: PiExit["cause"]): PiExit {
+    return { cause, code: null, signal: null, expected: this.stopping, started: this.started,
+      turnActive: this.agentRunning || this.activeEnvs.length > 0, toolActive: this.activeTools > 0,
+      ...(this.lastToolName ? { lastToolName: this.lastToolName } : {}) };
+  }
+
+  private reportExit(exit: PiExit): void {
+    if (this.exitReported) return;
+    this.exitReported = true;
+    const line = `[${this.id}] Pi exit: cause=${exit.cause} code=${exit.code ?? "unknown"} signal=${exit.signal ?? "unknown"} expected=${exit.expected} started=${exit.started} turnActive=${exit.turnActive} toolActive=${exit.toolActive} lastTool=${exit.lastToolName ?? "none"}`;
+    try { this.opts.log?.(line); } catch { /* reporting must not prevent owner settlement */ }
+    try { this.opts.onExit?.(exit); } catch { /* the owner is already offline */ }
+  }
+
   private fail(error: Error): void {
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
@@ -525,11 +574,13 @@ export class PiPeer extends BasePeer {
     if (this.opts.mode !== "tui" || !this.ownerPid || !this.ownerSignature) return;
     this.ownerMonitor = setInterval(() => {
       if (!this.ownerPid || ownerStillAlive(this.ownerPid, this.ownerSignature)) return;
+      const exit = this.exitMetadata("owner_lost");
       this.stopping = true; this.ownerClaimed = false; this.clearOwnerMonitor();
       this.resolveTuiExit?.(); this.resolveTuiExit = undefined;
       for (const pending of this.tuiCommands.values()) pending.reject(new Error("Pi owner exited"));
       this.tuiCommands.clear(); this.tuiQueue = [];
       this.fail(new Error("Pi owner process exited without session_shutdown"));
+      this.reportExit(exit);
     }, 500);
     this.ownerMonitor.unref?.();
   }

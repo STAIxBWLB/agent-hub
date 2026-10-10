@@ -1,5 +1,5 @@
 import { createInterface } from "node:readline";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 const option = (flag: string) => process.argv.includes(flag) ? process.argv[process.argv.indexOf(flag) + 1] : undefined;
 const empty = process.argv.includes("--empty-session");
@@ -17,3 +17,16 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   else if (request.type === "set_model") send({ type: "response", id: request.id, command: "set_model", success: true });
   else if (request.type === "prompt" || request.type === "steer") { messageCount++; send({ type: "response", id: request.id, command: request.type, success: true }); }
 });
+
+const exitTrigger = option("--exit-trigger");
+if (exitTrigger) {
+  const timer = setInterval(() => {
+    if (!existsSync(exitTrigger)) return;
+    clearInterval(timer);
+    if (process.argv.includes("--exit-consume-trigger")) rmSync(exitTrigger);
+    const signal = option("--exit-signal");
+    if (signal) process.kill(process.pid, signal as NodeJS.Signals);
+    else process.exit(Number(option("--exit-code") ?? 0));
+  }, 10);
+  timer.unref();
+}

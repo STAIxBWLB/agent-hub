@@ -9,6 +9,7 @@ import { assign, detectSignals, LOCAL, peerEntry, PI, predictSplit, type Assignm
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 import { realPath } from "./project.ts";
+import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 
 export interface TasksDeps {
@@ -470,7 +471,7 @@ export class Tasks {
   async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown }): Promise<Task> {
     // Callers are models: a title is one line (it is part of console and hub.log lines), not a document.
     const title = String(input.title ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
-    if (!title) throw new Error("title is required");
+    if (!title) throw new PreEffectToolRefusal("title is required");
     // Dependencies can only name tasks that exist, so the new task closes no cycle: nothing can depend on it yet.
     // Callers are models: a missing or null `after` is no dependency, and an id is an integer or a digit string.
     let afterIds: unknown[] = [];
@@ -479,14 +480,14 @@ export class Tasks {
     const deps: number[] = [];
     for (const v of afterIds) {
       const id = typeof v === "number" || (typeof v === "string" && /^\s*\d+\s*$/.test(v)) ? Number(v) : NaN;
-      if (!Number.isInteger(id)) throw new Error(`after: ${JSON.stringify(v)} is not a task id`);
-      if (!this.d.board.get(id)) throw new Error(`after: no task #${id}`);
+      if (!Number.isInteger(id)) throw new PreEffectToolRefusal(`after: ${JSON.stringify(v)} is not a task id`);
+      if (!this.d.board.get(id)) throw new PreEffectToolRefusal(`after: no task #${id}`);
       if (!deps.includes(id)) deps.push(id);
     }
     // An owner for work that waits is reserved (issue #207): routing offers it to that peer first once it is ready.
     const reserved = this.waitsFor({ deps }).length ? input.owner : undefined;
     const given = input.class === undefined || input.class === "" ? undefined : input.class;
-    if (given !== undefined && !CLASSES.includes(given as TaskClass)) throw new Error(`class must be one of ${CLASSES.join(", ")}`);
+    if (given !== undefined && !CLASSES.includes(given as TaskClass)) throw new PreEffectToolRefusal(`class must be one of ${CLASSES.join(", ")}`);
     const text = { title, detail: String(input.detail ?? "").slice(0, 8000), refs: cleanRefs(input.refs) };
     const plan = cleanPlan(input.plan);
     // The plan reaches other owners, so a PII pattern in it makes the task a PII task like one in the detail would.
@@ -511,7 +512,7 @@ export class Tasks {
     // A claim is work the caller will do itself: without a class and a model to name one, it is implementation (#6).
     const defaulted = !cls && input.owner === by;
     if (defaulted) cls = "implement";
-    if (!cls) throw new Error(`class is required (one of ${CLASSES.join(", ")}); ${fenced ? "the task is handled as PII and the hub's model is not reached on campus, so it was not asked to name one" : "the hub could not name one for you"}`);
+    if (!cls) throw new PreEffectToolRefusal(`class is required (one of ${CLASSES.join(", ")}); ${fenced ? "the task is handled as PII and the hub's model is not reached on campus, so it was not asked to name one" : "the hub could not name one for you"}`);
     const draft = { ...text, class: cls };
     let task = this.d.board.propose(by, { ...draft, plan, ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals });
     if (screening) task = this.screenedTask(task, screened);
@@ -902,9 +903,9 @@ export class Tasks {
   }
 
   /** Nobody, the console user included, works on a task before what it waits for is approved. */
-  private ready(task: Task): void {
+  private ready(task: Task, preEffect = false): void {
     const waits = this.waitsFor(task);
-    if (waits.length) throw new Error(`task #${task.id} waits for ${waits.map((id) => `#${id}`).join(", ")}, not approved yet`);
+    if (waits.length) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} waits for ${waits.map((id) => `#${id}`).join(", ")}, not approved yet`);
   }
 
   /** An approved task may be the last thing others waited for: those go through assignment now (issue #34). */
@@ -969,18 +970,18 @@ export class Tasks {
     }
   }
 
-  private mine(task: Task, by: PeerId, role: "owner" | "reviewer"): void {
-    if (by !== USER && task[role] !== by) throw new Error(`task #${task.id}: only its ${role} (${task[role] ?? "none"}) or the console user can do that`);
+  private mine(task: Task, by: PeerId, role: "owner" | "reviewer", preEffect = false): void {
+    if (by !== USER && task[role] !== by) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id}: only its ${role} (${task[role] ?? "none"}) or the console user can do that`);
   }
 
-  private need(id: unknown, open = false): Task {
+  private need(id: unknown, open = false, preEffect = false): Task {
     // Callers are models (#70): an id is a whole number or a digit string, never an array that Number() would accept.
     const n = typeof id === "number" ? id : typeof id === "string" && /^\s*\d+\s*$/.test(id) ? Number(id) : NaN;
-    if (!Number.isInteger(n)) throw new Error(`id must be a task number, not ${(typeof id === "number" ? String(id) : JSON.stringify(id ?? null)).slice(0, 60)}`);
+    if (!Number.isInteger(n)) throw new (preEffect ? PreEffectToolRefusal : Error)(`id must be a task number, not ${(typeof id === "number" ? String(id) : JSON.stringify(id ?? null)).slice(0, 60)}`);
     const task = this.d.board.get(n);
-    if (!task) throw new Error(`no task #${n}`);
+    if (!task) throw new (preEffect ? PreEffectToolRefusal : Error)(`no task #${n}`);
     // Handing a task to someone else only makes sense while there is work left on it.
-    if (open && !OPEN.includes(task.state)) throw new Error(`task #${task.id} is ${task.state}: it can no longer change hands`);
+    if (open && !OPEN.includes(task.state)) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} is ${task.state}: it can no longer change hands`);
     return task;
   }
 
@@ -989,15 +990,16 @@ export class Tasks {
    * announced like one found at assignment (issue #31).
    */
   accept(by: PeerId, id: unknown, plan?: unknown): Task {
-    const task = this.need(id);
-    this.mine(task, by, "owner");
-    this.ready(task);
+    const task = this.need(id, false, true);
+    this.mine(task, by, "owner", true);
+    this.ready(task, true);
+    if (task.state !== "proposed" && task.state !== "changes_requested" && task.state !== "in_progress") throw new PreEffectToolRefusal(`task #${task.id} is ${task.state}: cannot move to in_progress`);
     // Models send null or {} for an optional field they leave empty: neither replaces a plan.
     const given = plan == null ? undefined : cleanPlan(plan);
     const cleaned = given && Object.keys(given).length ? given : undefined;
     // A task's signals are fixed when it is proposed: text that matches a PII pattern cannot be let in afterwards.
     if (cleaned && !this.isPii(task) && this.isPii({ signals: detectSignals({ title: "", detail: planText(cleaned), refs: {} }, this.d.routing(), this.d.cwd) })) {
-      throw new Error("this plan matches a PII pattern and is not kept: other owners would see it");
+      throw new PreEffectToolRefusal("this plan matches a PII pattern and is not kept: other owners would see it");
     }
     const before = new Set(this.overlapHits(task).map((h) => h.task.id));
     const next = this.d.board.update(task.id, by, "accepted", { state: "in_progress", ...(cleaned ? { plan: cleaned } : {}) });
@@ -1056,8 +1058,8 @@ export class Tasks {
   };
 
   async decline(by: PeerId, id: unknown, reason?: string): Promise<Task> {
-    const task = this.need(id, true);
-    this.mine(task, by, "owner");
+    const task = this.need(id, true, true);
+    this.mine(task, by, "owner", true);
     // The owner it is declined for goes on the entry, also when the console declines for it: `excluded()` keeps it out (#207).
     const back = this.d.board.update(task.id, by, "declined", task.state === "in_progress" ? { state: "proposed" } : {}, reason, task.owner ? { from: task.owner } : {});
     this.d.notify(`task ${this.publicTitle(back)} declined by ${by}${reason && !this.isPii(back) ? `: ${reason}` : ""}`);
@@ -1076,13 +1078,13 @@ export class Tasks {
 
   async done(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs): Promise<Task> {
     const valid = (): Task => {
-      const t = this.need(id);
-      this.mine(t, by, "owner");
-      if (t.state === "in_review" || t.state === "approved") throw new Error(`task #${t.id} is already ${t.state}`);
-      this.ready(t);
+      const t = this.need(id, false, true);
+      this.mine(t, by, "owner", true);
+      if (t.state === "in_review" || t.state === "approved") throw new PreEffectToolRefusal(`task #${t.id} is already ${t.state}`);
+      this.ready(t, true);
       if (this.checking.has(t.id)) {
         // The result goes only to the owner the check was started for: anyone who took the task since hears nothing.
-        throw new Error(this.checking.get(t.id) === t.owner ? `task #${t.id}: its check is still running; its result comes as a task message` : `task #${t.id}: a check from before it changed hands is still running; call hub_task_done again in a few minutes`);
+        throw new PreEffectToolRefusal(this.checking.get(t.id) === t.owner ? `task #${t.id}: its check is still running; its result comes as a task message` : `task #${t.id}: a check from before it changed hands is still running; call hub_task_done again in a few minutes`);
       }
       return t;
     };
@@ -1331,10 +1333,10 @@ export class Tasks {
 
   async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown): Promise<Task> {
     const valid = (): Task => {
-      const t = this.need(id);
-      this.mine(t, by, "reviewer");
-      if (verdict !== "approved" && verdict !== "changes_requested") throw new Error('verdict must be "approved" or "changes_requested"');
-      if (t.state !== "in_review") throw new Error(`task #${t.id} is ${t.state}: cannot move to ${verdict} before its owner calls hub_task_done`);
+      const t = this.need(id, false, true);
+      this.mine(t, by, "reviewer", true);
+      if (verdict !== "approved" && verdict !== "changes_requested") throw new PreEffectToolRefusal('verdict must be "approved" or "changes_requested"');
+      if (t.state !== "in_review") throw new PreEffectToolRefusal(`task #${t.id} is ${t.state}: cannot move to ${verdict} before its owner calls hub_task_done`);
       return t;
     };
     const items = textList(unmet);

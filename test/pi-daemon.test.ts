@@ -1,4 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { Board } from "../src/hub/board.ts";
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -409,4 +411,168 @@ test("controlled restart refuses recorded MLX without consuming the snapshot", a
     if (priorOperation === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION;
     else process.env.AGENTHUB_RECOVERY_OPERATION = priorOperation;
   }
+});
+
+
+async function piToolCall(peer: PiPeer, name: string, args: unknown, toolCallId: string): Promise<{ text: string; failed?: boolean }> {
+  const launch = peer.tuiLaunch!;
+  return (await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, { method: "POST", headers: {
+    authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json",
+  }, body: JSON.stringify({ name, args, toolCallId }) })).json() as Promise<{ text: string; failed?: boolean }>;
+}
+
+test("Pi task authority and state refusals return their exact errors as done receipts through the daemon (#254)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-refusal-daemon-"));
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { stateDir, daemon, console_ } = await hub(config);
+  const board = new Board(join(stateDir, "hub.db")); cleanup.push(() => board.close());
+  const foreign = board.propose("claude", { title: "owned by codex", class: "implement" });
+  board.update(foreign.id, "hub", "assigned", { owner: "codex", reviewer: "claude" });
+  const reviewing = board.propose("claude", { title: "already reviewing", class: "implement" });
+  board.update(reviewing.id, "pi", "accepted", { owner: "pi", state: "in_progress" });
+  board.update(reviewing.id, "pi", "done", { state: "in_review" });
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  const peer = daemon.bus.peers.get("pi") as PiPeer;
+  for (const [name, args, message] of [
+    ["hub_task_accept", { id: foreign.id }, `task #${foreign.id}: only its owner (codex) or the console user can do that`],
+    ["hub_task_assign", { id: foreign.id, peer: "pi" }, "this operation requires the explicit conductor role"],
+    ["hub_task_done", { id: foreign.id, summary: "done" }, `task #${foreign.id}: only its owner (codex) or the console user can do that`],
+    ["hub_task_accept", { id: reviewing.id }, `task #${reviewing.id} is in_review: cannot move to in_progress`],
+  ] as const) {
+    const id = `${name}-${args.id}`;
+    const result = await piToolCall(peer, name, args, id);
+    expect(result).toEqual({ text: `error: ${message}`, failed: true });
+    const db = new Database(join(stateDir, "hub.db"));
+    try { expect(db.query("SELECT state,result FROM pi_tool_receipts WHERE call_id=?").get(id)).toEqual({ state: "done", result: `error: ${message}` }); }
+    finally { db.close(); }
+    expect(await piToolCall(peer, name, args, id)).toEqual(result);
+  }
+  expect(board.get(foreign.id)!.state).toBe("proposed");
+  expect(board.get(reviewing.id)!.state).toBe("in_review");
+});
+
+test("a Pi accept failure after its board write remains uncertain and pending, without repeating the effect (#254)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-postwrite-daemon-"));
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { stateDir, daemon, console_ } = await hub(config);
+  const board = new Board(join(stateDir, "hub.db")); cleanup.push(() => board.close());
+  const task = board.propose("claude", { title: "Pi implementation", class: "implement" });
+  board.update(task.id, "hub", "assigned", { owner: "pi" });
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  const peer = daemon.bus.peers.get("pi") as PiPeer;
+  const prototype = Board.prototype.get;
+  // The state transition is committed, then its final readback fails in Board.update.
+  const db = new Database(join(stateDir, "hub.db"));
+  let failed = false;
+  Board.prototype.get = function (id) {
+    if (!failed && id === task.id && (db.query("SELECT state FROM tasks WHERE id=?").get(id) as { state?: string })?.state === "in_progress") {
+      failed = true; throw new Error("lost board readback after write");
+    }
+    return prototype.call(this, id);
+  };
+  let result: { text: string; failed?: boolean };
+  try { result = await piToolCall(peer, "hub_task_accept", { id: task.id }, "post-write"); }
+  finally { Board.prototype.get = prototype; }
+  expect(failed).toBe(true);
+  expect(result!.text).toContain("outcome is uncertain");
+  expect(result!.failed).toBe(true);
+  expect(board.get(task.id)!.state).toBe("in_progress");
+  expect(db.query("SELECT state,result FROM pi_tool_receipts WHERE call_id='post-write'").get()).toEqual({ state: "pending", result: null });
+  expect((await piToolCall(peer, "hub_task_accept", { id: task.id }, "post-write")).text).toContain("previous tool outcome is uncertain");
+  expect(board.get(task.id)!.history.filter((entry) => entry.event === "accepted")).toHaveLength(1);
+  db.close();
+});
+
+for (const outcome of [{ code: 0 }, { code: 19 }, { signal: "SIGTERM" }] as const) {
+  test(`Pi exit notice names the OS cause and next action (${JSON.stringify(outcome)}) (#255)`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-exit-daemon-")), trigger = join(dir, "exit-now");
+    const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: false,
+      cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), "--exit-trigger", trigger,
+        ...("code" in outcome ? ["--exit-code", String(outcome.code)] : ["--exit-signal", outcome.signal])] } };
+    const { stateDir, daemon, console_ } = await hub(config);
+    const notices: string[] = [];
+    console_.onPush = (m) => { if (m.t === "notice") notices.push(String(m.line)); }; console_.send({ t: "tail" });
+    expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+    writeFileSync(trigger, "exit");
+    for (let i = 0; i < 200 && !notices.some((line) => line.startsWith("Pi exited")); i++) await Bun.sleep(5);
+    const exits = notices.filter((line) => line.startsWith("Pi exited"));
+    expect(exits).toHaveLength(1);
+    expect(exits[0]).toContain("code" in outcome ? `code ${outcome.code}` : `signal ${outcome.signal}`);
+    expect(exits[0]).toContain("pi.auto_start is off; start it with ahub pi");
+    expect(readFileSync(join(stateDir, "hub.log"), "utf8").split("\n").filter((line) => line.includes("Pi exit:"))).toHaveLength(1);
+    expect(daemon.bus.stateOf("pi")).toBe("offline");
+  });
+}
+
+test("pi.auto_start resumes one recorded idle-exit session and stops at a second exit within 60 s (#255)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-auto-exit-")), trigger = join(dir, "exit-now");
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true,
+    cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), "--exit-trigger", trigger, "--exit-consume-trigger", "--exit-code", "0"] } };
+  const { stateDir, daemon, console_ } = await hub(config);
+  const notices: string[] = [];
+  console_.onPush = (m) => { if (m.t === "notice") notices.push(String(m.line)); }; console_.send({ t: "tail" });
+  for (let i = 0; i < 200 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(5);
+  expect(daemon.bus.stateOf("pi")).toBe("idle");
+  const original = daemon.bus.peers.get("pi") as PiPeer, saved = original.recoveryMetadata();
+  writeFileSync(trigger, "exit");
+  for (let i = 0; i < 300 && (daemon.bus.peers.get("pi") === original || daemon.bus.stateOf("pi") !== "idle"); i++) await Bun.sleep(5);
+  expect(daemon.bus.peers.get("pi")).not.toBe(original);
+  expect(daemon.bus.stateOf("pi")).toBe("idle");
+  writeFileSync(trigger, "exit again");
+  for (let i = 0; i < 300 && !notices.some((line) => line.includes("restart limit")); i++) await Bun.sleep(5);
+  expect(notices.filter((line) => line.includes("Pi exited"))).toHaveLength(2);
+  expect(notices.filter((line) => line.includes("restart limit"))).toHaveLength(1);
+  const replacement = daemon.bus.peers.get("pi") as PiPeer;
+  expect(replacement).not.toBe(original);
+  expect(replacement.recoveryMetadata()).toMatchObject({ sessionId: saved.sessionId, sessionFile: saved.sessionFile });
+  expect(daemon.bus.stateOf("pi")).toBe("offline");
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8").split("\n").filter((line) => line.includes("Pi exit:"))).toHaveLength(2);
+});
+
+
+test("pi.auto_start does not replace an idle-exit session whose persisted history cannot be verified (#255)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-auto-unpersisted-")), trigger = join(dir, "exit-now");
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true,
+    cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), "--empty-session", "--exit-trigger", trigger, "--exit-code", "0"] } };
+  const { stateDir, daemon, console_ } = await hub(config);
+  const notices: string[] = [];
+  console_.onPush = (m) => { if (m.t === "notice") notices.push(String(m.line)); }; console_.send({ t: "tail" });
+  for (let i = 0; i < 200 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(5);
+  expect(daemon.bus.stateOf("pi")).toBe("idle");
+  const original = daemon.bus.peers.get("pi") as PiPeer;
+  writeFileSync(trigger, "exit");
+  for (let i = 0; i < 300 && !notices.some((line) => line.includes("could not resume its recorded session")); i++) await Bun.sleep(5);
+  expect(notices.some((line) => line.includes("could not resume its recorded session") && line.includes("ahub pi"))).toBe(true);
+  expect(daemon.bus.peers.get("pi")).toBe(original);
+  expect(daemon.bus.stateOf("pi")).toBe("offline");
+  expect(existsSync(join(stateDir, "pi-sessions", "fake-session.jsonl"))).toBe(false);
+});
+
+test("pi.auto_start reports a startup exit once and does not retry it (#255)", async () => {
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true, cmd: [process.execPath, "-e", "process.exit(0)"] } };
+  const { stateDir, daemon } = await hub(config);
+  for (let i = 0; i < 200 && !readFileSync(join(stateDir, "hub.log"), "utf8").includes("startup failed;"); i++) await Bun.sleep(5);
+  const log = readFileSync(join(stateDir, "hub.log"), "utf8");
+  expect(log).toContain("startup failed; inspect its session, then ahub pi");
+  expect(log.split("\n").filter((line) => line.includes("Pi exit:"))).toHaveLength(1);
+  expect(log).not.toContain("will try its recorded session once");
+  expect(daemon.bus.stateOf("pi")).toBe("offline");
+});
+
+test("an active Pi turn exiting under auto_start stays offline for reconciliation (#255)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-auto-active-")), trigger = join(dir, "exit-now");
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true,
+    cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), "--exit-trigger", trigger, "--exit-code", "0"] } };
+  const { stateDir, daemon } = await hub(config);
+  for (let i = 0; i < 200 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(5);
+  expect(daemon.bus.stateOf("pi")).toBe("idle");
+  const original = daemon.bus.peers.get("pi") as PiPeer, launch = original.tuiLaunch!;
+  await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/event`, { method: "POST", headers: {
+    authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json",
+  }, body: JSON.stringify({ type: "agent_start", generation: 1 }) });
+  writeFileSync(trigger, "exit");
+  for (let i = 0; i < 200 && daemon.bus.stateOf("pi") !== "offline"; i++) await Bun.sleep(5);
+  expect(daemon.bus.stateOf("pi")).toBe("offline");
+  expect(daemon.bus.peers.get("pi")).toBe(original);
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("turn/tool effects may be partial; inspect its session, then ahub pi");
 });

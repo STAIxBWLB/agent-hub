@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { processTable } from "../src/hub/child-process.ts";
 import { join } from "node:path";
-import { PiPeer } from "../src/adapters/pi.ts";
+import { PiPeer, type PiExit } from "../src/adapters/pi.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
 import { newEnvelope, type EnvelopeOpts } from "../src/hub/envelope.ts";
 
@@ -365,3 +365,80 @@ test("Pi stops a launcher that ignores SIGTERM together with the Pi it waits for
     rmSync(stateDir, { recursive: true, force: true });
   }
 }, 30_000);
+
+
+for (const outcome of [{ code: 0 }, { code: 17 }, { signal: "SIGTERM" }] as const) {
+  test(`Pi exit reports the OS cause once, turn status and last tool name only (${JSON.stringify(outcome)}) (#255)`, async () => {
+    const stateDir = mkdtempSync(join(process.cwd(), ".pi-exit-test-")), trigger = join(stateDir, "exit-now");
+    const exits: PiExit[] = [], logs: string[] = [];
+    const peer = new PiPeer("pi", {
+      cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx",
+      cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), "--exit-trigger", trigger,
+        ...("code" in outcome ? ["--exit-code", String(outcome.code)] : ["--exit-signal", outcome.signal])],
+      relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [] },
+      tools: [{ name: "read", parameters: {} }], executeTool: async () => "ok",
+      log: (line) => logs.push(line), onExit: (exit) => exits.push(exit),
+    });
+    try {
+      await peer.start();
+      const launch = peer.tuiLaunch!;
+      await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, { method: "POST", headers: {
+        authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json",
+      }, body: JSON.stringify({ name: "read", args: { path: "SECRET_ARGUMENT_MARKER" }, toolCallId: "last-read" }) });
+      writeFileSync(trigger, "exit");
+      for (let i = 0; i < 200 && !exits.length; i++) await Bun.sleep(5);
+      expect(exits).toHaveLength(1);
+      expect(exits[0]).toMatchObject({ cause: "process_exit", expected: false, started: true, turnActive: false, toolActive: false, lastToolName: "read",
+        code: "code" in outcome ? outcome.code : null, signal: "signal" in outcome ? outcome.signal : null });
+      expect(peer.state).toBe("offline");
+      expect(logs.filter((line) => line.includes("Pi exit:"))).toHaveLength(1);
+      expect(logs.join("\n")).not.toContain("SECRET_ARGUMENT_MARKER");
+      await peer.stop();
+      expect(exits).toHaveLength(1);
+    } finally { await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+  });
+}
+
+test("a requested Pi stop reports expected exit once and callback failures cannot undo offline settlement (#255)", async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-stop-report-test-")), exits: PiExit[] = [];
+  const peer = new PiPeer("pi", {
+    cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx", cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")],
+    relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [] }, tools: [], executeTool: async () => "ok",
+    log: () => { throw new Error("log unavailable"); }, onExit: (exit) => { exits.push(exit); throw new Error("notice unavailable"); },
+  });
+  try {
+    await peer.start(); await peer.stop();
+    expect(exits).toHaveLength(1);
+    expect(exits[0]).toMatchObject({ cause: "process_exit", expected: true, started: true, turnActive: false, toolActive: false });
+    expect(peer.state).toBe("offline");
+  } finally { await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+});
+
+test("Pi exit captures active turn and tool facts before failure cleanup (#255)", async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-active-exit-test-")), trigger = join(stateDir, "exit-now");
+  const exits: PiExit[] = [];
+  let entered = false, release!: () => void;
+  let tool: Promise<Response> | undefined;
+  const barrier = new Promise<void>((resolve) => { release = resolve; });
+  const peer = new PiPeer("pi", {
+    cwd: process.cwd(), stateDir, mode: "headless", backend: "dgx",
+    cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), "--exit-trigger", trigger, "--exit-code", "0"],
+    relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [] },
+    tools: [{ name: "write", parameters: {} }], executeTool: async () => { entered = true; await barrier; return "ok"; }, onExit: (exit) => exits.push(exit),
+  });
+  try {
+    await peer.start();
+    const launch = peer.tuiLaunch!, url = launch.env.AGENTHUB_PI_BRIDGE_URL;
+    const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
+    await fetch(`${url}/event`, { method: "POST", headers, body: JSON.stringify({ type: "agent_start", generation: 1 }) });
+    tool = fetch(`${url}/tool`, { method: "POST", headers, body: JSON.stringify({ name: "write", args: {}, toolCallId: "active" }) });
+    for (let i = 0; i < 200 && !entered; i++) await Bun.sleep(5);
+    expect(entered).toBe(true);
+    writeFileSync(trigger, "exit");
+    for (let i = 0; i < 200 && !exits.length; i++) await Bun.sleep(5);
+    expect(exits).toHaveLength(1);
+    expect(exits[0]).toMatchObject({ code: 0, expected: false, started: true, turnActive: true, toolActive: true, lastToolName: "write" });
+    release(); await tool;
+    expect(peer.state).toBe("offline");
+  } finally { release(); await tool?.catch(() => undefined); await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+});
