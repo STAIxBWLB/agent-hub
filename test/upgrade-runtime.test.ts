@@ -1078,7 +1078,7 @@ test("a restarted target whose planned session comes back clears the fresh choic
   const previousHome = process.env.AGENTHUB_HOME;
   process.env.AGENTHUB_HOME = join(temp, "home");
   try {
-    await makeRecoveryDriver(run).restore(planned, progress, op, "codex", () => {});
+    await makeRecoveryDriver(run).restore(planned, progress, op, "native", () => {});
     expect(progress.terminals["restored:codex"]).toMatchObject({ sessionId: "thread-T" });
     expect(progress.fresh).toBeUndefined();
     expect(readRecoveryWaivers(stateDir, "op-225")).toEqual({ codex: "fresh-session" });
