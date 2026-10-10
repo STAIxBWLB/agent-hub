@@ -589,3 +589,39 @@ for (const mode of ["never-ask", "ask-when-needed"] as const) {
     expect(fake.requests.filter(msg => msg.method === "turn/start").map(msg => msg.params.approvalPolicy)).toEqual([policy, policy, "untrusted", undefined]);
   });
 }
+
+
+test("a known steer rejection after native completion remains failed_safe", async () => {
+  const wire: string[] = [], receipts: { id: string; state: string; reason?: string }[] = [];
+  const fake = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req, server) { if (server.upgrade(req)) return; return new Response("no", { status: 400 }); }, websocket: {
+    message(ws, data) {
+      const msg = JSON.parse(String(data));
+      const reply = (result: unknown) => ws.send(JSON.stringify({ id: msg.id, result }));
+      const note = (method: string, params: unknown) => ws.send(JSON.stringify({ method, params }));
+      if (msg.method === "initialize") return reply({ userAgent: "codex-cli/0.154.0" });
+      if (msg.method === "thread/start") return reply({ thread: { id: "th1" } });
+      if (msg.method === "turn/start") { reply({ turn: { id: "turn1" } }); note("turn/started", { threadId: "th1", turn: { id: "turn1" } }); return; }
+      if (msg.method === "turn/steer") {
+        // A turn can finish while its steer is in flight. The ordered definitive refusal follows its completion.
+        wire.push("turn/completed"); note("turn/completed", { threadId: "th1", turn: { id: "turn1", status: "completed" } });
+        wire.push("known steer rejection"); ws.send(JSON.stringify({ id: msg.id, error: { code: -32000, message: "no active turn to steer" } }));
+      }
+    },
+  } });
+  const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: `ws://127.0.0.1:${fake.port}`, cwd: process.cwd(), steerTimeoutMs: 200 });
+  peer.onDelivery = receipt => receipts.push(receipt);
+  let tui: WebSocket | undefined;
+  try {
+    await peer.start(); tui = new WebSocket(peer.proxyUrl); await new Promise(resolve => tui!.onopen = resolve);
+    tui.send(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "late-rejection-fixture" } } }));
+    tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+    await until(() => peer.state === "idle");
+    await peer.deliver([newEnvelope("user", "normal")], "normal-delivery");
+    let error = "";
+    await peer.steer([newEnvelope("user", "urgent", { priority: "important" })], "late-steer").catch(reason => { error = reason.message; });
+    console.log("296 LATE REJECTION", JSON.stringify({ wire, receipts, error }));
+    expect(wire).toEqual(["turn/completed", "known steer rejection"]);
+    expect(receipts.find(receipt => receipt.id === "late-steer")).toMatchObject({ state: "failed_safe", reason: "no active turn to steer" });
+    expect(error).toBe("no active turn to steer");
+  } finally { tui?.close(); await peer.stop(); fake.stop(true); }
+});
