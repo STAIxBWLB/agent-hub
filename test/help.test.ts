@@ -84,7 +84,7 @@ describe("ahub help (#212)", () => {
   }, 20_000);
 
   test("ahub <command> -h prints that command's help instead of running it: kill stays alive, say sends nothing", async () => {
-    for (const [command, flag] of [["kill", "--help"], ["say", "-h"], ["remember", "-h"], ["up", "--help"]]) {
+    for (const [command, flag] of [["stop", "--help"], ["kill", "--help"], ["say", "-h"], ["remember", "-h"], ["up", "--help"]]) {
       expect(await cli([command!, flag!])).toEqual({ code: 0, stdout: `${renderHelp(80, false, command)}\n`, stderr: "" });
     }
     // Inside other arguments it is text: say goes on to send it (here it fails for want of a hub, not with help).

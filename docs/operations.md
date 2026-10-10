@@ -2001,3 +2001,30 @@ without asking for another hub approval. Its reported exit code comes from
 the process, including a nonzero exit; text printed by the command does not
 set its status. This exception requires the current idle TUI owner's reserved
 request and does not apply to model-origin bash calls.
+
+### Stop one headless peer
+
+`ahub stop kimi`, `ahub stop pi` (headless mode), or `ahub stop local` stops
+that hub-owned runtime through its adapter and prints `<peer>: offline`.
+The hub and its other peers keep running. The command is human-only;
+agent shells and tools-role connections cannot use the `peer_stop` request.
+An older hub that does not know the request needs an upgrade before this
+command is available.
+
+Claude, Codex and Pi in TUI mode belong to their native terminals: end them
+in those terminals. The upgrade plan's end-agents action closes a TUI through
+its verified terminal binding and uses `peer_stop` for a headless runtime.
+Unknown and already-offline peers are refused with a next action. A recovery
+operation or shutdown holds stop mutations; finish that operation first.
+A peer's concurrent start, stop or permission-mode change must also finish
+before another lifecycle change is admitted.
+
+A requested stop does not automatically restart a peer. Start it again with
+`ahub kimi`, `ahub pi` or `ahub local`. Pending approvals are withdrawn before
+teardown. An in-flight delivery becomes `needs_review`, with a reason naming
+the requested stop; it is neither completed nor automatically replayed.
+Inspect partial effects with `ahub queue list --peer <peer>` and
+`ahub queue show <delivery-id>`, then explicitly choose `completed`, `retry`
+or `discard` with `ahub queue resolve`. Restarting alone does not release
+that held delivery. Work queued behind an idle stopped peer is retained and
+runs when it is started again, subject to its existing pauses and holds.

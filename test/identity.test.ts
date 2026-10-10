@@ -40,6 +40,8 @@ test("starts, holds and assignment require daemon conductor authority, never an 
 
 test("audit labels and human-action hints contain command names only", () => {
   expect(cliCommandLabel("say", ["private-text"])).toBe("say");
+  expect(cliCommandLabel("stop", ["private-peer"])).toBe("stop");
+  for (const args of [[], ["pi"], ["pi", "--as-user"]]) expect(classifyPeerCommand("stop", args)).toBe("console");
   expect(cliCommandLabel("task", ["private-text"])).toBe("task");
   expect(cliCommandLabel("task", ["assign", "42", "private-text"])).toBe("task assign");
   expect(cliCommandLabel("malformed\ncommand", [])).toBe("unknown");

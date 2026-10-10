@@ -18,7 +18,7 @@ export interface PeerAdapter {
   /** Optional: feed envelopes into the turn that is running now. Only called while `state === "busy"`. */
   steer?(envs: Envelope[], deliveryId?: string): Promise<void>;
   start(): Promise<void>;
-  stop(): Promise<void>;
+  stop(reason?: string): Promise<void>;
   /** Set by the bus. The peer said something worth sharing. */
   onMessage?: (body: string, opts?: EnvelopeOpts) => unknown;
   /** Set by the bus. */
@@ -84,5 +84,5 @@ export abstract class BasePeer implements PeerAdapter {
 
   abstract deliver(envs: Envelope[], deliveryId?: string): Promise<void>;
   abstract start(): Promise<void>;
-  abstract stop(): Promise<void>;
+  abstract stop(reason?: string): Promise<void>;
 }

@@ -91,6 +91,7 @@ export class PiPeer extends BasePeer {
   private approvalTurnAbort = false;
   private approvalAbortSent = false;
   private approvalStopReason = "";
+  private requestedStopReason: string | undefined;
   private owner = randomUUID();
   private _tuiLaunch?: PiTuiLaunch;
   private requestedModel = "";
@@ -310,6 +311,7 @@ export class PiPeer extends BasePeer {
 
   private async startImpl(): Promise<void> {
     this.stopping = false;
+    this.requestedStopReason = undefined;
     this.approvalTurnAbort = false;
     this.exitReported = false; this.started = false; this.lastToolName = undefined; this.shutdownExit = undefined;
     this.approvalExpiries = 0; this.approvalAnswerEpoch = undefined; this.approvalStopReason = ""; this.approvalAbortSent = false;
@@ -399,7 +401,10 @@ export class PiPeer extends BasePeer {
     for (const call of pending) call.abort.abort();
     return pending.map((call) => call.settled);
   }
-  async stop(): Promise<void> {
+  get mode(): "headless" | "tui" { return this.opts.mode; }
+
+  async stop(reason?: string): Promise<void> {
+    if (reason !== undefined) this.requestedStopReason = reason;
     this.stopping = true; // fence new calls before withdrawing both turn and idle-shell execution
     const settling = this.abortTools();
     let unsettled: unknown;
@@ -412,7 +417,7 @@ export class PiPeer extends BasePeer {
     }
     const tuiExit = this.opts.mode === "tui" && this.ownerClaimed && this.ownerPid && this.ownerSignature
       ? { ...this.exitMetadata("owner_stopped"), expected: true } : undefined;
-    for (const id of this.activeDeliveryIds) this.delivery({ id, state: "needs_review", reason: "Pi session stopped before settlement" });
+    for (const id of this.activeDeliveryIds) this.delivery({ id, state: "needs_review", reason: reason ?? "Pi session stopped before settlement" });
     this.activeDeliveryIds.clear();
     this.stopping = true;
     this.clearOwnerMonitor();
@@ -682,7 +687,7 @@ export class PiPeer extends BasePeer {
     const envs = this.activeEnvs; this.activeEnvs = [];
     for (const id of this.activeDeliveryIds) this.delivery({ id, state: "needs_review", reason: error.message });
     this.activeDeliveryIds.clear();
-    if (envs.length) {
+    if (envs.length && !this.requestedStopReason) {
       this.onMessage?.(approvalStopReason ? `${approvalStopReason} Pi is offline because its extension could not abort the turn; restart with ahub pi and settle the held delivery after inspecting prior work.` : "Pi turn failed; inspect its session and any partial effects before continuing.", { inReplyTo: this.currentReply });
       if (!approvalStopReason && !(error instanceof ApprovalWaitStop)) void this.opts.onTurnFailure?.(envs, error.message).catch(() => this.opts.log?.("Pi failure handoff could not be completed"));
     }

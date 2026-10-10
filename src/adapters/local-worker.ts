@@ -131,9 +131,9 @@ export class LocalPeer extends BasePeer {
     this.setState("idle");
   }
 
-  async stop(): Promise<void> {
+  async stop(reason?: string): Promise<void> {
     this.endRouteTurn(this.labelTurnId, "failed");
-    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "turn stopped before settlement" });
+    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: reason ?? "turn stopped before settlement" });
     this.activeDeliveryId = undefined;
     this.turn++;
     clearTimeout(this.budgetTimer); this.budgetTimer = undefined;

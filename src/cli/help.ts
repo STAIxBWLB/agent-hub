@@ -38,6 +38,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub kimi [--print-command] [--model <alias>]", "start Kimi headless under ACP"],
     ["ahub pi [--print-command] [--mode headless|tui] [--backend auto|dgx|mlx] [--session-id <id>] [--session-file <path>]", "start Pi"],
     ["ahub local [--route <id> | --model <id>]", "start the hub-native worker on the self-hosted models (routing.toml)"],
+    ["ahub stop <peer>", "human only: stop a hub-owned headless peer; end TUI agents in their terminals"],
     ["ahub models setup|status|start|stop", "prepare or inspect local Ollama MLX (legacy stop is explicit)"],
   ]],
   ["Messages and approvals", [

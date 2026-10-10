@@ -1373,7 +1373,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   let releasing = false; // gone-owner release (#6) and the ready sweep (#34): one run at a time, and a recovery commit waits for it
   const recoveryReady = () => {
-    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;
+    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || (piReceipts?.inFlight ?? 0) !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;
     if (!recoveryPeerSnapshot) return true;
     const current = recoveryPeers();
     return recoveryPeerSnapshot.every((saved) => {
@@ -1933,6 +1933,7 @@ export async function startDaemon(opts: DaemonOptions) {
 
   // One start per peer at a time: a second `ahub codex` must not tear down an adapter that is still coming up.
   const starting = new Map<string, Promise<Record<string, unknown>>>();
+  const requestedPeerStops = new Set<string>();
   let piAutoRestartAt = -Infinity;
   let piAutoRestartPending = false;
   const replacingPi = new Set<PiPeer>();
@@ -1942,6 +1943,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   function startPeer(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean; unattended?: boolean }): Promise<Record<string, unknown>> {
     if (stopping) return Promise.resolve({ ok: false, error: "hub is stopping" });
+    if (requestedPeerStops.has(peer)) return Promise.resolve({ ok: false, error: "peer stop is in progress; wait for ahub status to show offline before starting it" });
     if (peer === "pi" && starting.has(peer)) return Promise.resolve({ ok: false, error: "Pi start is in progress; inspect status before retrying" });
     const joined = starting.get(peer);
     if (joined) {
@@ -1960,6 +1962,34 @@ export async function startDaemon(opts: DaemonOptions) {
       .finally(() => { starting.delete(peer); startingUnattended.delete(peer); });
     starting.set(peer, running);
     return running;
+  }
+
+  async function stopPeer(peer: unknown): Promise<Record<string, unknown>> {
+    if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding peer stops; finish the operation before retrying" };
+    if (typeof peer !== "string" || !PEER_ID.test(peer)) return { ok: false, error: "unknown peer; run ahub status and choose a hub-owned headless peer" };
+    if (peer === "claude" || peer === "codex") return { ok: false, error: "this peer belongs to a native terminal; end it in its terminal" };
+    const owner = bus.peers.get(peer);
+    if (!(owner instanceof AcpPeer || owner instanceof PiPeer || owner instanceof LocalPeer)) return { ok: false, error: "unknown or non-owned peer; run ahub status and choose a hub-owned headless peer" };
+    if (owner instanceof PiPeer && owner.mode !== "headless") return { ok: false, error: "Pi belongs to a native TUI terminal; end it in its terminal" };
+    if (owner.state === "offline") return { ok: false, error: `peer is already offline; start it with ahub ${peer} before stopping it` };
+    if (starting.has(peer) || requestedPeerStops.has(peer) || permissionChanges.has(peer)) return { ok: false, error: "peer lifecycle or permission change is in progress; wait for ahub status before retrying" };
+    requestedPeerStops.add(peer); // fence starts and recovery before the first asynchronous stop step
+    try {
+      return await permissionChange(peer, async () => {
+        if (stopping || recoveryActive() || bus.peers.get(peer) !== owner) return { ok: false, error: "peer or recovery changed; refresh ahub status before retrying" };
+        const reason = `requested stop: ahub stop ${peer}`; // ids only, never task or message text
+        for (const pending of permissions.values()) if (pending.peer === peer) pending.done(undefined);
+        await owner.stop(reason);
+        writeStatus();
+        if (owner.state !== "offline") return { ok: false, error: "peer stop did not reach offline; inspect ahub status and its terminal before retrying" };
+        try { notify(`${peer} stopped by the console; start it again with ahub ${peer}`); } catch { /* owner stop and readback remain authoritative */ }
+        return { ok: true, state: owner.state };
+      });
+    } catch {
+      writeStatus();
+      log(`requested peer stop failed for ${peer}; inspect owner state before retrying`);
+      return { ok: false, error: "peer stop did not finish; inspect ahub status and logs before retrying" };
+    } finally { requestedPeerStops.delete(peer); }
   }
 
   /**
@@ -2246,6 +2276,7 @@ export async function startDaemon(opts: DaemonOptions) {
           const cause = exit.signal ? `signal ${exit.signal}` : exit.code !== null ? `code ${exit.code}` : exit.cause;
           let action = "start it with ahub pi";
           if (stopping) action = "hub is stopping; requested stop, no automatic restart";
+          else if (requestedPeerStops.has("pi")) action = "requested stop; no automatic restart, start it again with ahub pi";
           else if (replacingPi.has(pi)) action = "stopped for a new Pi owner; inspect ahub status for the replacement";
           else if (exit.expected) action = "owner teardown; inspect its session, then ahub pi";
           else if (bus.peers.get("pi") !== pi) action = "superseded owner; no automatic restart";
@@ -2617,6 +2648,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (typeof msg.operationId !== "string" || msg.operationId.length < 1 || msg.operationId.length > 128) return recoveryError("operationId is required");
     const op = msg.operationId as string;
     if (msg.op === "prepare") {
+      if (requestedPeerStops.size) return recoveryError("peer stop is in progress; wait for ahub status before preparing recovery");
       if (recoveryCommitted) return recoveryError("recovery commit is already in progress");
       if (recoveryPhase === "released" && recoveryOperationId !== op) {
         recoveryOperationId = undefined;
@@ -2717,6 +2749,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function changePermission(peer: unknown, mode: unknown, confirmed: unknown): Promise<Record<string, unknown>> {
     if (typeof peer !== "string" || !["claude", "codex", "kimi", "pi", "local"].includes(peer)) return { ok: false, error: "unknown permission peer" };
+    if (requestedPeerStops.has(peer)) return { ok: false, error: "peer stop is in progress; wait for ahub status before changing its mode" };
     const owner = bus.peers.get(peer);
     if (mode === "ask" && (!owner || owner.state === "offline")) {
       // A Codex proxy outlives its TUI and keeps its own copy of the mode: clear that too, or the next TUI that attaches
@@ -3134,6 +3167,10 @@ export async function startDaemon(opts: DaemonOptions) {
         if (msg.instanceId !== instanceId) return void reply({ ok: false, error: "hub restarted; refresh before acting" });
         if (!msg.action || typeof msg.action !== "object" || Array.isArray(msg.action)) return void reply({ ok: false, error: "invalid dashboard action" });
         void uiAction(msg.action).then((result) => reply(result as Record<string, unknown>), () => reply({ ok: false, error: "dashboard action failed; check its inputs" }));
+        return;
+      case "peer_stop":
+        if (c.role !== "console") return void reply({ ok: false, error: "peer_stop is a console command; the person runs ahub stop in a terminal" });
+        void stopPeer(msg.peer).then(reply).catch(() => reply({ ok: false, error: "peer stop failed; inspect ahub status and logs before retrying" }));
         return;
       case "start":
         if (c.role !== "console") return void reply({ t: "started", ok: false, error: "start is a console command; use hub_peer_start with the conductor role" });

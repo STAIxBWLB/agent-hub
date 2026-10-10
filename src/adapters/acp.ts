@@ -222,13 +222,15 @@ export class AcpPeer extends BasePeer {
     this.permissionMode = mode;
   }
 
-  async stop(): Promise<void> {
-    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "ACP session stopped before settlement" });
+  async stop(reason?: string): Promise<void> {
+    if (reason !== undefined) this.turn++; // a requested stop cannot escalate or complete the cancelled turn
+    if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: reason ?? "ACP session stopped before settlement" });
     this.activeDeliveryId = undefined;
     const proc = this.proc;
-    if (!proc) return;
+    if (!proc) { this.setState("offline"); return; }
     await stopOwnedProcess(proc, { group: true }); // also when it exited: what it left in its group fails the stop
     if (this.proc === proc) this.proc = undefined;
+    this.setState("offline");
   }
 
   /** Resolves once the prompt is in flight; the turn result arrives on its own. */
