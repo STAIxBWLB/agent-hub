@@ -814,6 +814,8 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   sandbox fields. Ask restores a known native policy once after an accepted
   turn; rejected restoration remains pending. Restoration debt and captured
   policies are per thread and survive proxy detach and thread/start or thread/resume.
+  A known restoring turn retains its baseline even if the TUI echoes the resumed
+  response's sticky override.
   Unknown native baseline refuses restoration while attached, with instructions
   to close the TUI and run `ahub permission codex ask`; detached ask succeeds and
   returns a CLI-visible note about the old thread's unchanged native policy. Actual native unattended flags, not broker-wide flags, govern
@@ -830,7 +832,10 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   launches publish the native child PID/signature while running, bound to the exact
   launch record; crash cleanup additionally requires its PID absent from a verified
   process table. Script/interpreter native ownership remains unknown. Without
-  separate native identity proof, prior files remain for manual inspection.
+  separate native identity proof, prior files remain for manual inspection. Launch
+  record locks are atomically published with their signed owner populated; busy or
+  unknown legacy locks retain the prior metadata and skip new metadata publication
+  with exact-path guidance, without refusing the native launch.
 - Permission-only Claude PreToolUse never drives busy state. Only the former
   observation purposes retain native turn bookkeeping. Hook identity/purpose
   are launch/session bound; unverified hook status reads unverified.

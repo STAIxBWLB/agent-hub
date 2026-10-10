@@ -2,6 +2,7 @@ import { afterEach, test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, readdirSync, existsSync, chmodSync, symlinkSync, linkSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { processSignature } from "../src/pi/process-signature.ts";
 import { buildLaunch, cleanupStaleClaudeSettings, cleanupClaudeSettings, claudeObservationHooks, CLAUDE_CHANNEL, recordClaudeLaunch, recordClaudeNative, runClaudeLaunch, type ClaudeLaunchRecord } from "../src/cli/launch.ts";
 
 const states: string[] = [];
@@ -42,6 +43,65 @@ test("async Claude launch keeps the native environment and exit status but never
   expect(JSON.parse(readFileSync(join(state, "claude-launch.json"), "utf8"))).not.toHaveProperty("nativePid");
   expect(readFileSync(join(state, "claude-launch.json"), "utf8")).not.toContain("child-environment-preserved");
 }, 30_000);
+
+test("empty, unsigned and live launch locks retain metadata and files while the next native launch succeeds", async () => {
+  for (const kind of ["empty", "unsigned", "live"]) {
+    const state = fixtureState(), file = join(state, "claude-launch.json"), lock = join(state, "claude-launch.lock");
+    const facts = claudeObservationHooks({}, { script: "/candidate/facts-hook.ts", stateDir: state });
+    const previous = buildLaunch("claude", [], { unattended: false, facts });
+    const record: ClaudeLaunchRecord = { instanceId: "fixture", launchId: crypto.randomUUID(), settingsFile: previous.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid) };
+    expect(recordClaudeLaunch(state, record).recorded).toBe(true);
+    const bytes = readFileSync(file, "utf8");
+    const contents = kind === "empty" ? "" : JSON.stringify({ pid: process.pid, ...(kind === "live" ? { signature: processSignature(process.pid) } : {}) });
+    writeFileSync(lock, contents, { mode: 0o600 });
+    const next = buildLaunch("claude", [], { unattended: false, facts });
+    const nextRecord = { ...record, launchId: crypto.randomUUID(), settingsFile: next.settingsFile };
+    const publication = recordClaudeLaunch(state, nextRecord);
+    expect(publication.recorded).toBe(false);
+    expect(publication.warning).toContain(lock);
+    expect(publication.warning).toContain("Native launch continues");
+    expect(publication.warning).toContain("verify its owner has ended before removing it");
+    const result = await runClaudeLaunch({ ...next, cmd: "/bin/sleep", args: ["0.01"] }, {
+      cwd: state, stateDir: state, env: { PATH: process.env.PATH }, ...(publication.recorded ? { record: nextRecord } : {}),
+    });
+    expect(result).toEqual({ status: 0, signal: null });
+    expect(readFileSync(lock, "utf8")).toBe(contents);
+    expect(readFileSync(file, "utf8")).toBe(bytes);
+    expect(existsSync(previous.settingsFile!)).toBe(true);
+    expect(recordClaudeNative(state, nextRecord, process.pid + 1, "native-signature")).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe(bytes);
+  }
+}, 30_000);
+
+test("a signed dead launch-lock owner is recovered without leaving an unsigned lock", async () => {
+  const state = fixtureState(), lock = join(state, "claude-launch.lock");
+  const owner = Bun.spawn(["/bin/sleep", "60"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  try {
+    const signature = processSignature(owner.pid); expect(signature).toBeTruthy();
+    owner.kill("SIGKILL"); await owner.exited;
+    writeFileSync(lock, JSON.stringify({ pid: owner.pid, signature }), { mode: 0o600 });
+    const record: ClaudeLaunchRecord = { instanceId: "fixture", launchId: crypto.randomUUID(), launcherPid: process.pid, launcherSignature: processSignature(process.pid) };
+    expect(recordClaudeLaunch(state, record)).toEqual({ recorded: true });
+    expect(JSON.parse(readFileSync(join(state, "claude-launch.json"), "utf8"))).toEqual(record);
+    expect(existsSync(lock)).toBe(false);
+    expect(readdirSync(state).filter(name => name.startsWith("claude-launch.lock."))).toEqual([]);
+  } finally { if (owner.exitCode === null) { owner.kill("SIGKILL"); await owner.exited; } }
+}, 30_000);
+
+test("a published Claude launch lock already contains its signed owner before metadata is written", () => {
+  const state = fixtureState(), lock = join(state, "claude-launch.lock");
+  let observed = false;
+  const record: ClaudeLaunchRecord = { instanceId: "fixture", launchId: crypto.randomUUID(), launcherPid: process.pid,
+    get permissionHook() {
+      const owner = JSON.parse(readFileSync(lock, "utf8"));
+      expect(owner.pid).toBe(process.pid); expect(owner.signature).toMatch(/^[0-9a-f]{64}$/);
+      expect(statSync(lock).mode & 0o777).toBe(0o600);
+      observed = true; return true;
+    },
+  };
+  expect(recordClaudeLaunch(state, record).recorded).toBe(true);
+  expect(observed).toBe(true); expect(existsSync(lock)).toBe(false);
+});
 
 test("an exact candidate MCP bundle selects its server channel without overriding owned flags", () => {
   const dir = mkdtempSync(join(tmpdir(), "ahub-inline-plugin-"));

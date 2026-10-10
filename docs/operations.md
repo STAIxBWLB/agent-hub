@@ -884,7 +884,12 @@ until that native launch exits. Live/unknown previous launchers keep their files
 verified dead wrapper and native identities permit crash cleanup. Managed direct
 binary launches record their native PID while running; crash cleanup also requires
 that PID to be absent from the process table. Scripts/interpreters and unavailable
-process evidence retain the settings file. Without
+process evidence retain the settings file. Launch-record locks are published with
+the complete signed owner already written. A busy, empty, unsigned or unreadable
+`claude-launch.lock` skips metadata publication and reports its exact path; the
+native launch continues without claiming verified hook/native metadata. The lock
+and previous record are retained. Inspect the named lock and verify its owner has
+ended before removing it; a signed dead lock is recovered automatically. Without
 separate native identity proof, old settings remain for manual inspection. Settings carry
 no inline caller values in argv. Status reports an unverified Claude hook as
 unverified. Unattended native sessions cannot take a runtime mode; restart
@@ -893,7 +898,8 @@ ask while attached requires a known native approval baseline. If unavailable,
 close the TUI, then run `ahub permission codex ask` before starting `ahub codex`.
 For a known baseline, a detached proxy keeps restoration owed per thread and sends
 that policy once on the resumed thread's next accepted turn. Visiting another thread
-does not clear the debt. Rejected turns retain it. A baseline that was never reported
+does not clear the debt. The restoring turn uses that kept baseline even if the
+TUI echoes the resume response's sticky override. Rejected turns retain it. A baseline that was never reported
 is explained in the CLI reply, and that old thread keeps its last policy.
 An offline or absent peer accepts
 `ahub permission <peer> ask` to clear its hub choice. Codex --unattended launch

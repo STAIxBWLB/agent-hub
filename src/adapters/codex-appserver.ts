@@ -427,7 +427,9 @@ export class CodexPeer extends BasePeer {
     const msg = parse(raw);
     if (msg?.method === "turn/start" && msg.params && link === this.link) {
       const thread = typeof msg.params.threadId === "string" ? msg.params.threadId : this.threadId;
-      if (msg.params.approvalPolicy != null) this.nativeApprovalPolicies.set(thread, msg.params.approvalPolicy);
+      // A resumed TUI can echo the sticky hub overlay. The restoring turn must use the kept baseline.
+      const restoring = this.permissionMode === "ask" && this.overriddenApprovals.has(thread) && this.nativeApprovalPolicies.has(thread);
+      if (msg.params.approvalPolicy != null && !restoring) this.nativeApprovalPolicies.set(thread, msg.params.approvalPolicy);
       if (this.permissionMode !== "ask" || this.overriddenApprovals.has(thread)) {
         // Native turn overrides persist: ask restores the captured native policy once on successful admission.
         msg.params = this.applyPermissionPolicy(msg.params, msg.id);

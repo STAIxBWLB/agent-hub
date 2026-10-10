@@ -518,8 +518,8 @@ for (const [mode, policy] of [["ask-when-needed", "on-request"], ["never-ask", "
   });
 }
 
-for (const mode of ["never-ask", "ask-when-needed"] as const) {
-  test(`detached Codex ${mode} debt survives another thread and restores the resumed thread once`, async () => {
+for (const mode of ["never-ask", "ask-when-needed"] as const) for (const echoPolicy of [false, true]) {
+  test(`detached Codex ${mode} debt survives another thread and restores once${echoPolicy ? " with echoed resume policy" : ""}`, async () => {
     const { peer, tui, fake } = await setup();
     tui.send(JSON.stringify({ id: 2, method: "thread/start", params: { approvalPolicy: "untrusted" } }));
     await until(() => peer.state === "idle");
@@ -546,8 +546,9 @@ for (const mode of ["never-ask", "ask-when-needed"] as const) {
     // Simulate either native sticky override returned by a resumed app-server.
     await resume(11, "th1", mode === "never-ask" ? "never" : "on-request");
     await expect(peer.deliver([newEnvelope("user", "REFUSE_TURN")])).rejects.toThrow("turn rejected");
-    await resume(12, "th1", "never");
-    resumed.send(JSON.stringify({ id: 13, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: "restore native" }] } }));
+    const reportedPolicy = mode === "never-ask" ? "never" : "on-request";
+    await resume(12, "th1", reportedPolicy);
+    resumed.send(JSON.stringify({ id: 13, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: "restore native" }], ...(echoPolicy ? { approvalPolicy: reportedPolicy } : {}) } }));
     await until(() => seen.some(msg => msg.id === 13));
     await until(() => peer.state === "idle");
     expect(fake.requests.find(msg => msg.id === 13).params.approvalPolicy).toBe("untrusted");

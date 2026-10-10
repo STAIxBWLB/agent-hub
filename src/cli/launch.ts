@@ -1,5 +1,5 @@
 // Launchers inject only the flags the hub owns and refuse user-supplied duplicates.
-import { mkdirSync, writeFileSync, renameSync, unlinkSync, lstatSync, readFileSync, openSync, closeSync, readSync, accessSync, constants } from "node:fs";
+import { mkdirSync, writeFileSync, renameSync, unlinkSync, lstatSync, readFileSync, openSync, closeSync, readSync, accessSync, constants, linkSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { resolve, join, basename, dirname, isAbsolute } from "node:path";
@@ -83,27 +83,44 @@ export interface ClaudeLaunchRecord extends Record<string, unknown> {
   instanceId: string; launchId: string; settingsFile?: string; launcherPid: number; launcherSignature?: string;
 }
 
-/** Serialize both writers; an unreadable/live lock is never removed. No native arguments enter these files. */
-function withClaudeLaunchRecord(stateDir: string, action: () => void): void {
-  const lock = join(stateDir, "claude-launch.lock");
-  let fd: number;
-  try { fd = openSync(lock, "wx", 0o600); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    const before = lstatSync(lock);
-    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || (before.mode & 0o777) !== 0o600 || !process.getuid || before.uid !== process.getuid()) throw new Error("Claude launch record lock is unverified; inspect the launcher");
-    let owner: { pid?: unknown; signature?: unknown };
-    try { owner = JSON.parse(readFileSync(lock, "utf8")); } catch { throw new Error("Claude launch record lock is unreadable; inspect the launcher"); }
-    if (typeof owner.signature !== "string" || !owner.signature || processLiveness(owner.pid, owner.signature) !== "gone") throw new Error("Claude launch record is busy or its owner is unverified; retry after inspecting the launcher");
-    const current = lstatSync(lock);
-    if (current.dev !== before.dev || current.ino !== before.ino) throw new Error("Claude launch record lock changed; retry");
-    unlinkSync(lock);
-    fd = openSync(lock, "wx", 0o600);
-  }
+export interface ClaudeLaunchPublication { recorded: boolean; warning?: string; }
+
+/** Publish a populated signed lock exclusively. An unavailable lock skips metadata, never the native launch. */
+function withClaudeLaunchRecord(stateDir: string, action: () => void): ClaudeLaunchPublication {
+  const lock = join(stateDir, "claude-launch.lock"), temp = `${lock}.${randomUUID()}.tmp`;
+  const skipped = (): ClaudeLaunchPublication => ({ recorded: false, warning: `Claude launch metadata skipped; ${lock} is busy or unverified. Native launch continues; inspect ${lock} and verify its owner has ended before removing it.` });
+  const signature = processSignature(process.pid);
+  if (!signature) return skipped();
+  let locked = false, tempCreated = false, own: { dev: number; ino: number } | undefined;
   try {
-    writeFileSync(fd, JSON.stringify({ pid: process.pid, signature: processSignature(process.pid) }));
+    const fd = openSync(temp, "wx", 0o600); tempCreated = true;
+    try { writeFileSync(fd, JSON.stringify({ pid: process.pid, signature })); } finally { closeSync(fd); }
+    const stat = lstatSync(temp); own = { dev: stat.dev, ino: stat.ino };
+    try { linkSync(temp, lock); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") return skipped();
+      const before = lstatSync(lock);
+      if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || (before.mode & 0o777) !== 0o600 || !process.getuid || before.uid !== process.getuid()) return skipped();
+      let owner: { pid?: unknown; signature?: unknown };
+      try { owner = JSON.parse(readFileSync(lock, "utf8")); } catch { return skipped(); }
+      if (!owner || typeof owner.signature !== "string" || !owner.signature || processLiveness(owner.pid, owner.signature) !== "gone") return skipped();
+      const current = lstatSync(lock);
+      if (current.dev !== before.dev || current.ino !== before.ino) return skipped();
+      unlinkSync(lock);
+      try { linkSync(temp, lock); } catch { return skipped(); } // a live contender is never overwritten or waited on
+    }
+    locked = true;
+    unlinkSync(temp);
     action();
-  } finally { closeSync(fd); unlinkSync(lock); }
+    return { recorded: true };
+  } catch { return skipped(); }
+  finally {
+    if (locked && own) {
+      try { const current = lstatSync(lock); if (current.dev === own.dev && current.ino === own.ino) unlinkSync(lock); }
+      catch { /* only our verified lock may be removed */ }
+    }
+    if (tempCreated) { try { unlinkSync(temp); } catch { /* our populated temp may already be linked and consumed */ } }
+  }
 }
 
 function writeClaudeLaunchRecord(stateDir: string, record: Record<string, unknown>): void {
@@ -112,14 +129,14 @@ function writeClaudeLaunchRecord(stateDir: string, record: Record<string, unknow
   finally { try { unlinkSync(temp); } catch { /* the rename normally consumed it */ } }
 }
 
-export function recordClaudeLaunch(stateDir: string, record: ClaudeLaunchRecord): void {
-  withClaudeLaunchRecord(stateDir, () => writeClaudeLaunchRecord(stateDir, record));
+export function recordClaudeLaunch(stateDir: string, record: ClaudeLaunchRecord): ClaudeLaunchPublication {
+  return withClaudeLaunchRecord(stateDir, () => writeClaudeLaunchRecord(stateDir, record));
 }
 
 /** Never attach an old child's identity to a replacement launch, even when its spawn callback arrives later. */
-export function recordClaudeNative(stateDir: string, launch: ClaudeLaunchRecord, pid: number, signature: string): boolean {
+export function recordClaudeNative(stateDir: string, launch: ClaudeLaunchRecord, pid: number, signature: string, report?: (warning: string) => void): boolean {
   let recorded = false;
-  withClaudeLaunchRecord(stateDir, () => {
+  const publication = withClaudeLaunchRecord(stateDir, () => {
     let current: ClaudeLaunchRecord;
     try {
       const file = join(stateDir, "claude-launch.json"), stat = lstatSync(file);
@@ -132,7 +149,8 @@ export function recordClaudeNative(stateDir: string, launch: ClaudeLaunchRecord,
     writeClaudeLaunchRecord(stateDir, { ...current, nativePid: pid, nativeSignature: signature, nativeIdentity: "direct-child" });
     recorded = true;
   });
-  return recorded;
+  if (publication.warning) report?.(publication.warning);
+  return publication.recorded && recorded;
 }
 
 /** Scripts and interpreters can leave a different native owner behind: their crash cleanup remains disabled. */
@@ -164,7 +182,7 @@ export async function runClaudeLaunch(launch: Launch, options: { cwd: string; en
       if (!direct || !options.record || !child.pid) return;
       const signature = processSignature(child.pid);
       if (!signature) return;
-      try { recordClaudeNative(options.stateDir, options.record, child.pid, signature); }
+      try { recordClaudeNative(options.stateDir, options.record, child.pid, signature, warning => console.error(warning)); }
       catch { /* an unavailable/replaced record disables crash cleanup, never the native launch */ }
     });
     child.once("error", error => resolveResult({ status: null, signal: null, error }));

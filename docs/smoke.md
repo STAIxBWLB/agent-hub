@@ -18,8 +18,10 @@ Manual leg in a disposable project:
    `ahub permission codex never-ask --yes` from a human shell and complete a benign turn.
 2. Close the TUI without stopping its hub proxy. Run `ahub permission codex ask`.
 3. Hand-run `codex --remote <the existing proxy URL>` and resume that same thread.
-   Observe its policy before and after the next benign turn; record whether the
-   override persisted across resume and whether the original policy was restored.
+   Record what the TUI sends as `approvalPolicy` on its first turn after a resume,
+   including any echo of the resume response. Observe the policy before and after
+   that benign turn; record whether the override persisted across resume and
+   whether the original policy was restored.
 4. Repeat with `ask-when-needed`. Record the Codex version, thread ID, policies and
    outcomes. This checklist is not evidence that either live leg has passed.
 
@@ -1453,8 +1455,10 @@ The historical Claude benign checks above used the earlier hook policy. The curr
 
 Unverified natively (Codex 0.162.0): whether a thread that got a `never` or `on-request` override keeps it when the
 same thread is resumed through the hub's proxy by a hand-run `codex --remote` after `ahub permission codex ask` was
-given while no TUI was attached. The hub stops overriding at that point and the status says ask; `ahub codex` always
-starts a new proxy, which is not affected.
+given while no TUI was attached. The status says ask; the current proxy keeps restoration owed per thread and
+sends the captured native policy once on the resumed thread's next accepted turn, including when the TUI echoes
+the resume response's sticky override. That TUI traffic remains natively unverified. `ahub codex` always starts
+a new proxy, which is not affected. See the current #270 manual checklist above.
 
 ## Whole-board task progress and dashboard themes (#246)
 
