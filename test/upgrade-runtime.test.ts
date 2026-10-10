@@ -1010,6 +1010,8 @@ test("a restarted target keeps a fresh choice when the accepted session attaches
     expect(command).toEndWith("'claude'");
     expect(command).not.toContain("--resume");
     expect(progress.terminals["restored:claude"]).toMatchObject({ sessionId: "S-new" });
+    // The waiver's audit label for a Claude with nothing to resume.
+    expect(readRecoveryWaivers(stateDir, "op-225")).toMatchObject({ claude: "zero-turn" });
   } finally {
     if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
     server.stop(true); rmSync(temp, { recursive: true, force: true });

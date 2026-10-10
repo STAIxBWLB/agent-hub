@@ -511,7 +511,8 @@ export function makeRecoveryDriver(run: RunCommand = runCommand): RecoveryDriver
           }
           // Any other accepted session needs the target to waive the saved id, or release would wait for it forever;
           // a launch writes the waiver first, but this must not rely on that.
-          if (attached !== original.sessionId) waiveRecoveryPeers(planned.project.stateDir, op.id, { [original.peer]: waiver() });
+          // The planned session needs no waiver: the target's snapshot already expects it.
+          if (attached !== original.sessionId && attached !== plannedBinding.sessionId) waiveRecoveryPeers(planned.project.stateDir, op.id, { [original.peer]: waiver() });
           progress.terminals[key] = await revalidateTerminal(planned, progress, { ...original, sessionId: attached }, false); save();
         };
         // #215: a pending or failed receipt is settled by what is live now (the receipt table in the recovery spec).
