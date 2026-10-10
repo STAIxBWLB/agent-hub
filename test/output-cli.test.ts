@@ -6,6 +6,7 @@ import { PROTOCOL } from "../src/hub/control-client.ts";
 import { Registry } from "../src/hub/registry.ts";
 import { Turns } from "../src/hub/snapshots.ts";
 import { summarize, summarizeByTask } from "../src/hub/report.ts";
+import { drainCliAudits } from "../src/cli/identity-audit.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 
 const CLI = join(import.meta.dir, "../src/cli/main.ts");
@@ -184,4 +185,11 @@ test("new read render paths reject invalid colors before fetching", async () => 
     expect(result.code).toBe(1); expect(result.stderr).toContain(`usage: ahub ${args[0]}`);
   }
   expect(f.requests).toHaveLength(0);
+});
+
+test("successful filtered-board fallback records run rather than refused for an agent shell", async () => {
+  const f = fixture({ failFullBoard: true });
+  const result = await f.run(["board", "proposed"], { AGENTHUB_PEER_ID: "codex" });
+  expect(result.code).toBe(0); expect(result.stdout).toContain("proposed"); expect(result.stderr).toContain("stages unavailable");
+  expect(drainCliAudits(join(f.root, ".agenthub/state")).map(row => row.outcome)).toEqual(["run"]);
 });

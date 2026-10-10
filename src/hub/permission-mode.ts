@@ -17,6 +17,20 @@ export function permissionDefaults(value: unknown): Record<string, PermissionMod
   }
   return result;
 }
+/** Approval frequency does not create a common sandbox across native peers. */
+export function permissionBoundary(peer: string): string {
+  if (peer === "pi" || peer === "local") return `${peer}: inside hub sandbox, path guard and denylist`;
+  if (peer === "claude" || peer === "codex") return `${peer}: native vendor bounds; no hub sandbox`;
+  return `${peer}: runs its own tools; NO hub sandbox`;
+}
+/** What a mode lets a peer do without asking, in one line a person reads before choosing it (#269). */
+export function permissionGrant(peer: string, mode: PermissionMode): string {
+  if (mode === "ask") return peer === "codex" ? "the session's own approval policy applies again" : peer === "kimi" ? "Kimi asks as it does on its own" : peer === "claude" ? "Claude's own permission rules decide" : "every write, edit and shell command asks";
+  if (peer === "kimi") return mode === "never-ask" ? "Kimi's auto mode: nothing asks" : "Kimi's yolo mode: it asks only where it judges it must";
+  if (peer === "codex") return mode === "never-ask" ? "approval policy never on every turn: nothing asks" : "approval policy on-request on every turn";
+  if (peer === "claude") return mode === "never-ask" ? "every tool runs without asking" : "file tools on project files run without asking, outside .agenthub, .git and agent configuration; other tools keep Claude's own rules";
+  return mode === "never-ask" ? "every tool runs without asking, inside the hub sandbox and path guard" : "write and edit inside the project run without asking; shell and git writes still ask";
+}
 export const PI_EDIT_TOOLS = new Set(["edit", "write"]);
 /** Native agent policy files are never included in scoped automatic file grants. */
 export const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set([".claude", ".codex", ".qwen", ".kimi", ".pi", ".mcp.json"]);

@@ -40,11 +40,15 @@ function rows(head: string[], data: Span[][], columns?: number, details?: Span[]
     return interleave(table(head, physical, columns, [size]), lengths, wrap(head[0]!, size, 0).length);
   }
   const flexible = head.includes("TITLE") ? head.indexOf("TITLE") : head.length - 1;
-  const protectedColumns = new Set(head.map((h, i) => ["PEER", "STATE", "MODE", "LEVEL", "LINK", "CLASS"].includes(h) ? i : -1));
+  const protectedColumns = new Set(head.map((h, i) => ["ID", "OWNER", "REVIEWER", "AGE", "STAGE", "Q", "!", "REVIEW", "REV", "PEER", "STATE", "MODE", "LEVEL", "LINK", "CLASS"].includes(h) ? i : -1));
   const words = head.map((_, i) => Math.max(...data.flatMap(row => row[i]!.text.split(/\s+/).map(width))));
-  const minimum = head.map((h, i) => Math.max(width(h), protectedColumns.has(i) ? words[i]! : 0,
-    i === flexible && ["TITLE", "CONTEXT"].includes(h) ? Math.min(natural[i]!, 12) : 0));
-  // Narrow tables become bands before any meaningful state/link or useful title/context column is squeezed away.
+  const minimum = head.map((h, i) => Math.max(width(h), protectedColumns.has(i) ? words[i]! : 0));
+  // Context gets a readable soft minimum only after ids, counters and other atomic metadata have their room.
+  if (head[flexible] === "CONTEXT") {
+    const remaining = columns - 2 * (head.length - 1) - minimum.reduce((sum, n, i) => sum + (i === flexible ? 0 : n), 0);
+    minimum[flexible] = Math.max(width(head[flexible]!), Math.min(natural[flexible]!, 12, remaining));
+  }
+  // Narrow tables become linked bands before an id, peer, age, counter or state word would split.
   if (minimum.reduce((sum, n) => sum + n, 0) + 2 * (head.length - 1) > columns) {
     const bands: number[][] = []; let band = [0];
     for (let i = 1; i < head.length; i++) {
@@ -58,13 +62,14 @@ function rows(head: string[], data: Span[][], columns?: number, details?: Span[]
     return bands.flatMap((indices, i) => [...(i ? [[]] : []), ...rows(indices.map(index => head[index]!), data.map(row => indices.map(index => row[index]!)), columns, i === bands.length - 1 ? details : undefined)]);
   }
   const available = columns - 2 * (head.length - 1);
-  const widths = natural.map((n, i) => i === flexible ? minimum[i]! : Math.max(minimum[i]!, Math.min(n, Math.max(24, Math.floor(columns / 3)))));
+  const widths = natural.map((n, i) => i === flexible ? Math.max(minimum[i]!, Math.min(n, 12)) : Math.max(minimum[i]!, Math.min(n, Math.max(24, Math.floor(columns / 3)))));
   // Whole state phrases have priority too: they shrink to word boundaries only if the other columns need the room.
   for (const i of protectedColumns) if (i >= 0) widths[i] = natural[i]!;
   while (widths.reduce((sum, n) => sum + n, 0) > available) {
     const choices = widths.map((n, i) => ({ i, excess: n - minimum[i]! })).filter(item => item.excess > 0);
     if (!choices.length) break;
-    choices.sort((a, b) => Number(protectedColumns.has(a.i)) - Number(protectedColumns.has(b.i)) || b.excess - a.excess);
+    choices.sort((a, b) => Number(b.i === flexible) - Number(a.i === flexible) ||
+      Number(protectedColumns.has(a.i)) - Number(protectedColumns.has(b.i)) || b.excess - a.excess);
     widths[choices[0]!.i]!--;
   }
   widths[flexible] = Math.max(minimum[flexible]!, Math.min(natural[flexible]!, available - widths.reduce((sum, n, i) => sum + (i === flexible ? 0 : n), 0)));

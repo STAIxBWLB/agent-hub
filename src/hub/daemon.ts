@@ -36,6 +36,7 @@ import { HUB } from "./envelope.ts";
 import { trimToTokens } from "../memory/recall.ts";
 import { closeSync, constants as fsConstants, openSync, readSync, statSync } from "node:fs";
 import { basename, isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
 import { realPath } from "./project.ts";
 import type { BusEvent } from "./bus.ts";
 import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOLS } from "./hub-tools.ts";
@@ -46,11 +47,12 @@ import { launcherPreview } from "../cli/preview.ts";
 import { Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig } from "./inference.ts";
 import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
-import { currentRouting, detectSignals } from "./routing.ts";
+import { currentRouting, detectSignals, OVERLAY_FILE, parseRouting, routingText, type Routing } from "./routing.ts";
+import { checkSettingValue, ignoredLine, pendingUndo, readOverlay, restoredValue, routingCandidate, storedLocally, settingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingDef, type SettingRow, type SettingValue } from "./settings.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
-import { startDashboard } from "./ui.ts";
+import { startDashboard, type DashboardSession } from "./ui.ts";
 import { PROTOCOL, stateDirFor } from "./control-client.ts";
 import { newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
@@ -67,7 +69,9 @@ import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./li
 import { changedPaths, repoOf, snapshot, Turns, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 
-import { grantablePath, isPermissionMode, permissionDefaults, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
+import { isStartablePeer, peerStartConfig, STARTABLE_PEERS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
+import type { TerminalOpener } from "./terminal-open.ts";
+import { grantablePath, isPermissionMode, permissionBoundary, permissionDefaults, permissionGrant, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
 import { ContextWindows, DEFAULT_CONTEXT, claudeContext, type ContextConfig } from "./context-window.ts";
 
 export interface HubConfig {
@@ -105,6 +109,10 @@ export interface HubConfig {
   research: { enabled: boolean };
   /** #251: a project kept for benchmarks: `ahub bench run` resets its work tree between attempts. */
   bench: { enabled: boolean };
+  /** #269: per peer, how a start comes up when nothing more specific was asked: `tui` (the default) or `headless`. Pi and Codex only. */
+  peers: PeerStartConfig;
+  /** #269: a machine-local argv that opens a terminal for a hub-made TUI start; `{command}` in one element is the command to run. */
+  terminal: { open: string[] };
   /** Per-sender rate limits and repeat suppression for what agents send (issue #38). */
   limits: LimitsConfig;
   /** Reviewer choice from recorded review outcomes, once a reviewer has `min_reviews` of an implementer (issue #35). */
@@ -152,6 +160,8 @@ export const DEFAULT_CONFIG: HubConfig = {
   snapshots: { enabled: false, keep: 20 },
   research: { enabled: false },
   bench: { enabled: false },
+  peers: {},
+  terminal: { open: [] },
   limits: DEFAULT_LIMITS,
   review: { adaptive: false, min_reviews: 5 },
   recovery: { auto_resume_after_crash: false },
@@ -167,7 +177,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = ["config.json", "config.local.json"] as const;
-const CONFIG_BLOCKS = ["memory", "roles", "conductor", "budget", "context", "inference", "omniroute", "local", "pi", "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes"];
+const CONFIG_BLOCKS = ["memory", "roles", "conductor", "budget", "context", "inference", "omniroute", "local", "pi", "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal"];
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
 export function loadConductorPolicy(cwd: string): { roles: Record<string, string[]>; conductor: HubConfig["conductor"] } {
@@ -207,6 +217,9 @@ export function loadConfig(cwd: string): HubConfig {
       throw error;
     }
     permissionDefaults(file.permission_modes); // malformed declarations fail even when trust would drop them
+    peerStartConfig(file.peers);
+    if (file.terminal != null && (typeof file.terminal !== "object" || Array.isArray(file.terminal))) throw new Error("terminal must be an object");
+    terminalTemplate(file.terminal?.open);
     delete file.permission_default_sources; // provenance is loader-owned, never a file claim
     const why = stripUntrusted(file, DEFAULT_CONFIG, cwd, name);
     if (why) ignored.push(why);
@@ -261,6 +274,8 @@ export function loadConfig(cwd: string): HubConfig {
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
     research: { enabled: file.research?.enabled === true }, // opt-in: anything but true is off
     bench: { enabled: file.bench?.enabled === true }, // opt-in: a run resets this project's work tree
+    peers: peerStartConfig(file.peers),
+    terminal: { open: terminalTemplate(file.terminal?.open) },
     limits: { ...PROJECT_LIMITS, ...file.limits }, // on with any project config (issue #38)
     review: { ...DEFAULT_CONFIG.review, ...file.review },
     recovery: { ...DEFAULT_CONFIG.recovery, ...file.recovery },
@@ -280,9 +295,15 @@ export function mlxLaunchProblem(config: HubConfig, args: { backend?: unknown; m
 
 /** Shipped defaults remain capability-aware; operator-written MLX pins require an explicit migration. */
 function disabledMlxPolicyProblem(config: HubConfig, cwd: string): string | undefined {
-  if (config.mlx.enabled !== false || !existsSync(join(cwd, ".agenthub", "routing.toml"))) return undefined;
-  const conflict = Object.entries(currentRouting(cwd).classes).find(([, policy]) => policy?.pi_backend === "mlx");
-  return conflict ? `routing.toml: [classes.${conflict[0]}] pi_backend=mlx conflicts with mlx.enabled=false; remove the pin for hub/auto or select dgx` : undefined;
+  if (config.mlx.enabled !== false) return undefined;
+  const project = existsSync(join(cwd, ".agenthub", "routing.toml"));
+  if (!project && !existsSync(join(cwd, ".agenthub", OVERLAY_FILE))) return undefined;
+  return mlxPinProblem(currentRouting(cwd), project);
+}
+/** A pin a person wrote, in routing.toml or the machine-local overlay (#269); the shipped template's own pins are not theirs to migrate. */
+function mlxPinProblem(routing: Routing, project: boolean): string | undefined {
+  const conflict = Object.entries(routing.classes).find(([name, policy]) => policy?.pi_backend === "mlx" && (project || routing.sources?.[`classes.${name}.pi_backend`]));
+  return conflict ? `${routing.sources?.[`classes.${conflict[0]}.pi_backend`] ?? "routing.toml"}: [classes.${conflict[0]}] pi_backend=mlx conflicts with mlx.enabled=false; remove the pin for hub/auto or select dgx` : undefined;
 }
 
 export interface DaemonOptions {
@@ -297,6 +318,8 @@ export interface DaemonOptions {
   switchyardPort?: number;
   switchyardBin?: string;
   config?: HubConfig;
+  /** #269: the terminal providers for a TUI start the hub makes itself, built from `terminal.open`. Absent: none, and such a start is refused. */
+  terminal?: (template: string[]) => TerminalOpener;
   /** Auto-approve ACP permission requests with the agent's allow_once option. */
   unattended?: boolean;
   permissionTimeoutMs?: number;
@@ -1739,6 +1762,8 @@ export async function startDaemon(opts: DaemonOptions) {
           if (r.ok) { report(`pi resumed (pi.auto_start): ${step.how}`); continue; }
           report(`pi not resumed (${String(r.error)}); ${step.how}`);
         } else report(step.how);
+        // #269: a Pi that ran in a terminal is not replaced by a headless one unless headless is its start mode.
+        if (step.tui && startMode("pi") === "tui") { report("pi.auto_start starts no headless Pi in place of a terminal one: run the command above, or set peers.pi.start_mode to headless"); continue; }
         const fresh = await start("pi", { ...(step.fresh as Parameters<typeof startPeer>[1]), fresh: true });
         const back = step.tui ? `; to go back to the recorded session, run ahub kill, start the hub without pi.auto_start, then the command above` : "";
         report(fresh.ok ? `pi.auto_start started a fresh session${back}` : `pi.auto_start could not start Pi either (${String(fresh.error)})`);
@@ -1937,6 +1962,10 @@ export async function startDaemon(opts: DaemonOptions) {
   let piAutoRestartAt = -Infinity;
   let piAutoRestartPending = false;
   const replacingPi = new Set<PiPeer>();
+  /** pi.auto_start at hub start (#269): in Pi's start mode, and said out loud when it could not be done. */
+  const autoStartPi = () => void hubStart("pi", "pi.auto_start").then(
+    (result) => { if (result.ok !== true) notify(`pi.auto_start did not start Pi: ${String(result.error)}`); },
+    (error) => log(`Pi auto-start failed: ${(error as Error).message}`));
   async function stopPiForReplacement(pi: PiPeer): Promise<void> {
     replacingPi.add(pi);
     try { await pi.stop(); } finally { replacingPi.delete(pi); }
@@ -1962,6 +1991,57 @@ export async function startDaemon(opts: DaemonOptions) {
       .finally(() => { starting.delete(peer); startingUnattended.delete(peer); });
     starting.set(peer, running);
     return running;
+  }
+
+  // #269: start modes. A start the hub makes itself (the dashboard's Start, `peer_start` from a console child, the
+  // conductor, pi.auto_start) follows the peer's start mode. A TUI needs a terminal: a provider opens one running the
+  // fixed `ahub <peer>` command, and with no provider the start is refused with that command. It is never downgraded.
+  const opener: TerminalOpener = opts.terminal?.(config.terminal.open) ?? { available: () => ({ ok: false, why: "this hub was started without a terminal provider" }), open: async () => ({ ok: false, why: "this hub was started without a terminal provider" }) };
+  const CLI_ENTRY = fileURLToPath(new URL("../cli/main.ts", import.meta.url));
+  /** `config.peers` follows a settings write (`settingsSet`), so a changed mode applies at the peer's next start. */
+  const startMode = (peer: string): StartMode => startModeOf(config.peers, peer);
+  const startWords = (peer: string): string[] => peer === "pi" ? ["pi", "--mode", "tui"] : [peer];
+  const startable = (peer: string) => peer !== "pi" || config.pi.enabled;
+  // ponytail: one terminal per peer per 30 s, by the clock. The hub cannot see whether the terminal it opened still
+  // exists, so a peer that never attaches can be opened again after that; track the provider's handle to do better.
+  const opening = new Map<string, number>();
+  const OPENING_MS = 30_000;
+  /** For the dashboard's Start control: what a start of each peer would do now, and for a TUI where its terminal comes from. */
+  // ponytail: asks the provider on every dashboard poll (a launch-record read and a PATH lookup for Orca); cache it for a few seconds if a page feels it.
+  const startPlans = () => STARTABLE_PEERS.filter(startable).map((peer) => {
+    const mode = startMode(peer), owner = bus.peers.get(peer), can = mode === "tui" ? opener.available() : undefined;
+    return { peer, mode, attached: !!owner && owner.state !== "offline", command: `ahub ${startWords(peer).join(" ")}`, ...(can ? (can.ok ? { via: can.via } : { why: can.why }) : {}) };
+  });
+  async function hubStart(peer: unknown, by: string): Promise<Record<string, unknown>> {
+    if (stopping) return { ok: false, error: "hub is stopping" };
+    if (!isStartablePeer(peer) || !startable(peer)) return { ok: false, error: "unknown peer; the hub starts claude, codex, kimi, pi (when enabled) and local" };
+    if (recoveryActive()) return { ok: false, error: "recovery is holding mutations" };
+    const mode = startMode(peer);
+    const owner = bus.peers.get(peer);
+    if (mode === "headless") {
+      // A Pi a person runs in a terminal is theirs: a start made for them never takes it over as a headless one.
+      // ponytail: an attached terminal Pi only. A terminal launch that the TUI has not claimed yet reads as offline,
+      // like one whose terminal was closed, so a headless start in that window replaces it; record when a launch was
+      // issued to tell the two apart.
+      if (owner instanceof PiPeer && owner.state !== "offline" && owner.mode === "tui") return { ok: false, error: "Pi runs in a terminal; end it there before starting a headless one", command: "ahub pi --headless" };
+      return startPeer(peer, peer === "pi" ? { mode: "headless" } : {});
+    }
+    if (owner && owner.state !== "offline") return { ok: true, already: true, mode };
+    const command = `ahub ${startWords(peer).join(" ")}`;
+    const since = Date.now() - (opening.get(peer) ?? 0);
+    if (since < OPENING_MS) return { ok: false, error: `a terminal for ${peer} was opened ${Math.round(since / 1000)}s ago; wait for its TUI, or run ${command} yourself`, command };
+    // Reserved before the provider is awaited, so starts that arrive together open one terminal, not one each.
+    opening.set(peer, Date.now());
+    // Every word is the hub's own: its runtime, its entry point, this project and a peer from the closed list.
+    const opened = await opener.open(`${peer} (agent-hub)`, [process.execPath, CLI_ENTRY, "--project", opts.cwd, ...startWords(peer)]).catch((error: Error) => ({ ok: false as const, why: "the terminal provider failed", detail: error.message }));
+    if (!opened.ok) {
+      opening.delete(peer); // nothing was opened: the next request may try again at once
+      if (opened.detail) log(`terminal provider for ${peer}: ${opened.detail}`);
+      const headless = peer === "claude" ? "" : `, or set its start mode to headless (ahub settings set peers.${peer}.start_mode headless)`;
+      return { ok: false, error: `${peer} starts in its TUI and the hub could not open a terminal for it (${opened.why}). Run ${command} in a terminal${headless}`, command };
+    }
+    try { notify(`${peer}: ${by} opened a terminal running ${command} (${opened.via}); it attaches when its TUI is ready`); } catch { /* the terminal is open either way */ }
+    return { ok: true, mode, opened: opened.via, command };
   }
 
   async function stopPeer(peer: unknown): Promise<Record<string, unknown>> {
@@ -2494,10 +2574,10 @@ export async function startDaemon(opts: DaemonOptions) {
       launcherPreview(peer, peer === "pi" ? ["--mode", "tui"] : [], opts.cwd, opts.stateDir, false);
       return `ahub ${peer}${peer === "pi" ? " --mode tui" : ""}`;
     },
+    // #269: the conductor's start is the hub's own: the peer's start mode decides, never the caller.
+    startMode: peer => startMode(peer),
     start: async peer => {
-      const existing = bus.peers.get(peer);
-      if (existing instanceof PiPeer && (existing.recoveryMetadata().launch as { mode?: string })?.mode === "tui") throw new Error("Pi owns a TUI; ask the person to change its mode");
-      const result = await startPeer(peer, { mode: "headless" });
+      const result = await hubStart(peer, "the conductor");
       if (result.ok !== true) throw new Error(String(result.error ?? "peer start failed"));
       return result;
     },
@@ -2549,7 +2629,7 @@ export async function startDaemon(opts: DaemonOptions) {
           arm: rs[0]!.header.arm, runs: rs.length, measures: benchReport(rs).overall })) } };
     } catch { return {}; } // an unreadable store never breaks the dashboard
   }
-  function uiSnapshot(after: number) {
+  function uiSnapshot(after: number, _input?: Record<string, unknown>, session?: DashboardSession) {
     const quota = budget.status();
     const peers = [...new Set([...Object.keys(quota), ...bus.knownPeers()])];
     return {
@@ -2573,12 +2653,157 @@ export async function startDaemon(opts: DaemonOptions) {
       }),
       events: uiEvents.filter((e) => e.seq > after),
       cursor: uiSequence,
+      ...settingsSnapshot(session),
+      starts: startPlans(),
       ...benchView(),
     };
   }
 
-  async function uiAction(a: Record<string, unknown>): Promise<unknown> {
+  // #269: settings. One registry (src/hub/settings.ts) serves the dashboard and `ahub settings`; nothing outside it is written.
+  let storedConfigCache: { stamp: string; config: HubConfig | undefined } | undefined;
+  /** What the config files hold now, as the loader reads them. Re-read only when a file changed: the dashboard polls. */
+  const storedConfig = (): HubConfig | undefined => {
+    const stamp = CONFIG_FILES.map((name) => { try { const s = statSync(join(opts.cwd, ".agenthub", name)); return `${s.mtimeMs}:${s.size}`; } catch { return "-"; } }).join("|");
+    if (storedConfigCache?.stamp !== stamp) {
+      let loaded: HubConfig | undefined;
+      try { loaded = loadConfig(opts.cwd); } catch { /* the rows say that the files do not load */ }
+      storedConfigCache = { stamp, config: loaded };
+    }
+    return storedConfigCache.config;
+  };
+  /** Start modes are the one stored setting a running hub takes up: after a settings write, as the files now read. */
+  const applyStartModes = () => { const stored = storedConfig(); if (stored) config.peers = stored.peers; };
+  const settingScalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" ? value : Array.isArray(value) ? value.map(String) : null;
+  const routingValue = (routing: ReturnType<typeof currentRouting>, def: SettingDef): SettingValue =>
+    settingScalar(def.path[0] === "stay_switch" ? routing.stay_switch : (routing.classes[def.path[1] as TaskClass] as Record<string, unknown> | undefined)?.[def.path[2]!]);
+  /** For the dashboard: the rows, and until when this session may raise. A project whose files do not read still gets its dashboard. */
+  // ponytail: reads the two config files and the undo record and parses the routing files on each dashboard poll; cache by mtime if a page ever feels it.
+  function settingsSnapshot(session?: DashboardSession): { settings?: Record<string, unknown> } {
+    try { return { settings: { ...settingsView(), ...(session?.settings ? { sessionUntil: session.settingsUntil } : {}) } }; }
+    catch { return {}; }
+  }
+  function settingsView(): { rows: SettingRow[]; undo?: string } {
+    const stored = storedConfig();
+    // What the loader would say about the files as they are: an overlay that does not parse, or one that no longer
+    // merges (it names a route routing.toml dropped), leaves the last good policy in force, and the rows say why.
+    let routingProblem: string | undefined;
+    try { parseRouting(routingText(opts.cwd), readOverlay(opts.cwd)); } catch (error) { routingProblem = (error as Error).message; }
+    const rows = settingRows({
+      cwd: opts.cwd, routing: currentRouting(opts.cwd, log), ...(routingProblem ? { routingProblem } : {}), ...(stored?.ignored ? { ignored: stored.ignored } : {}),
+      running: (path) => valueAt(config, path),
+      next: stored ? (path) => valueAt(stored, path) : undefined,
+      mode: (peer) => {
+        const owner = bus.peers.get(peer), attached = !!owner && owner.state !== "offline";
+        const note = pendingPermissionDefaults.has(peer) ? "a never-ask default waits for y in ahub console" : attached ? undefined : "not attached: only ask can be set";
+        return { value: attached ? permissionDisplay(peer, owner) : permissionMode(peer), ...(note ? { note } : {}) };
+      },
+    });
+    const undo = pendingUndo(opts.stateDir);
+    return { rows, ...(undo ? { undo } : {}) };
+  }
+  /** The same announcement whatever surface made the change: events.jsonl, hub.log and every open console. */
+  const recordSetting = (key: string, from: SettingValue, to: SettingValue, source: "dashboard" | "terminal", undo = false) => {
+    event({ type: "settings", key, from, to, source, ...(undo ? { undo: true } : {}) });
+    try { notify(`setting ${key}: ${settingText(from)} -> ${settingText(to)} (${undo ? "undo, " : ""}${source})`); } catch { /* the write stands */ }
+  };
+  const settingSource = (authority: SettingAuthority) => authority === "terminal" ? "terminal" as const : "dashboard" as const;
+  /** A checked definition and value, or the refusal. Every settings write and preview starts here. */
+  function settingInput(key: unknown, raw: unknown): { def: SettingDef; value: SettingValue } | { error: string } {
+    const def = settingDef(key);
+    if (typeof def === "string") return { error: def };
+    const routing = currentRouting(opts.cwd, log);
+    try { return { def, value: checkSettingValue(def, raw, [...Object.keys(routing.routes), ...Object.keys(routing.hub_routes ?? {})]) }; }
+    catch (error) { return { error: (error as Error).message }; }
+  }
+  async function settingsSet(key: unknown, raw: unknown, authority: SettingAuthority, confirm?: unknown): Promise<Record<string, unknown>> {
+    const input = settingInput(key, raw);
+    if ("error" in input) return { ok: false, error: input.error };
+    const { def, value } = input;
+    const refusal = settingRefusal(def, value, authority);
+    if (refusal) return { ok: false, error: refusal };
+    const source = settingSource(authority);
+    const peer = def.group === "Permissions" ? def.path.at(-1)! : undefined;
+    // The console asks for y before never-ask; here the person types the peer it is for.
+    if (value === "never-ask" && confirm !== peer) return { ok: false, error: `never-ask for ${peer} needs its peer id as the confirmation; nothing was changed` };
+    if (def.store === "runtime") {
+      // The console's own request (#242): the same refusals, start reconciliation and events.
+      if (requestedPeerStops.has(peer!)) return { ok: false, error: "peer stop is in progress; wait for ahub status before changing its mode" };
+      const from = permissionMode(peer!);
+      const result = await permissionChange(peer!, () => changePermission(peer!, value, value === "never-ask"));
+      if (result.ok !== true) return result;
+      recordSetting(def.key, from, permissionMode(peer!), source);
+      return { ok: true, text: `${def.key}: ${result.permissionMode}`, ...(typeof result.note === "string" ? { note: result.note } : {}) };
+    }
+    try {
+      if (def.store === "routing") {
+        const from = routingValue(currentRouting(opts.cwd, log), def);
+        const next = writeRoutingSetting(opts.cwd, opts.stateDir, def, value, routingCheck);
+        if (!next) return { ok: true, text: `${def.key}: ${OVERLAY_FILE} already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
+        recordSetting(def.key, from, routingValue(next, def), source);
+        return { ok: true, text: `${def.key}: ${settingText(routingValue(next, def))} (in force now)` };
+      }
+      // Removing the machine-local value uncovers the shared file's: never-ask there needs the same confirmation.
+      if (peer && value === null && storedLocally(opts.cwd, def) && restoredValue(opts.cwd, opts.stateDir, def, true) === "never-ask" && confirm !== peer) return { ok: false, error: `removing the machine-local value leaves never-ask from config.json for ${peer}: it needs the peer id as the confirmation; nothing was changed` };
+      const from = settingScalar(valueAt(storedConfig(), def.path));
+      if (!writeConfigSetting(opts.cwd, opts.stateDir, def, value, (scratch) => loadConfig(scratch))) return { ok: true, text: `${def.key}: config.local.json already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
+      const to = settingScalar(valueAt(storedConfig(), def.path));
+      applyStartModes();
+      recordSetting(def.key, from, to, source);
+      // Config trust (#17) can drop a machine-local field at load: the write happened, and the person is told it will not count.
+      const dropped = ignoredLine(storedConfig()?.ignored, def);
+      return { ok: true, text: dropped ? `${def.key}: written, but the hub does not read it (${dropped})` : `${def.key}: ${settingText(to)} (${def.applies === "peer start" ? "applies at the peer's next start" : "applies at the next hub start"})` };
+    } catch (error) {
+      return { ok: false, error: (error as Error).message };
+    }
+  }
+  /** A pin the hub could not start with: refused before a write or an undo puts it on disk. */
+  // As at hub start: with no project routing.toml only a pin the overlay sets counts, never the shipped template's own.
+  const routingCheck = (routing: Routing) => { const problem = config.mlx.enabled === false ? mlxPinProblem(routing, existsSync(join(opts.cwd, ".agenthub", "routing.toml"))) : undefined; if (problem) throw new Error(problem); };
+  function settingsUndo(authority: SettingAuthority): Record<string, unknown> {
+    // The previous version can hold a wider value than the one in force, so undo is never an ordinary session's.
+    if (authority === "ordinary") return { ok: false, error: "undo can put back a value that widens what agents do without asking: open a settings session with ahub ui --settings, or use ahub settings undo in a terminal" };
+    const def = settingDef(pendingUndo(opts.stateDir));
+    if (typeof def === "string") return { ok: false, error: "nothing to undo" };
+    const read = (): SettingValue => def.store === "routing" ? routingValue(currentRouting(opts.cwd, log), def) : settingScalar(valueAt(storedConfig(), def.path));
+    // never-ask is set with its confirmation, never put back by an undo that carries none.
+    if (def.group === "Permissions" && restoredValue(opts.cwd, opts.stateDir, def) === "never-ask") return { ok: false, error: `undo would put never-ask back for ${def.path.at(-1)} without its confirmation: set ${def.key} again (never-ask, or inherit where the shared file holds it) with the confirmation instead; nothing was undone` };
+    try {
+      const from = read();
+      undoSetting(opts.cwd, opts.stateDir, (scratch) => loadConfig(scratch), routingCheck);
+      applyStartModes();
+      recordSetting(def.key, from, read(), settingSource(authority), true);
+      return { ok: true, text: `${def.key}: put back to ${settingText(read())}` };
+    } catch (error) {
+      return { ok: false, error: (error as Error).message };
+    }
+  }
+  /** What a change would do, before it is saved: what the mode grants, or `route explain` for the open tasks before and after. */
+  function settingsPreview(key: unknown, raw: unknown): Record<string, unknown> {
+    const input = settingInput(key, raw);
+    if ("error" in input) return { ok: false, error: input.error };
+    const { def, value } = input;
+    if (def.group === "Permissions") {
+      const peer = def.path.at(-1)!;
+      return { ok: true, lines: [permissionBoundary(peer), ...(isPermissionMode(value) ? [`${value}: ${permissionGrant(peer, value)}`] : ["inherit: the shared file's default, or ask"])] };
+    }
+    if (def.store !== "routing") return { ok: true, lines: [`${def.key}: ${settingText(value)}; ${def.applies === "peer start" ? "applies at the peer's next start" : "read at the next hub start"}`] };
+    try {
+      const after = parseRouting(routingText(opts.cwd), routingCandidate(readOverlay(opts.cwd), def, value));
+      const open = board.list().filter((task) => task.state !== "approved");
+      // A PII task's routing is fixed by its constraint and its text is private: it is counted, not shown.
+      const shown = open.filter((task) => !tasks.isPii(task)).slice(0, 20);
+      return { ok: true, lines: [`${def.key}: ${settingText(routingValue(currentRouting(opts.cwd, log), def))} -> ${settingText(routingValue(after, def))}`, ...(open.length ? [] : ["no open task: nothing is routed differently now"])],
+        tasks: shown.map((task) => ({ id: task.id, before: tasks.publicExplain(task.id), after: tasks.publicExplain(task.id, after) })),
+        ...(open.length > shown.length ? { hidden: open.length - shown.length } : {}) };
+    } catch (error) {
+      return { ok: false, error: (error as Error).message };
+    }
+  }
+
+  async function uiAction(a: Record<string, unknown>, session?: DashboardSession): Promise<unknown> {
     const bad = { ok: false, error: "invalid or unavailable dashboard action" };
+    // #269: a session opened by `ahub ui --settings` may raise authority while its window lasts; any other may not.
+    const authority: SettingAuthority = session?.settings ? "settings" : "ordinary";
     const text = (key: string, max: number) => typeof a[key] === "string" && (a[key] as string).length <= max;
     const peer = () => text("peer", 32) && PEER_ID.test(a.peer as string);
     const taskId = () => typeof a.id === "number" && Number.isSafeInteger(a.id) && a.id > 0;
@@ -2610,6 +2835,22 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "assign":
         return taskId() && peer() ? { ok: true, text: await taskOp(USER, "task_assign", { id: a.id, peer: a.peer }) } : bad;
+      case "start_peer": {
+        // #269: the hub's own start of a peer from the closed list, in the mode a person set. No argument reaches a command.
+        if (!peer()) return bad;
+        const result = await hubStart(a.peer, "the dashboard");
+        if (result.ok === true) return { ok: true, text: result.already ? `${a.peer} is already attached.` : result.opened ? `Opened a terminal running ${result.command}; ${a.peer} attaches when its TUI is ready.` : `${a.peer} started (headless).` };
+        // A refusal the hub worded itself carries the command to run by hand; an adapter's own failure text stays in the log.
+        if (typeof result.command === "string") return { ok: false, error: String(result.error) };
+        log(`dashboard start ${a.peer} failed: ${String(result.error)}`);
+        return { ok: false, error: `${a.peer} did not start; inspect ahub status and hub.log` };
+      }
+      case "setting":
+        return settingsSet(a.key, a.value, authority, a.confirm);
+      case "setting_undo":
+        return settingsUndo(authority);
+      case "setting_preview":
+        return settingsPreview(a.key, a.value);
       default:
         return bad;
     }
@@ -3160,7 +3401,9 @@ export async function startDaemon(opts: DaemonOptions) {
         try {
           dashboard ??= startDashboard({ snapshot: uiSnapshot, action: uiAction });
           writeStatus();
-          return void reply({ t: "ui", ok: true, url: dashboard.issue() });
+          // #269: `ahub ui --settings` is the same person's command; its ticket marks the session it opens.
+          if (msg.settings === true) notify("settings session opened from ahub ui --settings: for 15 minutes that dashboard session may change permission modes, routing and start settings");
+          return void reply({ t: "ui", ok: true, url: dashboard.issue(msg.settings === true), ...(msg.settings === true ? { settings: true } : {}) });
         } catch {
           return void reply({ t: "ui", ok: false, error: "could not start the dashboard" });
         }
@@ -3176,6 +3419,24 @@ export async function startDaemon(opts: DaemonOptions) {
         if (msg.instanceId !== instanceId) return void reply({ ok: false, error: "hub restarted; refresh before acting" });
         if (!msg.action || typeof msg.action !== "object" || Array.isArray(msg.action)) return void reply({ ok: false, error: "invalid dashboard action" });
         void uiAction(msg.action).then((result) => reply(result as Record<string, unknown>), () => reply({ ok: false, error: "dashboard action failed; check its inputs" }));
+        return;
+      case "settings_get":
+        if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
+        return void reply({ ok: true, ...settingsView() });
+      case "settings_preview":
+        if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
+        return void reply(settingsPreview(msg.key, msg.value));
+      case "settings_set":
+        if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
+        void settingsSet(msg.key, msg.value, "terminal", msg.confirm).then(reply, () => reply({ ok: false, error: "the setting could not be changed; inspect hub.log" }));
+        return;
+      case "settings_undo":
+        if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
+        return void reply(settingsUndo("terminal"));
+      case "peer_start":
+        // #269: a start the hub makes in the peer's start mode, for a console child with no terminal of its own.
+        if (c.role !== "console") return void reply({ ok: false, error: "peer_start is a console command; use hub_peer_start with the conductor role" });
+        void hubStart(msg.peer, "the console").then(reply, (error) => { log(`peer_start ${String(msg.peer)} failed: ${(error as Error).message}`); reply({ ok: false, error: "peer start failed; inspect ahub status and hub.log" }); });
         return;
       case "peer_stop":
         if (c.role !== "console") return void reply({ ok: false, error: "peer_stop is a console command; the person runs ahub stop in a terminal" });
@@ -3348,12 +3609,12 @@ export async function startDaemon(opts: DaemonOptions) {
     void recoverAfterCrash(crashed).catch((error) => {
       log(`crash recovery failed: ${(error as Error).message}`);
       // pi.auto_start still holds: a running Pi answers `already`, a starting one refuses the second start.
-      if (piAutoStart) void startPeer("pi", {}).catch((e) => log(`Pi auto-start failed: ${e.message}`));
+      if (piAutoStart) autoStartPi();
     });
   }
   // After a crash that recorded Pi, crash recovery starts it (#66): its recorded session first, a fresh one if that fails.
   const piRecovered = !!crashed?.peers.some((p) => p.peer === "pi");
-  if (piAutoStart && !recoveryActive() && !piRecovered) void startPeer("pi", {}).catch((error) => log(`Pi auto-start failed: ${error.message}`));
+  if (piAutoStart && !recoveryActive() && !piRecovered) autoStartPi();
   return { bus, token, port: server.port as number, stop, stopped: new Promise<void>((r) => (onStop = r)) };
   } finally {
     if (!ready) for (const cleanup of startupCleanup.reverse()) { try { cleanup(); } catch { /* preserve startup error */ } }

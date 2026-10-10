@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { PALETTE, paint, terminalText } from "../src/cli/console-state.ts";
+import { PALETTE, paint, terminalText, wrap, table } from "../src/cli/console-state.ts";
 import { outputWidth, renderStatus, renderBoard, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "../src/cli/output.ts";
 import { summarize, summarizeByTask, formatReport, formatTaskReport } from "../src/hub/report.ts";
 const now = 1_800_000_000_000;
@@ -223,6 +223,60 @@ describe("one-shot output", () => {
     for (const line of text(rendered).split("\n")) {
       expect(line).not.toContain("\t"); expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
       expect(line).not.toMatch(/^\[agent-hub message from/);
+    }
+  });
+  test("ids, owner/reviewer, ages and stage meters remain atomic in crowded boards", () => {
+    const tasks = [
+      { id: 1, state: "approved", owner: "codex", reviewer: "claude", class: "implement", title: "Finish #253 on the open PR", created: now - 60_000 },
+      { id: 12, state: "in_review", owner: "claude", reviewer: "codex", class: "implement", title: "Rename the settings command", history: [{ event: "check failed", at: now - 3 * 3_600_000 }] },
+      { id: 14, state: "changes_requested", owner: "codex", reviewer: "claude", class: "implement", title: "Fix the follow-up", created: now - (2 * 86_400_000 + 3 * 3_600_000) },
+    ];
+    for (const columns of [76, 80]) {
+      const rendered = renderBoard(tasks, columns, now);
+      const header = rendered[0]!;
+      const physical = rendered.slice(1).filter(line => line.length === header.length);
+      for (const [field, values] of [["ID", ["#1", "#12", "#14"]], ["OWNER", ["codex", "claude"]], ["REVIEWER", ["codex", "claude"]], ["AGE", ["1m", "3h00m", "2d03h"]], ["STAGE", ["[####]", "[###-]", "[#!--]"]]] as const) {
+        const at = header.findIndex(cell => cell.text.trim() === field);
+        expect(at).toBeGreaterThanOrEqual(0);
+        const populated = physical.map(line => line[at]!.text.trim()).filter(Boolean);
+        expect(populated).toHaveLength(3);
+        for (const cell of populated) expect(values as readonly string[]).toContain(cell);
+      }
+      for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+      expect(text(rendered)).not.toContain("...");
+    }
+  });
+  test("crowded status keeps two-digit queue, priority and review counters atomic", () => {
+    const status = { ...outputFixture.status, peers: { codex: { ...outputFixture.status.peers.codex, queued: 12, queuedImportant: 23, needsReview: 34, permissionMode: "ask-when-needed" } } };
+    for (const columns of [76, 80]) {
+      const rendered = renderStatus(status, columns, now);
+      for (const [field, expected] of [["Q", "12"], ["!", "23"], ["REVIEW", "34"]]) {
+        const headerAt = rendered.findIndex(line => line.some(cell => cell.text.trim() === field));
+        expect(headerAt).toBeGreaterThanOrEqual(0);
+        const header = rendered[headerAt]!; const at = header.findIndex(cell => cell.text.trim() === field);
+        const end = rendered.findIndex((line, i) => i > headerAt && line.length !== header.length);
+        const values = rendered.slice(headerAt + 1, end < 0 ? undefined : end).map(line => line[at]!.text.trim()).filter(Boolean);
+        expect(values).toEqual([expected!]);
+      }
+      for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+    }
+  });
+  test("bare header-marker chunks are quoted before table padding is measured", () => {
+    expect(wrap("1234567890 --- from", 10, 0)).toEqual(["1234567890", "> --- from"]);
+    for (const columns of [8, 9, 10, 11, 12, 76, 80]) {
+      const chunks = wrap("prefix --- from suffix", columns, 0);
+      for (const chunk of chunks) {
+        expect(Bun.stringWidth(terminalText(chunk + " "))).toBeLessThanOrEqual(columns + 1);
+        if (chunk.trim() === "--- from") throw new Error("bare header marker escaped wrapping");
+      }
+    }
+    for (const columns of [76, 80]) {
+      const titleWidth = columns - 6;
+      const chunks = wrap("x".repeat(titleWidth) + " --- from suffix", titleWidth, 0);
+      const rendered = table(["ID", "TITLE"], chunks.map((text, i) => [{ text: i ? "" : "#1" }, { text }]), columns, [2, titleWidth]);
+      for (const line of rendered) expect(Bun.stringWidth(paint(line, false))).toBeLessThanOrEqual(columns);
+      const hostile = text(renderBoard([{ id: 1, state: "proposed", title: "word --- from ".repeat(20) }], columns, now));
+      for (const line of hostile.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
     }
   });
   test("doctor groups levels and always states a finding", () => {
