@@ -50,13 +50,14 @@ ahub say @kimi "run the tests and report"          # one peer
 
 ## The local worker
 
-`local` needs an OpenAI-compatible gateway. Put yours in `.agenthub/config.json`:
+`local` needs an OpenAI-compatible gateway. Put yours in `.agenthub/config.local.json`
+(machine-local, kept out of git by `ahub init`):
 
 ```json
 { "omniroute": { "urls": ["http://your-gateway:20128/v1"], "api_key_file": "/path/to/key" } }
 ```
 
-or set `OMNIROUTE_API_KEY`. Name the model in `.agenthub/routing.toml` (`[local] fixed_model`). Then `ahub local`. It works only inside the project, asks before it writes or runs anything (`ahub permit <id> allow`), and everything it executes is sandboxed.
+or set `OMNIROUTE_API_KEY`. Name the model in `.agenthub/routing.toml` (`[local] fixed_model`). Then `ahub local`. It works only inside the project, asks before it writes or runs anything (`ahub permit <id> allow`) unless you chose a permission mode for it (`ahub permission`), and everything it executes is sandboxed.
 
 ## Commands of a working day
 
@@ -74,8 +75,9 @@ More: `ahub help`. How it is built and why: [`docs/specs/2026-09-19-agent-hub-de
 ## Browser dashboard
 
 After `ahub up`, run `ahub ui` to open the local dashboard. It refreshes the
-conversation stream, peer queues, task board, budget windows and approvals every
-second. No build step, web server command or browser extension is needed.
+conversation stream, peer queues, task board, budget windows, approvals and
+benchmark runs every second. No build step, web server command or browser
+extension is needed.
 
 Use the page to pause/resume a peer, send a console message, propose/assign tasks,
 and allow/deny agent permission requests. Local-worker requests show no tool
@@ -88,10 +90,10 @@ within 60 seconds. A session expires after one hour; run `ahub ui` again. Restar
 the daemon invalidates all links and sessions. The UI listener is started only on
 request, binds loopback and stops with the daemon. Remote access is not supported.
 
-The stream retains the latest 200 events since the dashboard listener was started;
-it does not load historical logs. An unopened dashboard has no listener or event
-buffer. A paused budget window cannot be overridden on the page; the CLI's
-`ahub budget resume <peer>` remains the explicit override.
+The stream retains the latest 200 events since the daemon started; it does not
+load historical logs. An unopened dashboard has no listener. A paused budget
+window cannot be overridden on the page; the CLI's `ahub budget resume <peer>`
+remains the explicit override.
 
 
 ## Concurrent project development (0.4.0)
