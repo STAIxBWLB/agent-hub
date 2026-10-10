@@ -66,6 +66,8 @@ export interface AcpOptions {
   /** Optional launch environment; recovery authority is always removed before spawn. */
   env?: NodeJS.ProcessEnv;
   watchdogMs?: number;
+  /** Bound for a journal-less watchdog cancellation to report its prompt; defaults to the 30 s ACP handshake cap. */
+  cancelWaitMs?: number;
   /** ACP stdio MCP servers for the session (the hub's task tools). */
   mcpServers?: { name: string; command: string; args: string[]; env: { name: string; value: string }[] }[];
   /** Appended to the standing instruction of the first delivery (role contract). */
@@ -132,6 +134,7 @@ export class AcpPeer extends BasePeer {
   private stopping = false;
   private activeDeliveryId: string | undefined;
   private deliveryAccepted = false;
+  private cancelWait: { turn: number; successor: number; timer: ReturnType<typeof setTimeout> } | undefined;
 
   constructor(
     id: PeerId,
@@ -227,6 +230,7 @@ export class AcpPeer extends BasePeer {
 
   async stop(reason?: string): Promise<void> {
     this.stopping = true;
+    this.clearCancelWait();
     if (reason !== undefined) this.turn++; // a requested stop cannot escalate or complete the cancelled turn
     if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: reason ?? "ACP session stopped before settlement" });
     this.activeDeliveryId = undefined;
@@ -265,12 +269,19 @@ export class AcpPeer extends BasePeer {
         }
       })
       .catch((e: Error) => {
+        if (turn !== this.turn || this.stopping) return;
         this.opts.log?.(`[${this.id}] prompt failed: ${e.message}`);
         if (turn === this.turn) this.reportTurnFailure(envs, e.message); // a watchdog-cancelled turn reports stale, never as this turn's failure
         if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: e.message });
         else if (!deliveryId) this.onFailed?.(envs);
       })
       .finally(() => {
+        const waiting = this.cancelWait;
+        if (waiting?.turn === turn) {
+          this.clearCancelWait();
+          if (!this.stopping && this.turn === waiting.successor && this.state === "busy") this.setState("idle");
+          return;
+        }
         if (turn === this.turn && this.state === "busy") this.setState("idle");
         if (turn === this.turn && this.activeDeliveryId === deliveryId) this.activeDeliveryId = undefined;
       });
@@ -286,6 +297,9 @@ export class AcpPeer extends BasePeer {
   }
 
   protected override onWatchdog(): void {
+    if (this.state !== "busy") return;
+    if (this.cancelWait) { this.clearWatchdog(); return; }
+    const cancelledTurn = this.turn;
     const durable = !!this.activeDeliveryId;
     if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "ACP turn watchdog timeout" });
     this.activeDeliveryId = undefined;
@@ -294,7 +308,23 @@ export class AcpPeer extends BasePeer {
     // ACP updates carry only a session ID, not a turn ID. After a durable turn times out,
     // keep the adapter offline until it is restarted so late chunks cannot contaminate a new turn.
     if (durable) this.setState("offline");
-    else super.onWatchdog();
+    else {
+      this.clearWatchdog(); // waiting for cancellation is not a second inactive model turn
+      const successor = this.turn;
+      const timer = setTimeout(() => {
+        const waiting = this.cancelWait;
+        if (!waiting || waiting.turn !== cancelledTurn || waiting.successor !== successor) return;
+        this.clearCancelWait();
+        if (!this.stopping && this.turn === successor) this.setState("offline"); // keep queued work until restart
+      }, this.opts.cancelWaitMs ?? HANDSHAKE_MS);
+      timer.unref?.();
+      this.cancelWait = { turn: cancelledTurn, successor, timer };
+    }
+  }
+
+  private clearCancelWait(): void {
+    if (this.cancelWait) clearTimeout(this.cancelWait.timer);
+    this.cancelWait = undefined;
   }
 
   private observeUsage(value: unknown, source: ACPUsageDiagnostic["source"]): void {
@@ -310,6 +340,7 @@ export class AcpPeer extends BasePeer {
   }
 
   private down(reason: string): void {
+    this.clearCancelWait();
     this.opts.log?.(`[${this.id}] ${reason}`);
     for (const p of this.pending.values()) p.reject(new Error(reason));
     this.pending.clear();
@@ -326,7 +357,7 @@ export class AcpPeer extends BasePeer {
     } catch {
       return; // not protocol output
     }
-    if (this.state === "busy") this.touch();
+    if (this.state === "busy" && !this.cancelWait) this.touch();
 
     if (msg.method === "session/update") {
       if (msg.params?.sessionId && msg.params.sessionId !== this.sessionId) return;
@@ -340,11 +371,11 @@ export class AcpPeer extends BasePeer {
       if (u?.sessionUpdate === "usage_update" && this.state !== "offline") {
         const observation = normalizeACPUsage(u, "usage_update");
         if (observation.shape === "context-used") {
-          if (this.state === "busy" || msg.params?.sessionId === this.sessionId) this.opts.onUsageDiagnostic?.(observation, this.sessionId);
+          if ((this.state === "busy" && !this.cancelWait) || msg.params?.sessionId === this.sessionId) this.opts.onUsageDiagnostic?.(observation, this.sessionId);
           return;
         }
       }
-      if (this.state !== "busy") return;
+      if (this.state !== "busy" || this.cancelWait) return;
       this.acceptDelivery();
       if (u?.sessionUpdate === "agent_message_chunk" && u.content?.type === "text") this.chunks.push(u.content.text);
       // The permission request that follows may carry no `rawInput` (Kimi 2.0.1 does not), and then the
@@ -364,6 +395,7 @@ export class AcpPeer extends BasePeer {
       }
       else if (u?.sessionUpdate === "usage_update") this.observeUsage(u, "usage_update");
     } else if (msg.method === "session/request_permission") {
+      if (this.cancelWait || this.stopping) { this.send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "cancelled" } } }); return; }
       void this.answerPermission(msg);
     } else if (msg.method && msg.id !== undefined) {
       this.send({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "method not supported by agent-hub" } });
@@ -415,7 +447,7 @@ export class AcpPeer extends BasePeer {
     } finally {
       clearInterval(alive); // also when there is no handler at all
     }
-    const valid = options.some((o) => o.optionId === picked);
+    const valid = turn === this.turn && !this.cancelWait && !this.stopping && options.some((o) => o.optionId === picked);
     this.send({
       jsonrpc: "2.0",
       id: msg.id,

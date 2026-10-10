@@ -663,3 +663,132 @@ test("an offline peer's occupancy update is dropped at the gate (#285)", async (
   (acp as unknown as { onLine: (line: string) => void }).onLine(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", used: 90_000, size: 200_000 } } }));
   expect(diagnostics).toEqual([]);
 }, 20_000);
+
+class CancelWaitingPeer extends AcpPeer { expireWatchdog(): void { this.onWatchdog(); } }
+const cancelChunks = (acp: AcpPeer) => (acp as unknown as { chunks: string[] }).chunks;
+function trackCancelBound() {
+  const originalSet = globalThis.setTimeout, originalClear = globalThis.clearTimeout;
+  const timers: { handle: ReturnType<typeof setTimeout>; callback: () => void; cleared: boolean; ms: number }[] = [];
+  const clearedHandles: ReturnType<typeof setTimeout>[] = [];
+  globalThis.setTimeout = ((callback: (...args: any[]) => void, ms?: number, ...args: any[]) => {
+    if (ms !== 53 && ms !== 300_000) return originalSet(callback, ms, ...args);
+    const handle = ms === 53 ? originalSet(() => {}, 300_000) : originalSet(callback, ms, ...args);
+    timers.push({ handle, callback: () => callback(...args), cleared: false, ms }); return handle;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((handle: ReturnType<typeof setTimeout>) => {
+    if (handle !== undefined) clearedHandles.push(handle);
+    const timer = timers.find(timer => timer.handle === handle); if (timer) timer.cleared = true;
+    originalClear(handle);
+  }) as typeof clearTimeout;
+  return { timers, clearedHandles, expire: () => { for (const timer of timers) if (!timer.cleared && timer.ms === 53) timer.callback(); }, restore: () => { for (const timer of timers) originalClear(timer.handle); globalThis.setTimeout = originalSet; globalThis.clearTimeout = originalClear; } };
+}
+
+test("a journal-less cancellation waits for the consumed native result instead of overlapping and dropping the queued message (#304)", async () => {
+  const bus = new Bus({ batchMs: 0, retryMs: 20 }), said: Envelope[] = [], failures: string[] = [], dropped: Envelope[] = [];
+  const diagnostics: number[] = [];
+  const acp = new CancelWaitingPeer("kimi", { cmd: [...FAKE, "--cancel-held", "--mode-delay-ms", "0"], cwd: process.cwd(), onUsageDiagnostic: value => { if (value.contextUsed !== undefined) diagnostics.push(value.contextUsed); }, onTurnFailure: (_envs, reason) => { failures.push(reason); } }); peer = acp;
+  bus.tap(event => { if (event.t === "envelope" && event.env.from === "kimi") said.push(event.env); if (event.t === "undeliverable") dropped.push(event.env); });
+  bus.add(acp); await acp.start();
+  bus.publish(newEnvelope("user", "CANCEL_WAIT", { to: ["kimi"] }));
+  await until(() => cancelChunks(acp).includes("ACK_CANCEL_WAIT")); // the adapter consumed native activity
+  const after = newEnvelope("user", "after cancellation", { to: ["kimi"] }); bus.publish(after);
+  acp.expireWatchdog();
+  await until(() => diagnostics.includes(1)); // the fake consumed session/cancel but has not reported its prompt
+  await acp.setPermissionMode("ask"); // old result precedes this reply and native busy is cleared before either frame
+  await until(() => said.length === 1 || dropped.length > 0);
+  expect(dropped).toEqual([]); expect(failures).toEqual([]);
+  expect(said.map(env => env.body)).toEqual(["echo: after cancellation"]);
+  expect(acp.state).toBe("idle"); expect(bus.queued("kimi")).toBe(0);
+});
+
+test("a cancellation that never reports has a bounded offline outcome with queued work retained (#304)", async () => {
+  const bus = new Bus({ batchMs: 0 }), failures: string[] = [], diagnostics: number[] = [];
+  const acp = new CancelWaitingPeer("kimi", { cmd: [...FAKE, "--cancel-never-report", "--mode-delay-ms", "0"], cwd: process.cwd(), ...{ cancelWaitMs: 53 }, onTurnFailure: (_envs, reason) => { failures.push(reason); }, onUsageDiagnostic: value => { if (value.contextUsed !== undefined) diagnostics.push(value.contextUsed); } }); peer = acp;
+  bus.add(acp); await acp.start();
+  bus.publish(newEnvelope("user", "CANCEL_WAIT", { to: ["kimi"] })); await until(() => cancelChunks(acp).includes("ACK_CANCEL_WAIT"));
+  const after = newEnvelope("user", "kept after timeout", { to: ["kimi"] }); bus.publish(after);
+  const timer = trackCancelBound();
+  try {
+    acp.expireWatchdog(); await until(() => diagnostics.includes(1));
+    expect(acp.state).toBe("busy"); expect(bus.queueIds("kimi")).toEqual([after.id]);
+    expect(timer.timers).toHaveLength(1); timer.expire();
+    expect(acp.state).toBe("offline"); expect(bus.queueIds("kimi")).toEqual([after.id]);
+    expect(timer.timers[0]!.cleared).toBe(true); expect(failures).toEqual([]);
+    await expect(acp.deliver([newEnvelope("user", "cannot overlap")])).rejects.toThrow("offline");
+  } finally { try { await acp.stop(); } finally { timer.restore(); } }
+});
+
+test("cancellation wait rejects turn-scoped noise and grants while retaining named occupancy diagnostics (#304)", async () => {
+  const diagnostics: number[] = [], tokens: number[] = [], grants: string[] = [], permits: string[] = [];
+  const recordDir = mkdtempSync(join(tmpdir(), "acp-cancel-noise-"));
+  const record = join(recordDir, "protocol.jsonl");
+  const acp = new CancelWaitingPeer("kimi", { cmd: [...FAKE, "--cancel-never-report", "--cancel-noise", "--mode-delay-ms", "0", "--record-protocol", record], cwd: process.cwd(), ...{ cancelWaitMs: 53 }, autoApprove: name => { grants.push(name); return true; }, onPermission: async request => { permits.push(request.title); return "yes"; }, onUsageDiagnostic: value => { if (value.contextUsed !== undefined) diagnostics.push(value.contextUsed); }, onTokens: total => { tokens.push(total); } }); peer = acp;
+  await acp.start(); await acp.deliver([newEnvelope("user", "CANCEL_WAIT")]); await until(() => cancelChunks(acp).includes("ACK_CANCEL_WAIT"));
+  const timer = trackCancelBound();
+  try {
+    acp.expireWatchdog(); expect(timer.clearedHandles.length).toBeGreaterThan(0);
+    await until(() => diagnostics.includes(1));
+    const pending = timer.timers[0]; expect(pending).toBeDefined();
+    await acp.setPermissionMode("ask"); // fake noise and the cancelled permission reply precede this barrier
+    expect(acp.state).toBe("busy"); expect(cancelChunks(acp)).not.toContain("STALE_CANCEL_CHUNK");
+    expect(tokens).toEqual([]); expect(grants).toEqual([]); expect(permits).toEqual([]);
+    expect(diagnostics).toEqual([1, 2]); expect(timer.timers).toHaveLength(1); // neither watchdog nor cancellation timer is rearmed
+    const outcomes = readFileSync(record, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(message => message.result?.outcome).map(message => message.result.outcome);
+    expect(outcomes).toEqual([{ outcome: "cancelled" }]);
+    acp.expireWatchdog(); expect(timer.timers).toHaveLength(1);
+    await acp.setPermissionMode("ask"); // consume any repeated cancel before asserting its count
+    expect(diagnostics.filter(value => value === 1)).toHaveLength(1);
+  } finally { try { await acp.stop(); } finally { timer.restore(); rmSync(recordDir, { recursive: true, force: true }); } }
+});
+
+for (const ending of ["reported", "stop", "down"] as const) test(`the cancellation wait timer is physically revoked on ${ending} (#304)`, async () => {
+  const acp = new CancelWaitingPeer("kimi", { cmd: [...FAKE, "--cancel-held", "--mode-delay-ms", "0"], cwd: process.cwd(), ...{ cancelWaitMs: 53 } }); peer = acp;
+  await acp.start(); await acp.deliver([newEnvelope("user", "CANCEL_WAIT")]); await until(() => cancelChunks(acp).includes("ACK_CANCEL_WAIT"));
+  const timer = trackCancelBound();
+  try {
+    acp.expireWatchdog(); expect(timer.timers).toHaveLength(1);
+    if (ending === "reported") { await acp.setPermissionMode("ask"); await until(() => acp.state === "idle"); }
+    else if (ending === "stop") await acp.stop();
+    else (acp as unknown as { down: (reason: string) => void }).down("fixture transport disconnected");
+    expect(timer.timers[0]!.cleared).toBe(true);
+    if (ending !== "reported") {
+      expect(acp.state).toBe("offline");
+      if (ending === "down") await acp.setPermissionMode("ask"); // consume the late result after the adapter went offline
+      expect(acp.state).toBe("offline");
+    }
+  } finally { try { await acp.stop(); } finally { timer.restore(); } }
+});
+
+test("a permission asked before cancellation cannot grant the cancelled turn when its answer arrives during the wait (#304)", async () => {
+  const recordDir = mkdtempSync(join(tmpdir(), "acp-cancel-grant-")), record = join(recordDir, "protocol.jsonl");
+  let release: (option: string | undefined) => void = () => {};
+  let asking = false;
+  const acp = new CancelWaitingPeer("kimi", { cmd: [...FAKE, "--cancel-held", "--cancel-permission-before", "--mode-delay-ms", "0", "--record-protocol", record], cwd: process.cwd(), onPermission: () => new Promise(resolve => { asking = true; release = resolve; }) }); peer = acp;
+  try {
+    await acp.start(); await acp.deliver([newEnvelope("user", "CANCEL_WAIT")]);
+    await until(() => asking && cancelChunks(acp).includes("ACK_CANCEL_WAIT"));
+    acp.expireWatchdog(); expect(acp.state).toBe("busy");
+    release("yes"); await acp.setPermissionMode("ask");
+    const replies = readFileSync(record, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(message => message.result?.outcome);
+    expect(replies.map(message => message.result.outcome)).toEqual([{ outcome: "cancelled" }]);
+    await until(() => acp.state === "idle");
+  } finally { release(undefined); await acp.stop(); rmSync(recordDir, { recursive: true, force: true }); }
+});
+
+test("a cancelled result consumed after the cancellation bound cannot restore idle or dispatch queued work (#304)", async () => {
+  const bus = new Bus({ batchMs: 0 }), diagnostics: number[] = [], said: Envelope[] = [], failures: string[] = [];
+  const acp = new CancelWaitingPeer("kimi", { cmd: [...FAKE, "--cancel-held", "--mode-delay-ms", "0"], cwd: process.cwd(), ...{ cancelWaitMs: 53 }, onUsageDiagnostic: value => { if (value.contextUsed !== undefined) diagnostics.push(value.contextUsed); }, onTurnFailure: (_envs, reason) => { failures.push(reason); } }); peer = acp;
+  bus.tap(event => { if (event.t === "envelope" && event.env.from === "kimi") said.push(event.env); });
+  bus.add(acp); await acp.start(); bus.publish(newEnvelope("user", "CANCEL_WAIT"));
+  await until(() => cancelChunks(acp).includes("ACK_CANCEL_WAIT"));
+  const after = newEnvelope("user", "retained after late report"); bus.publish(after);
+  const timer = trackCancelBound();
+  try {
+    acp.expireWatchdog(); await until(() => diagnostics.includes(1)); timer.expire();
+    expect(acp.state).toBe("offline"); expect(timer.timers[0]!.cleared).toBe(true);
+    await acp.setPermissionMode("ask"); // release and consume the genuinely late original result
+    await new Promise<void>(resolve => setImmediate(resolve)); // drain the result promise's downstream continuations
+    expect(acp.state).toBe("offline"); expect(bus.queueIds("kimi")).toEqual([after.id]);
+    expect(said).toEqual([]); expect(failures).toEqual([]);
+  } finally { try { await acp.stop(); } finally { timer.restore(); } }
+});

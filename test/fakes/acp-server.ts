@@ -10,6 +10,9 @@ const delay = Number(process.env.FAKE_ACP_DELAY_MS ?? 20);
 const send = (m: unknown) => process.stdout.write(`${JSON.stringify(m)}\n`);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let busy = false;
+let heldCancelReport: (() => void) | undefined;
+let cancelWaitSeen = false;
+let cancelPermissionSettled: Promise<void> = Promise.resolve();
 let cancel: (() => void) | undefined;
 // Receipt-order fixture: a later mode reply is an ordered transport barrier after the cancelled prompt result.
 let cancelledResultSent: (() => void) | undefined;
@@ -26,6 +29,28 @@ async function prompt(id: number, text: string) {
   if (busy) return send({ jsonrpc: "2.0", id, error: { code: -32000, message: "turn.agent_busy" } });
   busy = true;
   let verdict = "";
+  // #304 opt-in: retain native busy until the cancelled prompt is explicitly released by set_mode.
+  if ((process.argv.includes("--cancel-held") || process.argv.includes("--cancel-never-report")) && text.includes("CANCEL_WAIT")) {
+    send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ACK_CANCEL_WAIT" } } } });
+    if (process.argv.includes("--cancel-permission-before")) cancelPermissionSettled = new Promise<void>(resolve => {
+      const request = ++nextId;
+      waiting.set(request, () => { waiting.delete(request); resolve(); });
+      send({ jsonrpc: "2.0", id: request, method: "session/request_permission", params: { sessionId: "s1", toolCall: { title: "permission before cancel" }, options: [{ optionId: "yes", name: "Allow", kind: "allow_once" }] } });
+    });
+    await new Promise<void>(resolve => {
+      cancel = () => {
+        cancelWaitSeen = true;
+        send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", used: 1, size: 10 } } });
+        if (process.argv.includes("--cancel-never-report")) return;
+        heldCancelReport = () => {
+          heldCancelReport = undefined; busy = false; cancel = undefined;
+          send({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
+          cancelledResultSent?.(); resolve();
+        };
+      };
+    });
+    return;
+  }
   // Occupancy trailing updates (#285): flat `{used, size}` (docs/smoke.md), held for the test's barrier; 2.1.1's
   // source text emits it after the prompt resolves (read from the source, not observed live). OCCUPANCY is 45%,
   // OCCUPANCY_HIGH 90% (over a 0.8 gate), OCCUPANCY_INVALID the numbers normalizeACPUsage rejects,
@@ -166,15 +191,28 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   }
   else if (msg.method === "session/set_mode") {
     modePending = true;
-    const respond = () => setTimeout(() => {
+    const respond = () => setTimeout(async () => {
       modePending = false;
+      if (cancelWaitSeen && process.argv.includes("--cancel-noise")) {
+        send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "STALE_CANCEL_CHUNK" } } } });
+        send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", totalTokens: 999 } } });
+        send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", used: 2, size: 10 } } });
+        send({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "usage_update", used: 3, size: 10 } } });
+        await new Promise<void>(resolve => {
+          const request = ++nextId;
+          waiting.set(request, () => { waiting.delete(request); resolve(); });
+          send({ jsonrpc: "2.0", id: request, method: "session/request_permission", params: { sessionId: "s1", toolCall: { title: "mcp__agent-hub__hub_send" }, options: [{ optionId: "yes", name: "Allow", kind: "allow_once" }] } });
+        });
+      }
+      if (cancelWaitSeen && process.argv.includes("--cancel-permission-before")) await cancelPermissionSettled; // consume the prior permission reply
+      heldCancelReport?.();
       const ackRecord = arg("--mode-ack-record");
       if (ackRecord) appendFileSync(ackRecord, `${msg.params.modeId}\n`);
       flushHeld(); // held trailing updates go out before the reply: a resolved setPermissionMode is the barrier (#285)
       if (process.argv.includes("--refuse-mode")) send({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "mode disabled" } });
       else { modes.currentModeId = msg.params.modeId; send({ jsonrpc: "2.0", id: msg.id, result: {} }); }
     }, Number(arg("--mode-delay-ms") ?? 40));
-    if (process.argv.includes("--mode-after-cancel")) void cancelledResult.then(respond);
+    if (process.argv.includes("--mode-after-cancel") && !process.argv.includes("--cancel-held") && !process.argv.includes("--cancel-never-report")) void cancelledResult.then(respond);
     else respond();
   }
   else if (msg.method === "session/cancel") cancel?.();
