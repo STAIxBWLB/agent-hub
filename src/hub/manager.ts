@@ -148,7 +148,8 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
           await bounded(lifecycle.stopProject(project, input.instanceId), 20_000);
           return { ok: true };
         }
-        if (!["snapshot", "send", "pause", "resume", "permit", "propose", "assign"].includes(String(input.action))) return { ok: false, error: "invalid dashboard action" };
+        // The settings actions (#269) reach the project hub as an ordinary session's: this dashboard opens no settings session.
+        if (!["snapshot", "send", "pause", "resume", "permit", "propose", "assign", "setting", "setting_undo", "setting_preview", "start_peer"].includes(String(input.action))) return { ok: false, error: "invalid dashboard action" };
         client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: input.instanceId });
         return await client.request(input.action === "snapshot"
           ? { t: "ui_snapshot", after: input.after ?? 0 }

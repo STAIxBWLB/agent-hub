@@ -2417,7 +2417,7 @@ test("a second changes_requested returns the moved task when the escalation's as
   expect(peers.kimi!.got.length).toBe(kimiHeard);
   expect(peers.codex!.got.filter((e) => e.kind === "task" && e.refs?.task === "1")).toHaveLength(0);
   // The notice says what is known: the move is saved, the delivery is not confirmed, what to check before resending.
-  expect(notices.some((line) => line.includes("the move to codex is saved") && line.includes("delivery is not confirmed") && line.includes("ahub queue list --peer codex") && line.includes("ahub queue show") && line.includes("ahub task assign 1 codex"))).toBe(true);
+  expect(notices.some((line) => line.includes("the move to codex is saved") && line.includes("delivery is not confirmed") && line.includes("ahub queue list --peer codex") && line.includes("ahub queue show") && line.includes("ahub task show 1") && line.includes("ahub task assign 1 codex"))).toBe(true);
   // The command it names delivers the task envelope.
   await tasks.assignTo(1, "codex", USER);
   expect(peers.codex!.got.filter((e) => e.kind === "task" && e.refs?.task === "1")).toHaveLength(1);
