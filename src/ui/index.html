@@ -178,6 +178,20 @@ function renderTaskStage(stage) {
   for (const [index, label] of ['Proposed', 'In progress', 'In review', 'Approved'].entries()) row.append(el('span', `${index < stage.stage ? '[x]' : '[ ]'} ${label}${index < 3 ? ' > ' : ''}`, index < stage.stage ? 'reached' : ''));
   row.append(el('span', ` / Stage ${stage.stage}/4: ${stage.label}`)); return row;
 }
+function renderApprovals(permissions) {
+  const terminalWaiting = permissions.filter((permission) => permission.peer === 'pi' || permission.peer === 'local').length;
+  $('permission-count').textContent = permissions.length + ' waiting' + (terminalWaiting ? ', ' + terminalWaiting + ' Pi/local: answer in the console or ahub tail / ahub permit' : '');
+  update('permissions', permissions, (target) => {
+    if (!permissions.length) return empty(target, 'No approvals waiting.');
+    for (const permission of permissions) {
+      const row = el('div', undefined, 'row'); row.append(el('div', permission.peer, 'label'), el('p', permission.title, 'body'));
+      if (permission.terminalOnly) row.append(el('p', 'Review in the console or ahub tail; answer with ahub permit. You can deny here.', 'meta'));
+      const actions = el('div', undefined, 'actions');
+      for (const option of permission.options) { const deny = option.kind === 'reject_once' || option.kind === 'reject_always'; if (permission.terminalOnly && !deny) continue; actions.append(button(option.name, {action:'permit', id:permission.id, option:option.optionId}, deny ? 'danger' : 'primary')); }
+      row.append(actions); target.append(row);
+    }
+  });
+}
 function render(snapshot) {
   const peers = snapshot.status.peers || {}, ids = Object.keys(peers);
   $('peer-count').textContent = ids.length + ' peers';
@@ -227,17 +241,7 @@ function render(snapshot) {
       target.append(row);
     }
   });
-  $('permission-count').textContent = String(snapshot.permissions.length);
-  update('permissions', snapshot.permissions, (target) => {
-    if (!snapshot.permissions.length) return empty(target, 'No approvals waiting.');
-    for (const permission of snapshot.permissions) {
-      const row = el('div', undefined, 'row'); row.append(el('div', permission.peer, 'label'), el('p', permission.title, 'body'));
-      if (permission.terminalOnly) row.append(el('p', 'Review details and allow in the terminal with ahub tail. You can deny here.', 'meta'));
-      const actions = el('div', undefined, 'actions');
-      for (const option of permission.options) { const deny = option.kind === 'reject_once' || option.kind === 'reject_always'; if (permission.terminalOnly && !deny) continue; actions.append(button(option.name, {action:'permit', id:permission.id, option:option.optionId}, deny ? 'danger' : 'primary')); }
-      row.append(actions); target.append(row);
-    }
-  });
+  renderApprovals(snapshot.permissions);
   update('budget', snapshot.budget, (target) => {
     if (!Object.keys(snapshot.budget).length) return empty(target, 'No usage readings yet. Usage appears when a peer reports it.');
     for (const [peer, budget] of Object.entries(snapshot.budget)) {

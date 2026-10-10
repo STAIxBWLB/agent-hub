@@ -30,7 +30,7 @@ test("#181 the Pi /tool bridge answers with the toolResultFailed verdict", async
     const launch = peer.tuiLaunch!;
     const headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
     const call = async (name: string, args: unknown) => {
-      const response = await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, { method: "POST", headers, body: JSON.stringify({ name, args, toolCallId: `c-${name}-${JSON.stringify(args)}` }) });
+      const response = await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, { method: "POST", headers, body: JSON.stringify({ name, args, toolCallId: `c-${name}-${JSON.stringify(args)}`, sessionId: peer.recoveryMetadata().sessionId, generation: 0 }) });
       expect(response.status).toBe(200);
       return response.json() as Promise<{ text: string; failed: boolean }>;
     };
@@ -126,3 +126,112 @@ test("#181 the real extension maps the bridge verdict to isError without touchin
     }
   } finally { server.stop(true); }
 });
+
+
+test("the real extension forwards native abort and the person's shell exit status without parsing output", async () => {
+  let settle: (() => void) | undefined;
+  const events: any[] = [];
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
+    const path = new URL(req.url).pathname;
+    const body = await req.json() as any;
+    if (path === "/budget") return Response.json({ decisions: [], reservation: "verified-idle-reservation" });
+    if (path === "/event") { events.push(body); if (body.type === "tool_abort") settle?.(); return Response.json({ ok: true }); }
+    if (body.toolCallId === "native-cancelled") {
+      await new Promise<void>((resolve) => { settle = resolve; });
+      return Response.json({ text: "error: approval withdrawn because the turn ended; no operation was executed", failed: true });
+    }
+    expect(body).toMatchObject({ name: "bash", purpose: "idle_user_bash", reservation: "verified-idle-reservation" });
+    return Response.json({ text: "(exit 0) is arbitrary program output", exitCode: 7, failed: true });
+  } });
+  try {
+    const proc = Bun.spawn([process.execPath, join(import.meta.dir, "fakes/pi-extension-driver.ts"), join(import.meta.dir, "../src/pi/extension.ts"), "approvals"], {
+      stdout: "pipe", stderr: "pipe", env: { ...process.env, AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${server.port}`, AGENTHUB_PI_BRIDGE_TOKEN: "test-token", AGENTHUB_PI_TOOLS: JSON.stringify([{ name: "read", description: "read", parameters: { type: "object" } }]) },
+    });
+    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    expect(await proc.exited).toBe(0); expect(err).toBe("");
+    const results = out.trim().split("\n").map((line) => JSON.parse(line));
+    expect(results[0]).toMatchObject({ isError: true });
+    expect(events).toContainEqual({ type: "tool_abort", sessionId: "", generation: 0, toolCallId: "native-cancelled" });
+    expect(results[1].result).toMatchObject({ exitCode: 7, cancelled: false, output: "(exit 0) is arbitrary program output" });
+  } finally { settle?.(); server.stop(true); }
+}, 10_000);
+
+for (const supported of [true, false]) test(`the real extension ${supported ? "aborts and settles the turn with its approval reason" : "refuses an approval abort when the native runtime cannot abort"}`, async () => {
+  const reason = "Pi turn stopped after two unanswered approvals; no person answered. Do not retry the calls.";
+  const events: any[] = [], acknowledgements: any[] = [];
+  let started!: () => void, acknowledged!: () => void;
+  const turnStarted = new Promise<void>((resolve) => { started = resolve; });
+  const commandAcknowledged = new Promise<void>((resolve) => { acknowledged = resolve; });
+  let commands = 0;
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
+    const path = new URL(req.url).pathname;
+    if (path === "/commands") {
+      await turnStarted;
+      if (commands++ === 0) return Response.json({ command: { id: "approval-abort", type: "abort_budget", generation: 1, cause: "approval", reason } });
+      await commandAcknowledged;
+      return Response.json({ command: { id: "driver-shutdown", type: "shutdown" } });
+    }
+    const body = await req.json() as any;
+    if (path === "/event") {
+      events.push(body);
+      if (body.type === "agent_start") started();
+    } else if (path === "/ack") {
+      acknowledgements.push(body);
+      if (body.id === "approval-abort") acknowledged();
+    }
+    return Response.json({ ok: true });
+  } });
+  let stopChild: (() => Promise<void>) | undefined;
+  try {
+    const proc = Bun.spawn([process.execPath, join(import.meta.dir, "fakes/pi-extension-driver.ts"), join(import.meta.dir, "../src/pi/extension.ts"), supported ? "approval-abort" : "approval-abort-unsupported"], {
+      stdout: "pipe", stderr: "pipe", env: { ...process.env, AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${server.port}`, AGENTHUB_PI_BRIDGE_TOKEN: "test-token", AGENTHUB_PI_TOOLS: JSON.stringify([{ name: "read", description: "read", parameters: { type: "object" } }]) },
+    });
+    stopChild = async () => { if (proc.exitCode === null) { proc.kill(); await proc.exited; } };
+    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    expect(await proc.exited).toBe(0); expect(err).toBe("");
+    expect(JSON.parse(out.trim())).toEqual({ abortCalls: supported ? 1 : 0 });
+    expect(events.find((event) => event.type === "session_start")?.approvalTurnAbort).toBe(supported);
+    const ends = events.filter((event) => event.type === "agent_end");
+    const settled = events.filter((event) => event.type === "agent_settled");
+    if (supported) {
+      expect(acknowledgements.find((ack) => ack.id === "approval-abort")).toEqual({ id: "approval-abort", ok: true });
+      expect(ends).toHaveLength(2); // the forced failure and the native abort callback
+      for (const end of ends) expect(end).toMatchObject({ generation: 1, failed: true, error: reason });
+      expect(settled).toEqual([{ type: "agent_settled", generation: 1 }]);
+    } else {
+      expect(acknowledgements.find((ack) => ack.id === "approval-abort")).toEqual({ id: "approval-abort", ok: false, error: "Pi runtime cannot abort the current turn" });
+      expect(ends).toEqual([]);
+      expect(settled).toEqual([]);
+    }
+  } finally {
+    started(); acknowledged();
+    await stopChild?.();
+    server.stop(true);
+  }
+}, 10_000);
+
+
+test("the real extension pins tool session and generation before an awaited budget reply", async () => {
+  const tools: any[] = [];
+  const starts: number[] = [], budgets: number[] = [];
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
+    const path = new URL(req.url).pathname;
+    if (path === "/commands") { await Bun.sleep(25); return Response.json({ command: null }); }
+    const body = await req.json() as any;
+    if (path === "/event") { if (body.type === "agent_start") starts.push(body.generation); return Response.json({ ok: true }); }
+    if (path === "/budget") { budgets.push(body.generation); if (budgets.length > 1) { await Bun.sleep(100); return Response.json({ decisions: [{ allowed: false, reason: "exhausted", scope: "run:test", unit: "tool_calls", used: 1, limit: 1 }] }); } return Response.json({ decisions: [] }); }
+    tools.push(body); return Response.json({ text: "ok", failed: false });
+  } });
+  try {
+    const proc = Bun.spawn([process.execPath, join(import.meta.dir, "fakes/pi-extension-driver.ts"), join(import.meta.dir, "../src/pi/extension.ts"), "lineage"], { stdout: "pipe", stderr: "pipe", env: { ...process.env, AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${server.port}`, AGENTHUB_PI_BRIDGE_TOKEN: "test-token", AGENTHUB_PI_TOOLS: JSON.stringify([{ name: "read", description: "read", parameters: { type: "object" } }]) } });
+    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+    expect(await proc.exited).toBe(0); expect(err).toBe("");
+    expect(starts).toEqual([1, 2]); expect(budgets).toEqual([1, 1]);
+    expect(tools).toHaveLength(1);
+    expect(tools[0]).toMatchObject({ name: "read", toolCallId: "initial-lineage", sessionId: "producer-session", generation: 1 });
+    const results = out.trim().split("\n").map((line) => JSON.parse(line));
+    expect(results[0].isError).not.toBe(true);
+    expect(results[1].isError).toBe(true);
+    expect(results[1].content[0].text).toContain("lineage ended during admission");
+  } finally { server.stop(true); }
+}, 10_000);

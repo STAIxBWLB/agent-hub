@@ -3,6 +3,22 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { PreEffectToolRefusal } from "../hub/tool-refusal.ts";
 
+export const PI_TOOL_RESULT_CAP = 100_000;
+/** Bound encoded text before wrapping it so escaping never cuts off trusted exit metadata. */
+export function packPiShellResult(text: string, exitCode: number | null): string {
+  const pack = (value: string) => JSON.stringify({ kind: "user-bash-result", text: value, exitCode });
+  const full = pack(text);
+  if (full.length <= PI_TOOL_RESULT_CAP) return full;
+  const suffix = "\n[output truncated]";
+  let low = 0, high = text.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (pack(text.slice(0, middle) + suffix).length <= PI_TOOL_RESULT_CAP) low = middle;
+    else high = middle - 1;
+  }
+  return pack(text.slice(0, low) + suffix);
+}
+
 /** Private, session-scoped dedupe. An interrupted effect is never automatically repeated. */
 export class PiToolReceipts {
   private readonly db: Database;
@@ -33,7 +49,7 @@ export class PiToolReceipts {
     const claim = this.db.query("INSERT OR IGNORE INTO pi_tool_receipts(session,call_id,fingerprint,state) VALUES(?,?,?,'pending')").run(session, callId, fingerprint);
     if (!claim.changes) return this.execute(session, callId, name, args, run);
     const settle = (result: string): string => {
-      const text = result.slice(0, 100_000);
+      const text = result.slice(0, PI_TOOL_RESULT_CAP);
       this.db.query("UPDATE pi_tool_receipts SET state='done',result=? WHERE session=? AND call_id=?").run(text, session, callId);
       return text;
     };

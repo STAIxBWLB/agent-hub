@@ -1,10 +1,39 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
-import { PiToolReceipts } from "../src/pi/tool-receipts.ts";
+import { packPiShellResult, PiToolReceipts, PI_TOOL_RESULT_CAP } from "../src/pi/tool-receipts.ts";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+test("a person's oversized shell result stays within the cap and keeps its trusted exit code (#253)", () => {
+  const small = packPiShellResult("human", 7);
+  expect(JSON.parse(small)).toEqual({ kind: "user-bash-result", text: "human", exitCode: 7 });
+  const packed = packPiShellResult("\0".repeat(300_000), 3);
+  expect(packed.length).toBeLessThanOrEqual(PI_TOOL_RESULT_CAP);
+  const parsed = JSON.parse(packed);
+  expect(parsed.kind).toBe("user-bash-result");
+  expect(parsed.exitCode).toBe(3); // the review's `head -c 30000 /dev/zero; exit 3` lost this
+  expect(parsed.text.endsWith("\n[output truncated]")).toBe(true);
+  const cancelled = packPiShellResult("x".repeat(200_000), null);
+  expect(cancelled.length).toBeLessThanOrEqual(PI_TOOL_RESULT_CAP);
+  expect(JSON.parse(cancelled).exitCode).toBeNull();
+});
+
+test("bounded shell status survives a persisted receipt replay (#253)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-shell-receipt-")), file = join(dir, "hub.db");
+  let ledger = new PiToolReceipts(file), effects = 0;
+  try {
+    const output = await ledger.execute("shell-session", "nul-shell", "bash", { command: "head -c 30000 /dev/zero; exit 3" }, async () => {
+      effects++; return packPiShellResult("\0".repeat(30_000), 3);
+    });
+    expect(output.length).toBeLessThanOrEqual(PI_TOOL_RESULT_CAP);
+    expect(JSON.parse(output).exitCode).toBe(3);
+    ledger.close(); ledger = new PiToolReceipts(file);
+    const replay = await ledger.execute("shell-session", "nul-shell", "bash", { command: "head -c 30000 /dev/zero; exit 3" }, async () => { effects++; return "unexpected effect"; });
+    expect(replay).toBe(output); expect(effects).toBe(1); expect(JSON.parse(replay).exitCode).toBe(3);
+  } finally { ledger.close(); rmSync(dir, { recursive: true, force: true }); }
+});
 
 test("Pi tool receipts dedupe concurrent effects and survive a daemon restart", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-receipts-")), file = join(dir, "hub.db");

@@ -19,6 +19,7 @@ let pollStopped = false;
 let toolSteps = 0;
 let lastActivity = 0;
 let usageSeq = 0;
+let shellSeq = 0;
 let forcedFailure = "";
 let turnGeneration = 0;
 let sessionId = "";
@@ -33,9 +34,13 @@ async function post(path: string, body: unknown): Promise<any> {
   if (!response.ok) throw new Error(`Pi bridge HTTP ${response.status}`);
   return response.json();
 }
-async function admitBudget(unit: BudgetUnit, idleUserBash = false): Promise<{ allowed: boolean; reservation?: string }> {
+async function admitBudget(unit: BudgetUnit, idleUserBash = false, generation = turnGeneration, callSessionId = sessionId): Promise<{ allowed: boolean; reservation?: string; reason?: string }> {
+  const current = () => generation === turnGeneration && callSessionId === sessionId;
+  const stale = () => ({ allowed: false, reason: "Pi tool lineage ended during admission; do not retry the old call" });
+  if (!current()) return stale();
   try {
-    const result = await post("/budget", { unit, generation: turnGeneration, ...(idleUserBash ? { idleUserBash: true } : {}) });
+    const result = await post("/budget", { unit, generation, ...(idleUserBash ? { idleUserBash: true } : {}) });
+    if (!current()) return stale();
     const decisions = Array.isArray(result?.decisions) ? result.decisions : [];
     const denied = decisions.find((item: any) => item?.allowed === false);
     if (!denied) return { allowed: true, ...(idleUserBash && typeof result?.reservation === "string" ? { reservation: result.reservation } : {}) };
@@ -43,12 +48,14 @@ async function admitBudget(unit: BudgetUnit, idleUserBash = false): Promise<{ al
     if (idleUserBash) return { allowed: false };
     forcedFailure = reason;
   } catch (error) {
+    if (!current()) return stale();
     if (idleUserBash) return { allowed: false };
     forcedFailure = `execution budget admission unavailable: ${(error as Error).message}`;
   }
-  try { await post("/event", { type: "agent_end", generation: turnGeneration, failed: true, error: forcedFailure }); } catch { /* abort remains authoritative when the bridge is unavailable */ }
-  runtimeCtx?.abort?.();
-  return { allowed: false };
+  const reason = forcedFailure;
+  try { await post("/event", { type: "agent_end", generation, failed: true, error: reason }); } catch { /* abort remains authoritative when the bridge is unavailable */ }
+  if (current()) runtimeCtx?.abort?.();
+  return { allowed: false, reason };
 }
 async function poll(pi: ExtensionAPI): Promise<void> {
   while (!pollStopped) {
@@ -77,10 +84,13 @@ async function poll(pi: ExtensionAPI): Promise<void> {
           shutdown?.();
         } else if (command.type === "abort_budget") {
           if (Number.isSafeInteger(command.generation) && command.generation === turnGeneration) {
-            const reason = "execution budget exhausted: elapsed_ms wall cap reached";
+            if (typeof runtimeCtx?.abort !== "function") throw new Error("Pi runtime cannot abort the current turn");
+            const generation = turnGeneration, callSessionId = sessionId;
+            const reason = command.cause === "approval" && typeof command.reason === "string" && command.reason
+              ? command.reason : "execution budget exhausted: elapsed_ms wall cap reached";
             forcedFailure = reason;
-            await post("/event", { type: "agent_end", generation: turnGeneration, failed: true, error: reason });
-            runtimeCtx?.abort?.();
+            await post("/event", { type: "agent_end", generation, failed: true, error: reason });
+            if (generation === turnGeneration && callSessionId === sessionId) runtimeCtx?.abort?.();
           }
         }
         await post("/ack", { id: command.id, ok: true });
@@ -107,7 +117,7 @@ export default function(pi: ExtensionAPI): void {
     const state = ctx.sessionManager.getHeader();
     sessionId = String(state?.id ?? "");
     try {
-      const claimed = await post("/event", { type: "session_start", ownerToken, pid: process.pid, signature: processSignature(process.pid), sessionId: state?.id, sessionFile: ctx.sessionManager.getSessionFile() });
+      const claimed = await post("/event", { type: "session_start", ownerToken, pid: process.pid, signature: processSignature(process.pid), sessionId: state?.id, sessionFile: ctx.sessionManager.getSessionFile(), approvalTurnAbort: typeof ctx.abort === "function" });
       if (claimed?.ok === false) { ctx.shutdown?.(); return; }
     } catch (error) { ctx.shutdown?.(); throw error; }
     if (!pollStarted) { pollStarted = true; void poll(pi); }
@@ -140,8 +150,10 @@ export default function(pi: ExtensionAPI): void {
   });
   pi.on("before_provider_request", async (_event: any, ctx: any) => {
     if (ctx.model?.provider && ctx.model.provider !== "agent-hub-local") { ctx.abort?.(); return undefined; }
-    try { if (!(await admitBudget("model_calls")).allowed) ctx.abort?.(); }
-    catch (error) { forcedFailure = `execution budget admission failed: ${(error as Error).message}`; ctx.abort?.(); }
+    const generation = turnGeneration, callSessionId = sessionId;
+    const current = () => generation === turnGeneration && callSessionId === sessionId;
+    try { if (!(await admitBudget("model_calls", false, generation, callSessionId)).allowed && current()) ctx.abort?.(); }
+    catch (error) { if (current()) { forcedFailure = `execution budget admission failed: ${(error as Error).message}`; ctx.abort?.(); } }
     return undefined;
   });
   pi.on("agent_settled", async (_event: any, ctx: any) => {
@@ -151,10 +163,11 @@ export default function(pi: ExtensionAPI): void {
     await post("/event", { type: "agent_settled", generation: turnGeneration, ...(text ? { text } : {}) });
   });
   pi.on("user_bash", async (event: any) => {
-    const admission = await admitBudget("tool_calls", true);
+    const generation = turnGeneration, callSessionId = sessionId;
+    const admission = await admitBudget("tool_calls", true, generation, callSessionId);
     if (!admission.allowed || !admission.reservation) return { cancel: true };
-    const result = await post("/tool", { name: "bash", args: { command: event.command, cwd: event.cwd }, toolCallId: `pi-shell-${Date.now()}`, purpose: "idle_user_bash", generation: turnGeneration, reservation: admission.reservation });
-    return { result: { output: String(result.text ?? result), exitCode: 0, cancelled: false, truncated: false } };
+    const result = await post("/tool", { name: "bash", args: { command: event.command, cwd: event.cwd }, toolCallId: `pi-shell-${Date.now()}-${++shellSeq}`, purpose: "idle_user_bash", generation, sessionId: callSessionId, reservation: admission.reservation });
+    return { result: { output: String(result.text ?? result), exitCode: typeof result.exitCode === "number" ? result.exitCode : undefined, cancelled: result.exitCode === null, truncated: false } };
   });
   // Managed sessions may only be handed over by PiPeer after it has fenced the
   // owner and verified the replacement identity. User /fork and /resume would
@@ -164,8 +177,11 @@ export default function(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async () => { pollStopped = true; await post("/event", { type: "session_shutdown" }); });
   for (const raw of (() => { try { return JSON.parse(process.env.AGENTHUB_PI_TOOLS ?? "[]") as any[]; } catch { return []; } })()) {
     if (!raw || typeof raw.name !== "string" || !raw.parameters) continue;
-    pi.registerTool({ name: raw.name, label: raw.name, description: raw.description ?? raw.name, parameters: raw.parameters, async execute(toolCallId: string, params: unknown) {
-      if (!(await admitBudget("tool_calls")).allowed) return { content: [{ type: "text", text: `error: ${forcedFailure}` }], details: {}, isError: true };
+    pi.registerTool({ name: raw.name, label: raw.name, description: raw.description ?? raw.name, parameters: raw.parameters, async execute(toolCallId: string, params: unknown, signal?: AbortSignal) {
+      const generation = turnGeneration, callSessionId = sessionId;
+      if (signal?.aborted) return { content: [{ type: "text", text: "error: tool call cancelled before execution" }], details: {}, isError: true };
+      const admission = await admitBudget("tool_calls", false, generation, callSessionId);
+      if (!admission.allowed) return { content: [{ type: "text", text: `error: ${admission.reason ?? forcedFailure}` }], details: {}, isError: true };
       if (toolSteps++ >= maxSteps) {
         const reason = `Pi tool step limit ${maxSteps} reached`;
         forcedFailure = reason;
@@ -173,12 +189,19 @@ export default function(pi: ExtensionAPI): void {
         // event, so the adapter binds it while the turn still owns it. The counter already counts the
         // rejected pre-effect invocation (toolSteps++ above); its side effect never executes. The
         // reason text stays the failure record; the signal adds the validated counts.
-        try { await post("/event", { type: "ceiling", kind: PI_CEILING_KIND, unit: PI_CEILING_UNIT, count: toolSteps, limit: maxSteps, sessionId, generation: turnGeneration }); } catch { /* the agent_end failure below remains authoritative */ }
-        await post("/event", { type: "agent_end", generation: turnGeneration, failed: true, error: reason });
-        runtimeCtx?.abort?.();
+        try { await post("/event", { type: "ceiling", kind: PI_CEILING_KIND, unit: PI_CEILING_UNIT, count: toolSteps, limit: maxSteps, sessionId: callSessionId, generation }); } catch { /* the agent_end failure below remains authoritative */ }
+        await post("/event", { type: "agent_end", generation, failed: true, error: reason });
+        if (generation === turnGeneration && callSessionId === sessionId) runtimeCtx?.abort?.();
         return { content: [{ type: "text", text: `error: ${reason}` }], details: {}, isError: true };
       }
-      const result = await post("/tool", { name: raw.name, args: params, toolCallId });
+      const aborted = () => { void post("/event", { type: "tool_abort", sessionId: callSessionId, generation, toolCallId }).catch(() => undefined); };
+      if (signal?.aborted) return { content: [{ type: "text", text: "error: tool call cancelled before execution" }], details: {}, isError: true };
+      signal?.addEventListener("abort", aborted, { once: true });
+      let result: any;
+      try {
+        result = await post("/tool", { name: raw.name, args: params, toolCallId, sessionId: callSessionId, generation });
+        if (signal?.aborted) aborted();
+      } finally { signal?.removeEventListener("abort", aborted); }
       const text = String(result.text ?? result);
       // Pi 1.0.1 reads isError === true alone (#181). The bridge computes `failed` with the
       // managed-tool failure contract (toolResultFailed); the extension never re-parses the text.

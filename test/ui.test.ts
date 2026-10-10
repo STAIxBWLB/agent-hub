@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import { connect } from "node:net";
 import { createHash } from "node:crypto";
-import { runInNewContext } from "node:vm";
 import { taskProgress } from "../src/ui/task-progress.ts";
 import { initialConsoleState, renderConsole } from "../src/cli/console-state.ts";
 import { startDashboard } from "../src/hub/ui.ts";
@@ -302,4 +303,28 @@ test("shared model injection treats dollar replacement patterns as literal sourc
     const { ui } = setup(); const html = await (await fetch(ui.origin)).text();
     expect(html).toContain('/* $& */');
   } finally { taskProgress.toString = original; }
+});
+
+test("dashboard renders Pi/local waiting counts and terminal answer directions while keeping grants deny-only (#253)", () => {
+  const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
+  const code = /function renderApprovals\(permissions\) \{([\s\S]*?)\n\}/.exec(html)?.[0];
+  expect(code).toBeDefined();
+  class Node {
+    textContent = ""; children: Node[] = [];
+    constructor(text = "") { this.textContent = text; }
+    append(...children: Node[]) { this.children.push(...children); }
+  }
+  const count = new Node(), rows = new Node(), actions: unknown[] = [];
+  const context = {
+    $: () => count, el: (_tag: string, text?: string) => new Node(text),
+    empty: (target: Node, text: string) => target.append(new Node(text)),
+    update: (_id: string, _value: unknown, render: (target: Node) => void) => { rows.children = []; render(rows); },
+    button: (name: string, action: unknown) => { actions.push(action); return new Node(name); },
+    permissions: ["pi", "local"].map((peer, i) => ({ id: String(i), peer, title: "Private tool details", terminalOnly: true,
+      options: [{ name: "Allow", kind: "allow_once", optionId: "allow" }, { name: "Deny", kind: "reject_once", optionId: "deny" }] })),
+  };
+  runInNewContext(`${code}; renderApprovals(permissions)`, context);
+  expect(count.textContent).toContain("2 waiting, 2 Pi/local");
+  expect(count.textContent).toContain("console or ahub tail / ahub permit");
+  expect(actions).toEqual([{ action: "permit", id: "0", option: "deny" }, { action: "permit", id: "1", option: "deny" }]);
 });

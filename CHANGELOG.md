@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - `review()` and `done()` no longer throw after the approval or done board write when a following publish or notify fails: every such call goes through the one `releaseNotice` guard, which turns the failure into a console notice and returns the board write's result (#243).
+- Distinguish expired Pi/local approvals, end a turn after two unanswered requests through the budget abort path with Pi staying attached (an expiry counts only while no person answers, and an always-cache grant is not an answer), withdraw aborted requests before late answers, show private approval counts, run a person's managed Pi shell without another approval using its actual exit status, and never let a tool past the stop grace block Pi teardown (#253).
 
 ## 0.12.21
 

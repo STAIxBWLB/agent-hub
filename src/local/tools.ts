@@ -7,6 +7,15 @@ import { OUTPUT_CAP, sandboxedExec } from "./sandbox.ts";
 
 export { isDenied };
 
+export type ToolApproval = boolean | "expired" | "aborted";
+export interface ApprovalProvenance { source: "person" | "automatic" | "expired" | "aborted"; answerEpoch: number; eligibleExpiry?: boolean; }
+export type ApprovalObserver = (provenance: ApprovalProvenance) => void;
+export const APPROVAL_EXPIRED_TEXT = "error: approval expired: no person answered; do not retry this call; hand the task off or stop";
+export class ApprovalWaitStop extends Error {}
+const approvalError = (picked: ToolApproval, denied: string): string | undefined => picked === true ? undefined
+  : picked === "expired" ? APPROVAL_EXPIRED_TEXT
+  : picked === "aborted" ? "error: approval withdrawn because the turn ended; no operation was executed" : denied;
+
 export interface ToolContext {
   cwd: string;
   /** Extra denylist entries from config: substrings of the project-relative path. */
@@ -17,8 +26,10 @@ export interface ToolContext {
   sandboxEnv?: Record<string, string>;
   /** Turn cancellation signal, including the execution-budget wall cap. */
   signal?: AbortSignal;
-  /** Ask the console. Resolves false on deny or timeout. */
-  permit: (title: string, tool?: string, signal?: AbortSignal, path?: string) => Promise<boolean>;
+  /** Only true permits an effect; expiry and abort remain distinct from a person's denial. */
+  permit: (title: string, tool?: string, signal?: AbortSignal, canonicalTarget?: string, observe?: ApprovalObserver) => Promise<ToolApproval>;
+  /** Trusted process status, independent of what its stdout says. */
+  onProcessExit?: (code: number | null) => void;
   /** Publish a message to other peers mid-turn. Returns a one-line receipt. */
   send: (text: string, to?: string[]) => string;
 }
@@ -131,7 +142,8 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         let file = guardPath(ctx, String(a.path), "write");
         const approvedTarget = file;
         const content = String(a.content ?? "");
-        if (!(await ctx.permit(`write ${a.path} (${content.length} chars):\n${preview(content)}`, "write", ctx.signal, file))) return "error: the user did not approve this write";
+        const refused = approvalError(await ctx.permit(`write ${a.path} (${content.length} chars):\n${preview(content)}`, "write", ctx.signal, file), "error: the user did not approve this write");
+        if (refused) return refused;
         if (ctx.signal?.aborted) return "error: turn cancelled before write";
         file = guardPath(ctx, String(a.path), "write");
         if (file !== approvedTarget) return "error: path target changed during approval; inspect before retrying";
@@ -145,7 +157,8 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         let text = readFileSync(file, "utf8");
         let count = text.split(String(a.old)).length - 1;
         if (!a.old || count !== 1) return `error: \`old\` must match exactly once, it matched ${count} times`;
-        if (!(await ctx.permit(`edit ${a.path}:\n- ${preview(String(a.old), 600)}\n+ ${preview(String(a.new ?? ""), 600)}`, "edit", ctx.signal, file))) return "error: the user did not approve this edit";
+        const refused = approvalError(await ctx.permit(`edit ${a.path}:\n- ${preview(String(a.old), 600)}\n+ ${preview(String(a.new ?? ""), 600)}`, "edit", ctx.signal, file), "error: the user did not approve this edit");
+        if (refused) return refused;
         if (ctx.signal?.aborted) return "error: turn cancelled before edit";
         // Approval can outlive another peer's edit or a path change. Apply only the approved fragment to current bytes.
         file = guardPath(ctx, String(a.path), "write");
@@ -161,8 +174,10 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         if (!command.trim()) return "error: empty command";
         // The approver sees the whole command, not a prefix: what is hidden cannot be approved.
         if (command.length > 4000) return "error: command longer than 4000 characters; put it in a script file with write, then run that";
-        if (!(await ctx.permit(`bash: ${command}`, "bash", ctx.signal))) return "error: the user did not approve this command";
+        const refused = approvalError(await ctx.permit(`bash: ${command}`, "bash", ctx.signal), "error: the user did not approve this command");
+        if (refused) return refused;
         const res = await sandboxedExec(["/bin/bash", "-c", command], { cwd: ctx.cwd, profile: ctx.sandboxProfile, timeoutMs: (Number(a.timeout_s) || 120) * 1000, ...(ctx.sandboxEnv ? { env: ctx.sandboxEnv } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
+        try { ctx.onProcessExit?.(res.code); } catch { /* optional status observer never changes a tool result */ }
         return `${res.output}\n(exit ${res.code})`;
       }
       case "git": {
@@ -171,9 +186,13 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         if (!GIT_READ.has(sub) && !GIT_WRITE.has(sub)) return `error: git ${sub} is not available to the local worker`;
         const problem = gitArgsProblem(args, ctx.deny);
         if (problem) return `error: git ${sub}: ${problem}`;
-        if (GIT_WRITE.has(sub) && !(await ctx.permit(`git ${args.join(" ")}`, "git", ctx.signal))) return "error: the user did not approve this git command";
+        if (GIT_WRITE.has(sub)) {
+          const refused = approvalError(await ctx.permit(`git ${args.join(" ")}`, "git", ctx.signal), "error: the user did not approve this git command");
+          if (refused) return refused;
+        }
         // Sandboxed like bash: flags such as --output or an editor cannot write outside the project or reach the network.
         const res = await sandboxedExec(["git", "--no-pager", ...args], { cwd: ctx.cwd, profile: ctx.sandboxProfile, ...(ctx.sandboxEnv ? { env: ctx.sandboxEnv } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
+        try { ctx.onProcessExit?.(res.code); } catch { /* optional status observer never changes a tool result */ }
         return `${res.output}\n(exit ${res.code})`;
       }
       case "hub_send":
