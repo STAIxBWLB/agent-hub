@@ -254,8 +254,10 @@ test("an attempt's measures wait for the turn that approved the task, and belong
   expect(await metricsOf({ stateDir: stale, pollMs: 1, settleMs: 10 }, quiet, "p", 1, async () => new Set<string>())).not.toBeNull();
   // The wait running out with the turn still open, and an interrupt in the last poll, give none either.
   let ticks = 0;
-  const ticking = { now: () => ticks * 100, sleep: async () => { ticks++; }, log: () => {} };
+  const capped: string[] = [];
+  const ticking = { now: () => ticks * 100, sleep: async () => { ticks++; }, log: (line: string) => void capped.push(line) };
   expect(await metricsOf({ stateDir: stale, pollMs: 100, settleMs: 1000 }, ticking, "p", 1, async () => new Set(["claude"]))).toBeNull();
+  expect(capped.at(-1)).toContain("claude still had the turn that approved task #1 open after the wait");
   let slept = 0;
   expect(await metricsOf({ stateDir: stale, pollMs: 1, settleMs: 10, stopped: () => slept > 0 }, { now: () => 0, sleep: async () => { slept++; }, log: () => {} }, "p", 1, async () => new Set<string>())).toBeNull();
   // A status that cannot be read when no turn is open changes nothing: the measures are complete.
@@ -271,7 +273,7 @@ test("a run against a hub: only attached peers in the fingerprint, a hub that is
   const suite = (tasks: unknown[]) => { const path = join(suiteDir, `s${tasks.length}-${Math.random().toString(16).slice(2)}.json`); writeFileSync(path, JSON.stringify({ name: "stub", tasks })); return path; };
   let propose: Record<string, unknown> = { ok: true, text: "task #1: in_progress, owner worker, reviewer none" };
   const hub = { close() {}, request: async (msg: { t: string; op?: string }) =>
-    msg.t === "status" ? { status: { projectId: "p", version: "t", peers: { worker: { state: "idle" }, gone: { state: "offline", attached: false }, held: { state: "paused" } } } }
+    msg.t === "status" ? { status: { projectId: "p", version: "t", peers: { worker: { state: "idle" }, gone: { state: "offline", attached: false }, registered: { state: "offline" }, held: { state: "paused" } } } }
       : msg.op === "hub_task_propose" ? propose : { ok: true, text: JSON.stringify([{ id: 1, state: "approved" }]) } };
   const lines: string[] = [];
   const io: BenchIo = { ...defaultIo(root, root), connect: async () => hub as never, sleep: async () => {}, log: (line) => void lines.push(line) };
@@ -280,6 +282,7 @@ test("a run against a hub: only attached peers in the fingerprint, a hub that is
     { id: "a", title: "t", ref: "work", setup: "git commit -q --allow-empty -m agent && git branch -f work HEAD", verify: "true", timeout_s: 60 },
     { id: "b", title: "t", ref: "t1", setup: "git tag -d t1 >/dev/null", verify: "true", timeout_s: 60 },
     { id: "constructor", title: "t", ref: "HEAD~0", verify: "true", timeout_s: 60 },
+    { id: "__proto__", title: "t", ref: "HEAD~0", verify: "true", timeout_s: 60 },
   ]), arm: "x", repeat: 1, home, pollMs: 1 }, io);
   const run = readRuns(home).find((r) => r.header.run === moved)!;
   expect(run.header.fingerprint.peers.map((p) => p.id)).toEqual(["held", "worker"]);
@@ -291,6 +294,7 @@ test("a run against a hub: only attached peers in the fingerprint, a hub that is
   expect(lines.join("\n")).not.toContain("suite ref HEAD~0");
   // A task id that is also an Object.prototype name reports like any other.
   expect(benchReport([run]).tasks.constructor).toMatchObject({ attempts: 1, pass: 1 });
+  expect(Object.keys(JSON.parse(JSON.stringify(benchReport([run]).tasks))).sort()).toEqual(["__proto__", "a", "b", "constructor"]);
   for (const error of ["hub connection closed", "hub is stopping", "hub connection is not open", "no answer from the hub within 30 s"]) {
     propose = { ok: false, error };
     const stopped = await runBench({ cwd: root, stateDir: join(root, ".agenthub"), suitePath: suite([{ id: "a", title: "t", ref: "HEAD", verify: "true", timeout_s: 60 }]), arm: "x", repeat: 2, home, pollMs: 1 }, io);

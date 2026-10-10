@@ -119,6 +119,19 @@ test("an owner who gets a task back counts it once; a move without a reason is n
   expect(researchReport([r!]).byOwner.codex!.tasks).toBe(1);
   // An owner or model named like an Object.prototype member groups like any other.
   expect(researchReport([{ ...r!, owners: ["constructor"], models: ["__proto__"] }]).byOwner.constructor).toMatchObject({ tasks: 1 });
+  // A peer or model with such a name counts in the record too, and nothing lands on Object.
+  const odd = taskRecords([
+    task(4, "proposed", "proposed"), task(4, "assigned", "in_progress", { owner: "constructor" }),
+    { v: 1, at: at(), type: "tokens", peer: "constructor", n: 7, task: 4, attribution: "delivery" },
+    { v: 1, at: at(), type: "usage", peer: "constructor", source: "omniroute", id: "o1", servedModel: "__proto__", totalTokens: 9, task: 4, attribution: "delivery" },
+    task(4, "done", "approved", { owner: "constructor" }),
+  ], "p", writer)[0]!;
+  const round = JSON.parse(JSON.stringify(odd)) as TaskRecord;
+  const name: string = "constructor"; // a literal would read Object's own `constructor` type
+  expect(round.tokens.byPeer[name]).toBe(7);
+  expect(round.usage[name]).toMatchObject({ total: 9 });
+  expect(Object.keys(round.usageByModel)).toEqual(["__proto__"]);
+  expect(Object.prototype.hasOwnProperty.call(Object, "total")).toBe(false);
   // Two tasks #1 in one file (an events file that kept both): both get a record.
   const again = [...bounce, task(1, "proposed", "proposed"), task(1, "accepted", "in_progress", { owner: "claude" }), task(1, "done", "approved", { owner: "claude" })];
   const both = taskRecords(again, "p", writer);

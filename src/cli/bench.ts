@@ -93,8 +93,10 @@ export async function benchPreflight(cwd: string, enabled: boolean, refs: string
     }
     pinned.set(ref, commit.out);
     // A plain branch or tag name has a full ref name; a hash, `HEAD~1` or `main^{commit}` has none and is not tracked.
+    // (A name that is both a branch and a tag has none either; it is pinned to what git resolves it to, the tag.)
+    // Tracked only when that name is what was pinned: a branch someone named like a hash is not the hash.
     const full = await git(cwd, ["rev-parse", "--symbolic-full-name", "--verify", "--quiet", "--end-of-options", ref]);
-    if (full.code === 0 && full.out.startsWith("refs/")) named.set(ref, full.out);
+    if (full.code === 0 && full.out.startsWith("refs/") && (await git(cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${full.out}^{commit}`])).out === commit.out) named.set(ref, full.out);
   }
   const dirty = await git(cwd, TREE);
   if (dirty.code !== 0 || dirty.out) throw new Error("the work tree has changes; commit or remove them first (a run resets the tree between attempts)");
@@ -181,13 +183,15 @@ export async function runBench(opts: BenchOptions, io: BenchIo): Promise<string>
   const run = `${new Date(io.now()).toISOString().slice(0, 10).replace(/-/g, "")}-${randomUUID().slice(0, 8)}`;
   const home = opts.home ?? hubHome();
   try {
-    const status = (await hub.request({ t: "status" }, 5000)).status as { projectId: string; version: string; peers: Record<string, { state: string; attached?: boolean; requestedModel?: string; permissionMode?: string }> };
+    const answered = await hub.request({ t: "status" }, 5000);
+    if (!answered.status) throw new Error(`the hub did not answer its status: ${answered.error ?? "no reply"}`);
+    const status = answered.status as { projectId: string; version: string; peers: Record<string, { state: string; requestedModel?: string; permissionMode?: string }> };
     const routing = join(opts.cwd, ".agenthub", "routing.toml");
     const fingerprint: Fingerprint = {
       // ponytail: the hub's status reports a requested model for Pi only and permission modes once #242 lands; the rest
       // are recorded as absent. Reading each peer's launch settings would fill them in.
       // The status lists every peer the hub has known; an arm is the ones attached now.
-      peers: Object.entries(status.peers ?? {}).filter(([, p]) => p.state !== "offline" && p.attached !== false)
+      peers: Object.entries(status.peers ?? {}).filter(([, p]) => p.state !== "offline")
         .map(([id, p]) => ({ id, ...(p.requestedModel ? { model: p.requestedModel } : {}), ...(p.permissionMode ? { permissionMode: p.permissionMode } : {}) })).sort((a, b) => a.id.localeCompare(b.id)),
       routingHash: existsSync(routing) ? createHash("sha256").update(readFileSync(routing)).digest("hex") : null,
       hubVersion: status.version,
@@ -216,7 +220,9 @@ export async function runBench(opts: BenchOptions, io: BenchIo): Promise<string>
     for (const [ref, full] of named) {
       const commit = pinned.get(ref)!;
       const now = await git(opts.cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${full}^{commit}`]);
-      if (now.code !== 0) io.log(`  suite ref ${ref} was deleted during the run; this run used ${commit.slice(0, 12)}`);
+      // `rev-parse --verify --quiet` exits 1 for a name that no longer resolves; anything else is git not answering.
+      if (now.code === 1) io.log(`  suite ref ${ref} was deleted during the run; this run used ${commit.slice(0, 12)}`);
+      else if (now.code !== 0) io.log(`  suite ref ${ref} could not be checked after the run`);
       else if (now.out !== commit) io.log(`  suite ref ${ref} moved during the run (${commit.slice(0, 12)} to ${now.out.slice(0, 12)}); this run used ${commit.slice(0, 12)}`);
     }
     appendBench({ schema: BENCH_SCHEMA, kind: "end", run, endedAt: new Date(io.now()).toISOString(), ...(stopped ? { stopped } : {}) }, home);

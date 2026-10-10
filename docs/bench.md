@@ -29,8 +29,8 @@ run needs outside the tree, and let `setup` recreate what an attempt needs (depe
 Between attempts the runner checks out the task's pinned commit (`git checkout --force --detach <commit>`), runs
 `git clean -ffdx -e /.agenthub` and confirms the tree is clean; a step that fails says why. A run that finishes returns
 to the branch (or commit) it started on; a run that stops leaves the tree as its last attempt left it. Either way the
-runner says so if a branch or tag the suite names moved or was deleted during the run (a ref given as a hash, or
-relative to another such as `main~1`, is not tracked).
+runner says so if a branch or tag the suite names moved or was deleted during the run (a ref given as a hash, relative
+to another such as `main~1`, or by a name that is both a branch and a tag is not tracked).
 
 ## Suite file
 
