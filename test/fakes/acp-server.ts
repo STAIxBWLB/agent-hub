@@ -16,11 +16,28 @@ let cancelledResultSent: (() => void) | undefined;
 const cancelledResult = new Promise<void>((resolve) => { cancelledResultSent = resolve; });
 let nextId = 1000;
 const waiting = new Map<number, (result: any) => void>();
+// Trailing updates are held, never sent on a timer (#288's timing rule): a test releases them with a
+// session/set_mode, whose reply is the processing barrier (they go out before it, so a resolved setPermissionMode
+// proves the adapter processed them).
+const held: object[] = [];
+const flushHeld = () => { for (const m of held.splice(0)) send(m); };
 
 async function prompt(id: number, text: string) {
   if (busy) return send({ jsonrpc: "2.0", id, error: { code: -32000, message: "turn.agent_busy" } });
   busy = true;
   let verdict = "";
+  // Occupancy trailing updates (#285): flat `{used, size}` (docs/smoke.md), held for the test's barrier; 2.1.1's
+  // source text emits it after the prompt resolves (read from the source, not observed live). OCCUPANCY is 45%,
+  // OCCUPANCY_HIGH 90% (over a 0.8 gate), OCCUPANCY_INVALID the numbers normalizeACPUsage rejects,
+  // OCCUPANCY_UNNAMED names no session. LATETOTAL and LATECHUNK are the stay-out probes.
+  const hold = (update: object, withSession = true) => held.push({ jsonrpc: "2.0", method: "session/update", params: { ...(withSession ? { sessionId: "s1" } : {}), update } });
+  const holdTrailing = () => {
+    if (text.includes("OCCUPANCY_INVALID")) hold({ sessionUpdate: "usage_update", used: -1, size: 0 });
+    else if (text.includes("OCCUPANCY_UNNAMED")) hold({ sessionUpdate: "usage_update", used: 90_000, size: 200_000 }, false);
+    else if (text.includes("OCCUPANCY")) hold({ sessionUpdate: "usage_update", used: text.includes("OCCUPANCY_HIGH") ? 180_000 : 90_000, size: 200_000 });
+    if (text.includes("LATETOTAL")) hold({ sessionUpdate: "usage_update", totalTokens: 999 });
+    if (text.includes("LATECHUNK")) hold({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "LATE-CHUNK-LEAK" } });
+  };
   if (text.includes("PERMISSION")) {
     // Kimi 2.0.1's shape: the arguments travel on the tool_call update, the permission request has none.
     const announced = text.includes("ANNOUNCED");
@@ -96,6 +113,7 @@ async function prompt(id: number, text: string) {
       await sleep(delay); // the cancelled prompt reports late, after the next one may have started
       send({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
       cancelledResultSent?.();
+      holdTrailing(); // a cancelled turn's trailing update must not be taken for a new turn's either
       return;
     }
   }
@@ -109,11 +127,14 @@ async function prompt(id: number, text: string) {
       params: { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: part } } },
     });
   }
-  // The session's running total, as Kimi reports it: 50 tokens per prompt.
-  usageTotal += 50;
-  send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", usage: { totalTokens: usageTotal } } } });
+  // The session's running total, as Kimi reports it: 50 tokens per prompt, sent before the result.
+  if (!text.includes("OCCUPANCY")) {
+    usageTotal += 50;
+    send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", totalTokens: usageTotal } } });
+  }
   busy = false;
   send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
+  holdTrailing();
 }
 let usageTotal = 0;
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i < 0 ? undefined : process.argv[i + 1]; };
@@ -149,6 +170,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       modePending = false;
       const ackRecord = arg("--mode-ack-record");
       if (ackRecord) appendFileSync(ackRecord, `${msg.params.modeId}\n`);
+      flushHeld(); // held trailing updates go out before the reply: a resolved setPermissionMode is the barrier (#285)
       if (process.argv.includes("--refuse-mode")) send({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "mode disabled" } });
       else { modes.currentModeId = msg.params.modeId; send({ jsonrpc: "2.0", id: msg.id, result: {} }); }
     }, Number(arg("--mode-delay-ms") ?? 40));
