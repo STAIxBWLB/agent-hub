@@ -48,6 +48,12 @@ function itemChunks(cell: OutputCell, columns: number): string[] {
     if (line) chunks.push(line);
     const room = last ? columns : columns - 1;
     const split = width(item) <= room ? [item] : cell.pathItems ? pathChunks(item, room) : wrap(item, room, 0);
+    // The comma must sit right after the item's own end: a split item's last piece keeps at least its last three
+    // characters (a slashless name breaks mid-word, and a one or two character tail would strand them).
+    if (!last && split.length > 1 && split.at(-1)!.length < 3 && !item.includes("/") && split.join("") === item) {
+      const tail = split.splice(-2).join("");
+      split.push(tail.slice(0, Math.max(1, tail.length - 3)), tail.slice(-3));
+    }
     if (!last) split[split.length - 1] += ",";
     chunks.push(...split.slice(0, -1)); line = split.at(-1)!;
   }
@@ -94,10 +100,8 @@ function rows(head: string[], data: OutputCell[][], columns?: number, details?: 
   // A ROOT column keeps a quarter of a wide table: an item list (TASKS) wraps between its items instead (#284 round 3).
   const pathFloor = head[flexible] === "ROOT" && columns !== undefined && columns > 80 ? Math.floor(columns / 4) : 12;
   if (["TITLE", "CONTEXT", "ROOT", "FILES"].includes(head[flexible]!)) minimum[flexible] = Math.max(minimum[flexible]!, Math.min(natural[flexible]!, pathFloor));
-  if (head[flexible] === "FILES") {
-    const room = columns - 2 * (head.length - 1) - minimum.reduce((sum, n, i) => sum + (i === flexible ? 0 : n), 0);
-    minimum[flexible] = Math.max(minimum[flexible]!, Math.min(natural[flexible]!, 36, room));
-  }
+  // A FILES column has no floor of its own: a floor is paid by the time and state cells before the shorter-only
+  // comparison below looks at anything, so it would wrap them without the listing getting shorter (#284 round 5).
   // Label/value pairs never become unrelated lists. Narrow values wrap beside their own label.
   if (head[0] === "FIELD" && head[1] === "VALUE" && natural[0]! + minimum[1]! + 2 > columns) {
     if (columns < 12) return [...lines("FIELD  VALUE", columns), ...data.flatMap(row => lines(`${row[0]!.text}: ${row[1]!.text}`, columns, row[1]!.tone))];

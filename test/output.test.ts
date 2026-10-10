@@ -592,6 +592,8 @@ test("projects: a 39-character root takes at most two cell lines at 100 and 120 
   const stopped = { id: "p_571057063528c5dfe26ae138", root: "/Users/yj.lee/workspace/work/dev/hwp-cli", state: "stopped" };
   for (const columns of [100, 120]) {
     const rendered = renderProjects([running, stopped], columns, now);
+    // TASKS is not protected: it wraps between its items instead of banding the table to keep its natural width.
+    expect(rendered.filter((line) => line.some((cell) => cell.text.trim() === "PROJECT"))).toHaveLength(1);
     const { groups } = tableFieldGroups(rendered, "ROOT", [running.id, stopped.id]);
     // The root wraps at most once (the task list wraps between its items; the root is not floored at 12).
     expect(groups.get(running.id)!.filter(Boolean).length).toBeLessThanOrEqual(2);
@@ -620,4 +622,62 @@ test("turns: time and state cells wrap only when the listing gets shorter for it
   const heavyRendered = renderTurns(heavy, 100, now);
   expect(tableFieldGroups(heavyRendered, "STARTED", [heavy[0]!.id]).groups.get(heavy[0]!.id)!.filter(Boolean)).toHaveLength(2);
   expect(heavyRendered.length).toBe(1 + tableFieldGroups(heavyRendered, "FILES", [heavy[0]!.id]).groups.get(heavy[0]!.id)!.length);
+});
+
+test("turns: the time and state cells stay whole at 80 columns when the wrap would not shorten the listing (#284)", () => {
+  // The round-5 example: one turn with three files, five with none or one. Nine lines with the cells whole;
+  // the FILES floor (removed in round 5) made it 14 with every time cell wrapped.
+  const turns = [6, 5, 4, 3, 2, 1].map((n) => ({ id: `codex#mgk3x9ab.${n}`, peer: "codex", started: now - 3_600_000 * (n + 1) * (n === 6 ? 1 / 3 : 1), ended: now, start_tree: "a", end_tree: "b", changed: n === 6 ? ["src/cli/output.ts", "src/cli/main.ts", "test/output.test.ts"] : n === 5 ? ["README.md"] : [] }));
+  const rendered = renderTurns(turns, 80, now);
+  expect(rendered.length).toBe(9);
+  const ids = turns.map((t) => t.id);
+  for (const id of ids) {
+    expect(tableFieldGroups(rendered, "STARTED", ids).groups.get(id)!.filter(Boolean)).toHaveLength(1);
+    expect(tableFieldGroups(rendered, "STATE", ids).groups.get(id)!.filter(Boolean)).toHaveLength(1);
+  }
+  // One long file in an otherwise file-free listing: the cells stay whole too (a wrap would tax every row).
+  const long = [1, 2].map((n) => ({ id: `pi#long00000.${n}`, peer: "pi", started: now - 3_600_000 * n, ended: now, start_tree: "a", end_tree: "b", changed: n === 1 ? ["docs/verification/2026-10-10-cli-output-phase2.md"] : [] }));
+  const longRendered = renderTurns(long, 80, now);
+  expect(longRendered.length).toBe(5);
+  const longIds = long.map((t) => t.id);
+  for (const id of longIds) {
+    expect(tableFieldGroups(longRendered, "STARTED", longIds).groups.get(id)!.filter(Boolean)).toHaveLength(1);
+    expect(tableFieldGroups(longRendered, "STATE", longIds).groups.get(id)!.filter(Boolean)).toHaveLength(1);
+  }
+});
+
+test("an oversized path segment loses no character and leaves no slash alone (#284)", () => {
+  const segment = "x".repeat(60);
+  const turn = { id: "pi#seg000000.1", peer: "pi", started: now - 60_000, ended: now, start_tree: "a", end_tree: "b", changed: [`src/${segment}/`, "tail.ts"] };
+  const lines = tableFieldGroups(renderTurns([turn], 80, now), "FILES", [turn.id]).groups.get(turn.id)!.filter(Boolean);
+  // Every character of the cell survives the split (the segment's trailing slash rides its last piece).
+  expect(lines.join("").replace(/\s/g, "")).toBe(`2files:src/${segment}/,tail.ts`);
+  for (const line of lines) expect(line.trim()).not.toBe("/");
+});
+
+test("a narrow banded projects table keeps an all-dash column (#284)", () => {
+  const withTasks = { id: "p_4aa9b6e622ae35fef6b8c588", root: "/Users/dev/agent-hub", state: "running", status: { peers: { a: 1 }, tasks: { approved: 3 } } };
+  const noTasks = { id: "p_fef98853fd7865aa54ad9f29", root: "/Users/yj.lee/workspace/work/dev/agent-hub", state: "stopped" };
+  // Narrow enough that the band tables render per row, without the id column: the dash row keeps its TASKS cell.
+  const text = renderProjects([withTasks, noTasks], 30, now).map((line) => line.map((cell) => cell.text).join("")).join("\n");
+  expect(text).toContain("TASKS");
+  expect(text).toContain("stopped  unknown  -");
+});
+
+test("projects: a task item and its separator stay whole when the column is their width (#284)", () => {
+  const project = { id: "p_4aa9b6e622ae35fef6b8c588", root: "/Users/dev/workspace/work/dev/agent-hub", state: "running", status: { peers: { a: 1 }, tasks: { approved: 18, in_progress: 43, in_review: 76, changes_requested: 18, proposed: 107 } } };
+  for (const columns of [80, 88, 96]) {
+    const text = renderProjects([project], columns, now).map((line) => line.map((cell) => cell.text).join("")).join("\n");
+    expect(text).toContain("18 changes_requested,"); // never "18" / "changes_requested," on separate lines
+  }
+});
+
+test("projects: the ROOT floor starts above 80 columns, so an 80-column table stays flat (#284)", () => {
+  const project = { id: "p_4aa9b6e622ae35fef6b8c588", root: "/Users/dev/agent-hub1", state: "running", status: { peers: { a: 1 }, tasks: { approved: 67, in_progress: 2, in_review: 1, changes_requested: 1 } } };
+  const rendered = renderProjects([project], 80, now);
+  expect(rendered.filter((line) => line.some((cell) => cell.text.trim() === "PROJECT"))).toHaveLength(1);
+  // At 81 the floor applies: the root keeps a quarter of the table and the task list wraps between its items.
+  const wider = renderProjects([project], 81, now);
+  const { groups } = tableFieldGroups(wider, "ROOT", [project.id]);
+  expect(groups.get(project.id)!.filter(Boolean).length).toBeLessThanOrEqual(2);
 });
