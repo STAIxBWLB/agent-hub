@@ -1,6 +1,7 @@
 import { chmodSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
+import { PreEffectToolRefusal } from "../hub/tool-refusal.ts";
 
 /** Private, session-scoped dedupe. An interrupted effect is never automatically repeated. */
 export class PiToolReceipts {
@@ -31,10 +32,15 @@ export class PiToolReceipts {
     }
     const claim = this.db.query("INSERT OR IGNORE INTO pi_tool_receipts(session,call_id,fingerprint,state) VALUES(?,?,?,'pending')").run(session, callId, fingerprint);
     if (!claim.changes) return this.execute(session, callId, name, args, run);
-    const work = Promise.resolve().then(run).then((result) => {
+    const settle = (result: string): string => {
       const text = result.slice(0, 100_000);
       this.db.query("UPDATE pi_tool_receipts SET state='done',result=? WHERE session=? AND call_id=?").run(text, session, callId);
       return text;
+    };
+    // Legacy pending rows have no refusal proof: neither the current board nor an error's text can settle them.
+    const work = Promise.resolve().then(run).then(settle, (error: unknown) => {
+      if (error instanceof PreEffectToolRefusal) return settle(`error: ${error.message}`);
+      throw error;
     }).catch(() => "error: tool outcome is uncertain; stop and reconcile it, do not repeat the effect")
       .finally(() => this.pending.delete(key));
     this.pending.set(key, work);
