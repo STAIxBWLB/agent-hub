@@ -1,7 +1,8 @@
 import { lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { realPath } from "../hub/project.ts";
-import { hasSegment, isDenied } from "./deny.ts";
+import { isHubWritePath } from "../hub/permission-mode.ts";
+import { isDenied } from "./deny.ts";
 import { OUTPUT_CAP, sandboxedExec } from "./sandbox.ts";
 
 export { isDenied };
@@ -21,9 +22,6 @@ export interface ToolContext {
   /** Publish a message to other peers mid-turn. Returns a one-line receipt. */
   send: (text: string, to?: string[]) => string;
 }
-
-/** Not secret, but writing them changes what runs outside the worker's control. */
-const WRITE_DENY_SEGMENTS = [".git", ".agenthub"];
 
 const lexists = (p: string) => {
   try {
@@ -52,7 +50,9 @@ export function guardPath(ctx: Pick<ToolContext, "cwd" | "deny">, path: string, 
   const rel = relative(root, real);
   if (rel.startsWith("..") || resolve(root, rel) !== real) throw new Error(`${path} is outside the project directory`);
   if (isDenied(rel, ctx.deny)) throw new Error(`${path} is on the secrets denylist`);
-  if (mode === "write" && WRITE_DENY_SEGMENTS.some((s) => hasSegment(rel, s))) throw new Error(`${path} is not writable by the local worker`);
+  // Not secret, but writing .git or .agenthub changes what runs outside the worker's control. Names are compared
+  // folded: a new `.GIT/config` is `.git/config` to a case-insensitive disk, and git then runs what it names.
+  if (mode === "write" && isHubWritePath(rel)) throw new Error(`${path} is not writable by the local worker`);
   return real;
 }
 

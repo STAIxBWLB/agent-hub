@@ -56,9 +56,11 @@ are passed by path, keeping caller settings out of process argv.
 
 Claude ask-when-needed grants only resolving project file targets outside
 .agenthub, .git, .claude, .codex, .qwen, .kimi, .pi and .mcp.json. Symlink escapes, protected aliases, traversal and
-unresolved wildcard targets receive no decision. Names are compared folded (letter case and compatibility forms, so
-a look-alike such as a long s is the same name), the path is judged inside the project, and a file with a second hard
-link receives no decision, for Claude and for the Pi/local write and edit grants alike. Native rules then apply;
+unresolved wildcard targets receive no decision. Names are compared folded (letter case, compatibility forms and
+the code points a case-insensitive disk ignores, so a look-alike such as a long s or a name with a zero-width joiner
+is the same name), the path is judged inside the project, and a file with a second hard link receives no decision,
+for Claude and for the Pi/local write and edit grants alike. The local worker's and Pi's write guard refuses `.git`
+and `.agenthub` by the same folded comparison in every mode, so a new `.GIT/config` cannot be planted for git to run. Native rules then apply;
 this is a grant filter, not a filesystem sandbox.
 
 ## Agent CLI identity and conductor authority

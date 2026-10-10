@@ -20,8 +20,14 @@ export function permissionDefaults(value: unknown): Record<string, PermissionMod
 export const PI_EDIT_TOOLS = new Set(["edit", "write"]);
 /** Native agent policy files are never included in scoped automatic file grants. */
 export const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set([".claude", ".codex", ".qwen", ".kimi", ".pi", ".mcp.json"]);
-/** One spelling per name: a case-insensitive disk also opens `.mcp.j\u017Fon` (long s) as `.mcp.json`, which `toLowerCase` alone leaves apart. */
-export const foldSegment = (segment: string): string => segment.normalize("NFKC").toUpperCase().toLowerCase();
+/**
+ * One spelling per name, as a case-insensitive disk sees it: it opens `.mcp.j\u017Fon` (long s) as `.mcp.json`, and
+ * HFS+ also ignores the default-ignorable code points (a zero-width joiner inside `.codex` is still `.codex`).
+ */
+export const foldSegment = (segment: string): string => segment.normalize("NFKC").replace(/\p{Default_Ignorable_Code_Point}/gu, "").toLowerCase().toUpperCase().toLowerCase();
+/** The hub's and git's own directories: writing them changes what runs outside any agent's control. */
+export const HUB_WRITE_SEGMENTS: ReadonlySet<string> = new Set([".git", ".agenthub"]);
+export const isHubWritePath = (path: string): boolean => path.split(/[\\/]/).some(segment => HUB_WRITE_SEGMENTS.has(foldSegment(segment)));
 export const isAgentConfigPath = (path: string): boolean => path.split(/[\\/]/).some(segment => AGENT_CONFIG_SEGMENTS.has(foldSegment(segment)));
 /** A file with a second name somewhere else: a grant for this name would write that one too. */
 export function hardLinked(path: string): boolean {
@@ -34,5 +40,5 @@ export function hardLinked(path: string): boolean {
  */
 export function grantablePath(root: string, path: string): boolean {
   const inside = relative(root, path);
-  return !!inside && inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside) && !isAgentConfigPath(inside) && !hardLinked(path);
+  return !!inside && inside !== ".." && !inside.startsWith(`..${sep}`) && !isAbsolute(inside) && !isAgentConfigPath(inside) && !isHubWritePath(inside) && !hardLinked(path);
 }

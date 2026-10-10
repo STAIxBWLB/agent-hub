@@ -2682,7 +2682,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (mode === "ask" && (!owner || owner.state === "offline")) {
       // A Codex proxy outlives its TUI and keeps its own copy of the mode: clear that too, or the next TUI that attaches
       // to it would run a mode the status no longer shows.
-      if (owner instanceof CodexPeer) try { owner.clearPermissionMode(); } catch (error) { return { ok: false, error: (error as Error).message }; }
+      // It is never refused here: a leftover non-ask mode must always be undoable while the peer is away.
+      if (owner instanceof CodexPeer && !owner.clearPermissionMode()) log("permission mode codex: the detached session's own approval policy was never reported, so its thread keeps what it last got; a new ahub codex session starts in ask");
       const from = permissionMode(peer);
       permissionModes.set(peer, "ask"); permissionModeSources.set(peer, "human runtime command"); pendingPermissionDefaults.delete(peer);
       event({ type: "permission_mode", peer, from, to: "ask" });

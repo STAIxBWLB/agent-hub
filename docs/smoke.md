@@ -1403,6 +1403,11 @@ replaced with fake evidence. Fixture process groups were stopped afterward.
 
 The historical Claude benign checks above used the earlier hook policy. The current scoped-path policy, expanded native configuration exclusions, startup reconciliation, and private settings retirement are covered by fixtures but remain native unverified. No additional account prompts were used for the second review corrections.
 
+Unverified natively (Codex 0.162.0): whether a thread that got a `never` or `on-request` override keeps it when the
+same thread is resumed through the hub's proxy by a hand-run `codex --remote` after `ahub permission codex ask` was
+given while no TUI was attached. The hub stops overriding at that point and the status says ask; `ahub codex` always
+starts a new proxy, which is not affected.
+
 ## Whole-board task progress and dashboard themes (#246)
 
 Live console and dashboard light/dark inspection: **unverified**. No native

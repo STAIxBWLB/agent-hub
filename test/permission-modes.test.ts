@@ -166,9 +166,35 @@ test("ask for a Codex whose proxy outlived its TUI clears the proxy's own mode: 
   expect(app.requests.filter(r => r.method === "turn/start").at(-1).params.approvalPolicy).toBeUndefined();
 });
 
+test("ask for a detached Codex is never refused, even when the native policy was never reported", async () => {
+  const rig = await fixture();
+  const app = startFakeAppServer(30, 0, undefined, 93, false); cleanup.push(app.stop); // thread responses carry no approvalPolicy
+  const codex = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: app.url, cwd: rig.cwd });
+  rig.daemon.bus.add(codex);
+  await codex.start();
+  const tui = new WebSocket(codex.proxyUrl); cleanup.push(() => tui.close());
+  tui.onopen = () => tui.send(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "fake-tui", version: "1" } } }));
+  tui.onmessage = event => { const msg = JSON.parse(String(event.data)); if (msg.id === 1) { tui.send(JSON.stringify({ method: "initialized" })); tui.send(JSON.stringify({ id: 2, method: "thread/start", params: { cwd: rig.cwd } })); } };
+  await until(() => codex.state === "idle");
+  expect((await rig.mode("codex", "never-ask", true)).permissionMode).toBe("never-ask");
+  await codex.deliver([newEnvelope("user", "overridden turn", { to: ["codex"] })]);
+  await until(() => codex.state === "idle");
+  // Attached, the hub cannot restore a policy it never saw, and says so.
+  expect((await rig.mode("codex", "ask")).error).toContain("native approval policy unavailable");
+  tui.close();
+  await until(() => codex.state === "offline");
+  // Away, a leftover mode can always be dropped: the hub stops overriding and the status says ask.
+  expect(await rig.mode("codex", "ask")).toMatchObject({ ok: true, permissionMode: "ask" });
+  expect(codex.getPermissionMode()).toBe("ask");
+  expect((await rig.client.request({ t: "status" })).status.peers.codex.permissionMode ?? "ask").toBe("ask");
+  expect(readFileSync(join(rig.stateDir, "hub.log"), "utf8")).toContain("approval policy was never reported");
+});
+
 test("a scoped grant folds look-alike names, judges the path inside the project and refuses a hard link", () => {
   // A case-insensitive disk opens these as the real names.
   for (const name of [".mcp.j\u017Fon", ".MCP.JSON", ".\u212Aimi", ".Claude", ".codex"]) expect(isAgentConfigPath(`sub/${name}`)).toBe(true);
+  // HFS+ ignores these code points inside a name.
+  for (const name of [".mcp.js\u200Don", ".co\u200Cdex/config.toml", ".\uFEFFkimi/settings.json", ".cl\u202Eaude/x"]) expect(isAgentConfigPath(name)).toBe(true);
   expect(isAgentConfigPath("src/mcp.json")).toBe(false);
   const base = mkdtempSync(join(tmpdir(), "ahub-grant-"));
   // A project that itself lives under an agent's directory is still a project: only the path inside it counts.
@@ -180,6 +206,7 @@ test("a scoped grant folds look-alike names, judges the path inside the project 
   expect(grantablePath(root, join(root, ".mcp.j\u017Fon"))).toBe(false);
   expect(grantablePath(root, join(base, "outside.txt"))).toBe(false);
   expect(grantablePath(root, root)).toBe(false);
+  for (const hub of [".git/config", ".GIT/config", "sub/.Git/HEAD", ".AGENTHUB/config.local.json"]) expect(grantablePath(root, join(root, hub))).toBe(false);
   // Another name for a config file is the config file.
   linkSync(join(root, ".codex", "config.toml"), join(root, "notes.txt"));
   expect(grantablePath(root, join(root, "notes.txt"))).toBe(false);

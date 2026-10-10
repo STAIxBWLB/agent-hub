@@ -393,12 +393,14 @@ export class CodexPeer extends BasePeer {
   }
 
   /**
-   * The hub's choice was cleared while no TUI is attached. The proxy may still be up: the next turn through it then
-   * restores the native policy it captured, or sends none when it never overrode one.
+   * The hub's choice was cleared while no TUI is attached: this proxy sends no override from now on. Returns false
+   * when an override it already sent cannot be undone on that thread (its native policy was never reported): a thread
+   * started or resumed through the proxy afterwards reports its own policy, and that one is left alone.
    */
-  clearPermissionMode(): void {
-    if (this.approvalOverridden && this.nativeApprovalPolicy === undefined) throw new Error("codex cannot restore ask: native approval policy unavailable; restart the Codex session");
+  clearPermissionMode(): boolean {
+    const restorable = !this.approvalOverridden || this.nativeApprovalPolicy !== undefined;
     this.permissionMode = "ask";
+    return restorable;
   }
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {
