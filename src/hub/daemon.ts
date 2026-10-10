@@ -2101,8 +2101,10 @@ export async function startDaemon(opts: DaemonOptions) {
       });
       recoveryTaskPreface("codex");
       await ensurePreface("codex");
-      await codex.start();
-      await reconcileNativeStart(peer, codex);
+      try {
+        await codex.start();
+        await reconcileNativeStart(peer, codex);
+      } catch (error) { await codex.stop().catch(stop => log(`codex stop after a failed start: ${(stop as Error).message}`)); throw error; }
       return { ok: true, proxyUrl: codex.proxyUrl };
     }
     if (peer === "pi") {
