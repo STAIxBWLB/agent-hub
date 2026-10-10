@@ -3,7 +3,9 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
-import { ControlClient } from "../src/hub/control-client.ts";
+import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
+import { endPlannedPeer } from "../src/cli/upgrade-runtime.ts";
+import type { Inspection, PlannedProject, RecoveryPeer } from "../src/cli/upgrade.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { processTable } from "../src/hub/child-process.ts";
 import { PiPeer } from "../src/adapters/pi.ts";
@@ -243,4 +245,26 @@ test("a requested Pi stop holds its delivery before awaiting tools and ignores l
     await toolRequest;
     await stopRequest;
   }
+}, 30_000);
+
+
+test("upgrade endPlannedPeer ends a headless owner through the real daemon peer_stop contract (#278 AC4)", async () => {
+  const h = await rig(), kimi = await h.start("kimi"), owner = ownedGroup(kimi);
+  const project = { id: "stop-fixture", root: h.cwd, stateDir: h.stateDir, basePort: 0, instanceId: h.instanceId, pid: process.pid };
+  // Scope inspection to this fixture's real control transport rather than the user's global registry.
+  const inspect = async (): Promise<Inspection> => {
+    const status = (await h.console_.request({ t: "status" })).status;
+    const current = await h.inspect();
+    expect(status.pid).toBe(process.pid); expect(status.instanceId).toBe(h.instanceId);
+    return { state: "running", instanceId: status.instanceId, version: status.version, protocol: PROTOCOL,
+      peers: Object.values(current.peers) as RecoveryPeer[], blockers: current.blockers };
+  };
+  const source = await inspect(), peer = source.peers.find(peer => peer.id === "kimi")!;
+  expect(peer.state).toBe("idle");
+  const planned: PlannedProject = { project, source, terminals: [], blockers: [] };
+  expect(await endPlannedPeer(planned, peer, { inspect, lock: () => undefined })).toBe("stop-fixture/kimi: stopped");
+  expect(kimi.state).toBe("offline"); groupGone(owner);
+  expect((await inspect()).peers.find(peer => peer.id === "kimi")!.state).toBe("offline");
+  const stillRunning = (await h.console_.request({ t: "status" })).status;
+  expect(stillRunning.pid).toBe(process.pid);
 }, 30_000);
