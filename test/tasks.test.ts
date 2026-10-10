@@ -2395,19 +2395,3 @@ test("a second changes_requested returns the moved task when telling its old own
   expect(board.get(1)!.owner).toBe("codex");
   expect(notices.some((line) => line.includes("could not tell kimi it moved to codex") && line.includes("delivery journal unavailable"))).toBe(true);
 });
-
-test("a second changes_requested returns the task when the escalation's own assignment cannot publish (#243)", async () => {
-  const { tasks, board, bus, notices } = await setup();
-  await tasks.propose("claude", { title: "summarize the log", class: "summarize", owner: "kimi" });
-  tasks.accept("kimi", 1);
-  await tasks.done("kimi", 1, "v");
-  await tasks.review("claude", 1, "changes_requested", "too long");
-  await tasks.done("kimi", 1, "v");
-  const publish = bus.publish.bind(bus);
-  bus.publish = () => { throw new Error("delivery journal unavailable"); }; // a latched storage error: every publish fails
-  try { await expect(tasks.review("claude", 1, "changes_requested", "still too long")).resolves.toMatchObject({ id: 1, rejections: 0 }); }
-  finally { bus.publish = publish; }
-  // The verdict and the move are on the board; the console hears what did not go out and how to try again.
-  expect(board.get(1)!.history.map((h) => h.event)).toContain("escalated");
-  expect(notices.some((line) => line.includes("its escalation after 2 changes_requested did not complete (delivery journal unavailable); ahub task escalate 1 tries again"))).toBe(true);
-});

@@ -1380,14 +1380,7 @@ export class Tasks {
     this.contradict(rejected);
     this.note(rejected, by, "decision", `Task #${rejected.id} changes requested by ${by}: ${rejected.title}\n${note ?? ""}`, withheld);
     if (rejected.rejections >= ESCALATE_AFTER) {
-      let moved: Task;
-      try { moved = await this.escalate(HUB, rejected.id, `${rejected.rejections} consecutive changes_requested`, "rejections"); }
-      catch (e) {
-        // The verdict is on the board (#243): an escalation that fails partway (its assignment publishes too) is a
-        // console notice, never the review's failure.
-        this.releaseNotice(`task ${this.publicTitle(rejected)}: its escalation after ${rejected.rejections} changes_requested did not complete (${e instanceof Error ? e.message : String(e)}); ahub task escalate ${rejected.id} tries again`);
-        return this.d.board.get(rejected.id) ?? rejected;
-      }
+      const moved = await this.escalate(HUB, rejected.id, `${rejected.rejections} consecutive changes_requested`, "rejections");
       if (moved.owner !== rejected.owner) return moved;
       // Nobody to escalate to: the owner still has to hear the verdict and the note.
       this.releaseNotice(`task ${this.publicTitle(moved)}: could not tell ${moved.owner ?? "its owner"} changes were requested again`, () =>
