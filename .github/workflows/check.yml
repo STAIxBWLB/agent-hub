@@ -9,7 +9,7 @@ on:
         type: boolean
         default: false
       timing_runs:
-        description: Sequential macOS runs of daemon and PII screen tests only (0 disables)
+        description: Sequential macOS runs of daemon, PII screen and ACP tests only (0 disables)
         type: choice
         options: ['0', '20']
         default: '0'
@@ -130,7 +130,7 @@ jobs:
           set -euo pipefail
           for iteration in $(seq 1 20); do
             echo "timing run $iteration/20 at $GITHUB_SHA"
-            bun test --timeout 20000 test/daemon.test.ts test/pii-screen.test.ts &
+            bun test --timeout 20000 test/daemon.test.ts test/pii-screen.test.ts test/acp.test.ts &
             test_pid=$!
             scripts/hang-watch.sh "$test_pid" 120 &
             watch_pid=$!

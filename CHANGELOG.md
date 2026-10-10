@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Fix macOS timing-sensitive test fixtures by waiting for channel welcomes and releasing PII responses at the fallback decision; add opt-in repeated macOS verification (#287).
+- Fix macOS timing-sensitive test fixtures by waiting for channel welcomes and releasing PII responses at the fallback decision and separating ACP receipt checks from watchdog timing; add opt-in repeated macOS verification (#287).
 
 ## 0.12.22
 
