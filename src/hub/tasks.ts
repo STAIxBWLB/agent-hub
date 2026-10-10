@@ -92,6 +92,24 @@ const OPEN: Task["state"][] = ["proposed", "in_progress", "changes_requested"];
 /** Board events that leave a task where its completion check found it; any other event means it moved on meanwhile. */
 const QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep"]);
 
+/**
+ * Thrown when an assignment's board write is saved but a publish or notify after it failed (#297): the move is
+ * fact, the delivery is unconfirmed. Callers decide by this type, never by comparing owners or reading history.
+ * It stays a plain Error subclass, so the preEffect rule and the #231 ready-offer contract are unchanged.
+ * `task` and `cause` are non-enumerable: a PII task's title and detail must not reach a JSON.stringify of the error.
+ */
+export class AssignmentUndeliveredError extends Error {
+  /** The task as the board has it after the write. */
+  declare readonly task: Task;
+  declare readonly cause: unknown;
+  constructor(task: Task, cause: unknown) {
+    super(`task #${task.id}: the assignment to ${task.owner} is saved, but its delivery is not confirmed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = "AssignmentUndeliveredError";
+    Object.defineProperty(this, "task", { value: task, enumerable: false });
+    Object.defineProperty(this, "cause", { value: cause, enumerable: false });
+  }
+}
+
 /** A project path as one spelling (#67): no leading `./`, no repeated or trailing `/`; the root is `.`. */
 export const normPath = (p: string) => p.replace(/^(\.\/)+/, "").replace(/\/{2,}/g, "/").replace(/\/+$/, "") || ".";
 
@@ -242,7 +260,13 @@ export class Tasks {
           this.passedOver(task, a);
           this.d.notify(`${message} ${reviewer ? "Reviewer" : "Owner"} reassignment suggestion: ${candidate ?? "no eligible peer"}.`);
           if (!reviewer && candidate && this.sweepConfig.auto_reassign && this.sweepAvailable(candidate)) {
-            await this.assignOwner(this.d.board.get(task.id)!, HUB, { candidates: [candidate], exclude: [responsible], event: "reassigned", reason: "idle", note: `idle sweep: ${finding.kind}; from ${responsible}` });
+            try {
+              await this.assignOwner(this.d.board.get(task.id)!, HUB, { candidates: [candidate], exclude: [responsible], event: "reassigned", reason: "idle", note: `idle sweep: ${finding.kind}; from ${responsible}` });
+            } catch (e) {
+              // A saved move whose delivery failed: the console notice was printed where the error was thrown, and
+              // the sweep goes on (#297).
+              if (!(e instanceof AssignmentUndeliveredError)) throw e;
+            }
           }
         }
       }
@@ -569,7 +593,12 @@ export class Tasks {
     this.d.notify(`task ${this.publicTitle(lifted)}: the PII screen cleared it on a second look; it is routed as usual`);
     const still = this.waitsFor(lifted);
     if (still.length) return void this.d.board.update(lifted.id, HUB, "blocked", {}, `waits for ${still.map((id) => `#${id}`).join(", ")}`);
-    await this.assignOwner(lifted, HUB);
+    try {
+      await this.assignOwner(lifted, HUB);
+    } catch (e) {
+      // A saved move whose delivery failed: the console notice was printed where the error was thrown (#297).
+      if (!(e instanceof AssignmentUndeliveredError)) throw e;
+    }
   }
 
   /**
@@ -757,7 +786,12 @@ export class Tasks {
           // The gone owner hears it on its next delivery, if it comes back mid-work.
           if (next.owner && next.owner !== peer) this.d.tell?.(peer, noteLine(HUB, "decision", `task #${task.id} moved to ${next.owner} while you were offline; stop working on it`));
         } catch (e) {
-          this.d.notify(`task ${this.publicTitle(task)}: could not be released from ${peer}: ${(e as Error).message}`);
+          if (e instanceof AssignmentUndeliveredError) {
+            // The move is fact for the board, so it is fact here too: record it, and tell the gone owner to stop
+            // (the console notice was printed where the error was thrown) (#297).
+            moved.push({ id: task.id, title: this.publicTitle(task), to: e.task.owner });
+            if (e.task.owner && e.task.owner !== peer) this.d.tell?.(peer, noteLine(HUB, "decision", `task #${task.id} moved to ${e.task.owner} while you were offline; stop working on it`));
+          } else this.d.notify(`task ${this.publicTitle(task)}: could not be released from ${peer}: ${(e as Error).message}`);
         }
       }
     } finally {
@@ -800,7 +834,8 @@ export class Tasks {
    */
   private passedOver(task: Task, a: Assignment): string {
     if (!a.unreserved || task.reserved === task.owner || this.excluded(task).includes(task.reserved!)) return "";
-    this.d.notify(`task ${this.publicTitle(task)}: its reserved owner ${task.reserved} is passed over (${a.unreserved}); routing proceeds`);
+    // Before the write, but after the caller's own (a decline's, say): a throwing console fails nothing (#297).
+    this.releaseNotice(`task ${this.publicTitle(task)}: its reserved owner ${task.reserved} is passed over (${a.unreserved}); routing proceeds`);
     return `; reserved owner ${task.reserved} passed over: ${a.unreserved}`;
   }
 
@@ -825,12 +860,12 @@ export class Tasks {
     const a = assign(task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class) });
 
     if (waits.length) {
-      this.d.notify(`task ${this.publicTitle(task)} waits for ${waits.map((id) => `#${id}`).join(", ")}; it is offered once they are approved`);
+      this.releaseNotice(`task ${this.publicTitle(task)} waits for ${waits.map((id) => `#${id}`).join(", ")}; it is offered once they are approved`);
       return task;
     }
     const passed = this.passedOver(task, a);
     if (!a.owner) {
-      this.d.notify(`task ${this.publicTitle(task)}: no peer can take it (${a.trace.filter((l) => l.includes("skipped")).length} skipped); assign with: ahub task assign ${task.id} <peer>`);
+      this.releaseNotice(`task ${this.publicTitle(task)}: no peer can take it (${a.trace.filter((l) => l.includes("skipped")).length} skipped); assign with: ahub task assign ${task.id} <peer>`);
       // Only a decline takes the task away from its owner; a failed console assign or escalation leaves it where it was.
       if (opts.clearOnFail && task.owner) {
         this.cohorts.leave(task.id);
@@ -855,19 +890,38 @@ export class Tasks {
     // A claim is its own hand-over: the claimant took the task in the turn it is in, so it is taking it, not busy elsewhere.
     // The cohort record formed just below reads it, and so does `route explain` while that turn lasts.
     if (opts.claim && a.owner === by && this.d.bus.peers.get(by)?.state === "busy") this.sent.set(handOver(next, by), by);
-    const hits = this.overlapHits(next);
-    this.formCohort(next, hits);
-    if (hits.length) {
-      this.announceOverlap(next, hits);
-      this.tellEarlierOwners(next, hits);
+    try {
+      const hits = this.overlapHits(next);
+      this.formCohort(next, hits);
+      if (hits.length) {
+        this.announceOverlap(next, hits);
+        this.tellEarlierOwners(next, hits);
+      }
+      this.announceRouting(next, a);
+      if (!opts.claim || a.owner !== by) await this.sendTask(next, a, opts.context, this.overlaps(next, true, hits), opts.contextWithheld);
+    } catch (e) {
+      // Everything between the write and the end of the delivery is in here: the move is fact, and a failure is a
+      // delivery failure (#297). The one console notice is printed here, once, for every caller; callers decide
+      // control flow by the error type.
+      let saved = next;
+      try {
+        saved = this.d.board.get(task.id) ?? next;
+      } catch { /* the write's row is still true */ }
+      // Superseded means a later entry that moves or settles the task: another assignment, an unassign, the
+      // owner's accept, done, approval, close. Entries that do neither (the hub's quiet bookkeeping, a check
+      // result landing during the brief) leave the assignment exactly as undelivered as before: the notice and
+      // the typed error stand (#297 Decisions).
+      const moves = (entries: Task["history"]) => entries.filter((h) => !QUIET_EVENTS.has(h.event) && !h.event.startsWith("check "));
+      if (moves(saved.history).length !== moves(next.history).length) throw e;
+      this.releaseNotice(this.undeliveredNotice(saved, e));
+      throw new AssignmentUndeliveredError(saved, e);
     }
-    this.announceRouting(next, a);
+    // A claim is its own hand-over, with no delivery: its accepted write and its line stay as they were (#297).
     if (opts.claim && a.owner === by) {
       const claimed = this.d.board.update(next.id, by, "accepted", { state: "in_progress" });
-      this.d.notify(`task ${this.publicTitle(claimed)} claimed by ${by}`);
+      this.releaseNotice(`task ${this.publicTitle(claimed)} claimed by ${by}`);
       return claimed;
     }
-    await this.sendTask(next, a, opts.context, this.overlaps(next, true, hits), opts.contextWithheld);
     return next;
   }
 
@@ -935,6 +989,16 @@ export class Tasks {
     }
   }
 
+  /**
+   * The one text for a saved assignment whose delivery is unconfirmed (#297), built through publicTitle (a PII task
+   * shows nothing more than it does today): what to check, and how to send it again. No automatic resend: a blind
+   * resend can duplicate a publish that did leave (the #276 decision).
+   */
+  undeliveredNotice(task: Task, cause: unknown): string {
+    const owner = task.owner ?? "its owner";
+    return `task ${this.publicTitle(task)}: the move to ${owner} is saved, but its assignment's delivery is not confirmed (${cause instanceof Error ? cause.message : String(cause)}); look for a queued or needs_review delivery with ahub queue list --peer ${owner} (then ahub queue show <id>), or the accepted entry in ahub task show ${task.id} if the journal is down; send it again with: ahub task assign ${task.id} ${owner}`;
+  }
+
   private readonly offered = new Set<number>(); // assignments in this hub run, including offers still in flight
   private readonly sent = new Map<string, PeerId>(); // hand-over (`handOver`) -> owner, for the owner's current turn: its task envelope started it, or it claimed the task in it
 
@@ -957,7 +1021,7 @@ export class Tasks {
 
   /** Callers hold a list read before an await: re-read, or a task the other caller offered meanwhile is offered twice. */
   private async offerReady(stale: Task, why: string): Promise<void> {
-    let offering = false;
+    let offering = false, undelivered: AssignmentUndeliveredError | undefined;
     try {
       const t = this.d.board.get(stale.id);
       if (!t || t.state !== "proposed" || t.owner || this.offered.has(t.id)) return;
@@ -967,9 +1031,12 @@ export class Tasks {
       this.releaseNotice(`task ${this.publicTitle(ready)} is ready: what it waited for is approved`);
       await this.assignOwner(ready, HUB);
     } catch (e) {
-      this.releaseNotice(`task ${this.publicTitle(stale)}: could not be assigned: ${e instanceof Error ? e.message : String(e)}`);
+      // A saved move whose delivery failed is not "could not be assigned" (#297); the console notice was printed
+      // where the error was thrown. The offer stays consumed by the error's own evidence, without the readback.
+      if (e instanceof AssignmentUndeliveredError) undelivered = e;
+      else this.releaseNotice(`task ${this.publicTitle(stale)}: could not be assigned: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
-      if (offering) {
+      if (offering && !undelivered) {
         try {
           if (!this.d.board.get(stale.id)?.owner) this.offered.delete(stale.id);
         } catch (e) {
@@ -1383,18 +1450,13 @@ export class Tasks {
       try {
         moved = await this.escalate(HUB, rejected.id, `${rejected.rejections} consecutive changes_requested`, "rejections");
       } catch (e) {
-        // The verdict is saved. Decide by the escalation's own write, not by the owner alone: when the last history
-        // entry is this escalation (event "escalated", by the hub, reason "rejections"), the move is fact and only
-        // its delivery is unconfirmed; a publish may have succeeded before the throw, or the journal may recover
-        // and drain it later, so the notice says what to check before resending. The reviewer gets the saved task,
-        // never a failed tool call (#276). Anything else (the task closed meanwhile (#254), a failed board write,
-        // a concurrent move) still throws: review()'s own changes_requested and the escalation's reopened entry
-        // always follow any earlier escalated one. assignOwner keeps throwing for the ready offer's retry (#231).
-        const saved = this.d.board.get(rejected.id);
-        const last = saved?.history.at(-1);
-        if (!saved?.owner || last?.event !== "escalated" || last.by !== HUB || last.reason !== "rejections") throw e;
-        this.releaseNotice(`task ${this.publicTitle(saved)}: the move to ${saved.owner} is saved, but its assignment's delivery is not confirmed (${e instanceof Error ? e.message : String(e)}); look for a queued or needs_review delivery with ahub queue list --peer ${saved.owner} (then ahub queue show <id>), or the accepted entry in ahub task show ${saved.id} if the journal is down; send it again with: ahub task assign ${saved.id} ${saved.owner}`);
-        return saved;
+        // The verdict is saved. If the escalation's move was saved too, only its delivery is unconfirmed, and the
+        // error carries the saved task (#297); the console notice was printed where the error was thrown. The
+        // reviewer gets the saved task back, never a failed tool call (#276). Anything else (the task closed
+        // meanwhile (#254), a failed board write, a superseded move) still throws. assignOwner keeps throwing for
+        // the ready offer's retry (#231).
+        if (!(e instanceof AssignmentUndeliveredError)) throw e;
+        return e.task;
       }
       if (moved.owner !== rejected.owner) return moved;
       // Nobody to escalate to: the owner still has to hear the verdict and the note.
@@ -1431,13 +1493,10 @@ export class Tasks {
     try {
       next = await this.assignOwner(task, by, { candidates: list, event: "escalated", reason, note: `${why}; from ${from ?? "none"}`, context: why });
     } catch (e) {
-      // assignOwner writes before it publishes: the move may be on the board. Then the tail still runs (its parts
-      // are guarded), and the caller still gets the throw; what a failed delivery means is the caller's decision
-      // (#276). A failure before the write (no escalation entry as the last event) gets neither; `saved.owner !== from`
-      // excludes a stale earlier entry, and `from` is recorded only for a lasting escalation, so it is no evidence here.
-      const saved = this.d.board.get(task.id);
-      const last = saved?.history.at(-1);
-      if (saved?.owner && saved.owner !== from && last?.event === "escalated" && last.by === by) tail(saved);
+      // A saved move whose delivery failed arrives as AssignmentUndeliveredError carrying the saved task (#297);
+      // the tail still runs on it (its parts are guarded), and the caller still gets the throw. Anything before
+      // the write gets neither.
+      if (e instanceof AssignmentUndeliveredError) tail(e.task);
       throw e;
     }
     if (next.owner && next.owner !== from) {
@@ -1453,7 +1512,7 @@ export class Tasks {
     // Work that waits is handed to nobody yet (issue #207): the peer becomes its reserved owner instead.
     if (!this.waitsFor(task).length) return this.assignOwner(task, by, { candidates: [peer], event: "reassigned", reason: "manual", override: by === USER });
     const next = this.d.board.update(task.id, by, "reserved", { reserved: peer }, `for ${peer}`, { reason: "manual" });
-    this.d.notify(`task ${this.publicTitle(next)} reserved for ${peer} by ${by}; it is offered to ${peer} first once what it waits for is approved`);
+    this.releaseNotice(`task ${this.publicTitle(next)} reserved for ${peer} by ${by}; it is offered to ${peer} first once what it waits for is approved`);
     return next;
   }
 
@@ -1474,8 +1533,15 @@ export class Tasks {
         const pii = this.isPii(task);
         const candidates = [pii ? LOCAL : PI, pii ? undefined : LOCAL, ...(routing.classes[task.class]?.peers ?? []).filter((p) => p !== LOCAL && p !== PI)].filter((p): p is PeerId => !!p);
         const back = task.state === "in_progress" ? this.d.board.update(task.id, HUB, "released", { state: "proposed" }, `budget pause of ${peer}`) : task;
-        const next = await this.assignOwner(back, HUB, { candidates, exclude: [peer], event: "reassigned", reason: "budget", note: `budget pause of ${peer}`, clearOnFail: true, ...(context ? { context, contextWithheld } : {}) });
-        moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner, role: "owner" });
+        try {
+          const next = await this.assignOwner(back, HUB, { candidates, exclude: [peer], event: "reassigned", reason: "budget", note: `budget pause of ${peer}`, clearOnFail: true, ...(context ? { context, contextWithheld } : {}) });
+          moved.push({ id: task.id, title: this.publicTitle(task), to: next.owner, role: "owner" });
+        } catch (e) {
+          // A saved move whose delivery failed: the console notice was printed where the error was thrown; the
+          // task counts as moved and the relay goes on (#297). No retry is needed for it: the notice already spoke.
+          if (!(e instanceof AssignmentUndeliveredError)) throw e;
+          moved.push({ id: task.id, title: this.publicTitle(task), to: e.task.owner, role: "owner" });
+        }
       } else if (task.reviewer === peer && task.state !== "approved") {
         // No owner candidates: only the reviewer is wanted, and it must be neither the paused peer nor the task's owner.
         const a = assign(task, this.states(), routing, { exclude: [peer], candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}), ...this.weights(task.class) });
