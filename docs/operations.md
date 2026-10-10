@@ -16,7 +16,7 @@ turn ids, queue ids, project ids, execution budget ids and ids in labelled views
 `--color=auto|always|never` uses the console palette. Auto colors only a TTY with `TERM` other than `dumb`
 and empty `NO_COLOR`; pipes and redirects stay plain. Color never replaces a state or level word.
 TTY width is its columns (at least 80). A pipe uses a positive integer `COLUMNS` when supplied, otherwise rows
-are complete and unwrapped. Long fields wrap within their column; when whole metadata words and the readable flexible-column minimum do not fit, table bands retain every field. Each band carries the row id; when it cannot share a line with the metadata, a per-row id banner links them. Labelled two-column views keep each label beside its value, wrapping the value instead of separating labels and values into bands. Console children receive the console's width
+are complete and unwrapped. Long fields wrap within their column; when whole metadata words and the readable flexible-column minimum do not fit, table bands retain every field. Each band carries the row id; when it cannot share a line with the metadata, a per-row id banner links them. Labelled two-column views keep each label beside its value, wrapping the value instead of separating labels and values into bands. In `turns`, the time and state cells wrap at word boundaries only when the file list needs the room and the listing gets shorter for it. `projects` prints the task list and root in a second band for most listings between 81 and 96 columns. Console children receive the console's width
 minus its four-column indent and remain uncolored.
 
 ## Command help

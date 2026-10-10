@@ -553,3 +553,71 @@ test("ordinary tracked file paths split only when longer than their column", () 
     if (columns >= 100) expect(split).toBe(0);
   }
 });
+
+test("a separator trails its item: never dropped, never leads a line, never holds one alone (#284)", () => {
+  // The round-4 repro at 80 columns: the comma after server.js was dropped when the line filled exactly.
+  const turn = { id: "codex#mywec5eb.4", peer: "codex", started: now - 60_000, ended: now, start_tree: "a", end_tree: "b", changed: ["docs/agent-notes/server.js", "docs/verification/console-state.ts", "test/fakes/server.js"] };
+  const rendered = renderTurns([turn], 80, now);
+  const { groups } = tableFieldGroups(rendered, "FILES", [turn.id]);
+  const joined = groups.get(turn.id)!.filter(Boolean).join("\n");
+  for (const item of turn.changed.slice(0, -1)) expect(joined).toContain(`${item},`); // every separator kept
+  for (const line of joined.split("\n")) {
+    expect(line.startsWith(",")).toBe(false); // none leads with one
+    expect(line.trim() === ",").toBe(false); // none holds only one
+  }
+});
+
+test("an item exactly as wide as the column, and one a character narrower, keep their separators (#284)", () => {
+  const probe = { id: "codex#probe000.1", peer: "codex", started: now - 60_000, ended: now, start_tree: "a", end_tree: "b", changed: ordinaryFilePathFixture };
+  const at80 = renderTurns([probe], 80, now);
+  const header = at80.find(line => line.some(cell => cell.text.trim() === "FILES"))!;
+  const at = header.findIndex(cell => cell.text.trim() === "FILES");
+  const width = 80 - header.slice(0, at).reduce((sum, cell) => sum + Bun.stringWidth(cell.text), 0);
+  for (const size of [width, width - 1]) {
+    // A root-level name of exactly the column width (no slash to break after, so it wraps) after the prefix line.
+    const item = "src/" + "e".repeat(size - "src/".length - ".ts".length) + ".ts";
+    const turn = { ...probe, changed: [item, "src/next.ts"] };
+    const { groups } = tableFieldGroups(renderTurns([turn], 80, now), "FILES", [turn.id]);
+    const joined = groups.get(turn.id)!.filter(Boolean).join("\n");
+    expect(joined.replace(/\n/g, "")).toContain(`${item},`); // the separator rides the last piece of its item
+    for (const line of joined.split("\n")) {
+      expect(line.startsWith(",")).toBe(false);
+      expect(line.trim() === ",").toBe(false);
+    }
+  }
+});
+
+test("projects: a 39-character root takes at most two cell lines at 100 and 120 (#284)", () => {
+  const running = { id: "p_4aa9b6e622ae35fef6b8c588", root: "/Users/dev/workspace/work/dev/agent-hub", state: "running", status: { peers: { claude: {}, codex: {}, kimi: {}, pi: {} }, tasks: { approved: 67, in_progress: 2, in_review: 1, changes_requested: 1 } } };
+  const stopped = { id: "p_571057063528c5dfe26ae138", root: "/Users/yj.lee/workspace/work/dev/hwp-cli", state: "stopped" };
+  for (const columns of [100, 120]) {
+    const rendered = renderProjects([running, stopped], columns, now);
+    const { groups } = tableFieldGroups(rendered, "ROOT", [running.id, stopped.id]);
+    // The root wraps at most once (the task list wraps between its items; the root is not floored at 12).
+    expect(groups.get(running.id)!.filter(Boolean).length).toBeLessThanOrEqual(2);
+    const tasksCell = tableFieldGroups(rendered, "TASKS", [running.id, stopped.id]).groups.get(running.id)!.join(" ");
+    for (const item of ["67 approved", "2 in_progress", "1 in_review", "1 changes_requested"]) expect(tasksCell).toContain(item);
+  }
+});
+
+test("turns: time and state cells wrap only when the listing gets shorter for it (#284)", () => {
+  // No turn has more than one file: the cells stay whole at every width.
+  const single = [0, 1].map((n) => ({ id: `pi#single0000.${n}`, peer: "pi", started: now - 6_000_000 * (n + 1), ended: null, start_tree: "a", end_tree: null, changed: n ? ["src/cli/output.ts"] : [] }));
+  for (const columns of [80, 100, 120]) {
+    const rendered = renderTurns(single, columns, now);
+    const ids = single.map((t) => t.id);
+    for (const id of ids) {
+      expect(tableFieldGroups(rendered, "STARTED", ids).groups.get(id)!.filter(Boolean)).toHaveLength(1);
+      expect(tableFieldGroups(rendered, "STATE", ids).groups.get(id)!.filter(Boolean)).toHaveLength(1);
+    }
+  }
+  // A listing where the donation does not pay (the files fit either way): the cells stay whole too.
+  const plain = [{ id: "pi#plain00000.1", peer: "pi", started: now - 6_000_000, ended: null, start_tree: "a", end_tree: null, changed: ["src/cli/main.ts", "src/cli/output.ts", "src/cli/console.ts"] }];
+  const plainRendered = renderTurns(plain, 100, now);
+  expect(tableFieldGroups(plainRendered, "STARTED", [plain[0]!.id]).groups.get(plain[0]!.id)!.filter(Boolean)).toHaveLength(1);
+  // One where it does: the time cell wraps and the row is exactly as tall as its files cell (the wrap rides along).
+  const heavy = [{ id: "pi#heavy00000.1", peer: "pi", started: now - 6_000_000, ended: null, start_tree: "a", end_tree: null, changed: ordinaryFilePathFixture }];
+  const heavyRendered = renderTurns(heavy, 100, now);
+  expect(tableFieldGroups(heavyRendered, "STARTED", [heavy[0]!.id]).groups.get(heavy[0]!.id)!.filter(Boolean)).toHaveLength(2);
+  expect(heavyRendered.length).toBe(1 + tableFieldGroups(heavyRendered, "FILES", [heavy[0]!.id]).groups.get(heavy[0]!.id)!.length);
+});

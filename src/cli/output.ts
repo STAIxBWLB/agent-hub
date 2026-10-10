@@ -22,43 +22,42 @@ const shortId = (id: unknown, columns?: number, full = false) => full || columns
 function lines(text: string, columns?: number, tone?: Tone, indent = ""): Span[][] {
   return (columns === undefined ? [flat(indent + text)] : wrap(flat(indent + text), columns)).map(text => [span(text, tone)]);
 }
-/** Prefer path separators while retaining every character; only oversized individual segments use ordinary wrapping. */
+/** Prefer path separators while retaining every character; only oversized individual segments use ordinary wrapping, with a cell reserved so the segment's trailing slash rides its last piece. */
 function pathChunks(text: string, columns: number): string[] {
   const chunks: string[] = []; let line = "";
   for (const part of text.match(/[^/]+\/?|\//g) ?? []) {
     if (line && width(line + part) > columns) { chunks.push(line); line = ""; }
     if (width(part) > columns) {
-      const split = wrap(part, columns, 0); chunks.push(...split.slice(0, -1)); line = split.at(-1)!;
+      const slash = part.endsWith("/");
+      const split = wrap(slash ? part.slice(0, -1) : part, slash ? columns - 1 : columns, 0);
+      chunks.push(...split.slice(0, -1)); line = split.at(-1)! + (slash ? "/" : "");
     } else line += part;
   }
   if (line || !chunks.length) chunks.push(line);
   return chunks.flatMap(chunk => wrap(chunk, columns, 0));
 }
-/** Keep logical list items together before breaking oversized paths or words. A separator that does not fit leads its item's own line; it never holds a line alone. */
+/** Keep logical list items together before breaking oversized paths or words. A separator trails the item it follows: when an item and its separator do not fit, the item moves to the next line whole (or breaks after a slash, reserving a cell for the separator); the separator never gives, never leads a line, never holds one alone. */
 function itemChunks(cell: OutputCell, columns: number): string[] {
   if (!cell.items?.length) return wrap(cell.text, columns, 0);
   const chunks: string[] = []; let line = cell.prefix ?? "";
   for (const [index, item] of cell.items!.entries()) {
-    const separator = index ? ", " : cell.prefix ? " " : "";
-    if (width(line + separator + item) <= columns) { line += separator + item; continue; }
-    let lead = "";
-    if (index) {
-      if (width(line + ",") <= columns) line += ",";
-      else lead = ", ";
-    }
+    const last = index === cell.items!.length - 1;
+    const unit = item + (last ? "" : ",");
+    const glue = line && (index || cell.prefix) ? " " : "";
+    if (width(line + glue + unit) <= columns) { line += glue + unit; continue; }
     if (line) chunks.push(line);
-    // The lead goes only where it cannot itself split the item: a line break already separates the two.
-    const effective = lead && width(lead + item) > columns && width(item) <= columns ? item : lead + item;
-    const split = width(effective) <= columns ? [effective] : cell.pathItems ? pathChunks(effective, columns) : wrap(effective, columns, 0);
+    const room = last ? columns : columns - 1;
+    const split = width(item) <= room ? [item] : cell.pathItems ? pathChunks(item, room) : wrap(item, room, 0);
+    if (!last) split[split.length - 1] += ",";
     chunks.push(...split.slice(0, -1)); line = split.at(-1)!;
   }
   if (line || !chunks.length) chunks.push(line);
   return chunks.flatMap(chunk => wrap(chunk, columns, 0));
 }
-/** Wrap complete cells before handing canonical headers and explicit widths to the shared console table. */
-function rows(head: string[], data: OutputCell[][], columns?: number, details?: Span[][][]): Span[][] {
+/** Wrap complete cells before handing canonical headers and explicit widths to the shared console table. A column that is "-" on every row is dropped at the top level; a band keeps it, so a narrow render carries the same cells as the unbounded one (#284 round 4). */
+function rows(head: string[], data: OutputCell[][], columns?: number, details?: Span[][][], keepDash = false): Span[][] {
   if (!data.length) return [];
-  const keep = head.map((_, i) => i).filter(i => !data.every(row => flat(row[i]?.text) === "-"));
+  const keep = head.map((_, i) => i).filter(i => keepDash || !data.every(row => flat(row[i]?.text) === "-"));
   head = keep.map(i => head[i]!); data = data.map(row => fitLine(keep.map(i => ({ ...row[i]!, text: flat(row[i]?.text), ...(row[i]?.items ? { items: row[i]!.items!.map(flat), prefix: row[i]!.prefix === undefined ? undefined : flat(row[i]!.prefix) } : {}) })), Infinity));
   const natural = head.map((h, i) => Math.max(width(h), ...data.map(row => width(row[i]!.text))));
   const interleave = (rendered: Span[][], lengths: number[], headerHeight = 1) => {
@@ -90,7 +89,7 @@ function rows(head: string[], data: OutputCell[][], columns?: number, details?: 
   const words = head.map((_, i) => Math.max(...data.flatMap(row => row[i]!.text.split(/\s+/).map(width))));
   const minimum = head.map((h, i) => Math.max(width(h), protectedColumns.has(i) ? words[i]! : 0,
     Math.max(0, ...data.filter(row => row[i]!.atomic).map(row => width(row[i]!.text))),
-    h === "TASKS" ? Math.max(0, ...data.flatMap(row => row[i]!.items?.map(width) ?? [])) : 0));
+    h === "TASKS" ? Math.max(0, ...data.flatMap(row => row[i]!.items?.map((item, j, all) => width(item) + (j < all.length - 1 ? 1 : 0)) ?? [])) : 0));
   // Reserve readable flexible text before a multi-word state consumes the space; atomic words still win.
   // A ROOT column keeps a quarter of a wide table: an item list (TASKS) wraps between its items instead (#284 round 3).
   const pathFloor = head[flexible] === "ROOT" && columns !== undefined && columns > 80 ? Math.floor(columns / 4) : 12;
@@ -121,9 +120,9 @@ function rows(head: string[], data: OutputCell[][], columns?: number, details?: 
     bands.push(band);
     return bands.flatMap((indices, i) => {
       const part = indices.includes(0)
-        ? rows(indices.map(index => head[index]!), data.map(row => indices.map(index => row[index]!)), columns, i === bands.length - 1 ? details : undefined)
-        : data.flatMap((row, n) => [...rows([head[0]!], [[row[0]!]], columns),
-          ...rows(indices.map(index => head[index]!), [indices.map(index => row[index]!)], columns, i === bands.length - 1 && details ? [details[n]!] : undefined)]);
+        ? rows(indices.map(index => head[index]!), data.map(row => indices.map(index => row[index]!)), columns, i === bands.length - 1 ? details : undefined, true)
+        : data.flatMap((row, n) => [...rows([head[0]!], [[row[0]!]], columns, undefined, true),
+          ...rows(indices.map(index => head[index]!), [indices.map(index => row[index]!)], columns, i === bands.length - 1 && details ? [details[n]!] : undefined, true)]);
       return [...(i ? [[]] : []), ...part];
     });
   }
@@ -139,14 +138,20 @@ function rows(head: string[], data: OutputCell[][], columns?: number, details?: 
     widths[choices[0]!.i]!--;
   }
   widths[flexible] = Math.max(minimum[flexible]!, Math.min(natural[flexible]!, available - widths.reduce((sum, n, i) => sum + (i === flexible ? 0 : n), 0)));
-  // A flexible FILES column grows toward natural while protected columns can give down to their longest word
-  // (their content then wraps at word boundaries; the file list breaks between items regardless) (#284 round 3).
+  // A flexible FILES column grows toward natural while protected columns give down to their longest word, but only
+  // when that makes the listing shorter: both layouts are rendered and the taller one is dropped (#284 round 4).
   if (head[flexible] === "FILES") {
-    while (widths[flexible]! < natural[flexible]!) {
-      const donors = widths.map((n, i) => ({ i, room: i === flexible ? 0 : n - Math.max(minimum[i]!, protectedColumns.has(i) ? words[i]! : 0) })).filter(d => d.room > 0);
+    const grown = [...widths];
+    while (grown[flexible]! < natural[flexible]!) {
+      const donors = grown.map((n, i) => ({ i, room: i === flexible ? 0 : n - Math.max(minimum[i]!, protectedColumns.has(i) ? words[i]! : 0) })).filter(d => d.room > 0);
       if (!donors.length) break;
       donors.sort((a, b) => b.room - a.room);
-      widths[donors[0]!.i]!--; widths[flexible]!++;
+      grown[donors[0]!.i]!--; grown[flexible]!++;
+    }
+    if (grown[flexible]! > widths[flexible]!) {
+      const grownRender = renderAtWidths(grown);
+      const plainRender = renderAtWidths(widths);
+      return grownRender.length < plainRender.length ? grownRender : plainRender;
     }
   }
   return renderAtWidths(widths);
