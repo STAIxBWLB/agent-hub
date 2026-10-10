@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
-import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
+import { renderDigest, replyAudience, replyParent, sanitize, type Envelope, type PeerId } from "../hub/envelope.ts";
+import { acpQuotaRefusal, type ACPQuotaRefusal } from "./acp-quota.ts";
 import { KIMI_MODE_IDS, type PermissionMode } from "../hub/permission-mode.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
@@ -79,6 +80,8 @@ export interface AcpOptions {
   onTurnFailure?: (envs: Envelope[], reason: string) => Promise<void> | void;
   /** The sessionId is the adapter's own: the daemon binds a context reading to it, not to a lookup of its own (#285). */
   onUsageDiagnostic?: (observation: ACPUsageDiagnostic, sessionId: string) => void;
+  /** Return true only when the current-session refusal has an authoritative quota pause; otherwise hold delivery. */
+  onQuotaRefusal?: (window: ACPQuotaRefusal) => boolean;
   /** Resolve with an optionId, or undefined to cancel. Absent = every request is cancelled.
    *  A request whose payload could not be resolved is titled as such and carries no session-wide allow option. */
   onPermission?: (req: PermissionRequest) => Promise<string | undefined>;
@@ -135,6 +138,7 @@ export class AcpPeer extends BasePeer {
   private activeDeliveryId: string | undefined;
   private deliveryAccepted = false;
   private cancelWait: { turn: number; successor: number; timer: ReturnType<typeof setTimeout> } | undefined;
+  private promptActivity = false;
 
   constructor(
     id: PeerId,
@@ -250,6 +254,7 @@ export class AcpPeer extends BasePeer {
     const turn = ++this.turn;
     this.activeDeliveryId = deliveryId;
     this.deliveryAccepted = false;
+    this.promptActivity = false;
     this.chunks = [];
     this.setState("busy");
     // session/prompt answers only when the turn ends, so deliver resolves now and failures come back through onFailed.
@@ -269,10 +274,21 @@ export class AcpPeer extends BasePeer {
         }
       })
       .catch((e: Error) => {
-        if (turn !== this.turn || this.stopping) return;
-        this.opts.log?.(`[${this.id}] prompt failed: ${e.message}`);
-        if (turn === this.turn) this.reportTurnFailure(envs, e.message); // a watchdog-cancelled turn reports stale, never as this turn's failure
-        if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: e.message });
+        if (turn !== this.turn || this.stopping) return; // cancelled or stopped prompt refusals must not affect the current turn
+        const reason = sanitize(e.message);
+        this.opts.log?.(`[${this.id}] prompt failed: ${reason}`);
+        const quota = this.kimiAgent ? acpQuotaRefusal(e.message) : undefined;
+        if (quota) {
+          let paused = false;
+          try { paused = this.opts.onQuotaRefusal?.(quota) === true; }
+          catch (error) { this.opts.log?.(`[${this.id}] quota pause failed: ${sanitize(error instanceof Error ? error.message : String(error))}`); }
+          const safe = paused && !this.deliveryAccepted && !this.promptActivity;
+          if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: safe ? "failed_safe" : "needs_review", reason, ...(safe ? { quota: true as const } : {}) });
+          else if (!deliveryId) this.onFailed?.(envs, safe ? { quota: true } : undefined);
+          return; // quota relay owns reassignment, not the ordinary turn-failure path
+        }
+        this.reportTurnFailure(envs, reason);
+        if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason });
         else if (!deliveryId) this.onFailed?.(envs);
       })
       .finally(() => {
@@ -379,6 +395,7 @@ export class AcpPeer extends BasePeer {
         }
       }
       if (this.state !== "busy" || this.cancelWait) return;
+      this.promptActivity = true;
       this.acceptDelivery();
       if (u?.sessionUpdate === "agent_message_chunk" && u.content?.type === "text") this.chunks.push(u.content.text);
       // The permission request that follows may carry no `rawInput` (Kimi 2.0.1 does not), and then the
@@ -399,6 +416,7 @@ export class AcpPeer extends BasePeer {
       else if (u?.sessionUpdate === "usage_update") this.observeUsage(u, "usage_update");
     } else if (msg.method === "session/request_permission") {
       if (this.cancelWait || this.stopping) { this.send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "cancelled" } } }); return; }
+      if (this.state === "busy" && (!msg.params?.sessionId || msg.params.sessionId === this.sessionId)) this.promptActivity = true;
       void this.answerPermission(msg);
     } else if (msg.method && msg.id !== undefined) {
       this.send({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "method not supported by agent-hub" } });

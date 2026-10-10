@@ -1043,9 +1043,25 @@ export async function startDaemon(opts: DaemonOptions) {
     reading: (peer, windows, hard, at) => event({ type: "quota", peer, windows: windows.map((w) => ({ id: w.id, used: w.used, ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}) })), hard, ...(Math.abs(Date.now() - at) > 1000 ? { measuredAt: new Date(at).toISOString() } : {}) }),
     handoff: (peer, context, urgentOnly) => tasks.reassignForPause(peer, context, urgentOnly),
     resumed: (record) => {
+      // Coalesce unread notices without forgetting the public moves they carried.
+      const moves = new Map<string, typeof record.moved[number]>();
+      const earlier: string[] = [];
+      const superseded: string[] = [];
+      for (const env of bus.snapshot(false).queues[record.peer] ?? []) {
+        if (env.from !== HUB || env.kind !== "budget" || env.refs?.budgetResume !== record.peer) continue;
+        for (const move of env.refs.budgetResumeMoves ?? []) moves.set(JSON.stringify([move.id, move.role, move.to, move.title]), move);
+        earlier.push(...(env.refs.budgetResumeEarlier ?? []));
+        // A notice written by an older hub has no structured moves: retain its whole public text.
+        if (!env.refs.budgetResumeMoves) earlier.push(env.body);
+        superseded.push(env.id);
+      }
+      for (const move of record.moved) moves.set(JSON.stringify([move.id, move.role, move.to, move.title]), move);
+      const unreadMoves = [...moves.values()];
       if (record.peer === "kimi") kimiTokens.length = 0; // a new window: the old counts would pause it again at once
-      const moved = record.moved.length ? `While you were paused these moved: ${record.moved.map((m) => `${m.title} (${m.role} -> ${m.to ?? "nobody"})`).join("; ")}. They stay where they are; ask the user if you should take one back.` : "Nothing was moved while you were paused.";
-      bus.publish(newEnvelope(HUB, `Your quota window has reset and the hub has resumed you (paused since ${new Date(record.since).toLocaleTimeString()}, ${record.reason}). ${moved} Messages queued for you follow.`, { to: [record.peer], kind: "budget", priority: "important" }));
+      const moved = unreadMoves.length ? `While you were paused these moved: ${unreadMoves.map((m) => `${m.title} (${m.role} -> ${m.to ?? "nobody"})`).join("; ")}. They stay where they are; ask the user if you should take one back.` : earlier.length ? "Moves from earlier pauses are preserved in the unread notices below." : "Nothing was moved while you were paused.";
+      bus.publish(newEnvelope(HUB, `Your quota window has reset and the hub has resumed you (paused since ${new Date(record.since).toLocaleTimeString()}, ${record.reason}). ${moved}${earlier.length ? ` Earlier unread resume notices: ${earlier.join("\n")}` : ""} Messages queued for you follow.`, { to: [record.peer], kind: "budget", priority: "important", refs: { budgetResume: record.peer, budgetResumeMoves: unreadMoves, ...(earlier.length ? { budgetResumeEarlier: earlier } : {}) } }));
+      // Publish the complete replacement before removing its evidence. A failed write keeps the old notices.
+      for (const id of superseded) bus.withdraw(id);
     },
     notify: (line) => { notify(line); feedBudgetPauses(); },
   });
@@ -2172,6 +2188,11 @@ export async function startDaemon(opts: DaemonOptions) {
         autoApprove: (title) => !stopping && HUB_TOOL_TITLES.has(title),
         log,
         onTokens: onKimiTokens,
+        // Pause synchronously before the adapter requeues a provider-refused prompt (#306).
+        onQuotaRefusal: (window) => {
+          budget.report("kimi", [window], true);
+          return !!budget.record("kimi") && bus.isPaused("kimi");
+        },
         // Kimi's usage_update is context occupancy ({used, size}), not consumption (#167): it becomes the peer's
         // context reading (#285 phase 1), never a tokens event or a budget window. The reading is bound to the
         // adapter's own session id; report() drops it when that is not the daemon's current session. An invalid

@@ -4,6 +4,8 @@ export interface DeliveryReceipt {
   id: string;
   state: "accepted" | "completed" | "failed_safe" | "needs_review";
   reason?: string;
+  /** A provider refused before acceptance for quota; requeue without spending poison retries while paused. */
+  quota?: true;
 }
 
 export interface PeerAdapter {
@@ -24,7 +26,7 @@ export interface PeerAdapter {
   /** Set by the bus. */
   onState?: (state: PeerState) => void;
   /** Set by the bus. A delivery that had resolved turned out not to reach the agent: put it back. */
-  onFailed?: (envs: Envelope[]) => void;
+  onFailed?: (envs: Envelope[], failure?: { quota?: true }) => void;
   /** Correlated durable-delivery lifecycle, emitted only when the bus supplied an id. */
   onDelivery?: (receipt: DeliveryReceipt) => void;
   /** Safe restart metadata only: ids and launch parameters, never prompt/message text. */
@@ -38,7 +40,7 @@ export abstract class BasePeer implements PeerAdapter {
   /** Returns a reason (a string) when the hub refused the message (issue #38). */
   onMessage?: (body: string, opts?: EnvelopeOpts) => unknown;
   onState?: (state: PeerState) => void;
-  onFailed?: (envs: Envelope[]) => void;
+  onFailed?: (envs: Envelope[], failure?: { quota?: true }) => void;
   onDelivery?: (receipt: DeliveryReceipt) => void;
   private _state: PeerState = "offline";
   private timer: ReturnType<typeof setTimeout> | undefined;

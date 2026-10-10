@@ -81,10 +81,12 @@ const EXEMPT = new Set<PeerId>(["local", "user", "hub"]);
 export class Budget {
   private readonly db: Database;
   private readonly readings = new Map<PeerId, Map<string, Reading>>();
-  private readonly pausing = new Set<PeerId>();
+  private readonly pausing = new Map<PeerId, object>();
   private readonly handingOff = new Set<PeerId>();
   /** `ahub budget resume`: the owner overrode a pause; readings over the gate are ignored for that peer until then. */
   private readonly ignoreUntil = new Map<PeerId, number>();
+  /** Chosen fallback bounds belong to a window, never to every window of the peer. */
+  private readonly resetBounds = new Map<PeerId, Map<string, { at: number; explicit: boolean }>>();
   private closed = false;
   private recoveryHeld = false;
   private deferred = false;
@@ -155,6 +157,10 @@ export class Budget {
   /** `at`: when the numbers were measured, for sources that arrive through a file (a leftover file is not a fresh reading). */
   report(peer: PeerId, windows: UsageWindow[], hard = false, at = this.now()): void {
     if (EXEMPT.has(peer) || this.closed) return;
+    // An override ignores soft readings, not a provider that has actually refused another turn.
+    if (hard && this.ignoreUntil.delete(peer)) {
+      try { this.hooks.notify(`budget: ${peer} provider refused again; budget override ended`); } catch { /* a notice cannot prevent the hard pause */ }
+    }
     try { this.hooks.reading?.(peer, windows, hard, at); } catch { /* telemetry never costs a reading */ }
     const mine = this.readings.get(peer) ?? new Map<string, Reading>();
     this.readings.set(peer, mine);
@@ -174,7 +180,10 @@ export class Budget {
     const open = this.record(peer);
     if (!open) return false;
     this.ignoreUntil.set(peer, open.resetsAt);
+    const bounds = this.resetBounds.get(peer);
     this.resume(peer, "overridden by the console user");
+    // A new refusal may end the override before this same window has reset.
+    if (bounds) this.resetBounds.set(peer, bounds);
     return true;
   }
 
@@ -183,8 +192,14 @@ export class Budget {
     const fresh = this.fresh(peer);
     const over = fresh.filter((r) => r.used >= this.cfg.gate);
     const open = this.record(peer);
-    if (open) {
+    // An expired restored record may be waiting for attachment on an unpaused bus. A new hard refusal
+    // starts a fresh pause immediately, retaining its list of moved tasks for the eventual resume notice.
+    if (open && !(hard && this.now() >= open.resetsAt)) {
+      if (hard && over.length) this.hooks.pause(peer); // confirm the persisted pause on the live bus, too
       // A later reading may finally carry the reset time the first one lacked.
+      const bounds = this.resetBounds.get(peer) ?? new Map<string, { at: number; explicit: boolean }>();
+      this.resetBounds.set(peer, bounds);
+      for (const reading of over) if (reading.resetsAt !== undefined) bounds.set(reading.id, { at: reading.resetsAt, explicit: true });
       const known = Math.max(0, ...over.map((r) => r.resetsAt ?? 0));
       if (known && known !== open.resetsAt) {
         // A wait was decided against the old reset (#36). If the new one is past wait_max_min (a week window crossed
@@ -201,22 +216,36 @@ export class Budget {
       if (newer.length && fresh.every((r) => r.used < this.cfg.gate - HYSTERESIS)) this.resume(peer, "usage is back under the gate");
       return;
     }
-    if (!over.length || this.pausing.has(peer) || this.now() < (this.ignoreUntil.get(peer) ?? 0)) return;
-    this.pausing.add(peer);
+    if (!over.length || (this.pausing.has(peer) && !hard) || this.now() < (this.ignoreUntil.get(peer) ?? 0)) return;
+    // A hard refusal supersedes a soft evaluation still awaiting its checkpoint.
+    const evaluation = {};
+    this.pausing.set(peer, evaluation);
     try {
       const worst = over.reduce((a, b) => (b.used > a.used ? b : a));
-      const resetsAt = Math.max(...over.map((r) => r.resetsAt ?? this.now() + (r.windowMins ?? FALLBACK_WINDOW_MINS) * 60_000));
+      const bounds = this.resetBounds.get(peer) ?? new Map<string, { at: number; explicit: boolean }>();
+      this.resetBounds.set(peer, bounds);
+      const resetsAt = Math.max(...over.map((r) => {
+        const fallback = this.now() + (r.windowMins ?? FALLBACK_WINDOW_MINS) * 60_000;
+        const prior = bounds.get(r.id);
+        // Preserve an earlier future fallback for this window after an override.
+        // A provider's explicit reset, including a later one, remains authoritative.
+        const retained = prior !== undefined && prior.at > this.now() ? prior : undefined;
+        const reset = r.resetsAt ?? (retained ? retained.explicit ? retained.at : Math.min(retained.at, fallback) : fallback);
+        bounds.set(r.id, { at: reset, explicit: r.resetsAt !== undefined || retained?.explicit === true });
+        return reset;
+      }));
       const reason = `${worst.id} window at ${Math.round(worst.used * 100)}% (${worst.source})`;
       // Checkpoint first, pause second: a paused peer receives nothing, and a turn in flight is never cut by the coordinator.
       const summary = hard ? undefined : await this.hooks.requestCheckpoint(peer).catch(() => undefined);
+      if (this.pausing.get(peer) !== evaluation) return; // a later hard evaluation owns this pause
       if (this.recoveryHeld) { this.deferred = true; return; }
       if (this.closed) return; // the hub is shutting down: nothing is recorded, the next run sees the reading again
-      this.db.query("INSERT OR REPLACE INTO budget_pauses (peer, since, resets_at, reason, summary) VALUES (?, ?, ?, ?, ?)").run(peer, this.now(), resetsAt, reason, summary ?? null);
+      this.db.query("INSERT OR REPLACE INTO budget_pauses (peer, since, resets_at, reason, summary, moved) VALUES (?, ?, ?, ?, ?, ?)").run(peer, this.now(), resetsAt, reason, summary ?? null, JSON.stringify(open?.moved ?? []));
       this.hooks.pause(peer);
       this.hooks.notify(`budget: ${peer} paused, ${reason}; resumes ${new Date(resetsAt).toLocaleTimeString()}${summary ? "; checkpoint received" : hard ? "; hard limit, no checkpoint" : "; no checkpoint"}`);
       await this.finishHandoff(peer, summary);
     } finally {
-      this.pausing.delete(peer);
+      if (this.pausing.get(peer) === evaluation) this.pausing.delete(peer);
     }
   }
 
@@ -287,6 +316,7 @@ export class Budget {
     if (!record) return;
     this.db.query("DELETE FROM budget_pauses WHERE peer = ?").run(peer);
     this.readings.get(peer)?.clear(); // the old numbers describe the window that just ended
+    this.resetBounds.delete(peer);
     // The notice is queued while the peer is still paused, so it leads the first delivery: the peer learns what moved
     // before it touches anything that was waiting for it.
     this.hooks.resumed(record);

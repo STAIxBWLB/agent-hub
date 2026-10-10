@@ -5,6 +5,7 @@
 // loop-protection error (message plus structured data).
 import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { KIMI_2_1_1_5H_REFUSAL_PREFIX } from "../../src/adapters/acp-quota.ts";
 
 const delay = Number(process.env.FAKE_ACP_DELAY_MS ?? 20);
 const send = (m: unknown) => process.stdout.write(`${JSON.stringify(m)}\n`);
@@ -13,6 +14,8 @@ let busy = false;
 let heldCancelReport: (() => void) | undefined;
 let cancelWaitSeen = false;
 let cancelPermissionSettled: Promise<void> = Promise.resolve();
+let quotaRefusals = 0;
+let heldQuotaRefusal: (() => void) | undefined;
 let cancel: (() => void) | undefined;
 // Receipt-order fixture: a later mode reply is an ordered transport barrier after the cancelled prompt result.
 let cancelledResultSent: (() => void) | undefined;
@@ -50,6 +53,22 @@ async function prompt(id: number, text: string) {
       };
     });
     return;
+  }
+  // Opt-in quota fixture only: ordinary prompts and existing cancellation modes are unchanged.
+  if (process.argv.includes("--quota-refusal") && text.includes("QUOTA_REFUSAL") && quotaRefusals < Number(arg("--quota-refusals") ?? Infinity)) {
+    quotaRefusals++;
+    if (text.includes("QUOTA_REFUSAL_OCCUPANCY")) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", used: 1, size: 10 } } });
+    const message = arg("--quota-error-text") ?? (process.argv.includes("--quota-unrecognized") ? "Authentication required: 403 another provider refusal" : KIMI_2_1_1_5H_REFUSAL_PREFIX + " To continue now, purchase extra usage or upgrade your plan.");
+    const refuse = () => { busy = false; cancel = undefined; send({ jsonrpc: "2.0", id, error: { code: -32603, message } }); };
+    if (text.includes("QUOTA_REFUSAL_PERMISSION")) {
+      const request = ++nextId;
+      waiting.set(request, () => { waiting.delete(request); refuse(); }); // refusal follows the consumed permission answer
+      send({ jsonrpc: "2.0", id: request, method: "session/request_permission", params: { sessionId: "s1", toolCall: { title: "quota permission probe" }, options: [{ optionId: "yes", name: "Allow", kind: "allow_once" }] } });
+      return;
+    }
+    if (text.includes("QUOTA_REFUSAL_AFTER_ACTIVITY") || (text.includes("QUOTA_REFUSAL_HELD") && !text.includes("OCCUPANCY"))) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "quota fixture activity" } } } });
+    if (text.includes("QUOTA_REFUSAL_HELD") || text.includes("QUOTA_REFUSAL_OCCUPANCY_HELD")) { heldQuotaRefusal = refuse; cancel = () => { busy = false; }; return; }
+    return refuse();
   }
   // Occupancy trailing updates (#285): flat `{used, size}` (docs/smoke.md), held for the test's barrier; 2.1.1's
   // source text emits it after the prompt resolves (read from the source, not observed live). OCCUPANCY is 45%,
@@ -206,6 +225,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       }
       if (cancelWaitSeen && process.argv.includes("--cancel-permission-before")) await cancelPermissionSettled; // consume the prior permission reply
       heldCancelReport?.();
+      const quota = heldQuotaRefusal; heldQuotaRefusal = undefined; quota?.(); // consumed before mode reply
       const ackRecord = arg("--mode-ack-record");
       if (ackRecord) appendFileSync(ackRecord, `${msg.params.modeId}\n`);
       flushHeld(); // held trailing updates go out before the reply: a resolved setPermissionMode is the barrier (#285)
