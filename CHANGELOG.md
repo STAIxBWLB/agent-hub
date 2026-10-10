@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Settings in the dashboard and `ahub settings list|get|set|undo`, from one registry: permission modes now and at hub start, `pi.auto_start`, per-class routing (`peers`, `escalate_to`, `route`, `pi_backend`), `stay_switch` and the safe switches. Writes go only to `.agenthub/config.local.json` and the new machine-local `.agenthub/routing.local.toml` (merged over `routing.toml` key by key and named in `ahub route explain`), read by the hub's own loaders first, with one-step undo, a preview (`route explain` for the open tasks before and after) and a `settings` event. A dashboard session reads, lowers a mode to ask and changes safe switches; `ahub ui --settings` opens a 15-minute settings session for the rest, and never-ask needs the peer id typed. Commands, credentials and sandbox reach are never editable there. `ahub init` ignores `routing.local.toml` in git. Control protocol stays 16 (`settings_get|set|undo|preview` are new console-role requests) and events schema stays 1 (#269).
+- Fix macOS timing-sensitive test fixtures by waiting for channel welcomes and releasing PII responses at the fallback decision and separating ACP receipt checks from watchdog timing; add opt-in repeated macOS verification (#287).
 
 ## 0.12.22
 

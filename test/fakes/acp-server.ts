@@ -11,6 +11,9 @@ const send = (m: unknown) => process.stdout.write(`${JSON.stringify(m)}\n`);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let busy = false;
 let cancel: (() => void) | undefined;
+// Receipt-order fixture: a later mode reply is an ordered transport barrier after the cancelled prompt result.
+let cancelledResultSent: (() => void) | undefined;
+const cancelledResult = new Promise<void>((resolve) => { cancelledResultSent = resolve; });
 let nextId = 1000;
 const waiting = new Map<number, (result: any) => void>();
 
@@ -91,7 +94,9 @@ async function prompt(id: number, text: string) {
     busy = false;
     if (cancelled) {
       await sleep(delay); // the cancelled prompt reports late, after the next one may have started
-      return send({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
+      send({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
+      cancelledResultSent?.();
+      return;
     }
   }
   await sleep(delay);
@@ -140,13 +145,15 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   }
   else if (msg.method === "session/set_mode") {
     modePending = true;
-    setTimeout(() => {
+    const respond = () => setTimeout(() => {
       modePending = false;
       const ackRecord = arg("--mode-ack-record");
       if (ackRecord) appendFileSync(ackRecord, `${msg.params.modeId}\n`);
       if (process.argv.includes("--refuse-mode")) send({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "mode disabled" } });
       else { modes.currentModeId = msg.params.modeId; send({ jsonrpc: "2.0", id: msg.id, result: {} }); }
     }, Number(arg("--mode-delay-ms") ?? 40));
+    if (process.argv.includes("--mode-after-cancel")) void cancelledResult.then(respond);
+    else respond();
   }
   else if (msg.method === "session/cancel") cancel?.();
   else if (msg.method === "session/prompt") {
