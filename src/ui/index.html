@@ -50,6 +50,7 @@ let managerMode = false, projectList = [], selectedProjectId = '', selectedInsta
 let lastSnapshot = null;
 const drafts = new Map();
 const pendingButtons = new WeakSet();
+const pendingStarts = new Map();
 let draftChoicesPending = false;
 const signatures = new Map();
 const time = (value) => value ? new Date(value).toLocaleString() : 'unknown';
@@ -73,22 +74,38 @@ async function post(path, body) {
   const response = await fetch(path, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
   if (response.status === 401) { expire(); throw new Error('Run ahub ui to start a new session.'); }
   const result = await response.json();
+  if (result.unconfirmed === true) return result;
   if (!response.ok || result.ok === false) throw new Error(result.error || 'Request failed (' + response.status + ').');
   return result;
 }
 function canMutate() { return !managerMode || snapshotValid; }
 function context() { return { projectId: selectedProjectId, instanceId: selectedInstanceId, generation: viewGeneration }; }
+function startKey(peer, projectId = selectedProjectId) { return JSON.stringify([projectId, peer]); }
 async function action(payload, button, managerAction = false) {
   if (stopped) return false;
   if (!managerAction && !canMutate()) { notice('Wait for a current project snapshot before changing it.', true); return false; }
   const captured = context();
+  const key = payload.action === 'start_peer' ? startKey(payload.peer, captured.projectId) : undefined;
+  if (key && pendingStarts.has(key)) return false;
+  const pending = key ? {phase:'pending', text:'Starting ' + payload.peer + '. Waiting for the hub result.'} : undefined;
+  if (key) pendingStarts.set(key, pending);
   if (managerMode && !managerAction) payload = {...payload, projectId: captured.projectId, instanceId: captured.instanceId};
   if (button) { pendingButtons.add(button); button.disabled = true; }
-  try { const result = await post('/action', payload); if (!managerMode || captured.generation === viewGeneration) notice(result.text || 'Action accepted.'); return true; }
-  catch (error) { if (!stopped && (!managerMode || captured.generation === viewGeneration)) notice(error.message, true); return false; }
-  finally { if (button) { pendingButtons.delete(button); if (!stopped) button.disabled = !managerAction && managerMode && !snapshotValid; } }
+  try {
+    const result = await post('/action', payload);
+    if (result.unconfirmed === true) {
+      if (key && pendingStarts.get(key) === pending) { pending.phase = 'unconfirmed'; pending.text = result.text || 'Start result is unconfirmed. Check the Peers panel before retrying; the hub may still be starting the peer.'; }
+      if (!managerMode || captured.generation === viewGeneration) notice(result.text || 'Start result is unconfirmed. Check the Peers panel before retrying; the hub may still be starting the peer.');
+      return false;
+    }
+    if (key && pendingStarts.get(key) === pending) { pending.phase = 'awaiting'; pending.text = result.text || 'Start requested. Waiting for the peer to attach.'; }
+    if (!managerMode || captured.generation === viewGeneration) notice(result.text || 'Action accepted.');
+    return true;
+  }
+  catch (error) { if (key && pendingStarts.get(key) === pending) pendingStarts.delete(key); if (!stopped && (!managerMode || captured.generation === viewGeneration)) notice(error.message, true); return false; }
+  finally { if (button) { pendingButtons.delete(button); if (!stopped) button.disabled = Boolean(key && pendingStarts.has(key)) || (!managerAction && managerMode && !snapshotValid); } }
 }
-function button(text, payload, cls, managerAction = false) { const node = el('button', text, cls); node.type = 'button'; node.dataset.mutation = managerAction ? 'manager' : 'project'; node.disabled = !managerAction && managerMode && !snapshotValid; node.addEventListener('click', () => void action(payload, node, managerAction)); return node; }
+function button(text, payload, cls, managerAction = false) { const node = el('button', text, cls); node.type = 'button'; node.dataset.mutation = managerAction ? 'manager' : 'project'; if (payload.action === 'start_peer') node.dataset.startKey = startKey(payload.peer); node.disabled = Boolean(node.dataset.startKey && pendingStarts.has(node.dataset.startKey)) || (!managerAction && managerMode && !snapshotValid); node.addEventListener('click', () => void action(payload, node, managerAction)); return node; }
 function update(id, data, render) { const signature = JSON.stringify(data); if (signatures.get(id) === signature) return; signatures.set(id, signature); const target = $(id); target.replaceChildren(); render(target); }
 function empty(target, text) { target.append(el('p', text, 'empty')); }
 function count(value) { return Array.isArray(value) ? value.length : value && typeof value === 'object' ? Object.keys(value).length : value; }
@@ -105,7 +122,7 @@ function restoreDraft(choices = false) {
     for (const id of ['recipient','owner']) $(id).value = Array.from($(id).options).some((o) => o.value === draft[id]) ? draft[id] : '';
   } else { $('message').value = draft.message || ''; $('title').value = draft.title || ''; $('detail').value = draft.detail || ''; $('class').value = draft.class || 'implement'; }
 }
-function syncMutationControls() { document.querySelectorAll('button[data-mutation="project"]').forEach((b) => { b.disabled = pendingButtons.has(b) || (managerMode && !snapshotValid); }); }
+function syncMutationControls() { document.querySelectorAll('button[data-mutation="project"]').forEach((b) => { b.disabled = pendingButtons.has(b) || Boolean(b.dataset.startKey && pendingStarts.has(b.dataset.startKey)) || (managerMode && !snapshotValid); }); }
 function resetView(id, instance) {
   saveDraft();
   selectedProjectId = id || ''; selectedInstanceId = instance || ''; snapshotValid = false; cursor = 0; eventCount = 0; viewGeneration++;
@@ -292,22 +309,29 @@ function renderSettings(settings) {
     slot.signature = signature; slot.node.replaceChildren(settingRow(row, raise));
   }
 }
+function syncStarts(snapshot) {
+  for (const start of Array.isArray(snapshot.starts) ? snapshot.starts : []) if (start.attached) pendingStarts.delete(startKey(start.peer));
+  for (const [peer, state] of Object.entries(snapshot.status?.peers || {})) if (state?.attached === true) pendingStarts.delete(startKey(peer));
+}
 function renderStarts(target, starts) {
   // A Start control per peer that is not attached: the mode it will use and where that comes from.
   for (const start of starts) {
-    if (start.attached) continue;
+    if (start.attached) { pendingStarts.delete(startKey(start.peer)); continue; }
     const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
     head.append(el('span', 'Start ' + start.peer, 'label'), badge(start.mode));
     const tui = start.mode === 'tui';
     row.append(head, el('p', !tui ? 'Starts headless: its start mode.' : start.via ? 'Start mode tui: opens ' + start.command + ' in a terminal through ' + start.via + '.' : 'Start mode tui, and the hub has no terminal to open (' + start.why + '). Run ' + start.command + ' in a terminal.', 'meta'));
     if (!tui || start.via) { const actions = el('div', undefined, 'actions'); actions.append(button('Start ' + start.peer, {action:'start_peer', peer:start.peer})); row.append(actions); }
+    const pending = pendingStarts.get(startKey(start.peer));
+    if (pending) row.append(el('p', pending.text, 'meta'));
     target.append(row);
   }
 }
 function render(snapshot) {
   const peers = snapshot.status.peers || {}, ids = Object.keys(peers), starts = Array.isArray(snapshot.starts) ? snapshot.starts : [];
   $('peer-count').textContent = ids.length + ' peers';
-  update('peers', [peers, starts], (target) => {
+  syncStarts(snapshot);
+  update('peers', [peers, starts, starts.map(start => pendingStarts.get(startKey(start.peer))?.phase || '')], (target) => {
     if (!ids.length) { empty(target, 'No peers connected. Start one below, or from your terminal.'); return renderStarts(target, starts); }
     for (const [id, peer] of Object.entries(peers)) {
       const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head'), name = el('div', undefined, 'peername');

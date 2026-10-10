@@ -1022,6 +1022,8 @@ ahub ui --settings                 # dashboard with a 15-minute settings session
   hub answers the request as unknown and the CLI advises upgrading. The unified
   dashboard (`ahub ui --all`) acts as an ordinary session.
 
+The unified dashboard waits for a peer Start for the terminal provider's 30-second cap plus a 5-second response margin; other forwarded actions keep their 10-second wait. If a Start still has no answer, its result is unconfirmed: check the Peers panel while the hub continues. The page keeps that peer's Start disabled across redraws and project switches until an attached snapshot confirms it, so an unconfirmed result cannot immediately open another terminal. This closes the slow-start limit recorded with #269 part 2 (PR #292); the manager still opens no settings session.
+
 ## Start modes: TUI by default, headless as opt-in
 
 A peer that has a TUI the hub attaches to starts in it by default (issue #269).

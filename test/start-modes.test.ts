@@ -301,7 +301,7 @@ test("AC6 dashboard: the Start control names the mode and where the terminal com
   class Node { children: Node[] = []; constructor(public tag: string, public textContent = "", public className = "") {} append(...nodes: Node[]) { this.children.push(...nodes); } text(): string { return [this.textContent, ...this.children.map((c) => c.text())].join("\n"); } }
   const root = new Node("div"), actions: unknown[] = [];
   runInNewContext(`${code}; renderStarts(target, starts)`, {
-    target: root, el: (tag: string, text?: string, cls?: string) => new Node(tag, text ?? "", cls ?? ""), badge: (text: string) => new Node("span", text),
+    pendingStarts: new Map(), startKey: (peer: string) => peer, target: root, el: (tag: string, text?: string, cls?: string) => new Node(tag, text ?? "", cls ?? ""), badge: (text: string) => new Node("span", text),
     button: (text: string, payload: unknown) => { actions.push(payload); return new Node("button", text); },
     starts: [
       { peer: "claude", mode: "tui", attached: true, command: "ahub claude", via: "orca" },

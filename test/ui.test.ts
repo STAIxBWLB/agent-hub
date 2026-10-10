@@ -328,3 +328,108 @@ test("dashboard renders Pi/local waiting counts and terminal answer directions w
   expect(count.textContent).toContain("console or ahub tail / ahub permit");
   expect(actions).toEqual([{ action: "permit", id: "0", option: "deny" }, { action: "permit", id: "1", option: "deny" }]);
 });
+
+function startPageRuntime(fetch_: (path: string, options: any) => Promise<any>) {
+  const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
+  const actions = html.slice(html.indexOf("function notice("), html.indexOf("function update("));
+  const starts = /function renderStarts\(target, starts\) \{[\s\S]*?\n\}/.exec(html)![0];
+  const sync = /function syncStarts\(snapshot\) \{[\s\S]*?\n\}/.exec(html)![0];
+  const controls = /function syncMutationControls\(\) \{[^\n]*\}/.exec(html)![0];
+  class Node {
+    textContent = ""; className = ""; type = ""; disabled = false; dataset: Record<string, string> = {}; children: Node[] = [];
+    listeners: Record<string, () => void> = {}; error = false;
+    classList = { toggle: (_name: string, value: boolean) => { this.error = value; } };
+    append(...nodes: Node[]) { this.children.push(...nodes); }
+    addEventListener(name: string, listener: () => void) { this.listeners[name] = listener; }
+    text(): string { return [this.textContent, ...this.children.map(node => node.text())].join(" "); }
+  }
+  const root = new Node(), notice = new Node(), connection = new Node();
+  const buttons = () => {
+    const result: Node[] = [];
+    const visit = (node: Node) => { if (node.type === "button") result.push(node); node.children.forEach(visit); };
+    visit(root); return result;
+  };
+  const el = (_tag: string, text?: unknown, cls?: string) => { const node = new Node(); if (text !== undefined) node.textContent = String(text); node.className = cls ?? ""; return node; };
+  const api = runInNewContext(`
+    let stopped=false, timer, projectsTimer, managerMode=true, selectedProjectId='p1',selectedInstanceId='i1',snapshotValid=true,viewGeneration=1;
+    const pendingButtons=new WeakSet(),pendingStarts=new Map();
+    const $=id=>id==='notice'?noticeNode:connection;
+    const badge=text=>el('span',text);
+    ${actions}
+    ${controls}
+    ${sync}
+    ${starts}
+    ({post,action,
+      draw(starts){root.children=[];renderStarts(root,starts);return root},
+      project(id){selectedProjectId=id;selectedInstanceId='i-'+id;viewGeneration++;syncMutationControls()},
+      valid(value){snapshotValid=value;syncMutationControls()},
+      snapshot(value){syncStarts(value)},
+      pending(){return Array.from(pendingStarts.entries())}
+    });`, { fetch: fetch_, noticeNode: notice, connection, root, el, clearTimeout, document: { querySelectorAll: () => buttons() } });
+  return { api, root, notice, buttons };
+}
+const unavailableStart = "Start result is unconfirmed. Check the Peers panel before retrying; the hub may still be starting the peer.";
+const startRows = [{ peer: "codex", mode: "headless", attached: false }, { peer: "kimi", mode: "headless", attached: false }];
+test("real page functions keep an unconfirmed start neutral and prevent repeat starts across redraws and projects", async () => {
+  let finish!: (value: any) => void;
+  const response = new Promise<any>(resolve => { finish = resolve; });
+  const calls: any[] = [];
+  const { api, notice, buttons } = startPageRuntime(async (path, options) => { calls.push({ path, body: JSON.parse(options.body) }); return response; });
+  api.draw(startRows);
+  const initiating = buttons()[0]!;
+  const requested = api.action({ action: "start_peer", peer: "codex" }, initiating);
+  expect(initiating.disabled).toBe(true); expect(calls).toHaveLength(1);
+  api.draw(startRows); // poll replaced the button while the forwarded request is still open
+  expect(buttons()[0]!.disabled).toBe(true); expect(buttons()[1]!.disabled).toBe(false);
+  expect(await api.action({ action: "start_peer", peer: "codex" }, buttons()[0])).toBe(false);
+  expect(calls).toHaveLength(1);
+  finish({ ok: true, status: 200, json: async () => ({ ok: false, unconfirmed: true, text: unavailableStart, error: unavailableStart }) });
+  expect(await requested).toBe(false);
+  expect(notice.textContent).toBe(unavailableStart); expect(notice.error).toBe(false);
+  expect(notice.textContent).not.toContain("accepted"); expect(notice.textContent).not.toContain("failed");
+  api.draw(startRows);
+  expect(buttons()[0]!.disabled).toBe(true); expect(buttons()[1]!.disabled).toBe(false);
+  expect(api.draw(startRows).text()).toContain(unavailableStart);
+  api.valid(false); api.valid(true); // mutation-state synchronisation must not free an unconfirmed start
+  expect(buttons()[0]!.disabled).toBe(true);
+  api.project("p2"); api.draw(startRows);
+  expect(buttons()[0]!.disabled).toBe(false);
+  api.draw([{ ...startRows[0], attached: true }]); // another project's attachment cannot release p1
+  api.project("p1"); api.draw(startRows);
+  expect(buttons()[0]!.disabled).toBe(true);
+  api.draw([{ ...startRows[0], attached: true }, startRows[1]]);
+  expect(api.pending()).toEqual([]);
+  api.draw(startRows); expect(buttons()[0]!.disabled).toBe(false);
+  expect(calls[0].body).toEqual({ action: "start_peer", peer: "codex", projectId: "p1", instanceId: "i1" });
+});
+
+test("real page preserves ordinary action errors and waits for attachment after a confirmed start", async () => {
+  let result: any = { ok: false, error: "Provider refused the start" };
+  const { api, notice, buttons } = startPageRuntime(async () => ({ ok: true, status: 200, json: async () => result }));
+  api.draw(startRows);
+  expect(await api.action({ action: "start_peer", peer: "codex" }, buttons()[0])).toBe(false);
+  expect(notice.error).toBe(true); expect(notice.textContent).toBe("Provider refused the start"); expect(buttons()[0]!.disabled).toBe(false);
+  expect(api.pending()).toEqual([]);
+  result = { ok: true, text: "Terminal opened; waiting for Codex to attach" };
+  expect(await api.action({ action: "start_peer", peer: "codex" }, buttons()[0])).toBe(true);
+  expect(notice.error).toBe(false); expect(buttons()[0]!.disabled).toBe(true);
+  api.draw(startRows); expect(buttons()[0]!.disabled).toBe(true);
+  api.snapshot({ status: { peers: { codex: { attached: true } } }, starts: [] }); expect(api.pending()).toEqual([]);
+  result = { ok: false, error: "Ordinary action timed out" };
+  expect(await api.action({ action: "pause", peer: "kimi" })).toBe(false);
+  expect(notice.error).toBe(true); expect(notice.textContent).toBe("Ordinary action timed out");
+});
+
+test("a snapshot-confirmed attachment is not re-blocked by a late unconfirmed response", async () => {
+  let finish!: (value: any) => void;
+  const response = new Promise<any>(resolve => { finish = resolve; });
+  const { api, buttons } = startPageRuntime(async () => response);
+  api.draw(startRows);
+  const requested = api.action({ action: "start_peer", peer: "codex" }, buttons()[0]);
+  api.draw([{ ...startRows[0], attached: true }]);
+  expect(api.pending()).toEqual([]);
+  finish({ ok: true, status: 200, json: async () => ({ ok: false, unconfirmed: true, text: unavailableStart }) });
+  await requested;
+  expect(api.pending()).toEqual([]);
+  api.draw(startRows); expect(buttons()[0]!.disabled).toBe(false);
+});

@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openManager, startManager, stopManager, type Lifecycle, type ProjectRecord } from "../src/hub/manager.ts";
 
+import { PROTOCOL } from "../src/hub/control-client.ts";
+import { MAX_COMMAND_MS } from "../src/cli/terminal-recovery.ts";
+
 const dirs: string[] = [];
 afterEach(async () => { await stopManager({ home: dirs.at(-1) }); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
@@ -74,4 +77,57 @@ test("the manager stops when its state directory vanishes", async () => {
   rmSync(join(home, "manager"), { recursive: true, force: true });
   const bounded = new Promise<void>((_, reject) => setTimeout(() => reject(new Error("manager did not stop after losing its state dir")), 5_000));
   await Promise.race([manager.stopped, bounded]);
+});
+
+
+async function scriptedAction(replyDelayMs?: number) {
+  const fixture = setup();
+  const project = fixture.registry.get("p1") as ProjectRecord;
+  const requests: any[] = [], limits: [string, number][] = [];
+  const hub = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req, server) { if (server.upgrade(req)) return; return new Response("no", { status: 400 }); }, websocket: {
+    message(ws, data) {
+      const message = JSON.parse(String(data)); requests.push(message);
+      if (message.t === "hello") { ws.send(JSON.stringify({ rid: message.rid, t: "welcome", cwd: project.root, projectId: project.id, instanceId: "i1" })); return; }
+      if (replyDelayMs !== undefined) setTimeout(() => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ rid: message.rid, ok: true, text: "peer start confirmed" })); }, replyDelayMs);
+    },
+  } });
+  mkdirSync(project.stateDir, { recursive: true });
+  writeFileSync(join(project.stateDir, "status.json"), JSON.stringify({ pid: process.pid, controlPort: hub.port, protocol: PROTOCOL, cwd: project.root, projectId: project.id, instanceId: "i1" }));
+  writeFileSync(join(project.stateDir, "control-token"), "scripted-token");
+  await startManager({ ...fixture, forwardTimeoutMs: (action, nominalMs) => { limits.push([action, nominalMs]); return nominalMs / 100; } });
+  const url = await openManager(fixture), origin = new URL(url).origin;
+  const session = await fetch(`${origin}/session`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify({ ticket: new URL(url).hash.slice(1) }) });
+  const cookie = session.headers.get("set-cookie")!;
+  const action = async (kind: string) => (await fetch(`${origin}/action`, { method: "POST", headers: { origin, cookie, "content-type": "application/json" }, body: JSON.stringify({ action: kind, projectId: project.id, instanceId: "i1", peer: "pi" }) })).json() as Promise<any>;
+  return { ...fixture, hub, action, requests, limits };
+}
+
+test("unified peer start outwaits 10 seconds using the provider cap, with ordinary authority", async () => {
+  // 100x clock: 150 ms models 15 s, beyond ordinary 10 s but inside the provider 30 s + 5 s margin.
+  const f = await scriptedAction(150);
+  try {
+    expect(await f.action("start_peer")).toMatchObject({ ok: true, text: "peer start confirmed" });
+    expect(f.limits).toEqual([["start_peer", MAX_COMMAND_MS + 5_000]]);
+    expect(f.requests.filter(r => r.t !== "hello")).toEqual([expect.objectContaining({ t: "ui_action", action: expect.objectContaining({ action: "start_peer" }) })]);
+    expect(f.requests.some(r => r.t === "ui" || r.settings === true)).toBe(false);
+  } finally { await stopManager({ home: f.home }); f.hub.stop(true); }
+});
+
+test("a never-answering unified start is unconfirmed and points to Peers rather than failed", async () => {
+  const f = await scriptedAction();
+  try {
+    const result = await f.action("start_peer");
+    expect(result).toMatchObject({ ok: false, unconfirmed: true });
+    expect(result.text).toContain("unconfirmed"); expect(result.text).toContain("Peers panel"); expect(result.text).not.toMatch(/failed/i);
+    expect(f.limits).toEqual([["start_peer", MAX_COMMAND_MS + 5_000]]);
+  } finally { await stopManager({ home: f.home }); f.hub.stop(true); }
+});
+
+test("another unified action keeps 10 seconds and its timeout remains a failure", async () => {
+  const f = await scriptedAction();
+  try {
+    const result = await f.action("pause");
+    expect(result.ok).toBe(false); expect(result.unconfirmed).toBeUndefined(); expect(result.error).toContain("no answer from the hub");
+    expect(f.limits).toEqual([["pause", 10_000]]);
+  } finally { await stopManager({ home: f.home }); f.hub.stop(true); }
 });
