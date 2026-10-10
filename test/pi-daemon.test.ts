@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Board } from "../src/hub/board.ts";
-import { Tasks } from "../src/hub/tasks.ts";
+import { AssignmentUndeliveredError, Tasks } from "../src/hub/tasks.ts";
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1141,3 +1141,41 @@ test("a normal approval cannot grant after the verified OS owner dies before exi
     await pending.catch(() => undefined);
   }
 }, 30_000);
+
+test("the daemon's inference-failed catch stays quiet for a saved-but-undelivered move and reports other failures (#297)", async () => {
+  // This pins the daemon's catch branch only: Tasks.escalate is stubbed to throw the typed error itself, so no
+  // bus.publish runs here; AC1's literal "bus.publish fails after the write" is end-to-end for delivery_failed in
+  // test/reliability.test.ts. The notice for the typed error is printed where it is thrown (assignOwner), so the
+  // catch must add nothing, and never "could not be escalated" (the tail already said "escalated from A to B").
+  const dir = mkdtempSync(join(tmpdir(), "pi-undelivered-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { stateDir, daemon, console_ } = await hub(config);
+  const board = new Board(join(stateDir, "hub.db")); cleanup.push(() => board.close());
+  const task = board.propose("claude", { title: "pi work", class: "implement" });
+  board.update(task.id, "pi", "accepted", { owner: "pi", reviewer: "claude", state: "in_progress" });
+  const plain = board.propose("claude", { title: "pi plain failure", class: "implement" });
+  board.update(plain.id, "pi", "accepted", { owner: "pi", reviewer: "claude", state: "in_progress" });
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  const peer = daemon.bus.peers.get("pi") as PiPeer;
+  const onTurnFailure = (peer as unknown as { opts: { onTurnFailure?: (envs: unknown[], reason: string) => Promise<void> } }).opts.onTurnFailure!;
+  const escalate = Tasks.prototype.escalate;
+  Tasks.prototype.escalate = async function (_by: unknown, id: unknown) {
+    if (id === task.id) {
+      board.update(task.id, "hub", "escalated", { owner: "local", reviewer: null }, "pi inference failed; from pi");
+      throw new AssignmentUndeliveredError(board.get(task.id)!, new Error("delivery journal unavailable"));
+    }
+    throw new Error("no route");
+  };
+  const beforeFailure = readFileSync(join(stateDir, "hub.log"), "utf8").length;
+  try {
+    await onTurnFailure([newEnvelope("pi", "failed turn", { to: ["pi"], refs: { task: String(task.id) } }), newEnvelope("pi", "failed turn", { to: ["pi"], refs: { task: String(plain.id) } })], "Pi inference failed");
+  } finally {
+    Tasks.prototype.escalate = escalate;
+  }
+  const logText = readFileSync(join(stateDir, "hub.log"), "utf8");
+  const added = logText.slice(beforeFailure);
+  expect(added).not.toMatch(new RegExp(`task #${task.id}\\b`, "i")); // no second notice of any wording for the typed error
+  expect(logText).not.toContain(`Pi task #${task.id} could not be escalated`); // the typed error: quiet
+  expect(logText).toContain(`Pi task #${plain.id} could not be escalated`); // a plain failure: the old line
+}, 20_000);

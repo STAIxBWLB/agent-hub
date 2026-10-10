@@ -395,7 +395,19 @@ A delivery in `needs_review` holds later deliveries to that peer. The console an
 the hold once, and status, task assignment and route explanations name its delivery id.
 Inspect it with `ahub queue show <id>` and explicitly choose `completed`, `retry` or
 `discard` through `ahub queue resolve`. Reassignment or approval of its task never
-resolves an uncertain delivery automatically.
+resolves an uncertain delivery automatically. The same rule holds on every path that
+assigns a task (#297): once the move is saved on the board, a failed delivery prints
+exactly one console notice ("the move is saved... delivery is not confirmed"), printed
+where the error is thrown, and the caller (a peer in its turn, or the CLI) still gets
+its error. Two exceptions, by construction: a move superseded while the assignment was being prepared, meaning a later history entry that moves or settles the task (another assignment, an unassign, the owner's accept, done, approval, close; the hub's quiet bookkeeping such as a late check result or a reviewer change does not supersede), is
+the caller's error as before, with no notice naming either owner; and a claim is its own hand-over, so its
+accepted write and line stay outside the delivery rule (its overlap and routing announcements to earlier
+owners are deliveries and share it). The repair is always
+to look for a queued or needs_review delivery with
+`ahub queue list --peer <owner>` (then `ahub queue show <id>`, or the accepted entry in
+`ahub task show <id>` if the journal itself is down) and then send the assignment again
+with `ahub task assign <id> <owner>`. Nothing resends automatically: a blind resend can
+duplicate a delivery that actually left.
 
 Reviewer candidates follow `[classes.review].peers`, then attached peers with a
 `reviewer` role in `roles`. The owner cannot review its own task. If none is available,
