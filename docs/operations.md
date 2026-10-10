@@ -53,11 +53,12 @@ the rest and is cut with `...`.
 
 | Panel | Columns |
 |---|---|
-| Peers | PEER STATE LINK Q ! REVIEW PAUSE QUOTA MODEL |
+| Peers | PEER STATE MODE LINK Q ! REVIEW PAUSE QUOTA MODEL |
 | Approvals | ID PEER LEFT TITLE |
 | Tasks | ID STATE OWNER REVIEWER CLASS AGE TITLE |
 | Queue | ID PEER STATE REV AGE |
 
+The MODE column appears only when at least one peer has a non-`ask` mode.
 Zero counters and unknown values read `-`. Durations read `45s`, `12m`, `3h05m`
 or `2d03h`; quota resets and budget pauses read `in 2h13m`, and a pause by the
 console user reads `user`. When a peer's status carries #205's optional
@@ -834,6 +835,83 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
 - `"experiments": {"stale_notices": "deliver"}` in `.agenthub/config.json`
   turns the stale-notice drop off, for a controlled comparison only (the #106
   ablation in `docs/cooperbench.md`); the hub logs it at start.
+
+## Permission modes for running peers
+
+Use a plain terminal to inspect or change a running peer:
+
+```bash
+ahub permission
+ahub permission local ask-when-needed
+ahub permission kimi never-ask --yes
+ahub permission kimi ask
+```
+
+In the console Peers panel, `m` opens the three modes. Never-ask requires `y`,
+even for a typed command carrying --yes. Its confirmation says whether the peer
+uses its own tools outside the hub sandbox (Kimi), the hub sandbox/path guard/
+denylist (Pi and local), or native vendor boundaries (Claude and Codex).
+
+| Peer | ask-when-needed | never-ask | ask |
+| --- | --- | --- | --- |
+| Kimi Code CLI | ACP yolo | ACP auto | ACP default |
+| Codex | on-request for every outgoing turn/start | never for every outgoing turn/start | Restore the known native policy once, then stop overriding |
+| Claude | Allow resolving project file tools outside .agenthub/.git/.claude/.codex/.qwen/.kimi/.pi/.mcp.json | Hook allow for every tool | No hook decision |
+| Pi and local | Grant write/edit outside native agent configuration paths; read never asks; shell/git writes ask | Grant each tool once within the existing sandbox/guard | Normal approval handling |
+
+Kimi's map applies only to the actual Kimi Code CLI identity, not another ACP
+agent configured in kimi_cmd. Qwen and other ACP agents start fresh/resumed
+unmanaged without mode changes or mode-based startup refusals; runtime changes
+are refused until their own map exists.
+A set_mode timeout leaves the peer offline with mode unknown; inspect and
+restart before using it. Missing ids and refused startup changes name the mode.
+The benign Kimi live check verifies file edits and harmless shells in both
+modes without requests; risky-action behavior remains unverified.
+
+Claude's hook is installed in every managed launch. File grants use canonical
+real paths under the authenticated project root. Missing targets, symlink
+escapes, metadata directories and uncertain wildcard targets leave the native
+rules in charge. Grep/Glob path-bearing filters cannot bypass the exclusions.
+Other tools retain native decisions, which may already allow a harmless shell.
+Permission-only PreToolUse never marks Claude busy; former observation hooks
+retain their native-turn role. Settings are passed as a 0600 state file retained
+until that native launch exits. Live/unknown previous launchers keep their files;
+verified dead wrapper and native identities permit crash cleanup. Without
+separate native identity proof, old settings remain for manual inspection. Settings carry
+no inline caller values in argv. Status reports an unverified Claude hook as
+unverified. Unattended native sessions cannot take a runtime mode; restart
+without that native flag. Codex must be behind the hub proxy, and returning to
+ask requires a known native approval baseline. An offline or absent peer accepts
+`ahub permission <peer> ask` to clear its hub choice. Codex --unattended launch
+is refused under a non-ask choice; clear it with `ahub permission codex ask`
+first. A pending never-ask default cannot be confirmed for an unattended launch.
+
+Project defaults use permission_modes in .agenthub/config.json or
+.agenthub/config.local.json. Keys merge per peer; a local ask overrides the
+same peer's earlier default, while an empty local block preserves it. Every
+non-ask default start logs its mode and contributing filename. Automatic
+config effects stop at ask-when-needed. Git-tracked defaults are ignored and never
+offered for confirmation. Never-ask from an applied untracked file starts in ask
+and appears as a pending source-labelled console question at hub start.
+Only its separate console y enables that default; there is no boot --yes
+bypass. Only explicit n declines and keeps ask for that hub. Esc defers without declining
+and leaves approval keys usable; a refused y is not reoffered until its state changes. A successful runtime change removes that pending default. Runtime choices expire when the hub
+stops, and a later restart asks again for a never-ask config default.
+
+The CLI marker and console-role checks are operating policy, not a hostile-agent
+boundary. An agent able to run unrestricted shells may clear its markers,
+use --yes, or read the control token and act as the console. Hub tools,
+conductor operations and ordinary agent messages have no direct mode-changing
+or startup-confirmation operation, but those checks do not contain such a
+shell. Review the boundaries in [security](security.md) before choosing a mode.
+Modes never alter native sandboxes, hub path guards or denylists.
+
+Permission mode starts reconcile the current operator choice after native startup before bus delivery. Each non-ask start logs the mode and its config or runtime source. Dropped git-tracked defaults never appear as startup confirmations. Non-Kimi ACP peers run unmanaged, preserving their native fresh/resumed mode; permission commands refuse changes until a vendor map exists.
+
+Status shows non-ask modes and pending defaults, and each runtime change emits
+permission_mode (peer/from/to) with no tool arguments under events schema 1.
+The optional control requests preserve PROTOCOL; an older hub answers unknown
+and the CLI advises upgrading.
 
 ## Approvals and pauses
 

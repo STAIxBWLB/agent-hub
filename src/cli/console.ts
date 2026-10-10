@@ -4,7 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { ControlClient } from "../hub/control-client.ts";
 import { contextLine } from "./status-lines.ts";
 import { renderTailEvent } from "./tail-render.ts";
-import { approvalFrom, initialConsoleState, keyTable, notify, paint, panelRows, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap } from "./console-state.ts";
+import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, panelRows, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap } from "./console-state.ts";
 import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
 
@@ -132,6 +132,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       const [status, budget, tasks, queue, ready] = replies;
       if (status.status?.tasks && status.ok !== false) state.taskCounts = status.status.tasks;
       if (status.status?.peers) state.peers = status.status.peers;
+      if (syncPermissionDefaults(state, status.status?.permissionDefaults) && state.confirm?.type === "permission_default") stream({ text: permissionDefaultText(state.confirm), kind: "permission_default", peer: state.confirm.peer, tone: "attention" });
       if (budget.budget) state.budget = budget.budget;
       if (tasks?.ok) { const parsed = JSON.parse(tasks.text); if (Array.isArray(parsed)) {
           const readyIds = new Set(ready?.ok ? JSON.parse(ready.text).map((task: any) => task.id) : []);
@@ -158,6 +159,14 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   });
   const effect = async (action: ConsoleEffect) => {
     if (action.type === "exit") return stop();
+    if (action.type === "permission_default") {
+      const result = await client.request({ t: "permission_default", peer: action.peer, confirmed: action.confirmed }, 35_000);
+      if (!active) return;
+      if (result.ok === false) {
+        notice(String(result.error ?? "permission default refused"));
+      } else stream({ text: `  ${action.peer} never-ask default ${action.confirmed ? "enabled" : "cancelled for this hub"}`, kind: "permission_default", peer: action.peer, tone: "attention" });
+      await refresh(); draw(); return;
+    }
     if (action.type === "permit") {
       client.send({ t: "permit", surface: "console", id: action.id, ...(action.option ? { option: action.option } : {}) });
       if (!action.option) stream({ text: `  ! denial requested for permission ${action.id}`, kind: "permission", tone: "failure" });
@@ -223,6 +232,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
         // Under the modal key table it does nothing at all.
         if (Array.from(text).length > 1 && !["\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"].includes(text)) {
           if (state.help && state.mode === "panels") return;
+          if (state.confirm?.type === "permission_default") { draw(); return; }
           state.confirm = undefined; state.optionChoice = undefined; state.editing = true;
           state.input += terminalText(text.replace(/\x1b\[20[01]~/g, "")).replace(/\n/g, " "); draw();
         } else handle(text);

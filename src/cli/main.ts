@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { isPermissionMode } from "../hub/permission-mode.ts";
 import { currentRouting } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -17,7 +18,7 @@ import { OmniRoute } from "../omniroute/client.ts";
 import { MemoryClient } from "../memory/client.ts";
 import { init, planInit } from "./init.ts";
 import { launcherPreview } from "./preview.ts";
-import { buildLaunch, claudeObservationHooks, nativeLaunchEnv, UNATTENDED_WARNING } from "./launch.ts";
+import { cleanupStaleClaudeSettings, cleanupClaudeSettings, buildLaunch, claudeObservationHooks, nativeLaunchEnv, UNATTENDED_WARNING } from "./launch.ts";
 import { nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
 import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
@@ -43,7 +44,7 @@ import { pathWarnings } from "../hub/conflicts.ts";
 import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, peerCommandRefusal } from "./identity.ts";
 import { recordCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
-import { resolveColor } from "./console-state.ts";
+import { permissionBoundary, resolveColor } from "./console-state.ts";
 import { renderHelp } from "./help.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
@@ -539,10 +540,6 @@ const commands: Record<string, () => Promise<void> | void> = {
       process.env.AGENTHUB_INSTANCE_ID = control.instanceId;
       const terminal = await recordTerminalLaunch("claude", cwd, stateDir, control.instanceId);
       if (!terminal) process.env.AGENTHUB_LAUNCH_ID = randomUUID();
-      // Native hook identity exists in an ordinary terminal too; this is not an Orca recovery record.
-      const file = join(stateDir, "claude-launch.json");
-      writeFileSync(`${file}.tmp`, JSON.stringify({ instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID }), { mode: 0o600 });
-      chmodSync(`${file}.tmp`, 0o600); renameSync(`${file}.tmp`, file);
     }
     // `--settings` outranks project and user settings, so the tee has to wrap whichever status line would have won:
     // project local, then project, then user.
@@ -556,9 +553,26 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     // Turn-free facts and opted-in task sweeps share native PreToolUse/PostToolUse/Stop observations.
     const facts = claudeObservationHooks(projectConfig(), { script: join(import.meta.dir, "facts-hook.ts"), stateDir });
+    let previousLaunch: unknown;
+    try { previousLaunch = JSON.parse(readFileSync(join(stateDir, "claude-launch.json"), "utf8")); } catch { /* no previous managed launch */ }
     const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir, ...(original ? { original } : {}) }, ...(facts ? { facts } : {}) });
-    if (launch.warning) console.error(launch.warning);
-    exec(launch.cmd, launch.args, "claude");
+    let result: ReturnType<typeof spawnSync>;
+    try {
+      if (control?.instanceId) {
+        // Publish only the final launch's installed hook and effective permission flags.
+        const file = join(stateDir, "claude-launch.json");
+        writeFileSync(`${file}.tmp`, JSON.stringify({ instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, settingsFile: launch.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid), unattended: launch.unattended === true }), { mode: 0o600 });
+        chmodSync(`${file}.tmp`, 0o600); renameSync(`${file}.tmp`, file);
+        cleanupStaleClaudeSettings(stateDir, previousLaunch);
+      }
+      if (launch.warning) console.error(launch.warning);
+      const env = nativeLaunchEnv("claude", childEnv());
+      result = spawnSync(launch.cmd, launch.args, { cwd, stdio: "inherit", env: { ...env, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
+    } finally {
+      cleanupClaudeSettings(stateDir, launch.settingsFile);
+    }
+    if (result.error) fail(`cannot run ${launch.cmd}: ${result.error.message}`);
+    process.exit(result.status ?? 1);
   },
 
   codex: async () => {
@@ -575,7 +589,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const before = readControl(stateDir);
     if (recovering && before?.instanceId) await recordTerminalLaunch("codex", cwd, stateDir, before.instanceId);
     const hub = await connect();
-    const res = await hub.request({ t: "start", peer: "codex", operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+    const res = await hub.request({ t: "start", peer: "codex", args: { unattended: launch0.unattended === true }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
     hub.close();
     if (!res.ok) fail(res.error);
     const control = readControl(stateDir);
@@ -839,6 +853,24 @@ const commands: Record<string, () => Promise<void> | void> = {
   pause: () => hold("pause"),
   resume: () => hold("resume"),
 
+  permission: async () => {
+    const positional = args.filter(arg => arg !== "--yes");
+    const [peer, mode] = positional;
+    if (positional.length > 2 || positional.some(arg => arg.startsWith("--")) || (mode !== undefined && !isPermissionMode(mode))) fail("usage: ahub permission [<peer> [ask|ask-when-needed|never-ask]] [--yes]");
+    if (mode === "never-ask" && !args.includes("--yes")) fail("never-ask requires --yes; nothing was changed");
+    if (mode === "never-ask" && peer) console.error(`never-ask: ${permissionBoundary(peer)}; approval prompts are disabled`);
+    const hub = await connect();
+    try {
+      const reply = await hub.request({ t: "permission", ...(peer ? { peer } : {}), ...(mode ? { mode, confirmed: args.includes("--yes") } : {}) }, 35_000);
+      if (reply.ok === false) {
+        const error = String(reply.error ?? "permission request refused");
+        fail(/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know "permission"/i.test(error) ? `${error}; upgrade the running hub to use ahub permission` : error);
+      }
+      if (reply.peers) for (const [id, value] of Object.entries(reply.peers)) console.log(`${id}: ${value}`);
+      else console.log(`${peer}: ${reply.permissionMode}`);
+    } finally { hub.close(); }
+  },
+
   permit: async () => {
     const [id, option] = args;
     if (!id || !option) fail("usage: ahub permit <id> <option|deny>");
@@ -856,6 +888,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (args.includes("--json")) return console.log(JSON.stringify(status, null, 2));
     console.log(`hub pid ${status.pid}, control 127.0.0.1:${status.controlPort}, ${status.cwd}`);
     if (status.deliveryError) console.log(`  delivery storage: ${status.deliveryError}; dispatch is stopped`);
+    for (const pending of status.permissionDefaults ?? []) console.log(`  permission default ${pending.peer}: never-ask from ${pending.source}, stays ask until a person confirms in ahub console`);
     for (const line of (status as { crash?: string[] }).crash ?? []) console.log(`  crash recovery: ${line}`);
     const peers = Object.entries(status.peers as Record<string, PeerRow>);
     for (const [id, p] of peers) console.log(peerLine(id, { ...p, context: p.context ?? unknownContext() }));

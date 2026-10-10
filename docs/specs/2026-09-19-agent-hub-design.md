@@ -89,7 +89,8 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
 7. Quota relay hands open tasks to the `local` peer first, then waits for the window
    reset for judgment-heavy classes. Task-level escalation on verification failure.
 8. Safety defaults: cross-peer text is framed as untrusted; permission prompts stay on
-   unless `--unattended`; ports bind loopback only; Kimi ACP permission requests are
+   unless `--unattended` or an operator-selected permission mode (issues #240,
+   #242); ports bind loopback only; Kimi ACP permission requests are
    relayed to the hub console. Loopback is not enough on its own (any web page can open a
    WebSocket to 127.0.0.1), so the control WS requires a per-run token and both hub
    servers refuse requests that carry an `Origin` header (amended in M1).
@@ -488,7 +489,8 @@ inside a peer.
 ### Safety
 
 - Untrusted framing on all cross-peer text; standing instruction once per session.
-- `ahub claude` and `ahub codex` keep normal permission prompts. `--unattended` opts into
+- `ahub claude` and `ahub codex` keep native permission defaults unless the person
+  selects a permission mode (issues #240, #242). `--unattended` opts into
   `--dangerously-skip-permissions` (Claude) and `--dangerously-bypass-approvals-and-sandbox`
   (Codex 0.154.0 documents this flag, not `--yolo`) and prints a warning.
 - Kimi and local tools: cwd-scoped, secrets denylist (a secrets directory, `.env*`, keys).
@@ -765,7 +767,8 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   `hub_send` or a task tool, are answered with their `allow_once` option by the
   hub, without a console prompt, and logged by tool name only. This matches the
   `approval_mode = "approve"` Codex already gets for the same tools. Every other
-  request keeps the console path; `allow_always` is never chosen automatically.
+  request keeps the console path unless the person opts into the permission modes
+  below (issues #240, #242); `allow_always` is never chosen automatically.
 - For the other tools, the console payload falls back to the streamed argument
   text once it is a complete JSON object. A partial stream stays unresolved and
   keeps `allow_always` withheld.
@@ -777,6 +780,68 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   anything outside `[a-zA-Z0-9_-]`, and a server passed in `session/new` shadows a
   configured server of the same name, so only the hub's `agent-hub` server can
   produce the approved names.
+
+## Amendment: operator permission modes (issues #240, #242)
+
+- Modes: ask leaves native decisions unchanged; ask-when-needed uses native
+  Kimi/Codex policies or scoped Claude/Pi/local grants; never-ask suppresses
+  prompts within each peer's existing execution boundaries.
+- Runtime CLI permission changes are refused from ordinary agent shells.
+  Never-ask needs --yes; console mode selection needs a separate y. These
+  policy/role checks do not contain a hostile same-user shell: Kimi can clear
+  markers, use --yes or read the control token and impersonate the console.
+  The security and operations guides name that boundary explicitly.
+- permission_modes defaults merge per peer across config files. Automatic
+  effects stop at ask-when-needed. Never-ask from an applied untracked config remains ask until
+  a person's source-labelled console y at hub start; no boot --yes applies it.
+  Git-tracked mode defaults are ignored and never offered for confirmation.
+  Every non-ask start logs mode and source (config file or runtime choice). Successful
+  runtime changes clear pending config confirmations; startup choices are reconciled
+  under the peer fence before a new adapter is exposed to bus delivery. Runtime changes and
+  confirmations remain daemon-local and expire on stop.
+- Newly added native peers replay their non-offline state to drain queued work,
+  publish state telemetry and persist sessions. Offline/absent ask clears only
+  the hub choice. Unattended metadata is saved after successful startup, and
+  concurrent joined starts with different flags are refused. Refused default
+  confirmation remains handled until state changes; Esc defers without declining.
+- Kimi mapping requires the actual Kimi Code CLI identity: yolo for
+  ask-when-needed, auto for never-ask, default for ask. Another ACP agent starts fresh or resumed as unmanaged: its reported mode is
+  untouched, and runtime changes are refused until its table exists. Set-mode replies precede prompts;
+  missing ids/refused startup changes fail. A timeout is unknown/offline and
+  the owned process group stops, so a late reply cannot restore a live peer.
+  Loaded non-default Kimi modes are reset for project ask.
+- Codex overlays on-request/never on every outgoing turn/start without changing
+  sandbox fields. Ask restores a known native policy once after an accepted
+  turn; rejected restoration remains pending. Unknown native baseline refuses
+  restoration. Actual native unattended flags, not broker-wide flags, govern
+  the refusal to change a bypassed session.
+- Claude ask-when-needed allows only Read/Edit/Write/MultiEdit/NotebookEdit/LS
+  and bounded Glob/Grep targets resolved with realPath beneath project root,
+  outside .agenthub/.git/.claude/.codex/.qwen/.kimi/.pi/.mcp.json. Missing/nonresolving or escaping targets,
+  protected case aliases, symlinks and uncertain wildcard/filter targets yield
+  no decision. Never-ask answers allow; ask and transport errors decide nothing.
+  Merged/generated settings are 0600 state files passed by path, never inline
+  in argv. Preview writes no settings file. The owning launcher removes its settings file
+  after native exit; earlier active or unknown launchers retain theirs. Verified
+  dead wrapper and native identities permit crash fallback cleanup. Without
+  separate native identity proof, prior files remain for manual inspection.
+- Permission-only Claude PreToolUse never drives busy state. Only the former
+  observation purposes retain native turn bookkeeping. Hook identity/purpose
+  are launch/session bound; unverified hook status reads unverified.
+- Pi/local read never asks. Ask-when-needed grants write/edit inside the project, outside the shared native
+  configuration segments (.claude/.codex/.qwen/.kimi/.pi/.mcp.json, compared folded and by the path within the
+  project) and never through a hard link; bash and mutating
+  git retain console approval. Never-ask grants once, retaining sandbox and
+  path guards; no mode gives allow-always. ACP tools have no hub sandbox and
+  the never-ask confirmation names that difference.
+- Console-role permission and permission_default requests are additive;
+  ordinary tools/conductor/messages cannot change or confirm modes. Status
+  includes non-ask/unverified/unknown mode state and pending defaults; facts
+  replies include permission and authenticated projectRoot. Unknown requests
+  are answered, so PROTOCOL remains unchanged. permission_mode events retain
+  schema 1 and include only peer/from/to, never tool arguments.
+- Live benign Kimi/Claude results and unverified Codex/Pi limits are recorded
+  in docs/smoke.md. No extra account prompts accompany these review corrections.
 
 ## Amendment: approval notifications and timeout (issue #5)
 

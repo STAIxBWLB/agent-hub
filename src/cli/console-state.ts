@@ -1,3 +1,4 @@
+import { PERMISSION_MODES } from "../hub/permission-mode.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import type { ProgressStage } from "../ui/task-progress.ts";
 import { sanitize } from "../hub/envelope.ts";
@@ -6,6 +7,7 @@ export interface Approval {
   id: string; peer: string; title: string; expiresAt: number;
   options: { optionId: string; name: string; kind: string }[];
 }
+export interface PermissionDefault { peer: string; mode: "never-ask"; source: string }
 export interface ConsoleEvent { text: string; peer?: string; kind?: string; tone?: Tone }
 export interface ConsoleState {
   mode: "stream" | "panels"; panel: number; selection: number;
@@ -19,16 +21,55 @@ export interface ConsoleState {
   approvals: Approval[]; events: ConsoleEvent[]; peers: Record<string, any>; budget: Record<string, any>;
   tasks: any[]; tasksKnown?: boolean; taskCounts?: Record<string, number>; queue: any[]; detail?: Detail; detailOffset: number; help: boolean; notice: string; noticeAt?: number; noticeTone?: Tone;
   peerFilter?: string; kindFilter?: string; project?: string;
-  confirm?: { type: "permission"; id: string; option: string; peer: string } | { type: "command"; args: string[] };
+  confirm?: { type: "permission"; id: string; option: string; peer: string } | { type: "command"; args: string[] } | { type: "permission_default"; peer: string; source: string };
   optionChoice?: string;
+  modeChoice?: string;
+  permissionDefaults: PermissionDefault[];
+  permissionDefaultsHandled: string[];
 }
 /** A detail view: text as the stream shows it, or labeled fields. */
 export type Detail = string | Record<string, unknown>;
 export type ConsoleEffect = { type: "exit" } | { type: "permit"; id: string; option?: string } |
-  { type: "command"; args: string[] } | { type: "show"; panel: number; id: string } | { type: "print"; text: string; kind: string; tone?: Tone } | { type: "keys" };
+  { type: "permission_default"; peer: string; confirmed: boolean } | { type: "command"; args: string[] } | { type: "show"; panel: number; id: string } | { type: "print"; text: string; kind: string; tone?: Tone } | { type: "keys" };
 export function initialConsoleState(panels = false): ConsoleState {
   return { mode: panels ? "panels" : "stream", panel: 1, selection: 0,
-    input: "", editing: false, history: [], historyIndex: 0, approvals: [], events: [], peers: {}, budget: {}, tasks: [], tasksKnown: false, queue: [], detailOffset: 0, help: false, notice: "" };
+    input: "", editing: false, history: [], historyIndex: 0, approvals: [], events: [], peers: {}, budget: {}, tasks: [], tasksKnown: false, queue: [], permissionDefaults: [], permissionDefaultsHandled: [], detailOffset: 0, help: false, notice: "" };
+}
+/** Approval frequency does not create a common sandbox across native peers. */
+export function permissionBoundary(peer: string): string {
+  if (peer === "pi" || peer === "local") return `${peer}: inside hub sandbox, path guard and denylist`;
+  if (peer === "claude" || peer === "codex") return `${peer}: native vendor bounds; no hub sandbox`;
+  return `${peer}: runs its own tools; NO hub sandbox`;
+}
+function permissionModeRefusal(peer: string, mode: unknown): string | undefined {
+  if (mode === "unmanaged") return `${peer} permission mode is unmanaged; use its native controls`;
+  if (mode === "unverified") return `${peer} permission mode is unverified; start with ahub ${peer} and run a tool first`;
+  if (mode === "unknown") return `${peer} permission mode is unknown; inspect or reconnect its native session`;
+  return undefined;
+}
+/** Queue sizes and timestamps do not make a refused/default-deferred peer ready. */
+function permissionDefaultFingerprint(s: ConsoleState, row: Pick<PermissionDefault, "peer" | "source">): string {
+  const peer = s.peers[row.peer];
+  // Readiness, not activity: a peer going idle or busy does not make a deferred default worth asking about again.
+  return JSON.stringify([row.peer, row.source, !peer ? "absent" : peer.state === "offline" ? "offline" : "attached", peer?.permissionMode ?? "ask", peer?.attached ?? !!peer, peer?.claiming ?? false, peer?.toolsOnly ?? false]);
+}
+/** Offer one file default only when no other keyboard decision or edit is active. */
+export function syncPermissionDefaults(s: ConsoleState, rows: unknown): boolean {
+  if (!Array.isArray(rows)) rows = [];
+  s.permissionDefaults = (rows as unknown[]).filter((row): row is PermissionDefault => !!row && typeof row === "object" &&
+    typeof (row as PermissionDefault).peer === "string" && (row as PermissionDefault).mode === "never-ask" && typeof (row as PermissionDefault).source === "string");
+  const current = new Set(s.permissionDefaults.map(row => permissionDefaultFingerprint(s, row)));
+  s.permissionDefaultsHandled = s.permissionDefaultsHandled.filter(fingerprint => current.has(fingerprint));
+  const pending = s.confirm;
+  if (pending?.type === "permission_default" && !s.permissionDefaults.some(row => row.peer === pending.peer && row.source === pending.source)) s.confirm = undefined;
+  if (s.confirm || s.editing || s.input || s.modeChoice || s.optionChoice || s.help) return false;
+  const next = s.permissionDefaults.find(row => !s.permissionDefaultsHandled.includes(permissionDefaultFingerprint(s, row)));
+  if (!next) return false;
+  s.confirm = { type: "permission_default", peer: next.peer, source: next.source };
+  return true;
+}
+export function permissionDefaultText(row: Pick<PermissionDefault, "peer" | "source">): string {
+  return `never-ask default for ${row.peer} from ${quoted(row.source)}\n${permissionBoundary(row.peer)}\nUntil you answer y, this default stays ask. y enables; n cancels for this hub; Esc defers.`;
 }
 /** Strip terminal controls before any daemon or child output reaches a terminal. Preserve printable Unicode. */
 export function terminalText(value: unknown): string {
@@ -269,7 +310,7 @@ const KEYS: [string, string[]][] = [
   ["Command", ["Enter run", "Esc cancel", "Up/Down history", "Ctrl-U clear"]],
   ["Panels", ["1-5 panel", "j/k or arrows move", "Enter view", "j/k scroll a view"]],
   ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select"]],
-  ["Peers", ["p pause", "r resume"]],
+  ["Peers", ["p pause", "r resume", "m permission mode"]],
   ["Tasks", ["a assign (then y)", "r review"]],
   ["Queue", ["r resolve (reason, then y)"]],
   ["Events", ["f peer filter", "g kind filter"]],
@@ -303,7 +344,7 @@ function bound(s: ConsoleState): ConsoleState {
   if (s.requestDetail && s.requestDetail !== s.approvalId) { s.requestDetail = s.approvalId; s.detailOffset = 0; }
   return s;
 }
-const COMMANDS = new Set(["status", "board", "task", "review", "say", "pause", "resume", "budget", "queue", "permit", "ask", "remember", "route", "turns", "undo", "check-path", "report"]);
+const COMMANDS = new Set(["status", "board", "task", "review", "say", "pause", "resume", "budget", "queue", "permit", "permission", "ask", "remember", "route", "turns", "undo", "check-path", "report"]);
 /** A tiny argv parser, never a shell. Quotes group arguments; backslash escapes one character. */
 export function parseConsoleCommand(input: string): string[] {
   const words: string[] = []; let word = ""; let quote = ""; let escaped = false; let started = false;
@@ -322,7 +363,8 @@ export function parseConsoleCommand(input: string): string[] {
   return words;
 }
 export function commandNeedsConfirmation(args: string[]): boolean {
-  return (args[0] === "task" && args[1] === "assign") || (args[0] === "queue" && args[1] === "resolve") || (args[0] === "permit" && args[2] !== "deny");
+  const positional = args.filter(arg => arg !== "--yes");
+  return (positional[0] === "permission" && positional[2] === "never-ask") || (args[0] === "task" && args[1] === "assign") || (args[0] === "queue" && args[1] === "resolve") || (args[0] === "permit" && args[2] !== "deny");
 }
 export function panelRows(s: ConsoleState): any[] {
   if (s.panel === 1) return Object.entries(s.peers).map(([id, peer]) => ({ id, ...peer, budget: s.budget[id] }));
@@ -345,12 +387,32 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   if (key === "\x03") { effects.push({ type: "exit" }); return done(); }
   if (s.confirm) {
     const confirm = s.confirm; s.confirm = undefined;
+    if (confirm.type === "permission_default") {
+      if (key !== "y" && key !== "n" && key !== "\x1b") { s.confirm = confirm; return done(); }
+      s.permissionDefaultsHandled = [...s.permissionDefaultsHandled, permissionDefaultFingerprint(s, confirm)];
+      if (key === "\x1b") { notify(s, `${confirm.peer} never-ask default deferred; remains pending and ask`, now, "attention"); return done(); }
+      effects.push({ type: "permission_default", peer: confirm.peer, confirmed: key === "y" });
+      return done();
+    }
     if (key === "y") {
-      if (confirm.type === "command") effects.push({ type: "command", args: confirm.args });
+      if (confirm.type === "command") effects.push({ type: "command", args: confirm.args[0] === "permission" && confirm.args[2] === "never-ask" ? [...confirm.args.filter(arg => arg !== "--yes"), "--yes"] : confirm.args });
       else if (s.approvals.some(a => a.id === confirm.id && allowOptions(a).some(o => o.optionId === confirm.option))) {
         effects.push({ type: "permit", id: confirm.id, option: confirm.option });
         answered(confirm.id);
       }
+    }
+    return done();
+  }
+  if (s.modeChoice) {
+    const peer = s.modeChoice;
+    if (key === "\x1b") { s.modeChoice = undefined; return done(); }
+    const mode = PERMISSION_MODES[Number(key) - 1];
+    if (/^[1-3]$/.test(key) && mode) {
+      s.modeChoice = undefined;
+      if (!s.peers[peer] || s.peers[peer].state === "offline") notify(s, `${peer} is no longer attached`, now);
+      else if (permissionModeRefusal(peer, s.peers[peer].permissionMode)) notify(s, permissionModeRefusal(peer, s.peers[peer].permissionMode)!, now);
+      else if (mode === "never-ask") s.confirm = { type: "command", args: ["permission", peer, mode] };
+      else effects.push({ type: "command", args: ["permission", peer, mode] });
     }
     return done();
   }
@@ -366,7 +428,8 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       const input = s.input; s.input = ""; s.editing = false;
       if (!input.trim()) return done();
       try {
-        const args = parseConsoleCommand(input);
+        const parsed = parseConsoleCommand(input);
+        const args = parsed[0] === "permission" ? [...parsed.filter(arg => arg !== "--yes"), ...(parsed.includes("--yes") ? ["--yes"] : [])] : parsed;
         if (args[0] === "queue" && args[1] === "resolve") {
           const reason = args.indexOf("--reason");
           if (reason < 0 || !args[reason + 1]?.trim()) throw new Error("queue resolve requires --reason");
@@ -432,6 +495,14 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     return done();
   }
   if (s.mode === "panels" && item !== undefined && item !== null) {
+    if (s.panel === 1 && key === "m") {
+      const peer = String(item);
+      const info = s.peers[peer];
+      if (!info || info.state === "offline") notify(s, `${peer} is not attached`, now);
+      else if (permissionModeRefusal(peer, info.permissionMode)) notify(s, permissionModeRefusal(peer, info.permissionMode)!, now);
+      else s.modeChoice = peer;
+      return done();
+    }
     const prefill = s.panel === 1 && key === "p" ? `pause ${item}` : s.panel === 1 && key === "r" ? `resume ${item}` :
       s.panel === 3 && key === "a" ? `task assign ${item} ` : s.panel === 3 && key === "r" ? `review ${item} ` :
       s.panel === 4 && key === "r" ? `queue resolve ${item} --action retry --reason ` : undefined;
@@ -457,6 +528,7 @@ const TABLES: Record<number, string[]> = {
   3: ["ID", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "TITLE", "STAGE"],
   4: ["ID", "PEER", "STATE", "REV", "AGE"],
 };
+const showPermissionModes = (s: ConsoleState) => Object.values(s.peers).some(peer => peer.permissionMode && peer.permissionMode !== "ask");
 const count = (n: unknown) => typeof n === "number" && n ? String(n) : "-";
 /** One span per column of a panel row; zero counters and unknown values read `-`. */
 function cells(s: ConsoleState, row: any, selected: boolean, now: number, stages?: Map<number, ProgressStage>): Span[] {
@@ -467,6 +539,7 @@ function cells(s: ConsoleState, row: any, selected: boolean, now: number, stages
       ? `${row.paused.by ?? "paused"}${typeof row.paused.at === "number" ? ` ${duration(now - row.paused.at)}` : ""}`
       : row.paused === "manual" ? "user" : row.paused ? String(row.paused).split(":")[0] : "-";
     return [id(row.id, row.state === "offline" ? undefined : "info"), span(row.state, stateTone(row.state)),
+      ...(showPermissionModes(s) ? [span(row.permissionMode && row.permissionMode !== "ask" ? row.permissionMode : "-", row.permissionMode === "never-ask" ? "attention" : undefined)] : []),
       span(row.toolsOnly ? "tools-only" : row.attached === false ? "detached" : "attached", row.toolsOnly ? "attention" : undefined),
       span(count(row.queued)), span(count(row.queuedImportant), row.queuedImportant ? "attention" : undefined),
       span(count(row.needsReview), row.needsReview ? "failure" : undefined), span(paused, paused === "-" ? undefined : "attention"),
@@ -513,15 +586,16 @@ function table(head: string[], rows: Span[][], columns: number): Span[][] {
   }));
 }
 /** The footer's key hint: only keys that act in this mode, panel and state. */
-function hint(s: ConsoleState): string {
+function hint(s: ConsoleState, columns: number): string {
   const pending = selectedApproval(s) ? ["a allow", "d deny"] : [];
   if (s.mode === "stream") return [...pending, ...(pending.length ? ["v view"] : []), ...(s.approvals.length > (pending.length ? 1 : 0) ? ["[ ] select"] : []), "Tab panels", ": command", "? keys", "q quit"].join("  ");
   if (s.help) return "? or Esc close  q quit";
   const approvals = s.panel === 2 ? pending : [];
   if (s.detail !== undefined || s.requestDetail) return [...approvals, "j/k scroll", "Esc back", "? keys", "q quit"].join("  ");
   const rows = panelRows(s); const row = rows[selection(s)];
-  const context = !row ? [] : s.panel === 1 ? ["p pause", "r resume"] : s.panel === 3 ? ["a assign", "r review"] : s.panel === 4 ? ["r resolve"] : [];
-  return [...approvals, ...context, ...(s.panel === 5 ? ["f peer", "g kind"] : []), ...(rows.length ? ["j/k move"] : []), ...(row ? ["Enter view"] : []), "? keys", ": command", "Tab stream", "q quit"].join("  ");
+  const context = !row ? [] : s.panel === 1 ? ["p pause", "r resume", "m permission mode"] : s.panel === 3 ? ["a assign", "r review"] : s.panel === 4 ? ["r resolve"] : [];
+  const text = [...approvals, ...context, ...(s.panel === 5 ? ["f peer", "g kind"] : []), ...(rows.length ? ["j/k move"] : []), ...(row ? ["Enter view"] : []), "? keys", ": command", "Tab stream", "q quit"].join("  ");
+  return s.panel === 1 && Bun.stringWidth(text) > columns ? text.replace("m permission mode", "m mode").replace("j/k move", "j/k").replace(": command", ": cmd") : text;
 }
 /** The project, then the tabs: the active one in brackets, pending approvals and held deliveries counted. */
 function header(s: ConsoleState, columns: number): Span[] {
@@ -539,15 +613,17 @@ function header(s: ConsoleState, columns: number): Span[] {
 const more = (line: Span[], text?: string): Span[] => [span("(more)".padEnd(Bun.stringWidth(line[0]!.text)), "attention"), ...(text === undefined ? line.slice(1) : [span(text)])];
 export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, now = Date.now()): Span[][] {
   const permission = selectedApproval(s);
-  let prompt = s.editing ? `: ${s.input}` : hint(s);
+  let prompt = s.editing ? `: ${s.input}` : hint(s, columns);
   if (s.confirm?.type === "permission") prompt = `allow ${quoted(s.confirm.option)} for ${s.confirm.peer} (request ${s.confirm.id})? y/N`;
   if (s.confirm?.type === "command") prompt = `${s.confirm.args.join(" ")}? y/N`;
+  if (s.modeChoice) prompt = `permission ${s.modeChoice}: 1 ask  2 ask-when-needed  3 never-ask  Esc cancel`;
   const choice = s.optionChoice ? s.approvals.find(a => a.id === s.optionChoice) : undefined;
   if (choice) prompt = `allow request ${choice.id} (${choice.peer}) with: ${allowOptions(choice).map((o, i) => `${i + 1} ${quoted(o.name)}`).join("  ")}  Esc cancel`;
   const summary: Span[] = [];
   for (const [id, p] of Object.entries(s.peers)) {
     if (summary.length) summary.push(span(" "));
     summary.push(span(id, p.state === "offline" ? undefined : "info"), span(":"), span(p.state, stateTone(p.state)), span(` q${p.queued ?? 0}`));
+    if (p.permissionMode && p.permissionMode !== "ask") summary.push(span(` ${p.permissionMode}`, "attention"));
     if (p.needsReview) summary.push(span(` review${p.needsReview}`, "failure"));
     if (p.paused) summary.push(span(" paused", "attention"));
     if (p.toolsOnly) summary.push(span(" tools-only: ahub claude", "attention"));
@@ -559,13 +635,18 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   else if (s.approvals.length) approvals.push(span(" | none selected", "muted"));
   const noticeShown = !!s.notice && now - (s.noticeAt ?? now) < NOTICE_MS;
   if (noticeShown) approvals.push(span(" | "), span(s.notice, s.noticeTone ?? "failure"));
-  const footer = [fitLine(summary, columns), fitLine(approvals, columns), fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
+  const neverPeer = s.confirm?.type === "permission_default" ? s.confirm.peer : s.confirm?.type === "command" && s.confirm.args[0] === "permission" && s.confirm.args[2] === "never-ask" ? s.confirm.args[1] : undefined;
+  const defaultSource = s.confirm?.type === "permission_default" ? s.confirm.source : undefined;
+  if (s.confirm?.type === "permission_default") prompt = `enable never-ask default for ${s.confirm.peer}? y/n Esc defer`;
+  const footer = [fitLine(neverPeer ? [span(permissionBoundary(neverPeer), "attention")] : summary, columns),
+    fitLine(defaultSource !== undefined ? [span(`source ${quoted(defaultSource.split(/[\\/]/).at(-1))}; stays ask until y`, "attention")] : approvals, columns),
+    fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
   const rule = [span("-".repeat(Math.max(0, columns)), "muted")];
   if (s.mode === "stream") {
     const counts = s.taskCounts;
     const total = counts ? Object.values(counts).reduce((sum, value) => sum + value, 0) : 0;
     const taskCount = span(counts ? `tasks ${counts.approved ?? 0}/${total} approved` : "tasks loading...", counts ? "success" : "attention");
-    if (!noticeShown && (counts || !s.approvals.length) && Bun.stringWidth(taskCount.text + " | " + approvals.map(s => s.text).join("")) <= columns) {
+    if (!noticeShown && defaultSource === undefined && (counts || !s.approvals.length) && Bun.stringWidth(taskCount.text + " | " + approvals.map(s => s.text).join("")) <= columns) {
       footer[1] = fitLine([taskCount, span(" | "), ...approvals], columns);
     }
     return [rule, ...footer];
@@ -573,13 +654,14 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   const progress = taskProgress(s.tasks);
   const height = rows - 6; // header, rule, body, rule, three footer lines
   const lines: Span[][] = [];
-  if (s.help) lines.push(...keyTable(columns));
+  if (s.confirm?.type === "permission_default") lines.push(...fieldLines([["default", `${s.confirm.peer} never-ask`], ["source", s.confirm.source], ["bounds", permissionBoundary(s.confirm.peer)], ["decision", "y enables; n cancels for this hub; Esc defers; until then ask"]], columns, now).flat());
+  else if (s.help) lines.push(...keyTable(columns));
   else if (s.detail !== undefined || (s.requestDetail && permission)) {
     const detail = s.detail !== undefined ? detailLines(s.detail, columns, now) : fieldLines(approvalFields(permission!), columns, now).flat();
     lines.push(...detail.slice(Math.min(s.detailOffset, Math.max(0, detail.length - height))));
   }
   else {
-    const data = panelRows(s); const head = TABLES[s.panel]; const at = selection(s);
+    const data = panelRows(s); const head = s.panel === 1 && showPermissionModes(s) ? ["PEER", "STATE", "MODE", ...TABLES[1]!.slice(2)] : TABLES[s.panel]; const at = selection(s);
     // Below the Approvals table: the selected request's title, its allow options and deny, one line each. Deny always
     // shows; options that do not fit are counted, rows give way to the rest, and the title gets what is left.
     const [title = [], allow = [], deny = []] = s.panel === 2 && permission ? fieldLines(approvalFields(permission).slice(3), columns, now) : [];

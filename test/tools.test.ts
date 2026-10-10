@@ -37,6 +37,9 @@ test("paths: traversal, absolute outside paths, symlink escapes and denylisted n
     expect(() => guardPath(ctx, p, "read")).toThrow(/denylist/);
   }
   for (const p of [".git/hooks/pre-commit", ".agenthub/routing.toml"]) expect(() => guardPath(ctx, p, "write")).toThrow(/not writable/);
+  // A name that does not exist yet is compared folded: a case-insensitive disk opens these as .git and .agenthub.
+  for (const p of [".GIT/config", ".Git/hooks/pre-commit", "sub/.GIT/HEAD", ".AGENTHUB/routing.toml", ".g\u200Dit/config", ".\uFEFFagenthub/x"]) expect(() => guardPath(ctx, p, "write")).toThrow(/not writable/);
+  expect(guardPath(ctx, "docs/git/notes.md", "write")).toContain("notes.md");
   expect(guardPath(ctx, ".agenthub/routing.toml", "read")).toContain("routing.toml");
   expect(isDenied("src/environment.ts")).toBe(false);
 });
@@ -359,4 +362,18 @@ for (const tool of ["write", "edit"]) test(`${tool} rechecks a path replaced wit
   ctx.permit = async () => { unlinkSync(join(cwd, "a.txt")); symlinkSync(target, join(cwd, "a.txt")); return true; };
   expect(await call(ctx, tool, { path: "a.txt", content: "overwrite", old: "two", new: "2" })).toMatch(/^error: .*outside the project/);
   expect(readFileSync(target, "utf8")).toBe("OUTSIDE\n");
+});
+
+for (const tool of ["write", "edit"]) test(`${tool} refuses a canonical target retargeted into native agent config after approval`, async () => {
+  const { cwd, ctx } = project();
+  const ordinary = join(cwd, "ordinary"), protectedDir = join(cwd, ".claude"), alias = join(cwd, "editable-alias");
+  mkdirSync(ordinary); mkdirSync(protectedDir);
+  const original = join(ordinary, "policy.json"), protectedFile = join(protectedDir, "policy.json");
+  writeFileSync(original, "before"); writeFileSync(protectedFile, "before"); symlinkSync(ordinary, alias);
+  ctx.permit = async (_title, name, _signal, target) => {
+    expect(name).toBe(tool); expect(target).toBe(guardPath(ctx, "ordinary/policy.json", "write"));
+    unlinkSync(alias); symlinkSync(protectedDir, alias); return true;
+  };
+  expect(await call(ctx, tool, { path: "editable-alias/policy.json", content: "after", old: "before", new: "after" })).toContain("path target changed during approval");
+  expect(readFileSync(original, "utf8")).toBe("before"); expect(readFileSync(protectedFile, "utf8")).toBe("before");
 });

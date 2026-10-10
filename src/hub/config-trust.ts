@@ -10,6 +10,7 @@ import { childEnv } from "./child-process.ts";
  */
 export const MACHINE_LOCAL = [
   "kimi_cmd",
+  "permission_modes",
   "codex_bin",
   "pi.cmd",
   "checks",

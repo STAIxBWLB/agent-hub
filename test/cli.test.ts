@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { existsSync, linkSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,10 @@ import { nextStep, parseList, pluginState } from "../src/cli/setup.ts";
 import { VERSION } from "../src/version.ts";
 import { childEnv } from "../src/hub/child-process.ts";
 import { freeText } from "../src/cli/free-text.ts";
+
+const settingsStates: string[] = [];
+afterEach(() => { for (const dir of settingsStates.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+const settingsState = () => { const dir = mkdtempSync(join(tmpdir(), "ahub-cli-settings-")); settingsStates.push(dir); return dir; };
 
 test("ahub init is idempotent, keeps text outside the markers and writes no CLAUDE.md", () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
@@ -141,13 +145,15 @@ test("status line tee: records rate_limits, runs the wrapped command with the sa
 });
 
 test("ahub claude injects the tee through --settings, wraps the user's command, and steps aside for a user --settings", () => {
-  const tee = { script: "/repo/src/cli/statusline-tee.ts", stateDir: "/p/.agenthub/state", original: { command: "~/.claude/it's-hud.py # dot-hud", refreshInterval: 5 } };
+  const tee = { script: "/repo/src/cli/statusline-tee.ts", stateDir: settingsState(), original: { command: "~/.claude/it's-hud.py # dot-hud", refreshInterval: 5 } };
   const settings = JSON.parse(statusLineSettings(tee));
   expect(settings.statusLine).toMatchObject({ type: "command", refreshInterval: 5 });
-  expect(settings.statusLine.command).toContain("AGENTHUB_STATE_DIR='/p/.agenthub/state'");
+  expect(settings.statusLine.command).toContain(`AGENTHUB_STATE_DIR='${tee.stateDir}'`);
   expect(settings.statusLine.command).toContain(`AGENTHUB_STATUSLINE_CMD='~/.claude/it'\\''s-hud.py # dot-hud'`); // quoted for sh
   const launch = buildLaunch("claude", [], { unattended: false, statusLine: tee });
-  expect(launch.args.slice(2, 4)).toEqual(["--settings", statusLineSettings(tee)]);
+  expect(launch.args[2]).toBe("--settings");
+  expect(readFileSync(launch.args[3]!, "utf8")).toBe(statusLineSettings(tee));
+  expect(statSync(launch.args[3]!).mode & 0o777).toBe(0o600);
   const own = buildLaunch("claude", ["--settings", "{}"], { unattended: false, statusLine: tee });
   expect(own.args.filter((a) => a === "--settings")).toHaveLength(1);
   expect(own.warning).toContain("status line tee is off");
@@ -155,19 +161,21 @@ test("ahub claude injects the tee through --settings, wraps the user's command, 
 
 // issue #108: a turn-free project's Claude session gets the facts hook before and after every tool call, and at the end
 // of each turn (the quiescence evidence of issue #107).
-test("ahub claude adds the facts hooks next to the tee in a turn-free project, and says so when a user --settings turns them off", () => {
-  const tee = { script: "/repo/src/cli/statusline-tee.ts", stateDir: "/p/.agenthub/state" };
-  const facts = { script: "/repo/src/cli/facts-hook.ts", stateDir: "/p/.agenthub/state" };
+test("ahub claude adds the facts hooks next to the tee in a turn-free project, and preserves them when a user supplies --settings", () => {
+  const tee = { script: "/repo/src/cli/statusline-tee.ts", stateDir: settingsState() };
+  const facts = { script: "/repo/src/cli/facts-hook.ts", stateDir: tee.stateDir };
   const settings = JSON.parse(sessionSettings(tee, facts));
   expect(settings.statusLine.type).toBe("command");
-  const hooks = [{ type: "command", command: "AGENTHUB_STATE_DIR='/p/.agenthub/state' bun '/repo/src/cli/facts-hook.ts'", timeout: 5 }];
+  const hooks = [{ type: "command", command: `AGENTHUB_STATE_DIR='${tee.stateDir}' AGENTHUB_HOOK_PURPOSE='facts' bun '/repo/src/cli/facts-hook.ts'`, timeout: 5 }];
   for (const event of ["PreToolUse", "PostToolUse"]) expect(settings.hooks[event]).toEqual([{ matcher: "*", hooks }]);
   expect(settings.hooks.Stop).toEqual([{ hooks }]);
   expect(Object.keys(settings.hooks).sort()).toEqual(["PostToolUse", "PreToolUse", "Stop"]); // the hub's own and nothing else
   expect(sessionSettings(tee)).toBe(statusLineSettings(tee)); // an advisory project: the tee alone, as before
-  expect(buildLaunch("claude", [], { unattended: false, statusLine: tee, facts }).args.slice(2, 4)).toEqual(["--settings", sessionSettings(tee, facts)]);
+  const launch = buildLaunch("claude", [], { unattended: false, statusLine: tee, facts });
+  expect(readFileSync(launch.args[3]!, "utf8")).toBe(sessionSettings(tee, facts));
+  expect(statSync(launch.args[3]!).mode & 0o777).toBe(0o600);
   const own = buildLaunch("claude", ["--settings", "{}"], { unattended: false, statusLine: tee, facts });
-  expect(own.warning).toContain("turn-free facts hooks are off");
+  expect(JSON.parse(readFileSync(own.args[own.args.indexOf("--settings") + 1]!, "utf8")).hooks.PreToolUse).toBeDefined();
 });
 
 test("the facts hook prints nothing and exits 0 without a hub, without a state dir, or on bad input", () => {

@@ -1355,6 +1355,59 @@ untracked), with at least two real peers attached:
 - Press Ctrl-C during a `verify`; check the attempt reads `interrupted` and nothing it started keeps running.
 - Run a second arm, then `ahub bench compare <arm> <arm>`; check the dashboard's Benchmarks section shows both.
 
+## Permission modes (#240, #242), 2026-10-10
+
+Installed native versions: Kimi 2.1.1, Codex 0.162.0, Claude Code 2.1.296,
+Pi 1.0.1. Checks use disposable scratch fixtures outside this repository, one
+short file-edit plus harmless `printf` shell prompt per non-ask mode. Native
+runs go through `dot admit`; no production permission command or sandbox
+change is used. Two admission attempts were deferred before any prompt by
+unrelated rsync jobs; a later attempt admitted the sequential fixture run.
+
+| Agent | Mode | File edit | Harmless shell | Permission evidence |
+| --- | --- | --- | --- | --- |
+| Kimi | ask-when-needed (`yolo`) | `file-edit-ok` read back | `shell-ok` read back | 0 ACP permission requests |
+| Kimi | never-ask (`auto`) | `file-edit-ok` read back | `shell-ok` read back | 0 ACP permission requests |
+| Codex | ask-when-needed | Unverified, no file produced | Unverified, no file produced | Proxy turn emitted userMessage but no tool/completion within 180 s; 0 approval requests |
+| Codex | never-ask | Not run, unverified | Not run, unverified | Omitted after the first bounded failure, preserving prompt quota |
+| Claude | ask-when-needed | edit.txt changed to after | shell.txt read back shell-ok | Historical earlier policy: bound native hook identity; 0 denials. Current scoped policy unverified |
+| Claude | never-ask | edit.txt changed to after | shell.txt read back shell-ok | Historical earlier policy: bound native hook identity; 0 denials. Current scoped policy unverified |
+| Pi | ask-when-needed | Unverified, no tool ran | Unverified, no tool ran | Fixture had no model gateway configured; RPC prompt accepted but no model/tool execution |
+| Pi | never-ask | Unverified, no tool ran | Unverified, no tool ran | Same missing fixture gateway; no successful model/tool execution |
+
+The Kimi trace records set_mode replies before each prompt. session/new lists
+`default`, `plan`, `auto`, `yolo` and currentModeId default; loading the same
+session after never-ask reports default, with no extra prompt. Fake regressions
+also cover a resumed session retaining auto/yolo, which is reset to default
+before prompts under the project's ask policy.
+
+Kimi's CLI calls `yolo` Ask When Needed and says routine edits and commands run
+automatically. The observed harmless shells agree. These two benign prompts do
+not prove risky-action policy or distinguish the two modes on risky actions;
+the contradictory ACP mode descriptions do not justify reversing the CLI/UI
+mapping. Codex similarly uses its native on-request policy rather than the
+Claude/Pi read/edit allowlist.
+
+Claude Code completed both isolated headless native runs with exit 0. Its
+ask-when-needed hook allows file tools and returns no override for Bash;
+the harmless shell was permitted by the existing native policy. A zero
+permission_denials array is not evidence that an interactive dialog appeared.
+The hook's matching instance/launch metadata confirms its transport ran.
+
+No additional native prompts were sent for the subsequent launcher metadata
+and permission-only idle fixes; their behavior is pinned by focused daemon/launcher
+regressions. Pi's missing gateway was a fixture configuration limitation, not
+evidence of an account outage or a permission-mode failure. Codex's timeout
+cause remains undiagnosed. These legs remain unverified rather than being
+replaced with fake evidence. Fixture process groups were stopped afterward.
+
+The historical Claude benign checks above used the earlier hook policy. The current scoped-path policy, expanded native configuration exclusions, startup reconciliation, and private settings retirement are covered by fixtures but remain native unverified. No additional account prompts were used for the second review corrections.
+
+Unverified natively (Codex 0.162.0): whether a thread that got a `never` or `on-request` override keeps it when the
+same thread is resumed through the hub's proxy by a hand-run `codex --remote` after `ahub permission codex ask` was
+given while no TUI was attached. The hub stops overriding at that point and the status says ask; `ahub codex` always
+starts a new proxy, which is not affected.
+
 ## Whole-board task progress and dashboard themes (#246)
 
 Live console and dashboard light/dark inspection: **unverified**. No native

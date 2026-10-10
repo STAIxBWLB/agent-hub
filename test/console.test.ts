@@ -1,7 +1,7 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
-import { initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
+import { syncPermissionDefaults, permissionBoundary, initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
 import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
-import { contextLine } from "../src/cli/status-lines.ts";
+import { peerLine, contextLine } from "../src/cli/status-lines.ts";
 import { renderTailEvent } from "../src/cli/tail-render.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import type { ConsoleTerminal } from "../src/cli/console.ts";
@@ -494,7 +494,7 @@ describe("console layout (#213)", () => {
   test("the footer hint lists only keys that act in this mode, panel and state", () => {
     const s = sample(); const hints: string[] = [];
     const hint = () => { const line = renderConsole(s, 80, 24, T).at(-1)!; hints.push(line); return line; };
-    s.panel = 1; expect(hint()).toBe("p pause  r resume  j/k move  Enter view  ? keys  : command  Tab stream  q quit");
+    s.panel = 1; expect(hint()).toBe("p pause  r resume  m mode  j/k  Enter view  ? keys  : cmd  Tab stream  q quit");
     s.panel = 2; expect(hint()).toBe("a allow  d deny  j/k move  Enter view  ? keys  : command  Tab stream  q quit");
     s.panel = 3; expect(hint()).toStartWith("a assign  r review  j/k move");
     s.panel = 4; expect(hint()).toStartWith("r resolve  j/k move");
@@ -828,6 +828,217 @@ describe("console layout (#213)", () => {
     }
     const s = state(true); s.panel = 5; s.events = [{ text: "[agent-hubby stuff here and more" }];
     for (let columns = 10; columns <= 30; columns++) for (const line of renderConsoleLines(s, columns, 24, NOW)) expect(Bun.stringWidth(paint(line, false))).toBeLessThanOrEqual(columns);
+  });
+});
+
+
+describe("console permission modes (#242)", () => {
+  function peers() { const s = initialConsoleState(true); s.peers = { pi: { state: "idle", permissionMode: "ask-when-needed" } }; return s; }
+  test("Peers renders non-default mode and chooser; ask modes use command effects", () => {
+    const s = peers();
+    const rendered = renderConsole(s, 160, 24, NOW);
+    expect(rendered.join("\n")).toContain("ask-when-needed");
+    expect(rendered[2]).toContain("MODE");
+    for (const permissionMode of [undefined, "ask"]) {
+      s.peers.pi.permissionMode = permissionMode;
+      expect(renderConsole(s, 160, 24, NOW)[2]).not.toMatch(/\bMODE\b/);
+    }
+    s.peers.pi.permissionMode = "ask-when-needed";
+    const chosen = reduceConsole(s, "m", NOW).state;
+    expect(chosen.modeChoice).toBe("pi");
+    const text = renderConsole(chosen, 160, 24, NOW).join("\n");
+    for (const mode of ["ask", "ask-when-needed", "never-ask"]) expect(text).toContain(mode);
+    expect(reduceConsole(chosen, "1", NOW).effects).toEqual([{ type: "command", args: ["permission", "pi", "ask"] }]);
+    expect(reduceConsole(chosen, "2", NOW).effects).toEqual([{ type: "command", args: ["permission", "pi", "ask-when-needed"] }]);
+    expect(reduceConsole(chosen, "\x1b", NOW).state.modeChoice).toBeUndefined();
+  });
+  test("never-ask waits for explicit y, then passes --yes; typed --yes still confirms", () => {
+    const chosen = reduceConsole(peers(), "m", NOW).state;
+    const pending = reduceConsole(chosen, "3", NOW);
+    expect(pending.effects).toEqual([]);
+    expect(renderConsole(pending.state, 160, 24, NOW).join("\n")).toContain("never-ask? y/N");
+    expect(reduceConsole(pending.state, "\r", NOW).effects).toEqual([]);
+    expect(reduceConsole(pending.state, "y", NOW).effects).toEqual([{ type: "command", args: ["permission", "pi", "never-ask", "--yes"] }]);
+    for (const input of ["permission pi never-ask", "permission pi never-ask --yes", "permission --yes pi never-ask"]) {
+      const s = peers(); s.editing = true; s.input = input;
+      const entered = reduceConsole(s, "\r", NOW);
+      expect(entered.effects).toEqual([]);
+      expect(reduceConsole(entered.state, "y", NOW).effects).toEqual([{ type: "command", args: ["permission", "pi", "never-ask", "--yes"] }]);
+    }
+  });
+  test("local opens chooser and detached peers cannot open chooser", () => {
+    const local = initialConsoleState(true); local.peers = { local: { state: "idle" } };
+    expect(reduceConsole(local, "m", NOW).state.modeChoice).toBe("local");
+    for (const [peer, info, reason] of [["pi", { state: "offline" }, "not attached"]] as const) {
+      const s = initialConsoleState(true); s.peers = { [peer]: info };
+      const result = reduceConsole(s, "m", NOW);
+      expect(result.state.modeChoice).toBeUndefined(); expect(result.state.notice).toContain(reason); expect(result.effects).toEqual([]);
+    }
+    const chosen = reduceConsole(peers(), "m", NOW).state; chosen.peers = {};
+    expect(reduceConsole(chosen, "2", NOW).effects).toEqual([]);
+  });
+});
+
+
+test("Peers mode chooser executes through the console CLI effect only after explicit confirmation (#242)", async () => {
+  const f = fixture(160, 24); const commands: string[][] = [];
+  f.client.request = async (msg: any) => { f.requests.push(msg); return { ok: true, status: { peers: { pi: { state: "idle", permissionMode: "ask" } } }, budget: {}, text: "[]", deliveries: [] }; };
+  const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, panels: true,
+    runCommand: (args) => { commands.push(args); return () => {}; } });
+  await Promise.resolve(); await Promise.resolve();
+  f.input("m"); f.input("3");
+  expect(commands).toEqual([]);
+  f.input("y");
+  expect(commands).toEqual([["permission", "pi", "never-ask", "--yes"]]);
+  f.input("\x03"); await running;
+});
+
+
+describe("human confirmation for never-ask config defaults (#242)", () => {
+  const defaults = [{ peer: "kimi", mode: "never-ask" as const, source: ".agenthub/config.json" }, { peer: "local", mode: "never-ask" as const, source: ".agenthub/config.local.json" }];
+  test("a default offers before attachment, names the source and bounds, and waits for y", () => {
+    for (const panels of [false, true]) {
+      const s = initialConsoleState(panels);
+      expect(syncPermissionDefaults(s, defaults)).toBe(true);
+      expect(s.peers).toEqual({});
+      const view = renderConsole(s, 80, 24, NOW).join("\n");
+      expect(view).toContain("NO hub sandbox"); expect(view).toContain("config.json"); expect(view).toContain("y/n");
+      expect(reduceConsole(s, "y", NOW).effects).toEqual([{ type: "permission_default", peer: "kimi", confirmed: true }]);
+      expect(reduceConsole(s, "n", NOW).effects).toEqual([{ type: "permission_default", peer: "kimi", confirmed: false }]);
+      for (const key of ["\r", "j", "q", " ", "N"]) {
+        const untouched = reduceConsole(s, key, NOW);
+        expect(untouched.effects).toEqual([]); expect(untouched.state.confirm).toEqual(s.confirm);
+        expect(untouched.state.permissionDefaultsHandled).toEqual([]);
+      }
+    }
+  });
+  test("one confirmation at a time, cancellation is not reoffered, edits are not interrupted", () => {
+    const s = initialConsoleState(true); s.editing = true; s.input = "status";
+    expect(syncPermissionDefaults(s, defaults)).toBe(false); expect(s.confirm).toBeUndefined();
+    s.editing = false; s.input = ""; expect(syncPermissionDefaults(s, defaults)).toBe(true);
+    const declined = reduceConsole(s, "n", NOW).state;
+    expect(syncPermissionDefaults(declined, defaults)).toBe(true);
+    expect(declined.confirm).toMatchObject({ type: "permission_default", peer: "local" });
+    const view = renderConsole(declined, 80, 24, NOW).join("\n");
+    expect(view).toContain("config.local.json"); expect(view).toContain("hub sandbox, path guard and denylist");
+    const done = reduceConsole(declined, "y", NOW).state;
+    expect(syncPermissionDefaults(done, defaults)).toBe(false);
+    const restarted = initialConsoleState(); expect(syncPermissionDefaults(restarted, defaults)).toBe(true);
+  });
+  test("runtime never-ask confirmation describes each peer's effective boundary", () => {
+    for (const peer of ["kimi", "pi", "local", "claude", "codex"]) {
+      const s = initialConsoleState(true); s.peers = { [peer]: { state: "idle" } };
+      const chosen = reduceConsole(s, "m", NOW).state;
+      const pending = reduceConsole(chosen, "3", NOW).state;
+      const view = renderConsole(pending, 80, 24, NOW);
+      expect(view.join("\n")).toContain(permissionBoundary(peer));
+      for (const line of view) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
+      expect(reduceConsole(pending, "y", NOW).effects).toEqual([{ type: "command", args: ["permission", peer, "never-ask", "--yes"] }]);
+    }
+  });
+  test("console startup uses the dedicated RPC; --yes in typed runtime commands cannot answer defaults", async () => {
+    const f = fixture(120, 24); let pending = [...defaults]; const commands: string[][] = [];
+    f.client.request = async (msg: any) => {
+      f.requests.push(msg);
+      if (msg.t === "permission_default") pending = pending.filter(row => row.peer !== msg.peer);
+      return { ok: true, status: { peers: {}, permissionDefaults: pending }, budget: {}, text: "[]", deliveries: [] };
+    };
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, runCommand: args => { commands.push(args); return () => {}; } });
+    await Promise.resolve(); await Promise.resolve();
+    expect(f.output.join("")).toContain("config.json");
+    expect(f.requests.filter(row => row.t === "permission_default")).toEqual([]);
+    for (const input of ["\r", "j", "\x1b[200~ny\x1b[201~"]) {
+      f.input(input);
+      expect(f.requests.filter(row => row.t === "permission_default")).toEqual([]);
+      expect(f.output.join("")).toContain("Esc defer");
+    }
+    f.input("y");
+    for (let n = 0; n < 6; n++) await Promise.resolve();
+    expect(f.requests.filter(row => row.t === "permission_default")).toEqual([{ t: "permission_default", peer: "kimi", confirmed: true }]);
+    f.input("n");
+    for (let n = 0; n < 6; n++) await Promise.resolve();
+    expect(f.requests.filter(row => row.t === "permission_default")).toEqual([{ t: "permission_default", peer: "kimi", confirmed: true }, { t: "permission_default", peer: "local", confirmed: false }]);
+    expect(commands).toEqual([]);
+    f.input("\x03"); await running;
+  });
+});
+
+
+test("permission status preserves unverified, unmanaged and unknown in every console view (#242 F7)", () => {
+  for (const permissionMode of ["unverified", "unmanaged", "unknown"]) {
+    const s = initialConsoleState(true); s.peers = { claude: { state: "idle", permissionMode } };
+    expect(renderConsole(s, 160, 24, NOW).join("\n")).toContain(permissionMode);
+    expect(peerLine("claude", s.peers.claude)).toContain(`permission: ${permissionMode}`);
+    s.mode = "stream"; expect(renderConsole(s, 160, 24, NOW).join("\n")).toContain(permissionMode);
+    s.mode = "panels";
+    const refused = reduceConsole(s, "m", NOW);
+    expect(refused.state.modeChoice).toBeUndefined(); expect(refused.state.notice).toContain(permissionMode); expect(refused.effects).toEqual([]);
+    const managed = initialConsoleState(true); managed.peers = { claude: { state: "idle", permissionMode: "ask" } };
+    const choosing = reduceConsole(managed, "m", NOW).state;
+    choosing.peers = s.peers;
+    expect(reduceConsole(choosing, "2", NOW).effects).toEqual([]);
+  }
+});
+
+
+describe("pending defaults defer until readiness changes (#242 third review)", () => {
+  const defaults = [{ peer: "claude", mode: "never-ask" as const, source: ".agenthub/config.local.json" }];
+  test("a refused attempt remains handled across unchanged refreshes; meaningful state/source changes reoffer", () => {
+    const s = initialConsoleState(); s.peers = { claude: { state: "idle", permissionMode: "unverified", queued: 0 } };
+    expect(syncPermissionDefaults(s, defaults)).toBe(true);
+    const refused = reduceConsole(s, "y", NOW).state;
+    for (let queued = 1; queued < 4; queued++) {
+      refused.peers.claude.queued = queued;
+      expect(syncPermissionDefaults(refused, defaults)).toBe(false); expect(refused.confirm).toBeUndefined();
+    }
+    refused.peers.claude.permissionMode = "ask";
+    expect(syncPermissionDefaults(refused, defaults)).toBe(true);
+    const retried = reduceConsole(refused, "y", NOW).state;
+    expect(syncPermissionDefaults(retried, defaults)).toBe(false);
+    retried.peers.claude.permissionMode = "unverified";
+    expect(syncPermissionDefaults(retried, defaults)).toBe(true);
+    const changedBack = reduceConsole(retried, "y", NOW).state;
+    expect(syncPermissionDefaults(changedBack, [{ ...defaults[0]!, source: ".agenthub/config.json" }])).toBe(true);
+  });
+  test("Esc defers with no default RPC, keeps it pending, and frees normal approvals", () => {
+    const s = state(); s.peers = { claude: { state: "idle", permissionMode: "unverified" } };
+    expect(syncPermissionDefaults(s, defaults)).toBe(true);
+    const deferred = reduceConsole(s, "\x1b", NOW);
+    expect(deferred.effects).toEqual([]); expect(deferred.state.confirm).toBeUndefined();
+    expect(deferred.state.permissionDefaults).toEqual(defaults);
+    expect(syncPermissionDefaults(deferred.state, defaults)).toBe(false);
+    // A turn starting or ending is not a reason to ask again: only readiness is.
+    deferred.state.peers.claude.state = "busy";
+    expect(syncPermissionDefaults(deferred.state, defaults)).toBe(false);
+    deferred.state.peers.claude.state = "idle";
+    expect(syncPermissionDefaults(deferred.state, defaults)).toBe(false);
+    const allowing = reduceConsole(deferred.state, "a", NOW).state;
+    expect(allowing.confirm?.type).toBe("permission");
+    expect(reduceConsole(allowing, "y", NOW).effects).toEqual([{ type: "permit", id: "first", option: "allow" }]);
+    deferred.state.peers.claude.permissionMode = "ask";
+    expect(syncPermissionDefaults(deferred.state, defaults)).toBe(true);
+  });
+  test("console refused y and periodic status cannot trap approvals; Esc sends no decline", async () => {
+    const f = fixture(120, 24); let mode = "unverified";
+    f.client.request = async (msg: any) => {
+      f.requests.push(msg);
+      if (msg.t === "permission_default") return { ok: false, error: "hook unverified", status: { peers: {} }, budget: {}, text: "[]", deliveries: [] };
+      return { ok: true, status: { peers: { claude: { state: "idle", permissionMode: mode } }, permissionDefaults: defaults }, budget: {}, text: "[]", deliveries: [] };
+    };
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal });
+    await Promise.resolve(); await Promise.resolve();
+    f.input("y"); for (let n = 0; n < 8; n++) await Promise.resolve();
+    expect(f.requests.filter(row => row.t === "permission_default")).toEqual([{ t: "permission_default", peer: "claude", confirmed: true }]);
+    f.client.onPush({ t: "permission", ...state().approvals[0], expiresAt: Date.now() + 10_000 });
+    f.input("a"); f.input("y"); expect(f.sent).toContainEqual({ t: "permit", surface: "console", id: "first", option: "allow" });
+    mode = "ask";
+    f.input("\t"); for (let n = 0; n < 8; n++) await Promise.resolve();
+    f.input("\x1b");
+    expect(f.requests.filter(row => row.t === "permission_default")).toHaveLength(1);
+    f.client.onPush({ t: "permission", ...state().approvals[0], id: "second", expiresAt: Date.now() + 10_000 });
+    f.input("\t"); f.input("]"); f.input("d");
+    expect(f.sent).toContainEqual({ t: "permit", surface: "console", id: "second" });
+    f.input("\x03"); await running;
   });
 });
 

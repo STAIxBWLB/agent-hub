@@ -1,7 +1,8 @@
 import { lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { realPath } from "../hub/project.ts";
-import { hasSegment, isDenied } from "./deny.ts";
+import { isHubWritePath } from "../hub/permission-mode.ts";
+import { isDenied } from "./deny.ts";
 import { OUTPUT_CAP, sandboxedExec } from "./sandbox.ts";
 
 export { isDenied };
@@ -17,13 +18,10 @@ export interface ToolContext {
   /** Turn cancellation signal, including the execution-budget wall cap. */
   signal?: AbortSignal;
   /** Ask the console. Resolves false on deny or timeout. */
-  permit: (title: string) => Promise<boolean>;
+  permit: (title: string, tool?: string, signal?: AbortSignal, path?: string) => Promise<boolean>;
   /** Publish a message to other peers mid-turn. Returns a one-line receipt. */
   send: (text: string, to?: string[]) => string;
 }
-
-/** Not secret, but writing them changes what runs outside the worker's control. */
-const WRITE_DENY_SEGMENTS = [".git", ".agenthub"];
 
 const lexists = (p: string) => {
   try {
@@ -52,7 +50,9 @@ export function guardPath(ctx: Pick<ToolContext, "cwd" | "deny">, path: string, 
   const rel = relative(root, real);
   if (rel.startsWith("..") || resolve(root, rel) !== real) throw new Error(`${path} is outside the project directory`);
   if (isDenied(rel, ctx.deny)) throw new Error(`${path} is on the secrets denylist`);
-  if (mode === "write" && WRITE_DENY_SEGMENTS.some((s) => hasSegment(rel, s))) throw new Error(`${path} is not writable by the local worker`);
+  // Not secret, but writing .git or .agenthub changes what runs outside the worker's control. Names are compared
+  // folded: a new `.GIT/config` is `.git/config` to a case-insensitive disk, and git then runs what it names.
+  if (mode === "write" && isHubWritePath(rel)) throw new Error(`${path} is not writable by the local worker`);
   return real;
 }
 
@@ -129,23 +129,27 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
       }
       case "write": {
         let file = guardPath(ctx, String(a.path), "write");
+        const approvedTarget = file;
         const content = String(a.content ?? "");
-        if (!(await ctx.permit(`write ${a.path} (${content.length} chars):\n${preview(content)}`))) return "error: the user did not approve this write";
+        if (!(await ctx.permit(`write ${a.path} (${content.length} chars):\n${preview(content)}`, "write", ctx.signal, file))) return "error: the user did not approve this write";
         if (ctx.signal?.aborted) return "error: turn cancelled before write";
         file = guardPath(ctx, String(a.path), "write");
+        if (file !== approvedTarget) return "error: path target changed during approval; inspect before retrying";
         mkdirSync(dirname(file), { recursive: true });
         writeFileSync(file, content);
         return `wrote ${a.path}`;
       }
       case "edit": {
         let file = guardPath(ctx, String(a.path), "write");
+        const approvedTarget = file;
         let text = readFileSync(file, "utf8");
         let count = text.split(String(a.old)).length - 1;
         if (!a.old || count !== 1) return `error: \`old\` must match exactly once, it matched ${count} times`;
-        if (!(await ctx.permit(`edit ${a.path}:\n- ${preview(String(a.old), 600)}\n+ ${preview(String(a.new ?? ""), 600)}`))) return "error: the user did not approve this edit";
+        if (!(await ctx.permit(`edit ${a.path}:\n- ${preview(String(a.old), 600)}\n+ ${preview(String(a.new ?? ""), 600)}`, "edit", ctx.signal, file))) return "error: the user did not approve this edit";
         if (ctx.signal?.aborted) return "error: turn cancelled before edit";
         // Approval can outlive another peer's edit or a path change. Apply only the approved fragment to current bytes.
         file = guardPath(ctx, String(a.path), "write");
+        if (file !== approvedTarget) return "error: path target changed during approval; inspect before retrying";
         text = readFileSync(file, "utf8");
         count = text.split(String(a.old)).length - 1;
         if (count !== 1) return `error: file changed during approval; \`old\` must match exactly once, it matched ${count} times`;
@@ -157,7 +161,7 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         if (!command.trim()) return "error: empty command";
         // The approver sees the whole command, not a prefix: what is hidden cannot be approved.
         if (command.length > 4000) return "error: command longer than 4000 characters; put it in a script file with write, then run that";
-        if (!(await ctx.permit(`bash: ${command}`))) return "error: the user did not approve this command";
+        if (!(await ctx.permit(`bash: ${command}`, "bash", ctx.signal))) return "error: the user did not approve this command";
         const res = await sandboxedExec(["/bin/bash", "-c", command], { cwd: ctx.cwd, profile: ctx.sandboxProfile, timeoutMs: (Number(a.timeout_s) || 120) * 1000, ...(ctx.sandboxEnv ? { env: ctx.sandboxEnv } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
         return `${res.output}\n(exit ${res.code})`;
       }
@@ -167,7 +171,7 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         if (!GIT_READ.has(sub) && !GIT_WRITE.has(sub)) return `error: git ${sub} is not available to the local worker`;
         const problem = gitArgsProblem(args, ctx.deny);
         if (problem) return `error: git ${sub}: ${problem}`;
-        if (GIT_WRITE.has(sub) && !(await ctx.permit(`git ${args.join(" ")}`))) return "error: the user did not approve this git command";
+        if (GIT_WRITE.has(sub) && !(await ctx.permit(`git ${args.join(" ")}`, "git", ctx.signal))) return "error: the user did not approve this git command";
         // Sandboxed like bash: flags such as --output or an editor cannot write outside the project or reach the network.
         const res = await sandboxedExec(["git", "--no-pager", ...args], { cwd: ctx.cwd, profile: ctx.sandboxProfile, ...(ctx.sandboxEnv ? { env: ctx.sandboxEnv } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
         return `${res.output}\n(exit ${res.code})`;

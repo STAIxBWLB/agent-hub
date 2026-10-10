@@ -38,14 +38,14 @@ test("all human-only agent CLI commands refuse before a control connection and p
   writeFileSync(join(stateDir, "status.json"), JSON.stringify({ cwd: root, controlPort: server.port, protocol: PROTOCOL }));
   writeFileSync(join(stateDir, "control-token"), "fixture-token");
   try {
-    for (const args of [["permit", "sensitive-id", "allow"], ["queue", "resolve", "sensitive-id"], ["queue", "list"], ["budget", "resume", "kimi"], ["budget", "set", "kimi", "0"], ["budget", "execution"], ["kill"], ["recovery", "status", "sensitive-id"], ["upgrade"], ["restart"], ["up", "--unattended"], ["ask", "sensitive-question"]]) {
+    for (const args of [["permission", "pi", "never-ask", "--yes", "--as-user"], ["permit", "sensitive-id", "allow"], ["queue", "resolve", "sensitive-id"], ["queue", "list"], ["budget", "resume", "kimi"], ["budget", "set", "kimi", "0"], ["budget", "execution"], ["kill"], ["recovery", "status", "sensitive-id"], ["upgrade"], ["restart"], ["up", "--unattended"], ["ask", "sensitive-question"]]) {
       const result = await cli(root, args, { AGENTHUB_PEER_ID: "claude" });
       expect(result.code).toBe(1);
       expect(result.stderr).toContain("ahub console or a terminal");
       expect(connections).toBe(0);
     }
     const audits = drainCliAudits(stateDir);
-    expect(audits).toHaveLength(12);
+    expect(audits).toHaveLength(13);
     expect(audits.every(row => row.peer === "claude" && row.outcome === "refused")).toBe(true);
     expect(JSON.stringify(audits)).not.toContain("sensitive");
     const malformed = await cli(root, ["say", "harmless"], { AGENTHUB_PEER_ID: "codex", CLAUDECODE: "1" });
@@ -98,4 +98,58 @@ test("agent CLI task proposals obey peer capabilities instead of borrowing the c
     const list = await console_.request({ t: "task", op: "hub_task_list", args: {} });
     expect(JSON.parse(list.text)).toEqual([]);
   } finally { console_?.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
+
+test("permission CLI validates confirmation, lists and shows modes, and guides an older hub upgrade (#242)", async () => {
+  const root = project(), stateDir = join(root, ".agenthub/state");
+  mkdirSync(stateDir);
+  const requests: any[] = [];
+  let oldHub = false;
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(req, server) { if (server.upgrade(req)) return; return new Response("unexpected"); },
+    websocket: { message(ws, raw) {
+      const msg = JSON.parse(String(raw));
+      if (msg.t === "hello") { ws.send(JSON.stringify({ t: "welcome", rid: msg.rid, ok: true, cwd: root, protocol: PROTOCOL })); return; }
+      requests.push(msg);
+      const reply = msg.t === "status" ? { ok: true, status: { pid: 1, controlPort: server.port, cwd: root, peers: { claude: { state: "idle", permissionMode: "unverified" }, kimi: { state: "idle", permissionMode: "unmanaged" }, local: { state: "idle", permissionMode: "unknown" } } } } : oldHub ? { ok: false, error: 'this hub does not know "permission" (restart it: ahub kill && ahub up)' } : msg.peer === "missing" ? { ok: false, error: "unknown permission peer" } : msg.peer === "unsupported" ? { ok: false, error: "peer unsupported cannot change permission mode: relaunch behind the proxy" } : msg.peer ? { ok: true, peer: msg.peer, permissionMode: msg.mode ?? (msg.peer === "claude" ? "unverified" : msg.peer === "kimi" ? "unmanaged" : msg.peer === "local" ? "unknown" : "ask") } : { ok: true, peers: { pi: "ask-when-needed", codex: "ask", claude: "unverified", kimi: "unmanaged", local: "unknown" } };
+      ws.send(JSON.stringify({ t: "reply", rid: msg.rid, ...reply }));
+    } } });
+  writeFileSync(join(stateDir, "status.json"), JSON.stringify({ cwd: root, controlPort: server.port, protocol: PROTOCOL }));
+  writeFileSync(join(stateDir, "control-token"), "fixture-token");
+  try {
+    for (const args of [["permission", "pi", "never-ask"], ["permission", "pi", "invalid-mode"], ["permission", "--unknown"]]) {
+      const result = await cli(root, args);
+      expect(result.code).toBe(1); expect(requests).toHaveLength(0);
+    }
+    const list = await cli(root, ["permission"]);
+    expect(list.code, list.stderr).toBe(0); expect(list.stdout).toContain("pi: ask-when-needed");
+    for (const [peer, display] of [["claude", "unverified"], ["kimi", "unmanaged"], ["local", "unknown"]] as const) {
+      expect(list.stdout).toContain(`${peer}: ${display}`);
+      const shown = await cli(root, ["permission", peer]);
+      expect(shown.code, shown.stderr).toBe(0); expect(shown.stdout).toContain(`${peer}: ${display}`);
+    }
+    const status = await cli(root, ["status"]);
+    expect(status.code, status.stderr).toBe(0);
+    for (const display of ["unverified", "unmanaged", "unknown"]) expect(status.stdout).toContain(`permission: ${display}`);
+    const show = await cli(root, ["permission", "pi"]);
+    expect(show.code, show.stderr).toBe(0); expect(show.stdout).toContain("pi: ask");
+    for (const mode of ["ask", "ask-when-needed", "never-ask"]) {
+      const result = await cli(root, ["permission", "pi", mode, ...(mode === "never-ask" ? ["--yes"] : [])]);
+      expect(result.code, result.stderr).toBe(0); expect(result.stdout).toContain(`pi: ${mode}`);
+      expect(requests.at(-1)).toMatchObject({ t: "permission", peer: "pi", mode, confirmed: mode === "never-ask" });
+    }
+    for (const [peer, boundary] of [["local", "inside hub sandbox, path guard and denylist"], ["kimi", "NO hub sandbox"], ["codex", "native vendor bounds"]]) {
+      const runtime = await cli(root, ["permission", peer!, "never-ask", "--yes"]);
+      expect(runtime.code, runtime.stderr).toBe(0); expect(runtime.stderr).toContain(boundary!);
+      expect(requests.at(-1)).toMatchObject({ t: "permission", peer, mode: "never-ask", confirmed: true });
+      expect(requests.some(row => row.t === "permission_default")).toBe(false);
+    }
+    const refused = await cli(root, ["permission", "unsupported", "ask"]);
+    expect(refused.code).toBe(1); expect(refused.stderr).toContain("relaunch behind the proxy");
+    const missing = await cli(root, ["permission", "missing"]);
+    expect(missing.code).toBe(1); expect(missing.stderr).toContain("unknown permission peer"); expect(missing.stderr).not.toContain("upgrade");
+    oldHub = true;
+    const old = await cli(root, ["permission"]);
+    expect(old.code).toBe(1); expect(old.stderr).toContain("upgrade the running hub");
+  } finally { server.stop(true); rmSync(root, { recursive: true, force: true }); }
 }, 20_000);

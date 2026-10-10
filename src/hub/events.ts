@@ -11,6 +11,7 @@ export const EVENTS_SCHEMA = 1;
  * ids, routing and sizes, tasks carry ids and states, so the file can be exported without leaking what agents wrote.
  */
 export type HubEvent =
+  | { type: "permission_mode"; peer: string; from: import("./permission-mode.ts").PermissionMode; to: import("./permission-mode.ts").PermissionMode }
   | { type: "envelope"; id: string; from: string; to?: string[]; priority: string; hop: number; kind?: string; task?: string; bytes?: number; private?: boolean; dropped?: string }
   | { type: "overflow" | "undeliverable"; id: string; from: string; peer: string }
   | { type: "stale"; id: string; from: string; peer: string; task?: string }

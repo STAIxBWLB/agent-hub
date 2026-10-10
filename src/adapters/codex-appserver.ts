@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Server, ServerWebSocket } from "bun";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
+import type { PermissionMode } from "../hub/permission-mode.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { codexContext, type ContextReading } from "../hub/context-window.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
@@ -8,6 +9,7 @@ import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process
 export interface CodexOptions {
   /** Port the TUI attaches to: `codex --enable tui_app_server --remote ws://127.0.0.1:<proxyPort>`. */
   proxyPort: number;
+  permissionMode?: PermissionMode;
   /** Port for the spawned `codex app-server`. Ignored when `upstreamUrl` is set. */
   appPort: number;
   /** Attach to an already running app-server instead of spawning one (tests). */
@@ -60,6 +62,10 @@ const TRACKED = new Set(["thread/start", "thread/resume"]);
  * TUI's, and their responses are swallowed.
  */
 export class CodexPeer extends BasePeer {
+  private permissionMode: PermissionMode;
+  private nativeApprovalPolicy: unknown;
+  private approvalOverridden = false;
+  private readonly restoringApprovals = new Set<string | number>();
   private proc: ChildProcess | undefined;
   private server: Server<Link> | undefined;
   private link: Link | undefined; // the connection that owns the current thread
@@ -96,6 +102,7 @@ export class CodexPeer extends BasePeer {
     private readonly opts: CodexOptions,
   ) {
     super(id, opts.watchdogMs);
+    this.permissionMode = opts.permissionMode ?? "ask";
   }
 
   recoveryMetadata(): Record<string, unknown> {
@@ -184,6 +191,7 @@ export class CodexPeer extends BasePeer {
       this.pending.set(id, {
         deliveryId, kind: "deliver",
         resolve: (result) => {
+          if (this.restoringApprovals.delete(id) && this.permissionMode === "ask") this.approvalOverridden = false;
           this.primed = true;
           this.injected = replyParent(envs);
           this.answering = [...envs];
@@ -196,13 +204,14 @@ export class CodexPeer extends BasePeer {
           resolve();
         },
         reject: (e) => {
+          this.restoringApprovals.delete(id);
           if (!this.activeTurns.size) this.setState("idle");
           if (deliveryId) this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message });
           reject(e);
         },
       });
       link.up.send(
-        JSON.stringify({ method: "turn/start", id, params: { threadId: this.threadId, input: [{ type: "text", text }] } }),
+        JSON.stringify({ method: "turn/start", id, params: this.applyPermissionPolicy({ threadId: this.threadId, input: [{ type: "text", text }] }, id) }),
       );
     });
   }
@@ -350,6 +359,7 @@ export class CodexPeer extends BasePeer {
     if (this.link !== link) return;
     clearInterval(this.usageTimer);
     this.link = undefined;
+    this.restoringApprovals.clear();
     this.threadId = "";
     this.contextEpoch++;
     this.activeTurns.clear();
@@ -372,8 +382,55 @@ export class CodexPeer extends BasePeer {
     this.lastAnswer = "";
   }
 
+  get proxyAttached(): boolean { return !!this.link && this.link.up.readyState === WebSocket.OPEN; }
+
+  getPermissionMode(): PermissionMode { return this.permissionMode; }
+
+  /** Reconcile the daemon's current choice after startup, before the returned proxy URL has a TUI. */
+  setStartupPermissionMode(mode: PermissionMode): void {
+    if (this.link || this.state !== "offline" || this.approvalOverridden) throw new Error("codex startup mode reconciliation requires a fresh unattached proxy");
+    this.permissionMode = mode;
+  }
+
+  /**
+   * The hub's choice was cleared while no TUI is attached: this proxy sends no override from now on. Returns false
+   * when an override it already sent cannot be undone on that thread (its native policy was never reported): a thread
+   * started or resumed through the proxy afterwards reports its own policy, and that one is left alone.
+   */
+  clearPermissionMode(): boolean {
+    const restorable = !this.approvalOverridden || this.nativeApprovalPolicy !== undefined;
+    this.permissionMode = "ask";
+    return restorable;
+  }
+
+  async setPermissionMode(mode: PermissionMode): Promise<void> {
+    if (!this.link || this.link.up.readyState !== WebSocket.OPEN) throw new Error("codex permission mode unavailable: attach the TUI through ahub codex first");
+    if (mode === "ask" && this.approvalOverridden && this.nativeApprovalPolicy === undefined) throw new Error("codex cannot restore ask: native approval policy unavailable; restart the Codex session");
+    this.permissionMode = mode;
+  }
+
+  private applyPermissionPolicy(params: Record<string, unknown>, id: string | number): Record<string, unknown> {
+    if (this.permissionMode !== "ask") {
+      this.approvalOverridden = true;
+      return { ...params, approvalPolicy: this.permissionMode === "never-ask" ? "never" : "on-request" };
+    }
+    if (this.permissionMode === "ask" && this.approvalOverridden) {
+      this.restoringApprovals.add(id);
+      return { ...params, approvalPolicy: this.nativeApprovalPolicy };
+    }
+    return params;
+  }
+
   private fromTui(link: Link, raw: string): void {
     const msg = parse(raw);
+    if (msg?.method === "turn/start" && msg.params && link === this.link) {
+      if (msg.params.approvalPolicy != null) this.nativeApprovalPolicy = msg.params.approvalPolicy;
+      if (this.permissionMode !== "ask" || this.approvalOverridden) {
+        // Native turn overrides persist: ask restores the captured native policy once on successful admission.
+        msg.params = this.applyPermissionPolicy(msg.params, msg.id);
+        raw = JSON.stringify(msg);
+      }
+    }
     if (msg?.id !== undefined && TRACKED.has(msg.method)) link.tracked.set(msg.id, msg.method);
     if (link.up.readyState === WebSocket.OPEN) link.up.send(raw);
     else link.backlog.push(raw);
@@ -391,9 +448,17 @@ export class CodexPeer extends BasePeer {
       else p?.resolve(msg.result);
       return; // ours: the TUI never asked for it
     }
+    if (msg.id !== undefined && !msg.method && this.restoringApprovals.delete(msg.id) && !msg.error && this.permissionMode === "ask") this.approvalOverridden = false;
     if (typeof msg.result?.userAgent === "string") this.version = /^[^/\s]+\/(\d+\.\d+\.\d+(?:-[\w.]+)?)/.exec(msg.result.userAgent)?.[1] ?? this.version;
     const tracked = msg.id !== undefined && !msg.method ? link.tracked.get(msg.id) : undefined;
-    if (tracked && link.tracked.delete(msg.id)) this.adopt(link, msg.result?.thread?.id, tracked === "thread/start");
+    if (tracked && link.tracked.delete(msg.id)) {
+      if (typeof msg.result?.thread?.id === "string") {
+        this.nativeApprovalPolicy = msg.result?.approvalPolicy;
+        this.approvalOverridden = false;
+        this.restoringApprovals.clear();
+        this.adopt(link, msg.result.thread.id, tracked === "thread/start");
+      }
+    }
     else if (msg.method) this.onNotification(link, msg.method, msg.params ?? {});
     link.tui.send(raw);
   }

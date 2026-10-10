@@ -7,7 +7,7 @@ Read by `/codex:review`, `/code-review`, and human reviewers alike.
 Run these passes and tag every finding with its pass:
 
 - Bugs: logic errors, broken edge cases, regressions. Pay attention to lost or duplicated messages, state machines stuck in `busy`, and child processes that outlive the daemon.
-- Security: cross-peer text reaching an agent without untrusted framing, loopback servers reachable without the token or from a browser origin, secrets or tokens in logs, flags that disable permission prompts without `--unattended`.
+- Security: cross-peer text reaching an agent without untrusted framing, loopback servers reachable without the token or from a browser origin, secrets or tokens in logs, permission prompts bypassed without explicit operator opt-in (`--unattended`, `permission_modes` defaults or console-only `ahub permission`). Check agent-shell, hub-tool and conductor refusal paths, `never-ask` confirmation, native-policy restoration when returning to `ask`, and unchanged sandboxes.
 - Compliance: the change matches `docs/specs/2026-09-19-agent-hub-design.md` and the plan pinned on the issue; deviations are written into the spec in the same PR.
 
 ## What Important means here

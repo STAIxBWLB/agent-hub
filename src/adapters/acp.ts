@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
+import { KIMI_MODE_IDS, type PermissionMode } from "../hub/permission-mode.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 
@@ -56,6 +57,9 @@ export interface AcpOptions {
   cmd: string[];
   /** Coordinator-visible selected model only; contains no prompts or command arguments. */
   launchModel?: string;
+  permissionMode?: PermissionMode;
+  /** Bound for native mode acknowledgement; defaults to the handshake deadline. */
+  permissionModeTimeoutMs?: number;
   /** Load this earlier session (ACP `session/load`) instead of starting a new one: crash recovery, issue #37. */
   resumeSessionId?: string;
   cwd: string;
@@ -94,6 +98,8 @@ export function canonicalMcpToolName(announcedTitle: string | undefined, serverN
   return m && serverNames?.some((name) => name === m[2]) ? `mcp__${m[2]}__${m[1]}` : undefined;
 }
 
+class RpcTimeoutError extends Error {}
+
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 
 /** Streamed argument text as a payload: a complete JSON object, or nothing (a partial stream is not what will run). */
@@ -108,6 +114,10 @@ function jsonObject(text: string | undefined): object | undefined {
 
 /** ACP client (JSON-RPC 2.0, newline-delimited, over the child's stdio). One session, one prompt in flight. */
 export class AcpPeer extends BasePeer {
+  private permissionMode: PermissionMode;
+  private modeUnknown = false;
+  private kimiAgent = false;
+  private availableModes = new Set<string>();
   private proc: ChildProcessWithoutNullStreams | undefined;
   private sessionId = "";
   private nextId = 1;
@@ -126,6 +136,7 @@ export class AcpPeer extends BasePeer {
     private readonly opts: AcpOptions,
   ) {
     super(id, opts.watchdogMs);
+    this.permissionMode = opts.permissionMode ?? "ask";
   }
 
   recoveryMetadata(): Record<string, unknown> {
@@ -149,24 +160,66 @@ export class AcpPeer extends BasePeer {
         protocolVersion: 1,
         clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
       });
+      // The configured peer id and command are labels, not an agent-specific mode contract.
+      // Installed Kimi Code CLI's ACP initialize advertises this exact name.
+      this.kimiAgent = init?.agentInfo?.name === "Kimi Code CLI";
       const resume = this.opts.resumeSessionId;
       if (!resume) return this.request("session/new", { cwd: this.opts.cwd, mcpServers: this.opts.mcpServers ?? [] });
       // The agent replays the session as updates while it loads; they arrive before the peer is idle, so none of
       // them is taken for an answer.
       if (!init?.agentCapabilities?.loadSession) throw new Error(`${this.id} cannot load an earlier session (the agent offers no loadSession)`);
-      await this.request("session/load", { sessionId: resume, cwd: this.opts.cwd, mcpServers: this.opts.mcpServers ?? [] });
-      return { sessionId: resume };
+      const loaded = await this.request("session/load", { sessionId: resume, cwd: this.opts.cwd, mcpServers: this.opts.mcpServers ?? [] });
+      return { ...loaded, sessionId: resume };
     };
     const timeout = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error(`${this.id} did not complete the ACP handshake within ${HANDSHAKE_MS / 1000} s`)), HANDSHAKE_MS).unref();
     });
     try {
-      this.sessionId = (await Promise.race([handshake(), timeout])).sessionId;
+      const session = await Promise.race([handshake(), timeout]);
+      this.sessionId = session.sessionId;
+      const modes: unknown = session.modes?.availableModes;
+      this.availableModes = new Set(Array.isArray(modes) ? modes.flatMap((mode) => typeof mode?.id === "string" ? [mode.id] : []) : []);
+      // A recovered session can retain a previous runtime opt-in. An advertised non-default mode
+      // must be reset for the configured ask default before any prompt; a fresh ask session stays untouched.
+      const resetResumed = this.opts.resumeSessionId && typeof session.modes?.currentModeId === "string" && session.modes.currentModeId !== KIMI_MODE_IDS.ask;
+      // Other ACP vendors retain their native policy, including reported non-default modes on resume.
+      if (this.kimiAgent && (this.permissionMode !== "ask" || resetResumed)) await this.setPermissionMode(this.permissionMode);
     } catch (e) {
-      await stopOwnedProcess(proc, { group: true }).catch((stop: Error) => this.opts.log?.(`[${this.id}] ${stop.message}`));
+      this.setState("offline");
+      if (this.proc === proc) {
+        await stopOwnedProcess(proc, { group: true }).then(() => { if (this.proc === proc) this.proc = undefined; }, (stop: Error) => this.opts.log?.(`[${this.id}] ${stop.message}`));
+      }
       throw e;
     }
     this.setState("idle");
+  }
+
+  getPermissionMode(): PermissionMode { return this.permissionMode; }
+  get permissionModeState(): PermissionMode | "unknown" | "unmanaged" {
+    return !this.kimiAgent ? "unmanaged" : this.modeUnknown ? "unknown" : this.permissionMode;
+  }
+
+  async setPermissionMode(mode: PermissionMode): Promise<void> {
+    if (!this.kimiAgent) throw new Error(`${this.id} permission mode ${mode} unmanaged: this ACP agent has no verified mode mapping; use Kimi Code CLI or add an agent-specific mapping`);
+    if (this.modeUnknown) throw new Error(`${this.id} permission mode unknown after an unanswered change; restart the peer before changing modes`);
+    const id = KIMI_MODE_IDS[mode];
+    if (!this.sessionId || !this.proc || !this.availableModes.has(id)) throw new Error(`${this.id} permission mode ${mode} unavailable: session does not offer ${id}`);
+    try {
+      await this.request("session/set_mode", { sessionId: this.sessionId, modeId: id }, this.opts.permissionModeTimeoutMs ?? HANDSHAKE_MS);
+    } catch (error) {
+      if (error instanceof RpcTimeoutError) {
+        // No reply means the native mode may have changed. Invalidate the turn before stopping
+        // our verified process group; neither a late prompt result nor a late mode ack restores idle.
+        this.modeUnknown = true;
+        this.turn++;
+        this.setState("offline");
+        await this.stop().catch((stop: Error) => this.opts.log?.(`[${this.id}] ${stop.message}`));
+        throw new Error(`${this.id} permission mode ${mode} unknown: ${error.message}; peer is offline, restart it before sending work`);
+      }
+      throw new Error(`${this.id} permission mode ${mode} refused: ${(error as Error).message}`);
+    }
+    if (this.modeUnknown) throw new Error(`${this.id} permission mode unknown; restart the peer`);
+    this.permissionMode = mode;
   }
 
   async stop(): Promise<void> {
@@ -350,10 +403,18 @@ export class AcpPeer extends BasePeer {
     });
   }
 
-  private request(method: string, params: unknown): Promise<any> {
+  private request(method: string, params: unknown, timeoutMs?: number): Promise<any> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
+        this.pending.delete(id);
+        reject(new RpcTimeoutError(`${method} did not answer within ${timeoutMs / 1000} s`));
+      }, timeoutMs);
+      timer?.unref();
+      this.pending.set(id, {
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+        reject: (error) => { clearTimeout(timer); reject(error); },
+      });
       this.send({ jsonrpc: "2.0", id, method, params });
     });
   }
