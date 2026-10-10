@@ -392,6 +392,15 @@ export class CodexPeer extends BasePeer {
     this.permissionMode = mode;
   }
 
+  /**
+   * The hub's choice was cleared while no TUI is attached. The proxy may still be up: the next turn through it then
+   * restores the native policy it captured, or sends none when it never overrode one.
+   */
+  clearPermissionMode(): void {
+    if (this.approvalOverridden && this.nativeApprovalPolicy === undefined) throw new Error("codex cannot restore ask: native approval policy unavailable; restart the Codex session");
+    this.permissionMode = "ask";
+  }
+
   async setPermissionMode(mode: PermissionMode): Promise<void> {
     if (!this.link || this.link.up.readyState !== WebSocket.OPEN) throw new Error("codex permission mode unavailable: attach the TUI through ahub codex first");
     if (mode === "ask" && this.approvalOverridden && this.nativeApprovalPolicy === undefined) throw new Error("codex cannot restore ask: native approval policy unavailable; restart the Codex session");

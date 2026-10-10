@@ -1402,6 +1402,7 @@ cause remains undiagnosed. These legs remain unverified rather than being
 replaced with fake evidence. Fixture process groups were stopped afterward.
 
 The historical Claude benign checks above used the earlier hook policy. The current scoped-path policy, expanded native configuration exclusions, startup reconciliation, and private settings retirement are covered by fixtures but remain native unverified. No additional account prompts were used for the second review corrections.
+
 ## Whole-board task progress and dashboard themes (#246)
 
 Live console and dashboard light/dark inspection: **unverified**. No native

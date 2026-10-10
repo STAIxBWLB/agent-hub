@@ -67,7 +67,7 @@ import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./li
 import { changedPaths, repoOf, snapshot, Turns, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 
-import { isAgentConfigPath, isPermissionMode, permissionDefaults, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
+import { grantablePath, isPermissionMode, permissionDefaults, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
 import { ContextWindows, DEFAULT_CONTEXT, claudeContext, type ContextConfig } from "./context-window.ts";
 
 export interface HubConfig {
@@ -2142,7 +2142,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const piPermit = async (title: string, tool: string, signal?: AbortSignal, path?: string): Promise<boolean> => {
         if (signal?.aborted) return false;
         const selected = permissionMode("pi");
-        if (selected === "never-ask" || (selected === "ask-when-needed" && PI_EDIT_TOOLS.has(tool) && !!path && !isAgentConfigPath(path))) return pi.acceptingTools && bus.peers.get("pi") === pi;
+        if (selected === "never-ask" || (selected === "ask-when-needed" && PI_EDIT_TOOLS.has(tool) && !!path && grantablePath(realPath(opts.cwd), path))) return pi.acceptingTools && bus.peers.get("pi") === pi;
         if (piAlways.has(tool)) log(`permission auto-allowed for pi: ${tool} (granted until Pi restarts)`); // the name only, never the arguments
         else {
           const picked = await onPermission({ peer: "pi", title, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "always", name: `Always allow ${tool} until Pi restarts`, kind: "allow_always" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] });
@@ -2296,7 +2296,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const permit = (title: string, tool?: string, signal?: AbortSignal, path?: string): Promise<boolean> => {
         if (signal?.aborted) return Promise.resolve(false);
         const selected = permissionMode("local");
-        if (selected === "never-ask" || (selected === "ask-when-needed" && !!tool && PI_EDIT_TOOLS.has(tool) && !!path && !isAgentConfigPath(path))) return Promise.resolve(!stopping && bus.peers.get("local") === local);
+        if (selected === "never-ask" || (selected === "ask-when-needed" && !!tool && PI_EDIT_TOOLS.has(tool) && !!path && grantablePath(realPath(opts.cwd), path))) return Promise.resolve(!stopping && bus.peers.get("local") === local);
         return onPermission({
           peer: "local",
           title, tool,
@@ -2680,6 +2680,9 @@ export async function startDaemon(opts: DaemonOptions) {
     if (typeof peer !== "string" || !["claude", "codex", "kimi", "pi", "local"].includes(peer)) return { ok: false, error: "unknown permission peer" };
     const owner = bus.peers.get(peer);
     if (mode === "ask" && (!owner || owner.state === "offline")) {
+      // A Codex proxy outlives its TUI and keeps its own copy of the mode: clear that too, or the next TUI that attaches
+      // to it would run a mode the status no longer shows.
+      if (owner instanceof CodexPeer) try { owner.clearPermissionMode(); } catch (error) { return { ok: false, error: (error as Error).message }; }
       const from = permissionMode(peer);
       permissionModes.set(peer, "ask"); permissionModeSources.set(peer, "human runtime command"); pendingPermissionDefaults.delete(peer);
       event({ type: "permission_mode", peer, from, to: "ask" });

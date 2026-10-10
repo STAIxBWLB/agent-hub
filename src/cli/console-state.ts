@@ -33,7 +33,7 @@ export type ConsoleEffect = { type: "exit" } | { type: "permit"; id: string; opt
   { type: "permission_default"; peer: string; confirmed: boolean } | { type: "command"; args: string[] } | { type: "show"; panel: number; id: string } | { type: "print"; text: string; kind: string; tone?: Tone } | { type: "keys" };
 export function initialConsoleState(panels = false): ConsoleState {
   return { mode: panels ? "panels" : "stream", panel: 1, selection: 0,
-    input: "", editing: false, history: [], historyIndex: 0, approvals: [], events: [], peers: {}, budget: {}, tasks: [], tasksKnown: false, queue: [], permissionDefaults: [], permissionDefaultsHandled: [], detailOffset: 0, help: false, notice: "" };;
+    input: "", editing: false, history: [], historyIndex: 0, approvals: [], events: [], peers: {}, budget: {}, tasks: [], tasksKnown: false, queue: [], permissionDefaults: [], permissionDefaultsHandled: [], detailOffset: 0, help: false, notice: "" };
 }
 /** Approval frequency does not create a common sandbox across native peers. */
 export function permissionBoundary(peer: string): string {
@@ -50,7 +50,8 @@ function permissionModeRefusal(peer: string, mode: unknown): string | undefined 
 /** Queue sizes and timestamps do not make a refused/default-deferred peer ready. */
 function permissionDefaultFingerprint(s: ConsoleState, row: Pick<PermissionDefault, "peer" | "source">): string {
   const peer = s.peers[row.peer];
-  return JSON.stringify([row.peer, row.source, peer?.state ?? "absent", peer?.permissionMode ?? "ask", peer?.attached ?? !!peer, peer?.claiming ?? false, peer?.toolsOnly ?? false]);
+  // Readiness, not activity: a peer going idle or busy does not make a deferred default worth asking about again.
+  return JSON.stringify([row.peer, row.source, !peer ? "absent" : peer.state === "offline" ? "offline" : "attached", peer?.permissionMode ?? "ask", peer?.attached ?? !!peer, peer?.claiming ?? false, peer?.toolsOnly ?? false]);
 }
 /** Offer one file default only when no other keyboard decision or edit is active. */
 export function syncPermissionDefaults(s: ConsoleState, rows: unknown): boolean {

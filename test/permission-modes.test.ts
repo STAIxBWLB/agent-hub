@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { buildLaunch, claudeObservationHooks } from "../src/cli/launch.ts";
@@ -10,7 +10,7 @@ import { newEnvelope } from "../src/hub/envelope.ts";
 import { CodexPeer } from "../src/adapters/codex-appserver.ts";
 import { startFakeAppServer } from "./fakes/app-server.ts";
 import { PiPeer } from "../src/adapters/pi.ts";
-import { AGENT_CONFIG_SEGMENTS, permissionDefaults } from "../src/hub/permission-mode.ts";
+import { AGENT_CONFIG_SEGMENTS, grantablePath, isAgentConfigPath, permissionDefaults } from "../src/hub/permission-mode.ts";
 import { sandboxAvailable } from "../src/local/sandbox.ts";
 import { peerLine } from "../src/cli/status-lines.ts";
 import { startFakeModelServer, toolCall } from "./fakes/model-server.ts";
@@ -132,6 +132,57 @@ test("offline and absent ask clears the hub choice and pending defaults without 
   expect((await rig.mode("kimi", "ask")).permissionMode).toBe("ask");
   await rig.client.request({ t: "start", peer: "kimi" });
   expect((await rig.mode("kimi")).permissionMode).toBe("ask");
+});
+
+test("ask for a Codex whose proxy outlived its TUI clears the proxy's own mode: the next TUI runs its own policy", async () => {
+  const rig = await fixture();
+  const app = startFakeAppServer(); cleanup.push(app.stop);
+  const codex = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: app.url, cwd: rig.cwd });
+  rig.daemon.bus.add(codex);
+  await codex.start();
+  const attach = () => {
+    const tui = new WebSocket(codex.proxyUrl); cleanup.push(() => tui.close());
+    tui.onopen = () => tui.send(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "fake-tui", version: "1" } } }));
+    tui.onmessage = event => { const msg = JSON.parse(String(event.data)); if (msg.id === 1) { tui.send(JSON.stringify({ method: "initialized" })); tui.send(JSON.stringify({ id: 2, method: "thread/start", params: { cwd: rig.cwd, approvalPolicy: "untrusted" } })); } };
+    return tui;
+  };
+  const first = attach();
+  await until(() => codex.state === "idle");
+  expect((await rig.mode("codex", "never-ask", true)).permissionMode).toBe("never-ask");
+  await codex.deliver([newEnvelope("user", "overridden turn", { to: ["codex"] })]);
+  await until(() => codex.state === "idle");
+  expect(app.requests.filter(r => r.method === "turn/start").at(-1).params.approvalPolicy).toBe("never");
+  first.close();
+  await until(() => codex.state === "offline");
+  // The TUI is gone, the proxy is not: `ask` must reach the proxy's own copy, not only the hub's table.
+  expect((await rig.mode("codex", "ask")).permissionMode).toBe("ask");
+  expect(codex.getPermissionMode()).toBe("ask");
+  attach();
+  await until(() => codex.state === "idle");
+  expect((await rig.client.request({ t: "status" })).status.peers.codex.permissionMode ?? "ask").toBe("ask");
+  await codex.deliver([newEnvelope("user", "after offline ask", { to: ["codex"] })]);
+  await until(() => codex.state === "idle");
+  // The new TUI's thread runs its own policy: the hub sends no override (before the fix this turn carried "never").
+  expect(app.requests.filter(r => r.method === "turn/start").at(-1).params.approvalPolicy).toBeUndefined();
+});
+
+test("a scoped grant folds look-alike names, judges the path inside the project and refuses a hard link", () => {
+  // A case-insensitive disk opens these as the real names.
+  for (const name of [".mcp.j\u017Fon", ".MCP.JSON", ".\u212Aimi", ".Claude", ".codex"]) expect(isAgentConfigPath(`sub/${name}`)).toBe(true);
+  expect(isAgentConfigPath("src/mcp.json")).toBe(false);
+  const base = mkdtempSync(join(tmpdir(), "ahub-grant-"));
+  // A project that itself lives under an agent's directory is still a project: only the path inside it counts.
+  const root = join(base, ".claude", "worktrees", "feature"); mkdirSync(join(root, ".codex"), { recursive: true });
+  writeFileSync(join(root, "ordinary.txt"), "x"); writeFileSync(join(root, ".codex", "config.toml"), "x");
+  expect(grantablePath(root, join(root, "ordinary.txt"))).toBe(true);
+  expect(grantablePath(root, join(root, "new-file.txt"))).toBe(true);
+  expect(grantablePath(root, join(root, ".codex", "config.toml"))).toBe(false);
+  expect(grantablePath(root, join(root, ".mcp.j\u017Fon"))).toBe(false);
+  expect(grantablePath(root, join(base, "outside.txt"))).toBe(false);
+  expect(grantablePath(root, root)).toBe(false);
+  // Another name for a config file is the config file.
+  linkSync(join(root, ".codex", "config.toml"), join(root, "notes.txt"));
+  expect(grantablePath(root, join(root, "notes.txt"))).toBe(false);
 });
 
 for (const peer of ["pi", "local"]) test(`${peer} scoped edit grants exclude every canonical native config segment`, async () => {

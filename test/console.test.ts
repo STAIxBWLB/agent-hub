@@ -1007,6 +1007,11 @@ describe("pending defaults defer until readiness changes (#242 third review)", (
     expect(deferred.effects).toEqual([]); expect(deferred.state.confirm).toBeUndefined();
     expect(deferred.state.permissionDefaults).toEqual(defaults);
     expect(syncPermissionDefaults(deferred.state, defaults)).toBe(false);
+    // A turn starting or ending is not a reason to ask again: only readiness is.
+    deferred.state.peers.claude.state = "busy";
+    expect(syncPermissionDefaults(deferred.state, defaults)).toBe(false);
+    deferred.state.peers.claude.state = "idle";
+    expect(syncPermissionDefaults(deferred.state, defaults)).toBe(false);
     const allowing = reduceConsole(deferred.state, "a", NOW).state;
     expect(allowing.confirm?.type).toBe("permission");
     expect(reduceConsole(allowing, "y", NOW).effects).toEqual([{ type: "permit", id: "first", option: "allow" }]);

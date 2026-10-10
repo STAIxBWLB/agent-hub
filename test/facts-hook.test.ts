@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
+import { linkSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { factsHook, projectFileTool, nativeHookIdentity } from "../src/cli/facts-hook.ts";
@@ -54,6 +54,9 @@ test("ask-when-needed file grants stay within canonical project paths and exclud
       for (const file of [join(outside, "outside.ts"), "../outside.ts", "missing.ts", "escape/outside.ts", "alias/config", ".git/config", ".GIT/config", ".claude/config", ".agenthub/config"]) expect(projectFileTool(tool, { file_path: file }, dir)).toBe(false);
       expect(projectFileTool(tool, {}, dir)).toBe(false);
     }
+    // Another name for a protected file, and a look-alike a case-insensitive disk opens as the real name.
+    linkSync(join(dir, ".claude", "config"), join(dir, "notes.ts"));
+    for (const file of ["notes.ts", ".mcp.j\u017Fon", ".\u212Aimi/config"]) expect(projectFileTool("Edit", { file_path: file }, dir)).toBe(false);
     for (const directory of [".codex", ".qwen", ".kimi", ".pi"]) {
       mkdirSync(join(dir, directory)); writeFileSync(join(dir, directory, "settings.json"), "fixture");
       symlinkSync(join(dir, directory), join(dir, `alias-${directory.slice(1)}`));

@@ -828,8 +828,9 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
 - Permission-only Claude PreToolUse never drives busy state. Only the former
   observation purposes retain native turn bookkeeping. Hook identity/purpose
   are launch/session bound; unverified hook status reads unverified.
-- Pi/local read never asks. Ask-when-needed grants write/edit outside the shared case-insensitive native
-  configuration segments (.claude/.codex/.qwen/.kimi/.pi/.mcp.json); bash and mutating
+- Pi/local read never asks. Ask-when-needed grants write/edit inside the project, outside the shared native
+  configuration segments (.claude/.codex/.qwen/.kimi/.pi/.mcp.json, compared folded and by the path within the
+  project) and never through a hard link; bash and mutating
   git retain console approval. Never-ask grants once, retaining sandbox and
   path guards; no mode gives allow-always. ACP tools have no hub sandbox and
   the never-ask confirmation names that difference.
