@@ -1406,10 +1406,12 @@ export class Tasks {
     if (from && task.reviewer && task.reviewer !== USER && this.requestedChanges(task).has(task.reviewer)) this.d.board.recordReview({ implementer: from, reviewer: task.reviewer, class: task.class, kind: "escalated", task: task.id });
     const next = await this.assignOwner(task, by, { candidates: list, event: "escalated", reason, note: `${why}; from ${from ?? "none"}`, context: why });
     if (next.owner && next.owner !== from) {
-      this.d.notify(`task ${this.publicTitle(next)} escalated from ${from} to ${next.owner} (${why})`);
+      // The move is on the board (#243): review() reaches here after its changes_requested write.
+      this.releaseNotice(`task ${this.publicTitle(next)} escalated from ${from} to ${next.owner} (${why})`);
       this.note(next, by, "decision", `Task #${next.id} escalated from ${from} to ${next.owner}: ${why}`);
-      if (from) this.tell({ ...next, owner: from }, `Task #${next.id} moved to ${next.owner} (${why}). Stop working on it.`, this.isPii(next));
-    } else this.d.notify(`task ${this.publicTitle(task)}: escalation found nobody in [${list.join(", ")}]; it stays with ${from ?? "nobody"}`);
+      if (from) this.releaseNotice(`task ${this.publicTitle(next)}: could not tell ${from} it moved to ${next.owner}`, () =>
+        this.tell({ ...next, owner: from }, `Task #${next.id} moved to ${next.owner} (${why}). Stop working on it.`, this.isPii(next)));
+    } else this.releaseNotice(`task ${this.publicTitle(task)}: escalation found nobody in [${list.join(", ")}]; it stays with ${from ?? "nobody"}`);
     return this.d.board.get(next.id)!;
   }
 
