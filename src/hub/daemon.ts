@@ -47,7 +47,7 @@ import { Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig } from "./inference.ts";
 import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, detectSignals, OVERLAY_FILE, parseRouting, routingText, type Routing } from "./routing.ts";
-import { checkSettingValue, ignoredLine, pendingUndo, readOverlay, restoredValue, routingCandidate, settingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingDef, type SettingRow, type SettingValue } from "./settings.ts";
+import { checkSettingValue, ignoredLine, pendingUndo, readOverlay, restoredValue, routingCandidate, storedLocally, settingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingDef, type SettingRow, type SettingValue } from "./settings.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
@@ -2608,8 +2608,10 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   function settingsView(): { rows: SettingRow[]; undo?: string } {
     const stored = storedConfig();
+    // What the loader would say about the files as they are: an overlay that does not parse, or one that no longer
+    // merges (it names a route routing.toml dropped), leaves the last good policy in force, and the rows say why.
     let routingProblem: string | undefined;
-    try { readOverlay(opts.cwd); } catch (error) { routingProblem = (error as Error).message; }
+    try { parseRouting(routingText(opts.cwd), readOverlay(opts.cwd)); } catch (error) { routingProblem = (error as Error).message; }
     const rows = settingRows({
       cwd: opts.cwd, routing: currentRouting(opts.cwd, log), ...(routingProblem ? { routingProblem } : {}), ...(stored?.ignored ? { ignored: stored.ignored } : {}),
       running: (path) => valueAt(config, path),
@@ -2665,7 +2667,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return { ok: true, text: `${def.key}: ${settingText(routingValue(next, def))} (in force now)` };
       }
       // Removing the machine-local value uncovers the shared file's: never-ask there needs the same confirmation.
-      if (peer && value === null && restoredValue(opts.cwd, opts.stateDir, def, true) === "never-ask" && confirm !== peer) return { ok: false, error: `removing the machine-local value leaves never-ask from config.json for ${peer}: it needs the peer id as the confirmation; nothing was changed` };
+      if (peer && value === null && storedLocally(opts.cwd, def) && restoredValue(opts.cwd, opts.stateDir, def, true) === "never-ask" && confirm !== peer) return { ok: false, error: `removing the machine-local value leaves never-ask from config.json for ${peer}: it needs the peer id as the confirmation; nothing was changed` };
       const from = settingScalar(valueAt(storedConfig(), def.path));
       if (!writeConfigSetting(opts.cwd, opts.stateDir, def, value, (scratch) => loadConfig(scratch))) return { ok: true, text: `${def.key}: config.local.json already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
       const to = settingScalar(valueAt(storedConfig(), def.path));
@@ -2687,7 +2689,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (typeof def === "string") return { ok: false, error: "nothing to undo" };
     const read = (): SettingValue => def.store === "routing" ? routingValue(currentRouting(opts.cwd, log), def) : settingScalar(valueAt(storedConfig(), def.path));
     // never-ask is set with its confirmation, never put back by an undo that carries none.
-    if (def.group === "Permissions" && restoredValue(opts.cwd, opts.stateDir, def) === "never-ask") return { ok: false, error: `undo would put never-ask back for ${def.path.at(-1)} without its confirmation: set ${def.key} to never-ask again instead; nothing was undone` };
+    if (def.group === "Permissions" && restoredValue(opts.cwd, opts.stateDir, def) === "never-ask") return { ok: false, error: `undo would put never-ask back for ${def.path.at(-1)} without its confirmation: set ${def.key} again (never-ask, or inherit where the shared file holds it) with the confirmation instead; nothing was undone` };
     try {
       const from = read();
       undoSetting(opts.cwd, opts.stateDir, (scratch) => loadConfig(scratch), routingCheck);

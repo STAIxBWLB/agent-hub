@@ -417,6 +417,14 @@ test("AC7: the Settings section renders every row from the registry with its sou
   expect(typed.value).toBe("kimi, pi");
   expect(root.all().find((n) => n.id === "setting-permission-kimi")).not.toBe(other);
   expect(root.text()).toContain("not attached: only ask can be set");
+  // A save elsewhere changes the undo row: it has a slot of its own, so no setting row is rebuilt for it.
+  const kept = root.all().find((n) => n.id === "setting-permission-kimi")!;
+  live.again({ rows: rows.map((row) => row.key === "permission.kimi" ? { ...row, value: "ask", note: "not attached: only ask can be set" } : row), undo: "research.enabled" });
+  expect(root.text()).toContain("Last settings write: research.enabled");
+  expect(root.all().find((n) => n.id === "setting-permission-kimi")).toBe(kept);
+  expect(root.all().find((n) => n.id === "setting-routing-classes-implement-peers")).toBe(typed);
+  live.again({ rows: rows.map((row) => row.key === "permission.kimi" ? { ...row, value: "ask", note: "not attached: only ask can be set" } : row) });
+  expect(root.text()).not.toContain("Last settings write");
   // A stored default can be removed (inherit), which can leave a never-ask from the shared file in force: the same typed confirmation is offered.
   const stored: SettingRow = { key: "permission_modes.kimi", group: "Permissions", label: "kimi: mode at hub start", type: "enum", values: ["ask", "ask-when-needed", "never-ask"], file: "config.local.json", applies: "hub start", risk: "raises", floor: "ask", value: "ask", source: "config.local.json" };
   const one = runInNewContext(`${code}; settingRow(row, true)`, { ...context, row: stored }) as Node;
@@ -564,6 +572,12 @@ test("review of #290: a write that changes nothing writes nothing, a failed writ
   writeFileSync(join(p.cwd, ".git"), "gitdir: /nonexistent/elsewhere\n");
   expect(() => writeConfigSetting(p.cwd, p.stateDir, def("research.enabled"), true, (scratch) => loadConfig(scratch))).toThrow("git could not confirm that .agenthub/config.local.json is untracked");
   expect(text(p.file("config.local.json"))).toBeNull();
+  // The same when the repository is a directory above the project root.
+  const outer = realpathSync(mkdtempSync(join(tmpdir(), "ahub-settings-outer-"))), inner = join(outer, "nested", "project");
+  writeFileSync(join(outer, ".git"), "gitdir: /nonexistent/elsewhere\n");
+  mkdirSync(join(inner, ".agenthub"), { recursive: true });
+  expect(() => writeConfigSetting(inner, join(inner, "state"), def("research.enabled"), true, (scratch) => loadConfig(scratch))).toThrow("git could not confirm");
+  expect(existsSync(join(inner, ".agenthub", "config.local.json"))).toBe(false);
 }, 20_000);
 
 test("review of #290: never-ask comes back only with its confirmation, never through undo or inherit, and the control ui_action path is an ordinary session", async () => {
@@ -574,7 +588,9 @@ test("review of #290: never-ask comes back only with its confirmation, never thr
   expect((await set("permission_modes.codex", "never-ask", "codex")).ok).toBe(true);
   expect((await set("permission_modes.codex", "ask")).ok).toBe(true);
   const undone = await rig.client.request({ t: "settings_undo" });
-  expect(undone).toEqual(expect.objectContaining({ ok: false, error: "undo would put never-ask back for codex without its confirmation: set permission_modes.codex to never-ask again instead; nothing was undone" }));
+  expect(undone.ok).toBe(false);
+  expect(undone.error).toContain("undo would put never-ask back for codex without its confirmation");
+  expect(undone.error).toContain("nothing was undone");
   expect(JSON.parse(text(local)!)).toEqual({ permission_modes: { codex: "ask" } });
   // The shared file says never-ask and the machine-local one lowers it: removing the local value needs the peer id.
   writeFileSync(rig.file("config.json"), JSON.stringify({ memory: { enabled: false }, permission_modes: { codex: "never-ask" } }));
@@ -582,6 +598,8 @@ test("review of #290: never-ask comes back only with its confirmation, never thr
   expect((await set("permission_modes.codex", null, "kimi")).ok).toBe(false);
   expect(JSON.parse(text(local)!)).toEqual({ permission_modes: { codex: "ask" } });
   expect((await set("permission_modes.codex", null, "codex")).ok).toBe(true);
+  // With no machine-local value left there is nothing to remove: no confirmation is asked for a write that changes nothing.
+  expect((await set("permission_modes.codex", null)).text).toContain("already leaves it unset; nothing was written");
   // This project is no repository, so config trust drops the field at load: the reply and the row say the value will not count.
   const stored = await set("permission_modes.kimi", "ask-when-needed");
   expect(stored.ok).toBe(true);

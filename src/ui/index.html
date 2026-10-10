@@ -241,7 +241,8 @@ function settingRow(row, raise) {
       // can leave a never-ask from the shared file in force, so inherit offers the same field.
       const peer = row.key.split('.').pop();
       confirm = el('input'); confirm.type = 'text'; confirm.placeholder = 'type ' + peer + ' to confirm never-ask'; confirm.setAttribute('aria-label', 'Type ' + peer + ' to confirm never-ask for ' + peer); confirm.autocomplete = 'off'; confirm.spellcheck = false;
-      const sync = () => { confirm.hidden = select.value !== 'never-ask' && select.value !== INHERIT; }; select.addEventListener('change', sync); sync();
+      const removable = row.source === 'config.local.json'; // inherit changes something only where the machine-local file holds a value
+      const sync = () => { confirm.hidden = select.value !== 'never-ask' && !(select.value === INHERIT && removable); }; select.addEventListener('change', sync); sync();
       actions.append(confirm);
     }
   }

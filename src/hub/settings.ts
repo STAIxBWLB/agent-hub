@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { CLASSES, type TaskClass } from "./board.ts";
 import { configTracked } from "./config-trust.ts";
 import { PERMISSION_MODES, permissionBoundary } from "./permission-mode.ts";
@@ -109,8 +109,12 @@ type StoredFile = typeof CONFIG_LOCAL | typeof OVERLAY_FILE;
 interface UndoRecord { file: StoredFile; key: string; previous: string | null; written: string | null; at: number }
 const undoFile = (stateDir: string): string => join(stateDir, "settings-undo.json");
 const digest = (text: string | null): string | null => text === null ? null : createHash("sha256").update(text).digest("hex");
+/** The file's text, or null when it is not there. Any other failure is named by its code: its own text holds absolute paths. */
 const readText = (file: string): string | null => {
-  try { return readFileSync(file, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
+  try { return readFileSync(file, "utf8"); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new Error(`.agenthub/${basename(file)} could not be read (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);
+  }
 };
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 function parseObject(text: string, name: string): Record<string, unknown> {
@@ -294,10 +298,14 @@ export function undoSetting(cwd: string, stateDir: string, validate: (scratch: s
   rmSync(undoFile(stateDir), { force: true });
   return { key: String(record.key), file: record.file };
 }
+/** Whether the machine-local config file holds a value for this setting now. */
+export function storedLocally(cwd: string, def: SettingDef): boolean {
+  try { return valueAt(JSON.parse(readFileSync(join(cwd, ".agenthub", CONFIG_LOCAL), "utf8")), def.path) !== undefined; } catch { return false; }
+}
 /**
  * For a config setting: the value the config files would hold for it after the pending undo (the previous version of
- * the machine-local file, else the shared file), or after `inherit` when `previous` is given as null. Undefined when
- * neither sets it or nothing reads.
+ * the machine-local file, else the shared file), or, with `inherit`, after the machine-local value is removed (the
+ * shared file's). Undefined when neither sets it or nothing reads.
  */
 export function restoredValue(cwd: string, stateDir: string, def: SettingDef, inherit = false): unknown {
   const parse = (text: string | null): unknown => { try { return text === null ? {} : JSON.parse(text); } catch { return {}; } };
