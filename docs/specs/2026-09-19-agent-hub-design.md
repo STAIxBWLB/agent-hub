@@ -799,6 +799,11 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   runtime changes clear pending config confirmations; startup choices are reconciled
   under the peer fence before a new adapter is exposed to bus delivery. Runtime changes and
   confirmations remain daemon-local and expire on stop.
+- Newly added native peers replay their non-offline state to drain queued work,
+  publish state telemetry and persist sessions. Offline/absent ask clears only
+  the hub choice. Unattended metadata is saved after successful startup, and
+  concurrent joined starts with different flags are refused. Refused default
+  confirmation remains handled until state changes; Esc defers without declining.
 - Kimi mapping requires the actual Kimi Code CLI identity: yolo for
   ask-when-needed, auto for never-ask, default for ask. Another ACP agent starts fresh or resumed as unmanaged: its reported mode is
   untouched, and runtime changes are refused until its table exists. Set-mode replies precede prompts;
@@ -816,11 +821,14 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   protected case aliases, symlinks and uncertain wildcard/filter targets yield
   no decision. Never-ask answers allow; ask and transport errors decide nothing.
   Merged/generated settings are 0600 state files passed by path, never inline
-  in argv. Preview writes no settings file.
+  in argv. Preview writes no settings file. The owning launcher removes its settings file
+  after native exit; earlier active or unknown launchers retain theirs. Verified
+  dead previous owners permit crash fallback cleanup.
 - Permission-only Claude PreToolUse never drives busy state. Only the former
   observation purposes retain native turn bookkeeping. Hook identity/purpose
   are launch/session bound; unverified hook status reads unverified.
-- Pi/local read never asks. Ask-when-needed grants write/edit; bash and mutating
+- Pi/local read never asks. Ask-when-needed grants write/edit outside the shared case-insensitive native
+  configuration segments (.claude/.codex/.qwen/.kimi/.pi/.mcp.json); bash and mutating
   git retain console approval. Never-ask grants once, retaining sandbox and
   path guards; no mode gives allow-always. ACP tools have no hub sandbox and
   the never-ask confirmation names that difference.

@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { realPath } from "../src/hub/project.ts";
 import { ControlClient, stateDirFor } from "../src/hub/control-client.ts";
 import { startDaemon } from "../src/hub/daemon.ts";
 import { readEvents } from "../src/hub/events.ts";
@@ -14,7 +15,7 @@ import { claudeReportedTokens, readClaudeTranscriptUsage } from "../src/hub/usag
 const cleanup: Array<() => unknown> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 test("managed Claude launcher and genuine command hooks register a non-Orca session and count only native Stop", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "ahub-native-hooks-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-native-hooks-"))); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
   writeFileSync(join(dir, ".agenthub/config.json"), JSON.stringify({ roles: { claude: ["conductor", "reviewer"] }, conductor: { feed: "own" }, memory: { enabled: false }, inference: { enabled: false }, mlx: { enabled: false }, task_sweep: { enabled: false } }));
   const configDir = join(dir, "claude-config"), projects = join(configDir, "projects", "fixture"); mkdirSync(projects, { recursive: true });
@@ -28,7 +29,7 @@ test("managed Claude launcher and genuine command hooks register a non-Orca sess
   const capture = join(dir, "native-launch.json");
   const oldRecovery = JSON.stringify([{ peer: "claude", projectRoot: dir, instanceId: JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).instanceId, launchId: "previous-orca-launch", handle: "preserved-orca-handle", worktreeId: "preserved-worktree", incarnationId: "preserved-incarnation", launcherPid: 1, launcherSignature: "preserved-signature" }]);
   writeFileSync(join(stateDir, "terminal-recovery.json"), oldRecovery);
-  writeFileSync(join(bin, "claude"), `#!${process.execPath}\nimport {writeFileSync} from "node:fs"; writeFileSync(${JSON.stringify(capture)}, JSON.stringify({args:process.argv.slice(2),instanceId:process.env.AGENTHUB_INSTANCE_ID,launchId:process.env.AGENTHUB_LAUNCH_ID,peer:process.env.AGENTHUB_PEER_ID,stateDir:process.env.AGENTHUB_STATE_DIR}));\n`, { mode: 0o700 });
+  writeFileSync(join(bin, "claude"), `#!${process.execPath}\nimport {readFileSync,writeFileSync} from "node:fs"; const args=process.argv.slice(2); const settings=JSON.parse(readFileSync(args[args.indexOf("--settings")+1],"utf8")); writeFileSync(${JSON.stringify(capture)}, JSON.stringify({settings,args,instanceId:process.env.AGENTHUB_INSTANCE_ID,launchId:process.env.AGENTHUB_LAUNCH_ID,peer:process.env.AGENTHUB_PEER_ID,stateDir:process.env.AGENTHUB_STATE_DIR}));\n`, { mode: 0o700 });
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: configDir };
   for (const key of Object.keys(env)) if (key.startsWith("ORCA_") || key.startsWith("AGENTHUB_") || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete (env as any)[key];
   const launch = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", dir, "claude"], { cwd: dir, env, stdout: "pipe", stderr: "pipe" });
@@ -36,7 +37,8 @@ test("managed Claude launcher and genuine command hooks register a non-Orca sess
   const registered = JSON.parse(readFileSync(capture, "utf8")); expect(registered.peer).toBe("claude"); expect(registered.instanceId).toBeDefined(); expect(registered.launchId).toBeDefined();
   expect(JSON.parse(readFileSync(join(stateDir, "claude-launch.json"), "utf8"))).toMatchObject({ launchId: registered.launchId, permissionHook: true, unattended: false, hookPurpose: "idle" });
   expect(readFileSync(join(stateDir, "terminal-recovery.json"), "utf8")).toBe(oldRecovery); // ordinary replacement preserves unrelated recovery authority
-  const settings = JSON.parse(readFileSync(registered.args[registered.args.indexOf("--settings") + 1], "utf8"));
+  const settings = registered.settings;
+  expect(existsSync(registered.args[registered.args.indexOf("--settings") + 1])).toBe(false);
   for (const kind of ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]) expect(settings.hooks[kind]).toBeDefined();
   const sessionId = "native-session", transcript = join(projects, `${sessionId}.jsonl`); writeFileSync(transcript, "");
   const hook = async (kind: string, override: Record<string, string> = {}) => {
@@ -214,3 +216,23 @@ test("Claude reported categories count without an explicit total and absent inpu
   expect(claudeReportedTokens({ outputTokens: 2 })).toBeUndefined(); expect(claudeReportedTokens(undefined)).toBeUndefined();
   expect(claudeReportedTokens({ totalTokens: 0 })).toBe(0);
 });
+
+
+test("Claude private settings stay readable during the native launch and are cleaned on exit without a hub", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-settings-lifetime-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const bin = join(dir, "bin"); mkdirSync(bin);
+  const capture = join(dir, "capture.json"), release = join(dir, "release");
+  writeFileSync(join(bin, "claude"), `#!${process.execPath}
+import { readFileSync, writeFileSync, existsSync } from "node:fs"; const args=process.argv.slice(2); const file=args[args.indexOf("--settings")+1]; const first=JSON.parse(readFileSync(file,"utf8")); writeFileSync(${JSON.stringify(capture)},JSON.stringify({file,first})); const deadline=Date.now()+10000; while(!existsSync(${JSON.stringify(release)})&&Date.now()<deadline) await Bun.sleep(10); writeFileSync(${JSON.stringify(capture)},JSON.stringify({file,first,readableBeforeExit:!!JSON.parse(readFileSync(file,"utf8"))}));
+`, { mode: 0o700 });
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}:${process.env.PATH}`, AGENTHUB_HOME: join(dir, "hub-home") };
+  for (const key of Object.keys(env)) if (key.startsWith("ORCA_") || key.startsWith("AGENTHUB_") && key !== "AGENTHUB_HOME" || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete env[key];
+  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", dir, "claude"], { cwd: dir, env, stdout: "pipe", stderr: "pipe" });
+  for (let n=0;n<500&&!existsSync(capture);n++) await Bun.sleep(10);
+  try {
+    expect(existsSync(capture)).toBe(true);
+    const active = JSON.parse(readFileSync(capture, "utf8")); expect(existsSync(active.file)).toBe(true); expect(active.first.hooks.PreToolUse).toBeDefined();
+  } finally { writeFileSync(release, "exit"); await child.exited; }
+  const stderr = await new Response(child.stderr).text(); expect(await child.exited).toBe(0); expect(stderr).not.toContain("cannot run");
+  const finished = JSON.parse(readFileSync(capture, "utf8")); expect(finished.readableBeforeExit).toBe(true); expect(existsSync(finished.file)).toBe(false);
+}, 20_000);

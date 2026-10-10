@@ -904,7 +904,7 @@ describe("human confirmation for never-ask config defaults (#242)", () => {
       expect(view).toContain("NO hub sandbox"); expect(view).toContain("config.json"); expect(view).toContain("y/n");
       expect(reduceConsole(s, "y", NOW).effects).toEqual([{ type: "permission_default", peer: "kimi", confirmed: true }]);
       expect(reduceConsole(s, "n", NOW).effects).toEqual([{ type: "permission_default", peer: "kimi", confirmed: false }]);
-      for (const key of ["\r", "\x1b", "j", "q", " ", "N"]) {
+      for (const key of ["\r", "j", "q", " ", "N"]) {
         const untouched = reduceConsole(s, key, NOW);
         expect(untouched.effects).toEqual([]); expect(untouched.state.confirm).toEqual(s.confirm);
         expect(untouched.state.permissionDefaultsHandled).toEqual([]);
@@ -946,10 +946,10 @@ describe("human confirmation for never-ask config defaults (#242)", () => {
     await Promise.resolve(); await Promise.resolve();
     expect(f.output.join("")).toContain("config.json");
     expect(f.requests.filter(row => row.t === "permission_default")).toEqual([]);
-    for (const input of ["\r", "\x1b", "j", "\x1b[200~ny\x1b[201~"]) {
+    for (const input of ["\r", "j", "\x1b[200~ny\x1b[201~"]) {
       f.input(input);
       expect(f.requests.filter(row => row.t === "permission_default")).toEqual([]);
-      expect(f.output.join("")).toContain("other keys wait");
+      expect(f.output.join("")).toContain("Esc defer");
     }
     f.input("y");
     for (let n = 0; n < 6; n++) await Promise.resolve();
@@ -977,4 +977,61 @@ test("permission status preserves unverified, unmanaged and unknown in every con
     choosing.peers = s.peers;
     expect(reduceConsole(choosing, "2", NOW).effects).toEqual([]);
   }
+});
+
+
+describe("pending defaults defer until readiness changes (#242 third review)", () => {
+  const defaults = [{ peer: "claude", mode: "never-ask" as const, source: ".agenthub/config.local.json" }];
+  test("a refused attempt remains handled across unchanged refreshes; meaningful state/source changes reoffer", () => {
+    const s = initialConsoleState(); s.peers = { claude: { state: "idle", permissionMode: "unverified", queued: 0 } };
+    expect(syncPermissionDefaults(s, defaults)).toBe(true);
+    const refused = reduceConsole(s, "y", NOW).state;
+    for (let queued = 1; queued < 4; queued++) {
+      refused.peers.claude.queued = queued;
+      expect(syncPermissionDefaults(refused, defaults)).toBe(false); expect(refused.confirm).toBeUndefined();
+    }
+    refused.peers.claude.permissionMode = "ask";
+    expect(syncPermissionDefaults(refused, defaults)).toBe(true);
+    const retried = reduceConsole(refused, "y", NOW).state;
+    expect(syncPermissionDefaults(retried, defaults)).toBe(false);
+    retried.peers.claude.permissionMode = "unverified";
+    expect(syncPermissionDefaults(retried, defaults)).toBe(true);
+    const changedBack = reduceConsole(retried, "y", NOW).state;
+    expect(syncPermissionDefaults(changedBack, [{ ...defaults[0]!, source: ".agenthub/config.json" }])).toBe(true);
+  });
+  test("Esc defers with no default RPC, keeps it pending, and frees normal approvals", () => {
+    const s = state(); s.peers = { claude: { state: "idle", permissionMode: "unverified" } };
+    expect(syncPermissionDefaults(s, defaults)).toBe(true);
+    const deferred = reduceConsole(s, "\x1b", NOW);
+    expect(deferred.effects).toEqual([]); expect(deferred.state.confirm).toBeUndefined();
+    expect(deferred.state.permissionDefaults).toEqual(defaults);
+    expect(syncPermissionDefaults(deferred.state, defaults)).toBe(false);
+    const allowing = reduceConsole(deferred.state, "a", NOW).state;
+    expect(allowing.confirm?.type).toBe("permission");
+    expect(reduceConsole(allowing, "y", NOW).effects).toEqual([{ type: "permit", id: "first", option: "allow" }]);
+    deferred.state.peers.claude.permissionMode = "ask";
+    expect(syncPermissionDefaults(deferred.state, defaults)).toBe(true);
+  });
+  test("console refused y and periodic status cannot trap approvals; Esc sends no decline", async () => {
+    const f = fixture(120, 24); let mode = "unverified";
+    f.client.request = async (msg: any) => {
+      f.requests.push(msg);
+      if (msg.t === "permission_default") return { ok: false, error: "hook unverified", status: { peers: {} }, budget: {}, text: "[]", deliveries: [] };
+      return { ok: true, status: { peers: { claude: { state: "idle", permissionMode: mode } }, permissionDefaults: defaults }, budget: {}, text: "[]", deliveries: [] };
+    };
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal });
+    await Promise.resolve(); await Promise.resolve();
+    f.input("y"); for (let n = 0; n < 8; n++) await Promise.resolve();
+    expect(f.requests.filter(row => row.t === "permission_default")).toEqual([{ t: "permission_default", peer: "claude", confirmed: true }]);
+    f.client.onPush({ t: "permission", ...state().approvals[0], expiresAt: Date.now() + 10_000 });
+    f.input("a"); f.input("y"); expect(f.sent).toContainEqual({ t: "permit", surface: "console", id: "first", option: "allow" });
+    mode = "ask";
+    f.input("\t"); for (let n = 0; n < 8; n++) await Promise.resolve();
+    f.input("\x1b");
+    expect(f.requests.filter(row => row.t === "permission_default")).toHaveLength(1);
+    f.client.onPush({ t: "permission", ...state().approvals[0], id: "second", expiresAt: Date.now() + 10_000 });
+    f.input("\t"); f.input("]"); f.input("d");
+    expect(f.sent).toContainEqual({ t: "permit", surface: "console", id: "second" });
+    f.input("\x03"); await running;
+  });
 });

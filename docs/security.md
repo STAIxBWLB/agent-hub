@@ -39,6 +39,8 @@ peer's mode. A role check on the ordinary hub tool or conductor path does not
 contain an unrestricted shell running as the same user.
 
 Pi and local retain the hub's sandbox, path guard and denylist in every mode.
+Their ask-when-needed write/edit grants also exclude canonical native agent
+configuration segments in any case, using the same list as Claude's hook.
 Kimi executes its own tools outside that sandbox; Claude and Codex retain their
 vendor boundaries. The never-ask confirmation names this difference. No mode
 turns off the sandbox or grants a session-wide allow-always option.

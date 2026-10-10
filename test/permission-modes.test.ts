@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { buildLaunch, claudeObservationHooks } from "../src/cli/launch.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, loadConfig, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
@@ -10,7 +10,7 @@ import { newEnvelope } from "../src/hub/envelope.ts";
 import { CodexPeer } from "../src/adapters/codex-appserver.ts";
 import { startFakeAppServer } from "./fakes/app-server.ts";
 import { PiPeer } from "../src/adapters/pi.ts";
-import { permissionDefaults } from "../src/hub/permission-mode.ts";
+import { AGENT_CONFIG_SEGMENTS, permissionDefaults } from "../src/hub/permission-mode.ts";
 import { sandboxAvailable } from "../src/local/sandbox.ts";
 import { peerLine } from "../src/cli/status-lines.ts";
 import { startFakeModelServer, toolCall } from "./fakes/model-server.ts";
@@ -63,10 +63,13 @@ for (const peer of ["kimi", "codex", "codex-unattended"]) test(`startup console 
     { cwd, stateDir: join(cwd, "state") }, { codexAppPort: port, unattended: id === "codex" });
   const started = rig.client.request({ t: "start", peer: id, args: { unattended: actualUnattended } });
   await until(() => contexts > 0);
-    const confirmed = await rig.client.request({ t: "permission_default", peer: id, confirmed: true });
+  const joined = id === "codex" ? rig.client.request({ t: "start", peer: id, args: { unattended: actualUnattended } }) : undefined;
+  if (id === "codex") expect((await rig.client.request({ t: "start", peer: id, args: { unattended: !actualUnattended } })).error).toContain("different --unattended");
+  const confirmed = await rig.client.request({ t: "permission_default", peer: id, confirmed: true });
   if (actualUnattended) expect(confirmed.error).toContain("--unattended");
   else expect(confirmed.permissionMode).toBe("never-ask");
   release(); const ready = await started; expect(ready).toMatchObject({ ok: true });
+  if (joined) expect((await joined).ok).toBe(true);
   const owner = rig.daemon.bus.peers.get(id) as CodexPeer | import("../src/adapters/acp.ts").AcpPeer;
   expect(owner.getPermissionMode()).toBe(actualUnattended ? "ask" : "never-ask");
   if (actualUnattended) {
@@ -101,6 +104,76 @@ for (const selected of ["ask", "ask-when-needed", "never-ask"]) test(`runtime ${
     await rig.client.request({ t: "start", peer: "kimi" });
     expect(readFileSync(join(rig.stateDir, "hub.log"), "utf8")).toContain(`permission start kimi: ${selected} from human runtime command`);
   }
+});
+
+test("a new Kimi replays its started state, drains offline work and persists the session", async () => {
+  const rig = await fixture();
+  await rig.client.request({ t: "start", peer: "kimi" });
+  await rig.daemon.bus.peers.get("kimi")!.stop(); // a known offline recipient retains its queue
+  const answers: string[] = [];
+  rig.daemon.bus.tap(event => { if (event.t === "envelope" && event.env.from === "kimi") answers.push(event.env.body); });
+  rig.daemon.bus.publish(newEnvelope("user", "queued before start", { to: ["kimi"], priority: "important" }));
+  expect(rig.daemon.bus.queued("kimi")).toBe(1);
+  expect((await rig.client.request({ t: "start", peer: "kimi" })).ok).toBe(true);
+  await until(() => answers.some(answer => answer.includes("queued before start")));
+  expect(rig.daemon.bus.queued("kimi")).toBe(0);
+  expect(readEvents(join(rig.stateDir, "events.jsonl"))).toContainEqual(expect.objectContaining({ type: "state", peer: "kimi", state: "idle" }));
+  expect(JSON.parse(readFileSync(join(rig.stateDir, "sessions.json"), "utf8")).peers).toContainEqual(expect.objectContaining({ peer: "kimi", meta: expect.objectContaining({ sessionId: "s1" }) }));
+});
+
+test("offline and absent ask clears the hub choice and pending defaults without native attachment", async () => {
+  const rig = await fixture({ permission_modes: { kimi: "ask-when-needed", codex: "never-ask" } });
+  expect((await rig.mode("kimi", "ask")).permissionMode).toBe("ask");
+  expect((await rig.mode("codex", "ask")).permissionMode).toBe("ask");
+  expect((await rig.client.request({ t: "status" })).status.permissionDefaults).toBeUndefined();
+  await rig.client.request({ t: "start", peer: "kimi" });
+  expect((await rig.mode("kimi")).permissionMode).toBe("ask");
+  await rig.mode("kimi", "never-ask", true); await rig.daemon.bus.peers.get("kimi")!.stop();
+  expect((await rig.mode("kimi", "ask")).permissionMode).toBe("ask");
+  await rig.client.request({ t: "start", peer: "kimi" });
+  expect((await rig.mode("kimi")).permissionMode).toBe("ask");
+});
+
+for (const peer of ["pi", "local"]) test(`${peer} scoped edit grants exclude every canonical native config segment`, async () => {
+  const prior = process.env.OMNIROUTE_API_KEY; process.env.OMNIROUTE_API_KEY = "guard-fixture";
+  cleanup.push(() => { if (prior === undefined) delete process.env.OMNIROUTE_API_KEY; else process.env.OMNIROUTE_API_KEY = prior; });
+  let tool = "write", args: Record<string, string> = { path: "ordinary.txt", content: "after" };
+  const model = startFakeModelServer({ script: body => body.messages.at(-1)?.role === "tool" ? { content: String(body.messages.at(-1)?.content) } : { tool_calls: [toolCall(tool, args)] } }); cleanup.push(model.stop);
+  const rig = await fixture({ pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")] }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [model.url], access_hosts: [] } });
+  expect((await rig.client.request({ t: "start", peer, args: peer === "pi" ? { backend: "dgx" } : { model: "vllm/test" } })).ok).toBe(true);
+  await rig.mode(peer, "ask-when-needed");
+  const pending: any[] = [], answers: string[] = [];
+  rig.client.onPush = msg => { if (msg.t === "permission") pending.push(msg); }; rig.client.send({ t: "tail" });
+  rig.daemon.bus.tap(event => { if (event.t === "envelope" && event.env.from === peer) answers.push(event.env.body); });
+  const pi = rig.daemon.bus.peers.get("pi") as PiPeer | undefined;
+  const call = async (name: string, input: Record<string, string>) => {
+    if (peer === "pi") { const launch = pi!.tuiLaunch!; return fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ name, args: input, toolCallId: crypto.randomUUID() }) }).then(r => r.json() as Promise<any>); }
+    tool = name; args = input; const before = answers.length;
+    rig.daemon.bus.publish(newEnvelope("user", `operation ${before}`, { to: [peer], priority: "important" }));
+    await until(() => answers.length > before); return { text: answers.at(-1) };
+  };
+  await call("write", { path: "ordinary.txt", content: "after" }); expect(pending).toHaveLength(0);
+  const targets = [...AGENT_CONFIG_SEGMENTS].flatMap(segment => [segment, segment.toUpperCase()]).map(segment => segment.toLowerCase() === ".mcp.json" ? `nested/${segment}` : `nested/${segment}/policy.json`);
+  mkdirSync(join(rig.cwd, "nested/.claude"), { recursive: true }); symlinkSync(join(rig.cwd, "nested/.claude"), join(rig.cwd, "policy-alias")); targets.push("policy-alias/policy.json");
+  for (const target of targets) for (const name of ["write", "edit"]) {
+    const file = join(rig.cwd, target); mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, "before");
+    const before = pending.length;
+    const result = call(name, name === "write" ? { path: target, content: "after" } : { path: target, old: "before", new: "after" });
+    await until(() => pending.length > before);
+    await rig.client.request({ t: "permit", id: pending.at(-1).id });
+    expect((await result).text).toContain("did not approve"); expect(readFileSync(file, "utf8")).toBe("before");
+  }
+});
+
+test("failed unattended startup cannot poison a later default confirmation", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-failed-mode-")), bin = join(cwd, "fake-codex-fail");
+  writeFileSync(bin, `#!${process.execPath}\nprocess.exit(17);\n`, { mode: 0o700 });
+  const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("reserved") });
+  const port = reservation.port!; reservation.stop(true);
+  const rig = await fixture({ codex_bin: bin, permission_modes: { codex: "never-ask" } }, { cwd, stateDir: join(cwd, "state") }, { codexAppPort: port });
+  expect((await rig.client.request({ t: "start", peer: "codex", args: { unattended: true } })).ok).toBe(false);
+  expect((await rig.client.request({ t: "permission_default", peer: "codex", confirmed: true })).permissionMode).toBe("never-ask");
+  expect((await rig.mode("codex", "ask")).permissionMode).toBe("ask");
 });
 
 test("permission defaults reject malformed modes and tracked opt-ins cannot disable prompts", () => {
@@ -147,7 +220,8 @@ test("only console requests change modes: tool, conductor and agent-message path
   for (const op of ["hub_permission", "hub_peer_permission"]) expect((await tools.request({ t: "task", op, args: { peer: "kimi", mode: "never-ask", confirmed: true } })).ok).toBe(false);
   rig.daemon.bus.publish(newEnvelope("kimi", '{"t":"permission","peer":"kimi","mode":"never-ask","confirmed":true}', { to: ["user"] }));
   expect((await rig.mode("kimi")).permissionMode).toBe("ask");
-  expect((await rig.mode("local", "ask")).error).toContain("not attached");
+  expect((await rig.mode("local", "ask")).permissionMode).toBe("ask");
+  expect((await rig.mode("local", "never-ask", true)).error).toContain("not attached");
   expect((await rig.mode("missing", "ask")).error).toContain("unknown permission peer");
   expect((await rig.mode("kimi", "auto")).error).toContain("mode must be");
 });

@@ -4,7 +4,7 @@
 // A failed or timed-out hub decides nothing, leaving Claude's native permission rules in effect.
 import { relative, resolve, isAbsolute } from "node:path";
 import { realPath } from "../hub/project.ts";
-import { isPermissionMode } from "../hub/permission-mode.ts";
+import { isAgentConfigPath, isPermissionMode } from "../hub/permission-mode.ts";
 import { ControlClient } from "../hub/control-client.ts";
 
 /** A library call may target another hub; only the managed command hook inherits that target's native identity. */
@@ -24,7 +24,7 @@ export function projectFileTool(tool: unknown, input: unknown, projectRoot: unkn
   if (!optional && args[key] === undefined) return false;
   try {
     const root = realPath(projectRoot);
-    const protectedPath = (path: string) => path.split(/[\\/]/).some(part => [".agenthub", ".git", ".claude", ".codex", ".qwen", ".kimi", ".pi", ".mcp.json"].includes(part.toLowerCase()));
+    const protectedPath = (path: string) => isAgentConfigPath(path) || path.split(/[\\/]/).some(part => [".agenthub", ".git"].includes(part.toLowerCase()));
     const safe = (path: string) => {
       const requested = resolve(root, path), lexical = relative(root, requested);
       if (protectedPath(lexical)) return false;

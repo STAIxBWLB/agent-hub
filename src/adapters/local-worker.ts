@@ -277,13 +277,13 @@ export class LocalPeer extends BasePeer {
     return {
       cwd: this.opts.cwd,
       deny: this.opts.tools.deny,
-      permit: async (title, tool) => {
+      permit: async (title, tool, _signal, path) => {
         if (turnSignal.aborted) return false;
         return new Promise<boolean>((resolve, reject) => {
           const finish = (allowed: boolean) => { turnSignal.removeEventListener("abort", onAbort); resolve(allowed); };
           const onAbort = () => finish(false);
           turnSignal.addEventListener("abort", onAbort, { once: true });
-          this.opts.tools.permit(title, tool).then(finish, (error) => { turnSignal.removeEventListener("abort", onAbort); reject(error); });
+          this.opts.tools.permit(title, tool, turnSignal, path).then(finish, (error) => { turnSignal.removeEventListener("abort", onAbort); reject(error); });
         });
       },
       sandboxProfile: this.sandboxProfile,

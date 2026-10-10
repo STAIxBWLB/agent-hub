@@ -161,7 +161,6 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       const result = await client.request({ t: "permission_default", peer: action.peer, confirmed: action.confirmed }, 35_000);
       if (!active) return;
       if (result.ok === false) {
-        state.permissionDefaultsHandled = state.permissionDefaultsHandled.filter(peer => peer !== action.peer);
         notice(String(result.error ?? "permission default refused"));
       } else stream({ text: `  ${action.peer} never-ask default ${action.confirmed ? "enabled" : "cancelled for this hub"}`, kind: "permission_default", peer: action.peer, tone: "attention" });
       await refresh(); draw(); return;

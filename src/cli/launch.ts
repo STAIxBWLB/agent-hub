@@ -2,6 +2,7 @@
 import { mkdirSync, writeFileSync, renameSync, unlinkSync, lstatSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve, join, basename, dirname, isAbsolute } from "node:path";
+import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { realPath } from "../hub/project.ts";
 import { peerChildEnv } from "../hub/child-process.ts";
 export const CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub";
@@ -59,6 +60,15 @@ export function cleanupClaudeSettings(stateDir: string, previous: unknown): void
     if (realPath(previous) !== join(root, basename(previous))) return;
     unlinkSync(previous);
   } catch { /* Missing or unverifiable files remain untouched. */ }
+}
+
+/** Crash fallback only: an absent/unreadable owner identity never certifies that its native launch ended. */
+export function cleanupStaleClaudeSettings(stateDir: string, previous: unknown, identity = processSignature): void {
+  if (!previous || typeof previous !== "object" || Array.isArray(previous)) return;
+  const record = previous as Record<string, unknown>;
+  if (typeof record.launcherSignature !== "string" || !record.launcherSignature) return;
+  if (processLiveness(record.launcherPid, record.launcherSignature, identity) !== "gone") return;
+  cleanupClaudeSettings(stateDir, record.settingsFile);
 }
 
 export interface StatusLineTee {

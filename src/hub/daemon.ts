@@ -67,7 +67,7 @@ import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./li
 import { changedPaths, repoOf, snapshot, Turns, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 
-import { isPermissionMode, permissionDefaults, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
+import { isAgentConfigPath, isPermissionMode, permissionDefaults, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
 import { ContextWindows, DEFAULT_CONTEXT, claudeContext, type ContextConfig } from "./context-window.ts";
 
 export interface HubConfig {
@@ -1354,6 +1354,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const permissionMode = (peer: string): PermissionMode => permissionModes.get(peer) ?? "ask";
   const permissionModeSources = new Map(Object.entries(defaultSources).map(([peer, value]) => [peer, value.source]));
   const unattendedPeers = new Set<string>();
+  const startingUnattended = new Map<string, boolean>();
+  const nativeUnattended = (peer: string): boolean => startingUnattended.get(peer) ?? unattendedPeers.has(peer);
   const claudePermissionGenerations = new Map<string, string>();
   const permissions = new Map<string, { push: string; peer: string; tool?: string; createdAt: number; expiresAt: number; done: (optionId: string | undefined, surface?: "console" | "dashboard" | "terminal", reason?: "expired" | "cancelled") => boolean }>();
   let stopping = false;
@@ -1924,12 +1926,21 @@ export async function startDaemon(opts: DaemonOptions) {
   function startPeer(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean; unattended?: boolean }): Promise<Record<string, unknown>> {
     if (stopping) return Promise.resolve({ ok: false, error: "hub is stopping" });
     if (peer === "pi" && starting.has(peer)) return Promise.resolve({ ok: false, error: "Pi start is in progress; inspect status before retrying" });
-    const running = starting.get(peer) ?? startPeerOnce(peer, args).then(async result => {
+    const joined = starting.get(peer);
+    if (joined) {
+      if (peer === "codex" && startingUnattended.get(peer) !== (args.unattended === true)) return Promise.resolve({ ok: false, error: "Codex start has a different --unattended setting; wait for it to finish and retry" });
+      return joined;
+    }
+    if (peer === "codex") startingUnattended.set(peer, args.unattended === true);
+    const running = startPeerOnce(peer, args).then(async result => {
+      if (!result.ok && peer === "codex") unattendedPeers.delete(peer);
       if (!result.ok || result.already) return result;
       return permissionChange(peer, async () => {
+        if (peer === "codex") { if (args.unattended) unattendedPeers.add(peer); else unattendedPeers.delete(peer); }
         logPermissionStart(peer); writeStatus(); return result;
       }, true);
-    }).finally(() => starting.delete(peer));
+    }).catch(error => { if (peer === "codex") unattendedPeers.delete(peer); throw error; })
+      .finally(() => { starting.delete(peer); startingUnattended.delete(peer); });
     starting.set(peer, running);
     return running;
   }
@@ -2038,8 +2049,7 @@ export async function startDaemon(opts: DaemonOptions) {
       return { ok: true };
     }
     if (peer === "codex") {
-      if (args.unattended && permissionMode(peer) !== "ask") return { ok: false, error: "Codex started --unattended cannot take a permission mode; restart without --unattended" };
-      if (args.unattended) unattendedPeers.add(peer); else unattendedPeers.delete(peer);
+      if (args.unattended && permissionMode(peer) !== "ask") return { ok: false, error: "Codex --unattended cannot take a non-ask mode; run ahub permission codex ask first, or restart without --unattended" };
       let codexSteering = false;
       const codex = new CodexPeer("codex", {
         permissionMode: permissionMode("codex"),
@@ -2129,9 +2139,10 @@ export async function startDaemon(opts: DaemonOptions) {
       let piReply: Envelope | undefined;
       // Tools the person allowed "always" for this Pi start; a new start gets a new set (#209).
       const piAlways = new Set<string>();
-      const piPermit = async (title: string, tool: string): Promise<boolean> => {
+      const piPermit = async (title: string, tool: string, signal?: AbortSignal, path?: string): Promise<boolean> => {
+        if (signal?.aborted) return false;
         const selected = permissionMode("pi");
-        if (selected === "never-ask" || (selected === "ask-when-needed" && PI_EDIT_TOOLS.has(tool))) return pi.acceptingTools && bus.peers.get("pi") === pi;
+        if (selected === "never-ask" || (selected === "ask-when-needed" && PI_EDIT_TOOLS.has(tool) && !!path && !isAgentConfigPath(path))) return pi.acceptingTools && bus.peers.get("pi") === pi;
         if (piAlways.has(tool)) log(`permission auto-allowed for pi: ${tool} (granted until Pi restarts)`); // the name only, never the arguments
         else {
           const picked = await onPermission({ peer: "pi", title, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "always", name: `Always allow ${tool} until Pi restarts`, kind: "allow_always" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] });
@@ -2165,13 +2176,13 @@ export async function startDaemon(opts: DaemonOptions) {
           return piReceipts!.execute(sessionId ?? "", callId, name, raw, async () => {
             if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "error: invalid tool arguments";
             const nativeTurn = pi.observationTurn;
-            const output = TASK_TOOLS.some((t) => t.name === name) || CONDUCTOR_TOOL_NAMES.has(name) ? await taskOp("pi", name, raw as Record<string, unknown>, true) : await runTool(name, JSON.stringify(raw), { ...ctx, signal, permit: async title => {
-              if (!signal) return piPermit(title, name);
+            const output = TASK_TOOLS.some((t) => t.name === name) || CONDUCTOR_TOOL_NAMES.has(name) ? await taskOp("pi", name, raw as Record<string, unknown>, true) : await runTool(name, JSON.stringify(raw), { ...ctx, signal, permit: async (title, _tool, _signal, path) => {
+              if (!signal) return piPermit(title, name, undefined, path);
               if (signal.aborted) return false;
               return new Promise<boolean>((resolve, reject) => {
                 const finish = (allowed: boolean) => { signal.removeEventListener("abort", aborted); resolve(allowed && !signal.aborted); };
                 const aborted = () => finish(false); signal.addEventListener("abort", aborted, { once: true });
-                piPermit(title, name).then(finish, error => { signal.removeEventListener("abort", aborted); reject(error); });
+                piPermit(title, name, signal, path).then(finish, error => { signal.removeEventListener("abort", aborted); reject(error); });
               });
             } });
             if (!signal?.aborted && bus.peers.get("pi") === pi) {
@@ -2282,9 +2293,10 @@ export async function startDaemon(opts: DaemonOptions) {
       const capture = config.memory.enabled
         ? new Capture(memory, { project: chain.at(-1)!, cwd: opts.cwd, skip: skipTools(), deny: config.local.deny })
         : undefined;
-      const permit = (title: string, tool?: string): Promise<boolean> => {
+      const permit = (title: string, tool?: string, signal?: AbortSignal, path?: string): Promise<boolean> => {
+        if (signal?.aborted) return Promise.resolve(false);
         const selected = permissionMode("local");
-        if (selected === "never-ask" || (selected === "ask-when-needed" && !!tool && PI_EDIT_TOOLS.has(tool))) return Promise.resolve(!stopping && bus.peers.get("local") === local);
+        if (selected === "never-ask" || (selected === "ask-when-needed" && !!tool && PI_EDIT_TOOLS.has(tool) && !!path && !isAgentConfigPath(path))) return Promise.resolve(!stopping && bus.peers.get("local") === local);
         return onPermission({
           peer: "local",
           title, tool,
@@ -2667,6 +2679,13 @@ export async function startDaemon(opts: DaemonOptions) {
   async function changePermission(peer: unknown, mode: unknown, confirmed: unknown): Promise<Record<string, unknown>> {
     if (typeof peer !== "string" || !["claude", "codex", "kimi", "pi", "local"].includes(peer)) return { ok: false, error: "unknown permission peer" };
     const owner = bus.peers.get(peer);
+    if (mode === "ask" && (!owner || owner.state === "offline")) {
+      const from = permissionMode(peer);
+      permissionModes.set(peer, "ask"); permissionModeSources.set(peer, "human runtime command"); pendingPermissionDefaults.delete(peer);
+      event({ type: "permission_mode", peer, from, to: "ask" });
+      log(`permission mode ${peer}: ${from} -> ask (offline hub choice cleared)`); writeStatus();
+      return { ok: true, peer, permissionMode: "ask" };
+    }
     if (owner instanceof CodexPeer && !owner.proxyAttached) return { ok: false, error: "Codex TUI is not behind the hub proxy; reconnect with ahub codex" };
     if (!owner || owner.state === "offline") return { ok: false, error: `${peer} is not attached; start it through ahub first` };
     if (mode === undefined) return { ok: true, peer, permissionMode: permissionDisplay(peer, owner) };
@@ -2675,10 +2694,10 @@ export async function startDaemon(opts: DaemonOptions) {
     if (peer === "claude") {
       const launch = claudePermissionLaunch();
       if (!launch || !(owner instanceof WsPeer) || claudePermissionGenerations.get(peer) !== owner.sessionGeneration) return { ok: false, error: "Claude has no verified ahub claude permission hook; restart with ahub claude and run a tool first" };
-      if (launch.unattended) return { ok: false, error: "Claude started --unattended already skips prompts; restart without --unattended" };
+      if (launch.unattended) return { ok: false, error: "Claude started --unattended already skips prompts; run ahub permission claude ask after it stops to clear the hub choice, then restart without --unattended" };
     } else if (owner instanceof CodexPeer) {
       if (!owner.proxyAttached) return { ok: false, error: "Codex TUI is not behind the hub proxy; reconnect with ahub codex" };
-      if (unattendedPeers.has(peer)) return { ok: false, error: "Codex started --unattended already skips prompts; restart without --unattended" };
+      if (nativeUnattended(peer)) return { ok: false, error: "Codex started --unattended already skips prompts; run ahub permission codex ask after it stops to clear the hub choice, then restart without --unattended" };
     }
     const from = permissionMode(peer);
     try {
@@ -2703,7 +2722,7 @@ export async function startDaemon(opts: DaemonOptions) {
       writeStatus(); return { ok: true, peer, permissionMode: permissionMode(peer) };
     }
     const owner = bus.peers.get(peer);
-    if (peer === "codex" && unattendedPeers.has(peer)) return { ok: false, error: "Codex started --unattended cannot confirm a permission default; restart without --unattended" };
+    if (peer === "codex" && nativeUnattended(peer)) return { ok: false, error: "Codex started --unattended cannot confirm a permission default; run ahub permission codex ask after it stops, or restart without --unattended" };
     if (!starting.has(peer) && owner instanceof CodexPeer && owner.state === "offline") return { ok: false, error: "connect the Codex TUI through the hub proxy before confirming its default" };
     if (!starting.has(peer) && owner && owner.state !== "offline") {
       const result = await changePermission(peer, "never-ask", true);
@@ -2735,13 +2754,16 @@ export async function startDaemon(opts: DaemonOptions) {
     const result = await permissionChange(peer, async () => {
       if (stopping) return { ok: false, error: "hub is stopping" };
       const selected = permissionMode(peer);
-      if (owner instanceof CodexPeer && unattendedPeers.has(peer) && selected !== "ask") return { ok: false, error: "Codex started --unattended cannot take a permission mode; restart without --unattended" };
+      if (owner instanceof CodexPeer && nativeUnattended(peer) && selected !== "ask") return { ok: false, error: "Codex --unattended cannot take a non-ask mode; run ahub permission codex ask, or restart without --unattended" };
       if (!(owner instanceof AcpPeer && owner.permissionModeState === "unmanaged") && owner.getPermissionMode() !== selected) {
         if (owner instanceof CodexPeer && !owner.proxyAttached) owner.setStartupPermissionMode(selected);
         else await owner.setPermissionMode(selected);
       }
       // The bus may immediately drain at add(): do not expose an idle adapter until its current choice is applied.
-      bus.add(owner); return { ok: true };
+      bus.add(owner);
+      // start() finished before the bus installed its state hook: replay the current state to drain queued work and record it.
+      if (owner.state !== "offline") owner.onState?.(owner.state);
+      return { ok: true };
     }, true);
     if (!result.ok) throw new Error(String(result.error));
   }

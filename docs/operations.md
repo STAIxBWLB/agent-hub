@@ -828,7 +828,7 @@ denylist (Pi and local), or native vendor boundaries (Claude and Codex).
 | Kimi Code CLI | ACP yolo | ACP auto | ACP default |
 | Codex | on-request for every outgoing turn/start | never for every outgoing turn/start | Restore the known native policy once, then stop overriding |
 | Claude | Allow resolving project file tools outside .agenthub/.git/.claude/.codex/.qwen/.kimi/.pi/.mcp.json | Hook allow for every tool | No hook decision |
-| Pi and local | Grant write/edit; read never asks; bash and mutating git retain console approval | Grant each tool once within the existing sandbox/guard | Normal approval handling |
+| Pi and local | Grant write/edit outside native agent configuration paths; read never asks; shell/git writes ask | Grant each tool once within the existing sandbox/guard | Normal approval handling |
 
 Kimi's map applies only to the actual Kimi Code CLI identity, not another ACP
 agent configured in kimi_cmd. Qwen and other ACP agents start fresh/resumed
@@ -845,11 +845,16 @@ escapes, metadata directories and uncertain wildcard targets leave the native
 rules in charge. Grep/Glob path-bearing filters cannot bypass the exclusions.
 Other tools retain native decisions, which may already allow a harmless shell.
 Permission-only PreToolUse never marks Claude busy; former observation hooks
-retain their native-turn role. Settings are passed as a 0600 state file, with
+retain their native-turn role. Settings are passed as a 0600 state file retained
+until that native launch exits. Live/unknown previous launchers keep their files;
+verified dead previous launchers permit crash cleanup. Settings carry
 no inline caller values in argv. Status reports an unverified Claude hook as
 unverified. Unattended native sessions cannot take a runtime mode; restart
 without that native flag. Codex must be behind the hub proxy, and returning to
-ask requires a known native approval baseline.
+ask requires a known native approval baseline. An offline or absent peer accepts
+`ahub permission <peer> ask` to clear its hub choice. Codex --unattended launch
+is refused under a non-ask choice; clear it with `ahub permission codex ask`
+first. A pending never-ask default cannot be confirmed for an unattended launch.
 
 Project defaults use permission_modes in .agenthub/config.json or
 .agenthub/config.local.json. Keys merge per peer; a local ask overrides the
@@ -859,7 +864,8 @@ config effects stop at ask-when-needed. Git-tracked defaults are ignored and nev
 offered for confirmation. Never-ask from an applied untracked file starts in ask
 and appears as a pending source-labelled console question at hub start.
 Only its separate console y enables that default; there is no boot --yes
-bypass. Only explicit n declines and keeps ask for that hub; Enter/Esc keep the prompt. A successful runtime change removes that pending default. Runtime choices expire when the hub
+bypass. Only explicit n declines and keeps ask for that hub. Esc defers without declining
+and leaves approval keys usable; a refused y is not reoffered until its state changes. A successful runtime change removes that pending default. Runtime choices expire when the hub
 stops, and a later restart asks again for a never-ask config default.
 
 The CLI marker and console-role checks are operating policy, not a hostile-agent
@@ -869,6 +875,8 @@ conductor operations and ordinary agent messages have no direct mode-changing
 or startup-confirmation operation, but those checks do not contain such a
 shell. Review the boundaries in [security](security.md) before choosing a mode.
 Modes never alter native sandboxes, hub path guards or denylists.
+
+Permission mode starts reconcile the current operator choice after native startup before bus delivery. Each non-ask start logs the mode and its config or runtime source. Dropped git-tracked defaults never appear as startup confirmations. Non-Kimi ACP peers run unmanaged, preserving their native fresh/resumed mode; permission commands refuse changes until a vendor map exists.
 
 Status shows non-ask modes and pending defaults, and each runtime change emits
 permission_mode (peer/from/to) with no tool arguments under events schema 1.
@@ -1815,5 +1823,3 @@ invalid session history has no fresh fallback; inspect it before running
 `ahub pi`. Active turns/tools, failed startup, a superseded owner, native
 terminal exits, requested shutdown and recovery operations suppress this
 restart. Crash recovery's #66 recorded-session/fresh-start choices are unchanged.
-
-Permission mode starts reconcile the current operator choice after native startup before bus delivery. Each non-ask start logs the mode and its config or runtime source. Dropped git-tracked defaults never appear as startup confirmations. Non-Kimi ACP peers run unmanaged, preserving their native fresh/resumed mode; permission commands refuse changes until a vendor map exists.

@@ -2,7 +2,7 @@ import { afterEach, test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, readdirSync, existsSync, chmodSync, symlinkSync, linkSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildLaunch, cleanupClaudeSettings, claudeObservationHooks, CLAUDE_CHANNEL } from "../src/cli/launch.ts";
+import { buildLaunch, cleanupStaleClaudeSettings, cleanupClaudeSettings, claudeObservationHooks, CLAUDE_CHANNEL } from "../src/cli/launch.ts";
 
 const states: string[] = [];
 afterEach(() => { for (const dir of states.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -135,4 +135,18 @@ test("retiring private Claude settings preserves arbitrary paths, links and prev
   linkSync(linked, join(outside, "linked-copy")); cleanupClaudeSettings(state, linked); expect(existsSync(linked)).toBe(true);
   cleanupClaudeSettings(state, undefined); cleanupClaudeSettings(state, { settingsFile: next.settingsFile });
   expect(existsSync(next.settingsFile!)).toBe(true);
+});
+
+
+test("crash settings cleanup preserves live, unknown and identity-less native launch owners", () => {
+  const state = fixtureState(), facts = claudeObservationHooks({}, { script: "/candidate/facts-hook.ts", stateDir: state });
+  const launch = buildLaunch("claude", [], { unattended: false, facts });
+  const owner = { settingsFile: launch.settingsFile, launcherPid: process.pid, launcherSignature: "fixture-owner-identity" };
+  cleanupStaleClaudeSettings(state, owner, () => owner.launcherSignature);
+  expect(existsSync(launch.settingsFile!)).toBe(true);
+  cleanupStaleClaudeSettings(state, owner, () => undefined); expect(existsSync(launch.settingsFile!)).toBe(true);
+  cleanupStaleClaudeSettings(state, { ...owner, launcherSignature: undefined }); expect(existsSync(launch.settingsFile!)).toBe(true);
+  cleanupStaleClaudeSettings(state, { ...owner, launcherPid: undefined }, () => "other"); expect(existsSync(launch.settingsFile!)).toBe(true);
+  // A matching PID with a different verified signature is a reused PID; the old recorded owner is gone.
+  cleanupStaleClaudeSettings(state, owner, () => "replacement-owner-identity"); expect(existsSync(launch.settingsFile!)).toBe(false);
 });

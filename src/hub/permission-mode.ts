@@ -15,3 +15,6 @@ export function permissionDefaults(value: unknown): Record<string, PermissionMod
   return result;
 }
 export const PI_EDIT_TOOLS = new Set(["edit", "write"]);
+/** Native agent policy files are never included in scoped automatic file grants. */
+export const AGENT_CONFIG_SEGMENTS: ReadonlySet<string> = new Set([".claude", ".codex", ".qwen", ".kimi", ".pi", ".mcp.json"]);
+export const isAgentConfigPath = (path: string): boolean => path.split(/[\\/]/).some(segment => AGENT_CONFIG_SEGMENTS.has(segment.toLowerCase()));

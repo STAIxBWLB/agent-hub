@@ -45,21 +45,28 @@ function permissionModeRefusal(peer: string, mode: unknown): string | undefined 
   if (mode === "unknown") return `${peer} permission mode is unknown; inspect or reconnect its native session`;
   return undefined;
 }
+/** Queue sizes and timestamps do not make a refused/default-deferred peer ready. */
+function permissionDefaultFingerprint(s: ConsoleState, row: Pick<PermissionDefault, "peer" | "source">): string {
+  const peer = s.peers[row.peer];
+  return JSON.stringify([row.peer, row.source, peer?.state ?? "absent", peer?.permissionMode ?? "ask", peer?.attached ?? !!peer, peer?.claiming ?? false, peer?.toolsOnly ?? false]);
+}
 /** Offer one file default only when no other keyboard decision or edit is active. */
 export function syncPermissionDefaults(s: ConsoleState, rows: unknown): boolean {
   if (!Array.isArray(rows)) rows = [];
   s.permissionDefaults = (rows as unknown[]).filter((row): row is PermissionDefault => !!row && typeof row === "object" &&
     typeof (row as PermissionDefault).peer === "string" && (row as PermissionDefault).mode === "never-ask" && typeof (row as PermissionDefault).source === "string");
+  const current = new Set(s.permissionDefaults.map(row => permissionDefaultFingerprint(s, row)));
+  s.permissionDefaultsHandled = s.permissionDefaultsHandled.filter(fingerprint => current.has(fingerprint));
   const pending = s.confirm;
   if (pending?.type === "permission_default" && !s.permissionDefaults.some(row => row.peer === pending.peer && row.source === pending.source)) s.confirm = undefined;
   if (s.confirm || s.editing || s.input || s.modeChoice || s.optionChoice || s.help) return false;
-  const next = s.permissionDefaults.find(row => !s.permissionDefaultsHandled.includes(row.peer));
+  const next = s.permissionDefaults.find(row => !s.permissionDefaultsHandled.includes(permissionDefaultFingerprint(s, row)));
   if (!next) return false;
   s.confirm = { type: "permission_default", peer: next.peer, source: next.source };
   return true;
 }
 export function permissionDefaultText(row: Pick<PermissionDefault, "peer" | "source">): string {
-  return `never-ask default for ${row.peer} from ${quoted(row.source)}\n${permissionBoundary(row.peer)}\nUntil you answer y, this default stays ask. y enables; n cancels for this hub.`;
+  return `never-ask default for ${row.peer} from ${quoted(row.source)}\n${permissionBoundary(row.peer)}\nUntil you answer y, this default stays ask. y enables; n cancels for this hub; Esc defers.`;
 }
 /** Strip terminal controls before any daemon or child output reaches a terminal. Preserve printable Unicode. */
 export function terminalText(value: unknown): string {
@@ -378,8 +385,9 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   if (s.confirm) {
     const confirm = s.confirm; s.confirm = undefined;
     if (confirm.type === "permission_default") {
-      if (key !== "y" && key !== "n") { s.confirm = confirm; return done(); }
-      s.permissionDefaultsHandled = [...s.permissionDefaultsHandled, confirm.peer];
+      if (key !== "y" && key !== "n" && key !== "\x1b") { s.confirm = confirm; return done(); }
+      s.permissionDefaultsHandled = [...s.permissionDefaultsHandled, permissionDefaultFingerprint(s, confirm)];
+      if (key === "\x1b") { notify(s, `${confirm.peer} never-ask default deferred; remains pending and ask`, now, "attention"); return done(); }
       effects.push({ type: "permission_default", peer: confirm.peer, confirmed: key === "y" });
       return done();
     }
@@ -613,7 +621,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   if (s.notice && now - (s.noticeAt ?? now) < NOTICE_MS) approvals.push(span(" | "), span(s.notice, s.noticeTone ?? "failure"));
   const neverPeer = s.confirm?.type === "permission_default" ? s.confirm.peer : s.confirm?.type === "command" && s.confirm.args[0] === "permission" && s.confirm.args[2] === "never-ask" ? s.confirm.args[1] : undefined;
   const defaultSource = s.confirm?.type === "permission_default" ? s.confirm.source : undefined;
-  if (s.confirm?.type === "permission_default") prompt = `enable never-ask default for ${s.confirm.peer}? y/n (other keys wait)`;
+  if (s.confirm?.type === "permission_default") prompt = `enable never-ask default for ${s.confirm.peer}? y/n Esc defer`;
   const footer = [fitLine(neverPeer ? [span(permissionBoundary(neverPeer), "attention")] : summary, columns),
     fitLine(defaultSource !== undefined ? [span(`source ${quoted(defaultSource.split(/[\\/]/).at(-1))}; stays ask until y`, "attention")] : approvals, columns),
     fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
@@ -621,7 +629,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   if (s.mode === "stream") return [rule, ...footer];
   const height = rows - 6; // header, rule, body, rule, three footer lines
   const lines: Span[][] = [];
-  if (s.confirm?.type === "permission_default") lines.push(...fieldLines([["default", `${s.confirm.peer} never-ask`], ["source", s.confirm.source], ["bounds", permissionBoundary(s.confirm.peer)], ["decision", "y enables; n cancels for this hub; until then ask"]], columns, now).flat());
+  if (s.confirm?.type === "permission_default") lines.push(...fieldLines([["default", `${s.confirm.peer} never-ask`], ["source", s.confirm.source], ["bounds", permissionBoundary(s.confirm.peer)], ["decision", "y enables; n cancels for this hub; Esc defers; until then ask"]], columns, now).flat());
   else if (s.help) lines.push(...keyTable(columns));
   else if (s.detail !== undefined || (s.requestDetail && permission)) {
     const detail = s.detail !== undefined ? detailLines(s.detail, columns, now) : fieldLines(approvalFields(permission!), columns, now).flat();

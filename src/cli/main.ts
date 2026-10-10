@@ -18,7 +18,7 @@ import { OmniRoute } from "../omniroute/client.ts";
 import { MemoryClient } from "../memory/client.ts";
 import { init, planInit } from "./init.ts";
 import { launcherPreview } from "./preview.ts";
-import { cleanupClaudeSettings, buildLaunch, claudeObservationHooks, nativeLaunchEnv, UNATTENDED_WARNING } from "./launch.ts";
+import { cleanupStaleClaudeSettings, cleanupClaudeSettings, buildLaunch, claudeObservationHooks, nativeLaunchEnv, UNATTENDED_WARNING } from "./launch.ts";
 import { nextStep, parseList, pluginState, type InstalledPlugin, type Marketplace } from "./setup.ts";
 import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
@@ -553,18 +553,26 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     // Turn-free facts and opted-in task sweeps share native PreToolUse/PostToolUse/Stop observations.
     const facts = claudeObservationHooks(projectConfig(), { script: join(import.meta.dir, "facts-hook.ts"), stateDir });
-    let previousSettingsFile: unknown;
-    try { previousSettingsFile = JSON.parse(readFileSync(join(stateDir, "claude-launch.json"), "utf8")).settingsFile; } catch { /* no previous managed launch */ }
+    let previousLaunch: unknown;
+    try { previousLaunch = JSON.parse(readFileSync(join(stateDir, "claude-launch.json"), "utf8")); } catch { /* no previous managed launch */ }
     const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join(import.meta.dir, "statusline-tee.ts"), stateDir, ...(original ? { original } : {}) }, ...(facts ? { facts } : {}) });
-    if (control?.instanceId) {
-      // Publish only the final launch's installed hook and effective permission flags.
-      const file = join(stateDir, "claude-launch.json");
-      writeFileSync(`${file}.tmp`, JSON.stringify({ instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, settingsFile: launch.settingsFile, unattended: launch.unattended === true }), { mode: 0o600 });
-      chmodSync(`${file}.tmp`, 0o600); renameSync(`${file}.tmp`, file);
-      if (previousSettingsFile !== launch.settingsFile) cleanupClaudeSettings(stateDir, previousSettingsFile);
+    let result: ReturnType<typeof spawnSync>;
+    try {
+      if (control?.instanceId) {
+        // Publish only the final launch's installed hook and effective permission flags.
+        const file = join(stateDir, "claude-launch.json");
+        writeFileSync(`${file}.tmp`, JSON.stringify({ instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, settingsFile: launch.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid), unattended: launch.unattended === true }), { mode: 0o600 });
+        chmodSync(`${file}.tmp`, 0o600); renameSync(`${file}.tmp`, file);
+        cleanupStaleClaudeSettings(stateDir, previousLaunch);
+      }
+      if (launch.warning) console.error(launch.warning);
+      const env = nativeLaunchEnv("claude", childEnv());
+      result = spawnSync(launch.cmd, launch.args, { cwd, stdio: "inherit", env: { ...env, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
+    } finally {
+      cleanupClaudeSettings(stateDir, launch.settingsFile);
     }
-    if (launch.warning) console.error(launch.warning);
-    exec(launch.cmd, launch.args, "claude");
+    if (result.error) fail(`cannot run ${launch.cmd}: ${result.error.message}`);
+    process.exit(result.status ?? 1);
   },
 
   codex: async () => {
