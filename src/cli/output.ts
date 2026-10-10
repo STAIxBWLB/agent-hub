@@ -34,19 +34,22 @@ function pathChunks(text: string, columns: number): string[] {
   if (line || !chunks.length) chunks.push(line);
   return chunks.flatMap(chunk => wrap(chunk, columns, 0));
 }
-/** Keep logical list items together before breaking oversized paths or words. */
+/** Keep logical list items together before breaking oversized paths or words. A separator that does not fit leads its item's own line; it never holds a line alone. */
 function itemChunks(cell: OutputCell, columns: number): string[] {
   if (!cell.items?.length) return wrap(cell.text, columns, 0);
   const chunks: string[] = []; let line = cell.prefix ?? "";
   for (const [index, item] of cell.items!.entries()) {
     const separator = index ? ", " : cell.prefix ? " " : "";
     if (width(line + separator + item) <= columns) { line += separator + item; continue; }
+    let lead = "";
     if (index) {
       if (width(line + ",") <= columns) line += ",";
-      else { if (line) chunks.push(line); line = ","; }
+      else lead = ", ";
     }
     if (line) chunks.push(line);
-    const split = width(item) <= columns ? [item] : cell.pathItems ? pathChunks(item, columns) : wrap(item, columns, 0);
+    // The lead goes only where it cannot itself split the item: a line break already separates the two.
+    const effective = lead && width(lead + item) > columns && width(item) <= columns ? item : lead + item;
+    const split = width(effective) <= columns ? [effective] : cell.pathItems ? pathChunks(effective, columns) : wrap(effective, columns, 0);
     chunks.push(...split.slice(0, -1)); line = split.at(-1)!;
   }
   if (line || !chunks.length) chunks.push(line);
@@ -81,13 +84,17 @@ function rows(head: string[], data: OutputCell[][], columns?: number, details?: 
     return interleave(table(head, physical, columns, [size]), lengths, wrap(head[0]!, size, 0).length);
   }
   const flexible = head.includes("TITLE") ? head.indexOf("TITLE") : head.length - 1;
-  const protectedColumns = new Set(head.map((h, i) => ["ID", "PROJECT", "TURN", "TASK", "OWNER", "REVIEWER", "AGE", "STAGE", "Q", "!", "REVIEW", "REV", "PEER", "PEERS", "PIDS", "TURNS", "BUSY", "TOKENS", "COUNT", "FIELD", "TASKS", "STATE", "MODE", "LEVEL", "LINK", "CLASS"].includes(h) ? i : -1));
+  // TASKS is not protected: its items stay whole at any width (itemChunks breaks between them), so it wraps
+  // before ROOT floors (#284 round 3).
+  const protectedColumns = new Set(head.map((h, i) => ["ID", "PROJECT", "TURN", "TASK", "OWNER", "REVIEWER", "AGE", "STAGE", "Q", "!", "REVIEW", "REV", "PEER", "PEERS", "PIDS", "TURNS", "BUSY", "TOKENS", "COUNT", "FIELD", "STATE", "MODE", "LEVEL", "LINK", "CLASS"].includes(h) ? i : -1));
   const words = head.map((_, i) => Math.max(...data.flatMap(row => row[i]!.text.split(/\s+/).map(width))));
   const minimum = head.map((h, i) => Math.max(width(h), protectedColumns.has(i) ? words[i]! : 0,
     Math.max(0, ...data.filter(row => row[i]!.atomic).map(row => width(row[i]!.text))),
     h === "TASKS" ? Math.max(0, ...data.flatMap(row => row[i]!.items?.map(width) ?? [])) : 0));
   // Reserve readable flexible text before a multi-word state consumes the space; atomic words still win.
-  if (["TITLE", "CONTEXT", "ROOT", "FILES"].includes(head[flexible]!)) minimum[flexible] = Math.max(minimum[flexible]!, Math.min(natural[flexible]!, 12));
+  // A ROOT column keeps a quarter of a wide table: an item list (TASKS) wraps between its items instead (#284 round 3).
+  const pathFloor = head[flexible] === "ROOT" && columns !== undefined && columns > 80 ? Math.floor(columns / 4) : 12;
+  if (["TITLE", "CONTEXT", "ROOT", "FILES"].includes(head[flexible]!)) minimum[flexible] = Math.max(minimum[flexible]!, Math.min(natural[flexible]!, pathFloor));
   if (head[flexible] === "FILES") {
     const room = columns - 2 * (head.length - 1) - minimum.reduce((sum, n, i) => sum + (i === flexible ? 0 : n), 0);
     minimum[flexible] = Math.max(minimum[flexible]!, Math.min(natural[flexible]!, 36, room));
@@ -132,6 +139,16 @@ function rows(head: string[], data: OutputCell[][], columns?: number, details?: 
     widths[choices[0]!.i]!--;
   }
   widths[flexible] = Math.max(minimum[flexible]!, Math.min(natural[flexible]!, available - widths.reduce((sum, n, i) => sum + (i === flexible ? 0 : n), 0)));
+  // A flexible FILES column grows toward natural while protected columns can give down to their longest word
+  // (their content then wraps at word boundaries; the file list breaks between items regardless) (#284 round 3).
+  if (head[flexible] === "FILES") {
+    while (widths[flexible]! < natural[flexible]!) {
+      const donors = widths.map((n, i) => ({ i, room: i === flexible ? 0 : n - Math.max(minimum[i]!, protectedColumns.has(i) ? words[i]! : 0) })).filter(d => d.room > 0);
+      if (!donors.length) break;
+      donors.sort((a, b) => b.room - a.room);
+      widths[donors[0]!.i]!--; widths[flexible]!++;
+    }
+  }
   return renderAtWidths(widths);
 }
 function detail(label: string, text: unknown, columns?: number, tone?: Tone): Span[][] {

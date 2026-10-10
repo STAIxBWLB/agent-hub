@@ -551,6 +551,5 @@ test("ordinary tracked file paths split only when longer than their column", () 
     }
     expect(total).toBe(28);
     if (columns >= 100) expect(split).toBe(0);
-    console.log(`ordinary tracked paths @${columns}: ${split}/${total} split (${(split / total * 100).toFixed(2)}%), 0 avoidable`);
   }
 });
