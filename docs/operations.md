@@ -1172,6 +1172,21 @@ Rows without a live process are stale registrations; forget them with
 
 ## Upgrade and crash recovery
 
+On a terminal, one command reviews, applies and follows an upgrade:
+
+```bash
+ahub upgrade
+```
+
+Without `--to` the target is the registry's latest release. When that release is
+newer than the installed CLI, the CLI names the release's own coordinator
+(`bun x --package @staix/agent-hub@<version> ahub upgrade --to <version>`), asks,
+and hands over to it, so the version is never typed twice and an older CLI never
+coordinates. From an installed CLI older than 0.12.22, start it once by hand:
+`bunx --package @staix/agent-hub@<version> ahub upgrade`. The screens are
+described under [Interactive upgrade](#interactive-upgrade); the rest of this
+section is what they run.
+
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
 11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 and 0.12.21), and only
@@ -1228,12 +1243,18 @@ Apply only after reviewing the plan:
 ```bash
 ahub restart --yes
 ahub upgrade --to 0.12.21 --yes
-ahub recovery status <operation-id>
-ahub recovery resume <operation-id>
-ahub recovery abort <operation-id>
-ahub recovery dispose <operation-id> --fresh-session <peer> --reason <text>
-ahub recovery dispose <operation-id> --stop-and-archive --reason <text>
+ahub recovery status [<operation-id>]
+ahub recovery resume [<operation-id>]
+ahub recovery abort [<operation-id>]
+ahub recovery dispose [<operation-id>] --fresh-session <peer> --reason <text>
+ahub recovery dispose [<operation-id>] --stop-and-archive --reason <text>
 ```
+
+`--yes` needs `--to`; a dry run without `--to` plans the latest release. A target
+newer than the CLI is handed to that release's coordinator with the same flags,
+and the command is printed on stderr first. The `recovery` commands take the
+operation that holds the machine's lock when the id is left out, and say `no
+recovery operation holds the lock` when none does.
 
 The coordinator commits only once the source is quiet: no turn running, no
 approval pending, no completion check queued or running. It waits up to 10
@@ -1308,6 +1329,86 @@ are upgraded.
 Do not run an upgrade with an incompatible active protocol, an unverified
 terminal binding, or an unresolved operation lock. Dry-run performs no package,
 plugin, daemon, or terminal mutation.
+
+### Interactive upgrade
+
+`ahub upgrade` and `ahub restart` are interactive when standard input and output
+are a terminal and neither `--dry-run` nor `--yes` is given. With either flag, or
+through a pipe, the JSON plan, the `ahub: blocker:` lines and the exit codes are
+unchanged. The screens add no way to change an operation: every choice runs one
+of the commands in this section for you, so that command's refusals decide.
+
+The plan screen lists each project with its hub version and, per attached peer,
+its state, how it runs (`TUI` in a terminal the plan bound to its session,
+`headless` as the hub's own process, `own` for a session the hub did not
+launch or whose terminal the plan could not bind) and what happens to it: resumed in a new terminal (the old one is
+named), reconnecting by itself, restarted as a new session, restarted headless,
+or left offline. `in progress:` repeats what the running hub says keeps it from
+being quiet (busy peers, pending approvals, a peer starting, a budget
+transition); apply waits up to 10 minutes for it. Blockers follow, each with its
+next action. The choices are `[a] apply` (absent while a blocker stands), `[r]
+refresh`, `[k] end agents`, `[j]` the plan as JSON, `[x] reset a project's hub`
+and `[q] quit`.
+
+`[k] end agents` ends attached agents before the upgrade, so they are neither
+waited for nor restored: `t` for the TUI agents, `h` for the headless ones
+(Kimi, Pi in headless mode, the local worker), or their names, written
+`<project id>/<name>` when the plan covers more than one project. After a
+confirmation a TUI agent's terminal is closed, which cuts a turn in progress,
+and a headless agent is stopped by its hub through the `peer_stop` request
+(#278). A delivery that a busy agent had not settled is then held as
+`needs_review`, and its queue stays held until `ahub queue resolve` settles it. Each agent is ended only
+if the lock is free and its hub, its session and its terminal are still the
+ones the plan read; otherwise the screen says why it was left. A hub that does
+not know `peer_stop` (0.12.21 and older) cannot end a headless agent: the
+screen says so, the agent stops with the old hub at the upgrade, and the new
+hub starts it again. A session marked `own` is ended where it runs. The next
+plan shows the ended agents as offline.
+
+After apply the command stays attached and prints each step as the receipt
+records it, and while a source is being prepared, what it still waits for.
+Enter opens the operation's screen while the runner works on. Ctrl+C leaves the
+command, at any prompt and while following, and never stops the runner: the
+`left:` line names the command that comes back to the screen, with the
+operation's own coordinator, because the installed `ahub` is the older release
+until the upgrade ends. A Ctrl+C between `a` and the start of the operation
+starts nothing. A prompt for a reason that is answered with
+Ctrl+C or the end of input ends nothing.
+
+The operation's screen also opens first whenever an operation holds the lock,
+and for bare `ahub recovery`. It shows the phase and step, each project's phase
+and effect receipts and the error, then the choices that `status` lists under
+`next` for the same receipt and live state:
+
+| Key | Runs | Offered when |
+| --- | --- | --- |
+| `r` | `recovery resume`, then follows | resume can get past what is live |
+| `c` | `recovery abort` | no runtime was stopped and no terminal effect or commit request is recorded |
+| `f` | `recovery dispose --fresh-session <peer>`, after a reason | a Codex or Claude restoration failed |
+| `e` | `recovery dispose --stop-and-archive`, after a confirmation and a reason | every unverified project reads as running, stopped or missing |
+| `x` | `e`, then the reset below | as `e` |
+| `w` | follows the runner | a runner holds the operation |
+
+While a runner is only waiting for its source to get quiet (step `prepare`, no
+effect recorded), `c` stops that runner and then aborts. It is offered only for
+a runner whose claim carries a process signature that still matches; a claim
+from a coordinator of 0.12.20 or older has none, so its pid is never signalled,
+and such a runner gives up its wait after 10 minutes. The receipt is read again
+when the key is pressed, and a runner that has moved on is left alone. If it
+records an effect in the instant between that read and the signal, the abort is
+refused and resume is offered instead. Past that step a running operation
+offers only `w`.
+
+A reset is offered from the plan screen for a project whose hub is running, and
+with one question right after an operation was cancelled or ended from its
+screen: it asks for the project (when there are several) and the scope, prints
+the dry run of `ahub reset` or `ahub reset --all`, and applies it with `--yes`
+only after a second confirmation. While an operation holds the lock it refuses,
+as `ahub reset` does.
+
+Ending a peer's running turn is not part of these screens: finish or interrupt
+it in that peer's terminal, answer approvals with `ahub permit` or the console,
+or cancel and upgrade later.
 
 ### A partial operation
 

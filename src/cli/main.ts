@@ -24,10 +24,13 @@ import { CLASSES } from "../hub/board.ts";
 import { VERSION } from "../version.ts";
 import { freeText } from "./free-text.ts";
 import { createInterface } from "node:readline/promises";
-import { activeOperation, assertLifecycleAvailable, readOperation, recoveryLock, recoveryRunner } from "../hub/recovery-store.ts";
+import { createInterface as lineReader } from "node:readline";
+import { activeOperation, assertLifecycleAvailable, operationIdPattern, readOperation, recoveryLock, recoveryRunner, signedRunner, stopSignedRunner } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
 import { abortRecovery, createOperation, disposeRecovery, liveProjects, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
-import { makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
+import { endPlannedPeer, makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
+import { exactVersion, latestRelease, newerVersion } from "./recovery-package.ts";
+import { operationScreen, planScreen, type ScreenIO, type UpgradeHost } from "./upgrade-interactive.ts";
 import { recordTerminalLaunch } from "./terminal-recovery.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
 import { setupOllamaModel } from "./models-setup.ts";
@@ -339,32 +342,124 @@ async function hold(t: "pause" | "resume"): Promise<void> {
   console.log(`${args[0]} is ${res.state}`);
 }
 
-function spawnRecovery(operation: RecoveryOperation): void {
+function spawnRecovery(operation: RecoveryOperation, quiet = false): void {
   const child = spawn(process.execPath, [join(operation.sourceRoot, "src/cli/main.js"), "recovery-run", operation.id], {
     cwd, detached: true, stdio: "ignore", env: { ...process.env, AGENTHUB_RECOVERY_OPERATION: operation.id },
   });
   child.on("error", () => console.error(`runner launch failed; use ${recoveryCommand(operation, "resume")}`));
   child.unref();
   // #215: the operation's own coordinator, which has every recovery command; the global ahub may be older mid-upgrade.
-  console.log(`Recovery operation ${operation.id} scheduled.\n${recoveryCommand(operation, "status")}`);
+  if (!quiet) console.log(`Recovery operation ${operation.id} scheduled.\n${recoveryCommand(operation, "status")}`);
+}
+
+/** #272: a terminal session for the interactive screens. One line reader for the whole session, in the terminal's own
+ *  line mode, so Ctrl+C stays a signal: from then on every question answers null and the screens leave. The terminal
+ *  is not read again after it (a parent that died on the same Ctrl+C may have handed it back to the shell), and no
+ *  runner is ever stopped by it. */
+async function onTerminal(screens: (io: ScreenIO) => Promise<void>): Promise<void> {
+  const rl = lineReader({ input: process.stdin, terminal: false });
+  const lines: string[] = [], waiters: ((line: string | null) => void)[] = [];
+  let ended = false, interrupted = false;
+  rl.on("line", (line) => { const next = waiters.shift(); if (next) next(line.trim()); else lines.push(line.trim()); });
+  rl.on("close", () => { ended = true; for (const waiter of waiters.splice(0)) waiter(null); });
+  const onInterrupt = () => { interrupted = true; for (const waiter of waiters.splice(0)) waiter(null); };
+  process.on("SIGINT", onInterrupt);
+  try {
+    await screens({
+      ask: (question) => {
+        if (interrupted) return Promise.resolve(null);
+        process.stdout.write(question);
+        const typed = lines.shift();
+        return typed !== undefined ? Promise.resolve(typed) : ended ? Promise.resolve(null) : new Promise((resolve) => waiters.push(resolve));
+      },
+      out: (line) => console.log(line),
+      run: (argv) => new Promise((resolve) => {
+        // The command owns the terminal while it runs; a reader whose input already ended has nothing to pause.
+        if (!ended) rl.pause();
+        const done = (code: number) => { if (!ended) rl.resume(); resolve(code); };
+        const child = spawn(process.execPath, argv, { cwd, stdio: "inherit" });
+        child.on("error", () => done(1));
+        child.on("close", (code) => done(code ?? 1));
+      }),
+      sleep: (ms) => Bun.sleep(ms),
+      interrupted: () => interrupted,
+      // Scripted input (a pipe) is answers typed ahead for the next question; only a terminal's line is a key press.
+      typed: () => !ended && lines.splice(0).length > 0,
+    });
+  } finally { process.off("SIGINT", onInterrupt); rl.close(); }
+}
+
+function upgradeHost(kind: "restart" | "upgrade", version: string): UpgradeHost {
+  const scope = kind === "restart" ? cwd : undefined;
+  return {
+    plan: () => makeUpgradePlan(kind, version, scope),
+    apply: async (plan, interrupted) => {
+      assertLifecycleAvailable();
+      const current = await makeUpgradePlan(kind, plan.version, scope);
+      if (current.fingerprint !== plan.fingerprint) throw new Error("the plan changed during review; review it again");
+      // The check above takes seconds: a Ctrl+C in that time is still a no.
+      if (interrupted()) throw new Error("interrupted; nothing was started");
+      const operation = createOperation(plan, preserveSource(plan));
+      spawnRecovery(operation, true);
+      return operation;
+    },
+    lock: recoveryLock,
+    read: (id) => readOperation<RecoveryOperation>(id),
+    runner: recoveryRunner,
+    live: (op) => liveProjects(op, makeRecoveryDriver().inspect),
+    endPeer: (planned, peer) => endPlannedPeer(planned, peer),
+    runnerStoppable: (id) => signedRunner(id) !== undefined,
+    stopRunner: (id) => stopSignedRunner(id),
+    entry: join(import.meta.dir, "main.js"),
+    version: VERSION,
+  };
 }
 
 async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   const { one, rest } = takeFlags(args, ["--to"], []);
-  if (rest.some((a) => !["--dry-run", "--yes"].includes(a)) || (kind === "restart" && one["--to"])) fail("usage: ahub upgrade --to <version> [--dry-run] [--yes] | ahub restart [--dry-run] [--yes]");
-  if (kind === "upgrade" && !one["--to"]) fail("upgrade requires --to <exact-version>");
+  if (rest.some((a) => !["--dry-run", "--yes"].includes(a)) || (kind === "restart" && one["--to"])) fail("usage: ahub upgrade [--to <version>] [--dry-run] [--yes] | ahub restart [--dry-run] [--yes]");
   if (kind === "upgrade" && selector) fail("upgrade changes the shared package/plugin; omit --project to review all affected running projects");
-  const plan = await makeUpgradePlan(kind, one["--to"] ?? VERSION, kind === "restart" ? cwd : undefined);
+  const dry = rest.includes("--dry-run"), yes = rest.includes("--yes");
+  // #272: on a terminal, with neither flag, the plan is reviewed, applied and followed in one session.
+  const interactive = !dry && !yes && !!process.stdin.isTTY && !!process.stdout.isTTY;
+  let to = one["--to"];
+  if (kind === "upgrade" && !to) {
+    if (yes || (!dry && !interactive)) fail("upgrade requires --to <exact-version>");
+    to = await latestRelease();
+    console.error(`ahub: the latest release is ${to}`);
+  }
+  // Before the value reaches a package spec or the registry: a range such as 0.13 would resolve to whatever matches.
+  if (to !== undefined) { try { exactVersion(to); } catch (error) { fail((error as Error).message); } }
+  // An older CLI must not coordinate a newer target (docs/operations.md): the target's own coordinator takes over.
+  if (kind === "upgrade" && newerVersion(to!, VERSION) && process.env.AGENTHUB_UPGRADE_HANDOVER !== "1") {
+    const argv = ["x", "--package", `@staix/agent-hub@${to}`, "ahub", "upgrade", "--to", to!, ...rest];
+    console.error(`ahub: ${to} is newer than this CLI (${VERSION}), so its own coordinator runs the upgrade: bun ${argv.join(" ")}`);
+    if (interactive) {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      try { if (!/^(|y|yes)$/i.test((await rl.question("Continue? [Y/n] ")).trim())) return; } finally { rl.close(); }
+    }
+    // The coordinator owns the terminal from here. This process only waits, and a Ctrl+C meant for that session must not
+    // end it first and hand the terminal back to the shell under it.
+    process.on("SIGINT", () => {});
+    const code = await new Promise<number>((resolve) => {
+      const child = spawn(process.execPath, argv, { cwd, stdio: "inherit", env: { ...process.env, AGENTHUB_UPGRADE_HANDOVER: "1" } });
+      child.on("error", (error) => { console.error(`ahub: cannot run bun x: ${error.message}`); resolve(1); });
+      child.on("close", (status) => resolve(status ?? 1));
+    });
+    process.exit(code);
+  }
+  if (interactive) return onTerminal((io) => planScreen(upgradeHost(kind, to ?? VERSION), io));
+  const plan = await makeUpgradePlan(kind, to ?? VERSION, kind === "restart" ? cwd : undefined);
   console.log(JSON.stringify(plan, null, 2));
   // #206: name every blocker and reconnect-only session on stderr, not only inside the JSON above.
   for (const p of plan.projects) for (const peer of p.reconnectOnly ?? []) console.error(`ahub: ${p.project.id}: ${peer} is reconnect-only (unmanaged session): its plugin reattaches to the new hub; no terminal is closed or relaunched`);
   for (const p of plan.projects) for (const peer of p.freshStart ?? []) console.error(`ahub: ${p.project.id}: ${peer} restarts as a new session: its thread has no rollout and the hub recorded no turn on it, so nothing is lost`);
   const blockers = [...plan.blockers, ...plan.projects.flatMap((p) => p.blockers.map((b) => `${p.project.id}: ${b}`))];
   for (const blocker of blockers) console.error(`ahub: blocker: ${blocker}`);
-  if (args.includes("--dry-run")) return;
+  if (dry) return;
   if (blockers.length) fail("plan has blockers; no runtime was changed");
   assertLifecycleAvailable();
-  if (!args.includes("--yes")) {
+  if (!yes) {
     if (!process.stdin.isTTY) fail("review --dry-run and use --yes in non-interactive sessions");
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     try {
@@ -382,9 +477,18 @@ const commands: Record<string, () => Promise<void> | void> = {
   upgrade: () => upgrade("upgrade"),
   restart: () => upgrade("restart"),
   recovery: async () => {
-    const [action, id, ...rest] = args;
-    const usage = "usage: ahub recovery status|resume|abort <operation-id> | ahub recovery dispose <operation-id> --fresh-session <peer>|--stop-and-archive --reason <text>";
-    if (!id || !["status", "resume", "abort", "dispose"].includes(action ?? "") || (action !== "dispose" && rest.length)) fail(usage);
+    const [action, given, ...more] = args;
+    const usage = "usage: ahub recovery [status|resume|abort] [<operation-id>] | ahub recovery dispose [<operation-id>] --fresh-session <peer>|--stop-and-archive --reason <text>";
+    // #272: without an id, the operation that holds the machine's lock; bare on a terminal, its screen.
+    const named = !!given && operationIdPattern.test(given);
+    const id = named ? given : recoveryLock();
+    const rest = named || given === undefined ? more : [given, ...more];
+    if (action === undefined && process.stdin.isTTY && process.stdout.isTTY) {
+      if (!id) return console.log("no recovery operation is open");
+      return onTerminal(async (io) => { await operationScreen(upgradeHost("restart", VERSION), io, id); });
+    }
+    if (!["status", "resume", "abort", "dispose"].includes(action ?? "") || (action !== "dispose" && rest.length)) fail(usage);
+    if (!id) fail("no recovery operation holds the lock; name one by its id");
     const operation = readOperation<RecoveryOperation>(id);
     const runner = recoveryRunner(id);
     if (action === "status") {

@@ -2,6 +2,33 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## Interactive upgrade (#272)
+
+Not run live yet. Covered by tests with a scripted terminal and, for `restart`,
+by a real detached operation driven through the plan screen
+(`test/upgrade-cli.test.ts`, with standard input and output marked as a terminal).
+The live leg, at a real terminal with Orca-launched peers:
+
+1. With a hub on the previous release, run
+   `bunx --package @staix/agent-hub@<version> ahub upgrade`. Expect the plan
+   screen: the project, each peer's fate, `in progress:` when a peer is busy, no
+   blocker.
+2. Press `a`. Expect the steps in order, `waiting for:` while a peer is busy, and
+   `upgrade to <version> completed`; `ahub --version` and `ahub status` report it.
+3. On a scratch project, start `ahub restart` while a peer is busy, press `a`,
+   then Enter during the wait and `c` on the operation screen. Expect `operation
+   <id> is cancelled; the recovery lock is free`, the reset question, and the hub
+   still running.
+4. With an installed CLI one release behind, run `ahub upgrade`, confirm the
+   hand-over, press `a`, then Ctrl+C during the wait. Expect the `left:` line, a
+   clean shell prompt, and `ahub recovery` showing the runner still working.
+
+5. On the plan screen press `k`, then `t`, and confirm. Expect each TUI agent's
+   terminal closed and the next plan showing them offline; with a hub of 0.12.22
+   or newer, `h` stops the headless agents the same way.
+
+Record the versions, the screens' text and what differed.
+
 ## ahub reset on a scratch project (#214)
 
 Not yet run. A person runs it in a terminal, on a scratch project only, never

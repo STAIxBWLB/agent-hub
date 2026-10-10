@@ -8,10 +8,11 @@ import type { Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
 import { packageDigest, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
 import { inspectTerminals, closeTerminal, createTerminal, launcherOf, recordPath, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
-import { FinalRefusal, planFingerprint, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
+import { FinalRefusal, planFingerprint, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type RecoveryPeer, type UpgradePlan } from "./upgrade.ts";
 import { readEvents } from "../hub/events.ts";
 import { refreshManager } from "../hub/manager.ts";
 import { abandonRestartSnapshot, readRestartSnapshot, waiveRecoveryPeers } from "../hub/restart.ts";
+import { recoveryLock } from "../hub/recovery-store.ts";
 
 /** An unmanaged Claude's plugin retries with a backoff of at most 30 s; three of those bound the reconnect wait (#206). */
 const RECONNECT_WAIT_MS = 90_000;
@@ -91,6 +92,57 @@ async function rpc(project: Project, message: Record<string, unknown>, protocol 
   } finally { client.close(); }
 }
 
+/**
+ * #272: end one attached agent before an upgrade, for the person who chose it on the plan screen. The plan is what was
+ * drawn, so all of it is read again and any difference ends nothing: no operation holds the lock, the hub runs as the
+ * instance the plan read with the peer attached, and for a TUI agent the attached session is the one the plan bound and
+ * binds again to a terminal with the plan's handle and incarnation. `closeTerminal` itself compares only the terminal's
+ * handle, incarnation, worktree and root, never who runs in it. A headless agent is the hub's own process, so the hub
+ * is asked to stop it, which a hub older than that request cannot do. `deps` are a test's fakes.
+ */
+export async function endPlannedPeer(planned: PlannedProject, peer: RecoveryPeer, deps: { run?: RunCommand; inspect?: (project: Project) => Promise<Inspection>; lock?: () => string | undefined } = {}): Promise<string> {
+  const { run = runCommand, inspect = inspectRecovery, lock = recoveryLock } = deps;
+  const name = `${planned.project.id}/${peer.id}`;
+  const binding = (planned.terminals as TerminalBinding[]).find((t) => t.peer === peer.id);
+  const refused = (why: string) => `${name}: not ended (${why})`;
+  let cut = "", current: TerminalBinding | undefined;
+  try {
+    const owner = lock();
+    if (owner) return refused(`recovery operation ${owner} holds the lock`);
+    const hub = await inspect(planned.project);
+    if (hub.state !== "running" || hub.instanceId !== planned.source.instanceId) return refused(`its hub reads as ${hub.state === "running" ? `instance ${hub.instanceId}, not the ${planned.source.instanceId} of the plan` : hub.state}`);
+    const now = hub.peers.find((p) => p.id === peer.id && p.state !== "offline");
+    if (!now) return refused("it is no longer attached to its hub");
+    // The hub holds what a peer that goes offline mid-turn was working on (`uncertain` in bus.ts).
+    if (now.state === "busy") cut = "; its turn was cut: a delivery it had not settled is held as needs_review, and its queue stays held until ahub queue resolve";
+    if (binding) {
+      if ((binding.peer === "codex" ? now.threadId : now.sessionId) !== binding.sessionId) return refused(`the session attached now is not the one the plan bound to terminal ${binding.handle}`);
+      // The same question the plan asked (`makeUpgradePlan`), for this one peer.
+      const session = binding.peer === "pi" ? { sessionId: binding.sessionId, ...(now.sessionFile ? { sessionFile: now.sessionFile } : {}), ...(now.args?.backend ? { backend: now.args.backend } : {}), ...(now.args?.model ? { model: now.args.model } : {}) } : binding.sessionId;
+      const found = await inspectTerminals(planned.project.root, { [binding.peer]: session }, { ...terminalOptions(run), stateDir: planned.project.stateDir, instanceId: planned.source.instanceId });
+      current = found.byPeer[binding.peer];
+      if (found.manualRequired || !current) return refused(`its terminal cannot be bound again: ${found.blockers[0]?.message ?? "no terminal was found"}`);
+      if (current.handle !== binding.handle || current.incarnationId !== binding.incarnationId) return refused(`its session is now bound to terminal ${current.handle} (${current.incarnationId}), not the plan's ${binding.handle} (${binding.incarnationId})`);
+    }
+    // The reads above take a second or more: an operation that took the lock meanwhile still stops this.
+    const taken = lock();
+    if (taken) return refused(`recovery operation ${taken} holds the lock`);
+  } catch (error) { return refused((error as Error).message); } // a lock or a registry that cannot be read throws
+  if (current) {
+    const result = await closeTerminal(current, 0, terminalOptions(run));
+    return result.closed ? `${name}: terminal ${current.handle} closed${cut}` : `${name}: its terminal was not closed (${result.blockers[0]?.message ?? "unknown reason"}); end it in that terminal`;
+  }
+  try {
+    await rpc(planned.project, { t: "peer_stop", peer: peer.id }, planned.source.protocol ?? PROTOCOL);
+    return `${name}: stopped${cut}`;
+  } catch (error) {
+    const message = (error as Error).message;
+    return /does not know "peer_stop"/.test(message)
+      ? `${name}: hub ${planned.source.version ?? "of this version"} cannot end a headless agent by itself; it stops with the old hub at the upgrade and the new hub starts it again (ahub stop ${peer.id} ends it then)`
+      : `${name}: not stopped (${message})`;
+  }
+}
+
 export async function inspectRecovery(project: Project): Promise<Inspection> {
   // #226: the claim is judged by the registry as it is now, never by the plan's frozen copy, which holds the source's
   // pid from planning time (after a reboot another process may hold it). A registry that cannot be read throws: the
@@ -131,8 +183,10 @@ export async function inspectRecovery(project: Project): Promise<Inspection> {
       peers: [], blockers: ["runtime changed during recovery inspection"] };
   }
   const peers = Object.values(response.recovery?.peers ?? {}) as any[];
+  // #272: the hub's own words for what it waits on; shown to the person, never decided on.
+  const waiting = (Array.isArray(response.recovery?.blockers) ? response.recovery.blockers : []).filter((b: unknown): b is string => typeof b === "string").slice(0, 20).map((b: string) => b.slice(0, 200));
   return { state: "running", instanceId: status.instanceId, version: status.version, protocol: status.protocol,
-    recovery: { operationId: response.recovery?.operationId, phase: response.recovery?.phase, ready: response.recovery?.ready }, peers: peers.map((peer) => ({ id: peer.id, state: peer.state,
+    recovery: { operationId: response.recovery?.operationId, phase: response.recovery?.phase, ready: response.recovery?.ready, ...(waiting.length ? { waiting } : {}) }, peers: peers.map((peer) => ({ id: peer.id, state: peer.state,
       ...(peer.threadId ? { threadId: peer.threadId } : {}), ...(peer.sessionId ? { sessionId: peer.sessionId } : {}),
       ...(typeof (peer.sessionFile ?? peer.launch?.sessionFile) === "string" ? { sessionFile: peer.sessionFile ?? peer.launch.sessionFile } : {}),
       ...(peer.launch ? { args: Object.fromEntries(Object.entries(peer.launch).filter(([k, v]) => ["model", "route", "sessionFile", "mode", "backend"].includes(k) && typeof v === "string")) as Record<string, string> } : {}) })), blockers: [] };

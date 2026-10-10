@@ -74,6 +74,12 @@ export function recoveryCommand(op: { id: string; sourceRoot?: string }, action:
   return `${cli} recovery ${action} ${op.id}${flags ? ` ${flags}` : ""}`;
 }
 
+/** #272: the command above as an argv for `bun`, which a screen runs instead of printing; with no coordinator of its own, this release's. */
+export function recoveryArgv(op: { id: string; sourceRoot?: string }, action: "status" | "resume" | "abort" | "dispose", flags: string[] = []): string[] {
+  const entry = op.sourceRoot && coordinatorCurrent(op.sourceRoot) ? join(op.sourceRoot, "src/cli/main.js") : join(import.meta.dir, "../cli/main.js");
+  return [entry, "recovery", action, op.id, ...flags];
+}
+
 /**
  * Whether a coordinator has the #215 recovery commands (dispose, re-preparation, next actions).
  * ponytail: a text sniff of its upgrade.ts; a rename or re-export reads as an older coordinator (the running release is
@@ -114,6 +120,38 @@ export function recoveryRunner(id: string, home = hubHome()): number | "unknown"
     const state = processLiveness(row.pid, row.signature);
     return state === "gone" ? undefined : state === "live" ? row.pid : "unknown";
   } catch { return "unknown"; } finally { db?.close(); }
+}
+
+/**
+ * #272: the pid of the runner that holds `id`, only when its claim carries a process signature that still matches.
+ * `recoveryRunner` answers a claim without one (a coordinator of 0.12.20 or older, or a `ps` that failed at claim
+ * time) from its bare pid, which is enough to wait for it and never enough to signal it.
+ */
+export function signedRunner(id: string, home = hubHome()): number | undefined {
+  const path = `${operationPath(id, home)}.runner.db`;
+  if (!existsSync(path)) return undefined;
+  let db: Database | undefined;
+  try {
+    db = new Database(path, { readonly: true });
+    db.run("PRAGMA busy_timeout = 3000");
+    if (!signed(db)) return undefined;
+    const row = db.query("SELECT pid, signature FROM runner WHERE slot = 1").get() as { pid: number; signature: string | null } | null;
+    if (!row?.signature || !Number.isSafeInteger(row.pid) || row.pid < 1) return undefined;
+    return processSignature(row.pid) === row.signature ? row.pid : undefined;
+  } catch { return undefined; } finally { db?.close(); }
+}
+
+/** #272: stop that verified runner and wait until no runner holds the operation. False when one still does, or cannot be verified. */
+export async function stopSignedRunner(id: string, home = hubHome(), waitMs = 5000): Promise<boolean> {
+  if (recoveryRunner(id, home) === undefined) return true;
+  const pid = signedRunner(id, home);
+  if (pid === undefined) return false;
+  try { process.kill(pid, "SIGTERM"); } catch { /* gone meanwhile */ }
+  for (const deadline = Date.now() + waitMs; Date.now() < deadline;) {
+    if (recoveryRunner(id, home) === undefined) return true;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return false;
 }
 
 /** An exclusive runner claim. Never steal a live or uncertain owner on resume. */

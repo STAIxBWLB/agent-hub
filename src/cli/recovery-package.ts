@@ -67,6 +67,23 @@ export async function registryRelease(version: string, run: RunCommand = runComm
   return { version, integrity: data["dist.integrity"] };
 }
 
+/** #272: the registry's latest release, the target when `--to` is left out. */
+export async function latestRelease(run: RunCommand = runCommand): Promise<string> {
+  const result = await run(["npm", "view", "@staix/agent-hub", "version", "--json"], { timeoutMs: 30_000 });
+  if (result.code !== 0) throw new Error("registry metadata unavailable for @staix/agent-hub; name the release with --to <version>");
+  let version: unknown;
+  try { version = JSON.parse(result.stdout); } catch { /* reported below */ }
+  if (typeof version !== "string") throw new Error("registry returned an unexpected latest release; name the release with --to <version>");
+  return exactVersion(version);
+}
+
+/** ponytail: compares the numeric triple only, so a pre-release never counts as newer than its own release; a semver compare if pre-releases are ever published. */
+export function newerVersion(a: string, b: string): boolean {
+  const [x, y] = [a, b].map((v) => v.split("-")[0]!.split(".").map(Number));
+  for (let i = 0; i < 3; i++) if (x![i] !== y![i]) return (x![i] ?? 0) > (y![i] ?? 0);
+  return false;
+}
+
 /** Stage outside the mutable global install; retain successful versions for recovery. */
 export async function stageRelease(version: string, integrity: string, run: RunCommand = runCommand, home = hubHome()): Promise<{ root: string; digest: string }> {
   exactVersion(version);
