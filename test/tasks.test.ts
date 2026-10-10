@@ -10,7 +10,7 @@ import { HUB, newEnvelope, USER, type Envelope, type PeerState } from "../src/hu
 import { BasePeer } from "../src/hub/peers.ts";
 import { assign, currentRouting, detectSignals, loadRouting, SPLIT_MIN } from "../src/hub/routing.ts";
 import { DEFAULT_TASK_SWEEP } from "../src/hub/task-sweep.ts";
-import { Tasks } from "../src/hub/tasks.ts";
+import { AssignmentUndeliveredError, Tasks } from "../src/hub/tasks.ts";
 import { Briefs, parseRows } from "../src/memory/brief.ts";
 import { MemoryClient } from "../src/memory/client.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
@@ -2439,4 +2439,345 @@ test("a delivery_failed escalation whose assignment cannot publish runs the guar
   expect(notices.some((line) => line.includes("could not tell kimi it moved to codex") && line.includes("delivery journal unavailable"))).toBe(true);
   await until(() => saves().some((s) => typeof s.text === "string" && s.text.includes("escalated from kimi to codex")));
   expect(peers.kimi!.got.length).toBe(kimiHeard);
+});
+
+test("a ready offer whose assignment cannot publish is noticed as saved-but-unconfirmed, and the resend delivers (#297)", async () => {
+  const { tasks, board, bus, peers, notices } = await setup(["claude", "codex"]);
+  const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+  const c = await tasks.propose("claude", { title: "client", class: "implement", after: [a.id] });
+  await tasks.done("codex", a.id, "done");
+  const publish = bus.publish.bind(bus);
+  bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === String(c.id)) throw new Error("delivery journal unavailable"); return publish(env); };
+  try { await expect(tasks.review("claude", a.id, "approved")).resolves.toMatchObject({ state: "approved" }); }
+  finally { bus.publish = publish; }
+  // Board and notice agree: the move is saved, the delivery is not confirmed, and no notice says the move failed.
+  expect(board.get(c.id)!.owner).toBe("codex");
+  expect(notices.some((l) => l.includes(`task #${c.id} client`) && l.includes("delivery is not confirmed") && l.includes(`ahub task assign ${c.id} codex`))).toBe(true);
+  expect(notices.some((l) => l.includes("could not be assigned"))).toBe(false);
+  await tasks.assignTo(c.id, "codex", USER);
+  expect(peers.codex!.got.filter((e) => e.kind === "task" && e.refs?.task === String(c.id))).toHaveLength(1);
+});
+
+test("a budget relay move whose assignment cannot publish is noticed as saved-but-unconfirmed, the relay goes on, and the resend delivers (#297)", async () => {
+  const { tasks, board, bus, peers, notices } = await setup();
+  await tasks.propose("claude", { title: "write docs", class: "implement", owner: "kimi" });
+  await tasks.propose("claude", { title: "write tests", class: "implement", owner: "kimi" });
+  tasks.accept("kimi", 1);
+  tasks.accept("kimi", 2);
+  const publish = bus.publish.bind(bus);
+  bus.publish = (env) => { if (env.kind === "task" && (env.refs?.task === "1" || env.refs?.task === "2")) throw new Error("delivery journal unavailable"); return publish(env); };
+  let moved;
+  try {
+    moved = await tasks.reassignForPause("kimi", undefined);
+  } finally {
+    bus.publish = publish;
+  }
+  // Both moves are saved and recorded; the relay did not stop at the first failure.
+  expect(board.get(1)!.owner).toBe("local"); // local first for a paused peer
+  expect(board.get(2)!.owner).toBe("local");
+  expect(moved).toEqual([
+    { id: 1, title: "#1 write docs", to: "local", role: "owner" },
+    { id: 2, title: "#2 write tests", to: "local", role: "owner" },
+  ]);
+  expect(notices.filter((l) => l.includes("delivery is not confirmed") && l.includes("ahub task assign"))).toHaveLength(2);
+  expect(notices.some((l) => l.includes("task #1 write docs") && l.includes("ahub task assign 1 local"))).toBe(true);
+  expect(notices.some((l) => l.includes("task #2 write tests") && l.includes("ahub task assign 2 local"))).toBe(true);
+  await tasks.assignTo(1, "local", USER);
+  await tasks.assignTo(2, "local", USER);
+  expect(peers.local!.got.filter((e) => e.kind === "task" && e.refs?.task === "1")).toHaveLength(1);
+  expect(peers.local!.got.filter((e) => e.kind === "task" && e.refs?.task === "2")).toHaveLength(1);
+});
+
+test("an offline relay move whose assignment cannot publish is noticed as saved-but-unconfirmed (#297)", async () => {
+  const { tasks, board, bus, peers, notices, told } = await setup();
+  await tasks.propose("claude", { title: "write docs", class: "implement", owner: "kimi" });
+  tasks.accept("kimi", 1);
+  peers.kimi!.set("offline");
+  const publish = bus.publish.bind(bus);
+  bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === "1") throw new Error("delivery journal unavailable"); return publish(env); };
+  let moved;
+  try {
+    moved = await tasks.releaseFromGone("kimi", 5);
+  } finally {
+    bus.publish = publish;
+  }
+  const owner = board.get(1)!.owner!;
+  expect(owner).not.toBe("kimi");
+  expect(notices.some((l) => l.includes("task #1 write docs") && l.includes("delivery is not confirmed") && l.includes(`ahub task assign 1 ${owner}`))).toBe(true);
+  expect(notices.some((l) => l.includes("could not be released"))).toBe(false);
+  // The move is fact for the relay too: it is recorded, and the gone owner is told to stop (#297).
+  expect(moved).toEqual([{ id: 1, title: "#1 write docs", to: owner }]);
+  expect(told.some((l) => l.startsWith("kimi|") && l.includes(`moved to ${owner}`) && l.includes("stop working on it"))).toBe(true);
+});
+
+test("a console that throws in assignOwner's pre-write notices no longer fails a review whose verdict is saved (#297)", async () => {
+  const base = await setup(["claude", "kimi"]); // no codex: nobody to escalate to
+  const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (line) => {
+    if (line.includes("no peer can take it")) throw new Error("console unavailable");
+    base.notices.push(line);
+  } });
+  await tasks.propose("claude", { title: "summarize the log", class: "summarize", owner: "kimi" });
+  tasks.accept("kimi", 1);
+  await tasks.done("kimi", 1, "v");
+  await tasks.review("claude", 1, "changes_requested", "too long");
+  await tasks.done("kimi", 1, "v2");
+  // The second rejection escalates; nobody can take it, and the pre-write notice's throw must not fail the call.
+  await expect(tasks.review("claude", 1, "changes_requested", "still too long")).resolves.toMatchObject({ id: 1, owner: "kimi" });
+  expect(base.board.get(1)!.rejections).toBe(2);
+});
+
+test("a move made while the assignment's brief is being read is supersession, not an undelivered assignment (#297)", async () => {
+  const base = await setup();
+  await base.tasks.propose("claude", { title: "summarize the log", class: "summarize", owner: "kimi" });
+  base.tasks.accept("kimi", 1);
+  await base.tasks.done("kimi", 1, "v");
+  await base.tasks.review("claude", 1, "changes_requested", "too long");
+  await base.tasks.done("kimi", 1, "v2");
+  // The escalation writes owner codex; while sendTask reads the brief, a console assign moves the task to local
+  // and that delivery succeeds; the stale envelope to codex then throws.
+  const briefs = { forTask: async () => { base.board.update(1, "user", "reassigned", { owner: "local" }, "console assign during the brief"); return undefined; } };
+  const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (l) => base.notices.push(l), briefs: briefs as never });
+  const publish = base.bus.publish.bind(base.bus);
+  base.bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === "1") throw new Error("delivery journal unavailable"); return publish(env); };
+  try { await expect(tasks.review("claude", 1, "changes_requested", "still too long")).rejects.toThrow("delivery journal unavailable"); }
+  finally { base.bus.publish = publish; }
+  // The superseding move stands; nothing names either owner as undelivered, and no escalation tail ran.
+  expect(base.board.get(1)!.owner).toBe("local");
+  expect(base.notices.some((l) => l.includes("delivery is not confirmed"))).toBe(false);
+  expect(base.notices.some((l) => l.includes("escalated from kimi"))).toBe(false);
+});
+
+test("an AssignmentUndeliveredError serializes without the task's title or detail (#297)", async () => {
+  const { tasks, bus } = await setup();
+  await tasks.propose("claude", { title: "summarize the SECRET-MARKER log", class: "summarize", owner: "kimi", detail: "SECRET-DETAIL-MARKER" });
+  const publish = bus.publish.bind(bus);
+  bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === "1") throw new Error("delivery journal unavailable"); return publish(env); };
+  let caught: unknown;
+  try {
+    await tasks.assignTo(1, "codex", USER);
+  } catch (e) {
+    caught = e;
+  } finally {
+    bus.publish = publish;
+  }
+  expect(caught).toBeInstanceOf(AssignmentUndeliveredError);
+  const printed = JSON.stringify(caught);
+  expect(printed).not.toContain("SECRET-MARKER");
+  expect(printed).not.toContain("SECRET-DETAIL-MARKER");
+  // What the callers use is still there.
+  const err = caught as AssignmentUndeliveredError;
+  expect(err.task.owner).toBe("codex");
+  expect(err.message).toContain("delivery is not confirmed");
+});
+
+test("a failure between the assignment write and the delivery is the one notice and the typed error, on the ready offer (#297)", async () => {
+  const { tasks, board, notices } = await setup(["claude", "codex"]);
+  const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+  const c = await tasks.propose("claude", { title: "client", class: "implement", after: [a.id] });
+  await tasks.done("codex", a.id, "done");
+  // overlapHits reads the board after the assignment write; a failure there is the same delivery failure (#297).
+  (tasks as never as Record<string, unknown>).overlapHits = () => { throw new Error("board read failed mid-delivery"); };
+  await expect(tasks.review("claude", a.id, "approved")).resolves.toMatchObject({ state: "approved" });
+  expect(board.get(c.id)!.owner).toBe("codex");
+  expect(notices.filter((l) => l.includes("delivery is not confirmed") && l.includes(`ahub task assign ${c.id} codex`))).toHaveLength(1);
+  expect(notices.some((l) => l.includes("could not be assigned"))).toBe(false);
+});
+
+test("a failure between the assignment write and the delivery on the offline relay records the move and tells the gone owner (#297)", async () => {
+  const { tasks, board, notices, told, peers } = await setup();
+  await tasks.propose("claude", { title: "write docs", class: "implement", owner: "kimi" });
+  tasks.accept("kimi", 1);
+  peers.kimi!.set("offline");
+  (tasks as never as Record<string, unknown>).overlapHits = () => { throw new Error("board read failed mid-delivery"); };
+  const moved = await tasks.releaseFromGone("kimi", 5);
+  const owner = board.get(1)!.owner!;
+  expect(owner).not.toBe("kimi");
+  expect(moved).toEqual([{ id: 1, title: "#1 write docs", to: owner }]);
+  expect(notices.filter((l) => l.includes("delivery is not confirmed"))).toHaveLength(1);
+  expect(told.some((l) => l.startsWith("kimi|") && l.includes("stop working on it"))).toBe(true);
+});
+
+test("a review whose escalation hits a failure between the write and the delivery returns the saved task with the notice (#297)", async () => {
+  const { tasks, board, notices } = await setup();
+  await tasks.propose("claude", { title: "summarize the log", class: "summarize", owner: "kimi" });
+  tasks.accept("kimi", 1);
+  await tasks.done("kimi", 1, "v");
+  await tasks.review("claude", 1, "changes_requested", "too long");
+  await tasks.done("kimi", 1, "v2");
+  (tasks as never as Record<string, unknown>).overlapHits = () => { throw new Error("board read failed mid-delivery"); };
+  await expect(tasks.review("claude", 1, "changes_requested", "still too long")).resolves.toMatchObject({ id: 1, owner: "codex", state: "in_progress" });
+  expect(board.get(1)!.owner).toBe("codex");
+  expect(notices.filter((l) => l.includes("delivery is not confirmed") && l.includes("ahub task assign 1 codex"))).toHaveLength(1);
+  expect(notices.some((l) => l.includes("escalated from kimi to codex"))).toBe(true); // the tail ran
+});
+
+test("a throwing console on the passed-over notice does not fail a decline after its write (#297)", async () => {
+  const base = await setup();
+  const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (line) => {
+    if (line.includes("is passed over")) throw new Error("console unavailable");
+    base.notices.push(line);
+  } });
+  const a = await tasks.propose("claude", { title: "schema", class: "implement", owner: "codex" });
+  const c = await tasks.propose("claude", { title: "client", class: "implement", after: [a.id] });
+  await tasks.assignTo(c.id, "kimi", USER); // reserved while it waits
+  expect(base.board.get(c.id)!.reserved).toBe("kimi");
+  base.peers.kimi!.set("offline");
+  await tasks.done("codex", a.id, "done");
+  await tasks.review("claude", a.id, "approved"); // the offer assigns local (routing's first), passing over the reserved, offline kimi
+  expect(base.board.get(c.id)!.owner).toBe("local");
+  await expect(tasks.decline("local", c.id, "busy")).resolves.toMatchObject({ id: c.id });
+  const after = base.board.get(c.id)!;
+  expect(after.history.some((h) => h.event === "declined")).toBe(true);
+  expect(after.owner).not.toBe("local");
+});
+
+test("a same-owner reassign or an approval during the brief is supersession: the caller's error, no notice (#297)", async () => {
+  for (const meanwhile of ["reassigned-same-owner", "approved"] as const) {
+    const base = await setup();
+    await base.tasks.propose("claude", { title: "summarize the log", class: "summarize", owner: "kimi" });
+    base.tasks.accept("kimi", 1);
+    await base.tasks.done("kimi", 1, "v");
+    await base.tasks.review("claude", 1, "changes_requested", "too long");
+    await base.tasks.done("kimi", 1, "v2");
+    const briefs = {
+      forTask: async () => {
+        if (meanwhile === "reassigned-same-owner") base.board.update(1, "user", "reassigned", { owner: "codex" }, "assigned again and delivered");
+        else base.board.update(1, "claude", "approved", { state: "approved" }, "approved meanwhile");
+        return undefined;
+      },
+    };
+    const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (l) => base.notices.push(l), briefs: briefs as never });
+    const publish = base.bus.publish.bind(base.bus);
+    base.bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === "1") throw new Error("delivery journal unavailable"); return publish(env); };
+    try { await expect(tasks.review("claude", 1, "changes_requested", "still too long")).rejects.toThrow("delivery journal unavailable"); }
+    finally { base.bus.publish = publish; }
+    expect(base.notices.some((l) => l.includes("delivery is not confirmed"))).toBe(false);
+    expect(base.notices.some((l) => l.includes("escalated from kimi"))).toBe(false);
+  }
+});
+
+test("the hub's own bookkeeping during the brief is not supersession: the notice and the typed error stand (#297)", async () => {
+  for (const meanwhile of ["check finished late", "reviewer changed"] as const) {
+    const base = await setup();
+    await base.tasks.propose("claude", { title: "summarize the log", class: "summarize", owner: "kimi" });
+    base.tasks.accept("kimi", 1);
+    await base.tasks.done("kimi", 1, "v");
+    await base.tasks.review("claude", 1, "changes_requested", "too long");
+    await base.tasks.done("kimi", 1, "v2");
+    // The escalation writes owner codex; while sendTask reads the brief, the hub records an entry that moves
+    // nothing (a late check result, a reviewer change); the envelope to codex then throws.
+    const briefs = {
+      forTask: async () => {
+        if (meanwhile === "check finished late") base.board.update(1, HUB, "check finished late", {}, "check passed (late)");
+        else base.board.update(1, HUB, "reviewer changed", { reviewer: "local" }, "reviewer paused for quota");
+        return undefined;
+      },
+    };
+    const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (l) => base.notices.push(l), briefs: briefs as never });
+    const publish = base.bus.publish.bind(base.bus);
+    base.bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === "1") throw new Error("delivery journal unavailable"); return publish(env); };
+    try { await expect(tasks.review("claude", 1, "changes_requested", "still too long")).resolves.toMatchObject({ id: 1, owner: "codex" }); }
+    finally { base.bus.publish = publish; }
+    expect(base.notices.filter((l) => l.includes("delivery is not confirmed") && l.includes("ahub task assign 1 codex"))).toHaveLength(1);
+    expect(base.notices.some((l) => l.includes("escalated from kimi to codex"))).toBe(true);
+  }
+});
+
+test("a second rejection whose escalation lifts a silent cohort returns the saved task when every publish fails (#297)", async () => {
+  const { tasks, bus, board, notices, state } = await turnFreeRig();
+  const first = await tasks.propose("kimi", { title: "bus refactor", class: "implement", owner: "kimi", refs: { paths: ["src/hub/bus.ts"] }, plan: { symbols: ["Bus.publish"], signatures: ["publish(env: Envelope): PeerId[]"] } });
+  const offered = await tasks.propose("claude", { title: "retry", class: "implement", owner: "codex" });
+  tasks.accept("codex", offered.id, { paths: ["src/hub/retry.ts"], symbols: ["Bus.publish"] });
+  await tasks.done("kimi", first.id, "v");
+  await tasks.review("claude", first.id, "changes_requested", "too long");
+  await tasks.done("kimi", first.id, "v2");
+  // The escalation hands the task to codex, whose context path is no longer verified: formCohort lifts the silent
+  // cohort, and announceLift's "silence is lifted" envelopes are the publishes that fail here. At 5dc9d74
+  // formCohort sat outside the try, so this throw escaped as a plain error with the move saved (#297).
+  expect(tasks.silentFor(first.id)).toBe(true);
+  state.capable.delete("codex");
+  let forming = false;
+  const cohortFailures: { owner: string | null; body: string }[] = [];
+  const internal = tasks as unknown as { formCohort: (...args: any[]) => void };
+  const form = internal.formCohort.bind(tasks);
+  internal.formCohort = (...args) => { forming = true; try { form(...args); } finally { forming = false; } };
+  const publish = bus.publish.bind(bus);
+  bus.publish = env => {
+    if (forming) cohortFailures.push({ owner: board.get(first.id)!.owner, body: env.body });
+    throw new Error("delivery journal unavailable");
+  };
+  try { await expect(tasks.review("claude", first.id, "changes_requested", "still too long")).resolves.toMatchObject({ id: first.id, owner: "codex" }); }
+  finally { bus.publish = publish; internal.formCohort = form; }
+  expect(cohortFailures).toHaveLength(1);
+  expect(cohortFailures[0]!.owner).toBe("codex"); // the assignment write happened before the failing cohort publish
+  expect(cohortFailures[0]!.body).toContain("turn-free silence is lifted");
+  expect(board.get(first.id)!.owner).toBe("codex");
+  expect(notices.some((l) => l.includes("no longer silent"))).toBe(true); // the lift is what published
+  expect(notices.filter((l) => l.includes("delivery is not confirmed") && l.includes(`ahub task assign ${first.id} codex`))).toHaveLength(1);
+});
+
+test("propose, assignTo, decline and a manual escalation each print exactly one console notice and keep their error (#297)", async () => {
+  const { tasks, bus, notices, board } = await setup();
+  const undelivered = () => notices.filter((l) => l.includes("delivery is not confirmed")).length;
+  const failing = (id: string) => {
+    const p = bus.publish.bind(bus);
+    bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === id) throw new Error("delivery journal unavailable"); return p(env); };
+    return () => { bus.publish = p; };
+  };
+  // Each caller gets the typed error, not a plain one with the same message (#297).
+  const undeliveredError = async (p: Promise<unknown>) => {
+    const e = await p.catch((caught) => caught);
+    expect(e).toBeInstanceOf(AssignmentUndeliveredError);
+    expect((e as Error).message).toContain("delivery journal unavailable");
+  };
+  let restore = failing("1");
+  try { await undeliveredError(tasks.propose("claude", { title: "write docs", class: "implement" })); } finally { restore(); }
+  expect(undelivered()).toBe(1);
+  await tasks.propose("claude", { title: "write docs", class: "implement", owner: "kimi" });
+  tasks.accept("kimi", 2);
+  restore = failing("2");
+  try { await undeliveredError(tasks.assignTo(2, "codex", USER)); } finally { restore(); }
+  expect(undelivered()).toBe(2);
+  await tasks.propose("claude", { title: "write notes", class: "summarize", owner: "kimi" });
+  tasks.accept("kimi", 3);
+  restore = failing("3");
+  try { await undeliveredError(tasks.decline("kimi", 3, "busy")); } finally { restore(); }
+  expect(undelivered()).toBe(3);
+  const owner = board.get(3)!.owner!;
+  restore = failing("3");
+  try { await undeliveredError(tasks.escalate(USER, 3, "by hand")); } finally { restore(); }
+  expect(undelivered()).toBe(4);
+  expect(owner).not.toBe("kimi");
+});
+
+
+test("manual escalation preserves typed undelivered evidence across late checks and reviewer bookkeeping (#297)", async () => {
+  for (const meanwhile of ["check finished late", "reviewer changed"] as const) {
+    const base = await setup();
+    await base.tasks.propose("claude", { title: "summarize the log", class: "summarize", owner: "kimi" });
+    base.tasks.accept("kimi", 1);
+    const briefs = { forTask: async () => {
+      base.board.update(1, HUB, meanwhile, meanwhile === "reviewer changed" ? { reviewer: "local" } : {}, meanwhile === "reviewer changed" ? "reviewer paused for quota" : "check passed (late)");
+      return undefined;
+    } };
+    const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: line => base.notices.push(line), briefs: briefs as never });
+    const attempted: Envelope[] = [];
+    const publish = base.bus.publish.bind(base.bus);
+    base.bus.publish = env => {
+      attempted.push(env);
+      if (env.kind === "task" && env.refs?.task === "1") throw new Error("delivery journal unavailable");
+      return publish(env);
+    };
+    let caught: unknown;
+    try { await tasks.escalate(USER, 1, "by hand").catch(error => { caught = error; }); }
+    finally { base.bus.publish = publish; }
+    expect(caught).toBeInstanceOf(AssignmentUndeliveredError);
+    expect((caught as AssignmentUndeliveredError).task).toMatchObject({ id: 1, owner: "codex" });
+    expect((caught as AssignmentUndeliveredError).task.history.some(entry => entry.event === meanwhile)).toBe(true);
+    expect(base.board.get(1)!.owner).toBe("codex");
+    expect(base.notices.filter(line => line.includes("delivery is not confirmed"))).toHaveLength(1);
+    expect(base.notices.some(line => line.includes("ahub task assign 1 codex"))).toBe(true);
+    expect(base.notices.some(line => line.includes("escalated from kimi to codex"))).toBe(true);
+    expect(attempted.some(env => env.to?.includes("kimi") && env.body.includes("Stop working on it."))).toBe(true);
+  }
 });
