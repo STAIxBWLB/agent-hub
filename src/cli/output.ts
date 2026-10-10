@@ -42,16 +42,16 @@ function rows(head: string[], data: Span[][], columns?: number, details?: Span[]
   const protectedColumns = new Set(head.map((h, i) => ["ID", "OWNER", "REVIEWER", "AGE", "STAGE", "Q", "!", "REVIEW", "REV", "PEER", "STATE", "MODE", "LEVEL", "LINK", "CLASS"].includes(h) ? i : -1));
   const words = head.map((_, i) => Math.max(...data.flatMap(row => row[i]!.text.split(/\s+/).map(width))));
   const minimum = head.map((h, i) => Math.max(width(h), protectedColumns.has(i) ? words[i]! : 0));
-  // Context gets a readable soft minimum only after ids, counters and other atomic metadata have their room.
-  if (head[flexible] === "CONTEXT") {
-    const remaining = columns - 2 * (head.length - 1) - minimum.reduce((sum, n, i) => sum + (i === flexible ? 0 : n), 0);
-    minimum[flexible] = Math.max(width(head[flexible]!), Math.min(natural[flexible]!, 12, remaining));
-  }
+  // Reserve readable flexible text before a multi-word state consumes the space; atomic words still win.
+  if (["TITLE", "CONTEXT"].includes(head[flexible]!)) minimum[flexible] = Math.max(minimum[flexible]!, Math.min(natural[flexible]!, 12));
   // Narrow tables become linked bands before an id, peer, age, counter or state word would split.
   if (minimum.reduce((sum, n) => sum + n, 0) + 2 * (head.length - 1) > columns) {
     const bands: number[][] = []; let band = [0];
     for (let i = 1; i < head.length; i++) {
-      if ([...band, i].reduce((sum, index) => sum + minimum[index]!, 0) + 2 * band.length > columns) {
+      // Keep a board title with its stage meter: if both cannot fit here, give the title the next band's room.
+      const stage = head.indexOf("STAGE");
+      const trial = [...band, i, ...(i === flexible && stage > i ? [stage] : [])];
+      if (trial.reduce((sum, index) => sum + minimum[index]!, 0) + 2 * (trial.length - 1) > columns) {
         bands.push(band);
         band = minimum[0]! + minimum[i]! + 2 <= columns ? [0] : [];
       }
