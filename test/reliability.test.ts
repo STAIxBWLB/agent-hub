@@ -297,3 +297,20 @@ test("#102 control config meters a local peer across turns without resetting its
   expect(status.budgets.used.model_calls).toBe(1);
   expect((await h.console_.request({ t: "execution_budget", op: "configure", config: { id: "native", kind: "run", peers: ["codex"], limits: { tool_calls: 1 } } })).ok).toBe(false);
 });
+
+test("#297 a saved escalation whose assignment publish fails is noticed as unconfirmed, never as a failed escalation", async () => {
+  const h = await hub();
+  const p = await attach(h.daemon, "local"); p.mode = "failed_safe";
+  await attach(h.daemon, "kimi");
+  // The escalation's assignment envelope (to kimi) throws after the board write, as with a latched journal error.
+  const publish = h.daemon.bus.publish.bind(h.daemon.bus);
+  h.daemon.bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === "1" && env.to?.includes("kimi")) throw new Error("delivery journal unavailable"); return publish(env); };
+  try {
+    await h.op("hub_task_propose", { title: "give up", class: "implement", owner: "local" });
+    await until(() => h.notices.some((n) => n.includes("task #1 give up") && n.includes("delivery is not confirmed") && n.includes("ahub task assign 1 kimi")), 8000);
+  } finally {
+    h.daemon.bus.publish = publish;
+  }
+  expect(h.notices.some((n) => n.includes("could not be escalated"))).toBe(false);
+  expect(JSON.parse((await h.op("task_show", { id: 1 })).text).owner).toBe("kimi");
+});

@@ -466,3 +466,23 @@ test("with the screen off a summary that is not a string is stored as before; a 
   const fenced = new Tasks({ board: s.board, bus: s.bus, routing: () => loadRouting(s.dir), cwd: s.dir, project: "agent-hub", notify: () => {}, piiScreen: async () => ({ label: "unknown", miss: "off campus", ms: 1 }), triage: { classify: async () => "implement", onCampus: async () => false } });
   await expect(fenced.propose("claude", { title: "fix the parser" })).rejects.toThrow("the task is handled as PII and the hub's model is not reached on campus, so it was not asked to name one");
 });
+
+test("a cleared rescreen whose assignment cannot publish is noticed as saved-but-unconfirmed (#297)", async () => {
+  let verdict: PiiVerdict = { label: "unknown", miss: "timeout", ms: 1 };
+  const r = await rig("local", async () => verdict, ["claude", "codex", "kimi"]); // no local: nobody can take a PII task
+  const t = await r.tasks.propose("claude", { title: "fix the parser", class: "implement" });
+  expect(t).toMatchObject({ owner: null, signals: ["pii"] });
+  verdict = { label: "clear", ms: 5 };
+  const publish = r.bus.publish.bind(r.bus);
+  r.bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === String(t.id)) throw new Error("delivery journal unavailable"); return publish(env); };
+  try {
+    await r.tasks.rescreen();
+  } finally {
+    r.bus.publish = publish;
+  }
+  const lifted = r.board.get(t.id)!;
+  expect(lifted.owner).not.toBeNull(); // the move is saved
+  expect(r.notices.some((l) => l.includes(`task #${t.id} fix the parser`) && l.includes("delivery is not confirmed") && l.includes(`ahub task assign ${t.id} ${lifted.owner}`))).toBe(true);
+  await r.tasks.assignTo(t.id, lifted.owner!, "user");
+  expect(r.peers[lifted.owner!]!.got.filter((e) => e.kind === "task" && e.refs?.task === String(t.id))).toHaveLength(1);
+});

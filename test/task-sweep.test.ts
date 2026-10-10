@@ -151,3 +151,21 @@ test("sweep: explicit opt-in reassigns owner within routing constraints, reviewe
   expect(f.board.get(task.id)!.owner).toBe("local");
   expect(f.notices.at(-1)).toContain("Reviewer reassignment suggestion");
 });
+
+test("sweep: an auto-reassign whose assignment cannot publish is noticed as saved-but-unconfirmed and the sweep goes on (#297)", async () => {
+  const f = await fixture({ sweep: { ...DEFAULT_TASK_SWEEP, enabled: true, unaccepted_min: 1, review_min: 1, ladder_min: 1, auto_reassign: true } });
+  const task = f.make();
+  const at = task.history.at(-1)!.at + 60_001;
+  for (let step = 0; step < 2; step++) { await f.tasks.sweep(at + step * 60_000); await drain(); }
+  const publish = f.bus.publish.bind(f.bus);
+  f.bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === String(task.id)) throw new Error("delivery journal unavailable"); return publish(env); };
+  try {
+    await f.tasks.sweep(at + 2 * 60_000);
+  } finally {
+    f.bus.publish = publish;
+  }
+  await drain();
+  const owner = f.board.get(task.id)!.owner!;
+  expect(owner).toBe("local");
+  expect(f.notices.some((l) => l.includes("delivery is not confirmed") && l.includes(`ahub task assign ${task.id} ${owner}`))).toBe(true);
+});
