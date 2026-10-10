@@ -1964,11 +1964,16 @@ acts on the stopped state directory.
   `src/hub/research.ts`), so live and backfilled records agree, and appends it to the machine-wide store
   `~/.agenthub/research/<sha256(project id)[0:16]>.jsonl`. Records hold ids, states, counts, tokens and times only,
   because the events do; schema and fields: [research](../research.md).
-- The board has no terminal state but `approved`, so records are written at approval only; a task approved again
-  gets a newer revision, and a person's later verdict (`ahub task label`, including `abandoned`) is a separate label
-  record. Measures (success, first pass, rework, check failures, tokens and wall time per task) are derived when
-  reported, never stored.
+- The board has no terminal state but `approved`, and it is final, so each approved task gets one record; a person's
+  later verdict (`ahub task label`, including `abandoned`) is a separate label record bound to the task's proposal
+  time. A task is keyed by project, id and proposal time, because `ahub reset --all` restarts the ids and the store
+  keeps the older records. Measures (success, first pass, rework, check failures over checks run, tokens and wall time
+  per task) are derived when reported, never stored.
+- The record counts everything attributed to the task, the turn that approved it included: that turn ends after the
+  approval and its usage arrives later, so the writer waits until no open turn is attributed to the task (polled every
+  10 s, at most 30 minutes; a stopping hub writes what it has). Task events carry the board's move `reason` (a closed
+  list) so reassignments are counted by reason.
 - Recording never blocks or fails the task flow: the writer runs after the board event, and a failure is one
-  hub.log line per run. ponytail: it reads the whole events file at each approval; an incremental per-task index
+  hub.log line per run. ponytail: it reads the whole events file for each record; an incremental per-task index
   if that file grows large.
 - Agents may read the measures and export; backfill and labels are a person's (identity gate).

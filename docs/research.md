@@ -23,40 +23,48 @@ directory, so `ahub research --all` can compare them. `ahub reset --all` does no
 
 ## When a record is written
 
-When a task is approved (a review approves it, or its owner reports a task without a reviewer done), the hub appends
-one task record built from that project's events up to the approval. A task approved again after it reopened gets a
-newer record with `revision` one higher; reports use the latest revision. A failing write is one `hub.log` line per hub
-run and never changes the task flow.
+When a task is approved (a review approves it, or its owner reports a task without a reviewer done), the hub waits
+until no open turn is attributed to the task (the turn that approved it ends after the approval, and its usage arrives
+later still), checking every 10 s for at most 30 minutes, then appends one task record built from that project's events.
+A hub that stops first writes what it has. Approval is final on the board, so each task has one record. A failing write
+is one `hub.log` line per hub run and never changes the task flow.
 
 `ahub research backfill` builds the same records from a project's existing `events.jsonl` (marked
-`writer.source: "backfill"`) and appends those the store does not hold yet (same task, revision and approval time).
+`writer.source: "backfill"`), reading every event attributed to a task, and appends those the store does not hold yet.
+A task is identified by project, id and proposal time (`createdAt`), because `ahub reset --all` starts the ids again
+while the store keeps the older records.
 
 ## Task record (`agent-hub.research/v1`, `kind: "task"`)
 
 | Field | Meaning |
 | --- | --- |
 | `project` | the project key above |
-| `task`, `revision` | the board's task id; 1 for the first approval |
+| `task` | the board's task id |
 | `class`, `pii` | the task's class; whether it was a PII task (its record holds counts only, like any other) |
 | `outcome` | `approved` |
-| `createdAt`, `startedAt`, `approvedAt` | proposal, first `in_progress`, this approval (ISO) |
+| `createdAt`, `startedAt`, `approvedAt` | proposal, first `in_progress`, approval (ISO) |
 | `wallMs` | from `startedAt` to `approvedAt`, null when the start is not in the events |
-| `activeMs`, `turns`, `filesChanged` | sums over the turns attributed to the task (`turn_end`) |
-| `owners`, `reviewer` | peer ids that owned it, the last reviewer |
-| `reviewRounds`, `changesRequested`, `checkFailed`, `dones`, `reassignments` | times it went to review, was sent back, failed its check, was reported done, was declined, escalated or reassigned |
+| `activeMs`, `turns`, `filesChanged` | sums over the turns attributed to the task (`turn_end`), the ones ending after the approval included |
+| `owners`, `reviewer` | the owners in the order they held the task; the last reviewer |
+| `reviewRounds`, `changesRequested`, `dones` | times it went to review, was sent back, was reported done |
+| `checkPassed`, `checkFailed` | check results; a check that fails produces no done, so dones without a check are `dones - checkPassed` |
+| `reassignments`, `reassignedBy` | owner changes after the first owner, and the same by the board's move reason (`declined`, `idle`, `offline`, `budget`, `rejections`, `manual`, ...) |
 | `firstPass` | approved on its first review with no failed check and no changes requested |
 | `stuck`, `overlaps`, `conflicts` | escalation verdicts, overlap warnings and file conflicts about the task |
 | `tests` | route outcomes that ran tests: `pass`, `fail` counts |
-| `tokens` | attributed tokens, `total` and `byPeer` (#200 attribution; unattributed tokens are in no record) |
+| `tokens` | attributed tokens: `total`, `byPeer`, and `byAttribution` (`delivery`, `single_open`, the #200 rules); unattributed tokens are in no record |
 | `usage` | provider usage per peer: `input`, `output`, `cacheRead`, `total` (null when never reported) |
+| `usageByModel` | provider-reported total tokens per served (else requested) model |
 | `models` | model routes and served models of the attributed requests |
 | `writer` | the release and `live` or `backfill` |
 
 ## Label record (`kind: "label"`)
 
-`ahub task label <id> ok|regressed|reverted|incomplete|wrong|abandoned` appends `{ project, task, label, at }`: a
-person's later verdict (a revert next week, a regression found later, work given up). Only a person can run it (agent
-shells are refused), and only while research is on. The latest label wins.
+`ahub task label <id> ok|regressed|reverted|incomplete|wrong|abandoned` appends `{ project, task, createdAt, label, at }`:
+a person's later verdict (a revert next week, a regression found later, work given up) on the latest record with that
+id, which `createdAt` pins, so a later task with the same id after a reset does not inherit it. A task with no record
+yet is refused. Only a person can run it (agent shells are refused), and only while research is on. The latest label
+wins.
 
 ## Measures
 
@@ -65,13 +73,14 @@ shells are refused), and only while research is on. The latest label wins.
 - success rate: approved tasks whose latest label is none or `ok`, over approved tasks;
 - first-pass rate: `firstPass` over approved tasks;
 - rework: changes requested per approved task;
-- check-failure rate: failed checks over reported dones;
-- tokens and wall time per approved task, median and p90.
+- check-failure rate: failed checks over checks run (`checkFailed / (checkFailed + checkPassed)`);
+- tokens and wall time per approved task, median and p90 (linear interpolation between ranks).
 
 They are computed each time from the records; nothing derived is stored. `ahub research export [--format jsonl|csv]
-[--since] [--all]` writes the records for outside analysis; the CSV columns are, in order: project, task, revision,
-class, pii, outcome, createdAt, startedAt, approvedAt, wallMs, activeMs, owners, reviewer, reviewRounds,
-changesRequested, checkFailed, dones, reassignments, firstPass, stuck, overlaps, conflicts, testsPass, testsFail, tokens,
-turns, filesChanged, models, label, writerVersion, writerSource.
+[--since] [--all]` writes the records for outside analysis; the CSV columns are, in order: project, task, class, pii, outcome,
+createdAt, startedAt, approvedAt, wallMs, activeMs, owners, reviewer, reviewRounds, changesRequested, checkPassed,
+checkFailed, dones, reassignments, firstPass, stuck, overlaps, conflicts, testsPass, testsFail, tokens, turns,
+filesChanged, models, label, writerVersion, writerSource. The CSV is a flat subset; JSONL carries every field.
+Another project's measures: `ahub --project <dir> research`.
 
 Agents may read the measures and export (ids and counts only); `backfill` and `task label` are a person's.

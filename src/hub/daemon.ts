@@ -291,6 +291,8 @@ export interface DaemonOptions {
   orphanWatchMs?: number;
   /** Deterministic task-sweep time; the production default is Date.now. */
   taskSweepNow?: () => number;
+  /** How long a research record waits after an approval for the task's open turns to end (#247). Tests shrink this. */
+  researchGraceMs?: number;
 }
 
 interface Client {
@@ -406,14 +408,32 @@ export async function startDaemon(opts: DaemonOptions) {
    * ponytail: reads the whole events file at each approval; an incremental per-task index if that file grows large.
    */
   let researchLogged = false;
-  const recordResearch = (taskId: number) => setTimeout(() => {
+  // The approving turn ends after the approval and its usage arrives later still, so a record waits until no open turn
+  // is attributed to the task, checking every grace period. ponytail: polling with a 30 min cap, a turn_end hook if the
+  // wait ever matters; a hub that stops first writes what it has, and backfill rebuilds from the full events later.
+  const researchGraceMs = opts.researchGraceMs ?? 10_000;
+  const researchPending = new Map<number, { since: number; timer: ReturnType<typeof setTimeout> }>();
+  const writeResearch = (taskId: number) => {
+    const pending = researchPending.get(taskId);
+    if (pending) clearTimeout(pending.timer);
+    researchPending.delete(taskId);
     try {
       appendRecords(projectId, taskRecords(readEvents(join(opts.stateDir, "events.jsonl")), projectId, { version: VERSION, source: "live" }).filter((r) => r.task === taskId));
     } catch (error) {
       if (!researchLogged) log(`research record not written: ${(error as Error).message}`);
       researchLogged = true;
     }
-  }, 0);
+  };
+  const settleResearch = (taskId: number) => {
+    const pending = researchPending.get(taskId);
+    if (!pending) return;
+    const open = [...turns.values()].some((t) => t.attribution.task === taskId);
+    if (open && Date.now() - pending.since < 30 * 60_000) pending.timer = setTimeout(() => settleResearch(taskId), researchGraceMs);
+    else writeResearch(taskId);
+  };
+  const recordResearch = (taskId: number) => {
+    if (!researchPending.has(taskId)) researchPending.set(taskId, { since: Date.now(), timer: setTimeout(() => settleResearch(taskId), researchGraceMs) });
+  };
 
   // Any local web page can open a WebSocket to a loopback port, so the control link needs a secret.
   // The file is written only after the port is bound: a second daemon that loses the bind must not clobber it.
@@ -896,7 +916,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if ((h.event === "integration requested" || h.event === "integration unresolved") && /has not stopped/.test(h.note ?? "")) {
       for (const m of tasks.cohorts.of(t.id)?.members.values() ?? []) if (m.task !== t.id) log(`turn-free: task #${t.id} waits on ${stopEvidence(m.owner)}`);
     }
-    event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, pii: tasks.isPii(t) });
+    event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, pii: tasks.isPii(t), ...(h.reason ? { reason: h.reason } : {}) });
     if (config.research.enabled && t.state === "approved" && (h.event === "approved" || h.event === "done")) recordResearch(t.id);
     supervision.taskChanged(t, h);
     // Models can self-claim after their turn begins; preserve that ownership even if they finish before settlement.
@@ -2936,6 +2956,7 @@ export async function startDaemon(opts: DaemonOptions) {
       await egress?.close();
       await piReceipts?.close();
       collectClaudeUsage();
+      for (const id of [...researchPending.keys()]) writeResearch(id); // the turns are over now; backfill can redo it
       budget.close();
       conductorHolds.close();
       executionBudget.close();
