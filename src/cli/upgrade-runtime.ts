@@ -131,8 +131,10 @@ export async function inspectRecovery(project: Project): Promise<Inspection> {
       peers: [], blockers: ["runtime changed during recovery inspection"] };
   }
   const peers = Object.values(response.recovery?.peers ?? {}) as any[];
+  // #272: the hub's own words for what it waits on; shown to the person, never decided on.
+  const waiting = (Array.isArray(response.recovery?.blockers) ? response.recovery.blockers : []).filter((b: unknown): b is string => typeof b === "string").slice(0, 20).map((b: string) => b.slice(0, 200));
   return { state: "running", instanceId: status.instanceId, version: status.version, protocol: status.protocol,
-    recovery: { operationId: response.recovery?.operationId, phase: response.recovery?.phase, ready: response.recovery?.ready }, peers: peers.map((peer) => ({ id: peer.id, state: peer.state,
+    recovery: { operationId: response.recovery?.operationId, phase: response.recovery?.phase, ready: response.recovery?.ready, ...(waiting.length ? { waiting } : {}) }, peers: peers.map((peer) => ({ id: peer.id, state: peer.state,
       ...(peer.threadId ? { threadId: peer.threadId } : {}), ...(peer.sessionId ? { sessionId: peer.sessionId } : {}),
       ...(typeof (peer.sessionFile ?? peer.launch?.sessionFile) === "string" ? { sessionFile: peer.sessionFile ?? peer.launch.sessionFile } : {}),
       ...(peer.launch ? { args: Object.fromEntries(Object.entries(peer.launch).filter(([k, v]) => ["model", "route", "sessionFile", "mode", "backend"].includes(k) && typeof v === "string")) as Record<string, string> } : {}) })), blockers: [] };

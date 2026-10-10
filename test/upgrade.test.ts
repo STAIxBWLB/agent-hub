@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { abortRecovery, abortRefusal, createOperation, disposeRecovery, FinalRefusal, liveProjects, nextActions, planFingerprint, publicOperation, recoveryCommand, registeredProjects, runRecovery, type Inspection, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
+import { abortRecovery, abortRefusal, createOperation, disposeRecovery, FinalRefusal, liveProjects, nextActions, nextChoices, planFingerprint, publicOperation, recoveryCommand, registeredProjects, runRecovery, type Inspection, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { acquireRecoveryLock, activeOperation, claimRunner, readOperation, recoveryLock, recoveryRunner, releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
 import { exactVersion, packageDigest, registryRelease } from "../src/cli/recovery-package.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
@@ -922,7 +922,15 @@ test("next offers exactly what the commands accept, and resume only where it can
     const at = `${receipt} / ${live}`, wrong: string[] = [];
     const f = make(receipt, live), id = f.operation.id;
     const initial = readOperation<RecoveryOperation>(id, f.home);
-    const next = nextActions(initial, undefined, await liveProjects(initial, f.driver.inspect));
+    const seen = await liveProjects(initial, f.driver.inspect);
+    const next = nextActions(initial, undefined, seen);
+    // #272: the screens' structured choices are this same list, and each kind is the command its text prints.
+    const choices = nextChoices(initial, undefined, seen);
+    if (JSON.stringify(choices.map((c) => c.text)) !== JSON.stringify(next)) wrong.push("choices differ from next");
+    for (const c of choices) {
+      const names = { resume: ` recovery resume ${id}`, abort: ` recovery abort ${id}`, fresh: `--fresh-session ${c.peer} `, stop: "--stop-and-archive", wait: "" }[c.kind];
+      if (c.kind === "wait" ? /recovery (resume|abort|dispose) /.test(c.text) : !c.text.includes(names)) wrong.push(`choice ${c.kind} does not match its text`);
+    }
     const twin = () => make(receipt, live);
     const abort = twin(), stop = twin(), fresh = twin();
     const offered = {

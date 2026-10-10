@@ -17,16 +17,24 @@ their matching CLI; the new coordinator never guesses a PID to terminate.
 
 ## Commands
 
-- `ahub upgrade --to <exact-version> --dry-run`: inspect the running registered
-  projects, release identity, native session mappings and blockers.
-- `ahub upgrade --to <exact-version> [--yes]`: review the plan, revalidate it and
-  schedule an independent recovery process. `--yes` accepts the displayed scope;
-  it never overrides blockers.
+- `ahub upgrade [--to <exact-version>] --dry-run`: inspect the running registered
+  projects, release identity, native session mappings and blockers. Without
+  `--to` the target is the registry's latest release (#272).
+- `ahub upgrade [--to <exact-version>] [--yes]`: review the plan, revalidate it and
+  schedule an independent recovery process. `--yes` accepts the displayed scope
+  and needs `--to`; it never overrides blockers. On a terminal without either
+  flag the review, the apply and the progress are one interactive session (see
+  "Interactive screens").
+- A target newer than the running CLI is handed to that release's own
+  coordinator (`bun x --package @staix/agent-hub@<version> ahub upgrade --to
+  <version>` with the same flags), named on stderr first and confirmed on a
+  terminal (#272).
 - `ahub --project <path|id> restart [--dry-run] [--yes]`: recover one project using
   the current package, without changing the global installation or plugin.
-- `ahub recovery status|resume <operation-id>`: read redacted progress or resume
-  the recorded operation after checking live ownership.
-- `ahub recovery abort <operation-id>`: cancel a preflight and release its lock
+- `ahub recovery status|resume [<operation-id>]`: read redacted progress or resume
+  the recorded operation after checking live ownership. Without an id every
+  `recovery` command takes the operation that holds the machine's lock (#272).
+- `ahub recovery abort [<operation-id>]`: cancel a preflight and release its lock
   only before a runtime has stopped or a terminal mutation has been attempted.
 
 Upgrade uses all affected running registrations. Stopped projects stay stopped.
@@ -508,3 +516,33 @@ lose. Detaching forgets nothing; a thread whose start the log does not show
 (resumed, an older hub, a pruned log) is unsure and stays a plan blocker, as
 does one with turns. A planned fresh start still needs the store to show the
 rollout missing: an unreadable store blocks the close and the create.
+
+### Interactive screens (#272)
+
+`ahub upgrade`, `ahub restart` and bare `ahub recovery` on a terminal are a
+front end to the commands above, never a second coordinator.
+
+- The screens (`src/cli/upgrade-interactive.ts`) read the plan, the receipt, the
+  runner claim and the live inspections, and change an operation only by running
+  `recovery resume|abort|dispose` or `reset` as a child process, with the
+  operation's own coordinator (`recoveryArgv`, the argv form of
+  `recoveryCommand`). Each command decides its own refusal.
+- The operation screen's choices are `nextChoices`, the structured form of the
+  `next` list: `nextActions` is its text, and the invariant test that holds
+  `next` to what the commands accept also holds the two together.
+- One choice is not in `next`: cancelling while a runner only waits for its
+  source (`cancellableWait`: phase `running`, step `prepare:<project>`, no
+  effect receipt, no commit request). The screen stops the runner that the claim
+  names (`recoveryRunner`, which answers a pid only while the recorded process
+  signature matches) and then runs `recovery abort`, which reads what is live
+  again. A runner killed after it recorded an effect leaves an operation that
+  abort refuses and resume continues, as after any runner crash.
+- The progress view prints the receipt's steps and, during `prepare`, the
+  source's own readiness blockers. `inspectRecovery` copies them into
+  `Inspection.recovery.waiting` for display only; `planFingerprint` leaves
+  `recovery` out, so they never change a plan's identity.
+- Without `--to` the target is `npm view @staix/agent-hub version`. `--yes`
+  keeps requiring `--to`, so an unattended apply names its release.
+- Out of scope: a hub-side interrupt of a running turn (the running source may
+  be older and would not know the request), and answering approvals from the
+  screens.

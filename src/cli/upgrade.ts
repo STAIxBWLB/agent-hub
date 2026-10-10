@@ -20,7 +20,8 @@ export interface Inspection {
   version?: string;
   protocol?: number;
   peers: RecoveryPeer[];
-  recovery?: { operationId?: string; phase?: string; ready?: boolean };
+  /** `waiting` (#272): what the running hub says keeps it from being quiet (busy peers, pending approvals); display only. */
+  recovery?: { operationId?: string; phase?: string; ready?: boolean; waiting?: string[] };
   blockers: string[];
   /** #215: for a stopped runtime, the operation whose committed restart snapshot its state dir holds (unreleased). */
   snapshot?: string;
@@ -202,32 +203,48 @@ export function disposeRefusal(op: RecoveryOperation, live: Record<string, Inspe
   return unsettled ? { project: unsettled.id, reads: live[unsettled.id]?.state ?? "not inspected" } : undefined;
 }
 
+/** #272: one entry of `next`. `text` is the line status prints; a screen runs `kind` through `recoveryArgv`. */
+export interface NextChoice {
+  kind: "resume" | "abort" | "fresh" | "stop" | "wait";
+  /** `fresh` only: the peer that starts as a new session. */
+  peer?: string;
+  text: string;
+}
+
 /**
  * #215: what the person can do now, in the receipt table's order: resume (it also launches a failed peer again),
  * abort where it can succeed, a fresh session for a failed Codex or Claude restoration, and stop-and-archive last.
- * `status` and every error that names choices use this one list.
+ * `status`, every error that names choices and the interactive screen (#272) use this one list.
  */
-export function nextActions(receipt: RecoveryOperation, runner?: number | "unknown", live: Record<string, Inspection | undefined> = {}): string[] {
+export function nextChoices(receipt: RecoveryOperation, runner?: number | "unknown", live: Record<string, Inspection | undefined> = {}): NextChoice[] {
   // A receipt read without its project lists (never written so by a coordinator) still gets the general choices.
   const op: RecoveryOperation = receipt.projects ? receipt : { ...receipt, projects: [], plan: { ...receipt.plan, projects: receipt.plan?.projects ?? [] } };
   if (op.phase === "completed" || op.phase === "cancelled") return [];
   // claimRunner refuses an owner it cannot read, so resume, abort and dispose are all refused until the record reads.
-  if (runner === "unknown") return [`${recoveryCommand(op, "status")} again: whether a runner holds the operation could not be read (resume, abort and dispose are refused until it can)`];
-  if (runner) return [`wait: runner ${runner} is working; ${recoveryCommand(op, "status")}`];
+  if (runner === "unknown") return [{ kind: "wait", text: `${recoveryCommand(op, "status")} again: whether a runner holds the operation could not be read (resume, abort and dispose are refused until it can)` }];
+  if (runner) return [{ kind: "wait", text: `wait: runner ${runner} is working; ${recoveryCommand(op, "status")}` }];
   const unsettled = disposeRefusal(op, live);
-  const stop = unsettled ? `wait until ${unsettled.project}'s hub settles, then ${recoveryCommand(op, "status")}` : recoveryCommand(op, "dispose", STOP);
-  if (op.disposition) return [unsettled ? stop : `rerun ${stop}`];
+  const stop: NextChoice = unsettled ? { kind: "wait", text: `wait until ${unsettled.project}'s hub settles, then ${recoveryCommand(op, "status")}` } : { kind: "stop", text: recoveryCommand(op, "dispose", STOP) };
+  if (op.disposition) return [unsettled ? stop : { kind: "stop", text: `rerun ${stop.text}` }];
   const failed = [...new Set(op.projects.flatMap((p) => failedPeers(op, p, live)))];
   const old = !!op.sourceRoot && !coordinatorCurrent(op.sourceRoot);
   const abortable = !abortRefusal(op, live);
   const stuck = resumeBlocked(op, live);
   return [
-    ...(stuck ? [] : [`${recoveryCommand(op, "resume")}${op.error ? " (after the next action in error)" : ""}${old ? ` (runs the coordinator that started this operation, which cannot re-prepare an expired hold: if it reports "source is no longer prepared", use ${abortable ? "abort or " : ""}stop-and-archive)` : ""}`]),
-    ...(abortable ? [recoveryCommand(op, "abort")] : []),
-    ...(targetReadsWaivers(op) && !stuck ? failed.map((peer) => recoveryCommand(op, "dispose", `--fresh-session ${peer} --reason <text>`)) : []),
+    ...(stuck ? [] : [{ kind: "resume" as const, text: `${recoveryCommand(op, "resume")}${op.error ? " (after the next action in error)" : ""}${old ? ` (runs the coordinator that started this operation, which cannot re-prepare an expired hold: if it reports "source is no longer prepared", use ${abortable ? "abort or " : ""}stop-and-archive)` : ""}` }]),
+    ...(abortable ? [{ kind: "abort" as const, text: recoveryCommand(op, "abort") }] : []),
+    ...(targetReadsWaivers(op) && !stuck ? failed.map((peer) => ({ kind: "fresh" as const, peer, text: recoveryCommand(op, "dispose", `--fresh-session ${peer} --reason <text>`) })) : []),
     stop,
   ];
 }
+export const nextActions = (receipt: RecoveryOperation, runner?: number | "unknown", live: Record<string, Inspection | undefined> = {}): string[] => nextChoices(receipt, runner, live).map((c) => c.text);
+
+/**
+ * #272: a runner that only waits for its source to get quiet can be stopped and the operation aborted: nothing was
+ * closed, stopped or asked to commit. Abort decides again on what is live, so a runner that moved on meanwhile is
+ * refused there, never here.
+ */
+export const cancellableWait = (op: RecoveryOperation): boolean => op.phase === "running" && op.step.startsWith("prepare:") && !op.disposition && !hasEffects(op) && !op.projects.some((p) => p.commitSent);
 
 /**
  * "next actions: ..." from nextActions, with the inspections the caller holds. Every error that lists choices ends with

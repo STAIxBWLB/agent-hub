@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
-import { claimRunner, writeOperation } from "../src/hub/recovery-store.ts";
+import { acquireRecoveryLock, claimRunner, writeOperation } from "../src/hub/recovery-store.ts";
 
 test("installed-layout detached restart completes in an isolated project and preserves its task board", async () => {
   const temp = mkdtempSync(join(tmpdir(), "ahub-recovery-cli-"));
@@ -65,6 +65,25 @@ test("installed-layout detached restart completes in an isolated project and pre
     expect((await cli(["task", "propose", "--class", "implement", "Normal writes after recovery"])).code).toBe(0);
     const second = await cli(["restart", "--dry-run"]);
     expect(JSON.parse(second.out).projects[0].blockers).toEqual([]);
+    // #272: on a terminal, with no flag, the same restart is reviewed, applied with one key and followed to its end.
+    const wrapper = join(temp, "terminal.ts");
+    writeFileSync(wrapper, `for (const stream of [process.stdin, process.stdout]) Object.defineProperty(stream, "isTTY", { value: true });
+process.argv = [process.execPath, ${JSON.stringify(main)}, "--project", ${JSON.stringify(root)}, "restart"];
+await import(${JSON.stringify(main)});
+`);
+    const terminal = Bun.spawn([process.execPath, wrapper], { cwd: root, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    terminal.stdin.write("a\n"); terminal.stdin.end();
+    const [typedCode, screen] = await Promise.all([terminal.exited, new Response(terminal.stdout).text()]);
+    expect(typedCode).toBe(0);
+    expect(screen).toContain(`restart on ${after.version}\n\n${after.projectId}  ${root}  hub ${after.version} (running)`);
+    expect(screen).toContain("[a] apply  [r] refresh  [j] plan as JSON  [x] reset a project's hub  [q] quit: ");
+    expect(screen).toMatch(/operation [a-f0-9-]{36} started; Ctrl\+C stops following, never the restart\n  staging the release\n/);
+    expect(screen.trimEnd()).toEndWith(`  completed\nrestart to ${after.version} completed`);
+    operation = /operation ([a-f0-9-]{36}) started/.exec(screen)?.[1] ?? operation;
+    const typed = await status();
+    expect(typed.instanceId).not.toBe(after.instanceId);
+    expect(typed.recovery).toMatchObject({ operationId: operation, phase: "released" });
+    expect((await cli(["board"])).out).toContain("Normal writes after recovery");
     // An agent restored by this operation may later invoke CLI commands with the old
     // operation environment still inherited. A regular stop/up must not replay it.
     expect((await cli(["kill"], { AGENTHUB_RECOVERY_OPERATION: operation! })).code).toBe(0);
@@ -145,6 +164,33 @@ test("resume declines while a runner holds the operation", async () => {
     expect(await cli(["recovery", "resume", id])).toEqual({ code: 0, out: `runner ${process.pid} is still working on this operation; bun ${join(import.meta.dir, "../src/cli/main.js")} recovery status ${id}\n` });
     expect(JSON.parse((await cli(["recovery", "status", id])).out)).toMatchObject({ runner: { state: "running", pid: process.pid } });
   } finally { release(); rmSync(temp, { recursive: true, force: true }); }
+});
+
+// #272 AC6: without an id the recovery commands take the operation that holds the machine's lock.
+test("recovery commands without an id use the operation that holds the lock", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "ahub-lock-cli-"));
+  mkdirSync(join(temp, "project"));
+  const root = realpathSync(join(temp, "project")), home = join(temp, "home");
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("ORCA_") || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete env[key];
+  env.AGENTHUB_HOME = home;
+  const id = "00000000-0000-4000-8000-000000000272";
+  const cli = async (args: string[]) => {
+    const p = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", root, ...args], { cwd: root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    return { code, out, err: err.trim() };
+  };
+  try {
+    writeOperation(id, { schema: 1, id, phase: "completed", step: "completed", sourceRoot: "/preserved/coordinator", plan: { version: "0.0.0" }, projects: [], updatedAt: 1 }, home);
+    expect(await cli(["recovery", "status"])).toEqual({ code: 1, out: "", err: "ahub: no recovery operation holds the lock; name one by its id" });
+    acquireRecoveryLock(id, home);
+    expect(JSON.parse((await cli(["recovery", "status"])).out)).toMatchObject({ id, phase: "completed", next: [] });
+    expect((await cli(["recovery", "resume"])).out).toBe("recovery is already completed\n");
+    // Not a terminal: the bare command has no screen to open, and a word that is no id is not taken for one.
+    expect((await cli(["recovery"])).err).toStartWith("ahub: usage: ahub recovery [status|resume|abort] [<operation-id>]");
+    expect((await cli(["recovery", "status", "latest"])).err).toStartWith("ahub: usage: ahub recovery");
+    expect(JSON.parse((await cli(["recovery", "status", id])).out)).toMatchObject({ id });
+  } finally { rmSync(temp, { recursive: true, force: true }); }
 });
 
 // #215 review: a recovery launch of `ahub codex` records its launcher before the hub round trip, so the coordinator

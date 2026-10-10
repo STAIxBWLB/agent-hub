@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- `ahub upgrade` and `ahub restart` are interactive on a terminal when neither `--dry-run` nor `--yes` is given: a readable plan (each peer's fate, what is in progress, every blocker), one key to apply, the steps and readiness waits as they happen, and for an open operation the choices `status` lists under `next`, run on the spot: resume, cancel, a fresh session, end (stop-and-archive) and a reset with its dry run first. A runner that only waits for its source can be cancelled. `--to` defaults to the latest release for a terminal run and a dry run (`--yes` still needs it), and a target newer than the CLI is handed to that release's own coordinator. `ahub recovery status|resume|abort|dispose` take the operation that holds the lock when the id is left out, and bare `ahub recovery` on a terminal opens its screen. With a flag or through a pipe, output and exit codes are unchanged (#272).
 - `review()` and `done()` no longer throw after the approval or done board write when a following publish or notify fails: every such call goes through the one `releaseNotice` guard, which turns the failure into a console notice and returns the board write's result (#243).
 
 ## 0.12.21

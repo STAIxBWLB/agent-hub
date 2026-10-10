@@ -74,6 +74,12 @@ export function recoveryCommand(op: { id: string; sourceRoot?: string }, action:
   return `${cli} recovery ${action} ${op.id}${flags ? ` ${flags}` : ""}`;
 }
 
+/** #272: the command above as an argv for `bun`, which a screen runs instead of printing; with no coordinator of its own, this release's. */
+export function recoveryArgv(op: { id: string; sourceRoot?: string }, action: "status" | "resume" | "abort" | "dispose", flags: string[] = []): string[] {
+  const entry = op.sourceRoot && coordinatorCurrent(op.sourceRoot) ? join(op.sourceRoot, "src/cli/main.js") : join(import.meta.dir, "../cli/main.js");
+  return [entry, "recovery", action, op.id, ...flags];
+}
+
 /**
  * Whether a coordinator has the #215 recovery commands (dispose, re-preparation, next actions).
  * ponytail: a text sniff of its upgrade.ts; a rename or re-export reads as an older coordinator (the running release is
