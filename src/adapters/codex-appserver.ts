@@ -164,6 +164,7 @@ export class CodexPeer extends BasePeer {
   }
 
   async stop(): Promise<void> {
+    this.abandonSteers("peer stopped");
     this.server?.stop(true);
     this.claimedTui?.tui.close(1001, "hub shutting down");
     const proc = this.proc;
@@ -228,12 +229,26 @@ export class CodexPeer extends BasePeer {
       return Promise.reject(new Error(`${this.id} has no steerable turn`));
     }
     const id = this.nextId--;
+    const expectedEpoch = this.contextEpoch;
     this.steers.add(id);
     return new Promise<void>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settle = () => { clearTimeout(timer); this.steers.delete(id); };
+      const fail = (e: Error) => {
+        settle();
+        if (deliveryId) this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message });
+        reject(e);
+      };
       this.pending.set(id, {
         deliveryId, kind: "steer",
-        resolve: () => {
-          this.steers.delete(id);
+        resolve: (result) => {
+          // Native completion can precede the RPC answer. A late refusal is definitive; a late acceptance is uncertain.
+          if (deliveryId && (this.link !== link || this.contextEpoch !== expectedEpoch || !this.activeTurns.has(expectedTurnId) ||
+            (typeof result?.turnId === "string" && result.turnId !== expectedTurnId))) {
+            fail(new Error("steer accepted after its original native turn ended or changed"));
+            return;
+          }
+          settle();
           this.primed = true;
           // The turn now answers these too; the highest hop wins so a steer cannot reset the hop cap.
           this.injected = replyParent(this.injected ? [this.injected, ...envs] : envs);
@@ -244,12 +259,16 @@ export class CodexPeer extends BasePeer {
           }
           resolve();
         },
-        reject: (e) => {
-          this.steers.delete(id);
-          if (deliveryId) this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message });
-          reject(e);
-        },
+        reject: fail,
       });
+      if (deliveryId) {
+        timer = setTimeout(() => {
+          const pending = this.pending.get(id);
+          this.pending.delete(id);
+          pending?.reject(new Error("steer unanswered: RPC timeout"));
+        }, this.opts.steerTimeoutMs ?? 10_000);
+        timer.unref?.();
+      }
       const input = [{ type: "text", text: this.render(envs) }];
       link.up.send(JSON.stringify({ method: "turn/steer", id, params: { threadId: this.threadId, expectedTurnId, input } }));
     });
@@ -294,6 +313,7 @@ export class CodexPeer extends BasePeer {
   private abandonSteers(reason: string): void {
     for (const id of this.steers) {
       const p = this.pending.get(id);
+      if (reason === "turn completed" && p?.deliveryId) continue;
       this.pending.delete(id);
       p?.reject(new Error(`steer unanswered: ${reason}`));
     }
@@ -363,7 +383,7 @@ export class CodexPeer extends BasePeer {
     this.contextEpoch++;
     this.activeTurns.clear();
     for (const p of this.pending.values()) {
-      if (p.deliveryId) this.delivery({ id: p.deliveryId, state: "needs_review", reason: "Codex TUI detached" });
+      if (p.deliveryId && p.kind !== "steer") this.delivery({ id: p.deliveryId, state: "needs_review", reason: "Codex TUI detached" });
       p.reject(new Error("codex TUI detached"));
     }
     this.pending.clear();
@@ -470,6 +490,7 @@ export class CodexPeer extends BasePeer {
 
   private adopt(link: Link, threadId: unknown, fresh = false): void {
     if (typeof threadId !== "string" || !threadId) return;
+    this.abandonSteers("thread changed");
     this.tokenTotal = undefined;
     this.freshThread = fresh;
     this.link = link;

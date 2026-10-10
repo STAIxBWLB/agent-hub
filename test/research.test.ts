@@ -24,6 +24,11 @@ const task = (id: number, event: string, state: string, extra: Partial<{ owner: 
   ({ v: 1, at: at(), type: "task", id, event, by: extra.by ?? "hub", state, owner: extra.owner ?? null, reviewer: extra.reviewer ?? null, class: extra.class ?? "implement", pii: extra.pii ?? false, ...(extra.reason ? { reason: extra.reason } : {}) });
 const writer = { version: "test", source: "backfill" as const };
 
+const until = async (condition: () => boolean | Promise<boolean>, label: string, attempts = 100, interval = 10) => {
+  for (let i = 0; i < attempts && !(await condition()); i++) await Bun.sleep(interval);
+  if (!(await condition())) throw new Error(`timed out waiting for ${label}`);
+};
+
 test("one record per approved task: review rounds, rework, checks, owner chain, and the cost of the turns that end after the approval", () => {
   const events: StampedEvent[] = [
     task(1, "proposed", "proposed", { reviewer: "claude" }),
@@ -173,7 +178,7 @@ async function daemonWith(research: boolean, home: string) {
   const as = async (peer: string) => { const c = await ControlClient.connect(stateDir, { role: "tools", peer }); cleanup.push(() => c.close()); return c; };
   // Attached as peers too, so the board can give them tasks; the tools connections act for them.
   for (const peer of ["worker", "claude"]) { const c = await ControlClient.connect(stateDir, { role: "peer", peer }); cleanup.push(() => c.close()); }
-  for (let i = 0; i < 100 && !(daemon.bus.peers.get("worker")?.state === "idle" && daemon.bus.peers.get("claude")?.state === "idle"); i++) await Bun.sleep(10);
+  await until(() => daemon.bus.peers.get("worker")?.state === "idle" && daemon.bus.peers.get("claude")?.state === "idle", "research worker and reviewer attached");
   const codex = await as("worker"), claude = await as("claude");
   const op = async (c: ControlClient, name: string, args: Record<string, unknown>) => {
     const reply = await c.request({ t: "task", op: name, args });
@@ -252,19 +257,19 @@ async function daemonWithKimi(home: string, delayMs: number) {
   cleanup.push(stop);
   const worker = await ControlClient.connect(stateDir, { role: "peer", peer: "worker" });
   cleanup.push(() => worker.close());
-  for (let i = 0; i < 100 && daemon.bus.peers.get("worker")?.state !== "idle"; i++) await Bun.sleep(10);
+  await until(() => daemon.bus.peers.get("worker")?.state === "idle", "research worker attached");
   const tools = await ControlClient.connect(stateDir, { role: "tools", peer: "worker" });
   cleanup.push(() => tools.close());
   const console_ = await ControlClient.connect(stateDir, { role: "console" });
   cleanup.push(() => console_.close());
   expect((await console_.request({ t: "start", peer: "kimi" })).ok).toBe(true);
-  for (let i = 0; i < 300 && daemon.bus.peers.get("kimi")?.state !== "idle"; i++) await Bun.sleep(10);
+  await until(() => daemon.bus.peers.get("kimi")?.state === "idle", "research Kimi started", 300);
   // The worker's own plan task is approved by its done while Kimi's turn about the same task is still open.
   const approve = async () => {
     const op = async (name: string, args: Record<string, unknown>) => { const r = await tools.request({ t: "task", op: name, args }); if (!r.ok) throw new Error(r.error); return r.text as string; };
     await op("hub_task_propose", { title: "outline", class: "plan", owner: "worker" });
     daemon.bus.publish(newEnvelope(USER, "help with it", { to: ["kimi"], refs: { task: "1" } }));
-    for (let i = 0; i < 300 && daemon.bus.peers.get("kimi")?.state !== "busy"; i++) await Bun.sleep(5);
+    await until(() => daemon.bus.peers.get("kimi")?.state === "busy", "Kimi turn open before task approval", 300, 5);
     expect(await op("hub_task_done", { id: 1, summary: "done" })).toContain("approved");
   };
   return { stop, approve, daemon, file: researchFile("p-research", home) };

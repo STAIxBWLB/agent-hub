@@ -1784,7 +1784,8 @@ test("turn-free end to end: verified context paths, a silent cohort, held-back m
   await op("hub_task_propose", { title: "codex b", class: "implement", owner: "codex" });
   await op("hub_task_propose", { title: "claude b", class: "implement", owner: "claude" });
   const wait1Started = Date.now();
-  for (let i = 0; i < 100 && !(daemon.bus.stateOf("codex") === "idle" && daemon.bus.queued("codex") === 0); i++) await Bun.sleep(100); // codex took its second task
+  await until(() => daemon.bus.stateOf("codex") === "idle" && daemon.bus.queued("codex") === 0,
+    "codex drained before its second task");
   console.log("296 WAIT 1", Date.now() - wait1Started, daemon.bus.stateOf("codex"), daemon.bus.queued("codex"), JSON.stringify(daemon.bus.queueSummary("codex")));
   await claude.request({ t: "task", op: "hub_task_accept", args: { id: 4, plan: { paths: ["b.txt"] } } });
   await codexTools.request({ t: "task", op: "hub_task_accept", args: { id: 3, plan: { paths: ["b.txt"] } } });
@@ -1804,7 +1805,8 @@ test("turn-free end to end: verified context paths, a silent cohort, held-back m
   await op("hub_task_propose", { title: "claude c", class: "implement", owner: "claude", refs: { paths: ["c.txt"] } });
   await op("hub_task_propose", { title: "codex c", class: "implement", owner: "codex", refs: { paths: ["c.txt"] } });
   const wait2Started = Date.now();
-  for (let i = 0; i < 100 && !(daemon.bus.stateOf("codex") === "idle" && daemon.bus.queued("codex") === 0); i++) await Bun.sleep(100); // codex took its third task
+  await until(() => daemon.bus.stateOf("codex") === "idle" && daemon.bus.queued("codex") === 0,
+    "codex drained before its third task");
   console.log("296 WAIT 2", Date.now() - wait2Started, daemon.bus.stateOf("codex"), daemon.bus.queued("codex"), JSON.stringify(daemon.bus.queueSummary("codex")));
   await claudeTool("Read", { file_path: join(dir, "c.txt") }); // claude's view of c.txt
   await op("hub_task_propose", { title: "patient 900101-1234567 follow-up", class: "implement" }); // #7: PII, open
@@ -1825,7 +1827,8 @@ test("turn-free end to end: verified context paths, a silent cohort, held-back m
   await op("hub_task_propose", { title: "codex d", class: "implement", owner: "codex", refs: { paths: ["d.txt"] } }); // #8
   await op("hub_task_propose", { title: "claude d", class: "implement", owner: "claude", refs: { paths: ["d.txt"] } }); // #9
   const wait3Started = Date.now();
-  for (let i = 0; i < 100 && !(daemon.bus.stateOf("codex") === "idle" && daemon.bus.queued("codex") === 0); i++) await Bun.sleep(100);
+  await until(() => daemon.bus.stateOf("codex") === "idle" && daemon.bus.queued("codex") === 0,
+    "codex drained before its fourth task");
   console.log("296 WAIT 3", Date.now() - wait3Started, daemon.bus.stateOf("codex"), daemon.bus.queued("codex"), JSON.stringify(daemon.bus.queueSummary("codex")));
   const longTurn = answers().length;
   tui.send(JSON.stringify({ id: 100 + ++turns, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: "SLOW:6000 still working" }] } }));
