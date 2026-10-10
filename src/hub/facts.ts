@@ -3,6 +3,7 @@ import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, rmSync,
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { sanitize, type PeerId } from "./envelope.ts";
 import { isDenied } from "../local/deny.ts";
+import { hubGitArgv, hubGitEnv } from "./git.ts";
 import { realPath } from "./project.ts";
 
 /**
@@ -275,7 +276,7 @@ export class Facts {
     // One path per line: a newline in a name would shift the answers, and git drops a final carriage return (another file).
     files = files.filter((f) => !/[\r\n]/.test(f));
     if (!files.length) return out;
-    const r = Bun.spawnSync(["git", "cat-file", "--batch-check=%(objectname) %(objecttype)"], { cwd: this.root, stdin: new TextEncoder().encode(files.map((f) => `HEAD:./${f}`).join("\n") + "\n"), stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+    const r = Bun.spawnSync(hubGitArgv(["cat-file", "--batch-check=%(objectname) %(objecttype)"]), { cwd: this.root, stdin: new TextEncoder().encode(files.map((f) => `HEAD:./${f}`).join("\n") + "\n"), stdout: "pipe", stderr: "pipe", env: hubGitEnv({ ...process.env, GIT_OPTIONAL_LOCKS: "0" }) });
     if (r.exitCode !== 0) return out;
     r.stdout.toString().split("\n").forEach((line, i) => {
       const [oid, type] = line.split(" ");
@@ -414,7 +415,7 @@ export class Facts {
       if (!files) {
         // Plumbing only, with optional locks off: an agent's own git commands must never meet a lock the hub holds.
         const git = (...args: string[]) => {
-          const r = Bun.spawnSync(["git", ...args, "--", p], { cwd: this.root, stdout: "pipe", stderr: "pipe", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
+          const r = Bun.spawnSync(hubGitArgv([...args, "--", p]), { cwd: this.root, stdout: "pipe", stderr: "pipe", env: hubGitEnv({ ...process.env, GIT_OPTIONAL_LOCKS: "0" }) });
           return r.exitCode === 0 ? r.stdout.toString().split("\0").filter(Boolean) : undefined;
         };
         // Against HEAD, so a staged change counts (a staged move by both names); a repository without a commit yet has
@@ -693,7 +694,7 @@ export class Facts {
   tree(paths: string[], windows: { peer: PeerId; since: number; until?: number }[] = []): string {
     this.boundary();
     const h = createHash("sha1");
-    const head = Bun.spawnSync(["git", "rev-parse", "-q", "--verify", "HEAD"], { cwd: this.root, stdout: "pipe", stderr: "pipe" });
+    const head = Bun.spawnSync(hubGitArgv(["rev-parse", "-q", "--verify", "HEAD"]), { cwd: this.root, stdout: "pipe", stderr: "pipe", env: hubGitEnv() });
     h.update(head.exitCode === 0 ? head.stdout.toString().trim() : "no-head").update("\0");
     // The files the members wrote while at work in the cohort count too: a symbol-only overlap names no path, and a
     // tool's write outside the named paths still moves the work the integration checked. What they only read never
@@ -780,7 +781,7 @@ export class Facts {
     try {
       writeFileSync(a, before, { mode: 0o600 });
       writeFileSync(b, after, { mode: 0o600 });
-      const r = Bun.spawnSync(["git", "-c", "core.quotepath=off", "diff", "--no-index", "--no-color", "--no-ext-diff", "--unified=2", "--", a, b], { stdout: "pipe", stderr: "pipe" });
+      const r = Bun.spawnSync(hubGitArgv(["-c", "core.quotepath=off", "diff", "--no-index", "--no-color", "--no-ext-diff", "--unified=2", "--", a, b]), { stdout: "pipe", stderr: "pipe", env: hubGitEnv() });
       const lines = r.stdout.toString().split("\n");
       const start = lines.findIndex((l) => l.startsWith("@@"));
       if (start === -1) return [];

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { childEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { ControlClient } from "../hub/control-client.ts";
 import { readEvents } from "../hub/events.ts";
+import { hubGitArgv, hubGitEnv } from "../hub/git.ts";
 import { taskRecords } from "../hub/research.ts";
 import { appendBench, BENCH_SCHEMA, parseSuite, suiteHash, type Attempt, type AttemptError, type AttemptMetrics, type Fingerprint, type Outcome, type SuiteTask } from "../hub/bench.ts";
 import { hubHome, realPath } from "../hub/project.ts";
@@ -30,7 +31,7 @@ const fail = (message: string): never => { throw new Error(message); };
 
 /** Commands git runs without a shell; the arguments are ours, never suite text. */
 async function git(cwd: string, args: string[]): Promise<{ code: number; out: string }> {
-  const p = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "ignore" });
+  const p = Bun.spawn(hubGitArgv(args), { cwd, stdout: "pipe", stderr: "ignore", env: hubGitEnv() });
   const [code, out] = await Promise.all([p.exited, new Response(p.stdout).text()]);
   return { code, out: out.trim() };
 }
