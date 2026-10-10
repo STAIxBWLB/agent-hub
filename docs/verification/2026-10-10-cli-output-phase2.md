@@ -15,8 +15,8 @@ After:
 
 ```text
 PROJECT                     STATE    PEERS  TASKS                   ROOT
-p_123456789012345678901234  running  2      6 approved, 1           /project/
-                                            in_progress             경로경로경로
+p_123456789012345678901234  running  2      6 approved,             /project/
+                                            1 in_progress           경로경로경로
                                                                     경로경로경로
                                                                     경로경로경로
                                                                     경로경로경로
@@ -48,8 +48,8 @@ After:
 
 ```text
 PROJECT                     STATE    PEERS  TASKS                   ROOT
-p_123456789012345678901234  running  2      6 approved, 1           /project/
-                                            in_progress             경로경로경로
+p_123456789012345678901234  running  2      6 approved,             /project/
+                                            1 in_progress           경로경로경로
                                                                     경로경로경로
                                                                     경로경로경로
                                                                     경로경로경로
@@ -96,15 +96,15 @@ After:
 
 ```text
 TURN                       PEER   STARTED  STATE      FILES
-turn-12345678901234567890  codex  1m ago   completed  8 files: src/한글경로/
-                                                      file-0.ts, src/한글경로/
-                                                      file-1.ts, src/한글경로/
-                                                      file-2.ts, src/한글경로/
-                                                      file-3.ts, src/한글경로/
-                                                      file-4.ts, src/한글경로/
-                                                      file-5.ts, src/한글경로/
-                                                      file-6.ts, src/한글경로/
-                                                      file-7.ts
+turn-12345678901234567890  codex  1m ago   completed  8 files:
+                                                      src/한글경로/file-0.ts,
+                                                      src/한글경로/file-1.ts,
+                                                      src/한글경로/file-2.ts,
+                                                      src/한글경로/file-3.ts,
+                                                      src/한글경로/file-4.ts,
+                                                      src/한글경로/file-5.ts,
+                                                      src/한글경로/file-6.ts,
+                                                      src/한글경로/file-7.ts
 ```
 
 ## doctor --orphans, 80 columns
@@ -426,10 +426,10 @@ After:
 
 ```text
 TURN                       PEER   STARTED  STATE      FILES
-turn-12345678901234567890  codex  1m ago   completed  8 files: src/한글경로/file-0.ts, src/한글경로/file-1.ts, src/
-                                                      한글경로/file-2.ts, src/한글경로/file-3.ts, src/한글경로/
-                                                      file-4.ts, src/한글경로/file-5.ts, src/한글경로/file-6.ts, src/
-                                                      한글경로/file-7.ts
+turn-12345678901234567890  codex  1m ago   completed  8 files: src/한글경로/file-0.ts, src/한글경로/file-1.ts,
+                                                      src/한글경로/file-2.ts, src/한글경로/file-3.ts,
+                                                      src/한글경로/file-4.ts, src/한글경로/file-5.ts,
+                                                      src/한글경로/file-6.ts, src/한글경로/file-7.ts
 ```
 
 ## doctor --orphans, 120 columns

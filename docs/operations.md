@@ -9,14 +9,14 @@ results and remaining prerequisites are recorded separately in [the smoke ledger
 `status --all` uses the projects table. `queue show`, `models status` and `budget execution status` show labelled fields; add `--json` for the raw fetched document.
 `report --by task` keeps the attribution and coverage sentences with section headings and aligned counters.
 Use `--json` for scripts; it returns the fetched data without color, and `status --json` keeps its existing document.
-Text columns are a human interface, not a scripting contract. An identifier accepted as a command argument is always whole at every width:
+Text columns are a human interface, not a scripting contract. An identifier accepted as a command argument is whole wherever its available column can hold its own length:
 turn ids, queue ids, project ids, execution budget ids and ids in labelled views. Only status's informational settlement and hold ids are shortened;
 `status --full` keeps those whole too. Identifiers in suggested commands are always whole.
 
 `--color=auto|always|never` uses the console palette. Auto colors only a TTY with `TERM` other than `dumb`
 and empty `NO_COLOR`; pipes and redirects stay plain. Color never replaces a state or level word.
 TTY width is its columns (at least 80). A pipe uses a positive integer `COLUMNS` when supplied, otherwise rows
-are complete and unwrapped. Long fields wrap within their column; when whole metadata words and the readable flexible-column minimum do not fit, table bands linked by the row id retain every field. Console children receive the console's width
+are complete and unwrapped. Long fields wrap within their column; when whole metadata words and the readable flexible-column minimum do not fit, table bands retain every field. Each band carries the row id; when it cannot share a line with the metadata, a per-row id banner links them. Labelled two-column views keep each label beside its value, wrapping the value instead of separating labels and values into bands. Console children receive the console's width
 minus its four-column indent and remain uncolored.
 
 ## Command help
