@@ -1,6 +1,6 @@
 /** Native active-context occupancy, separate from accumulated billable usage (#185). */
 export interface ContextReading {
-  source: "claude_statusline" | "codex_token_usage";
+  source: "claude_statusline" | "codex_token_usage" | "acp_usage_update";
   sessionId: string;
   measuredAt: number;
   tokens: number | null;
@@ -36,6 +36,12 @@ export function codexContext(value: unknown, sessionId: string, measuredAt: numb
   const window = positive(c.modelContextWindow) ? c.modelContextWindow : null;
   const tokens = nonnegative(last.totalTokens) ? last.totalTokens : null;
   return { source: "codex_token_usage", sessionId, measuredAt, tokens, window, used: tokens !== null && window !== null ? Math.min(1, tokens / window) : null };
+}
+/** An ACP `usage_update` of the `{ used, size }` shape (Kimi 2.x): context occupancy, not consumption (#167, #285). */
+export function acpContext(usage: { used: number; size: number }, sessionId: string, measuredAt: number): ContextReading {
+  const window = positive(usage.size) ? usage.size : null;
+  const tokens = nonnegative(usage.used) ? usage.used : null;
+  return { source: "acp_usage_update", sessionId, measuredAt, tokens, window, used: tokens !== null && window !== null ? Math.min(1, tokens / window) : null };
 }
 export const unknownContext = (): ContextView => ({ source: null, measuredAt: null, tokens: null, window: null, used: null, freshness: "unknown" });
 /** Invalid/stale readings hide the value but never rearm a threshold already crossed. */

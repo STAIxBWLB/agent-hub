@@ -104,9 +104,14 @@ async function prompt(id: number, text: string) {
       params: { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: part } } },
     });
   }
-  // The session's running total, as Kimi reports it: 50 tokens per prompt.
-  usageTotal += 50;
-  send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", usage: { totalTokens: usageTotal } } } });
+  // The session's running total, as Kimi reports it: 50 tokens per prompt. OCCUPANCY instead sends Kimi 2.x's
+  // context-occupancy shape (#285): `used` against the bound model's context `size`, and no token total.
+  if (text.includes("OCCUPANCY")) {
+    send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", usage: { used: 90_000, size: 200_000 } } } });
+  } else {
+    usageTotal += 50;
+    send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", usage: { totalTokens: usageTotal } } } });
+  }
   busy = false;
   send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
 }

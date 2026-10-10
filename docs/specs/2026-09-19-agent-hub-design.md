@@ -387,7 +387,10 @@ inside a peer.
   2.0.1: one update per turn, payload `{"sessionUpdate":"usage_update","used":<tokens>,
   "size":<context window>}`; `used` is the session's context occupancy against `size`
   (1M), not billed quota. ACP records this shape as context occupancy diagnostics,
-  never as cumulative consumed tokens. Only validated cumulative totals or input/output
+  never as cumulative consumed tokens. Since #285 phase 1 it is also the peer's
+  native context reading (source `acp_usage_update`), shown in `ahub status`, the
+  console and the dashboard like Claude's and Codex's; a gate crossing records the
+  event and notice for an ACP peer but sends it no checkpoint request yet. Only validated cumulative totals or input/output
   pairs feed native token readings; unsupported shapes remain unknown. `ahub budget set`
   feeds a reading by hand. `local` has no quota and is never paused.
 - Gate at `budget.gate` (default 0.9) on any fresh window; readings older than

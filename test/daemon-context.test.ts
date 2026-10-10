@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
+import { newEnvelope, USER } from "../src/hub/envelope.ts";
 import { readEvents } from "../src/hub/events.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 
@@ -161,4 +162,28 @@ test.each(["owner", "reviewer"] as const)("context request and clean completion 
   f.reading(10); await Bun.sleep(1100); f.reading(90); await until(() => pressure(f.cwd).length === 2);
   expect(f.pushes.filter(p => p.t === "event" && p.e?.env?.body?.startsWith("Checkpoint request: your native context"))).toHaveLength(requestsBefore);
   expect(f.mem.calls.filter(c => c.path === "/api/memory/save")).toHaveLength(savesBefore);
+}, 20_000);
+
+test("Kimi's ACP usage_update occupancy becomes its context reading in status, the console tail and the UI snapshot, with no tokens event (#285)", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-acp-context-")); cleanup.push(() => rmSync(stateDir, { recursive: true, force: true }));
+  const daemon = await startDaemon({
+    cwd: stateDir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, instanceId: "acp-context",
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false }, kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts")] },
+  });
+  cleanup.push(() => daemon.stop());
+  const console_ = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => console_.close());
+  const pushes: any[] = []; console_.onPush = (m) => pushes.push(m); console_.send({ t: "tail" });
+  expect((await console_.request({ t: "start", peer: "kimi" })).ok).toBe(true);
+  await until(() => daemon.bus.stateOf("kimi") === "idle");
+  daemon.bus.publish(newEnvelope(USER, "OCCUPANCY: report your context", { to: ["kimi"] }));
+  // The 1 s context tail pushes a changed reading; 90000 of 200000 is 45%.
+  await until(() => pushes.some((p) => p.t === "context" && p.peer === "kimi" && p.reading?.used === 0.45 && p.reading?.source === "acp_usage_update"));
+  const shown = await console_.request({ t: "status" });
+  expect(shown.status.peers.kimi.context).toMatchObject({ used: 0.45, tokens: 90_000, window: 200_000, source: "acp_usage_update", freshness: "fresh" });
+  const ui = await console_.request({ t: "ui_snapshot", after: 0 });
+  expect(ui.budget.kimi.context).toMatchObject({ used: 0.45, source: "acp_usage_update", freshness: "fresh" });
+  // Occupancy is not consumption (#167): the turn wrote no tokens event and no budget window.
+  await until(() => readEvents(join(stateDir, "events.jsonl")).some((e) => e.type === "turn_end" && e.peer === "kimi"));
+  expect(readEvents(join(stateDir, "events.jsonl")).some((e) => e.type === "tokens" && e.peer === "kimi")).toBe(false);
+  expect(ui.budget.kimi.windows ?? []).toEqual([]);
 }, 20_000);

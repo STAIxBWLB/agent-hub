@@ -1959,7 +1959,10 @@ ownership, bind servers or start agents, sidecars or models.
 `ahub status`, `ahub tail` and the dashboard show native context occupancy,
 source and measurement freshness. Claude readings come from the status-line
 tee installed by `ahub claude`; Codex readings come from its current thread's
-native token-usage updates. Pi and other unsupported surfaces show unknown.
+native token-usage updates. Kimi readings come from its ACP `usage_update`
+(`{used, size}`, source `acp_usage_update`): context occupancy, not
+consumption, so no token total is counted from it. Pi and other unsupported
+surfaces show unknown.
 A stale or disconnected reading is unknown, not 0%. Codex's accumulated session
 usage is never used as context occupancy.
 
@@ -1973,8 +1976,9 @@ this to `.agenthub/config.json` and restart the daemon deliberately:
 `gate` is a fraction between 0 and 1; 0 disables checkpoint requests.
 `stale_min` must be positive. A reading at or above the threshold records a metadata-only
 event and console notice, then asks an attached Claude/Codex with active work
-for a checkpoint when no checkpoint request is already outstanding. The request
-supplies a `request_id`; include that id with
+for a checkpoint when no checkpoint request is already outstanding (an ACP peer
+such as Kimi gets the event and notice only; no checkpoint request is sent to it
+yet). The request supplies a `request_id`; include that id with
 `hub_checkpoint {summary, request_id}`. Repeated high readings do not repeat
 it until a fresh below-threshold reading or new session rearms the crossing.
 

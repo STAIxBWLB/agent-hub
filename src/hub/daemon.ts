@@ -68,7 +68,7 @@ import { changedPaths, repoOf, snapshot, Turns, type TurnRecord } from "./snapsh
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 
 import { grantablePath, isPermissionMode, permissionDefaults, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
-import { ContextWindows, DEFAULT_CONTEXT, claudeContext, type ContextConfig } from "./context-window.ts";
+import { ContextWindows, DEFAULT_CONTEXT, acpContext, claudeContext, type ContextConfig } from "./context-window.ts";
 
 export interface HubConfig {
   watchdog_ms: number;
@@ -2089,6 +2089,13 @@ export async function startDaemon(opts: DaemonOptions) {
         autoApprove: (title) => !stopping && HUB_TOOL_TITLES.has(title),
         log,
         onTokens: onKimiTokens,
+        // Kimi's usage_update is context occupancy ({used, size}), not consumption (#167): it becomes the peer's
+        // context reading (#285 phase 1), never a tokens event or a budget window.
+        onUsageDiagnostic: (observation) => {
+          if (observation.shape !== "context-used" || observation.contextUsed === undefined || observation.contextCapacity === undefined) return;
+          const session = contextSession("kimi");
+          if (session) contexts.report("kimi", acpContext({ used: observation.contextUsed, size: observation.contextCapacity }, session, Date.now()), session);
+        },
         onTurnFailure: () => { supervisionTurns.delete("kimi"); },
         mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("kimi")).map(([name, value]) => ({ name, value })) }],
         preamble: roleContract("kimi", config.roles),

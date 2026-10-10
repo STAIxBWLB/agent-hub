@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Kimi's ACP `usage_update` (`{used, size}`, context occupancy) becomes the peer's native context reading with the new source `acp_usage_update`, so `ahub status`, the console and the dashboard show `context N%` for Kimi like Claude's and Codex's; occupancy still writes no `tokens` event and no budget window, and a `context.gate` crossing records the event and notice for an ACP peer without sending it a checkpoint request yet (#285).
+
 ## 0.12.22
 
 - Restore the captured Codex approval policy once on a resumed thread after detached ask, show unknown-policy guidance in the CLI, and record direct native Claude child identity so verified crash cleanup can retire its settings file (#270).
