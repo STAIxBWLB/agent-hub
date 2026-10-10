@@ -105,3 +105,21 @@ test("doctor --orphans --kill stops a daemon argv that names the registered root
     expect(orphan.exitCode !== null || orphan.signalCode !== null).toBe(true);
   } finally { if (orphan.exitCode === null) { orphan.kill("SIGKILL"); await orphan.exited; } }
 });
+
+
+test("orphan kill JSON remains one document, with successful diagnostics on stderr", async () => {
+  const home = temp("ahub-doctor-json-home-");
+  const cwd = temp("ahub-doctor-json-cwd-");
+  const gone = registerGone(home);
+  const orphan = fakeDaemon(gone.root);
+  try {
+    const registry = new Registry(join(home, "registry.db"));
+    try { expect(registry.claim(gone.id, "orphan-json-instance", orphan.pid)).toBe(true); } finally { registry.close(); }
+    const result = await cli(home, cwd, ["doctor", "--orphans", "--kill", "--json", "--color=always"]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([expect.objectContaining({ project: expect.objectContaining({ id: gone.id }), pids: [orphan.pid] })]);
+    expect(result.stdout).not.toContain("\x1b"); expect(result.stdout).not.toContain("stopped with SIGTERM");
+    expect(result.stderr).toContain("stopped with SIGTERM");
+    await orphan.exited; expect(orphan.exitCode !== null || orphan.signalCode !== null).toBe(true);
+  } finally { if (orphan.exitCode === null) { orphan.kill("SIGKILL"); await orphan.exited; } }
+});

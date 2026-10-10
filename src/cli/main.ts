@@ -48,7 +48,7 @@ import { pathWarnings } from "../hub/conflicts.ts";
 import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, peerCommandRefusal } from "./identity.ts";
 import { recordCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
-import { paint, permissionBoundary, resolveColor, type Span } from "./console-state.ts";
+import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
 import { outputWidth, renderStatus, renderBoard, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "./output.ts";
 import { renderHelp } from "./help.ts";
 import { renderTailEvent } from "./tail-render.ts";
@@ -269,28 +269,28 @@ function orphanPids(project: Project): number[] {
 
 const processGone = (pid: number): boolean => !processCommandLine(pid);
 
-async function killOrphan(pid: number, root: string): Promise<boolean> {
+async function killOrphan(pid: number, root: string, diagnostic: (text: string) => void = text => console.log(text)): Promise<boolean> {
   if (!hubDaemonCommand(pid, root)) {
-    console.log(`    pid ${pid}: command line is not this project's hub daemon; refusing to kill`);
+    diagnostic(`    pid ${pid}: command line is not this project's hub daemon; refusing to kill`);
     return false;
   }
   try { process.kill(pid, "SIGTERM"); } catch { return true; } // exited meanwhile
   const graceful = Date.now() + 3_000;
   while (Date.now() < graceful && !processGone(pid)) await Bun.sleep(100);
-  if (processGone(pid)) { console.log(`    pid ${pid}: stopped with SIGTERM`); return true; }
+  if (processGone(pid)) { diagnostic(`    pid ${pid}: stopped with SIGTERM`); return true; }
   // The PID may have been reused since SIGTERM; verify identity again before escalating.
   if (!hubDaemonCommand(pid, root)) {
-    console.log(`    pid ${pid}: identity changed after SIGTERM; refusing SIGKILL`);
+    diagnostic(`    pid ${pid}: identity changed after SIGTERM; refusing SIGKILL`);
     return false;
   }
   try { process.kill(pid, "SIGKILL"); } catch { return true; }
   const hard = Date.now() + 2_000;
   while (Date.now() < hard && !processGone(pid)) await Bun.sleep(100);
   if (!processGone(pid)) {
-    console.log(`    pid ${pid}: still alive after SIGKILL`);
+    diagnostic(`    pid ${pid}: still alive after SIGKILL`);
     return false;
   }
-  console.log(`    pid ${pid}: killed with SIGKILL`);
+  diagnostic(`    pid ${pid}: killed with SIGKILL`);
   return true;
 }
 
@@ -299,7 +299,10 @@ async function orphanDoctor(kill: boolean, options: ReturnType<typeof outputOpti
   if (options.json) console.log(JSON.stringify(orphans, null, 2));
   else printOutput(renderOrphans(orphans, options.columns, Date.now(), options.full), options.color);
   let failed = 0;
-  if (kill) for (const { project, pids } of orphans) for (const pid of pids) if (!(await killOrphan(pid, project.root))) failed++;
+  const diagnostic = (text: string) => options.json
+    ? console.error(paint([{ text }], false))
+    : printOutput(wrap(text, options.columns ?? Infinity).map(text => [{ text }]), options.color);
+  if (kill) for (const { project, pids } of orphans) for (const pid of pids) if (!(await killOrphan(pid, project.root, diagnostic))) failed++;
   if (failed) fail(`${failed} orphaned hub process(es) could not be stopped`);
 }
 
