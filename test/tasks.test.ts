@@ -2416,10 +2416,27 @@ test("a second changes_requested returns the moved task when the escalation's as
   await until(() => saves().some((s) => typeof s.text === "string" && s.text.includes("escalated from kimi to codex")));
   expect(peers.kimi!.got.length).toBe(kimiHeard);
   expect(peers.codex!.got.filter((e) => e.kind === "task" && e.refs?.task === "1")).toHaveLength(0);
-  // The notice says what is known: the move is saved, the delivery is not confirmed, check before sending again.
-  expect(notices.some((line) => line.includes("the move to codex is saved") && line.includes("delivery is not confirmed") && line.includes("ahub queue list --peer codex") && line.includes("ahub task assign 1 codex"))).toBe(true);
+  // The notice says what is known: the move is saved, the delivery is not confirmed, what to check before resending.
+  expect(notices.some((line) => line.includes("the move to codex is saved") && line.includes("delivery is not confirmed") && line.includes("ahub queue list --peer codex") && line.includes("ahub queue show") && line.includes("ahub task assign 1 codex"))).toBe(true);
   // The command it names delivers the task envelope.
   await tasks.assignTo(1, "codex", USER);
   expect(peers.codex!.got.filter((e) => e.kind === "task" && e.refs?.task === "1")).toHaveLength(1);
   expect(board.get(1)!.history.at(-1)!.event).toBe("reassigned");
+});
+
+test("a delivery_failed escalation whose assignment cannot publish runs the guarded tail and still throws (#276)", async () => {
+  const { tasks, board, bus, peers, notices, saves } = await setup();
+  await tasks.propose("claude", { title: "summarize the log", class: "summarize", owner: "kimi" });
+  tasks.accept("kimi", 1);
+  const kimiHeard = peers.kimi!.got.length;
+  const publish = bus.publish.bind(bus);
+  bus.publish = () => { throw new Error("delivery journal unavailable"); }; // a latched storage error
+  // The hub's own escalation reason writes no `from` on the history entry: the tail must still run.
+  try { await expect(tasks.escalate(HUB, 1, "Undeliverable to kimi: retries exhausted", "delivery_failed")).rejects.toThrow("delivery journal unavailable"); }
+  finally { bus.publish = publish; }
+  expect(board.get(1)!).toMatchObject({ owner: "codex" });
+  expect(notices.some((line) => line.includes("escalated from kimi to codex"))).toBe(true);
+  expect(notices.some((line) => line.includes("could not tell kimi it moved to codex") && line.includes("delivery journal unavailable"))).toBe(true);
+  await until(() => saves().some((s) => typeof s.text === "string" && s.text.includes("escalated from kimi to codex")));
+  expect(peers.kimi!.got.length).toBe(kimiHeard);
 });

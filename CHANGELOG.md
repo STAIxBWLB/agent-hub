@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- A repeated `changes_requested` whose escalation saved its move but could not publish the assignment returns the saved task with a console notice naming the undelivered delivery and the `ahub task assign` resend command, instead of failing the reviewer's tool call; a failure before the escalation's write still throws (#276).
+- A repeated `changes_requested` whose escalation saved its move returns the saved task when the assignment's delivery fails, with a console notice that says the delivery is not confirmed and to look for a queued or needs_review delivery (`ahub queue list --peer`, then `ahub queue show <id>`; `ahub board` if the journal is down) before re-sending with `ahub task assign <id> <owner>`, instead of failing the reviewer's tool call; every escalation, a manual one included, now also runs its guarded tail on a saved move — the old owner is told to stop and the decision note is saved — before it throws, and a failure before the escalation's write still throws (#276).
 
 ## 0.12.22
 
