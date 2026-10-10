@@ -5,6 +5,7 @@ import { Database } from "bun:sqlite";
 import { hubHome } from "./project.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 
+const RUNNER_DB_BUSY_TIMEOUT_MS = 3000;
 export const operationIdPattern = /^[a-f0-9-]{36}$/;
 export function operationPath(id: string, home = hubHome()): string {
   if (!operationIdPattern.test(id)) throw new Error("invalid recovery operation ID");
@@ -111,7 +112,7 @@ export function recoveryRunner(id: string, home = hubHome()): number | "unknown"
   let db: Database | undefined;
   try {
     db = new Database(path, { readonly: true });
-    db.run("PRAGMA busy_timeout = 3000"); // a claim in progress must not read as no runner
+    db.run(`PRAGMA busy_timeout = ${RUNNER_DB_BUSY_TIMEOUT_MS}`); // a claim in progress must not read as no runner
     // A crash between creating the file and its table leaves no runner; claimRunner creates the table and claims.
     if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runner'").get()) return undefined;
     const row = db.query(`SELECT pid${signed(db) ? ", signature" : ""} FROM runner WHERE slot = 1`).get() as { pid: number; signature?: string | null } | null;
@@ -133,7 +134,7 @@ export function signedRunner(id: string, home = hubHome()): number | undefined {
   let db: Database | undefined;
   try {
     db = new Database(path, { readonly: true });
-    db.run("PRAGMA busy_timeout = 3000");
+    db.run(`PRAGMA busy_timeout = ${RUNNER_DB_BUSY_TIMEOUT_MS}`);
     if (!signed(db)) return undefined;
     const row = db.query("SELECT pid, signature FROM runner WHERE slot = 1").get() as { pid: number; signature: string | null } | null;
     if (!row?.signature || !Number.isSafeInteger(row.pid) || row.pid < 1) return undefined;
@@ -157,11 +158,11 @@ export async function stopSignedRunner(id: string, home = hubHome(), waitMs = 50
 /** An exclusive runner claim. Never steal a live or uncertain owner on resume. */
 export function claimRunner(id: string, home = hubHome()): () => void {
   const path = `${operationPath(id, home)}.runner.db`;
-  const db = new Database(path, { create: true });
-  chmodSync(path, 0o600);
   const nonce = randomUUID();
+  const db = new Database(path, { create: true });
   try {
-    db.run("PRAGMA busy_timeout = 3000");
+    db.run(`PRAGMA busy_timeout = ${RUNNER_DB_BUSY_TIMEOUT_MS}`);
+    chmodSync(path, 0o600);
     db.run("CREATE TABLE IF NOT EXISTS runner (slot INTEGER PRIMARY KEY, pid INTEGER NOT NULL, nonce TEXT NOT NULL, signature TEXT)");
     if (!signed(db)) {
       try { db.run("ALTER TABLE runner ADD COLUMN signature TEXT"); }

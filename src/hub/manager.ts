@@ -9,15 +9,19 @@ import { hubHome } from "./project.ts";
 import { startDashboard } from "./ui.ts";
 import { projectChain } from "../memory/recall.ts";
 import type { ProjectInspection } from "./lifecycle.ts";
+import { MAX_COMMAND_MS } from "../cli/terminal-recovery.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 
+const MANAGER_OWNER_DB_BUSY_TIMEOUT_MS = 5000;
 export type ProjectRecord = Project;
 export type Lifecycle = {
   inspectProject(project: Project): Promise<ProjectInspection>;
   startProject(project: Project, options?: { unattended?: boolean; env?: NodeJS.ProcessEnv }): Promise<any>;
   stopProject(project: Project, expectedInstance?: string): Promise<void>;
 };
-export type ManagerOptions = { registry?: Registry; lifecycle?: Lifecycle; home?: string; cli?: string; orphanWatchMs?: number };
+export type ManagerOptions = { registry?: Registry; lifecycle?: Lifecycle; home?: string; cli?: string; orphanWatchMs?: number;
+  /** Test clock seam: maps nominal forwarding deadlines, never comes from dashboard input. */
+  forwardTimeoutMs?: (action: string, nominalMs: number) => number };
 type ManagerHandle = { stop(): Promise<void>; stopped: Promise<void> };
 type Manifest = { port: number; protocol: number; instanceId: string; pid: number; pidSignature?: string };
 const active = new Map<string, { handle: ManagerHandle; issue(): string }>();
@@ -45,7 +49,7 @@ async function bounded<T>(promise: Promise<T>, ms: number): Promise<T> {
 function claimOwner(path: string, instanceId: string, signature: string | undefined): Database {
   const db = new Database(path, { create: true });
   try {
-    db.run("PRAGMA busy_timeout = 5000");
+    db.run(`PRAGMA busy_timeout = ${MANAGER_OWNER_DB_BUSY_TIMEOUT_MS}`);
     db.run("CREATE TABLE IF NOT EXISTS owner (slot INTEGER PRIMARY KEY CHECK (slot = 1), instance_id TEXT NOT NULL, pid INTEGER NOT NULL, signature TEXT)");
     if (!(db.query("PRAGMA table_info(owner)").all() as { name: string }[]).some((c) => c.name === "signature")) {
       try { db.run("ALTER TABLE owner ADD COLUMN signature TEXT"); }
@@ -151,9 +155,17 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
         // The settings actions (#269) reach the project hub as an ordinary session's: this dashboard opens no settings session.
         if (!["snapshot", "send", "pause", "resume", "permit", "propose", "assign", "setting", "setting_undo", "setting_preview", "start_peer"].includes(String(input.action))) return { ok: false, error: "invalid dashboard action" };
         client = await ControlClient.connect(project.stateDir, { role: "console", projectId: project.id, projectRoot: project.root, instanceId: input.instanceId });
-        return await client.request(input.action === "snapshot"
+        const nominalMs = input.action === "start_peer" ? MAX_COMMAND_MS + 5_000 : 10_000;
+        const timeoutMs = options.forwardTimeoutMs?.(String(input.action), nominalMs) ?? nominalMs;
+        const result = await client.request(input.action === "snapshot"
           ? { t: "ui_snapshot", after: input.after ?? 0 }
-          : { t: "ui_action", action: input, instanceId: input.instanceId }, 10_000);
+          : { t: "ui_action", action: input, instanceId: input.instanceId }, timeoutMs);
+        // ControlClient resolves its deadline as this exact sentinel; a hub refusal stays a known failure.
+        if (input.action === "start_peer" && result.ok === false && result.error === `no answer from the hub within ${Math.round(timeoutMs / 1000)} s`) {
+          const text = "Start result is unconfirmed. Check the Peers panel before retrying; the hub may still be starting the peer.";
+          return { ok: false, unconfirmed: true, text, error: text };
+        }
+        return result;
       } catch (error) { return { ok: false, error: safeError(error) }; }
       finally { client?.close(); }
     };

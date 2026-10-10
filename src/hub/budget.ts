@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import type { PeerId } from "./envelope.ts";
+import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 
 export interface UsageWindow {
   id: "5h" | "week" | "tokens";
@@ -96,6 +97,7 @@ export class Budget {
     private readonly now: () => number = Date.now,
   ) {
     this.db = new Database(dbPath, { create: true });
+    this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     this.db.run(`CREATE TABLE IF NOT EXISTS budget_pauses (peer TEXT PRIMARY KEY, since INTEGER NOT NULL, resets_at INTEGER NOT NULL,
       reason TEXT NOT NULL, summary TEXT, handed_off INTEGER NOT NULL DEFAULT 0, moved TEXT NOT NULL DEFAULT '[]')`);
   }

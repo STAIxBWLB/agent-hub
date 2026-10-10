@@ -126,16 +126,27 @@ test("a failed prompt turn reports onTurnFailure; an abnormal end with no answer
 
   // A watchdog-cancelled turn's late report is stale and never fires the callback.
   const lateFailures: string[] = [];
-  const acp = new AcpPeer("kimi", { cmd: FAKE, cwd: process.cwd(), watchdogMs: 1000, onTurnFailure: async (_e, r) => { lateFailures.push(r); } });
+  class CancelledPeer extends AcpPeer {
+    nativeActivity = false;
+    protected override touch(): void { super.touch(); if (this.state === "busy") this.nativeActivity = true; }
+    expireWatchdog(): void { this.onWatchdog(); }
+  }
+  const acp = new CancelledPeer("kimi", { cmd: [...FAKE, "--mode-after-cancel"], cwd: process.cwd(), onTurnFailure: async (_e, r) => { lateFailures.push(r); } });
   await acp.start();
   try {
     const answered: string[] = [];
     acp.onMessage = (body) => answered.push(body);
-    await acp.deliver([newEnvelope("user", "SLOW", { to: ["kimi"] })]); // no deliveryId: the watchdog returns it to idle
-    await until(() => acp.state === "idle");
+    await acp.deliver([newEnvelope("user", "ACK_SLOW", { to: ["kimi"] })]); // no deliveryId: expiry returns this legacy turn to idle
+    await until(() => acp.nativeActivity); // the fake has consumed the silent prompt, not just the parent delivery
+    acp.expireWatchdog();
+    expect(acp.state).toBe("idle");
+    // Parent idle does not prove the child cleared busy: cancel+ping in one stdin batch rejects ping.
+    // This mode reply follows the cancelled result on stdout and proves both cancellation and its stale report were consumed.
+    await acp.setPermissionMode("ask");
     await acp.deliver([newEnvelope("user", "ping", { to: ["kimi"] })]);
     await until(() => answered.length === 1);
-    await Bun.sleep(150); // the cancelled prompt's late report lands here, stale
+    await until(() => acp.state === "idle");
+    expect(answered).toEqual(["echo: ping"]);
     expect(lateFailures).toEqual([]);
   } finally { await acp.stop(); }
 });
@@ -396,13 +407,18 @@ test("ACP child drops recovery authority while retaining account and state envir
 });
 
 test("watchdog: the cancelled prompt reports late and must not disturb the turn that followed it", async () => {
-  const { bus, said } = await setup({ watchdogMs: 1000 });
+  const failures: string[] = [];
+  const { bus, said } = await setup({ watchdogMs: 1000, onTurnFailure: (_envs, reason) => { failures.push(reason); } });
   bus.publish(newEnvelope("user", "SLOW", { to: ["kimi"] }));
   bus.publish(newEnvelope("user", "after", { to: ["kimi"] }));
   await until(() => said.length === 1);
   await new Promise((r) => setTimeout(r, 80));
   expect(said.map((e) => e.body)).toEqual(["echo: after"]); // nothing attributed to SLOW
   expect(peer!.state).toBe("idle");
+  // The cancelled turn's late result lands while the next turn runs (wire order: it precedes the next answer);
+  // the turn generation fences it: no failure report names the cancelled end (#296). (The next prompt's first
+  // attempt can still hit the fake's busy window and retry, as the rejection test below covers.)
+  expect(failures.filter((f) => f.includes("cancelled") || f.includes("without normal completion"))).toEqual([]);
 });
 
 test("a prompt the agent rejects is retried, then reported undeliverable instead of blocking the queue", async () => {
@@ -597,3 +613,53 @@ for (const startup of [false, true]) {
     } finally { await peer?.stop(); rmSync(dir, { recursive: true, force: true }); }
   }, 20_000);
 }
+
+test("outside a turn only an occupancy diagnostic gets through: a token total, a chunk, an unnamed update and an offline peer all stay out (#285)", async () => {
+  const diagnostics: string[] = [];
+  const tokens: number[] = [];
+  // Ordinary turns on the default watchdog (#288's rule); the fake holds trailing updates and releases them on the
+  // set_mode the barrier issues: a resolved setPermissionMode proves the adapter processed them, idle.
+  const { bus, said } = await setup({ onUsageDiagnostic: (o) => diagnostics.push(`${o.shape}:${o.availability}`), onTokens: (t) => tokens.push(t) });
+  const barrier = () => peer!.setPermissionMode("ask");
+  const chunks = () => (peer as unknown as { chunks: string[] }).chunks;
+  // Turn 1: the in-turn total counts; the held late total and chunk do not (the chunk probe reads chunks directly:
+  // a leaked one would sit there, deliver() clears only at the next turn).
+  bus.publish(newEnvelope("user", "LATETOTAL LATECHUNK first", { to: ["kimi"] }));
+  await until(() => said.length === 1 && peer!.state === "idle");
+  await barrier();
+  expect(tokens).toEqual([50]);
+  expect(chunks().join()).not.toContain("LATE-CHUNK-LEAK");
+  expect(said[0]!.body).not.toContain("LATE-CHUNK-LEAK");
+  bus.publish(newEnvelope("user", "second", { to: ["kimi"] }));
+  await until(() => said.length === 2 && peer!.state === "idle");
+  expect(said[1]!.body).not.toContain("LATE-CHUNK-LEAK");
+  expect(tokens).toEqual([50, 100]);
+  // Turn 3: an occupancy update naming no session, released while idle, is dropped.
+  bus.publish(newEnvelope("user", "OCCUPANCY_UNNAMED third", { to: ["kimi"] }));
+  await until(() => said.length === 3 && peer!.state === "idle");
+  await barrier();
+  expect(diagnostics.filter((d) => d.startsWith("context-used"))).toEqual([]);
+  // Turn 4 (the contrast): a named occupancy update while idle does arrive.
+  bus.publish(newEnvelope("user", "OCCUPANCY fourth", { to: ["kimi"] }));
+  await until(() => said.length === 4 && peer!.state === "idle");
+  await barrier();
+  expect(diagnostics.filter((d) => d.startsWith("context-used"))).toEqual(["context-used:unsupported"]);
+}, 20_000);
+
+test("an offline peer's occupancy update is dropped at the gate (#285)", async () => {
+  class WatchdogPeer extends AcpPeer {
+    expireWatchdog(): void { this.onWatchdog(); }
+  }
+  const diagnostics: string[] = [];
+  const acp = new WatchdogPeer("kimi", { cmd: FAKE, cwd: process.cwd(), onUsageDiagnostic: (o) => diagnostics.push(o.shape) });
+  peer = acp;
+  await acp.start();
+  // A durable turn (a delivery id, as the journaled bus passes), expired explicitly: the peer goes offline.
+  await acp.deliver([newEnvelope("user", "SLOW fifth", { to: ["kimi"] })], "d1");
+  await until(() => acp.state === "busy");
+  acp.expireWatchdog();
+  await until(() => acp.state === "offline");
+  // The cancelled turn's trailing occupancy, probed at the gate directly (an offline adapter answers nothing).
+  (acp as unknown as { onLine: (line: string) => void }).onLine(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", used: 90_000, size: 200_000 } } }));
+  expect(diagnostics).toEqual([]);
+}, 20_000);

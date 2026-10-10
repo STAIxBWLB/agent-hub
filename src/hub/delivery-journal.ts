@@ -4,6 +4,7 @@ import { Database } from "bun:sqlite";
 import type { BusSnapshot } from "./bus.ts";
 import type { Envelope } from "./envelope.ts";
 import { processLiveness } from "../pi/process-signature.ts";
+import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 
 export type JournalDeliveryState =
   | "queued"
@@ -239,10 +240,10 @@ export class DeliveryJournal {
     this.operationId = options.operationId;
     mkdirSync(dirname(options.file), { recursive: true, mode: 0o700 });
     this.db = new Database(options.file, { create: true });
+    this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     this.harden();
     this.db.run("PRAGMA journal_mode = WAL");
     this.db.run("PRAGMA synchronous = FULL");
-    this.db.run("PRAGMA busy_timeout = 3000");
     this.createSchema();
     const meta = this.readMeta();
     if (!meta)

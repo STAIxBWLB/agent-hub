@@ -169,7 +169,7 @@ export function resolveColor(flag: string | undefined, env: { isTTY: boolean; TE
   if (flag === "always") return true;
   if (flag === "never") return false;
   if (flag === undefined || flag === "auto") return env.isTTY && env.TERM !== "dumb" && !env.NO_COLOR;
-  return new Error("usage: ahub console [--panels] [--color=auto|always|never]");
+  return new Error("usage: ahub <command> [--color=auto|always|never]");
 }
 export function stateTone(state: string): Tone | undefined {
   if (state === "idle" || state === "approved") return "success";
@@ -184,7 +184,7 @@ const flat = (value: unknown) => terminalText(value).replace(/[\n\t]/g, " ");
  * Clip sanitized plain text to the width and keep the tones of the surviving prefix. Widths are measured as paint()
  * prints them: paint() sanitizes each span again, and a cut that ends a span in `[agent-hub` earns it a `> `.
  */
-function fitLine(line: Span[], columns: number): Span[] {
+export function fitLine(line: Span[], columns: number): Span[] {
   const clean = line.map(s => ({ ...s, text: flat(s.text) }));
   if (Bun.stringWidth(clean.map(s => s.text).join("")) <= columns) return clean;
   const marker = ".".repeat(Math.max(0, Math.min(3, columns)));
@@ -211,7 +211,9 @@ export function fit(value: unknown, columns: number): string {
 export function wrap(value: unknown, columns: number, hang = 4): string[] {
   const lines: string[] = [];
   const half = Math.floor(columns / 2);
-  const width = (text: string) => Bun.stringWidth(sanitize(text));
+  // A bare chunk ending in "--- from" becomes a header marker when table padding follows it.
+  const quoteChunk = (text: string) => sanitize(text + " ").slice(0, -1);
+  const width = (text: string) => Bun.stringWidth(quoteChunk(text));
   for (const part of terminalText(value).replace(/\t/g, " ").split("\n")) {
     const indent = /^\s*/.exec(part)![0];
     const lead = Math.min(Bun.stringWidth(indent), half);
@@ -219,7 +221,7 @@ export function wrap(value: unknown, columns: number, hang = 4): string[] {
     const first = lines.length;
     let start = " ".repeat(lead);
     let line = start;
-    const push = () => { lines.push(sanitize(line.trimEnd())); line = start = pad; };
+    const push = () => { lines.push(quoteChunk(line.trimEnd())); line = start = pad; };
     for (const token of part.slice(indent.length).match(/\s+|\S+/g) ?? []) {
       if (width(line + token) <= columns) { line += token; continue; }
       if (line !== start) push();
@@ -229,7 +231,7 @@ export function wrap(value: unknown, columns: number, hang = 4): string[] {
         line += char;
       }
     }
-    if (line !== start || lines.length === first) lines.push(sanitize(line.trimEnd()));
+    if (line !== start || lines.length === first) lines.push(quoteChunk(line.trimEnd()));
   }
   return lines;
 }
@@ -517,7 +519,7 @@ export function renderConsole(s: ConsoleState, columns: number, rows = 24, now =
   return renderConsoleLines(s, columns, rows, now).map(line => paint(line, false));
 }
 const NOTICE_MS = 10_000;
-const TABLES: Record<number, string[]> = {
+export const TABLES: Record<number, string[]> = {
   1: ["PEER", "STATE", "LINK", "Q", "!", "REVIEW", "PAUSE", "QUOTA", "MODEL"],
   2: ["ID", "PEER", "LEFT", "TITLE"],
   3: ["ID", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "TITLE", "STAGE"],
@@ -526,7 +528,7 @@ const TABLES: Record<number, string[]> = {
 const showPermissionModes = (s: ConsoleState) => Object.values(s.peers).some(peer => peer.permissionMode && peer.permissionMode !== "ask");
 const count = (n: unknown) => typeof n === "number" && n ? String(n) : "-";
 /** One span per column of a panel row; zero counters and unknown values read `-`. */
-function cells(s: ConsoleState, row: any, selected: boolean, now: number, stages?: Map<number, ProgressStage>): Span[] {
+export function cells(s: ConsoleState, row: any, selected: boolean, now: number, stages?: Map<number, ProgressStage>): Span[] {
   const id = (text: unknown, tone: Tone | undefined) => span(text, tone && (selected ? "strong" : tone));
   if (s.panel === 1) {
     const b = s.budget[row.id];
@@ -558,14 +560,14 @@ function cells(s: ConsoleState, row: any, selected: boolean, now: number, stages
 /**
  * A header row, then the rows, each column starting at the same place on every row: two spaces apart, as wide as its
  * widest cell or header (Bun.stringWidth, at most a third of the width, wider cells cut with the marker); the last column
- * takes the rest.
+ * takes the rest. One-shot callers may supply widths for already-wrapped cells; console defaults stay unchanged.
  */
-function table(head: string[], rows: Span[][], columns: number): Span[][] {
+export function table(head: string[], rows: Span[][], columns: number, explicitWidths?: readonly number[]): Span[][] {
   const cap = Math.max(24, Math.floor(columns / 3));
   const width = (cell: Span | undefined) => Bun.stringWidth(flat(cell?.text));
-  const widths = head.map((h, i) => Math.min(cap, rows.reduce((max, row) => Math.max(max, width(row[i])), Bun.stringWidth(h))));
+  const widths = explicitWidths ? [...explicitWidths] : head.map((h, i) => Math.min(cap, rows.reduce((max, row) => Math.max(max, width(row[i])), Bun.stringWidth(h))));
   const flexible = head.includes("STAGE") ? head.indexOf("TITLE") : head.length - 1;
-  if (head.includes("STAGE")) {
+  if (!explicitWidths && head.includes("STAGE")) {
     // Keep the original columns adjacent; stage meters occupy a fixed right-edge column.
     const room = () => columns - 2 - widths.reduce((sum, value, index) => sum + (index === flexible ? 0 : value), 0) - 2 * (head.length - 1);
     for (const key of ["CLASS", "OWNER", "REVIEWER", "AGE", "STATE"]) {
@@ -574,7 +576,9 @@ function table(head: string[], rows: Span[][], columns: number): Span[][] {
     }
     widths[flexible] = Math.max(0, room());
   }
-  return [head.map(h => span(h, "info")), ...rows].map(row => row.map((cell, i) => {
+  const headerCells = explicitWidths ? head.map((h, i) => wrap(h, Math.max(1, widths[i]!), 0)) : undefined;
+  const headers = headerCells ? Array.from({ length: Math.max(...headerCells.map(cell => cell.length)) }, (_, n) => head.map((_, i) => span(headerCells[i]![n] ?? "", "info"))) : [head.map(h => span(h, "info"))];
+  return [...headers, ...rows].map(row => row.map((cell, i) => {
     if (i === head.length - 1 && flexible === i) return cell;
     const text = fit(cell.text, widths[i]!);
     return { ...cell, text: text + " ".repeat(Math.max(0, widths[i]! - Bun.stringWidth(text)) + (i === head.length - 1 ? 0 : 2)) };

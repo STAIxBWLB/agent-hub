@@ -154,7 +154,7 @@ export interface RecordedTerminalLaunch {
 }
 
 const MAX_WAIT_MS = 10 * 60 * 1000;
-const MAX_COMMAND_MS = 30_000;
+export const MAX_COMMAND_MS = 30_000;
 /** #215: a replacement's readiness is awaited in slices this long, checking between them whether its launcher still runs. */
 const EXIT_SLICE_MS = 5_000;
 const ALLOWED_ENV = ["CODEX_HOME", "CLAUDE_CONFIG_DIR"] as const;

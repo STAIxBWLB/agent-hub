@@ -1,7 +1,7 @@
-import { spawnSync } from "node:child_process";
 import { basename, dirname, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import type { PeerId } from "../hub/envelope.ts";
+import { hubGitSync } from "../hub/git.ts";
 import type { MemoryClient } from "./client.ts";
 
 const PLATFORMS = ["claude", "codex", "kimi", "agent-hub"];
@@ -14,7 +14,7 @@ const HEADER =
 
 /** Project names from the outermost superproject down to this repo. */
 export function projectChain(cwd: string): string[] {
-  const git = (dir: string, arg: string) => spawnSync("git", ["-C", dir, "rev-parse", arg], { encoding: "utf8" }).stdout?.trim() ?? "";
+  const git = (dir: string, arg: string) => hubGitSync(["-C", dir, "rev-parse", arg], { encoding: "utf8" }).stdout?.trim() ?? "";
   const top = git(cwd, "--show-toplevel");
   if (!top) return [basename(cwd)];
 

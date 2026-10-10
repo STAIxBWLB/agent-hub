@@ -1,3 +1,4 @@
+import { PEER_START_RETRY_MS } from "./start-mode.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -27,7 +28,8 @@ export function startDashboard(options: DashboardOptions) {
   const sessions = new Map<string, { expires: number; settingsUntil?: number }>();
   // Inject the same pure public-board model used by the console before computing CSP hashes.
   const html = readFileSync(new URL("../ui/index.html", import.meta.url), "utf8")
-    .replace("/* TASK_PROGRESS_MODEL */", () => `const taskProgress = ${taskProgress.toString()};`);
+    .replace("/* TASK_PROGRESS_MODEL */", () => `const taskProgress = ${taskProgress.toString()};`)
+    .replace("/* PEER_START_RETRY_MS */", () => `const PEER_START_RETRY_MS = ${PEER_START_RETRY_MS};`);
   const hashes = (tag: string) => [...html.matchAll(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g"))]
     .map((m) => `'sha256-${createHash("sha256").update(m[1]!).digest("base64")}'`).join(" ");
   const headers = {

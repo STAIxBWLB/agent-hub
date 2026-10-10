@@ -3,6 +3,19 @@
 This guide describes ahub 0.12.22 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
+## Command output
+
+`ahub status`, `board`, `budget` and `doctor` print shared console tables and labelled details.
+Use `--json` for scripts; it returns the fetched data without color, and `status --json` keeps its existing document.
+Text columns are a human interface, not a scripting contract. `status --full` keeps informational identifiers whole;
+identifiers in suggested commands are always whole.
+
+`--color=auto|always|never` uses the console palette. Auto colors only a TTY with `TERM` other than `dumb`
+and empty `NO_COLOR`; pipes and redirects stay plain. Color never replaces a state or level word.
+TTY width is its columns (at least 80). A pipe uses a positive integer `COLUMNS` when supplied, otherwise rows
+are complete and unwrapped. Long fields wrap within their column; widths too narrow for all headers use table bands linked by the row id, retaining every field. Console children receive the console's width
+minus its four-column indent and remain uncolored.
+
 ## Command help
 
 `ahub help`, `ahub --help` and `ahub -h` print the commands grouped by section;
@@ -1069,6 +1082,7 @@ A peer that has a TUI the hub attaches to starts in it by default (issue #269).
   never downgraded to headless. `ahub settings` lists each start mode, and the
   dashboard's Start control says which mode a start will use and where its
   terminal comes from.
+- **Dashboard Start:** the control is locked while its request is in flight. A confirmed answer unlocks it immediately, so a retry reaches the hub's own 30-second terminal reopen guard and shows any known refusal. The unified dashboard waits 35 seconds, covering a terminal provider's 30-second cap plus a 5-second response margin; a slower headless start can still end unconfirmed while the hub continues. Check the Peers panel before retrying. An unconfirmed unified-dashboard start holds that peer's control for the shared 30-second reopen bound, or until its `starts` snapshot confirms attachment, across redraws and project switches within the same hub instance; the row states the retry bound. The project-local dashboard keeps its usual confirmed-answer behavior. Other forwarded actions keep their 10-second wait; the manager opens no settings session.
 - The conductor cannot choose the mode: `hub_peer_start` takes the peer's own.
 - Recovery restores each peer in the mode its recorded session had. After an
   unplanned stop, a Pi that ran in a terminal is reported with its command and
@@ -1188,8 +1202,8 @@ Only `ahub claude` starts Claude Code with the development-channel flag. A
 Claude session started another way (plain `claude`, an IDE) keeps the hub tools
 but cannot show pushes, so it attaches tools-only (protocol 16, issue #205):
 
-- Its messages stay queued. `ahub status` shows `queued N` and `tools-only:
-  messages wait for hub_inbox; for pushes restart Claude with ahub claude`; the
+- Its messages stay queued. `ahub status` shows the queue count in `Q` and a `tools-only` detail:
+  `messages wait for hub_inbox; for pushes restart Claude with ahub claude`; the
   console footer shows `tools-only: ahub claude` and the dashboard shows the
   status line.
 - The session reads them with `hub_inbox`, at most ten messages at a time plus
@@ -1913,7 +1927,7 @@ whose MLX slot is still busy after that wait goes to `dgx/fast` first (`source: 
 so does an enforced tool loop pinned to it (`source: "pin"`); without it nothing moves for load. `dgx/fast`
 never goes first while it is cooling down, or while its own last dispatch failed in any way,
 an error status or a failed stream included, until it succeeds or 30 s pass (`ahub status`:
-`last dispatch failed, no load moves until ...`). No load move or pin happens while the request
+a `dispatch held` detail with a relative time and `no load moves until then`). No load move or pin happens while the request
 runs under an execution budget, and enforced, a load move happens only at a user turn. A moved
 attempt gets 15 s to its response headers after the gateway lookup (OmniRoute's own probe,
 up to two 4 s rounds when no gateway is cached) and is then abandoned for MLX, which serves
@@ -1927,7 +1941,7 @@ consecutive transport or startup failures outside a cooldown (a failure more tha
 the last counted one starts the count over), a relay alias cools down for 30 s, doubling up to
 5 min. A busy MLX slot and timeouts cut short by an execution budget never count; any HTTP
 answer, a success or an error status, proves the transport works and ends the streak and the
-cooldown. `ahub status` shows `cooling down until ...` on the backend line and `events.jsonl`
+cooldown. `ahub status` shows a `cooling` detail with a relative time and failure count and `events.jsonl`
 records `cooldown` events.
 Progress judgements suggest reassignment; they never change task ownership.
 
@@ -2097,7 +2111,13 @@ ownership, bind servers or start agents, sidecars or models.
 `ahub status`, `ahub tail` and the dashboard show native context occupancy,
 source and measurement freshness. Claude readings come from the status-line
 tee installed by `ahub claude`; Codex readings come from its current thread's
-native token-usage updates. Pi and other unsupported surfaces show unknown.
+native token-usage updates. Kimi readings come from its ACP `usage_update`
+(`{used, size}`, source `acp_usage_update`): context occupancy, not
+consumption, so no token total is counted from it; the adapter accepts the
+update whenever it names the current session, because 2.1.1's source text
+emits it after the turn settles (read from the source, not yet observed live
+through the hub; docs/smoke.md), so the peer may already be idle.
+Pi and other unsupported surfaces show unknown.
 A stale or disconnected reading is unknown, not 0%. Codex's accumulated session
 usage is never used as context occupancy.
 
@@ -2111,8 +2131,9 @@ this to `.agenthub/config.json` and restart the daemon deliberately:
 `gate` is a fraction between 0 and 1; 0 disables checkpoint requests.
 `stale_min` must be positive. A reading at or above the threshold records a metadata-only
 event and console notice, then asks an attached Claude/Codex with active work
-for a checkpoint when no checkpoint request is already outstanding. The request
-supplies a `request_id`; include that id with
+for a checkpoint when no checkpoint request is already outstanding (an ACP peer
+such as Kimi gets the event and notice only; no checkpoint request is sent to it
+yet). The request supplies a `request_id`; include that id with
 `hub_checkpoint {summary, request_id}`. Repeated high readings do not repeat
 it until a fresh below-threshold reading or new session rearms the crossing.
 

@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { PROJECT_COLUMNS, projectFromRow, type Project } from "../hub/registry.ts";
+import { REGISTRY_DB_BUSY_TIMEOUT_MS, PROJECT_COLUMNS, projectFromRow, type Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
 import { acquireRecoveryLock, claimRunner, coordinatorCurrent, readOperation, recoveryCommand, recoveryLock, releaseRecoveryLock, writeOperation } from "../hub/recovery-store.ts";
 
@@ -288,6 +288,7 @@ export function registeredProjects(home = hubHome()): Project[] {
   if (!existsSync(path)) return [];
   const db = new Database(path, { readonly: true });
   try {
+    db.run(`PRAGMA busy_timeout = ${REGISTRY_DB_BUSY_TIMEOUT_MS}`);
     // #226: a registry no current release opened yet has no signature column, and this read never migrates.
     const signed = (db.query("PRAGMA table_info(projects)").all() as { name: string }[]).some((c) => c.name === "pid_signature");
     return (db.query(`SELECT ${PROJECT_COLUMNS}${signed ? ", pid_signature" : ""} FROM projects ORDER BY root`).all() as Record<string, unknown>[]).map(projectFromRow);

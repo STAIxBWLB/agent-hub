@@ -15215,7 +15215,18 @@ import { join as join2 } from "path";
 // src/hub/project.ts
 import { existsSync, lstatSync, readFileSync, realpathSync } from "fs";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
+
+// src/hub/git.ts
 import { spawnSync } from "child_process";
+var SAFE_CONFIG = ["core.fsmonitor=false", "core.hooksPath=/dev/null", "diff.external=", "core.pager=cat", "credential.helper=", "core.askpass="];
+var hubGitArgv = (args) => ["git", "--no-pager", ...SAFE_CONFIG.flatMap((c) => ["-c", c]), ...args];
+var hubGitEnv = (env = process.env) => ({ ...env, GIT_TERMINAL_PROMPT: "0" });
+function hubGitSync(args, options) {
+  const argv = hubGitArgv(args);
+  return spawnSync(argv[0], argv.slice(1), { ...options, env: hubGitEnv(options.env ?? process.env) });
+}
+
+// src/hub/project.ts
 var canonical = (path) => {
   const absolute = resolve(path);
   try {
@@ -15226,7 +15237,7 @@ var canonical = (path) => {
   }
 };
 function gitRoot(dir) {
-  const result = spawnSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
+  const result = hubGitSync(["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
   if (result.status !== 0)
     return;
   const root = result.stdout.trim();
