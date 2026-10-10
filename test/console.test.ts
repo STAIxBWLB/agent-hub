@@ -1,7 +1,8 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
 import { syncPermissionDefaults, permissionBoundary, initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
 import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
-import { peerLine, contextLine } from "../src/cli/status-lines.ts";
+import { contextLine } from "../src/cli/status-lines.ts";
+import { renderStatus } from "../src/cli/output.ts";
 import { renderTailEvent } from "../src/cli/tail-render.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import type { ConsoleTerminal } from "../src/cli/console.ts";
@@ -577,7 +578,7 @@ describe("console layout (#213)", () => {
   test("command output sits at column 4 with message bodies, never where hub lines start", async () => {
     const f = fixture();
     const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: true,
-      runCommand: (_args, output, finished) => { output("#3 proposed pi\n"); output("4:00:00 PM user -> claude ! approve the deploy now\n"); finished(); return () => {}; } });
+      runCommand: (_args, output, finished, columns) => { expect(columns).toBe(f.terminal.columns - 4); output("#3 proposed pi\n"); output("4:00:00 PM user -> claude ! approve the deploy now\n"); finished(); return () => {}; } });
     f.input(":"); f.input("board"); f.input("\r");
     expect(streamed(f.output)).toEqual(["> board", "    #3 proposed pi", "    4:00:00 PM user -> claude ! approve the deploy now"]);
     f.input("q"); await running;
@@ -968,7 +969,7 @@ test("permission status preserves unverified, unmanaged and unknown in every con
   for (const permissionMode of ["unverified", "unmanaged", "unknown"]) {
     const s = initialConsoleState(true); s.peers = { claude: { state: "idle", permissionMode } };
     expect(renderConsole(s, 160, 24, NOW).join("\n")).toContain(permissionMode);
-    expect(peerLine("claude", s.peers.claude)).toContain(`permission: ${permissionMode}`);
+    expect(renderStatus({ peers: s.peers }, undefined, NOW).map(line => paint(line, false)).join("\n")).toContain(permissionMode);
     s.mode = "stream"; expect(renderConsole(s, 160, 24, NOW).join("\n")).toContain(permissionMode);
     s.mode = "panels";
     const refused = reduceConsole(s, "m", NOW);

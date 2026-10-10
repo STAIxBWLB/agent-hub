@@ -39,7 +39,7 @@ export function classifyPeerCommand(command: string, args: readonly string[]): P
   // #251: a run resets the bench project's tree and proposes work; reading results is harmless.
   // The subcommand is the first argument that is not --json, which the command accepts anywhere.
   if (command === "bench") return args.find((arg) => arg !== "--json") === "run" ? "console" : "allowed";
-  if (command === "budget") return !args.length || args.every((arg) => arg === "--json") ? "allowed" : "console";
+  if (command === "budget") return !args.length || args.every((arg) => arg === "--json" || arg === "--full" || arg.startsWith("--color=")) ? "allowed" : "console";
   if (["claude", "codex", "kimi", "pi", "local", "pause", "resume"].includes(command)) return "conductor";
   if (["help", "version", "--version", "say", "status", "board", "report", "turns", "review", "remember", "facts", "check-path"].includes(command)) return "allowed";
   return "console";

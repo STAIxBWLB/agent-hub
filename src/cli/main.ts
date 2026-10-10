@@ -35,8 +35,7 @@ import { recordTerminalLaunch } from "./terminal-recovery.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
 import { setupOllamaModel } from "./models-setup.ts";
 
-import { unknownContext } from "../hub/context-window.ts";
-import { backendLine, contextLine, peerLine, type BackendRow, type PeerRow } from "./status-lines.ts";
+import { contextLine, type PeerRow } from "./status-lines.ts";
 import { parseSince, readEvents } from "../hub/events.ts";
 import { armRuns, benchCompare, benchCsv, benchReport, formatCompare, formatReport as formatBenchReport, formatRuns, readRuns, runSummary, sameSuite } from "../hub/bench.ts";
 import { benchPreflight, defaultIo, runBench } from "./bench.ts";
@@ -47,7 +46,8 @@ import { pathWarnings } from "../hub/conflicts.ts";
 import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, peerCommandRefusal } from "./identity.ts";
 import { recordCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
-import { permissionBoundary, resolveColor } from "./console-state.ts";
+import { paint, permissionBoundary, resolveColor, type Span } from "./console-state.ts";
+import { outputWidth, renderStatus, renderBoard, renderBudget, renderDoctor, type DoctorCheck } from "./output.ts";
 import { renderHelp } from "./help.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
@@ -107,6 +107,18 @@ if (identity.role === "tools" && commandAccess === "console") { audit("refused")
 if (identity.role === "tools") audit("run");
 const invokedFrom = process.cwd(); // relative paths a person types (a bench suite) are theirs, not the project's
 try { process.chdir(cwd); } catch { fail(`project directory is unavailable: ${cwd}`); }
+/** One-shot output flags do not alter the fetched JSON document. */
+function outputOptions() {
+  const flags = args.filter(arg => arg.startsWith("--color="));
+  if (flags.length > 1 || args.includes("--color")) fail(`usage: ahub ${cmd} [--color=auto|always|never] [--json] [--full]`);
+  const color = resolveColor(flags[0]?.slice("--color=".length), { isTTY: !!process.stdout.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR });
+  if (color instanceof Error) fail(`usage: ahub ${cmd} [--color=auto|always|never] [--json] [--full]`);
+  return { color: color === true, json: args.includes("--json"), full: args.includes("--full"),
+    columns: outputWidth({ isTTY: !!process.stdout.isTTY, columns: process.stdout.columns, COLUMNS: process.env.COLUMNS }) };
+}
+function printOutput(lines: Span[][], color: boolean): void {
+  for (const line of lines) console.log(paint(line, color));
+}
 const unattendedEnv = process.env.AGENTHUB_UNATTENDED === "1";
 const lifecycle = { inspectProject, startProject, stopProject };
 const connect = () => ControlClient.connect(stateDir, identity.role === "tools" ? { role: "tools", peer: identity.peer, projectRoot: cwd } : { role: "console", projectRoot: cwd });
@@ -844,6 +856,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   budget: async () => {
+    const options = outputOptions();
     const hub = await connect();
     if (args[0] === "execution") {
       const op = args[1] ?? "status";
@@ -876,21 +889,18 @@ const commands: Record<string, () => Promise<void> | void> = {
     const res = await hub.request({ t: "budget", ...(set ? { set } : {}) });
     hub.close();
     if (!res.ok) fail(res.error);
-    const peers = Object.entries(res.budget as Record<string, any>);
-    if (!peers.length) return console.log(`no quota readings yet (gate ${res.gate}). Sources: Codex rate limits, Claude's status line (ahub claude), ahub budget set.`);
-    const left = (at: number) => { const s = Math.max(0, Math.round((at - Date.now()) / 1000)); return s >= 3600 ? `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`; };
-    for (const [peer, b] of peers) {
-      console.log(`${peer}${b.paused ? `  PAUSED: ${b.paused.reason}, resumes in ${left(b.paused.resetsAt)}` : ""}`);
-      for (const w of b.windows) console.log(`  ${String(w.id).padEnd(7)} ${String(Math.round(w.used * 100)).padStart(3)}%${w.resetsAt ? `  resets in ${left(w.resetsAt)}` : ""}  [${w.source}, ${Math.round((Date.now() - w.at) / 1000)}s ago${w.stale ? ", STALE" : ""}]`);
-    }
+    const data = { budget: res.budget, gate: res.gate };
+    if (options.json) return console.log(JSON.stringify(data, null, 2));
+    printOutput(renderBudget(data, options.columns, Date.now(), options.full), options.color);
   },
 
   board: async () => {
+    const options = outputOptions();
     const ready = args.includes("--ready");
     const state = args.find((a) => !a.startsWith("--"));
     const tasks = JSON.parse(await taskOp("hub_task_list", ready ? { ready: true } : state ? { state } : {})) as any[];
-    if (!tasks.length) return console.log("no tasks");
-    for (const t of tasks) console.log(`#${String(t.id).padEnd(4)} ${t.state.padEnd(18)} ${t.class.padEnd(10)} ${(t.owner ?? "-").padEnd(8)} review:${(t.reviewer ?? "-").padEnd(8)} ${t.title}${t.deps?.length ? `  (after ${t.deps.map((d: number) => `#${d}`).join(", ")})` : ""}${t.signals.includes("pii") ? `  (ahub task show ${t.id})` : ""}`);
+    if (options.json) return console.log(JSON.stringify(tasks, null, 2));
+    printOutput(renderBoard(tasks, options.columns, Date.now(), options.full), options.color);
   },
 
   task: async () => {
@@ -1000,23 +1010,15 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   status: async () => {
-    if (args.includes("--all")) return printProjects(args.includes("--json"));
+    const options = outputOptions();
+    if (args.includes("--all")) return printProjects(options.json);
     const hub = await connect();
-    const { status } = await hub.request({ t: "status" });
-    hub.close();
-    if (args.includes("--json")) return console.log(JSON.stringify(status, null, 2));
-    console.log(`hub pid ${status.pid}, control 127.0.0.1:${status.controlPort}, ${status.cwd}`);
-    if (status.deliveryError) console.log(`  delivery storage: ${status.deliveryError}; dispatch is stopped`);
-    for (const pending of status.permissionDefaults ?? []) console.log(`  permission default ${pending.peer}: never-ask from ${pending.source}, stays ask until a person confirms in ahub console`);
-    for (const line of (status as { crash?: string[] }).crash ?? []) console.log(`  crash recovery: ${line}`);
-    const peers = Object.entries(status.peers as Record<string, PeerRow>);
-    for (const [id, p] of peers) console.log(peerLine(id, { ...p, context: p.context ?? unknownContext() }));
-    const models = (status as any).models?.backends as BackendRow[] | undefined;
-    if (models?.length) for (const backend of models) console.log(backendLine(backend));
-    if (status.switchyard) console.log(`  switchyard: ${status.switchyard}`);
-    const counts = Object.entries(status.tasks ?? {}).map(([s, n]) => `${n} ${s}`).join(", ");
-    if (counts) console.log(`  tasks: ${counts} (ahub board)`);
-    if (!peers.length) console.log("  no peers attached yet (ahub claude | ahub codex | ahub kimi)");
+    try {
+      const { status } = await hub.request({ t: "status" });
+      if (options.json) return console.log(JSON.stringify(status, null, 2));
+      const quota = await hub.request({ t: "budget" });
+      printOutput(renderStatus({ ...status, budget: quota.budget ?? {} }, options.columns, Date.now(), options.full), options.color);
+    } finally { hub.close(); }
   },
 
   logs: () => exec("tail", [args.includes("-f") ? "-f" : "-n100", join(stateDir, "hub.log")]),
@@ -1312,13 +1314,22 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   doctor: async () => {
+    const options = outputOptions();
     if (args.includes("--orphans")) return orphanDoctor(args.includes("--kill"));
     const version = (bin: string) => {
       const res = spawnSync(bin, ["--version"], { encoding: "utf8" });
       return res.status === 0 ? res.stdout.trim().split("\n")[0]! : undefined;
     };
-    const row = (ok: boolean | undefined, name: string, detail: string) =>
-      console.log(`  ${ok === undefined ? "?" : ok ? "ok" : "--"}  ${name.padEnd(22)} ${detail}`);
+    const checks: DoctorCheck[] = [];
+    const row = (ok: boolean | undefined, name: string, detail: string) => {
+      const section: DoctorCheck["section"] = ["bun", "claude", "codex", "kimi"].includes(name) ? "Tools"
+        : name === "config" || name === "retired setting" ? "Config"
+        : name.startsWith("memory") ? "Memory"
+        : ["omniroute", "omniroute key", "local fixed_model", "switchyard", "pi mlx"].includes(name) ? "Models" : "Hub";
+      const optional = ["claude", "codex", "kimi", "ahub daemon", "switchyard", "pi mlx"].includes(name) || section === "Memory";
+      const level: DoctorCheck["level"] = ok === undefined ? (["switchyard", "omniroute"].includes(name) ? "warn" : "unknown") : ok ? "ok" : optional ? "warn" : "fail";
+      checks.push({ section, level, name, detail });
+    };
 
     for (const bin of ["bun", "claude", "codex", "kimi"]) {
       const v = version(bin);
@@ -1348,14 +1359,14 @@ const commands: Record<string, () => Promise<void> | void> = {
     for (const line of config.retired ?? []) row(false, "retired setting", line); // issue #83
     const omni = new OmniRoute(config.omniroute);
     const gateway = await omni.base();
-    row(!!gateway, "omniroute", gateway ? `${new URL(gateway).host} healthy` : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? "no candidate reachable (VPN off?); ahub local cannot run" : "not configured: set omniroute.urls in .agenthub/config.local.json (any OpenAI-compatible gateway); ahub local cannot run");
+    row(gateway ? true : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? false : undefined, "omniroute", gateway ? `${new URL(gateway).host} healthy` : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? "no candidate reachable (VPN off?); ahub local cannot run" : "not configured: set omniroute.urls in .agenthub/config.local.json (any OpenAI-compatible gateway); ahub local cannot run");
     row(!!omni.apiKey(), "omniroute key", omni.apiKey() ? "present" : "missing: set OMNIROUTE_API_KEY or omniroute.api_key_file in .agenthub/config.local.json");
     if (gateway && omni.apiKey()) {
       try {
         const fixed = currentRouting(cwd).local.fixed_model;
         const served = (await omni.models()).includes(fixed);
         row(served, "local fixed_model", served ? `${fixed} served` : `${fixed} is not served by the gateway`);
-      } catch { row(false, "local fixed_model", "could not read the gateway model inventory"); }
+      } catch { row(undefined, "local fixed_model", "could not read the gateway model inventory"); }
     }
     const sy = spawnSync(process.env.AGENTHUB_SWITCHYARD_BIN ?? "switchyard-server", ["--version"], { encoding: "utf8" });
     row(sy.status === 0 ? true : undefined, "switchyard", sy.status === 0 ? sy.stdout.trim() : "not installed: ahub local uses fixed_model on OmniRoute (cargo install --locked switchyard-server)");
@@ -1372,8 +1383,11 @@ const commands: Record<string, () => Promise<void> | void> = {
     const bridge = spawnSync("dot", ["ai", "memory", "status"], { encoding: "utf8" });
     const out = bridge.error ? "" : bridge.stdout.replace(/\x1b\[[0-9;]*m/g, "");
     for (const tool of ["codex", "kimi"]) {
-      row(bridge.error ? undefined : new RegExp(`✓\\s+${tool} ready`).test(out), `memory capture: ${tool}`, bridge.error ? "unknown (`dot ai memory status` not available)" : "per `dot ai memory status`");
+      const ready = new RegExp(`✓\\s+${tool} ready`).test(out);
+      row(bridge.error ? undefined : ready, `memory capture: ${tool}`, bridge.error ? "unknown (`dot ai memory status` not available)" : `${ready ? "ready" : "not ready"}, per ` + "`dot ai memory status`");
     }
+    if (options.json) console.log(JSON.stringify(checks, null, 2));
+    else printOutput(renderDoctor(checks, options.columns, Date.now(), options.full), options.color);
   },
 };
 

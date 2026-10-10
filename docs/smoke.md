@@ -1481,3 +1481,13 @@ with the dashboard. In the dashboard select Light, Dark and System, reload each
 choice, change OS theme on System, and check text, bars, stage labels and controls.
 Repeat with cookies blocked and across two dashboard ports; verify unchanged
 progress snapshots do not repeatedly announce the live region. Record the exact head and verdict here.
+
+## One-shot command output (#284 phase 1)
+
+Human visual inspection: **not run**. Automated geometry and color checks are separate evidence.
+At the PR head, run `ahub status`, `ahub board`, `ahub budget` and `ahub doctor` in a light and a dark terminal,
+at 80 and 120 columns. Inspect Korean and long task titles, settlement and hold details, modes and quota windows.
+Confirm readable state/level words with `--color=never`, matching visible text with `--color=always`, and no cut fields.
+Compare shortened informational ids with `--full`; suggested command ids must always be whole. In `ahub console`,
+run the same commands and confirm their rows stay within the four-column indent and output remains plain.
+Record the exact head and visual verdict here after the owner performs this leg.

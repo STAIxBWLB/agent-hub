@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Make status, board, budget and doctor output readable with shared tables, color policy, wrapped fields, full identifiers and JSON output; size console child output to its available width (#284).
+
 ## 0.12.22
 
 - Restore the captured Codex approval policy once on a resumed thread after detached ask, show unknown-policy guidance in the CLI, and record direct native Claude child identity so verified crash cleanup can retire its settings file (#270).

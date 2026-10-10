@@ -174,7 +174,7 @@ export function resolveColor(flag: string | undefined, env: { isTTY: boolean; TE
   if (flag === "always") return true;
   if (flag === "never") return false;
   if (flag === undefined || flag === "auto") return env.isTTY && env.TERM !== "dumb" && !env.NO_COLOR;
-  return new Error("usage: ahub console [--panels] [--color=auto|always|never]");
+  return new Error("usage: ahub <command> [--color=auto|always|never]");
 }
 export function stateTone(state: string): Tone | undefined {
   if (state === "idle" || state === "approved") return "success";
@@ -189,7 +189,7 @@ const flat = (value: unknown) => terminalText(value).replace(/[\n\t]/g, " ");
  * Clip sanitized plain text to the width and keep the tones of the surviving prefix. Widths are measured as paint()
  * prints them: paint() sanitizes each span again, and a cut that ends a span in `[agent-hub` earns it a `> `.
  */
-function fitLine(line: Span[], columns: number): Span[] {
+export function fitLine(line: Span[], columns: number): Span[] {
   const clean = line.map(s => ({ ...s, text: flat(s.text) }));
   if (Bun.stringWidth(clean.map(s => s.text).join("")) <= columns) return clean;
   const marker = ".".repeat(Math.max(0, Math.min(3, columns)));
@@ -522,7 +522,7 @@ export function renderConsole(s: ConsoleState, columns: number, rows = 24, now =
   return renderConsoleLines(s, columns, rows, now).map(line => paint(line, false));
 }
 const NOTICE_MS = 10_000;
-const TABLES: Record<number, string[]> = {
+export const TABLES: Record<number, string[]> = {
   1: ["PEER", "STATE", "LINK", "Q", "!", "REVIEW", "PAUSE", "QUOTA", "MODEL"],
   2: ["ID", "PEER", "LEFT", "TITLE"],
   3: ["ID", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "TITLE", "STAGE"],
@@ -531,7 +531,7 @@ const TABLES: Record<number, string[]> = {
 const showPermissionModes = (s: ConsoleState) => Object.values(s.peers).some(peer => peer.permissionMode && peer.permissionMode !== "ask");
 const count = (n: unknown) => typeof n === "number" && n ? String(n) : "-";
 /** One span per column of a panel row; zero counters and unknown values read `-`. */
-function cells(s: ConsoleState, row: any, selected: boolean, now: number, stages?: Map<number, ProgressStage>): Span[] {
+export function cells(s: ConsoleState, row: any, selected: boolean, now: number, stages?: Map<number, ProgressStage>): Span[] {
   const id = (text: unknown, tone: Tone | undefined) => span(text, tone && (selected ? "strong" : tone));
   if (s.panel === 1) {
     const b = s.budget[row.id];
@@ -565,7 +565,7 @@ function cells(s: ConsoleState, row: any, selected: boolean, now: number, stages
  * widest cell or header (Bun.stringWidth, at most a third of the width, wider cells cut with the marker); the last column
  * takes the rest.
  */
-function table(head: string[], rows: Span[][], columns: number): Span[][] {
+export function table(head: string[], rows: Span[][], columns: number): Span[][] {
   const cap = Math.max(24, Math.floor(columns / 3));
   const width = (cell: Span | undefined) => Bun.stringWidth(flat(cell?.text));
   const widths = head.map((h, i) => Math.min(cap, rows.reduce((max, row) => Math.max(max, width(row[i])), Bun.stringWidth(h))));

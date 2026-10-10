@@ -3,6 +3,19 @@
 This guide describes ahub 0.12.22 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
+## Command output
+
+`ahub status`, `board`, `budget` and `doctor` print shared console tables and labelled details.
+Use `--json` for scripts; it returns the fetched data without color, and `status --json` keeps its existing document.
+Text columns are a human interface, not a scripting contract. `--full` keeps informational identifiers whole;
+identifiers in suggested commands are always whole.
+
+`--color=auto|always|never` uses the console palette. Auto colors only a TTY with `TERM` other than `dumb`
+and empty `NO_COLOR`; pipes and redirects stay plain. Color never replaces a state or level word.
+TTY width is its columns (at least 80). A pipe uses a positive integer `COLUMNS` when supplied, otherwise rows
+are complete and unwrapped. Long fields wrap within their column. Console children receive the console's width
+minus its four-column indent and remain uncolored.
+
 ## Command help
 
 `ahub help`, `ahub --help` and `ahub -h` print the commands grouped by section;

@@ -23,7 +23,7 @@ export interface ConsoleOptions {
   terminal?: ConsoleTerminal;
   color?: boolean;
   /** Injected command runner must use argv, closed stdin, and return a cancellation handle. */
-  runCommand?: (args: string[], output: (text: string) => void, done: () => void) => (() => void);
+  runCommand?: (args: string[], output: (text: string) => void, done: () => void, columns?: number) => (() => void);
   pollMs?: number;
 }
 export const RESTORE_CONSOLE = "\x1b[?1049l\x1b[r\x1b[0m\x1b[?25h";
@@ -145,9 +145,10 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     } catch (error) { if (active) { notice(String((error as Error).message)); draw(); } }
     finally { polling = false; }
   };
-  const run = options.runCommand ?? ((args, output, finished) => {
+  const run = options.runCommand ?? ((args, output, finished, commandColumns) => {
     const child = Bun.spawn([process.execPath, fileURLToPath(new URL("./main.ts", import.meta.url)), "--project", options.cwd, ...args], {
       cwd: options.cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+      env: { ...process.env, COLUMNS: String(commandColumns), NO_COLOR: "1" },
     });
     const read = async (source: ReadableStream<Uint8Array>) => {
       const decoder = new TextDecoder(); const reader = source.getReader();
@@ -189,7 +190,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     try {
       // Output lines sit at column 4, as message bodies do: what a command prints can carry peer text, and columns 0 and 2 are the hub's.
       const output = (text: string) => { if (active) { stream({ text: text.replace(/\n$/, "").replace(/^/gm, "    "), kind: "command" }); draw(); } };
-      cancelChild = run(action.args, output, () => { childRunning = false; cancelChild = undefined; if (active) void refresh(); });
+      cancelChild = run(action.args, output, () => { childRunning = false; cancelChild = undefined; if (active) void refresh(); }, Math.max(1, columns - 4));
     } catch (error) { childRunning = false; notice(String((error as Error).message)); draw(); }
   };
   const handle = (key: string) => {
