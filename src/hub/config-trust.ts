@@ -52,8 +52,11 @@ export function configTracked(cwd: string, name: string): boolean | undefined {
   return r.stdout.split("\0").filter(Boolean).some((row) => {
     const path = row.slice(row.indexOf("\t") + 1);
     if (path.toLowerCase() === ".agenthub") return true;
-    // A file that is not there yet has no identity to match: its index entry by name is what a write would change.
-    if (!opened) return path.toLowerCase() === `.agenthub/${name}`.toLowerCase();
+    // A file that is not there has no identity to match: the index entry of this exact name is the one a write would
+    // change. Another spelling is another file where the disk keeps them apart.
+    // ponytail: on a disk that folds names, an entry tracked under another spelling and deleted from the work tree is
+    // not seen here; probe the disk's folding and compare folded names if that case ever matters.
+    if (!opened) return path === `.agenthub/${name}`;
     try {
       const s = statSync(join(cwd, path));
       return !!opened && s.dev === opened.dev && s.ino === opened.ino;

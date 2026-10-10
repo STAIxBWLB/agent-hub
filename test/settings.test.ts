@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext, Script } from "node:vm";
@@ -166,6 +166,10 @@ test("AC2: a candidate the loader refuses, a broken machine-local file, a hand e
   git("init", "-q"); git("add", "-f", ".agenthub/config.local.json"); // -f: a global ignore file may list .agenthub
   expect(() => writeConfigSetting(p.cwd, p.stateDir, def("research.enabled"), true, load)).toThrow("committed to git");
   expect(text(p.file("config.local.json"))).toBe(tracked);
+  // Tracked and deleted from the work tree: writing it again would still change a committed file.
+  rmSync(p.file("config.local.json"));
+  expect(() => writeConfigSetting(p.cwd, p.stateDir, def("research.enabled"), true, load)).toThrow("committed to git");
+  expect(text(p.file("config.local.json"))).toBeNull();
   git("rm", "-q", "--cached", ".agenthub/config.local.json"); git("add", "-f", `.agenthub/${OVERLAY_FILE}`);
   expect(() => writeRoutingSetting(p.cwd, p.stateDir, def("routing.stay_switch"), "off")).toThrow("committed to git");
   expect(text(p.file(OVERLAY_FILE))).toBe('stay_switch = "enforce"\n');
