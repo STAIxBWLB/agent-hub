@@ -2733,7 +2733,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (stopping) return { ok: false, error: "hub is stopping" };
       const selected = permissionMode(peer);
       if (!(owner instanceof AcpPeer && owner.permissionModeState === "unmanaged") && owner.getPermissionMode() !== selected) {
-        if (owner instanceof CodexPeer) owner.setStartupPermissionMode(selected);
+        if (owner instanceof CodexPeer && !owner.proxyAttached) owner.setStartupPermissionMode(selected);
         else await owner.setPermissionMode(selected);
       }
       // The bus may immediately drain at add(): do not expose an idle adapter until its current choice is applied.
