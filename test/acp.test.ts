@@ -601,30 +601,49 @@ for (const startup of [false, true]) {
 test("outside a turn only an occupancy diagnostic gets through: a token total, a chunk, an unnamed update and an offline peer all stay out (#285)", async () => {
   const diagnostics: string[] = [];
   const tokens: number[] = [];
-  const { bus, said } = await setup({ watchdogMs: 150, onUsageDiagnostic: (o) => diagnostics.push(`${o.shape}:${o.availability}`), onTokens: (t) => tokens.push(t) });
-  // Turn 1: the in-turn total counts; the late total and the late chunk (75 ms after the result, peer idle) do not.
+  // Ordinary turns on the default watchdog (#288's rule); the fake holds trailing updates and releases them on the
+  // set_mode the barrier issues: a resolved setPermissionMode proves the adapter processed them, idle.
+  const { bus, said } = await setup({ onUsageDiagnostic: (o) => diagnostics.push(`${o.shape}:${o.availability}`), onTokens: (t) => tokens.push(t) });
+  const barrier = () => peer!.setPermissionMode("ask");
+  const chunks = () => (peer as unknown as { chunks: string[] }).chunks;
+  // Turn 1: the in-turn total counts; the held late total and chunk do not (the chunk probe reads chunks directly:
+  // a leaked one would sit there, deliver() clears only at the next turn).
   bus.publish(newEnvelope("user", "LATETOTAL LATECHUNK first", { to: ["kimi"] }));
-  await until(() => said.length === 1);
-  await new Promise((r) => setTimeout(r, 300));
+  await until(() => said.length === 1 && peer!.state === "idle");
+  await barrier();
   expect(tokens).toEqual([50]);
+  expect(chunks().join()).not.toContain("LATE-CHUNK-LEAK");
   expect(said[0]!.body).not.toContain("LATE-CHUNK-LEAK");
-  // Turn 2: the next answer does not carry the late chunk either.
   bus.publish(newEnvelope("user", "second", { to: ["kimi"] }));
-  await until(() => said.length === 2);
+  await until(() => said.length === 2 && peer!.state === "idle");
   expect(said[1]!.body).not.toContain("LATE-CHUNK-LEAK");
   expect(tokens).toEqual([50, 100]);
-  // Turn 3: an occupancy update naming no session, outside a turn, is dropped.
+  // Turn 3: an occupancy update naming no session, released while idle, is dropped.
   bus.publish(newEnvelope("user", "OCCUPANCY_UNNAMED third", { to: ["kimi"] }));
-  await until(() => said.length === 3);
-  await new Promise((r) => setTimeout(r, 300));
+  await until(() => said.length === 3 && peer!.state === "idle");
+  await barrier();
   expect(diagnostics.filter((d) => d.startsWith("context-used"))).toEqual([]);
   // Turn 4 (the contrast): a named occupancy update while idle does arrive.
   bus.publish(newEnvelope("user", "OCCUPANCY fourth", { to: ["kimi"] }));
-  await until(() => diagnostics.some((d) => d === "context-used:unsupported"));
-  // Offline: a durable turn (a delivery id, as the journaled bus passes) cancelled by the watchdog takes the peer
-  // offline; the cancelled turn's trailing occupancy is dropped.
-  await peer!.deliver([newEnvelope("user", "SLOW OCCUPANCY fifth", { to: ["kimi"] })], "d1");
-  await until(() => peer!.state === "offline");
-  await new Promise((r) => setTimeout(r, 300));
+  await until(() => said.length === 4 && peer!.state === "idle");
+  await barrier();
   expect(diagnostics.filter((d) => d.startsWith("context-used"))).toEqual(["context-used:unsupported"]);
+}, 20_000);
+
+test("an offline peer's occupancy update is dropped at the gate (#285)", async () => {
+  class WatchdogPeer extends AcpPeer {
+    expireWatchdog(): void { this.onWatchdog(); }
+  }
+  const diagnostics: string[] = [];
+  const acp = new WatchdogPeer("kimi", { cmd: FAKE, cwd: process.cwd(), onUsageDiagnostic: (o) => diagnostics.push(o.shape) });
+  peer = acp;
+  await acp.start();
+  // A durable turn (a delivery id, as the journaled bus passes), expired explicitly: the peer goes offline.
+  await acp.deliver([newEnvelope("user", "SLOW fifth", { to: ["kimi"] })], "d1");
+  await until(() => acp.state === "busy");
+  acp.expireWatchdog();
+  await until(() => acp.state === "offline");
+  // The cancelled turn's trailing occupancy, probed at the gate directly (an offline adapter answers nothing).
+  (acp as unknown as { onLine: (line: string) => void }).onLine(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", used: 90_000, size: 200_000 } } }));
+  expect(diagnostics).toEqual([]);
 }, 20_000);
