@@ -1,6 +1,7 @@
-import { cells, TABLES, table, fitLine, wrap, relative, plural, terminalText, initialConsoleState, stateTone, type Span, type Tone } from "./console-state.ts";
+import { cells, TABLES, table, fitLine, wrap, duration, relative, plural, terminalText, initialConsoleState, stateTone, type Span, type Tone } from "./console-state.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import { backendLabel } from "./status-lines.ts";
+import { formatReport, formatTaskReport, type Report, type TaskReport } from "../hub/report.ts";
 
 export interface DoctorCheck { section: "Tools" | "Hub" | "Config" | "Models" | "Memory"; level: "ok" | "warn" | "fail" | "unknown"; name: string; detail: string }
 export interface StatusOutput {
@@ -165,5 +166,110 @@ export function renderDoctor(checks: DoctorCheck[], columns?: number, _now = Dat
   }
   const count = (level: DoctorCheck["level"]) => checks.filter(c => c.level === level).length;
   out.push([], ...lines(`${count("fail")} failure${count("fail") === 1 ? "" : "s"}, ${count("warn")} warning${count("warn") === 1 ? "" : "s"}, ${count("ok")} ok, ${count("unknown")} unknown`, columns));
+  return out;
+}
+
+export function renderProjects(projects: any[], columns?: number, _now = Date.now(), full = false): Span[][] {
+  if (!projects.length) return lines("No registered projects. Run ahub init in a project directory.", columns);
+  return rows(["PROJECT", "STATE", "PEERS", "TASKS", "ROOT"], projects.map(project => {
+    const tasks = Object.entries(project.status?.tasks ?? {}).map(([state, n]) => `${n} ${state}`).join(", ");
+    return [span(shortId(project.id, columns, full), "info"), span(project.state ?? "unknown", stateTone(project.state ?? "")),
+      span(project.status ? Object.keys(project.status.peers ?? {}).length : "unknown", "number"), span(tasks || "-"), span(project.root)];
+  }), columns, projects.map(project => project.error ? detail("error", project.error, columns, "failure") : []));
+}
+export function renderQueue(deliveries: any[], columns?: number, now = Date.now(), full = false): Span[][] {
+  if (!deliveries.length) return lines("no retained deliveries", columns);
+  const s = initialConsoleState(); s.panel = 4;
+  const data = deliveries.map(delivery => {
+    const row = cells(s, { ...delivery, id: shortId(delivery.id, columns, full) }, false, now);
+    row[1] = span(row[1]!.text, peerTone(delivery.peer)); return row;
+  });
+  return rows([...TABLES[4]!], data, columns, deliveries.map(delivery => delivery.important ? detail("priority", "important", columns, "attention") : []));
+}
+const moment = (value: unknown, now: number) => {
+  const at = typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isFinite(at) ? relative(at, now) : "unknown";
+};
+export function renderTurns(turns: any[], columns?: number, now = Date.now(), full = false): Span[][] {
+  if (!turns.length) return lines("no turns recorded (they need a git work tree and snapshots.enabled)", columns);
+  return rows(["TURN", "PEER", "STARTED", "STATE", "FILES"], turns.map(turn => {
+    const state = !turn.ended ? "running" : !turn.end_tree ? "no end snapshot" : "completed";
+    const files = turn.changed ?? [];
+    return [span(shortId(turn.id, columns, full), "info"), span(turn.peer ?? "unknown", peerTone(turn.peer)), span(moment(turn.started, now), "muted"),
+      span(state, state === "running" ? "attention" : state === "no end snapshot" ? "failure" : "success"), span(`${plural(files.length, "file")}${files.length ? `: ${files.join(", ")}` : ""}`)];
+  }), columns);
+}
+export function renderOrphans(orphans: { project: any; pids: number[] }[], columns?: number, _now = Date.now(), full = false): Span[][] {
+  if (!orphans.length) return lines("no orphaned hub registrations", columns);
+  return [...lines("orphaned hub registrations (the project root is gone):", columns, "strong"),
+    ...rows(["PROJECT", "STATE", "PIDS", "ROOT"], orphans.map(({ project, pids }) => [span(shortId(project.id, columns, full), "info"), span(pids.length ? "live" : "no live process", pids.length ? "attention" : "muted"), span(pids.length ? pids.join(", ") : "-", "number"), span(project.root)]), columns),
+    [], ...lines("kill live orphans with ahub doctor --orphans --kill", columns),
+    ...orphans.flatMap(({ project }) => detail("forget", `ahub projects remove ${project.id}`, columns))];
+}
+const TIME_FIELD = /^(?:at|ts|started|ended|created|updated|expires)$|(?:At|Until)$/;
+const ID_FIELD = /^(?:id|trace|previousId|sessionId|threadId|operationId|turnId)$/;
+/** Labelled scalar leaves preserve the daemon's public view without a raw document or inferred privacy changes. */
+function fields(value: unknown, columns: number | undefined, now: number, full: boolean, prefix = ""): Span[][] {
+  const leaves: Span[][] = [];
+  const visit = (current: unknown, label: string, key: string) => {
+    if (Array.isArray(current)) {
+      if (!current.length) leaves.push([span(label), span("none", "muted")]);
+      else current.forEach((item, index) => visit(item, `${label} ${index + 1}`, key));
+      return;
+    }
+    if (current && typeof current === "object") {
+      const entries = Object.entries(current);
+      if (!entries.length) leaves.push([span(label), span("none", "muted")]);
+      else for (const [child, item] of entries) visit(item, `${label}${label ? " " : ""}${child}`, child);
+      return;
+    }
+    let text: string;
+    if (current === null || current === undefined) text = "unknown";
+    else if (TIME_FIELD.test(key)) text = moment(current, now);
+    else if (key === "elapsed_ms" && typeof current === "number") text = duration(current);
+    else if (ID_FIELD.test(key)) text = shortId(current, columns, full);
+    else text = flat(current);
+    leaves.push([span(label || "value"), span(text, key === "state" ? stateTone(text) : typeof current === "number" ? "number" : TIME_FIELD.test(key) ? "muted" : undefined)]);
+  };
+  visit(value, prefix, prefix);
+  return rows(["FIELD", "VALUE"], leaves, columns);
+}
+export function renderQueueShow(delivery: any, columns?: number, now = Date.now(), full = false): Span[][] {
+  const out = [...lines("Delivery", columns, "strong"), ...fields(delivery, columns, now, full)];
+  if (delivery?.state === "needs_review" && delivery.id) out.push([], ...detail("resolve", `ahub queue resolve ${delivery.id} --action completed|retry|discard --reason <text>`, columns, "failure"));
+  return out;
+}
+export function renderModelsStatus(status: unknown, columns?: number, now = Date.now(), full = false): Span[][] {
+  return [...lines("Models", columns, "strong"), ...fields(status, columns, now, full)];
+}
+export function renderExecutionBudgetStatus(budgets: unknown, columns?: number, now = Date.now(), full = false): Span[][] {
+  return [...lines("Execution budget", columns, "strong"), ...fields(budgets, columns, now, full)];
+}
+/** Retain the report's coverage and attribution sentences; add sections and aligned counters for scanning. */
+export function renderReport(report: Report | TaskReport, columns?: number, now = Date.now(), _full = false, byTask = false): Span[][] {
+  const out = lines(`period: ${report.from ? moment(report.from, now) : "-"} .. ${report.to ? moment(report.to, now) : "-"}`, columns, "muted");
+  const formatted = byTask ? formatTaskReport(report as TaskReport) : formatReport(report as Report);
+  if (!byTask) {
+    const r = report as Report;
+    out.push([], ...lines("Counters", columns, "strong"), ...rows(["METRIC", "COUNT"], [
+      [span("messages"), span(r.messages.total, "number")], [span("overflow"), span(r.messages.overflow, "number")],
+      [span("undeliverable"), span(r.messages.undeliverable, "number")], [span("messages per task"), span(r.messages.perTask, "number")],
+      [span("overlap warnings"), span(r.overlaps.warnings, "number")], [span("task pairs"), span(r.overlaps.pairs, "number")],
+      [span("edit conflicts"), span(r.conflicts, "number")], [span("quota readings"), span(r.quota.readings, "number")], [span("hard limits"), span(r.quota.hard, "number")],
+    ], columns));
+  }
+  let previous = "";
+  const section = (line: string) => byTask
+    ? line.startsWith("task #") ? "Tasks" : line.startsWith("class ") ? "Classes" : line.startsWith("unattributed:") ? "Unattributed" : line.startsWith("before attribution:") ? "Before attribution" : previous
+    : line.startsWith("peer ") ? "Peers" : line.startsWith("usage ") ? "Usage" : line.startsWith("supervision ") ? "Supervision" : line.startsWith("conductor ") ? "Conductor" : line.startsWith("messages:") ? "Messages" : line.startsWith("overlap warnings:") ? "Coordination" : line.startsWith("task events:") ? "Tasks" : line.startsWith("quota readings:") ? "Quota" : line.startsWith("route ") ? "Routes" : "Report";
+  for (const sentence of formatted.slice(1)) {
+    const name = section(sentence);
+    if (name !== previous) {
+      out.push([], ...lines(name, columns, "strong")); previous = name;
+      if (name === "Peers" && !byTask) out.push(...rows(["PEER", "TURNS", "BUSY", "TOKENS"], Object.entries((report as Report).peers).map(([peer, p]) => [span(peer, peerTone(peer)), span(p.turns ?? "unknown", "number"), span(`${p.busyMinutes}m`, "muted"), span(p.tokens || "unknown", "number")]), columns));
+      if (name === "Tasks" && byTask) out.push(...rows(["TASK", "CLASS", "OUTCOME", "TURNS", "WALL"], Object.entries((report as TaskReport).tasks).map(([id, task]) => [span(`#${id}${task.pii ? " [pii]" : ""}`, "taskRef"), span(task.class ?? "unknown"), span(task.outcome ?? "unknown", stateTone(task.outcome ?? "")), span(task.turns, "number"), span(task.wallMs === null ? "unknown" : duration(task.wallMs), "muted")]), columns));
+    }
+    out.push(...lines(sentence, columns, undefined, "  "));
+  }
   return out;
 }

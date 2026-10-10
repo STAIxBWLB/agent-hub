@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Make status, board, budget and doctor output readable with shared tables, color policy, wrapped fields, full identifiers and JSON output; size console child output to its available width (#284).
+- Make status, board, budget, doctor, projects, queue, turns, models and reports readable with shared tables, labelled fields, color policy, complete wrapped text and JSON output; size and sanitize console child output to its available width (#284).
 
 ## 0.12.22
 

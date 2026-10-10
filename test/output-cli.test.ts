@@ -3,6 +3,9 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROTOCOL } from "../src/hub/control-client.ts";
+import { Registry } from "../src/hub/registry.ts";
+import { Turns } from "../src/hub/snapshots.ts";
+import { summarize, summarizeByTask } from "../src/hub/report.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 
 const CLI = join(import.meta.dir, "../src/cli/main.ts");
@@ -12,17 +15,33 @@ function fixture(options: { failFullBoard?: boolean } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-output-")));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const stateDir = join(root, ".agenthub/state"); mkdirSync(stateDir, { recursive: true });
+  const registry = new Registry(join(root, "home/registry.db"));
+  const project = registry.register(root, stateDir); registry.close();
   const now = Date.now();
-  const status = { pid: process.pid, cwd: root, controlPort: 12345, instanceId: "output-fixture", peers: { claude: { state: "idle", queued: 0, attached: true, context: { used: 0.5, freshness: "fresh", source: "claude_statusline", measuredAt: Date.now() } } }, tasks: { proposed: 1 } };
+  const status = { projectId: project.id, pid: process.pid, cwd: root, controlPort: 12345, instanceId: "output-fixture", peers: { claude: { state: "idle", queued: 0, attached: true, context: { used: 0.5, freshness: "fresh", source: "claude_statusline", measuredAt: Date.now() } } }, tasks: { proposed: 1 } };
   const tasks: any[] = [{ id: 1, state: "proposed", class: "implement", owner: "claude", reviewer: "codex", title: "검증할 긴 제목 ".repeat(40), signals: [], created: Date.now() }];
   const budget = { claude: { windows: [{ id: "week", used: 0.25, source: "fixture", at: Date.now(), resetsAt: Date.now() + 60_000 }] } };
+  const deliveries = [{ id: "abcdef12-1111-2222-3333-444444444444", peer: "codex", state: "needs_review", revision: 2, createdAt: now - 60_000, important: true, originals: [{ from: "claude", to: ["codex"], body: "[pii]", private: true, ts: now - 60_000 }] }];
+  const budgets = [{ id: "fixture-budget", kind: "run", peers: ["local"], limits: { model_calls: 5 }, used: { model_calls: 2 }, units: { model_calls: { used: 2, limit: 5, remaining: 3 } }, createdAt: now - 60_000, updatedAt: now }];
+  const turnStore = new Turns(join(stateDir, "hub.db"));
+  turnStore.begin("turn-fixture-12345678", "codex", "start-tree");
+  turnStore.end("turn-fixture-12345678", "end-tree", Array.from({ length: 8 }, (_, i) => `src/한글/file-${i}.ts`), 20);
+  const turns = turnStore.list(); turnStore.close();
+  const events: any[] = [
+    { v: 1, at: new Date(now - 60_000).toISOString(), type: "task", id: 3, state: "in_progress", class: "implement", event: "accepted", by: "codex", owner: "codex", reviewer: "claude", pii: false },
+    { v: 1, at: new Date(now - 30_000).toISOString(), type: "tokens", peer: "codex", n: 70, task: 3, attribution: "delivery" },
+    { v: 1, at: new Date(now).toISOString(), type: "turn_end", peer: "codex", turn: "t1", ms: 30_000, task: 3, attribution: "delivery" },
+  ];
+  writeFileSync(join(stateDir, "events.jsonl"), events.map(e => JSON.stringify(e)).join("\n") + "\n");
   const requests: any[] = [];
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req, server) { if (server.upgrade(req)) return; return new Response("no", { status: 400 }); }, websocket: {
     message(ws, body) {
       const req = JSON.parse(String(body)); requests.push(req);
-      const reply = req.t === "hello" ? { t: "welcome", cwd: root, instanceId: status.instanceId }
+      const reply = req.t === "hello" ? { t: "welcome", cwd: root, projectId: project.id, instanceId: status.instanceId }
         : req.t === "status" ? { status }
         : req.t === "budget" ? { budget, gate: 0.95 }
+        : req.t === "execution_budget" ? { budgets }
+        : req.t === "queue" ? req.op === "show" ? { delivery: deliveries[0] } : { deliveries }
         : req.t === "task" && options.failFullBoard && !Object.keys(req.args ?? {}).length ? { ok: false, error: "full board temporarily unavailable" }
         : req.t === "task" ? { text: JSON.stringify(req.args?.ready ? tasks.filter(t => t.state === "proposed" && (t.deps ?? []).every((id: number) => tasks.some(dep => dep.id === id && dep.state === "approved"))) : req.args?.state ? tasks.filter(t => t.state === req.args.state) : tasks) }
         : req.t === "recovery" ? { recovery: { peers: { claude: { id: "claude", state: "idle" } } } }
@@ -50,7 +69,7 @@ function fixture(options: { failFullBoard?: boolean } = {}) {
     const [code, stdout, stderr] = await Promise.all([proc.exited, new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
     return { code, stdout, stderr };
   };
-  return { run, status, tasks, budget, requests, root };
+  return { run, status, tasks, budget, requests, root, project, deliveries, budgets, turns, events };
 }
 
 test("status JSON remains byte-identical and adds no quota read; board/budget JSON print their rendered data without color", async () => {
@@ -121,4 +140,48 @@ for (const filter of ["--ready", "proposed"]) test(`filtered board ${filter} rem
   expect(result.stdout).toContain("proposed"); expect(result.stdout).not.toContain("waiting"); expect(result.stdout).not.toContain("STAGE");
   expect(result.stderr).toContain("dependency stages unavailable; showing filtered rows without stages");
   expect(result.stderr).toContain("full board temporarily unavailable");
+});
+
+
+test("remaining JSON commands keep fetched documents without color", async () => {
+  const f = fixture();
+  const expectedProjects = [{ ...f.project, state: "running", status: f.status }];
+  const cases: [string[], unknown][] = [
+    [["projects"], expectedProjects], [["status", "--all"], expectedProjects], [["queue", "list"], f.deliveries],
+    [["queue", "show", f.deliveries[0]!.id], f.deliveries[0]], [["turns"], f.turns],
+    [["models", "status"], { state: "disabled", enabled: false }], [["budget", "execution", "status"], f.budgets],
+    [["report"], summarize(f.events)], [["report", "--by", "task"], summarizeByTask(f.events)],
+  ];
+  for (const [args, expected] of cases) {
+    const result = await f.run([...args, "--json", "--color=always"]);
+    expect(result.code, result.stderr).toBe(0); expect(result.stdout).toBe(JSON.stringify(expected, null, 2) + "\n");
+    expect(result.stdout).not.toContain("\x1b");
+  }
+});
+
+test("remaining text command paths use complete readable tables and labelled fields at80", async () => {
+  const f = fixture();
+  const cases = [
+    ["projects"], ["status", "--all"], ["queue", "list"], ["queue", "show", f.deliveries[0]!.id], ["turns"],
+    ["models", "status"], ["budget", "execution", "status"], ["report"], ["report", "--by", "task"], ["doctor", "--orphans"],
+  ];
+  for (const args of cases) {
+    const result = await f.run([...args, "--color=never"], { COLUMNS: "80" });
+    expect(result.code, result.stderr).toBe(0); expect(result.stdout).not.toContain("\x1b"); expect(result.stdout).not.toContain('{"');
+    expect(result.stdout).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+    for (const line of result.stdout.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
+  }
+  const turns = await f.run(["turns"]);
+  for (const name of f.turns[0]!.changed) expect(turns.stdout).toContain(name);
+  const queue = await f.run(["queue", "show", f.deliveries[0]!.id]); expect(queue.stdout).toContain("[pii]");
+});
+
+
+test("new read render paths reject invalid colors before fetching", async () => {
+  const f = fixture();
+  for (const args of [["projects"], ["status", "--all"], ["queue", "list"], ["turns"], ["models", "status"], ["budget", "execution", "status"], ["report"], ["doctor", "--orphans"]]) {
+    const result = await f.run([...args, "--color=bad"]);
+    expect(result.code).toBe(1); expect(result.stderr).toContain(`usage: ahub ${args[0]}`);
+  }
+  expect(f.requests).toHaveLength(0);
 });

@@ -5,9 +5,11 @@ results and remaining prerequisites are recorded separately in [the smoke ledger
 
 ## Command output
 
-`ahub status`, `board`, `budget` and `doctor` print shared console tables and labelled details.
+`ahub status`, `board`, `budget`, `doctor`, `projects`, `queue list`, `turns` and `report` print shared console tables and labelled details.
+`status --all` uses the projects table. `queue show`, `models status` and `budget execution status` show labelled fields; add `--json` for the raw fetched document.
+`report --by task` keeps the attribution and coverage sentences with section headings and aligned counters.
 Use `--json` for scripts; it returns the fetched data without color, and `status --json` keeps its existing document.
-Text columns are a human interface, not a scripting contract. `status --full` keeps informational identifiers whole;
+Text columns are a human interface, not a scripting contract. `--full` keeps informational identifiers whole in status, projects, queue, turns and orphan registrations;
 identifiers in suggested commands are always whole.
 
 `--color=auto|always|never` uses the console palette. Auto colors only a TTY with `TERM` other than `dumb`
