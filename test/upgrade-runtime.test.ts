@@ -13,7 +13,7 @@ import { VERSION } from "../src/version.ts";
 import { liveProjects, nextActions, type PlannedProject, type ProjectProgress, type RecoveryOperation } from "../src/cli/upgrade.ts";
 import { Registry } from "../src/hub/registry.ts";
 import { processSignature } from "../src/pi/process-signature.ts";
-import { readRecoveryWaivers } from "../src/hub/restart.ts";
+import { readRecoveryWaivers, waiveRecoveryPeers } from "../src/hub/restart.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 
 // #206: a plain `claude` is attached while claude-session.json still holds the session an earlier, ended
@@ -1011,7 +1011,7 @@ test("a restarted target keeps a fresh choice when the accepted session attaches
     expect(command).not.toContain("--resume");
     expect(progress.terminals["restored:claude"]).toMatchObject({ sessionId: "S-new" });
     // The waiver's audit label for a Claude with nothing to resume.
-    expect(readRecoveryWaivers(stateDir, "op-225")).toMatchObject({ claude: "zero-turn" });
+    expect(readRecoveryWaivers(stateDir, "op-225")).toEqual({ claude: "zero-turn" });
   } finally {
     if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
     server.stop(true); rmSync(temp, { recursive: true, force: true });
@@ -1043,6 +1043,45 @@ for (const mode of ["a dead instance's live launcher", "unreadable launch record
     const err = await makeRecoveryDriver(run).restore(planned, progress, op, "claude", () => {}).then(() => undefined, (e) => e as Error);
     expect(err?.message).toContain(mode === "unreadable launch records" ? "terminal-recovery.json" : "terminal term-dead-claude is running but no claude session with an id attached yet");
     expect(calls.some((c) => c[2] === "create")).toBe(false);
+  } finally {
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+    server.stop(true); rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+// #225 review: the planned session coming back after a restart needs no waiver (the snapshot expects it), so the one
+// written when the operator chose a fresh session keeps its label, and the choice is cleared.
+test("a restarted target whose planned session comes back clears the fresh choice and keeps the waiver's label", async () => {
+  const temp = realpathSync(mkdtempSync(join(tmpdir(), "ahub-restart-planned-")));
+  const stateDir = join(temp, "state"), codexHome = join(temp, "codex-home");
+  mkdirSync(stateDir); mkdirSync(join(codexHome, "sessions"), { recursive: true });
+  const server = fakeHub(temp, stateDir, "i-new", () => ({ operationId: "op-225", phase: "restored", ready: true, peers: { codex: { id: "codex", state: "idle", threadId: "thread-T" } } }));
+  waiveRecoveryPeers(stateDir, "op-225", { codex: "fresh-session" });
+  const shown = { handle: "term-codex-planned", incarnationId: "inc-planned", worktreeId: "wt", worktreePath: temp, agentIdentity: "codex", sessionId: "thread-T", connected: true };
+  const run = async (argv: string[]) => {
+    if (argv[1] === "-e") return { code: 0, stdout: "function\n", stderr: "" };
+    const result = argv[2] === "show" ? { terminal: shown } : argv[2] === "wait" ? { wait: { satisfied: true } } : { terminals: [shown] };
+    return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
+  };
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: { CODEX_HOME: codexHome } };
+  const codex = { peer: "codex" as const, handle: "term-codex", incarnationId: "inc-codex", worktreeId: "wt", projectRoot: temp, sessionId: "thread-T", launch, launchMetadata: launch };
+  const planned: PlannedProject = {
+    project: { id: "p-215", root: temp, stateDir, instanceId: "i-source", pid: null, basePort: 4600 },
+    source: { state: "running", instanceId: "i-source", version: VERSION, protocol: PROTOCOL, peers: [{ id: "codex", state: "idle", threadId: "thread-T" }], blockers: [] },
+    terminals: [codex], blockers: [],
+  };
+  // The accepted fresh thread never got a rollout, so the planned thread attaching settles the pending receipt.
+  const progress: ProjectProgress = { id: "p-215", instanceId: "i-new", phase: "started", restarts: [{ instanceId: "i-dead", at: 1 }],
+    fresh: { codex: { lost: "thread-T", reason: "chosen", at: 1 } },
+    terminals: { "closed:codex": true, "closedRetired:codex": true, "retired:codex": { ...codex, sessionId: "thread-accepted" }, "restored:codex": "pending" } };
+  const op = { id: "op-225", sourceRoot: PACKAGE_ROOT, targetRoot: PACKAGE_ROOT, phase: "running", plan: { version: VERSION, projects: [planned] }, projects: [progress] } as unknown as RecoveryOperation;
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "home");
+  try {
+    await makeRecoveryDriver(run).restore(planned, progress, op, "codex", () => {});
+    expect(progress.terminals["restored:codex"]).toMatchObject({ sessionId: "thread-T" });
+    expect(progress.fresh).toBeUndefined();
+    expect(readRecoveryWaivers(stateDir, "op-225")).toEqual({ codex: "fresh-session" });
   } finally {
     if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
     server.stop(true); rmSync(temp, { recursive: true, force: true });
