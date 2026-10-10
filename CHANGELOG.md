@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.12.21
+
 - Console and dashboard show shared whole-board task progress, waiting dependencies and four-stage tracks; the dashboard adds a host-scoped System/Light/Dark choice with pre-paint initialization and hashed inline CSP (#246).
 - `ahub bench` follow-ups: a task id such as `constructor` no longer breaks reports, an attempt whose measure wait ran out or was interrupted in its last poll records no measures, the fingerprint lists only attached peers, a run returns to a branch that shares its name with a tag, and a suite ref deleted during the run is reported (#265).
 - `ahub bench`: run a suite of tasks against the attached peers in a project kept for benchmarks, record pass, fail, timeout and the #247 measures per attempt in `~/.agenthub/bench/`, and compare arms with bootstrap intervals (`bench run|list|status|report|compare|export`); the dashboard gains a Benchmarks section (#251).
