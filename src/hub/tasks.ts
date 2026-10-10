@@ -1379,7 +1379,23 @@ export class Tasks {
     this.contradict(rejected);
     this.note(rejected, by, "decision", `Task #${rejected.id} changes requested by ${by}: ${rejected.title}\n${note ?? ""}`, withheld);
     if (rejected.rejections >= ESCALATE_AFTER) {
-      const moved = await this.escalate(HUB, rejected.id, `${rejected.rejections} consecutive changes_requested`, "rejections");
+      let moved: Task;
+      try {
+        moved = await this.escalate(HUB, rejected.id, `${rejected.rejections} consecutive changes_requested`, "rejections");
+      } catch (e) {
+        // The verdict is saved. Decide by the escalation's own write, not by the owner alone: when the last history
+        // entry is this escalation (event "escalated", by the hub, reason "rejections"), the move is fact and only
+        // its delivery is unconfirmed; a publish may have succeeded before the throw, or the journal may recover
+        // and drain it later, so the notice says what to check before resending. The reviewer gets the saved task,
+        // never a failed tool call (#276). Anything else (the task closed meanwhile (#254), a failed board write,
+        // a concurrent move) still throws: review()'s own changes_requested and the escalation's reopened entry
+        // always follow any earlier escalated one. assignOwner keeps throwing for the ready offer's retry (#231).
+        const saved = this.d.board.get(rejected.id);
+        const last = saved?.history.at(-1);
+        if (!saved?.owner || last?.event !== "escalated" || last.by !== HUB || last.reason !== "rejections") throw e;
+        this.releaseNotice(`task ${this.publicTitle(saved)}: the move to ${saved.owner} is saved, but its assignment's delivery is not confirmed (${e instanceof Error ? e.message : String(e)}); look for a queued or needs_review delivery with ahub queue list --peer ${saved.owner} (then ahub queue show <id>), or the accepted entry in ahub task show ${saved.id} if the journal is down; send it again with: ahub task assign ${saved.id} ${saved.owner}`);
+        return saved;
+      }
       if (moved.owner !== rejected.owner) return moved;
       // Nobody to escalate to: the owner still has to hear the verdict and the note.
       this.releaseNotice(`task ${this.publicTitle(moved)}: could not tell ${moved.owner ?? "its owner"} changes were requested again`, () =>
@@ -1403,13 +1419,30 @@ export class Tasks {
     if (from && by !== HUB) this.d.board.recordOutcome(from, task.class, false);
     // Only a reviewer that asked for changes on this work saw it fail: not an escalation of unreviewed work (a Pi failure).
     if (from && task.reviewer && task.reviewer !== USER && this.requestedChanges(task).has(task.reviewer)) this.d.board.recordReview({ implementer: from, reviewer: task.reviewer, class: task.class, kind: "escalated", task: task.id });
-    const next = await this.assignOwner(task, by, { candidates: list, event: "escalated", reason, note: `${why}; from ${from ?? "none"}`, context: why });
+    // The guarded tail of a landed move: the console notice, the decision note and the old owner's stop message,
+    // each behind its own releaseNotice. It runs on the success path and on a saved move whose delivery failed.
+    const tail = (moved: Task) => {
+      this.releaseNotice(`task ${this.publicTitle(moved)} escalated from ${from} to ${moved.owner} (${why})`);
+      this.note(moved, by, "decision", `Task #${moved.id} escalated from ${from} to ${moved.owner}: ${why}`);
+      if (from) this.releaseNotice(`task ${this.publicTitle(moved)}: could not tell ${from} it moved to ${moved.owner}`, () =>
+        this.tell({ ...moved, owner: from }, `Task #${moved.id} moved to ${moved.owner} (${why}). Stop working on it.`, this.isPii(moved)));
+    };
+    let next: Task;
+    try {
+      next = await this.assignOwner(task, by, { candidates: list, event: "escalated", reason, note: `${why}; from ${from ?? "none"}`, context: why });
+    } catch (e) {
+      // assignOwner writes before it publishes: the move may be on the board. Then the tail still runs (its parts
+      // are guarded), and the caller still gets the throw; what a failed delivery means is the caller's decision
+      // (#276). A failure before the write (no escalation entry as the last event) gets neither; `saved.owner !== from`
+      // excludes a stale earlier entry, and `from` is recorded only for a lasting escalation, so it is no evidence here.
+      const saved = this.d.board.get(task.id);
+      const last = saved?.history.at(-1);
+      if (saved?.owner && saved.owner !== from && last?.event === "escalated" && last.by === by) tail(saved);
+      throw e;
+    }
     if (next.owner && next.owner !== from) {
       // The move is on the board (#243): review() reaches here after its changes_requested write.
-      this.releaseNotice(`task ${this.publicTitle(next)} escalated from ${from} to ${next.owner} (${why})`);
-      this.note(next, by, "decision", `Task #${next.id} escalated from ${from} to ${next.owner}: ${why}`);
-      if (from) this.releaseNotice(`task ${this.publicTitle(next)}: could not tell ${from} it moved to ${next.owner}`, () =>
-        this.tell({ ...next, owner: from }, `Task #${next.id} moved to ${next.owner} (${why}). Stop working on it.`, this.isPii(next)));
+      tail(next);
     } else this.releaseNotice(`task ${this.publicTitle(task)}: escalation found nobody in [${list.join(", ")}]; it stays with ${from ?? "nobody"}`);
     return this.d.board.get(next.id)!;
   }
