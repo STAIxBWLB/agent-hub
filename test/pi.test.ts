@@ -442,3 +442,38 @@ test("Pi exit captures active turn and tool facts before failure cleanup (#255)"
     expect(peer.state).toBe("offline");
   } finally { release(); await tool?.catch(() => undefined); await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
 });
+
+
+test("stopping a verified TUI survivor reports one owned exit with pre-cleanup metadata and unknown OS status (#255)", async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-tui-exit-test-")), owner = Bun.spawn(["sleep", "60"]);
+  const exits: PiExit[] = [], logs: string[] = [];
+  const peer = new PiPeer("pi", { cwd: process.cwd(), stateDir, mode: "tui", backend: "dgx", stopGraceMs: 25,
+    relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [] }, tools: [], executeTool: async () => "ok",
+    onExit: (exit) => exits.push(exit), log: (line) => logs.push(line) });
+  try {
+    await peer.start();
+    const launch = peer.tuiLaunch!, headers = { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" };
+    expect((await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/event`, { method: "POST", headers, body: JSON.stringify({
+      type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: owner.pid, signature: currentSignature(owner.pid),
+      sessionId: "owned-tui", sessionFile: join(stateDir, "owned.jsonl"),
+    }) })).status).toBe(200);
+    await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/event`, { method: "POST", headers, body: JSON.stringify({ type: "agent_start", generation: 1 }) });
+    await peer.stop(); // no shutdown ack: the signature-verified survivor is terminated
+    expect(await owner.exited).not.toBeNull();
+    expect(exits).toHaveLength(1);
+    expect(exits[0]).toEqual({ cause: "owner_stopped", code: null, signal: null, expected: true, started: true, turnActive: true, toolActive: false });
+    expect(logs.filter((line) => line.includes("Pi exit:"))).toHaveLength(1);
+    await peer.stop(); expect(exits).toHaveLength(1);
+  } finally {
+    if (owner.exitCode === null && owner.signalCode === null) { owner.kill("SIGKILL"); await owner.exited; }
+    await peer.stop(); rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("stopping a never-owned TUI launch invents no exit report (#255)", async () => {
+  const stateDir = mkdtempSync(join(process.cwd(), ".pi-unowned-exit-test-")), exits: PiExit[] = [];
+  const peer = new PiPeer("pi", { cwd: process.cwd(), stateDir, mode: "tui", backend: "dgx",
+    relay: { url: "http://127.0.0.1:9/v1", token: "t", models: [] }, tools: [], executeTool: async () => "ok", onExit: (exit) => exits.push(exit) });
+  try { await peer.start(); await peer.stop(); expect(exits).toEqual([]); }
+  finally { await peer.stop(); rmSync(stateDir, { recursive: true, force: true }); }
+});

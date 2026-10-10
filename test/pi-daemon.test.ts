@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Board } from "../src/hub/board.ts";
+import { Tasks } from "../src/hub/tasks.ts";
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -595,6 +596,7 @@ test("Pi conductor entry validation refusals settle receipts before assignment o
   for (const [name, args, message, callId] of [
     ["hub_task_assign", { id: open.id, peer: "bad peer" }, "peer must be a valid agent peer id", "invalid-peer"],
     ["hub_task_assign", { id: closed.id, peer: "pi" }, `task #${closed.id} is approved: it can no longer change hands`, "closed-task"],
+    ["hub_task_escalate", { id: closed.id }, `task #${closed.id} is approved: it can no longer change hands`, "closed-escalate"],
     ["hub_peer_start", { peer: "pi", mode: "invalid" }, "mode must be headless or tui", "invalid-mode"],
   ] as const) {
     const result = await piToolCall(peer, name, args, callId);
@@ -605,4 +607,83 @@ test("Pi conductor entry validation refusals settle receipts before assignment o
   expect(board.get(open.id)!.history.at(-1)!.event).toBe("assigned");
   expect(board.get(closed.id)!.history.at(-1)!.event).toBe("approved");
   expect(daemon.bus.peers.get("pi")).toBe(peer);
+});
+
+
+test("a watchdog Pi teardown gives inspection and ahub pi guidance rather than claiming a requested person stop (#255)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-watchdog-notice-"));
+  const config = { ...DEFAULT_CONFIG, watchdog_ms: 50, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: false, cmd: [process.execPath, fakePi(dir)] } };
+  const { stateDir, daemon, console_ } = await hub(config);
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  const peer = daemon.bus.peers.get("pi") as PiPeer, launch = peer.tuiLaunch!;
+  await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/event`, { method: "POST", headers: {
+    authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json",
+  }, body: JSON.stringify({ type: "agent_start", generation: 1 }) });
+  for (let i = 0; i < 300 && daemon.bus.stateOf("pi") !== "offline"; i++) await Bun.sleep(5);
+  expect(daemon.bus.stateOf("pi")).toBe("offline");
+  const exit = readFileSync(join(stateDir, "hub.log"), "utf8").split("\n").find((line) => line.includes("Pi exited"));
+  expect(exit).toContain("owner teardown; inspect its session, then ahub pi");
+  expect(exit).not.toContain("requested stop");
+});
+
+
+test("a long Pi idle restart attempt rearms its 60 s bound after settling (#255)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-long-restart-")), trigger = join(dir, "exit-now");
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true,
+    cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), "--exit-trigger", trigger, "--exit-consume-trigger", "--exit-code", "0"] } };
+  const { stateDir, daemon } = await hub(config);
+  for (let i = 0; i < 200 && daemon.bus.stateOf("pi") !== "idle"; i++) await Bun.sleep(5);
+  const original = daemon.bus.peers.get("pi") as PiPeer;
+  expect(original.state).toBe("idle");
+  const capture = original.captureResume.bind(original), now = Date.now;
+  let waiting = false, release!: () => void;
+  const barrier = new Promise<void>((resolve) => { release = resolve; });
+  original.captureResume = async () => { const saved = await capture(); if (!waiting) { waiting = true; await barrier; } return saved; };
+  try {
+    writeFileSync(trigger, "exit");
+    for (let i = 0; i < 200 && !waiting; i++) await Bun.sleep(5);
+    expect(waiting).toBe(true);
+    Date.now = () => now() + 61_000; // elapsed while the attempt was in flight, not after its replacement settled
+    release();
+    for (let i = 0; i < 300 && !readFileSync(join(stateDir, "hub.log"), "utf8").includes("resumed the recorded Pi session after its idle exit"); i++) await Bun.sleep(5);
+    const replacement = daemon.bus.peers.get("pi") as PiPeer;
+    expect(replacement).not.toBe(original); expect(replacement.state).toBe("idle");
+    writeFileSync(trigger, "second exit");
+    for (let i = 0; i < 300 && !readFileSync(join(stateDir, "hub.log"), "utf8").includes("restart limit"); i++) await Bun.sleep(5);
+    expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("restart limit (one in 60 s)");
+    expect(daemon.bus.peers.get("pi")).toBe(replacement);
+    expect(daemon.bus.stateOf("pi")).toBe("offline");
+  } finally { release(); Date.now = now; original.captureResume = capture; }
+});
+
+
+test("Pi review's internal post-write escalation keeps the generic default and an uncertain pending receipt (#254)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-postreview-daemon-"));
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { stateDir, daemon, console_ } = await hub(config);
+  const board = new Board(join(stateDir, "hub.db")); cleanup.push(() => board.close());
+  const task = board.propose("claude", { title: "second review", class: "implement" });
+  board.update(task.id, "codex", "accepted", { owner: "codex", reviewer: "pi", state: "in_progress", rejections: 1 });
+  board.update(task.id, "codex", "done", { state: "in_review" });
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  const peer = daemon.bus.peers.get("pi") as PiPeer, escalate = Tasks.prototype.escalate;
+  let reached = false;
+  Tasks.prototype.escalate = async function (...args) {
+    if (args[0] === "hub" && args[1] === task.id) {
+      reached = true;
+      expect(board.get(task.id)!.history.at(-1)!.event).toBe("changes_requested"); // the review is already saved
+      board.update(task.id, "hub", "reopened", { state: "in_progress" });
+      board.update(task.id, "claude", "approved", { state: "approved" }); // another task operation closes it before escalation
+    }
+    return escalate.apply(this, args);
+  };
+  let result: { text: string; failed?: boolean };
+  const args = { id: task.id, verdict: "changes_requested", note: "fix it" };
+  try { result = await piToolCall(peer, "hub_review", args, "post-review"); }
+  finally { Tasks.prototype.escalate = escalate; }
+  expect(reached).toBe(true); expect(result!.text).toContain("outcome is uncertain");
+  const db = new Database(join(stateDir, "hub.db")); cleanup.push(() => db.close());
+  expect(db.query("SELECT state,result FROM pi_tool_receipts WHERE call_id='post-review'").get()).toEqual({ state: "pending", result: null });
+  expect((await piToolCall(peer, "hub_review", args, "post-review")).text).toContain("previous tool outcome is uncertain");
+  expect(board.get(task.id)!.history.filter((entry) => entry.event === "changes_requested")).toHaveLength(1);
 });

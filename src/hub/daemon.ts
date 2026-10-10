@@ -1294,7 +1294,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return line(await tasks.assignTo(a.id, peer, USER, true));
       }
       case "task_escalate":
-        return line(await tasks.escalate(USER, a.id));
+        return line(await tasks.escalate(USER, a.id, undefined, undefined, true));
       case "route_explain":
         return tasks.explain(a.id !== undefined ? Number(a.id) : { title: String(a.title ?? ""), class: a.class as TaskClass }).join("\n");
       case "turn_revert": {
@@ -2134,7 +2134,8 @@ export async function startDaemon(opts: DaemonOptions) {
         onExit: (exit) => {
           const cause = exit.signal ? `signal ${exit.signal}` : exit.code !== null ? `code ${exit.code}` : exit.cause;
           let action = "start it with ahub pi";
-          if (exit.expected || stopping) action = "requested stop; no automatic restart";
+          if (stopping) action = "hub is stopping; requested stop, no automatic restart";
+          else if (exit.expected) action = "owner teardown; inspect its session, then ahub pi";
           else if (bus.peers.get("pi") !== pi) action = "superseded owner; no automatic restart";
           else if (recoveryActive()) action = "recovery holds automatic restart; inspect ahub status";
           else if (!piAutoStart) action = "pi.auto_start is off; start it with ahub pi";
@@ -2155,7 +2156,7 @@ export async function startDaemon(opts: DaemonOptions) {
               const result = await startPeer("pi", { mode: "headless", backend, ...(args.model ? { model: args.model } : {}), sessionId: saved.sessionId, sessionFile: saved.sessionFile });
               notify(result.ok ? "pi.auto_start resumed the recorded Pi session after its idle exit" : `pi.auto_start restart refused: ${String(result.error)}; start it with ahub pi`);
             })().catch((error) => { try { notify(`pi.auto_start could not resume its recorded session: ${error instanceof Error ? error.message : String(error)}; start it with ahub pi`); } catch { /* no retry loop */ } })
-              .finally(() => { piAutoRestartPending = false; });
+              .finally(() => { piAutoRestartAt = Date.now(); piAutoRestartPending = false; });
           }
           notify(`Pi exited (${cause}); turn active=${exit.turnActive}, tool active=${exit.toolActive}; ${action}`);
         },
@@ -2330,7 +2331,7 @@ export async function startDaemon(opts: DaemonOptions) {
       };
     },
     task: id => board.get(id), publicView: task => tasks.publicView(task, true),
-    assign: (actor, id, peer) => tasks.assignTo(id, peer, actor, true), escalate: (actor, id) => tasks.escalate(actor, id),
+    assign: (actor, id, peer) => tasks.assignTo(id, peer, actor, true), escalate: (actor, id) => tasks.escalate(actor, id, undefined, undefined, true),
     preview: peer => {
       // The operator wrapper runs the same planner again at launch, with runtime endpoints then resolved.
       launcherPreview(peer, peer === "pi" ? ["--mode", "tui"] : [], opts.cwd, opts.stateDir, false);

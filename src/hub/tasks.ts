@@ -1379,8 +1379,8 @@ export class Tasks {
   }
 
   /** Task-level escalation: the next attached peer in the class's escalate_to takes over, with the history. */
-  async escalate(by: PeerId, id: unknown, why = "by hand", reason: TaskMoveReason | undefined = by === HUB ? undefined : "manual"): Promise<Task> {
-    let task = this.need(id, true);
+  async escalate(by: PeerId, id: unknown, why = "by hand", reason: TaskMoveReason | undefined = by === HUB ? undefined : "manual", preEffect = false): Promise<Task> {
+    let task = this.need(id, true, preEffect);
     const list = this.d.routing().classes[task.class]?.escalate_to ?? [];
     if (task.state === "changes_requested") task = this.d.board.update(task.id, HUB, "reopened", { state: "in_progress" });
     const from = task.owner;

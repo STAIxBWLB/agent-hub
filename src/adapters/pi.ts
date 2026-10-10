@@ -16,7 +16,7 @@ export interface PiModelDescriptor { id: string; name?: string; contextWindow?: 
 export interface PiToolSchema { name: string; description?: string; parameters: Record<string, unknown>; }
 export interface PiRelay { url: string; token: string; models: PiModelDescriptor[]; }
 export interface PiExit {
-  cause: "process_exit" | "spawn_error" | "session_shutdown" | "owner_lost";
+  cause: "process_exit" | "spawn_error" | "session_shutdown" | "owner_lost" | "owner_stopped";
   code: number | null;
   signal: NodeJS.Signals | null;
   expected: boolean;
@@ -318,6 +318,8 @@ export class PiPeer extends BasePeer {
   }
 
   async stop(): Promise<void> {
+    const tuiExit = this.opts.mode === "tui" && this.ownerClaimed && this.ownerPid && this.ownerSignature
+      ? { ...this.exitMetadata("owner_stopped"), expected: true } : undefined;
     for (const id of this.activeDeliveryIds) this.delivery({ id, state: "needs_review", reason: "Pi session stopped before settlement" });
     this.activeDeliveryIds.clear();
     this.stopping = true;
@@ -358,6 +360,7 @@ export class PiPeer extends BasePeer {
     this.pending.clear();
     this.server?.stop(true); this.server = undefined; this.setState("offline");
     if (failed) throw failed;
+    if (tuiExit) this.reportExit(tuiExit); // the verified owner is gone; never invent an exit for an unclaimed launch
   }
 
   /**

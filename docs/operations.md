@@ -1129,8 +1129,6 @@ before 0.10.0 keeps no session record, so a crash of one is not reported as such
 by the next start.
 
 0.11.0 changes what `local.bash_network: true` means: the local worker's and
-Pi hub-task/conductor refusals proven before any effect return their original `error:` text and are recorded as completed tool receipts. An uncertain post-effect or storage failure remains pending: inspect it before repeating any action. Old pending receipts carry no proof of a past refusal and are kept pending across startup.
-
 Pi's commands reach the network only through the hub's egress proxy, to the
 hosts in `local.network_allow` (package registries and GitHub's code hosts by
 default). `local.network_allow` is machine-local and replaces the default list:
@@ -1708,8 +1706,10 @@ session with your chosen checkpoint as preface. No automatic restart or native
 compaction override is performed.
 
 
-### Pi exit causes and idle automatic restart
+## Pi tool refusals, exit causes and idle automatic restart
 
-Pi exit records show code or signal, turn/tool activity, requested-stop and startup status, and the last tool's name without arguments. An unobserved native-terminal exit records unknown OS status. The console notice gives the next action, usually `ahub pi`, or says why automatic start is held.
+Pi hub-task/conductor refusals proven before any effect return their original `error:` text and are recorded as completed tool receipts. An uncertain post-effect or storage failure remains pending: inspect it before repeating any action. Old pending receipts carry no proof of a past refusal and are kept pending across startup.
 
-With `pi.auto_start`, an unexpectedly idle headless Pi is resumed on its verified persisted session once in 60 seconds. A second exit inside that window stays offline. Missing/invalid session history has no fresh fallback; inspect it before running `ahub pi`. Active turns/tools, failed startup, a superseded owner, native terminal exits, requested shutdown and recovery operations suppress this restart. Crash recovery's #66 recorded-session/fresh-start choices are unchanged.
+Pi exit records show code or signal, turn/tool activity, whether teardown was expected, and startup status, and the last tool's name without arguments. An unobserved native-terminal exit records unknown OS status. The console notice gives the next action, usually `ahub pi`, or says why automatic start is held.
+
+With `pi.auto_start`, an unexpectedly idle headless Pi is resumed on its verified persisted session once, with the 60-second retry window rearmed when the attempt settles. A second exit inside that window stays offline. Missing/invalid session history has no fresh fallback; inspect it before running `ahub pi`. Active turns/tools, failed startup, a superseded owner, native terminal exits, requested shutdown and recovery operations suppress this restart. Crash recovery's #66 recorded-session/fresh-start choices are unchanged.
