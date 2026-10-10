@@ -296,6 +296,12 @@ test.skipIf(!sandboxAvailable())("a submodule's git dir under .git/modules: conf
   const cwd = join(base, "main");
   initRepo(cwd);
   expect(git(["-C", cwd, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subSrc, "sub"]).exitCode).toBe(0);
+  // A name with refs/logs as a substring and one ending in hooks: the boundary probes of round 2 (#281).
+  for (const name of ["catalogs", "webhooks"]) {
+    const src = join(base, `${name}-src`);
+    initRepo(src);
+    expect(git(["-C", cwd, "-c", "protocol.file.allow=always", "submodule", "add", "-q", src, name]).exitCode).toBe(0);
+  }
   expect(git(["-C", cwd, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive", "-q"]).exitCode).toBe(0);
   const subGit = join(cwd, ".git", "modules", "sub"), deepGit = join(subGit, "modules", "deep");
   expect(existsSync(join(subGit, "config"))).toBe(true);
@@ -318,8 +324,15 @@ test.skipIf(!sandboxAvailable())("a submodule's git dir under .git/modules: conf
     "git -C sub checkout -qb feature/hooks && echo branched-hooks-in-sub",
     "git -C sub/deep tag hooks && echo tagged-hooks-in-deep",
     "git -C sub -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm sub-work --allow-empty && echo committed-in-sub",
+    // A name with refs/logs as a substring keeps the refusal; one ending in hooks keeps its ordinary writes (#281).
+    "(echo x > .git/modules/catalogs/config) 2>/dev/null && echo WROTE-CATALOGS-CONFIG || echo blocked-catalogs-config",
+    "(echo x > .git/modules/catalogs/hooks/pre-commit) 2>/dev/null && echo WROTE-CATALOGS-HOOK || echo blocked-catalogs-hook",
+    "git -C catalogs branch fix/config && echo branched-config-in-catalogs",
+    "git -C webhooks -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm wh --allow-empty && echo committed-in-webhooks",
+    "(echo x > .git/modules/webhooks/FETCH_HEAD) 2>/dev/null && echo wrote-webhooks-fetch-head || echo blocked-webhooks-fetch-head",
+    "(echo x > .git/modules/webhooks/hooks/pre-commit) 2>/dev/null && echo WROTE-WEBHOOKS-HOOK || echo blocked-webhooks-hook",
   ].join("; ")], { cwd, profile: profile(cwd, false) });
-  for (const expected of ["blocked-sub-config", "blocked-sub-hook", "blocked-deep-config", "blocked-deep-hook", "blocked-rename", "blocked-root-rename", "blocked-nested-rename", "blocked-hardlink", "entry-intact", "branched-config-in-sub", "tagged-config-in-sub", "branched-hooks-in-sub", "tagged-hooks-in-deep", "committed-in-sub"]) expect(out.output).toContain(expected);
+  for (const expected of ["blocked-sub-config", "blocked-sub-hook", "blocked-deep-config", "blocked-deep-hook", "blocked-rename", "blocked-root-rename", "blocked-nested-rename", "blocked-hardlink", "entry-intact", "branched-config-in-sub", "tagged-config-in-sub", "branched-hooks-in-sub", "tagged-hooks-in-deep", "committed-in-sub", "blocked-catalogs-config", "blocked-catalogs-hook", "branched-config-in-catalogs", "committed-in-webhooks", "wrote-webhooks-fetch-head", "blocked-webhooks-hook"]) expect(out.output).toContain(expected);
   expect(readFileSync(join(subGit, "config"), "utf8")).toBe(subConfig);
   expect(readFileSync(join(deepGit, "config"), "utf8")).toBe(deepConfig);
   expect(existsSync(join(subGit, "hooks"))).toBe(false);

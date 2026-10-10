@@ -76,8 +76,10 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit?
   ]);
   const modules = moduleGit
     ? [
-        `(require-all ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(moduleGit.root)}/.*(refs|logs)/`)}))`,
-        `(require-all ${re(`^${sbplEscape(moduleGit.root)}/.*${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(moduleGit.root)}/.*(refs|logs)/`)}))`,
+        // Every name matches whole components only: `(.*/)?` forces a boundary, so a submodule named `catalogs`
+        // or `prefs` keeps the refusal and one named `webhooks` keeps its ordinary writes (#281 round 2).
+        `(require-all ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?(refs|logs)/`)}))`,
+        `(require-all ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?(refs|logs)/`)}))`,
         // A submodule git dir as a directory entry: no rename, replace, symlink or recreate. The basename is
         // folded (HFS+ opens the folded spelling as the real entry); the plain prefix is the path as discovered.
         ...moduleGit.entries.map((d) => re(`^${sbplEscape(dirname(d))}/${hfsFoldedName(basename(d))}$`)),
