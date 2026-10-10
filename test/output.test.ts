@@ -315,7 +315,7 @@ export const phaseFixture = {
   models: { state: "ready", model: "qwen/" + "long-model-name-".repeat(10), expiresAt: new Date(now + 600_000).toISOString(), active: 0, contextWindow: 32_768 },
   budgets: [{ id: "budget-12345678901234567890", kind: "task", taskId: 3, peers: ["local", "pi"], createdAt: now - 60_000, updatedAt: now - 30_000, units: { tokens: { used: 100, limit: 200, remaining: 100 } } }],
 };
-const phaseRenderers = (columns?: number, full = false) => [renderProjects(phaseFixture.projects, columns, now, full), renderQueue(phaseFixture.deliveries, columns, now, full), renderTurns(phaseFixture.turns, columns, now, full), renderOrphans([{ project: phaseFixture.projects[0], pids: [12345] }], columns, now, full), renderQueueShow(phaseFixture.deliveries[0], columns, now, full), renderModelsStatus(phaseFixture.models, columns, now, full), renderExecutionBudgetStatus(phaseFixture.budgets, columns, now, full), renderReport(summarize([]), columns, now), renderReport(summarizeByTask([]), columns, now, false, true)];
+const phaseRenderers = (columns?: number) => [renderProjects(phaseFixture.projects, columns, now), renderQueue(phaseFixture.deliveries, columns, now), renderTurns(phaseFixture.turns, columns, now), renderOrphans([{ project: phaseFixture.projects[0], pids: [12345] }], columns, now), renderQueueShow(phaseFixture.deliveries[0], columns, now), renderModelsStatus(phaseFixture.models, columns, now), renderExecutionBudgetStatus(phaseFixture.budgets, columns, now), renderReport(summarize([]), columns, now), renderReport(summarizeByTask([]), columns, now, true)];
 describe("remaining one-shot outputs", () => {
   for (const columns of [80, 120, 200]) test(`remaining commands preserve geometry and plain/colour parity at ${columns}`, () => {
     for (const rendered of phaseRenderers(columns)) {
@@ -334,7 +334,8 @@ describe("remaining one-shot outputs", () => {
     expect(turns).toContain("8 files"); expect(turns).toContain("completed"); expect(turns).toContain("1m ago"); expect(turns).not.toContain("...");
     expect(turns.split("\n")).toHaveLength(2);
     expect(text(renderTurns([{ ...phaseFixture.turns[0], ended: undefined }], 80, now))).toContain("running");
-    expect(text(renderTurns([{ ...phaseFixture.turns[0], end_tree: undefined }], 80, now))).toContain("no end snapshot");
+    const missing = renderTurns([{ ...phaseFixture.turns[0], end_tree: undefined }], 80, now);
+    expect(tableFieldGroups(missing, "STATE", [phaseFixture.turns[0]!.id]).groups.get(phaseFixture.turns[0]!.id)!.filter(Boolean).join(" ")).toBe("no end snapshot");
   });
   test("command-input identifiers stay whole and unique at80/120 without full mode", () => {
     for (const columns of [80, 120]) {
@@ -353,6 +354,7 @@ describe("remaining one-shot outputs", () => {
         expect(rendered.some(line => line.some(cell => cell.text.trim() === settlement[0]))).toBe(true);
       }
     }
+    expect(text(renderQueue(phaseFixture.deliveries, undefined, now))).toContain(hold);
     expect(text(renderQueueShow(phaseFixture.deliveries[0], 80, now)).replace(/\s/g, "")).toContain(`ahubqueueresolve${hold}`);
     expect(text(renderOrphans([{ project: phaseFixture.projects[0], pids: [] }], 80, now)).replace(/\s/g, "")).toContain(`ahubprojectsremove${phaseFixture.projects[0]!.id}`);
   });
@@ -371,7 +373,7 @@ describe("remaining one-shot outputs", () => {
     }
   });
   test("new identifier columns preserve full project and turn tokens at80", () => {
-    for (const rendered of [renderProjects(phaseFixture.projects, 80, now, true), renderTurns(phaseFixture.turns, 80, now, true)]) {
+    for (const rendered of [renderProjects(phaseFixture.projects, 80, now), renderTurns(phaseFixture.turns, 80, now)]) {
       const expected = rendered[0]![0]!.text.trim() === "PROJECT" ? phaseFixture.projects[0]!.id : phaseFixture.turns[0]!.id;
       expect(rendered.some(line => line[0]?.text.trim() === expected)).toBe(true);
       for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
@@ -386,7 +388,7 @@ describe("remaining one-shot outputs", () => {
   });
   test("report sentences retain their coverage and attribution meanings", () => {
     for (const [report, byTask] of [[summarize([]), false], [summarizeByTask([]), true]] as const) {
-      const rendered = text(renderReport(report, undefined, now, false, byTask));
+      const rendered = text(renderReport(report, undefined, now, byTask));
       const existing = byTask ? formatTaskReport(report as ReturnType<typeof summarizeByTask>) : formatReport(report as ReturnType<typeof summarize>);
       for (const sentence of existing.slice(1)) expect(rendered).toContain(sentence);
     }
@@ -404,16 +406,16 @@ describe("remaining one-shot outputs", () => {
     ];
     const team = summarize(events), tasks = summarizeByTask(events);
     for (const [report, byTask] of [[team, false], [tasks, true]] as const) {
-      const rendered = text(renderReport(report, undefined, now, false, byTask));
+      const rendered = text(renderReport(report, undefined, now, byTask));
       const original = byTask ? formatTaskReport(report as typeof tasks) : formatReport(report as typeof team);
       for (const sentence of original.slice(1)) expect(rendered).toContain(sentence);
       expect(rendered).toContain("period: 1m ago .. 30s ago");
       expect(rendered).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
-      for (const columns of [80, 120, 200]) for (const line of text(renderReport(report, columns, now, false, byTask)).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+      for (const columns of [80, 120, 200]) for (const line of text(renderReport(report, columns, now, byTask)).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
     }
     expect(text(renderReport(team, undefined, now))).toContain("120 reported tokens (1 known records)");
     expect(text(renderReport(team, undefined, now))).toContain("estimated price unknown; measured spend unknown");
-    const taskOutput = text(renderReport(tasks, undefined, now, false, true));
+    const taskOutput = text(renderReport(tasks, undefined, now, true));
     expect(taskOutput).toContain("task #3: class implement, outcome approved, turns 1, wall 30000 ms");
     expect(taskOutput).toContain("inputTokens 100 (1/1 known)");
     expect(taskOutput).toContain("WALL"); expect(taskOutput).toContain("30s");
@@ -434,5 +436,121 @@ test("execution counters retain complete labels, elapsed durations and explicit 
   expect(rendered.some(line => line[0]?.text.trim() === "1 units model_calls remaining" && line[1]?.text.trim() === "2")).toBe(true);
   expect(text(renderExecutionBudgetStatus([], 80, now))).toContain("No execution budgets configured.");
   expect(text(renderExecutionBudgetStatus(undefined, 80, now))).toContain("No matching execution budget.");
-  expect(text(renderOrphans([{ project: phaseFixture.projects[0], pids: [123] }], 80, now, false, true))).not.toContain("kill live orphans with");
+  expect(text(renderOrphans([{ project: phaseFixture.projects[0], pids: [123] }], 80, now, true))).not.toContain("kill live orphans with");
+});
+
+/** Ordinary tracked paths, fixed without targeting a particular split percentage. */
+export const ordinaryFilePathFixture = [
+  "src/cli/main.ts", "src/cli/output.ts", "src/cli/console.ts", "src/cli/console-state.ts",
+  "src/hub/daemon.ts", "src/hub/bus.ts", "src/hub/context-window.ts", "src/hub/control-client.ts",
+  "test/output.test.ts", "test/output-cli.test.ts", "test/daemon.test.ts", "docs/operations.md",
+  "docs/specs/2026-09-19-agent-hub-design.md", "scripts/check.sh",
+];
+
+function tableFieldGroups(rendered: Span[][], field: string, ids: string[]): { width: number; groups: Map<string, string[]> } {
+  const headerAt = rendered.findIndex(line => line.some(cell => cell.text.trim() === field));
+  expect(headerAt).toBeGreaterThanOrEqual(0);
+  const header = rendered[headerAt]!, at = header.findIndex(cell => cell.text.trim() === field);
+  const groups = new Map<string, string[]>(); let current = "";
+  const body = rendered.slice(headerAt + 1);
+  let fieldWidth = 0;
+  for (const line of body) {
+    if (line.length !== header.length) continue;
+    const id = line.find(cell => ids.includes(cell.text.trim()))?.text.trim();
+    if (id) { current = id; if (!groups.has(id)) groups.set(id, []); }
+    if (current && line[at]) { groups.get(current)!.push(line[at]!.text.trim()); fieldWidth = Math.max(fieldWidth, Bun.stringWidth(line[at]!.text)); }
+  }
+  return { width: fieldWidth, groups };
+}
+
+test("FILES keeps every fitting path whole and breaks an oversized path only after slash", () => {
+  const fitting = ["src/cli/output.ts", "src/cli/main.ts", "test/output-cli.test.ts"];
+  const long = "src/" + Array.from({ length: 18 }, (_, i) => `layer${i}/`).join("") + "panel.ts";
+  const ids = ["codex#mv2kr3pl.3", "codex#mv2kr3pl.2"];
+  const turns = ids.map(id => ({ id, peer: "codex", started: now - 600_000, ended: now - 60_000, end_tree: "recorded", changed: [...fitting, long] }));
+  for (const columns of [80, 100, 120]) {
+    const rendered = renderTurns(turns, columns, now);
+    const header = rendered.find(line => line.some(cell => cell.text.trim() === "FILES"))!;
+    const at = header.findIndex(cell => cell.text.trim() === "FILES");
+    const available = columns - header.slice(0, at).reduce((sum, cell) => sum + Bun.stringWidth(cell.text), 0);
+    const { groups } = tableFieldGroups(rendered, "FILES", ids);
+    expect(groups.size).toBe(2);
+    for (const chunks of groups.values()) {
+      for (const path of fitting) { expect(Bun.stringWidth(path)).toBeLessThanOrEqual(available); expect(chunks.some(chunk => chunk.includes(path))).toBe(true); }
+      expect(Bun.stringWidth(long)).toBeGreaterThan(available);
+      const joined = chunks.join(""); const start = joined.indexOf(long);
+      expect(start).toBeGreaterThanOrEqual(0);
+      let boundary = 0;
+      for (const chunk of chunks.slice(0, -1)) {
+        boundary += chunk.length;
+        if (boundary > start && boundary < start + long.length) expect(joined[boundary - 1]).toBe("/");
+      }
+    }
+    for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+  }
+});
+
+test("narrow labelled views pair each feasible full label with its value", () => {
+  for (const columns of [36, 48, 52]) {
+    const cases: [Span[][], [string, string][]][] = [
+      [renderQueueShow({ id: hold, peer: "codex", state: "queued", revision: 7, messages: [{ from: "claude", priority: "important", kind: "chat", body: "PUBLIC_BODY" }] }, columns, now), [["peer", "codex"], ["state", "queued"], ["revision", "7"], ["messages 1 from", "claude"], ["messages 1 priority", "important"], ["messages 1 kind", "chat"], ["messages 1 body", "PUBLIC_BODY"]]],
+      [renderModelsStatus({ state: "ready", model: "MODEL_VALUE", active: 2, maxConcurrency: 4 }, columns, now), [["state", "ready"], ["model", "MODEL_VALUE"], ["active", "2"], ["maxConcurrency", "4"]]],
+      [renderExecutionBudgetStatus([{ kind: "run", units: { model_calls: { used: 5, remaining: 123 } } }], columns, now), [["1 kind", "run"], ["1 units model_calls used", "5"], ["1 units model_calls remaining", "123"]]],
+    ];
+    for (const [rendered, pairs] of cases) {
+      for (const [label, value] of pairs) expect(rendered.some(line => line.some(cell => cell.text.trim() === label) && line.some(cell => cell.text.trim() === value)), `${columns}: ${label}=${value}`).toBe(true);
+      for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+    }
+  }
+});
+
+test("each narrow queue metadata band remains linked to its delivery id", () => {
+  const ids = ["q:codex:aaaaaaaa-1111-2222-33333", "q:codex:aaaaaaaa-1111-2222-44444"];
+  const deliveries = [{ id: ids[0], peer: "codex", state: "needs_review", revision: 7, createdAt: now - 60_000 }, { id: ids[1], peer: "kimi", state: "queued", revision: 8, createdAt: now - 120_000 }];
+  const owners = new Map([["codex", ids[0]], ["needs_review", ids[0]], ["7", ids[0]], ["1m", ids[0]], ["kimi", ids[1]], ["queued", ids[1]], ["8", ids[1]], ["2m", ids[1]]]);
+  for (const columns of [36, 48, 52]) {
+    const rendered = renderQueue(deliveries, columns, now); let last = ""; const seen = new Set<string>();
+    for (const line of rendered) {
+      const value = paint(line, false);
+      for (const id of ids) if (value.includes(id)) last = id;
+      for (const cell of line) {
+        const expected = owners.get(cell.text.trim());
+        if (expected) { expect(last).toBe(expected); seen.add(cell.text.trim()); }
+      }
+      expect(Bun.stringWidth(value)).toBeLessThanOrEqual(columns);
+    }
+    expect(seen.size).toBe(owners.size);
+  }
+});
+
+test("project TASKS preserves count/state items with unavailable and incompatible rows", () => {
+  const projects = ["running", "unavailable", "incompatible"].map((state, i) => ({ id: `p_12345678901234567890123${i}`, state, root: "/project/agent-hub", status: { peers: {}, tasks: { approved: i + 2, changes_requested: i + 4, in_review: i + 11 } } }));
+  for (const columns of [76, 80]) {
+    const rendered = renderProjects(projects, columns, now);
+    for (const project of projects) for (const [state, count] of Object.entries(project.status.tasks)) expect(rendered.some(line => line.some(cell => cell.text.includes(`${count} ${state}`)))).toBe(true);
+    for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+    expect(text(rendered)).not.toContain("...");
+  }
+});
+
+test("ordinary tracked file paths split only when longer than their column", () => {
+  const ids = ["codex#mv2kr3pl.3", "codex#mv2kr3pl.2"];
+  const turns = ids.map(id => ({ id, peer: "codex", started: now - 600_000, ended: now - 1, end_tree: "recorded", changed: ordinaryFilePathFixture }));
+  for (const columns of [80, 100, 120]) {
+    const rendered = renderTurns(turns, columns, now);
+    const header = rendered.find(line => line.some(cell => cell.text.trim() === "FILES"))!;
+    const at = header.findIndex(cell => cell.text.trim() === "FILES");
+    const size = columns - header.slice(0, at).reduce((sum, cell) => sum + Bun.stringWidth(cell.text), 0);
+    const { groups } = tableFieldGroups(rendered, "FILES", ids);
+    let split = 0, total = 0;
+    for (const chunks of groups.values()) for (const path of ordinaryFilePathFixture) {
+      total++;
+      const whole = chunks.some(chunk => chunk.includes(path));
+      if (!whole) split++;
+      if (Bun.stringWidth(path) <= size) expect(whole, `${columns}: ${path}`).toBe(true);
+    }
+    expect(total).toBe(28);
+    if (columns >= 100) expect(split).toBe(0);
+    console.log(`ordinary tracked paths @${columns}: ${split}/${total} split (${(split / total * 100).toFixed(2)}%), 0 avoidable`);
+  }
 });

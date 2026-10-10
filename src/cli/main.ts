@@ -226,7 +226,7 @@ async function projectRows() {
 async function printProjects(options: ReturnType<typeof outputOptions>) {
   const projects = await projectRows();
   if (options.json) return console.log(JSON.stringify(projects, null, 2));
-  printOutput(renderProjects(projects, options.columns, Date.now(), options.full), options.color);
+  printOutput(renderProjects(projects, options.columns, Date.now()), options.color);
 }
 
 /** Full command line of a live process, undefined once it is gone. */
@@ -297,7 +297,7 @@ async function killOrphan(pid: number, root: string, diagnostic: (text: string) 
 async function orphanDoctor(kill: boolean, options: ReturnType<typeof outputOptions>): Promise<void> {
   const orphans = registeredProjects().filter(project => !existsSync(project.root)).map(project => ({ project, pids: orphanPids(project) }));
   if (options.json) console.log(JSON.stringify(orphans, null, 2));
-  else printOutput(renderOrphans(orphans, options.columns, Date.now(), options.full, kill), options.color);
+  else printOutput(renderOrphans(orphans, options.columns, Date.now(), kill), options.color);
   let failed = 0;
   const diagnostic = (text: string) => options.json
     ? console.error(paint([{ text }], false))
@@ -803,7 +803,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   models: async () => {
     const action = outputArguments()[0] ?? "status";
     const options = action === "status" ? outputOptions() : undefined;
-    const showStatus = (data: unknown) => options!.json ? console.log(JSON.stringify(data, null, 2)) : printOutput(renderModelsStatus(data, options!.columns, Date.now(), options!.full), options!.color);
+    const showStatus = (data: unknown) => options!.json ? console.log(JSON.stringify(data, null, 2)) : printOutput(renderModelsStatus(data, options!.columns, Date.now()), options!.color);
     const configured = projectConfig().mlx;
     if (configured.enabled === false) {
       if (action === "status") return showStatus({ state: "disabled", enabled: false });
@@ -853,7 +853,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         const result = await hub.request({ t: "queue", op: "list", ...(one["--peer"] ? { peer: one["--peer"] } : {}) });
         if (!result.ok) fail(result.error);
         if (options.json) return console.log(JSON.stringify(result.deliveries, null, 2));
-        printOutput(renderQueue(result.deliveries, options.columns, Date.now(), options.full), options.color);
+        printOutput(renderQueue(result.deliveries, options.columns, Date.now()), options.color);
         return;
       }
       const [id, ...flags] = rest;
@@ -863,7 +863,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (operation === "show") {
         if (flags.length) fail("usage: ahub queue show <id>");
         if (options.json) return console.log(JSON.stringify(shown.delivery, null, 2));
-        return printOutput(renderQueueShow(shown.delivery, options.columns, Date.now(), options.full), options.color);
+        return printOutput(renderQueueShow(shown.delivery, options.columns, Date.now()), options.color);
       }
       const { one, rest: extra } = takeFlags(args.slice(2), ["--action", "--reason"], []);
       if (extra.length || !["completed", "retry", "discard"].includes(one["--action"] ?? "") || !one["--reason"]?.trim()) fail("usage: ahub queue resolve <id> --action completed|retry|discard --reason <text>");
@@ -904,7 +904,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (!result.ok) fail(result.error);
       const data = result.budgets ?? result.budget ?? { disabled: result.disabled };
       if (op !== "status" || options.json) return console.log(JSON.stringify(data, null, 2));
-      return printOutput(renderExecutionBudgetStatus(result.budgets, options.columns, Date.now(), options.full), options.color);
+      return printOutput(renderExecutionBudgetStatus(result.budgets, options.columns, Date.now()), options.color);
     }
     let set: Record<string, unknown> | undefined;
     if (args[0] === "resume") {
@@ -1216,7 +1216,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const events = readEvents(join(stateDir, "events.jsonl"), since());
     const data = by >= 0 ? summarizeByTask(events) : summarize(events);
     if (options.json) return console.log(JSON.stringify(data, null, 2));
-    printOutput(renderReport(data, options.columns, Date.now(), options.full, by >= 0), options.color);
+    printOutput(renderReport(data, options.columns, Date.now(), by >= 0), options.color);
   },
   facts: async () => {
     if (!args.includes("--hook")) return fail("usage: ahub facts --hook (a Claude Code PreToolUse, PostToolUse and Stop hook)");
@@ -1275,7 +1275,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const { one, rest } = takeFlags(outputArguments(), ["--limit"], []);
     const turns = turnRecords(t => t.list(rest[0], Number(one["--limit"]) || 20), []);
     if (options.json) return console.log(JSON.stringify(turns, null, 2));
-    printOutput(renderTurns(turns, options.columns, Date.now(), options.full), options.color);
+    printOutput(renderTurns(turns, options.columns, Date.now()), options.color);
   },
   undo: async () => {
     const id = args.find((a) => !a.startsWith("--")) ?? fail("usage: ahub undo <turn> [--yes] [--context]");

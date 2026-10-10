@@ -43,7 +43,7 @@ function fixture(options: { failFullBoard?: boolean } = {}) {
       const reply = req.t === "hello" ? { t: "welcome", cwd: root, projectId: project.id, instanceId: status.instanceId }
         : req.t === "status" ? { status }
         : req.t === "budget" ? { budget, gate: 0.95 }
-        : req.t === "execution_budget" ? { budgets }
+        : req.t === "execution_budget" ? req.op === "disable" ? { disabled: true } : { budgets }
         : req.t === "queue" ? req.op === "show" ? { delivery } : { deliveries }
         : req.t === "task" && options.failFullBoard && !Object.keys(req.args ?? {}).length ? { ok: false, error: "full board temporarily unavailable" }
         : req.t === "task" ? { text: JSON.stringify(req.args?.ready ? tasks.filter(t => t.state === "proposed" && (t.deps ?? []).every((id: number) => tasks.some(dep => dep.id === id && dep.state === "approved"))) : req.args?.state ? tasks.filter(t => t.state === req.args.state) : tasks) }
@@ -205,4 +205,17 @@ test("execution configure removes presentation flags before reading its file", a
   const result = await f.run(["budget", "--color=never", "execution", "configure", file]);
   expect(result.code, result.stderr).toBe(0);
   expect(f.requests.find(request => request.t === "execution_budget")).toMatchObject({ op: "configure", config });
+});
+
+
+test("execution disable after an output flag performs the exact requested operation", async () => {
+  const f = fixture();
+  const id = "nightly-run-2";
+  const result = await f.run(["budget", "--color=never", "execution", "disable", id]);
+  expect(result.code, result.stderr).toBe(0);
+  expect(f.requests.filter(request => request.t === "execution_budget")).toMatchObject([{ op: "disable", id }]);
+  expect(result.stdout).toContain("disabled"); expect(result.stdout).toContain("true");
+  expect(result.stdout).not.toContain("no quota readings");
+  const json = await f.run(["budget", "--json", "execution", "disable", id]);
+  expect(json.code, json.stderr).toBe(0); expect(json.stdout).toBe(JSON.stringify({ disabled: true }, null, 2) + "\n");
 });
