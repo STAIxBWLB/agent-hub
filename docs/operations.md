@@ -386,7 +386,7 @@ resolves an uncertain delivery automatically. The same rule holds on every path 
 assigns a task (#297): once the move is saved on the board, a failed delivery prints
 exactly one console notice ("the move is saved... delivery is not confirmed"), printed
 where the error is thrown, and the caller (a peer in its turn, or the CLI) still gets
-its error. Two exceptions, by construction: a move superseded by another while the assignment was being prepared is
+its error. Two exceptions, by construction: a move superseded while the assignment was being prepared, meaning a later history entry that moves or settles the task (another assignment, an unassign, the owner's accept, done, approval, close; the hub's quiet bookkeeping such as a late check result or a reviewer change does not supersede), is
 the caller's error as before, with no notice naming either owner; and a claim is its own hand-over, so its
 accepted write and line stay outside the delivery rule (its overlap and routing announcements to earlier
 owners are deliveries and share it). The repair is always

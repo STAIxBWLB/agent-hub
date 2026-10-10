@@ -1167,12 +1167,15 @@ test("the daemon's inference-failed catch stays quiet for a saved-but-undelivere
     }
     throw new Error("no route");
   };
+  const beforeFailure = readFileSync(join(stateDir, "hub.log"), "utf8").length;
   try {
     await onTurnFailure([newEnvelope("pi", "failed turn", { to: ["pi"], refs: { task: String(task.id) } }), newEnvelope("pi", "failed turn", { to: ["pi"], refs: { task: String(plain.id) } })], "Pi inference failed");
   } finally {
     Tasks.prototype.escalate = escalate;
   }
   const logText = readFileSync(join(stateDir, "hub.log"), "utf8");
+  const added = logText.slice(beforeFailure);
+  expect(added).not.toMatch(new RegExp(`task #${task.id}\\b`, "i")); // no second notice of any wording for the typed error
   expect(logText).not.toContain(`Pi task #${task.id} could not be escalated`); // the typed error: quiet
   expect(logText).toContain(`Pi task #${plain.id} could not be escalated`); // a plain failure: the old line
 }, 20_000);

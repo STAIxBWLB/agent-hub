@@ -907,10 +907,12 @@ export class Tasks {
       try {
         saved = this.d.board.get(task.id) ?? next;
       } catch { /* the write's row is still true */ }
-      // Any later write to the row (another owner, the same owner again, an accept, an approval) means this
-      // assignment was superseded or acted on meanwhile: not an undelivered assignment, so no notice, no tail,
-      // and the original error goes to the caller as before #297.
-      if (saved.history.length !== next.history.length) throw e;
+      // Superseded means a later entry that moves or settles the task: another assignment, an unassign, the
+      // owner's accept, done, approval, close. Entries that do neither (the hub's quiet bookkeeping, a check
+      // result landing during the brief) leave the assignment exactly as undelivered as before: the notice and
+      // the typed error stand (#297 Decisions).
+      const moves = (entries: Task["history"]) => entries.filter((h) => !QUIET_EVENTS.has(h.event) && !h.event.startsWith("check "));
+      if (moves(saved.history).length !== moves(next.history).length) throw e;
       this.releaseNotice(this.undeliveredNotice(saved, e));
       throw new AssignmentUndeliveredError(saved, e);
     }

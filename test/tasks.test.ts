@@ -2656,6 +2656,66 @@ test("a same-owner reassign or an approval during the brief is supersession: the
   }
 });
 
+test("the hub's own bookkeeping during the brief is not supersession: the notice and the typed error stand (#297)", async () => {
+  for (const meanwhile of ["check finished late", "reviewer changed"] as const) {
+    const base = await setup();
+    await base.tasks.propose("claude", { title: "summarize the log", class: "summarize", owner: "kimi" });
+    base.tasks.accept("kimi", 1);
+    await base.tasks.done("kimi", 1, "v");
+    await base.tasks.review("claude", 1, "changes_requested", "too long");
+    await base.tasks.done("kimi", 1, "v2");
+    // The escalation writes owner codex; while sendTask reads the brief, the hub records an entry that moves
+    // nothing (a late check result, a reviewer change); the envelope to codex then throws.
+    const briefs = {
+      forTask: async () => {
+        if (meanwhile === "check finished late") base.board.update(1, HUB, "check finished late", {}, "check passed (late)");
+        else base.board.update(1, HUB, "reviewer changed", { reviewer: "local" }, "reviewer paused for quota");
+        return undefined;
+      },
+    };
+    const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (l) => base.notices.push(l), briefs: briefs as never });
+    const publish = base.bus.publish.bind(base.bus);
+    base.bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === "1") throw new Error("delivery journal unavailable"); return publish(env); };
+    try { await expect(tasks.review("claude", 1, "changes_requested", "still too long")).resolves.toMatchObject({ id: 1, owner: "codex" }); }
+    finally { base.bus.publish = publish; }
+    expect(base.notices.filter((l) => l.includes("delivery is not confirmed") && l.includes("ahub task assign 1 codex"))).toHaveLength(1);
+    expect(base.notices.some((l) => l.includes("escalated from kimi to codex"))).toBe(true);
+  }
+});
+
+test("a second rejection whose escalation lifts a silent cohort returns the saved task when every publish fails (#297)", async () => {
+  const { tasks, bus, board, notices, state } = await turnFreeRig();
+  const first = await tasks.propose("kimi", { title: "bus refactor", class: "implement", owner: "kimi", refs: { paths: ["src/hub/bus.ts"] }, plan: { symbols: ["Bus.publish"], signatures: ["publish(env: Envelope): PeerId[]"] } });
+  const offered = await tasks.propose("claude", { title: "retry", class: "implement", owner: "codex" });
+  tasks.accept("codex", offered.id, { paths: ["src/hub/retry.ts"], symbols: ["Bus.publish"] });
+  await tasks.done("kimi", first.id, "v");
+  await tasks.review("claude", first.id, "changes_requested", "too long");
+  await tasks.done("kimi", first.id, "v2");
+  // The escalation hands the task to codex, whose context path is no longer verified: formCohort lifts the silent
+  // cohort, and announceLift's "silence is lifted" envelopes are the publishes that fail here. At 5dc9d74
+  // formCohort sat outside the try, so this throw escaped as a plain error with the move saved (#297).
+  expect(tasks.silentFor(first.id)).toBe(true);
+  state.capable.delete("codex");
+  let forming = false;
+  const cohortFailures: { owner: string | null; body: string }[] = [];
+  const internal = tasks as unknown as { formCohort: (...args: any[]) => void };
+  const form = internal.formCohort.bind(tasks);
+  internal.formCohort = (...args) => { forming = true; try { form(...args); } finally { forming = false; } };
+  const publish = bus.publish.bind(bus);
+  bus.publish = env => {
+    if (forming) cohortFailures.push({ owner: board.get(first.id)!.owner, body: env.body });
+    throw new Error("delivery journal unavailable");
+  };
+  try { await expect(tasks.review("claude", first.id, "changes_requested", "still too long")).resolves.toMatchObject({ id: first.id, owner: "codex" }); }
+  finally { bus.publish = publish; internal.formCohort = form; }
+  expect(cohortFailures).toHaveLength(1);
+  expect(cohortFailures[0]!.owner).toBe("codex"); // the assignment write happened before the failing cohort publish
+  expect(cohortFailures[0]!.body).toContain("turn-free silence is lifted");
+  expect(board.get(first.id)!.owner).toBe("codex");
+  expect(notices.some((l) => l.includes("no longer silent"))).toBe(true); // the lift is what published
+  expect(notices.filter((l) => l.includes("delivery is not confirmed") && l.includes(`ahub task assign ${first.id} codex`))).toHaveLength(1);
+});
+
 test("propose, assignTo, decline and a manual escalation each print exactly one console notice and keep their error (#297)", async () => {
   const { tasks, bus, notices, board } = await setup();
   const undelivered = () => notices.filter((l) => l.includes("delivery is not confirmed")).length;
@@ -2664,22 +2724,60 @@ test("propose, assignTo, decline and a manual escalation each print exactly one 
     bus.publish = (env) => { if (env.kind === "task" && env.refs?.task === id) throw new Error("delivery journal unavailable"); return p(env); };
     return () => { bus.publish = p; };
   };
+  // Each caller gets the typed error, not a plain one with the same message (#297).
+  const undeliveredError = async (p: Promise<unknown>) => {
+    const e = await p.catch((caught) => caught);
+    expect(e).toBeInstanceOf(AssignmentUndeliveredError);
+    expect((e as Error).message).toContain("delivery journal unavailable");
+  };
   let restore = failing("1");
-  try { await expect(tasks.propose("claude", { title: "write docs", class: "implement" })).rejects.toThrow("delivery journal unavailable"); } finally { restore(); }
+  try { await undeliveredError(tasks.propose("claude", { title: "write docs", class: "implement" })); } finally { restore(); }
   expect(undelivered()).toBe(1);
   await tasks.propose("claude", { title: "write docs", class: "implement", owner: "kimi" });
   tasks.accept("kimi", 2);
   restore = failing("2");
-  try { await expect(tasks.assignTo(2, "codex", USER)).rejects.toThrow("delivery journal unavailable"); } finally { restore(); }
+  try { await undeliveredError(tasks.assignTo(2, "codex", USER)); } finally { restore(); }
   expect(undelivered()).toBe(2);
   await tasks.propose("claude", { title: "write notes", class: "summarize", owner: "kimi" });
   tasks.accept("kimi", 3);
   restore = failing("3");
-  try { await expect(tasks.decline("kimi", 3, "busy")).rejects.toThrow("delivery journal unavailable"); } finally { restore(); }
+  try { await undeliveredError(tasks.decline("kimi", 3, "busy")); } finally { restore(); }
   expect(undelivered()).toBe(3);
   const owner = board.get(3)!.owner!;
   restore = failing("3");
-  try { await expect(tasks.escalate(USER, 3, "by hand")).rejects.toThrow("delivery journal unavailable"); } finally { restore(); }
+  try { await undeliveredError(tasks.escalate(USER, 3, "by hand")); } finally { restore(); }
   expect(undelivered()).toBe(4);
   expect(owner).not.toBe("kimi");
+});
+
+
+test("manual escalation preserves typed undelivered evidence across late checks and reviewer bookkeeping (#297)", async () => {
+  for (const meanwhile of ["check finished late", "reviewer changed"] as const) {
+    const base = await setup();
+    await base.tasks.propose("claude", { title: "summarize the log", class: "summarize", owner: "kimi" });
+    base.tasks.accept("kimi", 1);
+    const briefs = { forTask: async () => {
+      base.board.update(1, HUB, meanwhile, meanwhile === "reviewer changed" ? { reviewer: "local" } : {}, meanwhile === "reviewer changed" ? "reviewer paused for quota" : "check passed (late)");
+      return undefined;
+    } };
+    const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: line => base.notices.push(line), briefs: briefs as never });
+    const attempted: Envelope[] = [];
+    const publish = base.bus.publish.bind(base.bus);
+    base.bus.publish = env => {
+      attempted.push(env);
+      if (env.kind === "task" && env.refs?.task === "1") throw new Error("delivery journal unavailable");
+      return publish(env);
+    };
+    let caught: unknown;
+    try { await tasks.escalate(USER, 1, "by hand").catch(error => { caught = error; }); }
+    finally { base.bus.publish = publish; }
+    expect(caught).toBeInstanceOf(AssignmentUndeliveredError);
+    expect((caught as AssignmentUndeliveredError).task).toMatchObject({ id: 1, owner: "codex" });
+    expect((caught as AssignmentUndeliveredError).task.history.some(entry => entry.event === meanwhile)).toBe(true);
+    expect(base.board.get(1)!.owner).toBe("codex");
+    expect(base.notices.filter(line => line.includes("delivery is not confirmed"))).toHaveLength(1);
+    expect(base.notices.some(line => line.includes("ahub task assign 1 codex"))).toBe(true);
+    expect(base.notices.some(line => line.includes("escalated from kimi to codex"))).toBe(true);
+    expect(attempted.some(env => env.to?.includes("kimi") && env.body.includes("Stop working on it."))).toBe(true);
+  }
 });
