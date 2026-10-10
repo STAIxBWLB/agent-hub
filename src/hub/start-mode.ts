@@ -2,6 +2,8 @@
  * #269: how a peer comes up when the hub starts it: its own TUI in a terminal, or headless. A person who types
  * `ahub <peer>` gets the same default and can override it with a flag.
  */
+/** Shared terminal-start guard and dashboard retry hold after an unconfirmed response. */
+export const PEER_START_RETRY_MS = 30_000;
 export const START_MODES = ["tui", "headless"] as const;
 export type StartMode = typeof START_MODES[number];
 /** The peers with both forms. Claude has only a TUI; Kimi (ACP) and the local worker have none the hub attaches to. */
