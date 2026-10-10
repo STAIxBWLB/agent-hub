@@ -812,8 +812,15 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   Loaded non-default Kimi modes are reset for project ask.
 - Codex overlays on-request/never on every outgoing turn/start without changing
   sandbox fields. Ask restores a known native policy once after an accepted
-  turn; rejected restoration remains pending. Unknown native baseline refuses
-  restoration. Actual native unattended flags, not broker-wide flags, govern
+  turn; rejected restoration remains pending. Restoration debt and captured
+  policies are per thread and survive proxy detach and thread/start or thread/resume.
+  A known restoring turn retains its baseline even if the TUI echoes the resumed
+  response's sticky override, in any hub permission mode. After restoration is
+  admitted, a later repeated TUI policy is indistinguishable from an explicit
+  native choice and passes through; only the restoring turn is protected.
+  Unknown native baseline refuses restoration while attached, with instructions
+  to close the TUI and run `ahub permission codex ask`; detached ask succeeds and
+  returns a CLI-visible note about the old thread's unchanged native policy. Actual native unattended flags, not broker-wide flags, govern
   the refusal to change a bypassed session.
 - Claude ask-when-needed allows only Read/Edit/Write/MultiEdit/NotebookEdit/LS
   and bounded Glob/Grep targets resolved with realPath beneath project root,
@@ -823,8 +830,17 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   Merged/generated settings are 0600 state files passed by path, never inline
   in argv. Preview writes no settings file. The owning launcher removes its settings file
   after native exit; earlier active or unknown launchers retain theirs. Verified
-  dead wrapper and native identities permit crash fallback cleanup. Without
-  separate native identity proof, prior files remain for manual inspection.
+  dead wrapper and native identities permit crash fallback cleanup. Direct binary
+  launches publish the native child PID/signature while running, bound to the exact
+  launch record; crash cleanup additionally requires its PID absent from a verified
+  process table. Script/interpreter native ownership remains unknown. Without
+  separate native identity proof, prior files remain for manual inspection. Every
+  launch atomically publishes its managed hook/session record without depending
+  on the native-proof lock. Exact-binding native proof is stored separately, so
+  an old callback cannot replace a later launch record. The populated signed
+  native-proof lock waits up to 250 ms for a live owner; an unknown/busy lock
+  disables only native identity/crash cleanup with exact-path guidance. Managed
+  hooks keep working for the current launch.
 - Permission-only Claude PreToolUse never drives busy state. Only the former
   observation purposes retain native turn bookkeeping. Hook identity/purpose
   are launch/session bound; unverified hook status reads unverified.

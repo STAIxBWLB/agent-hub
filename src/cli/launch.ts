@@ -1,10 +1,11 @@
 // Launchers inject only the flags the hub owns and refuse user-supplied duplicates.
-import { mkdirSync, writeFileSync, renameSync, unlinkSync, lstatSync, readFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { mkdirSync, writeFileSync, renameSync, unlinkSync, lstatSync, readFileSync, openSync, closeSync, readSync, accessSync, constants, linkSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { randomUUID, createHash } from "node:crypto";
 import { resolve, join, basename, dirname, isAbsolute } from "node:path";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { realPath } from "../hub/project.ts";
-import { peerChildEnv } from "../hub/child-process.ts";
+import { peerChildEnv, processTable } from "../hub/child-process.ts";
 export const CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub";
 
 /** Launch identity belongs to the native child, never to the agent that invoked the wrapper. */
@@ -65,14 +66,188 @@ export function cleanupClaudeSettings(stateDir: string, previous: unknown): void
 /** Crash fallback only: an absent/unreadable owner identity never certifies that its native launch ended. */
 export function cleanupStaleClaudeSettings(stateDir: string, previous: unknown, identity = processSignature): void {
   if (!previous || typeof previous !== "object" || Array.isArray(previous)) return;
-  const record = previous as Record<string, unknown>;
+  const original = previous as Record<string, unknown>;
+  const record = readClaudeNative(stateDir, original as ClaudeLaunchRecord) ?? original;
   if (typeof record.launcherSignature !== "string" || !record.launcherSignature) return;
   if (processLiveness(record.launcherPid, record.launcherSignature, identity) !== "gone") return;
-  // ponytail: spawnSync launch records have no independent native identity, so crash-left settings are retained.
-  // Upgrade path: record the native child's PID and processSignature before admitting crash fallback cleanup.
   if (typeof record.nativePid !== "number" || !Number.isSafeInteger(record.nativePid) || record.nativePid <= 0 || record.nativePid === record.launcherPid || typeof record.nativeSignature !== "string" || !record.nativeSignature) return;
-  if (processLiveness(record.nativePid, record.nativeSignature, identity) !== "gone") return;
+  if (record.nativeIdentity === "direct-child") {
+    // A direct child may exec in place. A changed signature while its PID still runs cannot certify native exit.
+    // The shared table excludes exited zombies; an unavailable table certifies nothing.
+    const table = processTable();
+    if (!table || table.some(row => row.pid === record.nativePid)) return;
+  } else if (processLiveness(record.nativePid, record.nativeSignature, identity) !== "gone") return;
   cleanupClaudeSettings(stateDir, record.settingsFile);
+  removeClaudeNative(stateDir, original as ClaudeLaunchRecord);
+}
+
+export interface ClaudeLaunchRecord extends Record<string, unknown> {
+  instanceId: string; launchId: string; settingsFile?: string; launcherPid: number; launcherSignature?: string;
+}
+
+export interface ClaudeLaunchPublication { recorded: boolean; warning?: string; }
+
+/** Native attestation alone is serialized; managed hook metadata never waits on this lock. */
+async function withClaudeLaunchRecord(stateDir: string, action: () => void): Promise<ClaudeLaunchPublication> {
+  const lock = join(stateDir, "claude-launch.lock"), temp = `${lock}.${randomUUID()}.tmp`;
+  const skipped = (reason = `${lock} is busy or unverified`): ClaudeLaunchPublication => ({ recorded: false, warning: `Native identity and crash cleanup disabled for this launch; managed hook record stays current. ${reason}; inspect ${lock} and verify its owner has ended before removing it.` });
+  const signature = processSignature(process.pid);
+  if (!signature) return skipped("launcher identity could not be verified");
+  let locked = false, tempCreated = false, own: { dev: number; ino: number } | undefined;
+  try {
+    const fd = openSync(temp, "wx", 0o600); tempCreated = true;
+    try { writeFileSync(fd, JSON.stringify({ pid: process.pid, signature })); } finally { closeSync(fd); }
+    const stat = lstatSync(temp); own = { dev: stat.dev, ino: stat.ino };
+    const deadline = performance.now() + 250;
+    for (;;) {
+      try { linkSync(temp, lock); break; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") return skipped();
+        let before;
+        try { before = lstatSync(lock); } catch { if (performance.now() < deadline) continue; return skipped(); }
+        if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || (before.mode & 0o777) !== 0o600 || !process.getuid || before.uid !== process.getuid()) return skipped();
+        let owner: { pid?: unknown; signature?: unknown };
+        try { owner = JSON.parse(readFileSync(lock, "utf8")); } catch { return skipped(); }
+        if (!owner || typeof owner.signature !== "string" || !owner.signature) return skipped();
+        const alive = processLiveness(owner.pid, owner.signature);
+        if (alive === "unknown") return skipped();
+        if (alive === "live") {
+          if (performance.now() >= deadline) return skipped();
+          await new Promise(resolve => setTimeout(resolve, 25)); continue;
+        }
+        const current = lstatSync(lock);
+        if (current.dev !== before.dev || current.ino !== before.ino) return skipped();
+        unlinkSync(lock);
+      }
+    }
+    locked = true;
+    unlinkSync(temp);
+    try { action(); } catch { return skipped("native attestation publication failed"); }
+    return { recorded: true };
+  } catch { return skipped("native attestation lock could not be read or published"); }
+  finally {
+    if (locked && own) {
+      try { const current = lstatSync(lock); if (current.dev === own.dev && current.ino === own.ino) unlinkSync(lock); }
+      catch { /* only our verified lock may be removed */ }
+    }
+    if (tempCreated) { try { unlinkSync(temp); } catch { /* our populated temp may already be linked and consumed */ } }
+  }
+}
+
+function writeClaudeLaunchRecord(stateDir: string, record: Record<string, unknown>): void {
+  const file = join(stateDir, "claude-launch.json"), temp = `${file}.${randomUUID()}.tmp`;
+  try { writeFileSync(temp, JSON.stringify(record), { mode: 0o600 }); renameSync(temp, file); }
+  finally { try { unlinkSync(temp); } catch { /* the rename normally consumed it */ } }
+}
+
+export function recordClaudeLaunch(stateDir: string, record: ClaudeLaunchRecord): ClaudeLaunchPublication {
+  writeClaudeLaunchRecord(stateDir, record);
+  return { recorded: true };
+}
+
+function sameClaudeLaunch(left: ClaudeLaunchRecord, right: ClaudeLaunchRecord): boolean {
+  return left.instanceId === right.instanceId && left.launchId === right.launchId && left.settingsFile === right.settingsFile
+    && left.launcherPid === right.launcherPid && left.launcherSignature === right.launcherSignature;
+}
+function nativeAttestationPath(stateDir: string, launch: ClaudeLaunchRecord): string {
+  const hash = createHash("sha256").update(JSON.stringify([launch.instanceId, launch.launchId, launch.settingsFile, launch.launcherPid, launch.launcherSignature])).digest("hex");
+  return join(stateDir, `claude-native-${hash}.json`);
+}
+function privateClaudeNative(stateDir: string, launch: ClaudeLaunchRecord): { file: string; stat: ReturnType<typeof lstatSync>; record: ClaudeLaunchRecord } | undefined {
+  const file = nativeAttestationPath(stateDir, launch);
+  try {
+    const stat = lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600 || !process.getuid || stat.uid !== process.getuid()) return;
+    const record = JSON.parse(readFileSync(file, "utf8")) as ClaudeLaunchRecord;
+    if (!record || !sameClaudeLaunch(record, launch) || typeof record.nativePid !== "number" || !Number.isSafeInteger(record.nativePid) || record.nativePid <= 0 || typeof record.nativeSignature !== "string" || !record.nativeSignature || record.nativeIdentity !== "direct-child") return;
+    return { file, stat, record };
+  } catch { return; }
+}
+export function readClaudeNative(stateDir: string, launch: ClaudeLaunchRecord): ClaudeLaunchRecord | undefined {
+  return privateClaudeNative(stateDir, launch)?.record;
+}
+function removeClaudeNative(stateDir: string, launch: ClaudeLaunchRecord): void {
+  const saved = privateClaudeNative(stateDir, launch); if (!saved?.stat) return;
+  try { const now = lstatSync(saved.file); if (now.dev === saved.stat.dev && now.ino === saved.stat.ino) unlinkSync(saved.file); }
+  catch { /* absent or replaced native proof remains untouched */ }
+}
+
+/** Never attach an old child's identity to a replacement launch, even when its spawn callback arrives later. */
+export async function recordClaudeNative(stateDir: string, launch: ClaudeLaunchRecord, pid: number, signature: string, report?: (warning: string) => void): Promise<boolean> {
+  let recorded = false;
+  const publication = await withClaudeLaunchRecord(stateDir, () => {
+    let current: ClaudeLaunchRecord;
+    try {
+      const file = join(stateDir, "claude-launch.json"), stat = lstatSync(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600 || !process.getuid || stat.uid !== process.getuid()) return;
+      current = JSON.parse(readFileSync(file, "utf8"));
+    } catch { return; }
+    if (!sameClaudeLaunch(current, launch)) return;
+    if (!Number.isSafeInteger(pid) || pid <= 0 || pid === launch.launcherPid || !signature) return;
+    const file = nativeAttestationPath(stateDir, launch), temp = `${file}.${randomUUID()}.tmp`;
+    try {
+      lstatSync(file);
+      const saved = privateClaudeNative(stateDir, launch);
+      recorded = !!saved && saved.record.nativePid === pid && saved.record.nativeSignature === signature;
+      return; // a launch's first native proof is immutable; an unknown file is never overwritten
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return; }
+    try {
+      writeFileSync(temp, JSON.stringify({ ...launch, nativePid: pid, nativeSignature: signature, nativeIdentity: "direct-child" }), { mode: 0o600, flag: "wx" });
+      renameSync(temp, file);
+    } finally { try { unlinkSync(temp); } catch { /* atomic rename consumed our private temporary file */ } }
+    try { recorded = sameClaudeLaunch(JSON.parse(readFileSync(join(stateDir, "claude-launch.json"), "utf8")), launch); } catch { /* replaced or unreadable managed record */ }
+  });
+  if (publication.warning) report?.(publication.warning);
+  return publication.recorded && recorded;
+}
+
+/** Scripts and interpreters can leave a different native owner behind: their crash cleanup remains disabled. */
+function directNativeExecutable(command: string, cwd: string, env: NodeJS.ProcessEnv): boolean {
+  const interpreter = /^(?:node|bun|deno|env|busybox|python(?:[0-9.]+)?|ruby|perl|bash|sh|zsh|fish|dash|ksh|csh|tcsh|ash)(?:\.exe)?$/;
+  if (interpreter.test(basename(command))) return false;
+  const paths = command.includes("/") ? [resolve(cwd, command)] : (env.PATH ?? "").split(":").filter(Boolean).map(path => resolve(cwd, path, command));
+  for (const path of paths) {
+    let fd: number | undefined;
+    try {
+      const target = realPath(path);
+      accessSync(target, constants.X_OK);
+      if (interpreter.test(basename(target))) return false;
+      fd = openSync(target, "r");
+      const bytes = Buffer.alloc(4); if (readSync(fd, bytes, 0, 4, 0) !== 4) return false;
+      return ["7f454c46", "feedface", "cefaedfe", "feedfacf", "cffaedfe", "cafebabe", "bebafeca", "cafebabf", "bfbafeca"].includes(bytes.toString("hex"));
+    } catch { /* resolve the next PATH entry */ }
+    finally { if (fd !== undefined) closeSync(fd); }
+  }
+  return false;
+}
+
+/** Same native stdio/environment and exit result as spawnSync, with a live child identity before it exits. */
+export async function runClaudeLaunch(launch: Launch, options: { cwd: string; env: NodeJS.ProcessEnv; stateDir: string; record?: ClaudeLaunchRecord }): Promise<{ status: number | null; signal: NodeJS.Signals | null; error?: Error }> {
+  const direct = directNativeExecutable(launch.cmd, options.cwd, options.env);
+  return new Promise(resolveResult => {
+    let attestation: Promise<unknown> | undefined;
+    let childSignature: string | undefined;
+    const child = spawn(launch.cmd, launch.args, { cwd: options.cwd, env: options.env, stdio: "inherit" });
+    child.once("spawn", () => {
+      if (!options.record || !child.pid) return;
+      const unavailable = (reason: string) => console.error(`Native identity and crash cleanup disabled for this launch; managed hook record stays current. ${reason}.`);
+      if (!direct) { unavailable("native executable is a script or an unverified interpreter"); return; }
+      if (!options.record.launcherSignature) { unavailable("launcher identity could not be verified"); return; }
+      const signature = processSignature(child.pid);
+      if (!signature) { unavailable("native process identity could not be verified"); return; }
+      childSignature = signature;
+      attestation = recordClaudeNative(options.stateDir, options.record, child.pid, signature, warning => console.error(warning)).catch(() => undefined);
+    });
+    child.once("error", error => resolveResult({ status: null, signal: null, error }));
+    child.once("exit", async (status, signal) => {
+      await attestation;
+      if (options.record) {
+        const saved = readClaudeNative(options.stateDir, options.record);
+        if (saved && typeof child.pid === "number" && saved.nativePid === child.pid && saved.nativeSignature === childSignature) removeClaudeNative(options.stateDir, options.record);
+      } // this child's observed exit, after its last bounded write
+      resolveResult({ status, signal });
+    });
+  });
 }
 
 export interface StatusLineTee {

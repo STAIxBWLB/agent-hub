@@ -881,12 +881,36 @@ Other tools retain native decisions, which may already allow a harmless shell.
 Permission-only PreToolUse never marks Claude busy; former observation hooks
 retain their native-turn role. Settings are passed as a 0600 state file retained
 until that native launch exits. Live/unknown previous launchers keep their files;
-verified dead wrapper and native identities permit crash cleanup. Without
+verified dead wrapper and native identities permit crash cleanup. Managed direct
+binary launches record their native PID while running; crash cleanup also requires
+that PID to be absent from the process table. Scripts/interpreters and unavailable
+process evidence retain the settings file. Every launch atomically replaces
+`claude-launch.json` with its current managed hook/session identity. Native PID
+proof is separate in a private `claude-native-<binding-hash>.json` file, so an old
+callback cannot overwrite a newer launch record. Only that native proof uses
+`claude-launch.lock`, published with its signed owner already written. It waits
+up to 250 ms for a verified live owner. An empty, unsigned or unverifiable lock
+is retained and disables native identity/crash cleanup for this launch; the
+warning names the path and what is off. Managed hooks and session observations
+still use the newly published launch record. Inspect the named lock and verify
+its owner has ended before removing it; a signed dead lock is recovered. Without
 separate native identity proof, old settings remain for manual inspection. Settings carry
 no inline caller values in argv. Status reports an unverified Claude hook as
 unverified. Unattended native sessions cannot take a runtime mode; restart
 without that native flag. Codex must be behind the hub proxy, and returning to
-ask requires a known native approval baseline. An offline or absent peer accepts
+ask while attached requires a known native approval baseline. If unavailable,
+close the TUI, then run `ahub permission codex ask` before starting `ahub codex`.
+For a known baseline, a detached proxy keeps restoration owed per thread and sends
+that policy once on the resumed thread's next accepted turn. Visiting another thread
+does not clear the debt. The restoring turn uses that kept baseline even if the
+TUI echoes the resume response's sticky override, whether ask was selected before
+or after that resume. Rejected turns retain it. The protection covers that one
+restoring turn. A later TUI turn that repeats the policy looks exactly like a
+person's explicit native policy choice and is passed through; the proxy cannot
+resolve that ambiguity. An explicit choice on the restoring turn is delayed
+until the following turn. A baseline that was never reported
+is explained in the CLI reply, and that old thread keeps its last policy.
+An offline or absent peer accepts
 `ahub permission <peer> ask` to clear its hub choice. Codex --unattended launch
 is refused under a non-ask choice; clear it with `ahub permission codex ask`
 first. A pending never-ask default cannot be confirmed for an unattended launch.
