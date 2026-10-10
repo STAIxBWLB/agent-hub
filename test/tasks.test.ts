@@ -2397,16 +2397,29 @@ test("a second changes_requested returns the moved task when telling its old own
 });
 
 test("a second changes_requested returns the moved task when the escalation's assignment cannot publish (#276)", async () => {
-  const { tasks, board, bus, notices } = await setup();
+  const { tasks, board, bus, peers, notices, saves } = await setup();
   await tasks.propose("claude", { title: "summarize the log", class: "summarize", owner: "kimi" });
   tasks.accept("kimi", 1);
   await tasks.done("kimi", 1, "v");
   await tasks.review("claude", 1, "changes_requested", "too long");
   await tasks.done("kimi", 1, "v");
+  const kimiHeard = peers.kimi!.got.length;
   const publish = bus.publish.bind(bus);
   bus.publish = () => { throw new Error("delivery journal unavailable"); }; // a latched storage error
   try { await expect(tasks.review("claude", 1, "changes_requested", "still too long")).resolves.toMatchObject({ id: 1, owner: "codex", state: "in_progress" }); }
   finally { bus.publish = publish; }
-  expect(board.get(1)!.owner).toBe("codex");
-  expect(notices.some((line) => line.includes("the move to codex is saved, but its assignment was not delivered: delivery journal unavailable") && line.includes("ahub task assign 1 codex"))).toBe(true);
+  expect(board.get(1)!).toMatchObject({ owner: "codex", state: "in_progress" });
+  // The saved escalation's guarded tail still ran: the console notice and the decision note landed, and the old
+  // owner's stop message was attempted and its failure noticed (kimi heard nothing).
+  expect(notices.some((line) => line.includes("escalated from kimi to codex"))).toBe(true);
+  expect(notices.some((line) => line.includes("could not tell kimi it moved to codex") && line.includes("delivery journal unavailable"))).toBe(true);
+  await until(() => saves().some((s) => typeof s.text === "string" && s.text.includes("escalated from kimi to codex")));
+  expect(peers.kimi!.got.length).toBe(kimiHeard);
+  expect(peers.codex!.got.filter((e) => e.kind === "task" && e.refs?.task === "1")).toHaveLength(0);
+  // The notice says what is known: the move is saved, the delivery is not confirmed, check before sending again.
+  expect(notices.some((line) => line.includes("the move to codex is saved") && line.includes("delivery is not confirmed") && line.includes("ahub queue list --peer codex") && line.includes("ahub task assign 1 codex"))).toBe(true);
+  // The command it names delivers the task envelope.
+  await tasks.assignTo(1, "codex", USER);
+  expect(peers.codex!.got.filter((e) => e.kind === "task" && e.refs?.task === "1")).toHaveLength(1);
+  expect(board.get(1)!.history.at(-1)!.event).toBe("reassigned");
 });
