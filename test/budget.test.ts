@@ -1,8 +1,12 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Budget, claudeWindows, codexWindows, DEFAULT_BUDGET, type BudgetHooks, type Moved, type PauseRecord } from "../src/hub/budget.ts";
+import { AcpPeer } from "../src/adapters/acp.ts";
+import { Bus } from "../src/hub/bus.ts";
+import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
+import { newEnvelope } from "../src/hub/envelope.ts";
 
 function setup(over: Partial<BudgetHooks> = {}, db = join(mkdtempSync(join(tmpdir(), "agenthub-budget-")), "hub.db"), cfg = DEFAULT_BUDGET) {
   const clock = { now: 1_800_000_000_000 };
@@ -25,6 +29,53 @@ function setup(over: Partial<BudgetHooks> = {}, db = join(mkdtempSync(join(tmpdi
   return { budget, clock, log, resumed, settle, db, hooks };
 }
 const MIN = 60_000;
+
+test("ACP quota resets retry an untouched envelope once per window without consuming poison attempts (#306)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-quota-reset-"));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "quota", instanceId: "quota-run" });
+  const bus = new Bus({ batchMs: 0, journal });
+  let now = 1_800_000_000_000;
+  let reports = 0;
+  const checkpoint = () => { throw new Error("an exhausted agent must not receive a checkpoint"); };
+  const budget = new Budget(join(dir, "hub.db"), DEFAULT_BUDGET, {
+    pause: peer => bus.pause(peer), resume: peer => bus.resume(peer),
+    requestCheckpoint: checkpoint, platformContext: async () => undefined,
+    canHandOff: () => false, attached: peer => bus.peers.has(peer), handoff: async () => [],
+    resumed: () => {}, notify: () => {},
+  }, () => now);
+  const peer = new AcpPeer("kimi", {
+    cwd: dir, cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts"), "--quota-refusal"],
+    onQuotaRefusal: window => { budget.report("kimi", [window], true); reports++; return !!budget.record("kimi") && bus.isPaused("kimi"); },
+  });
+  const undeliverable: string[] = [];
+  bus.tap(event => { if (event.t === "undeliverable") undeliverable.push(event.env.id); });
+  const until = async (condition: () => boolean) => {
+    for (let i = 0; i < 400 && !condition(); i++) await Bun.sleep(10);
+    expect(condition()).toBe(true);
+  };
+  try {
+    await peer.start(); bus.add(peer);
+    const env = newEnvelope("user", "QUOTA_REFUSAL", { to: ["kimi"] });
+    bus.publish(env);
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      await until(() => reports === attempt && bus.isPaused("kimi") && bus.queueIds("kimi").includes(env.id));
+      expect(budget.record("kimi")!.resetsAt).toBe(now + 300 * MIN);
+      expect(budget.status().kimi!.windows[0]!.source).toBe("kimi ACP usage-limit refusal");
+      expect(bus.queueIds("kimi").filter(id => id === env.id)).toHaveLength(1);
+      expect(journal.list("kimi").filter(row => row.originals.some(original => original.id === env.id) && row.state === "failed")).toHaveLength(attempt);
+      expect(bus.queueSummary("kimi").needsReview).toBe(0);
+      expect(bus.attemptState()).toEqual({});
+      expect(undeliverable).toEqual([]);
+      if (attempt < 4) {
+        now = budget.record("kimi")!.resetsAt + MIN; // existing coordinator reset grace, on a virtual clock
+        budget.tick();
+        expect(budget.record("kimi")).toBeUndefined();
+      }
+    }
+  } finally {
+    await peer.stop(); bus.closeJournal(); budget.close(); rmSync(dir, { recursive: true, force: true });
+  }
+}, 20_000);
 
 test("over the gate: checkpoint first, pause second, hand over with the summary; repeating the reading does nothing", async () => {
   const { budget, clock, log, settle } = setup();
@@ -58,6 +109,78 @@ test("a hard limit skips the checkpoint and falls back to memory; no memory mean
   await bare.settle();
   expect(bare.budget.record("local")).toBeUndefined();
 });
+
+test("a provider hard refusal ends a reading override and supersedes a pending soft checkpoint (#306)", async () => {
+  let release!: (value: string | undefined) => void;
+  const overridden = setup({ canHandOff: () => false });
+  try {
+    overridden.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "hard" }], true);
+    expect(overridden.budget.override("kimi")).toBe(true);
+    overridden.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "hard again" }], true);
+    expect(overridden.budget.record("kimi")!.reason).toContain("hard again");
+    expect(overridden.log).toContain("! budget: kimi provider refused again; budget override ended");
+  } finally { overridden.budget.close(); }
+
+  const pending = setup({ canHandOff: () => false, requestCheckpoint: () => new Promise(resolve => { release = resolve; }) });
+  try {
+    pending.budget.report("kimi", [{ id: "5h", used: 0.95, source: "soft" }]);
+    expect(pending.budget.record("kimi")).toBeUndefined();
+    pending.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "hard refusal" }], true);
+    expect(pending.budget.record("kimi")!.reason).toContain("hard refusal");
+    release("outdated soft checkpoint");
+    for (let i = 0; i < 100 && !pending.budget.recoverySettled; i++) await Bun.sleep(1);
+    expect(pending.budget.recoverySettled).toBe(true);
+    expect(pending.budget.record("kimi")).toMatchObject({ summary: null, reason: "5h window at 100% (hard refusal)" });
+  } finally { pending.budget.close(); }
+});
+
+test("a hard refusal renews an expired restored pause that was waiting for attachment (#306)", () => {
+  const first = setup({ canHandOff: () => false });
+  first.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "old refusal" }], true);
+  const reset = first.budget.record("kimi")!.resetsAt;
+  first.budget.close();
+  const restored = setup({ canHandOff: () => false, attached: () => false }, first.db);
+  restored.clock.now = reset + MIN;
+  try {
+    restored.budget.restore();
+    expect(restored.log).not.toContain("pause kimi");
+    expect(restored.budget.record("kimi")).toBeDefined(); // old record retained for the resume notice
+    restored.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "new refusal" }], true);
+    expect(restored.log).toContain("pause kimi");
+    expect(restored.budget.record("kimi")).toMatchObject({ since: restored.clock.now, resetsAt: restored.clock.now + 300 * MIN, reason: "5h window at 100% (new refusal)" });
+  } finally { restored.budget.close(); }
+});
+
+test("after two quota resets the same original completes once when the provider accepts (#306)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-quota-success-"));
+  const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "quota", instanceId: "success" });
+  const bus = new Bus({ batchMs: 0, journal }); let now = 1_800_000_000_000, reports = 0;
+  const answers: ReturnType<typeof newEnvelope>[] = [];
+  const budget = new Budget(join(dir, "hub.db"), DEFAULT_BUDGET, {
+    pause: id => bus.pause(id), resume: id => bus.resume(id), requestCheckpoint: async () => undefined,
+    platformContext: async () => undefined, canHandOff: () => false, attached: () => true,
+    handoff: async () => [], resumed: () => {}, notify: () => {},
+  }, () => now);
+  const acp = new AcpPeer("kimi", { cwd: dir, cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts"), "--quota-refusal", "--quota-refusals", "2"],
+    onQuotaRefusal: window => { reports++; budget.report("kimi", [window], true); return !!budget.record("kimi") && bus.isPaused("kimi"); },
+  });
+  bus.tap(event => { if (event.t === "envelope" && event.env.from === "kimi") answers.push(event.env); });
+  const until = async (condition: () => boolean) => { for (let i = 0; i < 400 && !condition(); i++) await Bun.sleep(10); expect(condition()).toBe(true); };
+  try {
+    await acp.start(); bus.add(acp);
+    const original = newEnvelope("user", "QUOTA_REFUSAL", { to: ["kimi"] }); bus.publish(original);
+    for (const count of [1, 2]) {
+      await until(() => reports === count && bus.queueIds("kimi").includes(original.id));
+      now = budget.record("kimi")!.resetsAt + MIN; budget.tick();
+    }
+    await until(() => acp.state === "idle" && answers.length === 1 && !bus.hasInFlight("kimi"));
+    await acp.setPermissionMode("ask"); // consumed transport barrier after the last possible native answer
+    expect(answers).toHaveLength(1);
+    expect(answers[0]).toMatchObject({ body: "echo: QUOTA_REFUSAL", trace: original.trace, hop: original.hop + 1, to: ["user"] });
+    expect(journal.list("kimi").filter(row => row.originals.some(env => env.id === original.id) && row.state === "completed")).toHaveLength(1);
+    expect(bus.queueIds("kimi")).toEqual([]); expect(bus.queueSummary("kimi").needsReview).toBe(0);
+  } finally { await acp.stop(); bus.closeJournal(); budget.close(); rmSync(dir, { recursive: true, force: true }); }
+}, 20_000);
 
 test("resume: at the reset time, or on a fresh reading under gate - 0.1; a dip just under the gate or a stale reading does not", async () => {
   const { budget, clock, log, resumed, settle } = setup();
@@ -307,4 +430,125 @@ test("headroom: the most used fresh window decides, with its own reset; stale re
   expect(budget.headroom().kimi).toEqual({ headroom: 0.5 }); // a binding window with no known reset: no drain rate
   clock.now += 31 * MIN; // past stale_min
   expect(budget.headroom()).toEqual({});
+});
+
+test("a hard refusal ending an override keeps the earlier future bound of that same window (#35)", () => {
+  const s = setup({ canHandOff: () => false });
+  try {
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "first refusal" }], true);
+    const reset = s.budget.record("kimi")!.resetsAt;
+    s.clock.now += 60 * MIN;
+    expect(s.budget.override("kimi")).toBe(true);
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "refused after override" }], true);
+    expect(s.budget.record("kimi")!.resetsAt).toBe(reset);
+    expect(s.budget.record("kimi")!.since).toBe(s.clock.now);
+    expect(s.budget.record("kimi")!.reason).toContain("refused after override");
+  } finally { s.budget.close(); }
+});
+
+test("override bounds do not shorten another window or an explicit provider reset (#35)", () => {
+  for (const differentWindow of [false, true]) {
+    const s = setup({ canHandOff: () => false });
+    try {
+      s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "initial" }], true);
+      s.clock.now += 60 * MIN;
+      expect(s.budget.override("kimi")).toBe(true);
+      const reset = s.clock.now + (differentWindow ? 10_080 : 500) * MIN;
+      s.budget.report("kimi", [differentWindow
+        ? { id: "week", used: 1, windowMins: 10_080, source: "weekly refusal" }
+        : { id: "5h", used: 1, resetsAt: reset, source: "provider reset" }], true);
+      expect(s.budget.record("kimi")!.resetsAt).toBe(reset);
+    } finally { s.budget.close(); }
+  }
+});
+
+test("a hard refusal confirms an open persisted pause on the live bus without extending its fallback (#35)", () => {
+  let livePaused = false, pauses = 0;
+  const s = setup({ canHandOff: () => false, pause: () => { livePaused = true; pauses++; } });
+  try {
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "initial" }], true);
+    const first = s.budget.record("kimi")!;
+    livePaused = false; // the persisted pause is open, but live pause state needs confirmation
+    s.clock.now += MIN;
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "again" }], true);
+    expect(livePaused).toBe(true);
+    expect(pauses).toBe(2);
+    expect(s.budget.record("kimi")).toEqual(first);
+  } finally { s.budget.close(); }
+});
+
+test("a hard renewal of an expired pause retains previously moved work for the eventual resume (#35)", async () => {
+  let canHandOff = true, finish!: () => void;
+  const moved = [{ id: 17, title: "#17 moved task", to: "codex", role: "owner" }] as Moved[];
+  const handedOff = new Promise<void>(resolve => { finish = resolve; });
+  const s = setup({ attached: () => false, canHandOff: () => canHandOff,
+    handoff: async () => moved, notify: line => { if (line.startsWith("budget: moved from")) finish(); } });
+  try {
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "initial" }], true);
+    await handedOff; // persisted moved list was written before this correlated notice
+    const first = s.budget.record("kimi")!;
+    expect(first.moved).toEqual(moved);
+    s.clock.now = first.resetsAt + MIN;
+    s.budget.tick();
+    expect(s.budget.record("kimi")).toBeDefined(); // unattached: retain the resume notice's evidence
+    canHandOff = false;
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "renewed" }], true);
+    expect(s.budget.record("kimi")).toMatchObject({ moved, handedOff: false, since: s.clock.now, resetsAt: s.clock.now + 300 * MIN });
+    expect(s.resumed).toEqual([]);
+  } finally { s.budget.close(); }
+});
+
+test("an obsolete soft checkpoint's finally cannot delete the newer hard evaluation token (#35)", async () => {
+  let releaseSoft!: (summary: string) => void, releaseHandoff!: (moved: Moved[]) => void, started!: () => void;
+  const handoffStarted = new Promise<void>(resolve => { started = resolve; });
+  const s = setup({ requestCheckpoint: () => new Promise(resolve => { releaseSoft = resolve; }),
+    platformContext: async () => undefined,
+    handoff: () => { started(); return new Promise(resolve => { releaseHandoff = resolve; }); } });
+  const internal = s.budget as unknown as { evaluate(peer: string, hard: boolean): Promise<void>; pausing: Map<string, object> };
+  const evaluate = internal.evaluate.bind(s.budget), evaluations: Promise<void>[] = [];
+  internal.evaluate = (peer, hard) => { const done = evaluate(peer, hard); evaluations.push(done); return done; };
+  try {
+    s.budget.report("kimi", [{ id: "5h", used: 0.95, source: "soft" }]);
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "hard" }], true);
+    await handoffStarted;
+    expect(evaluations).toHaveLength(2);
+    const hardToken = internal.pausing.get("kimi");
+    expect(hardToken).toBeDefined();
+    releaseSoft("obsolete checkpoint");
+    await evaluations[0]; // the obsolete evaluation has executed its finally
+    expect(internal.pausing.get("kimi")).toBe(hardToken);
+    expect(s.budget.recoverySettled).toBe(false);
+    expect(s.budget.record("kimi")!.summary).toBeNull();
+    releaseHandoff([]);
+    await evaluations[1];
+    expect(internal.pausing.has("kimi")).toBe(false);
+    expect(s.budget.recoverySettled).toBe(true);
+    expect(s.budget.record("kimi")!.handedOff).toBe(true);
+  } finally { s.budget.close(); }
+});
+
+test("a same-window override bound that has expired does not constrain a fresh refusal (#35)", () => {
+  const s = setup({ canHandOff: () => false });
+  try {
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "old" }], true);
+    const oldReset = s.budget.record("kimi")!.resetsAt;
+    expect(s.budget.override("kimi")).toBe(true);
+    s.clock.now = oldReset + MIN;
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "new" }], true);
+    expect(s.budget.record("kimi")!.resetsAt).toBe(s.clock.now + 300 * MIN);
+  } finally { s.budget.close(); }
+});
+
+test("a provider reset learned while paused replaces the fallback retained across override (#35)", () => {
+  const s = setup({ canHandOff: () => false });
+  try {
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "fallback" }], true);
+    const providerReset = s.clock.now + 500 * MIN;
+    s.budget.report("kimi", [{ id: "5h", used: 1, resetsAt: providerReset, source: "known reset" }], true);
+    expect(s.budget.record("kimi")!.resetsAt).toBe(providerReset);
+    s.clock.now += 60 * MIN; // a new fallback is shorter, but cannot replace the provider's explicit reset
+    expect(s.budget.override("kimi")).toBe(true);
+    s.budget.report("kimi", [{ id: "5h", used: 1, windowMins: 300, source: "unknown again" }], true);
+    expect(s.budget.record("kimi")!.resetsAt).toBe(providerReset);
+  } finally { s.budget.close(); }
 });

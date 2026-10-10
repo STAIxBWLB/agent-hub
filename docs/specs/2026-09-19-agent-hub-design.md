@@ -382,8 +382,13 @@ inside a peer.
   and runs the original command unchanged. `~/.claude/settings.json` is never edited; a
   user-supplied `--settings` wins and turns the tee off. The `--settings` injection is
   verified live (2026-09-19: `claude-usage.json` appears within seconds, the wrapped HUD
-  renders unchanged, `ahub budget` shows both windows). Kimi: `usage_update` tokens over a
-  rolling 5 h against `budget.kimi_tokens_5h` (off by default). Verified live on kimi
+  renders unchanged, `ahub budget` shows both windows). Kimi has an optional soft
+  rolling 5 h ceiling for validated consumed-token readings, `budget.kimi_tokens_5h`
+  (off by default), and the observed Kimi Code CLI 2.1.1 five-hour provider refusal
+  is a hard source (#306). Only the pinned rejected-prompt text is recognised,
+  bound to verified native identity and the current turn. It reports `5h`, used 1,
+  source `kimi ACP usage-limit refusal`, and a conservative 300-minute reset
+  estimate; weekly/monthly limits and other ACP providers remain unverified. Verified live on kimi
   2.0.1: one update per turn, payload `{"sessionUpdate":"usage_update","used":<tokens>,
   "size":<context window>}`; `used` is the session's context occupancy against `size`
   (1M), not billed quota. ACP records this shape as context occupancy diagnostics,
@@ -411,7 +416,17 @@ inside a peer.
   released, so it leads the first delivery. Moved tasks stay with their new owners. A manual
   `ahub pause` is never lifted by the coordinator; `ahub resume` does not override a budget
   pause, `ahub budget resume <peer>` does, and the coordinator then leaves that peer alone
-  until the window that paused it has reset. A handoff waits until another peer is attached
+  until the window that paused it has reset, unless a provider refuses another turn:
+  that hard refusal ends the override and supersedes a pending soft checkpoint. An
+  untouched ACP refusal is requeued only after the hub confirms its budget pause;
+  otherwise it stays held for review. After activity, the delivery remains held
+  even though open tasks are relayed, and the queue stays held after the budget
+  reset until a person inspects and resolves it. Keep one pending resume notice carrying
+  every public move since the previous notice was delivered; retain an older unstructured
+  notice as public text. Within one hub run, retain a still-future reset bound for the same
+  window across an override, while an explicit provider reset remains authoritative. A
+  restored pause without per-window reading identity starts a fresh estimate at the next refusal.
+  A handoff waits until another peer is attached
   (right after a restart nobody is), readings keep their own timestamp, and a window whose
   reset time has passed no longer counts. A peer whose window reset while the hub was down is
   not paused again, and still gets the resume envelope once it attaches. With no status line
@@ -673,7 +688,7 @@ M6 internal inference, packaging
 | Anthropic-to-chat translation drops `tool_use` | Claude never runs on local models in this design |
 | Local worker executes untrusted room text | Untrusted framing, cwd scope, denylist, no `--unattended` by default |
 | Steering a Codex turn changes its plan mid-flight | Only `important` steers; default tier is `status` |
-| Kimi ACP has no quota API | Token-based soft limit only; documented |
+| Kimi ACP has no quota API | Optional token soft ceiling plus the observed five-hour provider refusal as a hard source; conservative reset, other limits unverified |
 | claude-mem worker API is internal and unversioned for third-party clients | Client isolated in `src/memory/`, pinned to a plugin version range, fail-open everywhere, contract test against a fake worker plus one live smoke |
 
 

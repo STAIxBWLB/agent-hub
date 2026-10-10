@@ -1,12 +1,8 @@
 import { appendNote, DIGEST, HUB, keepNotes, MAX_HOP, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
-import type { PeerAdapter } from "./peers.ts";
+import type { PeerAdapter, DeliveryReceipt } from "./peers.ts";
 import { DeliveryJournal, type JournalDelivery, type JournalDeliveryState } from "./delivery-journal.ts";
 
-export interface DeliveryReceipt {
-  id: string;
-  state: "accepted" | "completed" | "failed_safe" | "needs_review";
-  reason?: string;
-}
+export type { DeliveryReceipt } from "./peers.ts";
 
 export type BusEvent =
   | { t: "envelope"; env: Envelope; dropped?: "hop" | "fyi" }
@@ -195,7 +191,7 @@ export class Bus {
       if (hushed.length) this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}`));
       return heldBack ? hushed[0]!.reason : undefined;
     };
-    peer.onFailed = (envs) => {
+    peer.onFailed = (envs, failure) => {
       // The adapter got the condensed list; what has to come back is what that list replaced.
       const last = this.lastDelivery.get(peer.id);
       const same = !!last && envs.length === last.out.length && envs.every((e, i) => e.id === last.out[i]!.id);
@@ -207,7 +203,7 @@ export class Bus {
             this.deliveryReceipt(peer.id, { id: deliveryId, state: "needs_review", reason: "adapter reported delivery failure without safe-failure evidence" });
           }
         }
-      } else this.failed(peer.id, same ? last.originals : envs);
+      } else this.failed(peer.id, same ? last.originals : envs, undefined, failure?.quota === true);
     };
     peer.onState = () => {
       if (this.closed) return;
@@ -423,7 +419,7 @@ export class Bus {
     this.journal.transition(id, state, receipt.reason);
     if (before?.state === "dispatching" && (state === "accepted" || state === "completed")) this.delivered(peer, before.originals);
     if (state === "failed") {
-      if (before) this.failed(peer, before.originals, before.originals.some((e) => e.private) ? "private delivery failed" : receipt.reason);
+      if (before) this.failed(peer, before.originals, before.originals.some((e) => e.private) ? "private delivery failed" : receipt.reason, receipt.quota === true && before.state === "dispatching");
     }
     if (state === "completed") { this.failureStreak.delete(peer); this.lastFailure.delete(peer); }
     if (state === "completed" || state === "failed" || state === "needs_review") this.activeDeliveries.delete(id);
@@ -906,10 +902,12 @@ export class Bus {
     return [...this.activeDeliveries.values()].includes(peer) || this.draining.has(peer);
   }
 
-  private failed(id: PeerId, envs: Envelope[], reason = "delivery failed without an error detail"): void {
+  private failed(id: PeerId, envs: Envelope[], reason = "delivery failed without an error detail", quota = false): void {
     if (!this.journal) this.deliveryFailed(id);
+    // A quota refusal ran no work. The budget pause fences retries until reset; it is not a poison attempt.
+    const quotaPaused = quota && this.paused.has(id);
     this.lastFailure.set(id, reason.replace(/\s+/g, " ").slice(0, 300));
-    if (envs.some((env) => !(env.from === HUB && env.kind === "presence") && (this.attempts.get(`${id}:${env.id}`) ?? 0) + 1 >= MAX_ATTEMPTS)) {
+    if (!quotaPaused && envs.some((env) => !(env.from === HUB && env.kind === "presence") && (this.attempts.get(`${id}:${env.id}`) ?? 0) + 1 >= MAX_ATTEMPTS)) {
       this.failureStreak.set(id, (this.failureStreak.get(id) ?? 0) + 1);
     }
     const keep = envs.filter((env) => {
@@ -918,6 +916,7 @@ export class Bus {
         this.restorePreface(id, env); // rides again on the next delivery, without counting as a failed envelope
         return false;
       }
+      if (quotaPaused) return true;
       const key = `${id}:${env.id}`;
       const n = (this.attempts.get(key) ?? 0) + 1;
       if (n < MAX_ATTEMPTS) return this.attempts.set(key, n);
