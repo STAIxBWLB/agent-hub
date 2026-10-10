@@ -213,7 +213,8 @@ final response in the native TUI. Broadcasting implementation instructions can
 cause an otherwise unassigned owner to claim duplicate work.
 
 The person answers approvals in the console, resolves `needs_review` deliveries
-with `ahub queue resolve`, and handles budget overrides and hub lifecycle.
+with `ahub queue resolve`, stops a headless peer with `ahub stop`, and handles
+budget overrides and hub lifecycle.
 Running these commands from an agent shell is refused; the CLI retains the
 agent's identity even when invoked through a shell tool.
 
@@ -285,6 +286,18 @@ app, its whole `Contents`, whose `SharedFrameworks` its tools load), write the
 project and a temp dir of their own (`TMPDIR`, made for each command and
 removed when it ends; one left by a hub crash, named `ahub-cmd-*`, goes with
 the OS temp cleanup), and nothing else; the shared temp dirs are closed.
+
+Some names stay closed to those commands, and to Pi's, wherever they may
+otherwise write: anything named `.git` at any depth, the `config`, `hooks` and
+`commondir` of a git directory, and `.agenthub` anywhere in the project. A
+command can therefore not create, rename or remove a `.git`: `git init`,
+`git clone` and `git worktree add` do not run inside the sandbox, and neither
+do `git worktree remove`, `git worktree prune` of a stale record,
+`git clean -ffd` over a nested repository or `rm -rf` of a directory that
+holds a `.git`. `git add`, `commit`, `stash`, `checkout` and `gc` work, and
+`.gitignore` and `.github/` stay writable; a commit that your git configuration
+signs with a key under `~/.ssh` or `~/.gnupg` fails, because the sandbox cannot
+read those directories. Run a refused command yourself, in a terminal.
 
 Network is off unless `local.bash_network` says otherwise. With `true` it goes
 only through the hub's egress proxy on a loopback port (0.11): commands get
@@ -936,9 +949,11 @@ ahub permit <request-id> allow
 
 Use the exact option shown by `ahub tail`; do not approve an unresolved or
 unexpected request. On macOS a waiting request also raises a desktop
-notification that names the peer and, for Kimi and the local worker, the tool,
+notification that names the peer and, for Kimi, Pi and the local worker, the tool,
 never what it would run. An unanswered request is cancelled after `approvals.timeout_s` (default
 120, 30 to 3600) in `.agenthub/config.json`, and the console and log say so.
+Pi and the local worker are told that nobody answered, and two such requests in
+a row end their turn ([Pi/local unanswered approvals](#pilocal-unanswered-approvals)).
 Set `approvals.notify` to `false` to turn notifications off; a hub started
 without a project config file raises none. While Kimi waits for an answer its
 turn is kept alive, so a timeout longer than the inactivity watchdog does not
@@ -1044,7 +1059,8 @@ The daemon waits for shutdown work that must survive termination. Afterward,
 run `ahub status` or `ahub up` and read the project state before restarting
 peers. A stopped daemon does not delete task records or the durable journal.
 Do not kill a native terminal by PID or start a replacement while ownership is
-uncertain.
+uncertain. To stop one headless peer and keep the hub running, use
+`ahub stop <peer>` ([Stop one headless peer](#stop-one-headless-peer)).
 
 Shutdown is bounded: once it begins, a daemon that cannot finish within
 15 seconds exits anyway, and a peer that refuses to stop is logged rather than
@@ -1295,6 +1311,10 @@ runs under the deny-default sandbox, and `hub.log` and `ahub doctor` say so.
 `local.bash_network: "direct"` still works until 0.13.0, and both name it while
 it is set.
 
+0.12.22 closes the name `.git` to the local worker's and Pi's commands at any
+depth: `git init`, `git clone` and `git worktree add` no longer run inside the
+sandbox (the full list is under Install and start).
+
 The 0.7.0 transition stages the verified package and runs a retained
 coordinator from the source tree. It accepts a verified protocol-9 source and
 moves to a protocol-10 target. The source journal, queued envelopes, tasks,
@@ -1345,7 +1365,9 @@ launch or whose terminal the plan could not bind) and what happens to it: resume
 named), reconnecting by itself, restarted as a new session, restarted headless,
 or left offline. `in progress:` repeats what the running hub says keeps it from
 being quiet (busy peers, pending approvals, a peer starting, a budget
-transition); apply waits up to 10 minutes for it. Blockers follow, each with its
+transition; a hub of 0.12.22 or newer also names a task command, completion
+checks or Pi tool calls in flight, ready tasks being released and a Pi that has
+not settled); apply waits up to 10 minutes for it. Blockers follow, each with its
 next action. The choices are `[a] apply` (absent while a blocker stands), `[r]
 refresh`, `[k] end agents`, `[j]` the plan as JSON, `[x] reset a project's hub`
 and `[q] quit`.
@@ -1388,6 +1410,10 @@ and effect receipts and the error, then the choices that `status` lists under
 | `e` | `recovery dispose --stop-and-archive`, after a confirmation and a reason | every unverified project reads as running, stopped or missing |
 | `x` | `e`, then the reset below | as `e` |
 | `w` | follows the runner | a runner holds the operation |
+
+When more than one restoration failed, the second and later peers get
+`f-<peer>`. `s` refreshes the screen, `j` prints the receipt as JSON and `q`
+leaves the operation as it is.
 
 While a runner is only waiting for its source to get quiet (step `prepare`, no
 effect recorded), `c` stops that runner and then aborts. It is offered only for
@@ -1963,8 +1989,9 @@ verified persisted session once. The 60-second retry window rearms when the
 attempt settles; a second exit inside that window stays offline. Missing or
 invalid session history has no fresh fallback; inspect it before running
 `ahub pi`. Active turns/tools, failed startup, a superseded owner, native
-terminal exits, requested shutdown and recovery operations suppress this
-restart. Crash recovery's #66 recorded-session/fresh-start choices are unchanged.
+terminal exits, a requested stop (`ahub stop pi`), requested shutdown and
+recovery operations suppress this restart. Crash recovery's #66
+recorded-session/fresh-start choices are unchanged.
 
 ### Pi/local unanswered approvals
 
@@ -2017,7 +2044,8 @@ its verified terminal binding and uses `peer_stop` for a headless runtime.
 Unknown and already-offline peers are refused with a next action. A recovery
 operation or shutdown holds stop mutations; finish that operation first.
 A peer's concurrent start, stop or permission-mode change must also finish
-before another lifecycle change is admitted.
+before another lifecycle change is admitted, and an upgrade or restart does not
+prepare the hub while a stop is in progress.
 
 A requested stop does not automatically restart a peer. A person or an authorized
 conductor can explicitly start it again; conductor starts remain permitted. Start it with

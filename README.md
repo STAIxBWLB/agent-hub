@@ -33,9 +33,15 @@ bun add -g github:STAIxBWLB/agent-hub#v0.12.21 && ahub setup
 
 The installed commands remain `ahub` and `agent-hub`.
 
-When upgrading an existing project, run `ahub init` to refresh its managed agent
-instructions and `ahub setup` to refresh the Claude plugin. Restart the daemon
-and agent sessions so both load the update.
+To upgrade while hubs are running, run `ahub upgrade` in a terminal. It takes
+the latest release, shows the plan for every running project, applies it on
+one key and follows it: the operation starts the new hub, installs the Claude
+plugin and the global CLI, and restores or restarts the agent sessions as the
+plan says. The [operations guide](docs/operations.md#upgrade-and-crash-recovery)
+has the details, and the one-time start from an older CLI. With no hub running
+there is nothing to carry over: install the new version as above and run
+`ahub setup`. Afterwards run `ahub init` in a project to refresh its managed
+agent instructions.
 
 - [Quickstart](docs/quickstart.md): install, first session, the local worker, the commands of a working day
 - [Operations guide](docs/operations.md): managed launchers, task/review flow, receipts, shutdown and recovery
@@ -100,7 +106,8 @@ only. `--backend dgx` or `--backend mlx` explicitly pins a Pi session's backend.
 Pi connects to an authenticated relay with model aliases `dgx/coding`,
 `dgx/fast`, and `mlx/fast`; upstream gateway credentials stay in the hub.
 Its managed tools use the existing path guards, shell sandbox and terminal
-approval flow. Keep `ahub console` open to approve write/edit/shell operations.
+approval flow. Keep `ahub console` open to approve write/edit/shell operations:
+a request nobody answers expires, and two in a row end Pi's turn.
 Tool-call receipts survive daemon restart; an interrupted operation with an
 unknown outcome must be reconciled before repeating it. Cancelling a Pi turn
 does not automatically hand its task to a cloud peer.

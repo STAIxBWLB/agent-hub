@@ -64,9 +64,9 @@ Area rules live in `docs/agent-notes/`. Before editing a path below, read its no
 - Local worker and sandbox (`docs/agent-notes/local-worker.md`): `src/adapters/local-worker.ts`, `src/local/`, `src/memory/capture.ts`, `src/hub/facts.ts`, `src/hub/permission-mode.ts`.
 - Models (`docs/agent-notes/models.md`): `src/models/`, `src/hub/inference.ts`, `src/omniroute/`, `src/switchyard/`.
 - Task board and hub tools (`docs/agent-notes/tasks.md`): `src/hub/tasks.ts`, `src/hub/board.ts`, `src/hub/routing.ts`, `src/hub/task-sweep.ts`, `src/hub/conductor.ts`, `src/hub/supervision.ts`, `src/hub/hub-tools.ts`, `src/hub/tool-refusal.ts`.
-- Budget (`docs/agent-notes/budget.md`): `src/hub/budget.ts`, `src/cli/statusline-tee.ts`, `src/hub/bus.ts`, `src/hub/delivery-journal.ts`, `src/hub/restart.ts` (pause persistence).
+- Budget (`docs/agent-notes/budget.md`): `src/hub/budget.ts`, `src/hub/context-window.ts`, `src/cli/statusline-tee.ts`, `src/hub/bus.ts`, `src/hub/delivery-journal.ts`, `src/hub/restart.ts` (pause persistence).
 - Daemon and recovery (`docs/agent-notes/daemon.md`): `src/hub/daemon.ts`, `src/hub/control-client.ts`, `src/adapters/claude-channel.ts`, `src/hub/restart.ts`, `src/hub/recovery-store.ts`, `src/hub/snapshots.ts`, `src/hub/manager.ts`, `src/hub/lifecycle.ts`, `src/hub/crash.ts`, `src/cli/setup.ts`, `src/cli/upgrade*.ts`, `src/cli/terminal-recovery.ts`, `src/cli/recovery-package.ts`, `src/cli/facts-hook.ts`, or adding a native peer.
-- Tests (`docs/agent-notes/tests.md`): any test or fake under `test/`, `scripts/check.sh`, `scripts/hang-watch.sh`.
+- Tests (`docs/agent-notes/tests.md`): any test or fake under `test/`, `scripts/check.sh`, `scripts/hang-watch.sh`, `scripts/seeded-check.ts`, `scripts/seeds.json`.
 
 `src/hub/daemon.ts`, `src/cli/main.ts` and `src/cli/launch.ts` wire every area. Before editing any of them, read all notes in `docs/agent-notes/`.
 
