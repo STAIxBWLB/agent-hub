@@ -1357,9 +1357,10 @@ untracked), with at least two real peers attached:
 
 ## Whole-board task progress and dashboard themes (#246)
 
-Live console and dashboard light/dark inspection: **unverified**. Local resource
-admission currently defers on uncovered system mediaanalysisd work; no native
-sessions or model prompts were started for this change.
+Live console and dashboard light/dark inspection: **unverified**. No native
+sessions or model prompts were started for this change. The review pass admitted
+a real dependency install and focused tests, recorded separately from native
+visual/theme qualification.
 
 When admitted, inspect an empty board and a mixed board (approved, waiting,
 working, review and changes requested) at 80x24, 120x40 and 200x60. Confirm the

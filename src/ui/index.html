@@ -161,7 +161,7 @@ async function refreshProjects() {
 function peerOptions(select, ids, first) { const selected = select.value; select.replaceChildren(); const initial = el('option', first); initial.value = ''; select.append(initial); for (const id of ids) { const option = el('option', id); option.value = id; select.append(option); } if (ids.includes(selected)) select.value = selected; }
 function renderTaskProgress(progress) {
   update('task-progress', progress, (target) => {
-  const percent = Math.floor(progress.approvedFraction * 100);
+  const percent = progress.total ? Math.floor(progress.counts.approved * 100 / progress.total) : 0;
   target.append(el('strong', `${progress.counts.approved}/${progress.total} approved (${percent}%)`));
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 100 12'); svg.setAttribute('preserveAspectRatio', 'none'); svg.setAttribute('aria-hidden', 'true');
   let x = 0;

@@ -905,11 +905,12 @@ describe("whole-board task progress (#246)", () => {
     expect(screen[0]).not.toContain('tmp | tasks');
   });
   test("partial boards never show a full bar or 100 percent, and counts drop only from the end", () => {
-    for (const [done, total] of [[1, 3], [39, 40], [199, 200]]) {
+    for (const [done, total] of [[1, 3], [39, 40], [199, 200], [29, 100]]) {
       const s = state(true); s.panel = 3; s.tasksKnown = true;
       s.tasks = Array.from({ length: total! }, (_, id) => ({ id, state: id < done! ? "approved" : "proposed", title: "task" }));
       const text = paint(renderConsoleLines(s, 200, 60, NOW)[2]!, false);
       expect(text).not.toContain("[####################]"); expect(text).not.toContain("100%");
+      if (total === 100) expect(text).toContain("29%");
       if (total === 3) expect(text).toContain("[######..............] 33%");
     }
     const s = state(true); s.panel = 3; s.tasks = ["approved", "proposed", "in_progress", "in_review", "changes_requested"].flatMap((state, offset) => Array.from({ length: 10 }, (_, i) => ({ id: offset * 10 + i, state, title: "task" })));

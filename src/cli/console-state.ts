@@ -587,8 +587,8 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     const stages = new Map(progress.stages.map(stage => [stage.id, stage]));
     const rowsOf = head ? table(head, data.map((row, i) => cells(s, row, i === at, now, stages)), columns) : undefined;
     if (s.panel === 3) {
-      const done = Math.floor(progress.approvedFraction * 20);
-      const main = s.tasksKnown === false && !progress.total ? "tasks loading..." : `${progress.counts.approved}/${progress.total} approved [${"#".repeat(done)}${".".repeat(20 - done)}] ${Math.floor(progress.approvedFraction * 100)}%`;
+      const done = progress.total ? Math.floor(progress.counts.approved * 20 / progress.total) : 0;
+      const main = s.tasksKnown === false && !progress.total ? "tasks loading..." : `${progress.counts.approved}/${progress.total} approved [${"#".repeat(done)}${".".repeat(20 - done)}] ${progress.total ? Math.floor(progress.counts.approved * 100 / progress.total) : 0}%`;
       const known = s.tasksKnown !== false || progress.total > 0;
       const parts = [span(main, known ? "success" : "attention")];
       for (const [label, value, tone] of [["changes", progress.counts.changes_requested, "failure"], ["review", progress.counts.in_review, "attention"], ["waiting", progress.counts.waiting, "attention"], ["in progress", progress.counts.in_progress, undefined], ["proposed", progress.counts.proposed, undefined]] as const) {
