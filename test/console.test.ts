@@ -833,6 +833,13 @@ describe("console layout (#213)", () => {
 
 
 describe("whole-board task progress (#246)", () => {
+  test("an unknown empty panel labels loading without fabricated state counts", () => {
+    const s = initialConsoleState(true); s.panel = 3;
+    const summary = renderConsole(s, 80, 24)[2]!;
+    expect(summary).toBe('tasks loading...');
+    s.tasksKnown = true;
+    expect(renderConsole(s, 80, 24)[2]).toContain('0/0 approved');
+  });
   test("a refused stream board read exposes an error and never confirms an empty board", async () => {
     const f = fixture(); const original = f.client.request;
     f.client.request = async msg => msg.op === "hub_task_list" ? { ok: false, error: "board refused" } as any : original(msg);

@@ -584,10 +584,11 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     if (s.panel === 3) {
       const done = Math.round(progress.approvedFraction * 20);
       const main = s.tasksKnown === false && !progress.total ? "tasks loading..." : `${progress.counts.approved}/${progress.total} approved [${"#".repeat(done)}${".".repeat(20 - done)}] ${Math.round(progress.approvedFraction * 100)}%`;
-      const parts = [span(main, "success")];
+      const known = s.tasksKnown !== false || progress.total > 0;
+      const parts = [span(main, known ? "success" : "attention")];
       for (const [label, value, tone] of [["proposed", progress.counts.proposed, undefined], ["waiting", progress.counts.waiting, "attention"], ["in progress", progress.counts.in_progress, undefined], ["review", progress.counts.in_review, "attention"], ["changes", progress.counts.changes_requested, "failure"]] as const) {
         const extra = `  ${label} ${value}`;
-        if (Bun.stringWidth(parts.map(p => p.text).join("") + extra) <= columns) parts.push(span(extra, tone));
+        if (known && Bun.stringWidth(parts.map(p => p.text).join("") + extra) <= columns) parts.push(span(extra, tone));
       }
       lines.push(fitLine(parts, columns));
     }

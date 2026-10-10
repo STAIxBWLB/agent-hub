@@ -111,7 +111,7 @@ function resetView(id, instance) {
   signatures.clear(); $('stream').replaceChildren(); empty($('stream'), managerMode ? 'Select a running project...' : 'Waiting for hub activity...');
   if (streamFilter) { streamFilter = ''; for (const child of $('stream-filters').children) child.setAttribute('aria-pressed', 'false'); }
   $('stream-empty').hidden = true; $('task-filter').value = '';
-  for (const [id, text] of [['peers','No project selected.'],['tasks','No project selected.'],['permissions','No project selected.'],['budget','No project selected.']]) { $(id).replaceChildren(); empty($(id), text); }
+  for (const [id, text] of [['peers','No project selected.'],['tasks','No project selected.'],['task-progress','No project selected.'],['permissions','No project selected.'],['budget','No project selected.']]) { $(id).replaceChildren(); empty($(id), text); }
   $('peer-count').textContent = ''; $('task-count').textContent = ''; $('permission-count').textContent = ''; $('project-context').textContent = '';
   notice('');
   draftChoicesPending = managerMode && Boolean(selectedProjectId);
