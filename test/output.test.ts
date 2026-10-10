@@ -201,6 +201,7 @@ describe("one-shot output", () => {
     const contextAt = header.findIndex(cell => cell.text.trim() === "CONTEXT");
     const linkAt = header.findIndex(cell => cell.text.trim() === "LINK");
     expect(contextAt).toBeGreaterThan(0); expect(linkAt).toBeGreaterThan(0);
+    for (const peer of ["claude", "codex", "kimi", "pi"]) expect(rendered.some(line => line[0]?.text.trim() === peer)).toBe(true);
     const physical = rendered.slice(headerAt + 1).filter(line => line.length === header.length);
     expect(physical.filter(line => line[linkAt]?.text.trim() === "attached")).toHaveLength(3);
     expect(physical.some(line => line[contextAt]?.text.includes("80% 14s ago"))).toBe(true);

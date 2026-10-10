@@ -39,7 +39,7 @@ function rows(head: string[], data: Span[][], columns?: number, details?: Span[]
     return interleave(table(head, physical, columns, [size]), lengths, wrap(head[0]!, size, 0).length);
   }
   const flexible = head.includes("TITLE") ? head.indexOf("TITLE") : head.length - 1;
-  const protectedColumns = new Set(head.map((h, i) => ["STATE", "MODE", "LEVEL", "LINK", "CLASS"].includes(h) ? i : -1));
+  const protectedColumns = new Set(head.map((h, i) => ["PEER", "STATE", "MODE", "LEVEL", "LINK", "CLASS"].includes(h) ? i : -1));
   const words = head.map((_, i) => Math.max(...data.flatMap(row => row[i]!.text.split(/\s+/).map(width))));
   const minimum = head.map((h, i) => Math.max(width(h), protectedColumns.has(i) ? words[i]! : 0,
     i === flexible && ["TITLE", "CONTEXT"].includes(h) ? Math.min(natural[i]!, 12) : 0));

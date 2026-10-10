@@ -21,26 +21,28 @@ After:
 agent-hub 0.12.22  pid 25893  control 127.0.0.1:12345
 /project/agent-hub
 
-PEER  STATE  MODE             LINK        Q  PAUSE  QUOTA   MODEL   CONTEXT
-clau  idle   -                attached    -  -      5h 23%  -       80% 14s ago
-de                                                  in              claude_statu
-                                                    10m,            sline
-                                                    week
-                                                    49% in
-                                                    5d09h
-code  busy   -                attached    2  user   -       dgx/qw  34% 1m ago
-x                                                           en-cod  codex_token_
-                                                            er-lar  usage
-                                                            ge
+PEER    STATE  MODE             LINK        Q  PAUSE  QUOTA  MODEL  CONTEXT
+claude  idle   -                attached    -  -      5h     -      80% 14s ago
+                                                      23%           claude_statu
+                                                      in            sline
+                                                      10m,
+                                                      week
+                                                      49%
+                                                      in
+                                                      5d09h
+codex   busy   -                attached    2  user   -      dgx/q  34% 1m ago
+                                                             wen-c  codex_token_
+                                                             oder-  usage
+                                                             large
   settling  8d03b496, 3325f7a0
   held  by needs_review abcdef12; ahub queue resolve
       abcdef12-1111-2222-3333-444444444444 --action completed|retry|discard
       --reason <text>
   paused  manual
-kimi  idle   ask-when-needed  attached    -  -      -       -       25% 2m ago
+kimi    idle   ask-when-needed  attached    -  -      -      -      25% 2m ago
                                                                     acp_usage_up
                                                                     date
-pi    idle   -                tools-only  -  -      -       -       unknown
+pi      idle   -                tools-only  -  -      -      -      unknown
   tools-only  messages wait for hub_inbox; for pushes restart Claude with ahub
       claude
 
