@@ -196,6 +196,9 @@ export function writeConfigSetting(cwd: string, stateDir: string, def: SettingDe
   // Nothing to change: no file is created or rewritten, and the undo record keeps the last real write.
   const held = valueAt(doc, def.path);
   if (value === null ? held === undefined : same(held, value)) return false;
+  // The loader gives a project that has any config file its project defaults (snapshots, limits, the budget relay,
+  // the approval notice). A settings write must not be what silently makes the first one.
+  if (before === null && !existsSync(join(cwd, ".agenthub", "config.json"))) throw new Error("this project has no .agenthub/config.json: run ahub init first. A first config file also turns on the project defaults (snapshots, limits, the budget relay), which a settings write does not do for you");
   let node = doc;
   const trail: [Record<string, unknown>, string][] = [];
   for (const part of def.path.slice(0, -1)) {

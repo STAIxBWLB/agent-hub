@@ -997,7 +997,9 @@ ahub ui --settings                 # dashboard with a 15-minute settings session
   file was edited since, and when it would put a stored never-ask back (set it
   again with its confirmation instead). A mode changed for the running hub is
   not a file: set it again instead. Setting a value it already has, or
-  removing one that is not set, writes nothing.
+  removing one that is not set, writes nothing. A project with no
+  `.agenthub/config.json` gets no first config file from a settings write
+  (any config file turns the project defaults on): run `ahub init` first.
 - A project initialised before 0.12.23 has no `.gitignore` line for
   `.agenthub/routing.local.toml`: run `ahub init` again, or add it. A
   `permission_modes` value is read only from a file git confirms nobody

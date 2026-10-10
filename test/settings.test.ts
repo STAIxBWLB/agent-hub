@@ -567,6 +567,12 @@ test("review of #290: a write that changes nothing writes nothing, a failed writ
   expect(existsSync(`${local}.${process.pid}.tmp`)).toBe(false); // the stale temp file went with the failed attempt, so the next write is not stuck on it
   expect((await rig.client.request({ t: "settings_undo" })).text).toContain("coordination: put back to");
   expect(JSON.parse(text(local)!)).toEqual({ research: { enabled: true } });
+  // A project with no config file at all runs on the built-in defaults; a settings write does not create its first
+  // config file, because any config file switches the project defaults on at the next start.
+  const blank = project(); rmSync(blank.file("config.json"));
+  expect(() => writeConfigSetting(blank.cwd, blank.stateDir, def("research.enabled"), true, (scratch) => loadConfig(scratch))).toThrow("run ahub init first");
+  expect(text(blank.file("config.local.json"))).toBeNull();
+  expect(writeRoutingSetting(blank.cwd, blank.stateDir, def("routing.stay_switch"), "shadow")).toBeDefined(); // the routing overlay has no such effect
   // A repository whose git cannot answer: unknown is not untracked, so nothing is written.
   const p = project();
   writeFileSync(join(p.cwd, ".git"), "gitdir: /nonexistent/elsewhere\n");
@@ -576,6 +582,7 @@ test("review of #290: a write that changes nothing writes nothing, a failed writ
   const outer = realpathSync(mkdtempSync(join(tmpdir(), "ahub-settings-outer-"))), inner = join(outer, "nested", "project");
   writeFileSync(join(outer, ".git"), "gitdir: /nonexistent/elsewhere\n");
   mkdirSync(join(inner, ".agenthub"), { recursive: true });
+  writeFileSync(join(inner, ".agenthub", "config.json"), SHARED);
   expect(() => writeConfigSetting(inner, join(inner, "state"), def("research.enabled"), true, (scratch) => loadConfig(scratch))).toThrow("git could not confirm");
   expect(existsSync(join(inner, ".agenthub", "config.local.json"))).toBe(false);
 }, 20_000);
