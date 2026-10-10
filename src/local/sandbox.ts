@@ -1,8 +1,9 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, type Dirent } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { realPath } from "../hub/project.ts";
+import { hubGitSync } from "../hub/git.ts";
 import { denyRegexes, hubWriteRegexes, sbplString } from "./deny.ts";
 
 const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
@@ -40,10 +41,45 @@ function developerDir(): string | undefined {
 
 /** A submodule or worktree keeps its git dir outside the project; git needs it, minus the parts that execute or reconfigure. */
 function externalGitDirs(root: string): string[] {
-  const out = spawnSync("git", ["-C", root, "rev-parse", "--absolute-git-dir", "--git-common-dir"], { encoding: "utf8" });
+  // Runs in the hub process, outside the sandbox: the hardened helper keeps the repo's config from naming a program (#281).
+  const out = hubGitSync(["-C", root, "rev-parse", "--absolute-git-dir", "--git-common-dir"], { encoding: "utf8" });
   if (out.status !== 0) return [];
   const dirs = out.stdout.trim().split("\n").map((d) => resolve(root, d));
   return [...new Set(dirs)].filter((d) => !d.startsWith(`${root}/`));
+}
+
+/**
+ * The project's submodule git directories live under the common dir's `modules/` tree (the worktree case included:
+ * it is the main repo's `.git/modules`). Returns the modules root and every directory entry that must not be
+ * renamed, replaced, symlinked or recreated: each discovered git dir (a directory holding HEAD and config) and
+ * every component between it and the modules root (#281). Discovered in the hub process, outside the sandbox.
+ */
+function moduleGitDirs(root: string): { root: string; entries: string[] } | undefined {
+  const out = hubGitSync(["-C", root, "rev-parse", "--git-common-dir"], { encoding: "utf8" });
+  if (out.status !== 0) return undefined;
+  const modulesRoot = join(resolve(root, out.stdout.trim()), "modules");
+  const dirs: string[] = [];
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 8) return; // submodules do not nest deeper in practice; the regex rules still cover the names
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return; // no modules tree (no submodules): nothing to discover
+    }
+    const names = new Set(entries.map((e) => e.name));
+    if (names.has("HEAD") && names.has("config")) {
+      dirs.push(dir);
+      const nested = join(dir, "modules");
+      if (names.has("modules")) walk(nested, depth + 1); // a submodule of a submodule
+      return;
+    }
+    for (const e of entries) if (e.isDirectory()) walk(join(dir, e.name), depth + 1);
+  };
+  walk(modulesRoot, 0);
+  const entries = new Set<string>([modulesRoot]);
+  for (const d of dirs) for (let p = d; p.length > modulesRoot.length; p = dirname(p)) entries.add(p);
+  return { root: modulesRoot, entries: [...entries] };
 }
 
 /** The system directories a deny-default profile lets commands read and run from: dyld, frameworks, toolchains. */
@@ -74,6 +110,7 @@ export function profile(cwd: string, network: SandboxNetwork, readAllow: string[
   const inHome = (p: string) => (p.startsWith("~/") ? join(home, p.slice(2)) : p);
   const root = realPath(cwd);
   const gitDirs = externalGitDirs(root);
+  const moduleGit = moduleGitDirs(root);
   const creds = [".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube", ".docker", ".netrc", ".npmrc", ".omniroute", ".claude", ".codex", ".kimi-code", "Library/Keychains"];
   const dev = developerDir();
   const readable = [root, ...HOME_READABLE.map((p) => join(home, p)), ...readAllow.map(inHome), ...gitDirs, ...(dev ? [dev] : [])];
@@ -104,9 +141,10 @@ export function profile(cwd: string, network: SandboxNetwork, readAllow: string[
     `(allow file-write* (subpath ${q(root)}) (regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`,
     // Inside cwd: nothing that runs later outside the sandbox, nothing that reconfigures the hub. The .git and
     // .agenthub patterns tolerate the code points HFS+ ignores in every segment, the .git name itself is refused
-    // at any depth (creation, rename, symlink, gitfile), and the external git dirs get folded hooks/config rules
-    // (#270). The cost: git init, clone and worktree add no longer run inside the sandbox.
-    `(deny file-write* ${hubWriteRegexes(root, gitDirs).join(" ")})`,
+    // at any depth (creation, rename, symlink, gitfile), a submodule git dir's config and hooks under
+    // .git/modules/ are refused at the depth submodules nest (#281), and the external git dirs get folded
+    // hooks/config rules (#270). The cost: git init, clone and worktree add no longer run inside the sandbox.
+    `(deny file-write* ${hubWriteRegexes(root, gitDirs, moduleGit).join(" ")})`,
     `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join(home, c))})`).join(" ")})`,
     `(deny file-read* file-write* ${denyRegexes(root, deny).join(" ")})`,
     // Python's own CA bundle (certifi, which pip vendors too): pip, requests and httpx read it instead of the system's (#64).
