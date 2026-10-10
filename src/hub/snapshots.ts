@@ -1,10 +1,10 @@
 import { Database } from "bun:sqlite";
-import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdtempSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { childEnv } from "./child-process.ts";
 import type { Touch } from "./conflicts.ts";
+import { hubGitSync } from "./git.ts";
 
 /**
  * Per-turn workspace snapshots (issue #33): git tree objects written through a copy of the index, so the user's index
@@ -15,7 +15,7 @@ import type { Touch } from "./conflicts.ts";
  * of an older turn says so. Refs under refs/agenthub/ would keep them, at the cost of showing up in the user's repo.
  */
 const git = (top: string, args: string[], env: Record<string, string> = {}) =>
-  spawnSync("git", ["-C", top, ...args], {
+  hubGitSync(["-C", top, ...args], {
     encoding: "utf8",
     env: { ...childEnv(process.env), ...env },
     // These run inside the bus's state change: a hung git (a huge new directory, a stuck filter) must not freeze the hub.

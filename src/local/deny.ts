@@ -1,4 +1,4 @@
-import { basename, sep } from "node:path";
+import { basename, dirname, sep } from "node:path";
 
 /**
  * The one denylist. tools.ts checks paths against it, sandbox.ts turns it into seatbelt rules, capture.ts keeps
@@ -50,13 +50,23 @@ const hfsFoldedName = (name: string) => `${HFS_IGNORABLE}*${[...name].map((c) =>
  * rename, symlink or gitfile, and `config` and `hooks` directly under it are folded too; the cost is that
  * `git init`, `git clone` and `git worktree add` no longer run inside the sandbox. `commondir` is refused at any
  * depth below a `.git` and below each external git dir: that is where git keeps it for linked worktrees and
- * submodules. An external git dir's `config`/`hooks` rules cover only its own children (plus the hooks
- * directory's contents): at any depth they would deny refs named `config` or `hooks` in a worktree or submodule
- * project (`git branch fix/config` fails on `.git/logs/refs/heads/fix/config`). Every pattern keeps its `^`
- * anchor (an unanchored starred alternation does not match in this engine) and no folded literal contains the
- * root: an SBPL string literal dies at 1024 bytes ("Error reading string"), which a long project path would trip.
+ * submodules. A submodule's git dir under `.git/modules/` gets the same `config`/`hooks` refusal at whatever depth
+ * submodules nest (a nested one lives under `.git/modules/<a>/modules/<b>`, #281), anchored at the discovered
+ * modules root so a directory named `refs`, `config` or `hooks` ABOVE the project neither disables the rule nor
+ * trips it; a `/refs/` or `/logs/` segment below the root keeps a branch or tag named `config` or `hooks` writable
+ * (the round-3 regression of #277), at the price of leaving a submodule whose own path holds a `refs` or `logs`
+ * segment unprotected. The basenames are folded; a folded INTERMEDIATE component on HFS+ (a spelling of `modules`)
+ * is a known residual, the same one the external git dir rules carry. The directory entries above those files are
+ * protected as the `.git` name is: the discovered git dirs, the modules root and every component in between are
+ * refused as targets (rename, replace, symlink, recreate). An external git dir's `config`/`hooks` rules cover only
+ * its own children (plus the hooks directory's contents): at any depth they would deny refs named `config` or
+ * `hooks` in a worktree or submodule project (`git branch fix/config` fails on `.git/logs/refs/heads/fix/config`).
+ * Every pattern keeps its `^` anchor (an unanchored starred alternation does not match in this engine) and no
+ * folded literal contains the root: an SBPL string literal dies at 1024 bytes ("Error reading string"), which a
+ * long project path would trip. ponytail: the modules rules do contain the (plain) modules root; a project path
+ * over roughly 600 bytes with submodules would exceed the limit — fold the root's segments if one ever shows up.
  */
-export function hubWriteRegexes(root: string, gitDirs: string[] = []): string[] {
+export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit?: { root: string; entries: string[] }): string[] {
   const git = hfsFoldedName(".git");
   const re = (s: string) => `(regex ${sbplString(s)})`;
   const external = gitDirs.flatMap((d) => [
@@ -64,12 +74,24 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = []): string[] 
     `(subpath ${sbplString(`${d}/hooks`)})`,
     `(require-all (subpath ${sbplString(d)}) ${re(`^.*/${hfsFoldedName("commondir")}$`)})`,
   ]);
+  const modules = moduleGit
+    ? [
+        // Every name matches whole components only: `(.*/)?` forces a boundary, so a submodule named `catalogs`
+        // or `prefs` keeps the refusal and one named `webhooks` keeps its ordinary writes (#281 round 2).
+        `(require-all ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?(refs|logs)/`)}))`,
+        `(require-all ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?(refs|logs)/`)}))`,
+        // A submodule git dir as a directory entry: no rename, replace, symlink or recreate. The basename is
+        // folded (HFS+ opens the folded spelling as the real entry); the plain prefix is the path as discovered.
+        ...moduleGit.entries.map((d) => re(`^${sbplEscape(dirname(d))}/${hfsFoldedName(basename(d))}$`)),
+      ]
+    : [];
   return [
     `(require-all (subpath ${sbplString(root)}) ${re(`^.*/${hfsFoldedName(".agenthub")}(/|$)`)})`,
     re(`^.*/${git}$`),
     re(`^.*/${git}/${hfsFoldedName("config")}$`),
     re(`^.*/${git}/${hfsFoldedName("hooks")}(/|$)`),
     `(require-all ${re(`^.*/${git}/.*$`)} ${re(`^.*/${hfsFoldedName("commondir")}$`)})`,
+    ...modules,
     ...external,
   ];
 }

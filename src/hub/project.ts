@@ -2,6 +2,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { hubGitSync } from "./git.ts";
 
 const canonical = (path: string): string => {
   const absolute = resolve(path);
@@ -39,7 +40,7 @@ export function realPath(path: string): string {
 }
 
 function gitRoot(dir: string): string | undefined {
-  const result = spawnSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
+  const result = hubGitSync(["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
   if (result.status !== 0) return undefined;
   const root = result.stdout.trim();
   return root ? canonical(root) : undefined;
