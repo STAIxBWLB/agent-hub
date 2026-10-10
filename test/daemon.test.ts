@@ -77,13 +77,8 @@ async function dashboardClient(console_: ControlClient) {
   return { origin, post };
 }
 
-/** A fake Claude Code: an MCP client that spawns the channel server and records channel pushes. `channelEvidence`: AGENTHUB_CHANNEL, "1" as `ahub claude` sets it, null for none (#205). */
-async function fakeClaude(stateDir: string, channelEvidence: string | null = "1") {
-  const client = new Client({ name: "fake-claude", version: "0" }, { capabilities: {} });
-  const channel: any[] = [];
-  client.fallbackNotificationHandler = async (n) => void channel.push(n);
-  const env: Record<string, string> = { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: stateDir };
-  if (channelEvidence === null) delete env.AGENTHUB_CHANNEL; else env.AGENTHUB_CHANNEL = channelEvidence;
+/** MCP initialization does not imply that the plugin has processed its control welcome (#287). */
+async function connectPlugin(client: Client, env: Record<string, string>, peer: string, expectConnected = true) {
   const transport = new StdioClientTransport({
     command: "bun",
     args: [join(ROOT, "plugins/agent-hub/server.js")], // the shipped bundle, not the source
@@ -94,11 +89,22 @@ async function fakeClaude(stateDir: string, channelEvidence: string | null = "1"
   transport.stderr!.on("data", (chunk) => { diagnostics += chunk.toString(); });
   await client.connect(transport);
   cleanup.push(() => client.close());
-  // MCP initialization and daemon idle both precede the channel receiving welcome (#287).
   const waitConnected = (count = 1) => until(
-    () => diagnostics.split('[agent-hub] connected to hub as "claude"').length - 1 >= count,
-    `channel welcome ${count}`,
+    () => diagnostics.split(`[agent-hub] connected to hub as "${peer}"`).length - 1 >= count,
+    `channel welcome ${peer} ${count}`,
   );
+  // Opt out only when the test deliberately exercises a refused/standing-by connection.
+  if (expectConnected) await waitConnected();
+  return waitConnected;
+}
+/** A fake Claude Code: an MCP client that spawns the channel server and records channel pushes. `channelEvidence`: AGENTHUB_CHANNEL, "1" as `ahub claude` sets it, null for none (#205). */
+async function fakeClaude(stateDir: string, channelEvidence: string | null = "1", expectConnected = true) {
+  const client = new Client({ name: "fake-claude", version: "0" }, { capabilities: {} });
+  const channel: any[] = [];
+  client.fallbackNotificationHandler = async (n) => void channel.push(n);
+  const env: Record<string, string> = { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: stateDir };
+  if (channelEvidence === null) delete env.AGENTHUB_CHANNEL; else env.AGENTHUB_CHANNEL = channelEvidence;
+  const waitConnected = await connectPlugin(client, env, "claude", expectConnected);
   return { client, channel, waitConnected };
 }
 
@@ -208,7 +214,7 @@ test("a claude session without pushes never takes the peer from one with them: i
   const { stateDir, daemon, console_ } = await hub();
   const flagged = await fakeClaude(stateDir);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "channel attach");
-  const plain = await fakeClaude(stateDir, null);
+  const plain = await fakeClaude(stateDir, null, false);
   await Bun.sleep(1500); // past the plain side's first retry
   expect((daemon.bus.peers.get("claude") as any).pullOnly).toBe(false);
   await console_.request({ t: "send", body: "for the channel session", to: ["claude"] });
@@ -503,9 +509,7 @@ test("a second session attached as the same peer wins, and the replaced one stan
   const { stateDir, daemon, events } = await hub();
   const first = await fakeClaude(stateDir);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "first attach");
-  await first.waitConnected();
   const second = await fakeClaude(stateDir);
-  await second.waitConnected();
   await until(() => events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline").length === 1, "replacement");
   await Bun.sleep(2500); // past the replaced side's first retries: it must not fight for a peer someone holds
   expect(events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline")).toHaveLength(1);
@@ -600,7 +604,7 @@ test("the channel server exits when its host goes away and does not retry a hub 
   writeFileSync(join(stateDir, "status.json"), JSON.stringify({ controlPort: fake.port, protocol: PROTOCOL, cwd: ROOT }));
   writeFileSync(join(stateDir, "control-token"), "t");
 
-  const { client } = await fakeClaude(stateDir);
+  const { client } = await fakeClaude(stateDir, "1", false);
   await until(() => hellos === 1, "first hello");
   await Bun.sleep(2500);
   expect(hellos).toBe(1);
@@ -784,13 +788,11 @@ test("task tools from every surface: Claude plugin, a tools-role client acting f
 
   // the same bundle in tools mode, as Kimi or Codex would run it
   const kimiTools = new Client({ name: "fake-kimi-mcp", version: "0" }, { capabilities: {} });
-  await kimiTools.connect(new StdioClientTransport({ command: "bun", args: [join(ROOT, "plugins/agent-hub/server.js")], env: { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: first.stateDir, AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: "kimi" }, stderr: "ignore" }));
-  cleanup.push(() => kimiTools.close());
+  await connectPlugin(kimiTools, { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: first.stateDir, AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: "kimi" }, "kimi");
   expect(kimiTools.getServerCapabilities()?.experimental).toBeUndefined(); // no channel in tools mode
   expect((await kimiTools.listTools()).tools.map((t) => t.name)).not.toContain("hub_inbox");
   expect(kimiTools.getInstructions()).toContain("verifier: run the checks");
   const call = async (name: string, args: unknown) => ((await kimiTools.callTool({ name, arguments: args as any })) as any).content[0].text as string;
-  for (let i = 0; i < 50 && (await call("hub_task_list", {})).startsWith("hub is not running"); i++) await Bun.sleep(50);
   expect(await call("hub_task_accept", { id: 1 })).toBe("task #1: in_progress, owner kimi, reviewer claude"); // attributed to kimi
   expect(await call("hub_review", { id: 1, verdict: "approved" })).toMatch(/^error: .*only its reviewer \(claude\)/);
   expect(await call("hub_task_done", { id: 1, summary: "doc written" })).toContain("in_review");
@@ -832,10 +834,8 @@ test("a note from one peer rides on the others' next delivery, never its own; a 
   kimi.deliver = (envs, deliveryId) => ((toKimi += envs.map((e) => e.body).join("\n")), deliver(envs, deliveryId));
 
   const kimiTools = new Client({ name: "fake-kimi-mcp", version: "0" }, { capabilities: {} });
-  await kimiTools.connect(new StdioClientTransport({ command: "bun", args: [join(ROOT, "plugins/agent-hub/server.js")], env: { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: "kimi" }, stderr: "ignore" }));
-  cleanup.push(() => kimiTools.close());
+  await connectPlugin(kimiTools, { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_MODE: "tools", AGENTHUB_PEER_ID: "kimi" }, "kimi");
   const call = async (name: string, args: unknown) => ((await kimiTools.callTool({ name, arguments: args as any })) as any).content[0].text as string;
-  for (let i = 0; i < 50 && (await call("hub_task_list", {})).startsWith("hub is not running"); i++) await Bun.sleep(50);
 
   expect(await call("hub_remember", { title: "WAL mode", text: "locks the test db", kind: "fail" })).toBe("saved to shared memory; the other agents get it with their next message");
   await Bun.sleep(60);
@@ -1587,9 +1587,8 @@ test("limits: a value that is not a number falls back to the project default, wi
 // issue #39: per-peer hub-tool capabilities, enforced by the daemon, and a permission only the console can answer.
 test("capabilities: a peer without one is refused that tool and told why; unlisted peers keep everything", async () => {
   const { stateDir, daemon } = await hub({ capabilities: { claude: ["propose"] } });
-  const { client, waitConnected } = await fakeClaude(stateDir);
+  const { client } = await fakeClaude(stateDir);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
-  await waitConnected();
   const call = async (name: string, args: Record<string, unknown>) => ((await client.callTool({ name, arguments: args })) as { content: { text: string }[] }).content[0]!.text;
   expect(await call("hub_task_propose", { title: "mine", class: "implement", owner: "claude" })).toContain("task #1");
   expect(await call("hub_task_propose", { title: "theirs", class: "implement", owner: "kimi" })).toContain('claude may not hand tasks to other peers (no "assign" in capabilities.claude');
@@ -1614,9 +1613,8 @@ test("capabilities: a listed peer whose value is not a list gets none, and hub.l
 // issue #70: model-written owners and ids are settled before anything reaches the board.
 test("hub_task_propose: an owner that is not a peer id is refused and creates no task; null and empty mean none", async () => {
   const { stateDir, daemon } = await hub({ capabilities: { claude: ["propose"] } });
-  const { client, waitConnected } = await fakeClaude(stateDir);
+  const { client } = await fakeClaude(stateDir);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
-  await waitConnected();
   const call = async (name: string, args: Record<string, unknown>) => ((await client.callTool({ name, arguments: args })) as { content: { text: string }[] }).content[0]!.text;
   expect(await call("hub_task_propose", { title: "x", class: "implement", owner: ["codex"] })).toContain('owner must be a peer id, not ["codex"]');
   expect(JSON.parse(await call("hub_task_list", {}))).toHaveLength(0); // nothing reached the board

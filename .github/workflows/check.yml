@@ -21,7 +21,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: check-${{ github.ref }}
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.timing_runs == '20' && 'macos-timing' || 'check' }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

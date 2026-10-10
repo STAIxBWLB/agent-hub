@@ -381,7 +381,7 @@ test("a busy on-device slot sends the screen to the campus gateway; off campus i
   expect(device.requests).toHaveLength(0);
 
   const off = gateway(() => ({ content: "clear" }), true);
-  const offDeps = { omni: off.omni, onCampus: () => off.omni.onCampus(), fixedModel: () => "m", device: async () => handle };
+  const offDeps = { omni: off.omni, onCampus: () => off.omni.onCampus(), fixedModel: () => "m", device: async () => handle, timeoutMs: 2000 };
   asks.length = 0;
   busyFor = 30;
   expect(await screenPii("fix the parser", offDeps)).toMatchObject({ label: "clear" });
@@ -435,9 +435,10 @@ test("a device that fails or is still loading hands over to the campus gateway w
   cleanup.push(device.stop);
   const released: number[] = [];
   const handle = { url: device.url, model: "agenthub-fast", acquire: async () => () => void released.push(1) };
-  // Use the production deadline: CI recorded 519 ms for a nominal 300 ms response under a 400 ms limit (#287).
-  // Hold the answer until the fallback decision instead of guessing a delay between the two deadlines.
-  const campus = { omni: on.omni, onCampus: () => on.omni.onCampus(), fixedModel: () => "m", device: async () => handle };
+  // CI recorded a timeout verdict at 519 ms under a 400 ms deadline, not a 519 ms response (#287).
+  // Hold the answer until the fallback decision: a 2 s budget gives the device 1.2 s and leaves 800 ms
+  // for the released response or gateway round trip, rather than the original 100 ms scheduler margin.
+  const campus = { omni: on.omni, onCampus: () => on.omni.onCampus(), fixedModel: () => "m", device: async () => handle, timeoutMs: 2000 };
   const offCampus = { ...campus, omni: off.omni, onCampus: async () => {
     const available = await off.omni.onCampus();
     releaseAnswer?.(); // reached only after the device's share; off campus must still await its answer
