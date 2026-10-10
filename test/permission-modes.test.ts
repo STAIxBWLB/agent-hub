@@ -225,7 +225,7 @@ for (const peer of ["pi", "local"]) test(`${peer} scoped edit grants exclude eve
   rig.daemon.bus.tap(event => { if (event.t === "envelope" && event.env.from === peer) answers.push(event.env.body); });
   const pi = rig.daemon.bus.peers.get("pi") as PiPeer | undefined;
   const call = async (name: string, input: Record<string, string>) => {
-    if (peer === "pi") { const launch = pi!.tuiLaunch!; return fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ name, args: input, toolCallId: crypto.randomUUID() }) }).then(r => r.json() as Promise<any>); }
+    if (peer === "pi") { const launch = pi!.tuiLaunch!; return fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ name, args: input, toolCallId: crypto.randomUUID(), sessionId: pi!.recoveryMetadata().sessionId, generation: 0 }) }).then(r => r.json() as Promise<any>); }
     tool = name; args = input; const before = answers.length;
     rig.daemon.bus.publish(newEnvelope("user", `operation ${before}`, { to: [peer], priority: "important" }));
     await until(() => answers.length > before); return { text: answers.at(-1) };
@@ -331,7 +331,7 @@ test("Pi mode grants edits once, keeps shell on the console, and ask restores th
   const pending: any[] = [];
   rig.client.onPush = value => { if (value.t === "permission") pending.push(value); };
   rig.client.send({ t: "tail" });
-  const call = (name: string, args: object) => fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ name, args, toolCallId: crypto.randomUUID() }) }).then(r => r.json() as Promise<any>);
+  const call = (name: string, args: object) => fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ name, args, toolCallId: crypto.randomUUID(), sessionId: pi.recoveryMetadata().sessionId, generation: 0 }) }).then(r => r.json() as Promise<any>);
   await rig.mode("pi", "ask-when-needed");
   expect((await call("write", { path: "edit.txt", content: "changed" })).failed).toBe(false);
   expect(pending).toHaveLength(0);
