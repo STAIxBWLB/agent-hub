@@ -1875,7 +1875,11 @@ was pending, so a batch of parallel requests does not stop a worker whose
 person is answering; a grant served from the always-allow cache or a permission
 mode is not an answer and does not reset the count. A new turn also resets it. The turn ends
 through the same abort path an execution-budget stop uses: Pi stays attached
-and the sender is told the approval reason. A Pi whose extension cannot abort
+and the sender is told the approval reason. Supported Pi and local settle that
+delivery after reporting the reason, so the next queued message runs without
+an operator release. Pi clears turn-only approval state at settlement; the
+person's idle `!command` remains usable and a later failure keeps its own reason.
+A Pi whose extension cannot abort
 a turn (an older hub extension or a runtime without native abort support) goes
 offline instead. Inspect prior work, restart with `ahub pi`, find the held
 delivery with `ahub queue list --peer pi`, inspect it with `ahub queue show <id>`,

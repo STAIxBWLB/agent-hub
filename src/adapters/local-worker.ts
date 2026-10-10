@@ -182,7 +182,7 @@ export class LocalPeer extends BasePeer {
           msgs.push({ role: "assistant", content: e.message });
           if (!policy?.pii) this.commit(msgs);
           this.onMessage?.(e.message, reply);
-          if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: e.message });
+          if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "completed", reason: e.message });
           return; // even without effects, an unanswered approval must not trigger safe replay
         }
         if (this.budgetStopReason && !(e instanceof ExecutionBudgetStop)) e = new ExecutionBudgetStop(this.budgetStopReason);

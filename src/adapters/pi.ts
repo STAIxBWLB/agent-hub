@@ -265,7 +265,7 @@ export class PiPeer extends BasePeer {
         const reason = this.approvalStopReason;
         // Finish this request's expiry reply before withdrawing siblings and aborting the native turn.
         setTimeout(() => {
-          if (generation === this.budgetGeneration && this.approvalStopReason === reason && !this.stopping) void this.endApprovalTurn(generation, reason);
+          if (this.agentRunning && generation === this.budgetGeneration && this.approvalStopReason === reason && !this.stopping) void this.endApprovalTurn(generation, reason);
         }, 10);
       }
       if (this.state === "busy") {
@@ -602,7 +602,8 @@ export class PiPeer extends BasePeer {
       this.agentRunning = false;
       if (typeof event.text === "string" && event.text.trim()) this.settledText = event.text;
       const generation = Number.isSafeInteger(event.generation) ? event.generation : this.budgetGeneration;
-      const text = this.settledText.trim(); const error = this.approvalStopReason || this.budgetStops.get(generation) || this.settledError; const cancelled = !error && this.settledCancelled;
+      const approvalStopReason = this.approvalStopReason;
+      const text = this.settledText.trim(); const error = approvalStopReason || this.budgetStops.get(generation) || this.settledError; const cancelled = !error && this.settledCancelled;
       const ceiling = this.ceilingStops.get(generation);
       this.budgetStops.delete(generation);
       this.ceilingStops.delete(generation);
@@ -612,13 +613,16 @@ export class PiPeer extends BasePeer {
       const reply = { inReplyTo: this.currentReply, to: replyAudience(this.activeEnvs) };
       if (cancelled) this.onMessage?.("Pi turn cancelled; inspect any partial effects before continuing.", reply);
       else if (error?.startsWith("execution budget")) this.onMessage?.(`Pi stopped at the execution budget: ${error}. Inspect partial work before continuing.`, reply);
-      else if (this.approvalStopReason) this.onMessage?.(this.approvalStopReason, reply);
+      else if (approvalStopReason) this.onMessage?.(approvalStopReason, reply);
       else if (error) void this.opts.onTurnFailure?.(this.activeEnvs, error, ceiling);
       else if (text) this.onMessage?.(text, reply);
-      for (const id of this.activeDeliveryIds) this.delivery({ id, state: this.approvalStopReason ? "completed" : error || cancelled ? "needs_review" : "completed", ...(error || cancelled ? { reason: error || "Pi turn cancelled; partial effects are possible" } : {}) });
+      for (const id of this.activeDeliveryIds) this.delivery({ id, state: approvalStopReason ? "completed" : error || cancelled ? "needs_review" : "completed", ...(error || cancelled ? { reason: error || "Pi turn cancelled; partial effects are possible" } : {}) });
       this.activeDeliveryIds.clear();
-      this.currentReply = undefined; this.activeEnvs = []; if (this.state === "busy" && !this.activeTools) this.setState("idle");
+      this.currentReply = undefined; this.activeEnvs = [];
       this.executionAbort?.abort(); this.executionAbort = undefined;
+      this.approvalExpiries = 0; this.approvalAnswerEpoch = undefined; this.approvalStopReason = ""; this.approvalAbortSent = false;
+      this.abortedToolIds.clear(); this.abortIdsOverflow = false;
+      if (this.state === "busy" && !this.activeTools) this.setState("idle");
     }
   }
 
@@ -668,15 +672,19 @@ export class PiPeer extends BasePeer {
   }
 
   private fail(error: Error): void {
+    const approvalStopReason = this.approvalStopReason;
     this.abortTools();
+    this.agentRunning = false;
+    this.approvalExpiries = 0; this.approvalAnswerEpoch = undefined; this.approvalStopReason = ""; this.approvalAbortSent = false;
+    this.abortedToolIds.clear(); this.abortIdsOverflow = false;
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
     const envs = this.activeEnvs; this.activeEnvs = [];
     for (const id of this.activeDeliveryIds) this.delivery({ id, state: "needs_review", reason: error.message });
     this.activeDeliveryIds.clear();
     if (envs.length) {
-      this.onMessage?.(this.approvalStopReason ? `${this.approvalStopReason} Pi is offline because its extension could not abort the turn; restart with ahub pi and settle the held delivery after inspecting prior work.` : "Pi turn failed; inspect its session and any partial effects before continuing.", { inReplyTo: this.currentReply });
-      if (!this.approvalStopReason && !(error instanceof ApprovalWaitStop)) void this.opts.onTurnFailure?.(envs, error.message).catch(() => this.opts.log?.("Pi failure handoff could not be completed"));
+      this.onMessage?.(approvalStopReason ? `${approvalStopReason} Pi is offline because its extension could not abort the turn; restart with ahub pi and settle the held delivery after inspecting prior work.` : "Pi turn failed; inspect its session and any partial effects before continuing.", { inReplyTo: this.currentReply });
+      if (!approvalStopReason && !(error instanceof ApprovalWaitStop)) void this.opts.onTurnFailure?.(envs, error.message).catch(() => this.opts.log?.("Pi failure handoff could not be completed"));
     }
     this.currentReply = undefined;
     this.setState("offline");
@@ -698,6 +706,7 @@ export class PiPeer extends BasePeer {
   }
   private clearOwnerMonitor(): void { if (this.ownerMonitor) clearInterval(this.ownerMonitor); this.ownerMonitor = undefined; }
   private async endApprovalTurn(generation: number, reason: string): Promise<void> {
+    if (!this.agentRunning || generation !== this.budgetGeneration || this.approvalStopReason !== reason || this.stopping || this.state === "offline") return;
     this.executionAbort?.abort();
     if (this.approvalTurnAbort) {
       try { await this.sendTui({ type: "abort_budget", generation, cause: "approval", reason }); return; }

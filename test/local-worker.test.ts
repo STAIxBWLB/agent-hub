@@ -626,9 +626,57 @@ test("local answered denial resets the expiry streak and each new turn starts a 
   expect(notices).toEqual([]); expect(decisions).toBe(6);
 });
 
+test("the daemon's actual person denial resets local expiry provenance and the next turn starts fresh (#253)", async () => {
+  const model = startFakeModelServer({ key: "k", script: body => {
+    const start = body.messages.findLastIndex(message => message.role === "user");
+    const tools = body.messages.slice(start + 1).filter(message => message.role === "tool").length;
+    return tools < 3 ? { tool_calls: [toolCall("write", { path: "a.txt", content: "no" })] }
+      : { content: "registry turn complete" };
+  } });
+  cleanup.push(model.stop); process.env.OMNIROUTE_API_KEY = "k";
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "local-denial-daemon-"))), stateDir = join(cwd, "state");
+  writeFileSync(join(cwd, "a.txt"), "kept");
+  const daemon = await startDaemon({ cwd, stateDir, permissionTimeoutMs: 400, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, omniroute: { urls: [model.url], access_hosts: [] } } });
+  cleanup.push(() => daemon.stop());
+  const client = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => client.close());
+  const asks: any[] = [], answers: Envelope[] = [];
+  client.onPush = message => { if (message.t === "permission") asks.push(message); };
+  client.send({ t: "tail" });
+  daemon.bus.tap(event => { if (event.t === "envelope" && event.env.from === "local") answers.push(event.env); });
+  expect((await client.request({ t: "start", peer: "local", args: { model: "m" } })).ok).toBe(true);
+  const peer = daemon.bus.peers.get("local")!;
+  for (const turn of [1, 2]) {
+    const before = model.requests.length, askedBefore = asks.length;
+    daemon.bus.publish(newEnvelope("user", `registry turn ${turn}`, { to: ["local"] }));
+    await until(() => asks.length === askedBefore + 2, "second approval after the first expired");
+    expect((await client.request({ t: "permit", id: asks[askedBefore + 1]!.id, option: "deny", surface: "console" })).ok).toBe(true);
+    await until(() => answers.length === turn && peer.state === "idle", "ordinary completion after expire, person deny, expire");
+    expect(model.requests).toHaveLength(before + 4);
+    expect(asks).toHaveLength(askedBefore + 3);
+    expect(answers[turn - 1]!.body).toBe("registry turn complete");
+    const messages = model.requests[before + 3]!.body.messages as { role: string; content: string }[];
+    const start = messages.findLastIndex(message => message.role === "user");
+    const results = messages.slice(start + 1).filter(message => message.role === "tool");
+    expect(results).toHaveLength(3);
+    expect(results[0]!.content).toContain("approval expired: no person answered");
+    expect(results[1]!.content).toContain("the user did not approve this write");
+    expect(results[2]!.content).toContain("approval expired: no person answered");
+    expect(daemon.bus.queueSummary("local").heldBy).toBeUndefined();
+  }
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).not.toContain("Local turn stopped after two unanswered approvals");
+  expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("kept");
+  await Bun.sleep(60); expect(model.requests).toHaveLength(8);
+}, 30_000);
+
 
 test("daemon local expiry text and N2 stop use real approval timeout without replay (#253)", async () => {
-  const model = startFakeModelServer({ key: "k", script: () => ({ tool_calls: [toolCall("write", { path: "a.txt", content: "no" })] }) });
+  const nextTurn = "answer the second independent message";
+  const model = startFakeModelServer({ key: "k", script: (body) => {
+    const lastUser = body.messages.findLast(message => message.role === "user");
+    return String(lastUser?.content).includes(nextTurn) ? { content: "second message answered" }
+      : { tool_calls: [toolCall("write", { path: "a.txt", content: "no" })] };
+  } });
   cleanup.push(model.stop); process.env.OMNIROUTE_API_KEY = "k";
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "local-timeout-daemon-"))), stateDir = join(cwd, "state");
   writeFileSync(join(cwd, "a.txt"), "kept");
@@ -638,11 +686,38 @@ test("daemon local expiry text and N2 stop use real approval timeout without rep
   const client = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => client.close());
   expect((await client.request({ t: "start", peer: "local", args: { model: "m" } })).ok).toBe(true);
   const peer = daemon.bus.peers.get("local")!;
-  daemon.bus.publish(newEnvelope("user", "work", { to: ["local"] }));
+  const answers: Envelope[] = [], receiptStates: string[] = [];
+  daemon.bus.tap(event => { if (event.t === "envelope" && event.env.from === "local") answers.push(event.env); });
+  const recordReceipt = peer.onDelivery;
+  peer.onDelivery = receipt => { receiptStates.push(receipt.state); recordReceipt?.(receipt); };
+  const original = newEnvelope("user", "work", { to: ["local"] });
+  daemon.bus.publish(original);
   await until(() => model.requests.length >= 2 && peer.state === "idle");
   expect(model.requests).toHaveLength(2);
   expect(model.requests[1]!.body.messages.find((message: {role: string}) => message.role === "tool").content).toContain("approval expired: no person answered");
   expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("Local turn stopped after two unanswered approvals");
   expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("kept");
   await Bun.sleep(60); expect(model.requests).toHaveLength(2);
+  const firstDelivery = daemon.bus.queueList("local").filter(row => row.originals.some(env => env.id === original.id));
+  expect(firstDelivery).toHaveLength(1);
+  expect(firstDelivery[0]!.state).toBe("completed");
+  expect(daemon.bus.queueSummary("local").needsReview).toBe(0);
+  expect(daemon.bus.queueSummary("local").heldBy).toBeUndefined();
+  expect(answers).toHaveLength(1);
+  expect(answers[0]!.body).toContain("two unanswered approvals");
+
+  const second = newEnvelope("user", nextTurn, { to: ["local"] });
+  daemon.bus.publish(second);
+  await until(() => answers.length === 2 && peer.state === "idle", "automatic delivery after the expired approval turn");
+  expect(model.requests).toHaveLength(3);
+  expect(String(model.requests[2]!.body.messages.findLast((message: { role: string }) => message.role === "user").content)).toContain(nextTurn);
+  expect(answers[1]!.body).toBe("second message answered");
+  const secondDelivery = daemon.bus.queueList("local").filter(row => row.originals.some(env => env.id === second.id));
+  expect(secondDelivery).toHaveLength(1);
+  expect(secondDelivery[0]!.state).toBe("completed");
+  expect(receiptStates).toEqual(["accepted", "completed", "accepted", "completed"]);
+  expect(daemon.bus.queueSummary("local").needsReview).toBe(0);
+  expect(daemon.bus.queueSummary("local").heldBy).toBeUndefined();
+  expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("kept");
+  await Bun.sleep(60); expect(model.requests).toHaveLength(3); // original turn was not replayed
 });

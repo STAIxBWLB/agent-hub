@@ -766,6 +766,11 @@ async function approvalPi(timeout = 20, approvalTurnAbort = false) {
 
 test("two Pi approval expiries return distinct results including the second, then stop the turn without retry", async () => {
   const h = await approvalPi();
+  const receipts: any[] = [], failures: string[] = [];
+  const settle = h.pi.onDelivery;
+  h.pi.onDelivery = (receipt: any) => { receipts.push(receipt); settle?.(receipt); };
+  h.pi.opts.onTurnFailure = async (_envs: unknown, reason: string) => { failures.push(reason); };
+  await h.pi.deliver([newEnvelope("user", "work until approvals expire", { to: ["pi"] })], "unanswered-delivery");
   await h.event("agent_start", { generation: 1 });
   for (const id of ["expired-first", "expired-second"]) {
     const result = await h.call(id);
@@ -780,7 +785,9 @@ test("two Pi approval expiries return distinct results including the second, the
   const log = readFileSync(join(h.dir, "hub.log"), "utf8");
   expect(log).toContain("Pi turn stopped after two unanswered approvals");
   expect(h.asks).toHaveLength(2);
-  expect(log).not.toContain("safe replay");
+  expect(failures).toEqual([]); // observe the actual escalation hook, never a nonexistent log phrase
+  expect(receipts.filter(receipt => receipt.state === "accepted")).toHaveLength(1);
+  expect(receipts.at(-1).state).toBe("needs_review"); // unsupported Pi went offline, not safely replayable
 }, 30_000);
 
 test("Pi tool abort withdraws only its own approval and a late always answer cannot grant future calls", async () => {
@@ -818,6 +825,9 @@ test.skipIf(process.platform !== "darwin")("a claimed TUI person's shell bypasse
   const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-person-shell-"));
   const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
   const { stateDir, daemon, console_ } = await hub(config); // deliberately not unattended
+  const asks: any[] = [];
+  console_.onPush = message => { if (message.t === "permission") asks.push(message); };
+  console_.send({ t: "tail" });
   const launch = (await console_.request({ t: "start", peer: "pi", args: { mode: "tui" } })).launch;
   const owner = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdout: "ignore", stderr: "ignore" });
   cleanup.push(async () => { if (owner.exitCode === null) owner.kill(); await owner.exited; });
@@ -825,13 +835,44 @@ test.skipIf(process.platform !== "darwin")("a claimed TUI person's shell bypasse
   const sessionFile = join(sessionDir, "person.jsonl");
   writeFileSync(sessionFile, JSON.stringify({ type: "session", id: "person-session", cwd: stateDir }) + "\n");
   const post = (path: string, body: unknown) => fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}${path}`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify(body) });
-  expect((await post("/event", { type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: owner.pid, signature: processSignature(owner.pid), sessionId: "person-session", sessionFile })).status).toBe(200);
+  expect((await post("/event", { type: "session_start", ownerToken: launch.env.AGENTHUB_PI_OWNER_TOKEN, pid: owner.pid, signature: processSignature(owner.pid), sessionId: "person-session", sessionFile, approvalTurnAbort: true })).status).toBe(200);
   const admission = await (await post("/budget", { unit: "tool_calls", idleUserBash: true, generation: 0 })).json() as any;
   const result = await (await post("/tool", { name: "bash", purpose: "idle_user_bash", sessionId: "person-session", generation: 0, reservation: admission.reservation, toolCallId: "human-exit-7", args: { command: "printf human; exit 7", cwd: stateDir } })).json() as any;
   expect(result).toMatchObject({ exitCode: 7, failed: true, text: expect.stringContaining("human") });
-  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).not.toContain("permission requested");
+  expect(asks).toHaveLength(0);
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).not.toMatch(/permission [^ ]+ requested by pi/);
   const invalid = await post("/tool", { name: "bash", purpose: "idle_user_bash", sessionId: "person-session", generation: 0, reservation: admission.reservation, toolCallId: "reused-human", args: { command: "true", cwd: stateDir } });
   expect(invalid.status).toBe(409);
+  const pi = daemon.bus.peers.get("pi") as PiPeer;
+  await post("/event", { type: "agent_start", generation: 1 });
+  const abortCommand = fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/commands`, { headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}` } }).then(response => response.json() as Promise<any>);
+  for (const id of ["person-expiry-one", "person-expiry-two"]) {
+    const expired = await (await post("/tool", { name: "write", toolCallId: id, sessionId: "person-session", generation: 1, args: { path: `${id}.txt`, content: id } })).json() as any;
+    expect(expired.text).toContain("approval expired");
+  }
+  const command = (await abortCommand).command;
+  expect(command.cause).toBe("approval");
+  await post("/ack", { id: command.id, ok: true });
+  await post("/event", { type: "agent_end", generation: 1, failed: true, error: command.reason });
+  await post("/event", { type: "agent_settled", generation: 1 });
+  expect(pi.state).toBe("idle");
+  expect(asks).toHaveLength(2);
+  // With no new agent_start to reset state, both idle human commands must still run.
+  for (const id of ["person-after-stop", "person-after-stop-again"]) {
+    const admission = await (await post("/budget", { unit: "tool_calls", idleUserBash: true, generation: 1 })).json() as any;
+    const shell = await (await post("/tool", { name: "bash", purpose: "idle_user_bash", sessionId: "person-session", generation: 1, reservation: admission.reservation, toolCallId: id, args: { command: "printf human-after-stop; exit 7" } })).json() as any;
+    expect(shell.exitCode).toBe(7); expect(shell.text).toContain("human-after-stop");
+    expect(shell.text).not.toContain("approval withdrawn");
+    expect(asks).toHaveLength(2); expect(pi.state).toBe("idle");
+  }
+  // A turn's bounded early-abort cache must not fence the person's later idle shell.
+  await post("/event", { type: "agent_start", generation: 2 });
+  for (let i = 0; i < 65; i++) await post("/event", { type: "tool_abort", sessionId: "person-session", generation: 2, toolCallId: `early-${i}` });
+  await post("/event", { type: "agent_settled", generation: 2 });
+  const cleanAdmission = await (await post("/budget", { unit: "tool_calls", idleUserBash: true, generation: 2 })).json() as any;
+  const afterOverflow = await (await post("/tool", { name: "bash", purpose: "idle_user_bash", sessionId: "person-session", generation: 2, reservation: cleanAdmission.reservation, toolCallId: "person-after-abort-overflow", args: { command: "printf cache-cleared; exit 7" } })).json() as any;
+  expect(afterOverflow.exitCode).toBe(7); expect(afterOverflow.text).toContain("cache-cleared");
+  expect(asks).toHaveLength(2);
   // A real claimed TUI owner is stopped on handover, and the replacement keeps the recorded session.
   const replacement = await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } });
   expect(replacement.ok).toBe(true);
@@ -913,6 +954,50 @@ test("an always-cache grant is not an answer: it does not reset the expiry strea
   for (let i = 0; i < 200 && h.pi.state !== "offline"; i++) await Bun.sleep(10);
   expect(h.pi.state).toBe("offline");
   expect(readFileSync(join(h.dir, "hub.log"), "utf8")).toContain("Pi turn stopped after two unanswered approvals");
+}, 30_000);
+
+test("an approval abort delayed until after settlement cannot tear down the idle Pi owner", async () => {
+  const h = await approvalPi(40); // unsupported extension would otherwise tear down the owner
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const delayed = new Promise<void>(resolve => { release = resolve; });
+  const abortTurn = h.pi.endApprovalTurn.bind(h.pi);
+  h.pi.endApprovalTurn = async (generation: number, reason: string) => { entered(); await delayed; return abortTurn(generation, reason); };
+  try {
+    await h.event("agent_start", { generation: 1 });
+    await h.call("settled-delay-one"); await h.call("settled-delay-two");
+    await started; // hold the delayed continuation while native settlement arrives
+    await h.event("agent_settled", { generation: 1 });
+    release();
+    await Bun.sleep(60);
+    expect(h.pi.state).toBe("idle");
+    expect(h.pi.proc.exitCode).toBeNull();
+    expect(readFileSync(join(h.dir, "hub.log"), "utf8")).not.toContain("approval turn abort unsupported");
+  } finally { release(); }
+}, 30_000);
+
+test("a later Pi owner failure before agent_start never inherits a settled approval reason", async () => {
+  const h = await approvalPi(40, true);
+  const messages: string[] = [], failures: string[] = [];
+  const publish = h.pi.onMessage;
+  h.pi.onMessage = (text: string, opts: any) => { messages.push(text); return publish?.(text, opts); };
+  h.pi.opts.onTurnFailure = async (_envs: unknown, reason: string) => { failures.push(reason); };
+  await h.pi.deliver([newEnvelope("user", "first work", { to: ["pi"] })], "first-work");
+  await h.event("agent_start", { generation: 1 });
+  const pending = h.nextCommand();
+  await h.call("stale-reason-one"); await h.call("stale-reason-two");
+  const command = await pending;
+  await h.post("/ack", { id: command.id, ok: true });
+  await h.event("agent_end", { generation: 1, failed: true, error: command.reason });
+  await h.event("agent_settled", { generation: 1 });
+  expect(messages).toHaveLength(1); expect(messages[0]).toContain("two unanswered approvals");
+  await h.pi.deliver([newEnvelope("user", "unrelated next work", { to: ["pi"] })], "unrelated-work");
+  h.pi.proc.kill("SIGKILL"); // accepted next delivery, no native agent_start yet
+  for (let i = 0; i < 200 && h.pi.state !== "offline"; i++) await Bun.sleep(10);
+  expect(h.pi.state).toBe("offline"); expect(messages).toHaveLength(2);
+  expect(messages[1]).toContain("Pi turn failed");
+  expect(messages[1]).not.toContain("unanswered approvals");
+  expect(failures).toHaveLength(1); expect(failures[0]).toContain("SIGKILL");
 }, 30_000);
 
 test("two expiries abort the Pi turn through the budget path when the extension supports it; Pi stays attached", async () => {
