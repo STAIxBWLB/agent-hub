@@ -167,14 +167,15 @@ export function appendRecords(projectId: string, records: ResearchRecord[], home
  * store's only record with that id. Throws why there is none, or which ones to choose from.
  */
 export function labelTarget(records: ResearchRecord[], events: StampedEvent[], task: number, created?: string): TaskRecord {
-  const mine = records.filter((r): r is TaskRecord => r.kind === "task" && r.task === task);
+  // A record without a proposal time (its proposal was not in the events) cannot be told apart, so it takes no label.
+  const mine = records.filter((r): r is TaskRecord => r.kind === "task" && r.task === task && r.createdAt !== null);
   if (created !== undefined) {
     return mine.find((r) => r.createdAt === created) ?? fail(`no research record for task #${task} proposed at ${created}${mine.length ? ` (it has: ${mine.map((r) => r.createdAt).join(", ")})` : ""}`);
   }
   const proposed = events.filter((e) => e.type === "task" && e.id === task && e.event === "proposed").at(-1);
   if (proposed) {
     return mine.find((r) => r.createdAt === proposed.at)
-      ?? fail(`task #${task} has no research record yet: it is not approved, its record still waits for the turns that approved it, or it was approved while research was off (ahub research backfill builds that one)`);
+      ?? fail(`task #${task} has no research record yet: it is not approved, its record still waits for the turns that approved it, or it was approved while research was off (ahub research backfill builds that one)${mine.length ? `; an earlier task #${task} from before a reset is labelled with --created ${mine.map((r) => r.createdAt).join(" or ")}` : ""}`);
   }
   if (mine.length === 1) return mine[0]!;
   if (!mine.length) throw new Error(`no research record for task #${task}`);

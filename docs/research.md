@@ -67,8 +67,8 @@ while the store keeps the older records.
 `{ project, task, createdAt, label, at }`: a person's later verdict (a revert next week, a regression found later, work
 given up). It labels the current board's task with that id (its proposal in `events.jsonl` pins `createdAt`), so a
 later task with the same id after a reset does not inherit it. A task from before `ahub reset --all` is not on the board
-any more: it is the store's only record with that id, or, when there are several, the one `--created` names (the
-`createdAt` that `ahub research export` shows). A task with no record yet (not approved, its record still waiting for
+any more: it is the store's only record with that id, or, when there are several or the id is in use again, the one
+`--created` names (the `createdAt` that `ahub research export` shows; a record without one takes no label). A task with no record yet (not approved, its record still waiting for
 the turns that approved it, or approved while research was off) is refused; labels mark approved tasks only. Only a
 person can run it (agent shells are refused), and only while research is on. The latest label wins.
 

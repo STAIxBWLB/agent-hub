@@ -1972,7 +1972,8 @@ acts on the stopped state directory.
 - The record counts everything attributed to the task, the turn that approved it included: that turn ends after the
   approval and its usage arrives later, so the writer waits until no open turn is attributed to the task (polled every
   10 s, at most 30 minutes; a stopping hub writes once its peers have stopped). The first record written for a
-  task is final; a label binds to the current board's task, or with `--created` to one from before a reset. Task events carry the board's move `reason` (a closed
+  task is final; a label binds to the current board's task, else to the store's only record with that id, or with
+  `--created` to a named one from before a reset. Task events carry the board's move `reason` (a closed
   list) so reassignments are counted by reason.
 - Recording never blocks or fails the task flow: the writer runs after the board event, and a failure is one
   hub.log line per run. ponytail: it reads the whole events file for each record; an incremental per-task index
