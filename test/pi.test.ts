@@ -492,12 +492,13 @@ test("a managed tool that outlives the stop grace does not block the teardown; s
     const launch = peer.tuiLaunch!;
     const post = (path: string, body: unknown) => fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}${path}`, { method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify(body) });
     await post("/event", { type: "agent_start", generation: 1 });
-    const call = post("/tool", { name: "write", toolCallId: "stuck-tool", sessionId: peer.recoveryMetadata().sessionId, generation: 1, args: { path: "stuck.txt", content: "x" } });
+    // Register the expected disconnect handler before teardown can reset the pending HTTP request.
+    const call = post("/tool", { name: "write", toolCallId: "stuck-tool", sessionId: peer.recoveryMetadata().sessionId, generation: 1, args: { path: "stuck.txt", content: "x" } }).catch(() => undefined);
     for (let i = 0; i < 100 && (peer as any).activeTools === 0; i++) await Bun.sleep(5);
     expect((peer as any).activeTools).toBe(1);
     await expect(peer.stop()).rejects.toThrow("Pi managed tools did not settle after cancellation");
     expect(peer.state).toBe("offline"); // the teardown completed: shutdown, owner teardown, process stop
-    await call.catch(() => undefined);
+    await call;
   } finally { await peer.stop().catch(() => undefined); rmSync(stateDir, { recursive: true, force: true }); }
 }, 30_000);
 
