@@ -73,6 +73,7 @@ export interface ProcessSignature {
 const DEFAULT_RUNTIME_DIR = join(homedir(), ".agenthub", "runtimes", "mlx");
 const DEFAULT_MODEL_PATH = join(homedir(), ".agenthub", "models", "qwen3-8b-mlx");
 const OWNER_FILE = "owner.json";
+const GENERATION_DB_BUSY_TIMEOUT_MS = 100;
 const GENERATION_DB = "generation-slots.db";
 
 const ownerPath = (runtimeDir: string) => join(runtimeDir, OWNER_FILE);
@@ -185,7 +186,7 @@ function generationDatabase(runtimeDir: string): Database {
   mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
   const db = new Database(generationDbPath(runtimeDir), { create: true });
   try {
-    db.run("PRAGMA busy_timeout = 100");
+    db.run(`PRAGMA busy_timeout = ${GENERATION_DB_BUSY_TIMEOUT_MS}`);
     db.run(`CREATE TABLE IF NOT EXISTS generation_slots (
       slot INTEGER PRIMARY KEY,
       token TEXT NOT NULL,

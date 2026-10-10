@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import type { Task } from "./board.ts";
 import { samePlace } from "./tasks.ts";
+import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 
 /** A file an owner's open task changed, as the turn snapshots saw it (issue #32). */
 export interface Touch {
@@ -39,6 +40,7 @@ export function pathWarnings(dbFile: string, peer: string, file: { project: stri
   if (!existsSync(dbFile)) return [];
   const db = new Database(dbFile, { readonly: true });
   try {
+    db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     const rows = db.query("SELECT * FROM tasks WHERE owner IS NOT NULL AND owner != ? AND state IN ('proposed', 'in_progress', 'in_review', 'changes_requested') ORDER BY id").all(peer) as Record<string, string | number | null>[];
     let touches: Touch[] = [];
     try {

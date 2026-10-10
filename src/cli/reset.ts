@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Bus } from "../hub/bus.ts";
 import { DeliveryJournal } from "../hub/delivery-journal.ts";
 import type { Project } from "../hub/registry.ts";
+import { HUB_DB_BUSY_TIMEOUT_MS } from "../hub/db-timeout.ts";
 
 /** Agent session resume pointers. `pi-sessions/` holds Pi transcripts, history rather than pointers, and stays. */
 export const SESSION_POINTERS = ["sessions.json", "claude-session.json", "claude-context.json"];
@@ -60,6 +61,7 @@ export function planReset(stateDir: string, projectId: string): ResetPlan {
   const quiet = !existsSync(`${file}-wal`) || !existsSync(`${file}-shm`);
   const db = quiet ? new Database(`file:${file.replace(/[%?#]/g, (c) => `%${c.charCodeAt(0).toString(16)}`)}?immutable=1`, constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI) : new Database(file, { readonly: true });
   try {
+    db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     const has = (table: string) => !!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
     const peers = (table: string) => has(table) ? (db.query(`SELECT peer FROM ${table} ORDER BY peer`).all() as { peer: string }[]).map((row) => row.peer) : [];
     plan.budgetPauses = peers("budget_pauses");
@@ -121,6 +123,7 @@ export function resetRuntime(stateDir: string, project: Project): { settled: str
     } finally { bus.closeJournal(); }
     const db = new Database(file);
     try {
+      db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
       db.transaction(() => {
         for (const table of ["budget_pauses", "conductor_holds"]) {
           if (db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) db.run(`DELETE FROM ${table}`);

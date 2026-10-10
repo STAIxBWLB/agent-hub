@@ -7,6 +7,7 @@ import { processLiveness } from "../pi/process-signature.ts";
 
 const BASE_PORT = 4600;
 const STRIDE = 10;
+export const REGISTRY_DB_BUSY_TIMEOUT_MS = 5000;
 const MAX_PORT = 65535 - 3;
 const LEGACY_DONE = "legacy_ports_imported";
 type Tx = { immediate(): void };
@@ -50,7 +51,7 @@ export class Registry {
     this.path = path;
     mkdirSync(dirname(path), { recursive: true });
     this.db = new Database(path, { create: true });
-    this.db.run("PRAGMA busy_timeout = 5000");
+    this.db.run(`PRAGMA busy_timeout = ${REGISTRY_DB_BUSY_TIMEOUT_MS}`);
     try {
       this.db.run("PRAGMA journal_mode = WAL");
     } catch (error) {
