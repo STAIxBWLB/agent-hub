@@ -1,9 +1,52 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdtempSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { acquireRecoveryLock, claimRunner, writeOperation } from "../src/hub/recovery-store.ts";
+
+const RESTART_LOG_BYTES = 64 * 1024;
+
+/** Failure diagnostics only: bounded selected logs and file metadata, never SQLite contents or control files. */
+function retainRestartDiagnostics(root: string, home: string, operation: string | undefined, destination = process.env.AHUB_RESTART_DIAGNOSTICS_DIR): string | undefined {
+  if (!destination) return undefined;
+  mkdirSync(destination, { recursive: true, mode: 0o700 });
+  const output = mkdtempSync(join(destination, "installed-layout-restart-"));
+  const roots = [[root, "<fixture-project>"], [home, "<fixture-home>"], [join(import.meta.dir, ".."), "<checkout>"], [homedir(), "<host-home>"], [tmpdir(), "<temp>"]]
+    .sort((a, b) => b[0]!.length - a[0]!.length);
+  const redact = (value: string) => {
+    let text = value;
+    for (const [path, label] of roots) text = text.replaceAll(path!, label!);
+    return text.replace(/(^|[\s("'=])\/[^\s"'<>)]*/gm, "$1<absolute-path>")
+      .replace(/\b(token|authorization|password|secret|api[_-]?key)\s*[:=]\s*(?:Bearer\s+)?[^\s,;]+/gi, "$1=<redacted>");
+  };
+  const logs: Record<string, { copiedBytes?: number; truncated?: boolean; available: boolean }> = {};
+  for (const [name, file] of [["hub.log", join(root, ".agenthub", "state", "hub.log")], ["manager.log", join(home, "manager", "manager.log")]]) {
+    let fd: number | undefined;
+    try {
+      fd = openSync(file!, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const stat = fstatSync(fd);
+      if (!stat.isFile()) throw new Error("not a regular log");
+      const length = Math.min(stat.size, RESTART_LOG_BYTES), data = Buffer.alloc(length);
+      const bytes = readSync(fd, data, 0, length, stat.size - length);
+      const redacted = Buffer.from(redact(data.subarray(0, bytes).toString("utf8")));
+      writeFileSync(join(output, name!), redacted.subarray(Math.max(0, redacted.length - RESTART_LOG_BYTES)), { mode: 0o600 });
+      logs[name!] = { available: true, copiedBytes: bytes, truncated: stat.size > bytes };
+    } catch { logs[name!] = { available: false }; }
+    finally { if (fd !== undefined) closeSync(fd); }
+  }
+  const databases: Record<string, { mode: string; bytes: number; regular: boolean } | { exists: false }> = {};
+  const selected = [["hub.db", join(root, ".agenthub", "state", "hub.db")], ["registry.db", join(home, "registry.db")]];
+  if (operation && /^[a-f0-9-]{36}$/.test(operation)) selected.push(["runner.db", join(home, "recovery", `${operation}.json.runner.db`)]);
+  for (const [name, file] of selected) for (const suffix of ["", "-wal", "-shm"]) {
+    try {
+      const stat = lstatSync(file! + suffix);
+      databases[name! + suffix] = { mode: (stat.mode & 0o777).toString(8).padStart(3, "0"), bytes: stat.size, regular: stat.isFile() };
+    } catch { databases[name! + suffix] = { exists: false }; }
+  }
+  writeFileSync(join(output, "files.json"), JSON.stringify({ logs, databases }, null, 2) + "\n", { mode: 0o600 });
+  return output;
+}
 
 test("installed-layout detached restart completes in an isolated project and preserves its task board", async () => {
   const temp = mkdtempSync(join(tmpdir(), "ahub-recovery-cli-"));
@@ -91,6 +134,12 @@ await import(${JSON.stringify(main)});
     expect((await status()).recovery).toBeUndefined();
     expect((await cli(["board"])).out).toContain("Keep this task through restart");
     expect(pids.size).toBeGreaterThan(0); // the harness recorded at least one daemon generation
+  } catch (error) {
+    // Snapshot before kill/removal changes the evidence. Capture failure never hides
+    // the original assertion, and passing fixtures write no artifact.
+    try { retainRestartDiagnostics(root, home, operation); }
+    catch { console.warn("restart diagnostics could not be retained"); }
+    throw error;
   } finally {
     try { await cli(["kill"], operation ? { AGENTHUB_RECOVERY_OPERATION: operation } : {}); } catch { /* best effort; the pid sweep below is the guarantee */ }
     // The recovery flow also runs a detached dashboard manager out of the staged source.
@@ -314,5 +363,38 @@ test("resume refuses an operation whose stop-and-archive is partway", async () =
     expect({ code, out }).toEqual({ code: 1, out: "" });
     expect(err).toContain("a stop-and-archive of this operation is partway; nothing was resumed; next actions: rerun");
     expect(err).toContain("recovery dispose 00000000-0000-4000-8000-000000000217 --stop-and-archive --reason <text>");
+  } finally { rmSync(temp, { recursive: true, force: true }); }
+});
+
+
+test("restart failure diagnostics retain only bounded logs and database modes, with private paths redacted (#303)", () => {
+  const temp = mkdtempSync(join(tmpdir(), "ahub-restart-diagnostics-"));
+  const root = join(temp, "project"), home = join(temp, "home"), artifacts = join(temp, "artifacts");
+  const state = join(root, ".agenthub", "state"), operation = "12345678-1234-1234-1234-123456789abc";
+  mkdirSync(state, { recursive: true }); mkdirSync(join(home, "manager"), { recursive: true }); mkdirSync(join(home, "recovery"));
+  try {
+    writeFileSync(join(state, "hub.log"), "discarded-prefix\n" + "x".repeat(RESTART_LOG_BYTES) + `\nSQLiteError: database is locked\n at ${root}/hub.db\n at ${home}/registry.db\n at /Users/private-person/work/secret.db\n token=dont-upload-token\n`);
+    writeFileSync(join(home, "manager", "manager.log"), "manager diagnostic\n");
+    writeFileSync(join(state, "hub.db"), "dont-upload-db-contents"); chmodSync(join(state, "hub.db"), 0o600);
+    writeFileSync(join(state, "hub.db-wal"), "dont-upload-wal-contents");
+    writeFileSync(join(home, "registry.db"), "dont-upload-registry-contents");
+    writeFileSync(join(home, "recovery", `${operation}.json.runner.db`), "dont-upload-runner-contents");
+    for (const name of ["control-token", "status.json", "config.json"]) writeFileSync(join(state, name), "dont-upload-control-files");
+    const result = retainRestartDiagnostics(root, home, operation, artifacts)!;
+    expect(readdirSync(result).sort()).toEqual(["files.json", "hub.log", "manager.log"]);
+    rmSync(root, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); // evidence survives fixture cleanup
+    const log = readFileSync(join(result, "hub.log"), "utf8");
+    expect(Buffer.byteLength(log)).toBeLessThanOrEqual(RESTART_LOG_BYTES);
+    expect(log).toContain("SQLiteError: database is locked"); expect(log).not.toContain("discarded-prefix");
+    expect(log).toContain("<fixture-project>/hub.db"); expect(log).toContain("<fixture-home>/registry.db");
+    expect(log).toContain("<absolute-path>"); expect(log).toContain("token=<redacted>");
+    for (const privateValue of [root, home, "/Users/private-person", "dont-upload-token"]) expect(log).not.toContain(privateValue);
+    const metadata = JSON.parse(readFileSync(join(result, "files.json"), "utf8"));
+    expect(metadata.logs["hub.log"]).toEqual({ available: true, copiedBytes: RESTART_LOG_BYTES, truncated: true });
+    expect(metadata.databases["hub.db"]).toMatchObject({ mode: "600", regular: true });
+    expect(metadata.databases["hub.db-shm"]).toEqual({ exists: false });
+    expect(metadata.databases["runner.db"].regular).toBe(true);
+    for (const file of readdirSync(result)) expect(readFileSync(join(result, file), "utf8")).not.toMatch(/dont-upload-(db|wal|registry|runner|control)/);
+    expect(retainRestartDiagnostics("unused", "unused", undefined, "")).toBeUndefined();
   } finally { rmSync(temp, { recursive: true, force: true }); }
 });

@@ -1,3 +1,4 @@
+import { isDatabaseBusy, RecoveryDatabaseBusy } from "../hub/recovery-error.ts";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -87,7 +88,11 @@ async function rpc(project: Project, message: Record<string, unknown>, protocol 
   const client = await ControlClient.connect(project.stateDir, { role: "console", projectRoot: project.root, projectId: project.id }, 30_000, protocol);
   try {
     const reply = await client.request(message, 30_000);
-    if (reply.ok === false) throw new Error(reply.error ?? "recovery control request failed");
+    if (reply.ok === false) {
+      // An older hub has only its exact SQLite message; preserve compatibility without trusting arbitrary text.
+      if (reply.code === "database_busy" || reply.error === "database is locked") throw new RecoveryDatabaseBusy();
+      throw new Error(reply.error ?? "recovery control request failed");
+    }
     return reply;
   } finally { client.close(); }
 }
@@ -165,7 +170,8 @@ export async function inspectRecovery(project: Project): Promise<Inspection> {
     try {
       const readback = await rpc(project, { t: "status" }, sourceProtocol);
       status = readback.status;
-    } catch {
+    } catch (error) {
+      if (isDatabaseBusy(error)) throw error;
       // server.stop() runs before state-file removal, so a stopping hub briefly refuses
       // connections with its manifest still on disk. Never infer stopped from a connect
       // failure: callers poll again and see "stopped" once the manifest is gone.
@@ -176,7 +182,8 @@ export async function inspectRecovery(project: Project): Promise<Inspection> {
   if (!status || !control) return { state: "unavailable", peers: [], blockers: ["authenticated source status unavailable"] };
   let response: any;
   try { response = await rpc(project, { t: "recovery", op: "inspect", expectedInstanceId: status.instanceId }, sourceProtocol ?? PROTOCOL); }
-  catch {
+  catch (error) {
+    if (isDatabaseBusy(error)) throw error;
     // A stop can complete between authenticated status and the second read. Never infer stopped
     // from a connection failure: the coordinator will inspect the ownership manifest again.
     return { state: "unavailable", instanceId: status.instanceId, version: status.version, protocol: status.protocol,

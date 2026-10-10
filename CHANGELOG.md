@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- A restart blocked by SQLite contention now records retryable `database_busy` with a resume instruction, settles its control reply, and preserves bounded CI fixture diagnostics for the next occurrence (#303).
 - Pause Kimi on its observed ACP 5-hour quota refusal, requeue untouched work only after a confirmed pause and automatically relay open tasks through the existing budget policy; hard refusals end reading overrides and supersede pending soft checkpoints. (#306)
 - Bound SQLite contention on every shared database connection with a per-file busy timeout and a source guard. (#303)
 - Make status, board, budget and doctor output readable with shared tables, color policy, wrapped fields, full identifiers and JSON output; size console child output to its available width (#284).

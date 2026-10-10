@@ -1,3 +1,4 @@
+import { isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { buildKimiLaunch } from "../cli/launch.ts";
 import { ProgressObserver, normalizeCodexObservation, normalizeClaudeObservation } from "./progress.ts";
 import type { ToolObservation } from "../models/route/signals.ts";
@@ -497,6 +498,12 @@ export async function startDaemon(opts: DaemonOptions) {
           parsed = JSON.parse(String(data));
           onMessage(sock, parsed);
         } catch (e) {
+          if (isDatabaseBusy(e) && sock.data.authed && Number.isSafeInteger(parsed?.rid)) {
+            const busy = new RecoveryDatabaseBusy();
+            try { log(`control ${sanitize(String(parsed.t))} database contention`); } catch { /* the reply still settles its rid */ }
+            sock.send(JSON.stringify({ rid: parsed.rid, ok: false, error: busy.message, code: busy.code, retryable: busy.retryable }));
+            return;
+          }
           log("control operation failed; inspect delivery storage and recovery status");
           if (sock.data.authed && Number.isSafeInteger(parsed?.rid)) sock.send(JSON.stringify({ rid: parsed.rid, ok: false, error: "operation failed; inspect delivery storage and recovery status before retrying" }));
         }
@@ -3247,7 +3254,13 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "recovery":
         if (c.role !== "console") return void reply(recoveryError("recovery is a console command"));
-        void recoveryOp(msg).then(reply, (error) => reply(recoveryError((error as Error)?.message ?? "recovery operation failed")));
+        void recoveryOp(msg).then(reply, (error) => {
+          if (isDatabaseBusy(error)) {
+            try { log(`recovery ${sanitize(String(msg.op))} database contention: ${sanitize(String(error?.stack ?? "").split("\n").slice(1).join("\n"))}`); } catch { /* the reply still settles its rid */ }
+            const busy = new RecoveryDatabaseBusy();
+            reply({ ...recoveryError(busy.message), code: busy.code, retryable: busy.retryable });
+          } else reply(recoveryError((error as Error)?.message ?? "recovery operation failed"));
+        });
         return;
       case "send": {
         if (recoveryActive()) return void reply({ t: "sent", ok: false, error: "recovery is holding new deliveries" });

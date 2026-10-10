@@ -1667,6 +1667,24 @@ next actions").
   restart snapshot.
   A second `resume` while its own hold still stands checks the peers again
   before it closes anything.
+- If a restart stops with `database_busy`, the receipt stays `blocked` and
+  carries `failure: { code: "database_busy", retryable: true }`. Another
+  connection did not release its SQLite lock within the database's bounded
+  wait. Let that connection settle, then inspect `ahub recovery status <id>`
+  and use its offered `ahub recovery resume <id>`; resume rechecks the source
+  and reconciles a commit that may already have been requested. Do not delete
+  database files or start a second operation to bypass the lock. Registry
+  and authenticated status reads before the commit request can give the same outcome. This names the
+  contention, not its historical holder: the earlier CI receipt kept neither
+  a throw site nor a hub log. A failed installed-layout CI restart now retains
+  bounded, redacted fixture logs and file-mode metadata as a per-OS artifact.
+  Hub database connections wait up to 3 s on a foreign writer, including
+  Board, Budget, ConductorHolds, ExecutionBudget and Turns, which previously
+  threw immediately. Bun's SQLite calls are synchronous, so this can block
+  the daemon's one thread. Recovery and default control requests wait 30 s;
+  the 1 s silenced probe is shorter, and 3 s console/lifecycle probes have no
+  margin. Their timeout remains an unconfirmed read, never proof the hub
+  stopped. The busy wait is not multiplied by a retry loop.
 - When a target hub dies after it started (a crash or a reboot), `resume`
   starts it again from the operation's snapshot while the project's state
   directory still holds it: it records the restart (status shows `restarts`),

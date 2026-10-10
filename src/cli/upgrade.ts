@@ -1,3 +1,4 @@
+import { isDatabaseBusy, RecoveryDatabaseBusy } from "../hub/recovery-error.ts";
 import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -82,6 +83,7 @@ export interface RecoveryOperation {
   pluginInstalled?: boolean;
   globalInstalled?: boolean;
   error?: string;
+  failure?: { code: "database_busy"; retryable: true };
   /** #215: every human disposition, in order. Operator reasons only; never task or message text. */
   audit?: { at: number; action: "fresh-session" | "stop-and-archive"; reason: string; peer?: string; projects: string[] }[];
   disposition?: { choice: "stop-and-archive"; at: number; projects: Record<string, string> };
@@ -437,7 +439,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       op.phase = "blocked"; save();
       return op;
     }
-    op.phase = "running"; delete op.error; save();
+    op.phase = "running"; delete op.error; delete op.failure; save();
     step("stage");
     const target = await driver.stage(op);
     if (op.targetDigest && (target.root !== op.targetRoot || target.digest !== op.targetDigest)) throw new FinalRefusal("staged target changed since operation started");
@@ -557,6 +559,8 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
     releaseRecoveryLock(id, home); op.phase = "completed"; step("completed");
   } catch (error) {
     // #215: every runner error ends with the choices status shows, read from every open source, never only this one.
+    if (isDatabaseBusy(error)) { error = new RecoveryDatabaseBusy(); op.failure = { code: "database_busy", retryable: true }; }
+    else delete op.failure;
     if (error instanceof FinalRefusal) op.final = true;
     const next = nextActionsText(op, await liveProjects(op, driver.inspect));
     op.phase = "blocked"; op.error = `${error instanceof Error ? error.message : "recovery failed"}; ${next}`; save();
@@ -576,7 +580,7 @@ export function publicOperation(op: RecoveryOperation, runnerPid?: number | "unk
       ...(p.restarts?.length ? { restarts: p.restarts.length } : {}) })),
     pluginInstalled: !!op.pluginInstalled, globalInstalled: !!op.globalInstalled,
     ...(!targetReadsWaivers(op) && op.projects.some((p) => failedPeers(op, p).length) ? { freshSession: `not offered: target ${op.plan.version} cannot read recovery waivers, so it could not release a new session` } : {}),
-    ...(op.error ? { error: op.error } : {}), ...(op.disposition ? { disposition: op.disposition } : {}), ...(op.audit ? { audit: op.audit } : {}), next };
+    ...(op.error ? { error: op.error } : {}), ...(op.failure ? { failure: op.failure } : {}), ...(op.disposition ? { disposition: op.disposition } : {}), ...(op.audit ? { audit: op.audit } : {}), next };
 }
 
 /** Escape a blocked preflight without abandoning a stopped runtime or an uncertain terminal mutation. */

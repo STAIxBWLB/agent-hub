@@ -91,7 +91,17 @@ jobs:
         with:
           bun-version: 1.4.2
       - name: Gate (typecheck, bundle and manifest freshness, package contents, tests)
+        env:
+          AHUB_RESTART_DIAGNOSTICS_DIR: ${{ runner.temp }}/ahub-restart-diagnostics
         run: scripts/check.sh
+      - name: Retain failed restart fixture diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: restart-diagnostics-${{ matrix.os }}-${{ github.sha }}
+          path: ${{ runner.temp }}/ahub-restart-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
 
   seeded:
     name: seeded guards

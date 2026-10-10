@@ -1,3 +1,4 @@
+import { isDatabaseBusy, RecoveryDatabaseBusy } from "../src/hub/recovery-error.ts";
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -1151,4 +1152,32 @@ test("an operation whose coordinator cannot restart a target is not offered resu
   const op = readOperation<RecoveryOperation>(f.operation.id, f.home);
   const next = nextActions(op, undefined, await liveProjects(op, f.driver.inspect));
   expect(next.some((line) => line.includes(" resume "))).toBe(false);
+});
+
+
+test("SQLite contention is a named retryable outcome, not an arbitrary error text (#303)", () => {
+  for (const error of [{ code: "SQLITE_BUSY" }, { code: "SQLITE_BUSY_RECOVERY" }, { errno: 517 }, { code: "SQLITE_LOCKED_SHAREDCACHE" }]) expect(isDatabaseBusy(error)).toBe(true);
+  for (const error of [undefined, { code: "SQLITE_ERROR" }, { errno: 19 }, new Error("database is locked")]) expect(isDatabaseBusy(error)).toBe(false);
+  expect(isDatabaseBusy(new RecoveryDatabaseBusy())).toBe(true);
+});
+
+for (const site of ["commit", "pre-commit inspection"] as const) test(`restart records and clears retryable database contention at ${site} (#303)`, async () => {
+  const f = fixture("restart", ["alpha"]);
+  const native = Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY", errno: 5 });
+  const commit = f.driver.commit, inspect = f.driver.inspect;
+  let refused = false;
+  if (site === "commit") f.driver.commit = async (...args) => { if (!refused) { refused = true; throw native; } return commit(...args); };
+  else f.driver.inspect = async (...args) => {
+    const receipt = readOperation<RecoveryOperation>(f.operation.id, f.home);
+    if (!refused && receipt.step === "commit:alpha") { refused = true; throw native; }
+    return inspect(...args);
+  };
+  const result = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(result.phase).toBe("blocked"); expect(result.step).toBe("commit:alpha");
+  expect(result.failure).toEqual({ code: "database_busy", retryable: true });
+  expect(result.error).toContain("database_busy"); expect(result.error).not.toContain("database is locked");
+  expect(result.projects[0]!.commitSent).toBe(site === "commit" ? true : undefined);
+  expect(publicOperation(result).failure).toEqual({ code: "database_busy", retryable: true });
+  const resumed = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(resumed.phase).toBe("completed"); expect(resumed.failure).toBeUndefined(); expect(resumed.error).toBeUndefined();
 });
