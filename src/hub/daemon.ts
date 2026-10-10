@@ -72,7 +72,7 @@ import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, remov
 import { isStartablePeer, peerStartConfig, STARTABLE_PEERS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
 import type { TerminalOpener } from "./terminal-open.ts";
 import { grantablePath, isPermissionMode, permissionBoundary, permissionDefaults, permissionGrant, PI_EDIT_TOOLS, type PermissionMode } from "./permission-mode.ts";
-import { ContextWindows, DEFAULT_CONTEXT, claudeContext, type ContextConfig } from "./context-window.ts";
+import { ContextWindows, DEFAULT_CONTEXT, acpContext, claudeContext, type ContextConfig } from "./context-window.ts";
 
 export interface HubConfig {
   watchdog_ms: number;
@@ -2169,6 +2169,20 @@ export async function startDaemon(opts: DaemonOptions) {
         autoApprove: (title) => !stopping && HUB_TOOL_TITLES.has(title),
         log,
         onTokens: onKimiTokens,
+        // Kimi's usage_update is context occupancy ({used, size}), not consumption (#167): it becomes the peer's
+        // context reading (#285 phase 1), never a tokens event or a budget window. The reading is bound to the
+        // adapter's own session id; report() drops it when that is not the daemon's current session. An invalid
+        // shape reports a null reading: unknown, not the previous value (#285).
+        onUsageDiagnostic: (observation, sessionId) => {
+          if (observation.source !== "usage_update" || observation.shape !== "context-used") return;
+          const current = contextSession("kimi");
+          if (!current) return;
+          contexts.report("kimi",
+            observation.contextUsed !== undefined && observation.contextCapacity !== undefined
+              ? acpContext({ used: observation.contextUsed, size: observation.contextCapacity }, sessionId, Date.now())
+              : { source: "acp_usage_update", sessionId, measuredAt: Date.now(), tokens: null, window: null, used: null },
+            current);
+        },
         onTurnFailure: () => { supervisionTurns.delete("kimi"); },
         mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv("kimi")).map(([name, value]) => ({ name, value })) }],
         preamble: roleContract("kimi", config.roles),

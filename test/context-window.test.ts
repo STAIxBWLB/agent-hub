@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { claudeContext, codexContext, ContextWindows, DEFAULT_CONTEXT } from "../src/hub/context-window.ts";
+import { acpContext, claudeContext, codexContext, ContextWindows, DEFAULT_CONTEXT } from "../src/hub/context-window.ts";
 import { contextLine } from "../src/cli/status-lines.ts";
 
 test("native context counters distinguish occupancy from lifetime usage and unknown from zero", () => {
@@ -49,4 +49,22 @@ test.each(["pause", "recovery"])("context crossing held by %s retries once after
   windows.report("codex", sample(0.9), "native"); expect(events).toHaveLength(2);
   held = true; windows.report("codex", sample(0.9, "replacement"), "replacement"); held = false;
   windows.retry("codex", "another-session"); expect(events).toHaveLength(2);
+});
+
+test("an ACP usage_update of the {used, size} shape is a context reading, and a wrong-session or stale one shows unknown (#285)", () => {
+  let now = 120_000;
+  const reading = acpContext({ used: 90_000, size: 200_000 }, "acp-s1", now);
+  expect(reading).toEqual({ source: "acp_usage_update", sessionId: "acp-s1", measuredAt: now, tokens: 90_000, window: 200_000, used: 0.45 });
+  expect(acpContext({ used: 250_000, size: 200_000 }, "s", now).used).toBe(1); // clamped, like Codex's
+  expect(acpContext({ used: 1, size: 0 }, "s", now).used).toBeNull();
+  const windows = new ContextWindows(DEFAULT_CONTEXT, () => {}, () => now);
+  windows.report("kimi", acpContext({ used: 90_000, size: 200_000 }, "acp-s1", now), "acp-s2"); // wrong session: dropped
+  expect(windows.view("kimi", "acp-s2", true).freshness).toBe("unknown");
+  windows.report("kimi", acpContext({ used: 90_000, size: 200_000 }, "acp-s1", now), "acp-s1");
+  const fresh = windows.view("kimi", "acp-s1", true);
+  expect([fresh.freshness, fresh.used, fresh.source]).toEqual(["fresh", 0.45, "acp_usage_update"]);
+  expect(contextLine(fresh)).toContain("context 45% (fresh, acp_usage_update");
+  now += DEFAULT_CONTEXT.stale_min * 60_000 + 1;
+  const stale = windows.view("kimi", "acp-s1", true);
+  expect([stale.freshness, stale.used]).toEqual(["stale", null]);
 });
