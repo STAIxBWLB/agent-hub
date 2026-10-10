@@ -136,13 +136,14 @@ test("a failed prompt turn reports onTurnFailure; an abnormal end with no answer
   try {
     const answered: string[] = [];
     acp.onMessage = (body) => answered.push(body);
-    await acp.deliver([newEnvelope("user", "ACK_SLOW", { to: ["kimi"] })]); // no deliveryId: expiry returns this legacy turn to idle
+    await acp.deliver([newEnvelope("user", "ACK_SLOW", { to: ["kimi"] })]); // no deliveryId: expiry waits for the cancelled native result
     await until(() => acp.nativeActivity); // the fake has consumed the silent prompt, not just the parent delivery
     acp.expireWatchdog();
-    expect(acp.state).toBe("idle");
+    expect(acp.state).toBe("busy");
     // Parent idle does not prove the child cleared busy: cancel+ping in one stdin batch rejects ping.
     // This mode reply follows the cancelled result on stdout and proves both cancellation and its stale report were consumed.
     await acp.setPermissionMode("ask");
+    expect(acp.state).toBe("idle");
     await acp.deliver([newEnvelope("user", "ping", { to: ["kimi"] })]);
     await until(() => answered.length === 1);
     await until(() => acp.state === "idle");
@@ -415,9 +416,9 @@ test("watchdog: the cancelled prompt reports late and must not disturb the turn 
   await new Promise((r) => setTimeout(r, 80));
   expect(said.map((e) => e.body)).toEqual(["echo: after"]); // nothing attributed to SLOW
   expect(peer!.state).toBe("idle");
-  // The cancelled turn's late result lands while the next turn runs (wire order: it precedes the next answer);
-  // the turn generation fences it: no failure report names the cancelled end (#296). (The next prompt's first
-  // attempt can still hit the fake's busy window and retry, as the rejection test below covers.)
+  // The cancelled result now lands while the adapter waits busy for cancellation (#304), before the next prompt.
+  // The generation fence still matters while busy: a busy-state check in its place reports the cancelled end
+  // as a current failure and fails this assertion. A missing result at the bound goes offline, not into a later turn.
   expect(failures.filter((f) => f.includes("cancelled") || f.includes("without normal completion"))).toEqual([]);
 });
 
