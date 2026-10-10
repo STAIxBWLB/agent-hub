@@ -39,6 +39,10 @@ test("paths: traversal, absolute outside paths, symlink escapes and denylisted n
   for (const p of [".git/hooks/pre-commit", ".agenthub/routing.toml"]) expect(() => guardPath(ctx, p, "write")).toThrow(/not writable/);
   // A name that does not exist yet is compared folded: a case-insensitive disk opens these as .git and .agenthub.
   for (const p of [".GIT/config", ".Git/hooks/pre-commit", "sub/.GIT/HEAD", ".AGENTHUB/routing.toml", ".g\u200Dit/config", ".\uFEFFagenthub/x"]) expect(() => guardPath(ctx, p, "write")).toThrow(/not writable/);
+  // Equality, not prefix: names that only start with .git or .agenthub stay writable (#270).
+  expect(guardPath(ctx, ".gitignore", "write")).toContain(".gitignore");
+  expect(guardPath(ctx, ".github/workflows/ci.yml", "write")).toContain("ci.yml");
+  expect(guardPath(ctx, ".agenthub.md", "write")).toContain(".agenthub.md");
   expect(guardPath(ctx, "docs/git/notes.md", "write")).toContain("notes.md");
   expect(guardPath(ctx, ".agenthub/routing.toml", "read")).toContain("routing.toml");
   expect(isDenied("src/environment.ts")).toBe(false);
