@@ -166,6 +166,7 @@ function renderTaskProgress(progress) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 100 12'); svg.setAttribute('preserveAspectRatio', 'none'); svg.setAttribute('aria-hidden', 'true');
   let x = 0;
   for (const [state, count] of Object.entries(progress.counts)) {
+    if (!count) continue;
     const width = progress.total ? count / progress.total * 100 : 0;
     const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect'); rect.setAttribute('x', String(x)); rect.setAttribute('y', '0'); rect.setAttribute('width', String(width)); rect.setAttribute('height', '12'); rect.setAttribute('class', 'progress-' + state); svg.append(rect); x += width;
   }

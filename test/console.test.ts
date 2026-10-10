@@ -849,17 +849,23 @@ describe("whole-board task progress (#246)", () => {
     f.signal(); await running;
   });
 
-  test("failed status refresh preserves the known footer count and displays an error", async () => {
-    const f = fixture(); let failed = false; const original = f.client.request;
-    f.client.request = async msg => msg.t === "status" ? failed ? { ok: false, error: "status unavailable" } as any : { ok: true, status: { peers: {}, tasks: { approved: 1 } } } as any : original(msg);
-    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
-    for (let i = 0; i < 8; i++) await Promise.resolve();
-    expect(f.output.join("")).toContain("tasks 1/1 approved"); failed = true;
-    f.input("\t"); for (let i = 0; i < 8; i++) await Promise.resolve();
-    f.input("\t"); for (let i = 0; i < 8; i++) await Promise.resolve();
-    expect(f.output.join("")).toContain("status unavailable");
-    expect(f.output.join("").lastIndexOf("tasks 1/1 approved")).toBeGreaterThan(f.output.join("").indexOf("status unavailable"));
-    f.signal(); await running;
+  test("failed status refresh restores the known footer count after notice TTL without a key", async () => {
+    const callbacks: (() => void)[] = []; const originalInterval = globalThis.setInterval;
+    globalThis.setInterval = ((fn: () => void, ms?: number) => { callbacks.push(fn); return originalInterval(fn, ms); }) as typeof setInterval;
+    try {
+      const f = fixture(); let failed = false; const original = f.client.request;
+      f.client.request = async msg => msg.t === "status" ? failed ? { ok: false, error: "status unavailable" } as any : { ok: true, status: { peers: {}, tasks: { approved: 1 } } } as any : original(msg);
+      const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      expect(f.output.join("\n")).toContain("tasks 1/1 approved"); failed = true;
+      callbacks[1]!(); for (let i = 0; i < 8; i++) await Promise.resolve();
+      let at = f.output.lastIndexOf("\x1b[23;1H\x1b[2K");
+      expect(f.output[at + 1]).toContain("status unavailable"); expect(f.output[at + 1]).not.toContain("tasks 1/1");
+      setSystemTime(new Date(Date.now() + 10_000)); callbacks[0]!();
+      at = f.output.lastIndexOf("\x1b[23;1H\x1b[2K");
+      expect(f.output[at + 1]).toContain("tasks 1/1 approved"); expect(f.output[at + 1]).not.toContain("status unavailable");
+      f.signal(); await running;
+    } finally { globalThis.setInterval = originalInterval; setSystemTime(); }
   });
   test("stream retains top-origin scrollback and gets footer totals from status without board requests", async () => {
     const f = fixture(); const original = f.client.request;
@@ -909,16 +915,24 @@ describe("whole-board task progress (#246)", () => {
     s.peers = Object.fromEntries(['claude','codex','kimi','pi','local'].map(peer => [peer, { state: 'idle', queued: 0, ...(peer === 'local' ? { needsReview: 2 } : {}) }]));
     const lines = renderConsoleLines(s, 80, 24, NOW);
     expect(paint(lines[1]!, false)).toContain('local:idle q0 review2');
+    expect(lines[1]!.find(part => part.text.includes('review2'))?.tone).toBe('failure');
     expect(paint(lines[2]!, false)).toContain('tasks 1/3 approved');
     s.notice = 'no request selected; [ ] selects one'; s.noticeAt = NOW;
     const alerts = renderConsoleLines(s, 80, 24, NOW);
     expect(paint(alerts[2]!, false)).toContain(s.notice); expect(paint(alerts[2]!, false)).not.toContain('tasks 1/3');
-    expect(paint(renderConsoleLines(s, 80, 24, NOW + 10_000)[2]!, false)).toBe('0 approvals');
+    expect(paint(renderConsoleLines(s, 80, 24, NOW + 10_000)[2]!, false)).toContain('tasks 1/3 approved');
     s.notice = '';
     expect(paint(renderConsoleLines(s, 80, 24, NOW + 10_000)[2]!, false)).toContain('tasks 1/3 approved');
     expect(lines.map(line => terminalText(paint(line, true)))).toEqual(lines.map(line => paint(line, false)));
     s.peers = {}; s.budget = { pi: { windows: [{ id: '5h', used: 0.2 }] } };
     expect(paint(renderConsoleLines(s, 80, 24, NOW)[1]!, false)).not.toContain(' | ');
+  });
+  test("nonzero unknown states appear in the summary's fixed suffix", () => {
+    const s = state(true); s.panel = 3; s.tasks = [{ id: 1, state: 'approved' }, { id: 2, state: 'future_state' }];
+    const text = renderConsole(s, 200, 60, NOW)[2]!;
+    expect(text).toContain('1/2 approved'); expect(text).toContain('  unknown 1');
+    s.tasks = [{ id: 1, state: 'approved' }];
+    expect(renderConsole(s, 200, 60, NOW)[2]).not.toContain('  unknown ');
   });
   test("only fully approved boards render a complete bar and 100 percent", () => {
     const s = state(true); s.panel = 3; s.tasks = [{ id: 1, state: 'approved', title: 'done' }];
@@ -954,6 +968,13 @@ describe("whole-board task progress (#246)", () => {
       s.mode = "stream";
       s.taskCounts = { approved: 1, proposed: 1, changes_requested: 1 };
       expect(paint(renderConsoleLines(s, columns!, rows!, NOW)[2]!, false)).toContain("tasks 1/3 approved");
+      for (const notice of ['', 'status unavailable']) {
+        s.notice = notice; s.noticeAt = NOW;
+        const footer = renderConsoleLines(s, columns!, rows!, NOW);
+        expect(footer).toHaveLength(4);
+        expect(footer.map(line => terminalText(paint(line, true)))).toEqual(footer.map(line => paint(line, false)));
+        for (const line of footer) expect(Bun.stringWidth(paint(line, false))).toBeLessThanOrEqual(columns!);
+      }
     });
   }
 });

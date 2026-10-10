@@ -1375,7 +1375,7 @@ in review and approved; changes requested returns to stage two and is marked.
 The console Tasks panel has a 20-cell ASCII summary bar and fixed four-cell row
 meters, preserving width and color-off geometry. Cells and percentage round down;
 count labels use importance order changes requested, review, waiting, in progress,
-proposed and drop only from the end. The stream count is in the fixed footer,
+proposed, then unknown when nonzero, and drop only from the end. The stream count is in the fixed footer,
 from existing all-state status counts; it makes no board fetch and retains a
 row-one scroll region for terminal scrollback. Loading/failed reads never imply
 confirmed empty progress. Dashboard filters affect rows only, not totals. Its

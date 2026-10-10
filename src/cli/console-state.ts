@@ -557,15 +557,15 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   const approvals = [span(plural(s.approvals.length, "approval"), s.approvals.length ? "attention" : undefined)];
   if (permission) approvals.push(span(` | ${permission.peer} ${permission.id}`, "attention"), span(` ${duration(permission.expiresAt - now)} left`, "muted"));
   else if (s.approvals.length) approvals.push(span(" | none selected", "muted"));
-  if (s.notice && now - (s.noticeAt ?? now) < NOTICE_MS) approvals.push(span(" | "), span(s.notice, s.noticeTone ?? "failure"));
+  const noticeShown = !!s.notice && now - (s.noticeAt ?? now) < NOTICE_MS;
+  if (noticeShown) approvals.push(span(" | "), span(s.notice, s.noticeTone ?? "failure"));
   const footer = [fitLine(summary, columns), fitLine(approvals, columns), fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
   const rule = [span("-".repeat(Math.max(0, columns)), "muted")];
   if (s.mode === "stream") {
     const counts = s.taskCounts;
     const total = counts ? Object.values(counts).reduce((sum, value) => sum + value, 0) : 0;
     const taskCount = span(counts ? `tasks ${counts.approved ?? 0}/${total} approved` : "tasks loading...", counts ? "success" : "attention");
-    // Let the existing tick/key clear notice state before restoring optional totals.
-    if (!s.notice && Bun.stringWidth(taskCount.text + " | " + approvals.map(s => s.text).join("")) <= columns) {
+    if (!noticeShown && (counts || !s.approvals.length) && Bun.stringWidth(taskCount.text + " | " + approvals.map(s => s.text).join("")) <= columns) {
       footer[1] = fitLine([taskCount, span(" | "), ...approvals], columns);
     }
     return [rule, ...footer];
@@ -594,7 +594,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
       const main = s.tasksKnown === false && !progress.total ? "tasks loading..." : `${progress.counts.approved}/${progress.total} approved [${"#".repeat(done)}${".".repeat(20 - done)}] ${progress.total ? Math.floor(progress.counts.approved * 100 / progress.total) : 0}%`;
       const known = s.tasksKnown !== false || progress.total > 0;
       const parts = [span(main, known ? "success" : "attention")];
-      for (const [label, value, tone] of [["changes", progress.counts.changes_requested, "failure"], ["review", progress.counts.in_review, "attention"], ["waiting", progress.counts.waiting, "attention"], ["in progress", progress.counts.in_progress, undefined], ["proposed", progress.counts.proposed, undefined]] as const) {
+      for (const [label, value, tone] of [["changes", progress.counts.changes_requested, "failure"], ["review", progress.counts.in_review, "attention"], ["waiting", progress.counts.waiting, "attention"], ["in progress", progress.counts.in_progress, undefined], ["proposed", progress.counts.proposed, undefined], ...(progress.counts.unknown ? [["unknown", progress.counts.unknown, "attention"] as const] : [])] as const) {
         const extra = `  ${label} ${value}`;
         if (!known || Bun.stringWidth(parts.map(p => p.text).join("") + extra) > columns) break;
         parts.push(span(extra, tone));

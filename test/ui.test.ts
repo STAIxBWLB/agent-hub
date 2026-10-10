@@ -262,6 +262,10 @@ test("shared public progress executes in the hashed dashboard and matches consol
   expect(target.children[0]?.textContent).toBe("0/0 approved (0%)");
   renderers.renderTaskProgress(browserModel(Array.from({ length: 100 }, (_, id) => ({ id, state: id < 29 ? 'approved' : 'proposed' }))));
   expect(target.children[0]?.textContent).toBe('29/100 approved (29%)');
+  renderers.renderTaskProgress(browserModel([{ id: 1, state: 'approved' }]));
+  expect(target.children[0]?.textContent).toBe('1/1 approved (100%)');
+  expect(target.children[1]?.children).toHaveLength(1);
+  expect(target.children[1]?.children[0]?.attrs.width).toBe('100');
   expect(Math.floor((29 / 100) * 100)).toBe(28); // confirms why rounded binary ratios must not drive the percentage
   expect(html).toContain("renderTaskProgress(progress)");
   const blocks = [...html.matchAll(/<(script|style)>([\s\S]*?)<\/\1>/g)]; expect(blocks).toHaveLength(3);
