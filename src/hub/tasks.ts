@@ -920,9 +920,20 @@ export class Tasks {
     }
   }
 
-  /** Notifications may read the same unavailable board; they must not undo a saved approval's return. */
-  private releaseNotice(line: string): void {
-    try { this.d.notify(line); } catch { /* best effort; the release timer retries ownerless work */ }
+  /**
+   * The one guard for a publish or notify after a board write (#231, #243): the write took effect, so a failure
+   * never throws back to the caller. A failed publish becomes a console notice naming what was lost; a failed notify
+   * is dropped (a second attempt would fail the same way). A lost publish is not retried here: the delivery
+   * journal's own recovery covers a storage error.
+   */
+  private releaseNotice(line: string, run?: () => unknown): void {
+    if (!run) {
+      try { this.d.notify(line); } catch { /* best effort; the release timer retries ownerless work */ }
+      return;
+    }
+    try { run(); } catch (e) {
+      try { this.d.notify(`${line}: ${e instanceof Error ? e.message : String(e)}`); } catch { /* best effort */ }
+    }
   }
 
   private readonly offered = new Set<number>(); // assignments in this hub run, including offers still in flight
@@ -1125,7 +1136,7 @@ export class Tasks {
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
     this.checking.set(task.id, task.owner);
     const pending = this.d.board.update(task.id, by, "done (checking)", { refs: cleanRefs(refs) }, summary, { withheld: withheld || undefined });
-    this.d.notify(`task ${this.publicTitle(pending)} done by ${by}; its check is queued or running: ${command}`);
+    this.releaseNotice(`task ${this.publicTitle(pending)} done by ${by}; its check is queued or running: ${command}`);
     const seen = { events: pending.history.length, owner: pending.owner };
     this.pendingChecks++;
     this.checkQueue = this.checkQueue
@@ -1255,11 +1266,11 @@ export class Tasks {
     this.tellCompleted(next, summary, withheld);
     if (!reviewer) {
       if (next.owner) this.d.board.recordOutcome(next.owner, next.class, true); // approved without a review is a success too
-      this.d.notify(`task ${this.publicTitle(next)} done by ${by}, no reviewer: approved`);
+      this.releaseNotice(`task ${this.publicTitle(next)} done by ${by}, no reviewer: approved`);
       await this.releaseDependents(next);
     }
-    else if (reviewer === USER) this.d.notify(`task ${this.publicTitle(next)} done by ${by}: review it with ahub task show ${next.id}, then ahub review ${next.id} approved|changes_requested [note]`);
-    else this.sendReview(next, reviewer);
+    else if (reviewer === USER) this.releaseNotice(`task ${this.publicTitle(next)} done by ${by}: review it with ahub task show ${next.id}, then ahub review ${next.id} approved|changes_requested [note]`);
+    else this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${reviewer}`, () => this.sendReview(next, reviewer));
     return next;
   }
 
@@ -1279,7 +1290,8 @@ export class Tasks {
         cohort.held.add(task.id);
         continue;
       }
-      this.whileOpen(hit.task.owner!, hit.task.id, this.completedNotice(task, hit, summary, withheld));
+      this.releaseNotice(`task ${this.publicTitle(task)}: could not publish the completed-change notice to ${hit.task.owner}`, () =>
+        this.whileOpen(hit.task.owner!, hit.task.id, this.completedNotice(task, hit, summary, withheld)));
     }
   }
 
@@ -1357,7 +1369,8 @@ export class Tasks {
         }
       }
       this.note(next, by, "decision", `Task #${next.id} approved by ${by}: ${next.title}\n${note ?? ""}`, withheld);
-      this.tell(next, `Task #${next.id} approved by ${by}.${note ? ` ${this.screen(next, note, "review note", next.owner, withheld)}` : ""}`, pii);
+      this.releaseNotice(`task ${this.publicTitle(next)}: could not tell ${next.owner ?? "its owner"} it was approved`, () =>
+        this.tell(next, `Task #${next.id} approved by ${by}.${note ? ` ${this.screen(next, note, "review note", next.owner, withheld)}` : ""}`, pii));
       await this.releaseDependents(next);
       return next;
     }
@@ -1370,11 +1383,13 @@ export class Tasks {
       const moved = await this.escalate(HUB, rejected.id, `${rejected.rejections} consecutive changes_requested`, "rejections");
       if (moved.owner !== rejected.owner) return moved;
       // Nobody to escalate to: the owner still has to hear the verdict and the note.
-      this.tell(moved, `Task #${moved.id}: ${by} requests changes again.${note ? ` ${this.screen(moved, note, "review note", moved.owner, withheld)}` : ""} Nobody else can take it; fix it and call hub_task_done again.`, pii);
+      this.releaseNotice(`task ${this.publicTitle(moved)}: could not tell ${moved.owner ?? "its owner"} changes were requested again`, () =>
+        this.tell(moved, `Task #${moved.id}: ${by} requests changes again.${note ? ` ${this.screen(moved, note, "review note", moved.owner, withheld)}` : ""} Nobody else can take it; fix it and call hub_task_done again.`, pii));
       return moved;
     }
     const reopened = this.d.board.update(rejected.id, HUB, "reopened", { state: "in_progress" });
-    this.tell(reopened, `Task #${reopened.id}: ${by} requests changes.${note ? ` ${this.screen(reopened, note, "review note", reopened.owner, withheld)}` : ""} Fix it and call hub_task_done again.`, pii);
+    this.releaseNotice(`task ${this.publicTitle(reopened)}: could not tell ${reopened.owner ?? "its owner"} changes were requested`, () =>
+      this.tell(reopened, `Task #${reopened.id}: ${by} requests changes.${note ? ` ${this.screen(reopened, note, "review note", reopened.owner, withheld)}` : ""} Fix it and call hub_task_done again.`, pii));
     return reopened;
   }
 
@@ -1475,7 +1490,7 @@ export class Tasks {
     if (this.isPii(task) || !this.d.memory) return;
     // claude-mem's observer is a cloud model: model-written text that matches a PII pattern, or that the PII screen did
     // not clear (#198), is not sent (#69).
-    if (withheld || !this.nameable(text)) return this.d.notify(`task #${task.id}: a ${kind} note was not saved to shared memory (${this.whyWithheld(text)})`);
+    if (withheld || !this.nameable(text)) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (${this.whyWithheld(text)})`);
     void this.d.memory.save({ text, title: `agent-hub task #${task.id}: ${task.title}`.slice(0, 120), project: this.d.project, metadata: { peer: by, task: task.id, kind } });
   }
 

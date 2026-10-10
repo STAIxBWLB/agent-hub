@@ -2344,3 +2344,38 @@ for (const path of ["list", "waits"] as const) {
     expect(peers.codex!.got.filter((e) => e.kind === "task" && e.refs?.task === String(c.id))).toHaveLength(1);
   });
 }
+
+test("a throwing publish after the approval write returns the approved task and names the failure (#243)", async () => {
+  const { tasks, board, bus, notices } = await setup(["claude", "codex"]);
+  const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+  await tasks.done("codex", a.id, "done");
+  const publish = bus.publish.bind(bus);
+  bus.publish = () => { throw new Error("delivery journal unavailable"); }; // a latched storage error
+  try { await expect(tasks.review("claude", a.id, "approved")).resolves.toMatchObject({ id: a.id, state: "approved" }); }
+  finally { bus.publish = publish; }
+  expect(board.get(a.id)!.state).toBe("approved");
+  expect(notices.some((line) => line.includes(`task #${a.id}`) && line.includes("could not tell") && line.includes("delivery journal unavailable"))).toBe(true);
+});
+
+test("a throwing notify after a reviewer-less done returns the approved task (#243)", async () => {
+  const base = await setup(["claude", "codex"]);
+  let thrown = false;
+  const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", notify: (line) => {
+    if (!thrown && line.includes("no reviewer: approved")) { thrown = true; throw new Error("console unavailable"); }
+  } });
+  const t = await tasks.propose("claude", { title: "read the design", class: "review" });
+  await expect(tasks.done("claude", t.id, "looks right")).resolves.toMatchObject({ id: t.id, state: "approved" });
+  expect(thrown).toBe(true);
+});
+
+test("a throwing notify from note() after a done write returns the approved task (#243)", async () => {
+  const base = await setup(["claude", "codex"]);
+  let thrown = false;
+  const tasks = new Tasks({ board: base.board, bus: base.bus, routing: () => loadRouting(base.dir), cwd: base.dir, project: "agent-hub", memory: new MemoryClient(base.mem.url), notify: (line) => {
+    if (!thrown && line.includes("note was not saved to shared memory")) { thrown = true; throw new Error("console unavailable"); }
+  } });
+  const t = await tasks.propose("claude", { title: "check the chart", class: "review" });
+  // The summary matches a PII pattern, so note() takes its notify path after the done write.
+  await expect(tasks.done("claude", t.id, PII)).resolves.toMatchObject({ id: t.id, state: "approved" });
+  expect(thrown).toBe(true);
+});
