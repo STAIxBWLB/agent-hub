@@ -72,9 +72,9 @@ const TREE = ["status", "--porcelain", "--untracked-files=all", "--", ".", ":(ex
 /**
  * The preconditions a run checks before it changes anything; each refusal says why. Returns the branch (or commit) to
  * return to. `pinned` receives each suite ref's commit: a reset checks out that commit, never the name, which an
- * agent's own commit could move.
+ * agent's own commit could move. `named` receives the full ref name of each one given as a plain branch or tag.
  */
-export async function benchPreflight(cwd: string, enabled: boolean, refs: string[] = [], pinned: Map<string, string> = new Map()): Promise<string> {
+export async function benchPreflight(cwd: string, enabled: boolean, refs: string[] = [], pinned: Map<string, string> = new Map(), named: Map<string, string> = new Map()): Promise<string> {
   if (!enabled) throw new Error('benchmarks are off for this project: set "bench": { "enabled": true } in .agenthub/config.json of a project kept for benchmarks (each attempt resets its work tree)');
   const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0) throw new Error("a benchmark project must be a git repository");
@@ -92,11 +92,17 @@ export async function benchPreflight(cwd: string, enabled: boolean, refs: string
       throw new Error(`suite ref ${ref} tracks files under .agenthub/, which a reset to it would write over the hub's own; use a commit made after .agenthub was untracked, or rebuild the ref without that directory`);
     }
     pinned.set(ref, commit.out);
+    // A plain branch or tag name has a full ref name; a hash, `HEAD~1` or `main^{commit}` has none and is not tracked.
+    // (A name that is both a branch and a tag has none either; it is pinned to what git resolves it to, the tag.)
+    // Tracked only when that name is what was pinned: a branch someone named like a hash is not the hash.
+    const full = await git(cwd, ["rev-parse", "--symbolic-full-name", "--verify", "--quiet", "--end-of-options", ref]);
+    if (full.code === 0 && full.out.startsWith("refs/") && (await git(cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${full.out}^{commit}`])).out === commit.out) named.set(ref, full.out);
   }
   const dirty = await git(cwd, TREE);
   if (dirty.code !== 0 || dirty.out) throw new Error("the work tree has changes; commit or remove them first (a run resets the tree between attempts)");
-  const branch = await git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
-  return branch.code === 0 && branch.out ? branch.out : (await git(cwd, ["rev-parse", "HEAD"])).out;
+  // The bare branch name, never `--short`: a branch that shares its name with a tag would come back as `heads/<name>`.
+  const branch = await git(cwd, ["symbolic-ref", "--quiet", "HEAD"]);
+  return branch.code === 0 && branch.out.startsWith("refs/heads/") ? branch.out.slice("refs/heads/".length) : (await git(cwd, ["rev-parse", "HEAD"])).out;
 }
 
 /**
@@ -123,7 +129,8 @@ export async function reset(cwd: string, target: string, detach: boolean, log: (
  * with the same id). The turn that approved it ends after the approval and its usage arrives later still, so this waits
  * while a turn started since the task's proposal has not ended and its peer is still busy (`busy`, the hub's live
  * view: a turn the hub closed without an end event does not hold the wait), at most `settleMs`, then one poll more.
- * Unapproved tasks have no record.
+ * Unapproved tasks have no record, and a wait that was interrupted, could not read the hub, or ran out with the turn
+ * still open gives none either: partial measures would read as complete.
  */
 export async function metricsOf(opts: Pick<BenchOptions, "stateDir" | "settleMs" | "pollMs" | "stopped">, io: Pick<BenchIo, "now" | "sleep" | "log">, projectId: string, task: number,
     busy: () => Promise<Set<string> | undefined> = async () => undefined): Promise<AttemptMetrics | null> {
@@ -142,12 +149,14 @@ export async function metricsOf(opts: Pick<BenchOptions, "stateDir" | "settleMs"
     const working = await busy().then((w) => w, () => null);
     if (working === null && open.size) { io.log(`  the hub's status could not be read while task #${task}'s approving turn was open; its measures are not recorded`); return null; }
     const waiting = [...open].filter((peer) => !working || working.has(peer));
-    if (!waiting.length || io.now() >= until) break;
+    if (!waiting.length) break;
+    if (io.now() >= until) { io.log(`  ${waiting.join(", ")} still had the turn that approved task #${task} open after the wait; its measures are not recorded`); return null; }
     if (!said) { said = true; io.log(`  waiting for ${waiting.join(", ")} to end the turn that approved task #${task}, so its cost is counted`); }
     await io.sleep(opts.pollMs ?? 2000);
   }
   if (opts.stopped?.()) return null; // cut short: partial measures would read as complete
   await io.sleep(opts.pollMs ?? 2000); // the last usage of a turn lands a moment after its end
+  if (opts.stopped?.()) return null;
   const all = events();
   const proposed = last(all, true, "proposed");
   const r = taskRecords(all, projectId, { version: VERSION, source: "live" }).find((x) => x.task === task && x.createdAt === proposed);
@@ -167,19 +176,23 @@ export async function runBench(opts: BenchOptions, io: BenchIo): Promise<string>
   const suite = parseSuite(suiteText);
   // --tasks also sets the order, so a person can randomize it per run (docs/bench.md).
   const tasks = opts.only?.length ? opts.only.map((id) => suite.tasks.find((t) => t.id === id) ?? fail(`--tasks names ${id}, which the suite does not have`)) : suite.tasks;
-  const pinned = new Map<string, string>();
-  const original = await benchPreflight(opts.cwd, true, [...new Set(tasks.map((t) => t.ref))], pinned);
+  const pinned = new Map<string, string>(), named = new Map<string, string>();
+  const original = await benchPreflight(opts.cwd, true, [...new Set(tasks.map((t) => t.ref))], pinned, named);
   const onBranch = (await git(opts.cwd, ["symbolic-ref", "--quiet", "HEAD"])).code === 0;
   const hub = await io.connect();
   const run = `${new Date(io.now()).toISOString().slice(0, 10).replace(/-/g, "")}-${randomUUID().slice(0, 8)}`;
   const home = opts.home ?? hubHome();
   try {
-    const status = (await hub.request({ t: "status" }, 5000)).status as { projectId: string; version: string; peers: Record<string, { state: string; requestedModel?: string; permissionMode?: string }> };
+    const answered = await hub.request({ t: "status" }, 5000);
+    if (!answered.status) throw new Error(`the hub did not answer its status: ${answered.error ?? "no reply"}`);
+    const status = answered.status as { projectId: string; version: string; peers: Record<string, { state: string; requestedModel?: string; permissionMode?: string }> };
     const routing = join(opts.cwd, ".agenthub", "routing.toml");
     const fingerprint: Fingerprint = {
       // ponytail: the hub's status reports a requested model for Pi only and permission modes once #242 lands; the rest
       // are recorded as absent. Reading each peer's launch settings would fill them in.
-      peers: Object.entries(status.peers ?? {}).map(([id, p]) => ({ id, ...(p.requestedModel ? { model: p.requestedModel } : {}), ...(p.permissionMode ? { permissionMode: p.permissionMode } : {}) })).sort((a, b) => a.id.localeCompare(b.id)),
+      // The status lists every peer the hub has known; an arm is the ones attached now.
+      peers: Object.entries(status.peers ?? {}).filter(([, p]) => p.state !== "offline")
+        .map(([id, p]) => ({ id, ...(p.requestedModel ? { model: p.requestedModel } : {}), ...(p.permissionMode ? { permissionMode: p.permissionMode } : {}) })).sort((a, b) => a.id.localeCompare(b.id)),
       routingHash: existsSync(routing) ? createHash("sha256").update(readFileSync(routing)).digest("hex") : null,
       hubVersion: status.version,
     };
@@ -201,13 +214,16 @@ export async function runBench(opts: BenchOptions, io: BenchIo): Promise<string>
         break outer;
       }
     }
-    // Back where it started: on its branch, or at its commit. A branch or tag the suite names that moved during the
-    // run names different work next time (HEAD-relative and hash refs are not checked: the runner itself moves HEAD).
+    // Back where it started: on its branch, or at its commit. A branch or tag the suite names that moved or went
+    // away during the run names different work next time (refs given as a hash or relative to another are not tracked).
     if (!stopped && !(await reset(opts.cwd, original, !onBranch, io.log))) io.log(`  the tree was not returned to ${original}; check it before the next run`);
-    for (const [ref, commit] of pinned) {
-      if (!(await git(opts.cwd, ["rev-parse", "--symbolic-full-name", "--verify", "--quiet", "--end-of-options", ref])).out.startsWith("refs/")) continue;
-      const now = (await git(opts.cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`])).out;
-      if (now !== commit) io.log(`  suite ref ${ref} moved during the run (${commit.slice(0, 12)} to ${now.slice(0, 12) || "nothing"}); this run used ${commit.slice(0, 12)}`);
+    for (const [ref, full] of named) {
+      const commit = pinned.get(ref)!;
+      const now = await git(opts.cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${full}^{commit}`]);
+      // `rev-parse --verify --quiet` exits 1 for a name that no longer resolves; anything else is git not answering.
+      if (now.code === 1) io.log(`  suite ref ${ref} was deleted during the run; this run used ${commit.slice(0, 12)}`);
+      else if (now.code !== 0) io.log(`  suite ref ${ref} could not be checked after the run`);
+      else if (now.out !== commit) io.log(`  suite ref ${ref} moved during the run (${commit.slice(0, 12)} to ${now.out.slice(0, 12)}); this run used ${commit.slice(0, 12)}`);
     }
     appendBench({ schema: BENCH_SCHEMA, kind: "end", run, endedAt: new Date(io.now()).toISOString(), ...(stopped ? { stopped } : {}) }, home);
     return run;

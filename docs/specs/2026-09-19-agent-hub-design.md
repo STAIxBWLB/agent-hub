@@ -1998,8 +1998,9 @@ acts on the stopped state directory.
 - `setup` and `verify` run in their own process group, bounded; the group is stopped at the bound, on an interrupt and
   when the command exits. An approved attempt's measures come from #247's `taskRecords` for the task proposed last with
   that id, read once the turns started since its proposal have ended (waiting only while their peers are busy or
-  paused, at most 10 minutes, outside the attempt's duration); a timeout, an error, an interrupted wait or an unreadable
-  hub status leaves none, never partial ones.
+  paused, at most 10 minutes, outside the attempt's duration); a timeout, an error, an interrupted wait, a wait that
+  runs out with the turn still open, or a hub status that cannot be read while it is open leaves none, never partial
+  ones. The fingerprint lists only the peers attached at the start.
 - Results go to `~/.agenthub/bench/<run>.jsonl` (ids, outcomes, exit codes, counts, times; never suite text or command
   output). A run's state comes from its end record or its runner's liveness (`processLiveness`). Comparisons are
   derived when asked: an arm is every run of it that is over (a stopped run included), runs of different suites or

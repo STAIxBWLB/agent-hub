@@ -59,9 +59,11 @@ export const recordKey = (r: { project: string; task: number; createdAt: string 
 type Acc = Omit<TaskRecord, "schema" | "kind" | "project" | "approvedAt" | "wallMs" | "firstPass" | "outcome" | "writer" | "models"> & {
   models: Set<string>; approvedAt: string | null; lastState: string | null;
 };
+/** Keyed by peer ids, model names and reasons, any of which may be `constructor` or `__proto__`: no prototype to inherit from. */
+const keyed = <T>(): Record<string, T> => Object.create(null) as Record<string, T>;
 const blank = (task: number): Acc => ({ task, class: null, pii: false, createdAt: null, startedAt: null, activeMs: 0, owners: [], reviewer: null,
-  reviewRounds: 0, changesRequested: 0, checkPassed: 0, checkFailed: 0, dones: 0, reassignments: 0, reassignedBy: {}, stuck: 0, overlaps: 0, conflicts: 0,
-  tests: { pass: 0, fail: 0 }, tokens: { total: 0, byPeer: {}, byAttribution: {} }, usage: {}, usageByModel: {}, turns: 0, filesChanged: 0, models: new Set(),
+  reviewRounds: 0, changesRequested: 0, checkPassed: 0, checkFailed: 0, dones: 0, reassignments: 0, reassignedBy: keyed(), stuck: 0, overlaps: 0, conflicts: 0,
+  tests: { pass: 0, fail: 0 }, tokens: { total: 0, byPeer: keyed(), byAttribution: keyed() }, usage: keyed(), usageByModel: keyed(), turns: 0, filesChanged: 0, models: new Set(),
   approvedAt: null, lastState: null });
 const add = (current: number | null, value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? (current ?? 0) + value : current;
 const bump = (counts: Record<string, number>, key: string, n = 1) => { counts[key] = (counts[key] ?? 0) + n; };
@@ -219,9 +221,10 @@ export function researchReport(records: ResearchRecord[], since = 0): ResearchRe
   }
   const all = [...latest.values()];
   const group = (keys: (r: TaskRecord) => string[]) => {
-    const out: Record<string, TaskRecord[]> = {};
-    for (const r of all) for (const k of keys(r)) (out[k] ??= []).push(r);
-    return Object.fromEntries(Object.entries(out).sort(([a], [b]) => a.localeCompare(b)).map(([k, rs]) => [k, measures(rs, labels)]));
+    // A Map: a peer or model may be named `constructor`, which a plain object answers with an inherited value.
+    const out = new Map<string, TaskRecord[]>();
+    for (const r of all) for (const k of keys(r)) out.set(k, [...(out.get(k) ?? []), r]);
+    return Object.fromEntries([...out].sort(([a], [b]) => a.localeCompare(b)).map(([k, rs]) => [k, measures(rs, labels)]));
   };
   return { overall: measures(all, labels), byClass: group((r) => [r.class ?? "unknown"]), byOwner: group((r) => r.owners.length ? [...new Set(r.owners)] : ["none"]),
     byProject: group((r) => [r.project]), byModel: group((r) => r.models.length ? r.models : ["unknown"]) };
