@@ -264,7 +264,8 @@ export class LocalPeer extends BasePeer {
           const result: ChatMessage = { role: "tool", tool_call_id: call.id, content: output, is_error: toolResultFailed(name, output) };
           msgs.push(result); results.push(result);
           this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
-          capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
+          // Hub tool arguments/results are not capture evidence; Tasks owns its screened memory writes.
+          if (name !== "hub_send" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name)) capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
         }
       } finally { if (results.length) this.routes.observeResults(res.routeDecision, res.message, results); }
     }
