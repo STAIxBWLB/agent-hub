@@ -91,6 +91,26 @@ allow decisions require confirmation; delivery resolution requires a reason. Tas
 polling runs only while the corresponding panel is visible. Leaving restores
 the terminal and returning from panels replays the bounded stream buffer.
 
+The Tasks panel summarizes the whole public board with an approved/all fraction,
+a 20-cell ASCII bar and state counts. Proposed tasks with unapproved or missing
+`after` dependencies count as waiting; PII stubs count normally. Each task has a
+four-cell stage meter (proposed, in progress, review, approved). Changes requested
+returns to in progress and uses `!` plus the failure tone. Narrow panels retain
+the fraction/bar before optional counts. The stream has a fixed top header with
+`tasks N/M approved`, above a scroll region beginning on row 2. Until a board
+read succeeds it says loading, not 0/0; a later failure keeps the prior snapshot
+with a visible notice. Stream board reads occur at startup and when existing
+status counts change; panels read the board on their existing refresh.
+
+The dashboard Task board shows the same shared public-board progress model,
+including state counts, waiting, stacked segments and a labeled four-stage track
+per row. Filtering rows does not filter overall progress. Theme offers System,
+Light and Dark; it is applied before first paint and stored per browser. Blocked
+storage defaults to System on reload and never prevents operation. System follows
+OS color preference through CSS. Both inline scripts and the style retain CSP
+hashes; there are no external chart/theme assets. Live theme/readability inspection
+is tracked in `docs/smoke.md` and remains unverified until performed.
+
 Console color policy is `--color=auto|always|never`, with `auto` as the default.
 Auto enables color only when both input and output are TTYs, `TERM` is not
 `dumb`, and `NO_COLOR` is empty or absent. Explicit `always` overrides these

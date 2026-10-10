@@ -1354,3 +1354,16 @@ untracked), with at least two real peers attached:
 - Let one task run past its `timeout_s`; check the run stops, names the open task and reads `stopped`.
 - Press Ctrl-C during a `verify`; check the attempt reads `interrupted` and nothing it started keeps running.
 - Run a second arm, then `ahub bench compare <arm> <arm>`; check the dashboard's Benchmarks section shows both.
+
+## Whole-board task progress and dashboard themes (#246)
+
+Live console and dashboard light/dark inspection: **unverified**. Local resource
+admission currently defers on uncovered system mediaanalysisd work; no native
+sessions or model prompts were started for this change.
+
+When admitted, inspect an empty board and a mixed board (approved, waiting,
+working, review and changes requested) at 80x24, 120x40 and 200x60. Confirm the
+stream count is above the scroll region and the Tasks summary/row meters agree
+with the dashboard. In the dashboard select Light, Dark and System, reload each
+choice, change OS theme on System, and check text, bars, stage labels and controls.
+Repeat with browser storage disabled. Record the exact head and verdict here.

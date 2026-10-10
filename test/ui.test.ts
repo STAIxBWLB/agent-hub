@@ -1,5 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { connect } from "node:net";
+import { createHash } from "node:crypto";
+import { runInNewContext } from "node:vm";
+import { taskProgress } from "../src/ui/task-progress.ts";
+import { initialConsoleState, renderConsole } from "../src/cli/console-state.ts";
 import { startDashboard } from "../src/hub/ui.ts";
 
 const cleanup: (() => void)[] = [];
@@ -207,4 +211,56 @@ test("snapshot rejects a backend identity that disagrees with the requested proj
   const session = await fetch(`${ui.origin}/session`, { method: "POST", headers: { origin: ui.origin, "content-type": "application/json" }, body: JSON.stringify({ ticket }) });
   const cookie = session.headers.get("set-cookie")!.split(";")[0]!;
   expect((await post({ after: 0, projectId: "requested", instanceId: "i1" }, cookie)).status).toBe(409);
+});
+
+
+test("shared public progress executes in the hashed dashboard and matches console counts/stages", async () => {
+  const { ui } = setup(); const response = await fetch(ui.origin); const html = await response.text();
+  const model = html.match(/const taskProgress = ([\s\S]*?);\nconst themeControl/)?.[1];
+  expect(model).toBeDefined();
+  const browserModel = runInNewContext("(" + model + ")");
+  const board = [{ id: 1, state: "approved" as const, title: "[pii]" }, { id: 2, state: "proposed" as const, deps: [1], title: "ready" }, { id: 3, state: "proposed" as const, deps: [4], title: "waiting" }, { id: 4, state: "in_progress" as const, title: "working" }, { id: 5, state: "in_review" as const, title: "review" }, { id: 6, state: "changes_requested" as const, title: "changes" }, { id: 7, state: "approved" as const, title: "done" }];
+  const progress = JSON.parse(JSON.stringify(browserModel(board)));
+  expect(progress).toEqual(taskProgress(board));
+  const s = initialConsoleState(true); s.panel = 3; s.tasks = board;
+  const summary = renderConsole(s, 200, 60)[2]!;
+  expect(summary).toContain("2/7 approved");
+  for (const [state, count] of Object.entries(progress.counts)) if (state !== "approved") expect(summary).toContain(`${state.replaceAll("_", " ").replace("in review", "review").replace("changes requested", "changes")} ${count}`);
+  class Node {
+    children: Node[] = []; textContent = ""; className = ""; attrs: Record<string, string> = {};
+    append(...nodes: Node[]) { this.children.push(...nodes); }
+    replaceChildren() { this.children = []; }
+    setAttribute(key: string, value: string) { this.attrs[key] = value; }
+  }
+  const target = new Node();
+  const document = { createElement: () => new Node(), createElementNS: () => new Node() };
+  const consumers = html.slice(html.indexOf("function renderTaskProgress("), html.indexOf("function render(snapshot)"));
+  const renderers = runInNewContext(`const $ = () => target; const el = (tag,text,cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = String(text); node.className = cls || ''; return node; }; ${consumers}; ({renderTaskProgress,renderTaskStage})`, { document, target });
+  renderers.renderTaskProgress(progress);
+  expect(target.children[0]?.textContent).toBe("2/7 approved (29%)");
+  expect(target.children[2]?.textContent).toContain("waiting 1");
+  expect(renderers.renderTaskStage(progress.stages[5]).attrs["aria-label"]).toBe("Stage 2/4: changes requested (back in progress)");
+  renderers.renderTaskProgress(browserModel([]));
+  expect(target.children[0]?.textContent).toBe("0/0 approved (0%)");
+  expect(html).toContain("renderTaskProgress(progress)");
+  const blocks = [...html.matchAll(/<(script|style)>([\s\S]*?)<\/\1>/g)]; expect(blocks).toHaveLength(3);
+  for (const match of blocks) expect(response.headers.get("content-security-policy")).toContain(createHash("sha256").update(match[2]!).digest("base64"));
+  expect(response.headers.get("content-security-policy")).not.toContain("unsafe-inline");
+});
+test("theme preference initializes before style/paint, persists choices and tolerates blocked storage", async () => {
+  const { ui } = setup(); const html = await (await fetch(ui.origin)).text();
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)![1];
+  expect(html.indexOf(script!)).toBeLessThan(html.indexOf("<style>"));
+  for (const saved of ["system", "light", "dark", "invalid"]) {
+    const values: string[] = []; const root = { dataset: {} as Record<string, string> };
+    const theme = runInNewContext(script + ";dashboardTheme", { document: { documentElement: root }, localStorage: { getItem: () => saved, setItem: (_key: string, value: string) => values.push(value) } });
+    expect(root.dataset.theme).toBe(saved === "invalid" ? "system" : saved);
+    theme.set("dark"); expect(root.dataset.theme).toBe("dark"); expect(values).toEqual(["dark"]);
+  }
+  const root = { dataset: {} as Record<string, string> };
+  const theme = runInNewContext(script + ";dashboardTheme", { document: { documentElement: root }, localStorage: { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("blocked"); } } });
+  expect(root.dataset.theme).toBe("system"); expect(() => theme.set("light")).not.toThrow();
+  expect(html).toContain(':root[data-theme="dark"]');
+  expect(html).toContain(':root:not([data-theme="light"]):not([data-theme="dark"])');
+  expect(html).toContain('@media(prefers-color-scheme:dark)');
 });

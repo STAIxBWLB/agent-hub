@@ -1366,6 +1366,23 @@ approval. Deny is direct. Pending requests include expiry and are withdrawn by
 Panels expose Peers, Approvals, Tasks, Queue and Events with bounded polling and
 Unicode cell widths, fall back below 80x24, and restore terminal state on exit.
 
+Whole-board progress (#246) uses one pure `taskProgress` function shared by the
+console and hashed dashboard script. It reads only public id/state/deps fields;
+PII stubs count like other tasks. Waiting partitions proposed tasks whose public
+dependencies are not approved, including unknown dependencies. Approved/all gives
+the done fraction (zero on an empty board). Four stages are proposed, in progress,
+in review and approved; changes requested returns to stage two and is marked.
+The console Tasks panel has a 20-cell ASCII summary bar and fixed four-cell row
+meters, preserving width and color-off geometry. Its stream header is fixed at
+row one, outside the row-two scroll region; whole-board reads use the existing
+bounded refresh and status-count changes. Loading/failed reads never fabricate
+confirmed empty progress. Dashboard filters affect rows only, not totals. Its
+stacked bar and stages have text equivalents. System/Light/Dark choice is applied
+as `data-theme` before first paint, persists with guarded localStorage access and
+follows OS CSS preference on System. The shared model is injected before the
+page's own inline script/style CSP hashes are calculated, with no new control
+message or CLI JSON change. UI public rows expose public-view deps for waiting.
+
 Console semantic colors (issue #201) use spans with a fixed terminal-native
 palette: cyan information, bold cyan active/selected labels, green availability
 and success, yellow attention/waiting, red failure/intervention, and restrained

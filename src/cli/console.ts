@@ -4,7 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { ControlClient } from "../hub/control-client.ts";
 import { contextLine } from "./status-lines.ts";
 import { renderTailEvent } from "./tail-render.ts";
-import { approvalFrom, initialConsoleState, keyTable, notify, paint, panelRows, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap } from "./console-state.ts";
+import { approvalFrom, initialConsoleState, keyTable, notify, paint, panelRows, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, renderStreamHeader, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap } from "./console-state.ts";
 import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
 
@@ -69,6 +69,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   let state = initialConsoleState(!!options.panels); state.project = basename(options.cwd);
   let columns = options.columns ?? terminal.columns; let rows = options.rows ?? terminal.rows;
   let active = true; let inAlternate = false; let plain = !terminal.isTTY || columns < 80 || rows < 24;
+  let boardCounts: string | undefined;
   let polling = false; let childRunning = false; let cancelChild: (() => void) | undefined;
   const priorPush = client.onPush; const priorClose = client.onClose; const priorRaw = !!terminal.isRaw;
   const removers: (() => void)[] = []; const timers: ReturnType<typeof setInterval>[] = [];
@@ -95,12 +96,15 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     if (!active || plain) return;
     if (state.mode === "panels" && !inAlternate) { terminal.write("\x1b[r\x1b[?1049h\x1b[2J"); inAlternate = true; }
     else if (state.mode === "stream" && inAlternate) {
-      terminal.write(`\x1b[?1049l\x1b[1;${rows - 4}r`); inAlternate = false;
+      terminal.write(`\x1b[?1049l\x1b[2;${rows - 4}r`); inAlternate = false;
       if (droppedStream) writeStream({ text: `${plural(droppedStream, "older panel-mode event")} omitted from console memory; inspect hub.log for the full stream.` });
       for (const event of pendingStream) writeStream(event);
       pendingStream = []; droppedStream = 0;
     }
-    terminal.write(state.mode === "stream" ? `\x1b[1;${rows - 4}r` : "\x1b[r");
+    terminal.write(state.mode === "stream" ? `\x1b[2;${rows - 4}r` : "\x1b[r");
+    if (state.mode === "stream") {
+      terminal.write("\x1b[1;1H\x1b[2K"); terminal.write(paint(renderStreamHeader(state, columns), color));
+    }
     const lines = renderConsoleLines(state, columns, rows);
     const start = rows - lines.length + 1;
     for (const [index, line] of lines.entries()) { terminal.write(`\x1b[${start + index};1H\x1b[2K`); terminal.write(paint(line, color)); }
@@ -129,12 +133,17 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
         ...(panels ? [client.request({ t: "task", op: "hub_task_list", args: {} }, 3000), client.request({ t: "queue", op: "list" }, 3000), client.request({ t: "task", op: "hub_task_list", args: { ready: true } }, 3000)] : []),
       ]);
       if (!active) return;
-      const [status, budget, tasks, queue, ready] = replies;
+      const [status, budget, panelTasks, queue, ready] = replies;
+      const counts = JSON.stringify(status.status?.tasks ?? {});
+      const tasks = panelTasks ?? (counts !== boardCounts ? await client.request({ t: "task", op: "hub_task_list", args: {} }, 3000) : undefined);
+      if (!active) return;
+      if (!panelTasks && tasks) replies.push(tasks);
       if (status.status?.peers) state.peers = status.status.peers;
       if (budget.budget) state.budget = budget.budget;
-      if (tasks?.ok && state.mode === "panels") { const parsed = JSON.parse(tasks.text); if (Array.isArray(parsed)) {
+      if (tasks?.ok) { const parsed = JSON.parse(tasks.text); if (Array.isArray(parsed)) {
           const readyIds = new Set(ready?.ok ? JSON.parse(ready.text).map((task: any) => task.id) : []);
           state.tasks = parsed.map(task => ({ ...task, ready: readyIds.has(task.id) }));
+          boardCounts = counts; state.tasksKnown = true;
         } }
       if (queue?.ok && state.mode === "panels" && Array.isArray(queue.deliveries)) state.queue = queue.deliveries;
       const error = replies.find(reply => reply.ok === false)?.error; if (error) notice(String(error));

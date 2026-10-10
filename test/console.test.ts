@@ -1,5 +1,5 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
-import { initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
+import { initialConsoleState, reduceConsole, renderConsole, renderConsoleLines, renderStreamHeader, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted } from "../src/cli/console-state.ts";
 import { eventTone, RESTORE_CONSOLE, runConsole } from "../src/cli/console.ts";
 import { contextLine } from "../src/cli/status-lines.ts";
 import { renderTailEvent } from "../src/cli/tail-render.ts";
@@ -131,10 +131,11 @@ describe("console terminal lifecycle", () => {
     f.input("\x1b"); f.input(":kill\ry"); expect(spawned).toBe(0);
     f.input("\x03"); await running;
   });
-  test("panel buffer is left when toggling, and only panels request board/queue", async () => {
+  test("panel buffer is left when toggling; stream reads the board and only panels request queue", async () => {
     const f = fixture(); const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal });
     await Promise.resolve(); await Promise.resolve();
     expect(f.requests.some(msg => msg.t === "queue")).toBe(false);
+    expect(f.requests.some(msg => msg.op === "hub_task_list" && !msg.args.ready)).toBe(true);
     f.input("\t"); await Promise.resolve(); await Promise.resolve();
     expect(f.output.join("")).toContain("\x1b[?1049h");
     f.input("\t"); expect(f.output.join("")).toContain("\x1b[?1049l");
@@ -288,8 +289,8 @@ describe("console colors", () => {
     expect(eventTone({ t: "undeliverable", env, peer: "pi" })).toBe("failure");
     const s = state(true); s.panel = 3;
     s.tasks = [{ id: 1, state: "in_progress", title: "retry the failed check", class: "implement", history: [{ event: "check failed", at: NOW }] }];
-    expect(renderConsoleLines(s, 80, 24, NOW)[3]!.some(span => span.text.startsWith("in_progress check failed") && span.tone === "failure")).toBe(true);
-    expect(renderConsole(s, 80, 24, NOW)[3]).toContain("in_progress check failed");
+    expect(renderConsoleLines(s, 80, 24, NOW)[4]!.some(span => span.text.startsWith("in_progress check failed") && span.tone === "failure")).toBe(true);
+    expect(renderConsole(s, 80, 24, NOW)[4]).toContain("in_progress check failed");
   });
   for (const [columns, rows] of [[80, 24], [120, 40], [200, 60]]) {
     test(`painted and plain geometry match ${columns}x${rows} including long Korean text`, () => {
@@ -414,8 +415,8 @@ describe("console layout (#213)", () => {
     for (const [panel, words] of [[1, ["STATE", "LINK", "Q", "!", "REVIEW", "PAUSE", "QUOTA", "MODEL"]], [2, ["PEER", "LEFT", "TITLE"]],
       [3, ["STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "TITLE"]], [4, ["PEER", "STATE", "REV", "AGE"]]] as const) {
       s.panel = panel;
-      const lines = renderConsole(s, columns, 24, T); const header = lines[2]!;
-      const rows = lines.slice(3, 3 + panelRows(s).length);
+      const lines = renderConsole(s, columns, 24, T); const headerAt = panel === 3 ? 3 : 2; const header = lines[headerAt]!;
+      const rows = lines.slice(headerAt + 1, headerAt + 1 + panelRows(s).length);
       expect(header).toStartWith(`  ${panel === 1 ? "PEER" : "ID"}  `);
       for (const word of words) {
         if (columns === 80 && !header.includes(` ${word}`)) continue; // the last Peers column may be cut at 80
@@ -828,4 +829,50 @@ describe("console layout (#213)", () => {
     const s = state(true); s.panel = 5; s.events = [{ text: "[agent-hubby stuff here and more" }];
     for (let columns = 10; columns <= 30; columns++) for (const line of renderConsoleLines(s, columns, 24, NOW)) expect(Bun.stringWidth(paint(line, false))).toBeLessThanOrEqual(columns);
   });
+});
+
+
+describe("whole-board task progress (#246)", () => {
+  test("a refused stream board read exposes an error and never confirms an empty board", async () => {
+    const f = fixture(); const original = f.client.request;
+    f.client.request = async msg => msg.op === "hub_task_list" ? { ok: false, error: "board refused" } as any : original(msg);
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    const text = f.output.join(""); expect(text).toContain("board refused"); expect(text).toContain("tasks loading..."); expect(text).not.toContain("tasks 0/0 approved");
+    f.signal(); await running;
+  });
+
+  test("a later refused board read preserves the known progress and displays its error", async () => {
+    const f = fixture(); let failed = false; const original = f.client.request;
+    f.client.request = async msg => msg.op === "hub_task_list" ? failed ? { ok: false, error: "board unavailable" } as any : { ok: true, text: JSON.stringify([{ id: 1, state: "approved", title: "done" }]) } as any : original(msg);
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(f.output.join("")).toContain("tasks 1/1 approved"); failed = true;
+    f.input("\t"); for (let i = 0; i < 8; i++) await Promise.resolve();
+    f.input("\t"); for (let i = 0; i < 8; i++) await Promise.resolve();
+    expect(f.output.join("")).toContain("board unavailable");
+    expect(f.output.at(-3) || f.output.join("")).not.toContain("tasks 0/0 approved");
+    expect(f.output.join("").lastIndexOf("tasks 1/1 approved")).toBeGreaterThan(f.output.join("").indexOf("board unavailable"));
+    f.signal(); await running;
+  });
+  test("stream progress occupies row one above a scroll region starting at row two", async () => {
+    const f = fixture(); const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
+    expect(f.output.join("")).toContain("\x1b[2;20r");
+    const at = f.output.indexOf("\x1b[1;1H\x1b[2K");
+    expect(at).toBeGreaterThanOrEqual(0); expect(f.output[at + 1]).toContain("tasks loading...");
+    f.signal(); await running;
+  });
+  for (const [columns, rows] of [[80, 24], [120, 40], [200, 60]]) {
+    test(`progress summary and stages preserve ASCII geometry ${columns}x${rows}`, () => {
+      const s = state(true); s.panel = 3;
+      s.tasks = [{ id: 1, state: "approved", title: "done", class: "implement" }, { id: 2, state: "proposed", deps: [3], title: "wait", class: "implement" }, { id: 3, state: "changes_requested", title: "retry", class: "implement" }];
+      const lines = renderConsoleLines(s, columns!, rows!, NOW);
+      expect(paint(lines[2]!, false)).toContain("1/3 approved [#######.............] 33%");
+      expect(lines.map(line => terminalText(paint(line, true)))).toEqual(lines.map(line => paint(line, false)));
+      expect(lines.map(line => paint(line, false)).join("\n")).toContain("[#!--]");
+      for (const line of lines) { const text = paint(line, false); expect(Bun.stringWidth(text)).toBeLessThanOrEqual(columns!); expect(text).toMatch(/^[\x20-\x7e]*$/); }
+      s.mode = "stream";
+      expect(paint(renderStreamHeader(s, columns!), false)).toContain("tasks 1/3 approved");
+    });
+  }
 });

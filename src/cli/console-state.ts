@@ -1,3 +1,5 @@
+import { taskProgress } from "../ui/task-progress.ts";
+import type { ProgressStage } from "../ui/task-progress.ts";
 import { sanitize } from "../hub/envelope.ts";
 
 export interface Approval {
@@ -15,7 +17,7 @@ export interface ConsoleState {
   autoSelected?: boolean;
   input: string; editing: boolean; history: string[]; historyIndex: number;
   approvals: Approval[]; events: ConsoleEvent[]; peers: Record<string, any>; budget: Record<string, any>;
-  tasks: any[]; queue: any[]; detail?: Detail; detailOffset: number; help: boolean; notice: string; noticeAt?: number; noticeTone?: Tone;
+  tasks: any[]; tasksKnown?: boolean; queue: any[]; detail?: Detail; detailOffset: number; help: boolean; notice: string; noticeAt?: number; noticeTone?: Tone;
   peerFilter?: string; kindFilter?: string; project?: string;
   confirm?: { type: "permission"; id: string; option: string; peer: string } | { type: "command"; args: string[] };
   optionChoice?: string;
@@ -26,7 +28,7 @@ export type ConsoleEffect = { type: "exit" } | { type: "permit"; id: string; opt
   { type: "command"; args: string[] } | { type: "show"; panel: number; id: string } | { type: "print"; text: string; kind: string; tone?: Tone } | { type: "keys" };
 export function initialConsoleState(panels = false): ConsoleState {
   return { mode: panels ? "panels" : "stream", panel: 1, selection: 0,
-    input: "", editing: false, history: [], historyIndex: 0, approvals: [], events: [], peers: {}, budget: {}, tasks: [], queue: [], detailOffset: 0, help: false, notice: "" };
+    input: "", editing: false, history: [], historyIndex: 0, approvals: [], events: [], peers: {}, budget: {}, tasks: [], tasksKnown: false, queue: [], detailOffset: 0, help: false, notice: "" };
 }
 /** Strip terminal controls before any daemon or child output reaches a terminal. Preserve printable Unicode. */
 export function terminalText(value: unknown): string {
@@ -452,12 +454,12 @@ const NOTICE_MS = 10_000;
 const TABLES: Record<number, string[]> = {
   1: ["PEER", "STATE", "LINK", "Q", "!", "REVIEW", "PAUSE", "QUOTA", "MODEL"],
   2: ["ID", "PEER", "LEFT", "TITLE"],
-  3: ["ID", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "TITLE"],
+  3: ["ID", "STAGE", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "TITLE"],
   4: ["ID", "PEER", "STATE", "REV", "AGE"],
 };
 const count = (n: unknown) => typeof n === "number" && n ? String(n) : "-";
 /** One span per column of a panel row; zero counters and unknown values read `-`. */
-function cells(s: ConsoleState, row: any, selected: boolean, now: number): Span[] {
+function cells(s: ConsoleState, row: any, selected: boolean, now: number, stages?: Map<number, ProgressStage>): Span[] {
   const id = (text: unknown, tone: Tone | undefined) => span(text, tone && (selected ? "strong" : tone));
   if (s.panel === 1) {
     const b = s.budget[row.id];
@@ -476,7 +478,9 @@ function cells(s: ConsoleState, row: any, selected: boolean, now: number): Span[
     const last = row.history?.at(-1);
     const at = last?.at ?? row.updated ?? row.created;
     const failed = last?.event === "check failed" || last?.event === "failed";
-    return [id(`#${row.id}`, "info"), span(`${row.state}${failed && row.state !== last.event ? ` ${last.event}` : ""}${row.ready ? " ready" : ""}`, failed ? "failure" : row.ready ? "attention" : stateTone(row.state)),
+    const stage = stages?.get(row.id);
+    const meter = stage ? "[" + "#".repeat(stage.stage - (stage.changes ? 1 : 0)) + (stage.changes ? "!" : "") + "-".repeat(4 - stage.stage) + "]" : "[----]";
+    return [id(`#${row.id}`, "info"), span(meter, stage?.changes ? "failure" : stateTone(row.state)), span(`${row.state}${failed && row.state !== last.event ? ` ${last.event}` : ""}${row.ready ? " ready" : ""}${stage?.waiting ? " waiting" : ""}`, failed ? "failure" : row.ready || stage?.waiting ? "attention" : stateTone(row.state)),
       span(row.owner ?? "-"), span(row.reviewer ?? "-"), span(row.class ?? "-"), span(typeof at === "number" ? duration(now - at) : "-", "muted"), span(row.title)];
   }
   if (s.panel === 4) return [id(row.id, "info"), span(row.peer), span(row.state, stateTone(row.state)), span(row.revision ?? "-"), span(typeof row.createdAt === "number" ? duration(now - row.createdAt) : "-", "muted")];
@@ -492,6 +496,12 @@ function table(head: string[], rows: Span[][], columns: number): Span[][] {
   const cap = Math.max(24, Math.floor(columns / 3));
   const width = (cell: Span | undefined) => Bun.stringWidth(flat(cell?.text));
   const widths = head.map((h, i) => Math.min(cap, rows.reduce((max, row) => Math.max(max, width(row[i])), Bun.stringWidth(h))));
+  if (head.includes("STAGE")) {
+    // Keep room for a title and its cut marker when the new fixed stage column is present.
+    const metadata = head.indexOf("CLASS");
+    const occupied = () => widths.slice(0, -1).reduce((sum, value) => sum + value + 2, 2);
+    while (occupied() > columns - 7 && widths[metadata]! > head[metadata]!.length) widths[metadata] = widths[metadata]! - 1;
+  }
   return [head.map(h => span(h, "info")), ...rows].map(row => row.map((cell, i) => {
     if (i === head.length - 1) return cell;
     const text = fit(cell.text, widths[i]!);
@@ -523,6 +533,11 @@ function header(s: ConsoleState, columns: number): Span[] {
 }
 /** The label column is the hub's own: a cut title or option list is marked `(more)` there; Enter shows it whole. */
 const more = (line: Span[], text?: string): Span[] => [span("(more)".padEnd(Bun.stringWidth(line[0]!.text)), "attention"), ...(text === undefined ? line.slice(1) : [span(text)])];
+/** Fixed first screen row, outside the stream scroll region (#246). */
+export function renderStreamHeader(s: ConsoleState, columns: number): Span[] {
+  const progress = taskProgress(s.tasks);
+  return fitLine([span(`${s.project ?? "agent-hub"} | `, "info"), span(s.tasksKnown === false && !progress.total ? "tasks loading..." : `tasks ${progress.counts.approved}/${progress.total} approved`, s.tasksKnown === false && !progress.total ? "attention" : "success")], columns);
+}
 export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, now = Date.now()): Span[][] {
   const permission = selectedApproval(s);
   let prompt = s.editing ? `: ${s.input}` : hint(s);
@@ -546,6 +561,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   if (s.notice && now - (s.noticeAt ?? now) < NOTICE_MS) approvals.push(span(" | "), span(s.notice, s.noticeTone ?? "failure"));
   const footer = [fitLine(summary, columns), fitLine(approvals, columns), fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
   const rule = [span("-".repeat(Math.max(0, columns)), "muted")];
+  const progress = taskProgress(s.tasks);
   if (s.mode === "stream") return [rule, ...footer];
   const height = rows - 6; // header, rule, body, rule, three footer lines
   const lines: Span[][] = [];
@@ -562,8 +578,19 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     const fits = Math.max(1, height - 5); // table header, one row, rule, one title line, deny
     if (allow.length > fits) allow.splice(fits - 1, Infinity, more(allow[0]!, `${plural(allow.length - fits + 1, "more option")}: Enter shows them all`));
     const tail = [...allow, ...deny];
-    const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : height - 1); const start = Math.max(0, at - capacity + 1);
-    const rowsOf = head ? table(head, data.map((row, i) => cells(s, row, i === at, now)), columns) : undefined;
+    const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : height - (s.panel === 3 ? 2 : 1)); const start = Math.max(0, at - capacity + 1);
+    const stages = new Map(progress.stages.map(stage => [stage.id, stage]));
+    const rowsOf = head ? table(head, data.map((row, i) => cells(s, row, i === at, now, stages)), columns) : undefined;
+    if (s.panel === 3) {
+      const done = Math.round(progress.approvedFraction * 20);
+      const main = s.tasksKnown === false && !progress.total ? "tasks loading..." : `${progress.counts.approved}/${progress.total} approved [${"#".repeat(done)}${".".repeat(20 - done)}] ${Math.round(progress.approvedFraction * 100)}%`;
+      const parts = [span(main, "success")];
+      for (const [label, value, tone] of [["proposed", progress.counts.proposed, undefined], ["waiting", progress.counts.waiting, "attention"], ["in progress", progress.counts.in_progress, undefined], ["review", progress.counts.in_review, "attention"], ["changes", progress.counts.changes_requested, "failure"]] as const) {
+        const extra = `  ${label} ${value}`;
+        if (Bun.stringWidth(parts.map(p => p.text).join("") + extra) <= columns) parts.push(span(extra, tone));
+      }
+      lines.push(fitLine(parts, columns));
+    }
     lines.push(fitLine([span("  "), ...(rowsOf?.[0] ?? [span(`peer ${s.peerFilter ?? "all"}  kind ${s.kindFilter ?? "all"}`, "info")])], columns));
     for (let i = start; i < Math.min(data.length, start + capacity); i++) {
       const selected = i === at;
