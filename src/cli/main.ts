@@ -319,7 +319,7 @@ async function taskOp(op: string, a: Record<string, unknown>, throwOnError = fal
   const hub = await connect();
   try {
     const res = await hub.request({ t: "task", op, args: a });
-    if (!res.ok) { audit("refused"); if (throwOnError) throw new Error(res.error); fail(res.error); }
+    if (!res.ok) { if (throwOnError) throw new Error(res.error); audit("refused"); fail(res.error); }
     return res.text;
   } finally { hub.close(); }
 }

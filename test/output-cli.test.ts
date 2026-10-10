@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROTOCOL } from "../src/hub/control-client.ts";
+import { drainCliAudits } from "../src/cli/identity-audit.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 
 const CLI = join(import.meta.dir, "../src/cli/main.ts");
@@ -121,4 +122,12 @@ for (const filter of ["--ready", "proposed"]) test(`filtered board ${filter} rem
   expect(result.stdout).toContain("proposed"); expect(result.stdout).not.toContain("waiting"); expect(result.stdout).not.toContain("STAGE");
   expect(result.stderr).toContain("dependency stages unavailable; showing filtered rows without stages");
   expect(result.stderr).toContain("full board temporarily unavailable");
+});
+
+
+test("successful filtered-board fallback records run rather than refused for an agent shell", async () => {
+  const f = fixture({ failFullBoard: true });
+  const result = await f.run(["board", "proposed"], { AGENTHUB_PEER_ID: "codex" });
+  expect(result.code).toBe(0); expect(result.stdout).toContain("proposed"); expect(result.stderr).toContain("stages unavailable");
+  expect(drainCliAudits(join(f.root, ".agenthub/state")).map(row => row.outcome)).toEqual(["run"]);
 });

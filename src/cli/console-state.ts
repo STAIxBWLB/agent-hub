@@ -211,7 +211,9 @@ export function fit(value: unknown, columns: number): string {
 export function wrap(value: unknown, columns: number, hang = 4): string[] {
   const lines: string[] = [];
   const half = Math.floor(columns / 2);
-  const width = (text: string) => Bun.stringWidth(sanitize(text));
+  // A bare chunk ending in "--- from" becomes a header marker when table padding follows it.
+  const quoteChunk = (text: string) => sanitize(text + " ").slice(0, -1);
+  const width = (text: string) => Bun.stringWidth(quoteChunk(text));
   for (const part of terminalText(value).replace(/\t/g, " ").split("\n")) {
     const indent = /^\s*/.exec(part)![0];
     const lead = Math.min(Bun.stringWidth(indent), half);
@@ -219,7 +221,7 @@ export function wrap(value: unknown, columns: number, hang = 4): string[] {
     const first = lines.length;
     let start = " ".repeat(lead);
     let line = start;
-    const push = () => { lines.push(sanitize(line.trimEnd())); line = start = pad; };
+    const push = () => { lines.push(quoteChunk(line.trimEnd())); line = start = pad; };
     for (const token of part.slice(indent.length).match(/\s+|\S+/g) ?? []) {
       if (width(line + token) <= columns) { line += token; continue; }
       if (line !== start) push();
@@ -229,7 +231,7 @@ export function wrap(value: unknown, columns: number, hang = 4): string[] {
         line += char;
       }
     }
-    if (line !== start || lines.length === first) lines.push(sanitize(line.trimEnd()));
+    if (line !== start || lines.length === first) lines.push(quoteChunk(line.trimEnd()));
   }
   return lines;
 }
