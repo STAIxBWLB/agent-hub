@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createServer, type Server } from "node:net";
 import { ControlClient, PROTOCOL, readControl } from "./control-client.ts";
 import { startDaemon } from "./daemon.ts";
+import { terminalOpener } from "./terminal-open.ts";
 import { Registry, type Project } from "./registry.ts";
 import { CODEX_APP, CODEX_PROXY, CONTROL, SWITCHYARD } from "./ports.ts";
 import { assertLifecycleAvailable, recoveryLock } from "./recovery-store.ts";
@@ -112,7 +113,9 @@ export async function runProjectDaemon(project: Project, unattended = false): Pr
         try {
           daemon = await startDaemon({ cwd: project.root, stateDir: project.stateDir, projectId: project.id, instanceId,
             controlPort: base + CONTROL, codexAppPort: base + CODEX_APP, codexProxyPort: base + CODEX_PROXY,
-            switchyardPort: base + SWITCHYARD, unattended, onShutdownStart });
+            switchyardPort: base + SWITCHYARD, unattended, onShutdownStart,
+            // #269: the real terminal providers belong to the running product; a daemon built without them opens nothing.
+            terminal: (template) => terminalOpener({ template, cwd: project.root, stateDir: project.stateDir }) });
           break;
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;

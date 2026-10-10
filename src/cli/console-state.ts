@@ -1,4 +1,4 @@
-import { PERMISSION_MODES } from "../hub/permission-mode.ts";
+import { PERMISSION_MODES, permissionBoundary } from "../hub/permission-mode.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import type { ProgressStage } from "../ui/task-progress.ts";
 import { sanitize } from "../hub/envelope.ts";
@@ -35,12 +35,7 @@ export function initialConsoleState(panels = false): ConsoleState {
   return { mode: panels ? "panels" : "stream", panel: 1, selection: 0,
     input: "", editing: false, history: [], historyIndex: 0, approvals: [], events: [], peers: {}, budget: {}, tasks: [], tasksKnown: false, queue: [], permissionDefaults: [], permissionDefaultsHandled: [], detailOffset: 0, help: false, notice: "" };
 }
-/** Approval frequency does not create a common sandbox across native peers. */
-export function permissionBoundary(peer: string): string {
-  if (peer === "pi" || peer === "local") return `${peer}: inside hub sandbox, path guard and denylist`;
-  if (peer === "claude" || peer === "codex") return `${peer}: native vendor bounds; no hub sandbox`;
-  return `${peer}: runs its own tools; NO hub sandbox`;
-}
+export { permissionBoundary };
 function permissionModeRefusal(peer: string, mode: unknown): string | undefined {
   if (mode === "unmanaged") return `${peer} permission mode is unmanaged; use its native controls`;
   if (mode === "unverified") return `${peer} permission mode is unverified; start with ahub ${peer} and run a tool first`;

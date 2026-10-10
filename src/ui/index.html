@@ -15,7 +15,7 @@ const dashboardTheme = (() => {
 </script>
 <style>
 :root{color-scheme:light;--waiting:#795399;--paper:#f5f4ef;--ink:#252b29;--muted:#68716c;--line:#d9ddd5;--panel:#ffffff;--panel-soft:#f4f6f2;--control:#ffffff;--control-border:#bbc4bb;--hover:#f0f4ef;--green:#245f45;--green-soft:#e4efe9;--amber:#8a5b12;--amber-soft:#f8eed6;--blue:#245a93;--blue-soft:#e6eef8;--red:#a2392f;--red-soft:#f6e5e2;--dot:#98a29b;--dot-ok:#2f7a52;--dot-warn:#b07a16;--dot-err:#b24539;--focus:#245f45;--on-accent:#ffffff}:root[data-theme="dark"]{color-scheme:dark;--waiting:#b9a0df;--paper:#161a18;--ink:#e5e8e3;--muted:#97a099;--line:#2c342f;--panel:#1d2320;--panel-soft:#17201b;--control:#1d2320;--control-border:#3a443d;--hover:#263029;--green:#6fc2a0;--green-soft:#1e3a2e;--amber:#d9a64f;--amber-soft:#3a2f14;--blue:#8ab8ea;--blue-soft:#1d2f44;--red:#e28b80;--red-soft:#3d2320;--dot:#5b6660;--dot-ok:#4cb77f;--dot-warn:#d9a64f;--dot-err:#e28b80;--focus:#6fc2a0;--on-accent:#161a18}@media(prefers-color-scheme:dark){:root:not([data-theme="light"]):not([data-theme="dark"]){color-scheme:dark;--waiting:#b9a0df;--paper:#161a18;--ink:#e5e8e3;--muted:#97a099;--line:#2c342f;--panel:#1d2320;--panel-soft:#17201b;--control:#1d2320;--control-border:#3a443d;--hover:#263029;--green:#6fc2a0;--green-soft:#1e3a2e;--amber:#d9a64f;--amber-soft:#3a2f14;--blue:#8ab8ea;--blue-soft:#1d2f44;--red:#e28b80;--red-soft:#3d2320;--dot:#5b6660;--dot-ok:#4cb77f;--dot-warn:#d9a64f;--dot-err:#e28b80;--focus:#6fc2a0;--on-accent:#161a18}}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.5 system-ui,sans-serif}header,main{max-width:1440px;margin:auto;padding:24px 32px}header{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);gap:20px}h1{font-size:24px;letter-spacing:-1px;margin:0}h1 span{font-weight:400;color:var(--muted)}h2{font-size:15px;margin:0}p{margin:6px 0}.eyebrow{overflow-wrap:anywhere;font-size:12px;color:var(--muted)}.eyebrow{letter-spacing:1.5px;text-transform:uppercase}.meta{overflow-wrap:anywhere;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.connection{font-size:12px;color:var(--muted)}main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:24px;align-items:start}.stack{display:flex;flex-direction:column;gap:24px;min-width:0}section{border:1px solid var(--line);background:var(--panel);border-radius:8px;overflow:hidden}.section-head{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line);gap:12px}.section-head .filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.content{padding:16px 18px}.empty{color:var(--muted);padding:20px 18px}.row{padding:14px 18px;border-bottom:1px solid var(--line)}.row:last-child{border-bottom:0}.row-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.peername{display:flex;align-items:center;gap:8px;min-width:0}.label{font-weight:600;overflow-wrap:anywhere}.badge{display:inline-block;font:11px ui-monospace,monospace;padding:2px 7px;background:var(--panel-soft);color:var(--muted);border-radius:4px;white-space:nowrap}.badge.ok{background:var(--green-soft);color:var(--green)}.badge.warn{color:var(--amber);background:var(--amber-soft)}.badge.info{color:var(--blue);background:var(--blue-soft)}.badge.err{color:var(--red);background:var(--red-soft)}.dot{flex:none;width:9px;height:9px;border-radius:50%;background:var(--dot)}.dot.ok{background:var(--dot-ok)}.dot.warn{background:var(--dot-warn)}.dot.err{background:var(--dot-err)}.chips{display:flex;gap:6px;flex-wrap:wrap}.chip{background:var(--control);color:var(--muted);border:1px solid var(--control-border);border-radius:999px;padding:4px 10px;font-size:12px;cursor:pointer;line-height:1.2}.chip:hover{background:var(--hover)}.chip[aria-pressed="true"]{background:var(--green);color:var(--on-accent);border-color:var(--green);font-weight:600}.actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}button,input,select,textarea{font:inherit}button{background:var(--control);color:var(--ink);border:1px solid var(--control-border);border-radius:5px;padding:6px 10px;cursor:pointer}button:hover{background:var(--hover)}button.primary{background:var(--green);color:var(--on-accent);border-color:var(--green)}button.danger{color:var(--red)}button:disabled{opacity:.5;cursor:default}:focus-visible{outline:2px solid var(--focus);outline-offset:3px}input,select,textarea{width:100%;border:1px solid var(--control-border);border-radius:5px;padding:8px;background:var(--control);color:var(--ink)}input[type="checkbox"]{width:auto;margin-right:6px}textarea{resize:vertical;min-height:78px}label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}form .field{margin-bottom:12px}.actions select{width:auto;max-width:220px}.section-head .filters select{width:auto;max-width:220px}.body{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:7px}.stream{height:360px;overflow:auto}.event{padding:12px 18px;border-bottom:1px solid var(--line)}.event[hidden]{display:none}.event .body{font:13px/1.55 ui-monospace,monospace}.notice{grid-column:1/-1;margin:0;border:1px solid var(--line);border-radius:6px;padding:10px 14px;background:var(--panel);overflow-wrap:anywhere}.notice.error{color:var(--red);border-color:var(--red)}.notice:empty{display:none}progress{width:100%;height:8px;accent-color:var(--green);display:block;margin:8px 0}progress.warn{accent-color:var(--amber)}progress.warn::-webkit-progress-value{background:var(--amber)}progress.critical{accent-color:var(--red)}progress.critical::-webkit-progress-value{background:var(--red)}progress::-moz-progress-bar{background:var(--green)}progress.warn::-moz-progress-bar{background:var(--amber)}progress.critical::-moz-progress-bar{background:var(--red)}.budget-window+.budget-window{margin-top:14px}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}details summary{cursor:pointer;padding:14px 18px;color:var(--green);font-weight:600}details form{padding:0 18px 18px}.task-list{max-height:460px;overflow:auto}footer{max-width:1440px;margin:auto;padding:0 32px 24px;color:var(--muted);font-size:12px}@media(max-width:900px){main{grid-template-columns:1fr}.stack{gap:18px}header,main{padding:18px}.stream{height:300px}footer{padding:0 18px 18px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
-.task-progress{padding:12px 18px;border-bottom:1px solid var(--line)}.task-progress svg{display:block;width:100%;height:12px;margin:8px 0}.progress-proposed{fill:var(--dot)}.progress-unknown{fill:var(--dot)}.progress-waiting{fill:var(--waiting)}.progress-in_progress{fill:var(--blue)}.progress-in_review{fill:var(--amber)}.progress-changes_requested{fill:var(--red)}.progress-approved{fill:var(--green)}.task-stage{font:12px ui-monospace,monospace;margin:8px 0;color:var(--muted)}.task-stage .reached{color:var(--green)}.task-stage.changes{color:var(--red)}.theme-choice{width:auto}
+.task-progress{padding:12px 18px;border-bottom:1px solid var(--line)}.task-progress svg{display:block;width:100%;height:12px;margin:8px 0}.progress-proposed{fill:var(--dot)}.progress-unknown{fill:var(--dot)}.progress-waiting{fill:var(--waiting)}.progress-in_progress{fill:var(--blue)}.progress-in_review{fill:var(--amber)}.progress-changes_requested{fill:var(--red)}.progress-approved{fill:var(--green)}.task-stage{font:12px ui-monospace,monospace;margin:8px 0;color:var(--muted)}.task-stage .reached{color:var(--green)}.task-stage.changes{color:var(--red)}.theme-choice{width:auto}.actions input[type="text"]{width:auto;flex:1 1 160px;max-width:320px}details.settings-group>summary{padding:12px 18px;cursor:pointer;border-bottom:1px solid var(--line);font-weight:600}details.settings-group:last-child:not([open])>summary{border-bottom:0}.preview{margin-top:8px;padding:8px 10px;background:var(--panel-soft);border-radius:5px;font:12px ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.preview:empty{display:none}
 </style>
 </head>
 <body>
@@ -26,6 +26,7 @@ const dashboardTheme = (() => {
 <section aria-labelledby="stream-title"><div class="section-head"><h2 id="stream-title">Live stream</h2><div class="filters"><div id="stream-filters" class="chips" role="group" aria-label="Filter events by kind"></div><label><input id="follow" type="checkbox" checked> Follow latest</label></div></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div><p id="stream-empty" class="empty" hidden>No events match this filter.</p></section>
 <section aria-labelledby="tasks-title"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="proposed">Proposed</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div id="tasks" class="task-list"></div><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><button class="primary" data-mutation="project" type="submit">Propose task</button></form></details></section>
 <section aria-labelledby="compose-title"><div class="section-head"><h2 id="compose-title">Console message</h2></div><form id="send" class="content"><div class="field"><label for="recipient">Recipient</label><select id="recipient" name="recipient"><option value="">All peers</option></select></div><div class="field"><label for="message">Message</label><textarea id="message" name="body" required maxlength="8000" placeholder="Send an instruction to the team..."></textarea></div><button class="primary" data-mutation="project" type="submit">Send message</button></form></section>
+<section aria-labelledby="settings-title"><div class="section-head"><h2 id="settings-title">Settings</h2><span id="settings-session" class="meta" role="status"></span></div><div id="settings"><p class="empty">Waiting for the hub...</p></div></section>
 </div>
 <div class="stack">
 <section id="projects-panel" aria-labelledby="projects-title"><div class="section-head"><h2 id="projects-title">Projects</h2><span id="project-count" class="meta"></span></div><div id="projects"></div></section>
@@ -111,7 +112,8 @@ function resetView(id, instance) {
   signatures.clear(); $('stream').replaceChildren(); empty($('stream'), managerMode ? 'Select a running project...' : 'Waiting for hub activity...');
   if (streamFilter) { streamFilter = ''; for (const child of $('stream-filters').children) child.setAttribute('aria-pressed', 'false'); }
   $('stream-empty').hidden = true; $('task-filter').value = '';
-  for (const [id, text] of [['peers','No project selected.'],['tasks','No project selected.'],['task-progress','No project selected.'],['permissions','No project selected.'],['budget','No project selected.']]) { $(id).replaceChildren(); empty($(id), text); }
+  for (const [id, text] of [['peers','No project selected.'],['tasks','No project selected.'],['task-progress','No project selected.'],['permissions','No project selected.'],['budget','No project selected.'],['settings','No project selected.']]) { $(id).replaceChildren(); empty($(id), text); }
+  $('settings-session').textContent = '';
   $('peer-count').textContent = ''; $('task-count').textContent = ''; $('permission-count').textContent = ''; $('project-context').textContent = '';
   notice('');
   draftChoicesPending = managerMode && Boolean(selectedProjectId);
@@ -192,11 +194,121 @@ function renderApprovals(permissions) {
     }
   });
 }
+const SETTING_GROUPS = ['Permissions', 'Start', 'Routing', 'Switches'], INHERIT = '__inherit__';
+const settingsOpen = new Set(['Permissions']);
+const settingText = (value) => value === null || value === undefined ? '(not set)' : Array.isArray(value) ? (value.join(', ') || '(none)') : String(value);
+async function previewSetting(row, value, out, control) {
+  if (stopped) return;
+  if (!canMutate()) return notice('Wait for a current project snapshot before previewing a change.', true);
+  const captured = context();
+  let payload = {action:'setting_preview', key:row.key, value};
+  if (managerMode) payload = {...payload, projectId: captured.projectId, instanceId: captured.instanceId};
+  control.disabled = true;
+  try {
+    const result = await post('/action', payload), lines = [...(result.lines || [])];
+    // Each side is route explain: the task line, "if it were assigned now:", then the trace.
+    for (const task of result.tasks || []) lines.push('', task.before[0], '  before:', ...task.before.slice(2).map((line) => '    ' + line), '  after:', ...task.after.slice(2).map((line) => '    ' + line));
+    if (result.hidden) lines.push('', result.hidden + ' more open tasks are not shown.');
+    out.textContent = lines.join('\n');
+  } catch (error) { out.textContent = error.message; }
+  finally { if (!stopped) control.disabled = false; }
+}
+function settingRow(row, raise) {
+  const node = el('div', undefined, 'row'), head = el('div', undefined, 'row-head'), id = 'setting-' + row.key.replaceAll('.', '-');
+  const title = el('label', row.label, 'label'); title.htmlFor = id;
+  head.append(title, badge(settingText(row.value), row.group === 'Permissions' && row.value !== null && row.value !== 'ask' ? 'warn' : ''));
+  node.append(head, el('p', row.key + ' / from ' + row.source + ' / ' + (row.applies === 'live' ? 'applies at once' : row.applies === 'peer start' ? "applies at the peer's next start" : 'read at hub start') + ' / written to ' + row.file, 'meta'));
+  if (row.pending !== undefined) node.append(el('p', 'Pending restart: ' + settingText(row.pending) + ' at the next hub start.', 'meta'));
+  if (row.hint) node.append(el('p', 'Bounds: ' + row.hint, 'meta'));
+  if (row.note) node.append(el('p', row.note, 'meta'));
+  if (row.risk === 'raises' && !raise) node.append(el('p', 'Raising this needs a settings session: run ahub ui --settings.' + (row.floor === undefined ? '' : ' Setting it to ' + row.floor + ' works here.'), 'meta'));
+  const actions = el('div', undefined, 'actions'), stored = row.file !== 'this hub run';
+  let read, confirm;
+  if (row.type === 'peers') {
+    const input = el('input'); input.type = 'text'; input.id = id; input.value = Array.isArray(row.value) ? row.value.join(', ') : ''; input.placeholder = 'peer ids, comma-separated; empty inherits'; input.autocomplete = 'off'; input.spellcheck = false;
+    read = () => { const list = input.value.split(',').map((value) => value.trim()).filter(Boolean); return list.length ? list : null; };
+    actions.append(input);
+  } else {
+    const select = el('select'), values = row.type === 'boolean' ? ['true', 'false'] : (row.values || []), current = row.value === null ? '' : String(row.value); select.id = id;
+    if (current && !values.includes(current)) { const option = el('option', current + ' (now)'); option.value = current; option.disabled = true; select.append(option); }
+    for (const value of values) { const option = el('option', value); option.value = value; select.append(option); }
+    if (stored) { const option = el('option', 'inherit (remove the machine-local value)'); option.value = INHERIT; select.append(option); }
+    select.value = current || (stored ? INHERIT : 'ask');
+    read = () => select.value === INHERIT ? null : row.type === 'boolean' ? select.value === 'true' : select.value;
+    actions.append(select);
+    if (row.group === 'Permissions') {
+      // never-ask: the person types the peer it is for, as the console asks for y. Removing the machine-local value
+      // can leave a never-ask from the shared file in force, so inherit offers the same field.
+      const peer = row.key.split('.').pop();
+      confirm = el('input'); confirm.type = 'text'; confirm.placeholder = 'type ' + peer + ' to confirm never-ask'; confirm.setAttribute('aria-label', 'Type ' + peer + ' to confirm never-ask for ' + peer); confirm.autocomplete = 'off'; confirm.spellcheck = false;
+      const removable = row.source === 'config.local.json'; // inherit changes something only where the machine-local file holds a value
+      const sync = () => { confirm.hidden = select.value !== 'never-ask' && !(select.value === INHERIT && removable); }; select.addEventListener('change', sync); sync();
+      actions.append(confirm);
+    }
+  }
+  const out = el('div', undefined, 'preview'); out.setAttribute('role', 'status'); out.setAttribute('aria-live', 'polite');
+  if (row.group === 'Permissions' || row.group === 'Routing') {
+    const preview = el('button', 'Preview'); preview.type = 'button'; preview.setAttribute('aria-label', 'Preview ' + row.label);
+    preview.addEventListener('click', () => void previewSetting(row, read(), out, preview)); actions.append(preview);
+  }
+  const save = el('button', 'Save', 'primary'); save.type = 'button'; save.dataset.mutation = 'project'; save.disabled = managerMode && !snapshotValid; save.setAttribute('aria-label', 'Save ' + row.label);
+  save.addEventListener('click', () => { const payload = {action:'setting', key:row.key, value:read()}; if (confirm && !confirm.hidden && confirm.value.trim()) payload.confirm = confirm.value.trim(); void action(payload, save); });
+  actions.append(save); node.append(actions, out);
+  return node;
+}
+const settingSlots = new Map();
+function setText(node, text) { if (node.textContent !== text) node.textContent = text; }
+function renderSettings(settings) {
+  if (!settings || !Array.isArray(settings.rows)) { setText($('settings-session'), ''); settingSlots.clear(); return update('settings', 'none', (target) => empty(target, 'This hub does not report settings.')); }
+  const raise = typeof settings.sessionUntil === 'number' && settings.sessionUntil > Date.now();
+  // Written only when it changes: a status region that is rewritten every second is read out every second.
+  setText($('settings-session'), raise ? 'Settings session: ' + Math.max(1, Math.ceil((settings.sessionUntil - Date.now()) / 60000)) + ' min left' : 'Read, lower and safe switches only');
+  // The frame (the groups) follows the list of keys. The undo row and every setting sit in slots of their own and
+  // are rebuilt only when their own data changed, so a value being typed in one row survives a save of another.
+  update('settings', settings.rows.map((row) => row.key), (target) => {
+    settingSlots.clear();
+    const undo = el('div'); settingSlots.set('', { node: undo, signature: null }); target.append(undo);
+    for (const group of SETTING_GROUPS) {
+      const rows = settings.rows.filter((row) => row.group === group);
+      if (!rows.length) continue;
+      const box = el('details', undefined, 'settings-group'); box.open = settingsOpen.has(group);
+      box.addEventListener('toggle', () => { if (box.open) settingsOpen.add(group); else settingsOpen.delete(group); });
+      box.append(el('summary', group + ' (' + rows.length + ')'));
+      for (const row of rows) { const slot = el('div'); settingSlots.set(row.key, { node: slot, signature: '' }); box.append(slot); }
+      target.append(box);
+    }
+  });
+  const undoSlot = settingSlots.get(''), undoKey = settings.undo || '';
+  if (undoSlot && undoSlot.signature !== undoKey) {
+    undoSlot.signature = undoKey; undoSlot.node.replaceChildren();
+    if (undoKey) {
+      const row = el('div', undefined, 'row'); row.append(el('p', 'Last settings write: ' + undoKey, 'meta'));
+      const actions = el('div', undefined, 'actions'); actions.append(button('Undo last write', {action:'setting_undo'})); row.append(actions); undoSlot.node.append(row);
+    }
+  }
+  for (const row of settings.rows) {
+    const slot = settingSlots.get(row.key), signature = JSON.stringify([row, raise]);
+    if (!slot || slot.signature === signature) continue;
+    slot.signature = signature; slot.node.replaceChildren(settingRow(row, raise));
+  }
+}
+function renderStarts(target, starts) {
+  // A Start control per peer that is not attached: the mode it will use and where that comes from.
+  for (const start of starts) {
+    if (start.attached) continue;
+    const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
+    head.append(el('span', 'Start ' + start.peer, 'label'), badge(start.mode));
+    const tui = start.mode === 'tui';
+    row.append(head, el('p', !tui ? 'Starts headless: its start mode.' : start.via ? 'Start mode tui: opens ' + start.command + ' in a terminal through ' + start.via + '.' : 'Start mode tui, and the hub has no terminal to open (' + start.why + '). Run ' + start.command + ' in a terminal.', 'meta'));
+    if (!tui || start.via) { const actions = el('div', undefined, 'actions'); actions.append(button('Start ' + start.peer, {action:'start_peer', peer:start.peer})); row.append(actions); }
+    target.append(row);
+  }
+}
 function render(snapshot) {
-  const peers = snapshot.status.peers || {}, ids = Object.keys(peers);
+  const peers = snapshot.status.peers || {}, ids = Object.keys(peers), starts = Array.isArray(snapshot.starts) ? snapshot.starts : [];
   $('peer-count').textContent = ids.length + ' peers';
-  update('peers', peers, (target) => {
-    if (!ids.length) return empty(target, 'No peers connected. Start an agent from your terminal.');
+  update('peers', [peers, starts], (target) => {
+    if (!ids.length) { empty(target, 'No peers connected. Start one below, or from your terminal.'); return renderStarts(target, starts); }
     for (const [id, peer] of Object.entries(peers)) {
       const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head'), name = el('div', undefined, 'peername');
       name.append(dot(peerDot[peer.state] || ''), el('span', id, 'label'));
@@ -214,6 +326,7 @@ function render(snapshot) {
       const paused = peer.state === 'paused' || peer.paused;
       row.append(button(paused ? 'Resume' : 'Pause', {action:paused ? 'resume' : 'pause', peer:id})); target.append(row);
     }
+    renderStarts(target, starts);
   });
   const assignable = ids.filter((id) => peers[id].state !== 'offline' && peers[id].attached !== false);
   const peerSignature = JSON.stringify([ids, assignable]);
@@ -267,6 +380,7 @@ function render(snapshot) {
     }
   });
   renderBench(snapshot.bench);
+  renderSettings(snapshot.settings);
   const stream = $('stream');
   if (!eventCount) { stream.replaceChildren(); empty(stream, 'No activity yet.'); }
   for (const entry of snapshot.events || []) {

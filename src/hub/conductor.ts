@@ -4,6 +4,7 @@ import { CONDUCTOR_TOOL_NAMES } from "./hub-tools.ts";
 import { HUB, USER } from "./envelope.ts";
 import { OWNERSHIP_EVENTS } from "./tasks.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
+import { isStartablePeer, type StartablePeer, type StartMode } from "./start-mode.ts";
 import type { HubEvent } from "./events.ts";
 import type { SupervisionFeed } from "./supervision.ts";
 import type { Budget } from "./budget.ts";
@@ -100,13 +101,18 @@ export class ConductorHolds {
   close(): void { this.db.close(); }
 }
 
-export type ConductorStart = { peer: "local" | "kimi" | "pi"; mode: "headless" } | { peer: "claude" | "codex" | "pi"; mode: "tui"; command: string };
-/** Preview commands come from the same launch planner the CLI uses, never caller-supplied shell text. */
-export function conductorStart(peer: unknown, mode: unknown, preview: (peer: "claude" | "codex" | "pi") => string, preEffect = false): ConductorStart {
-  if (mode !== undefined && mode !== "headless" && mode !== "tui") throw new (preEffect ? PreEffectToolRefusal : Error)("mode must be headless or tui");
-  if (peer === "claude" || peer === "codex" || (peer === "pi" && mode === "tui")) return { peer, mode: "tui", command: preview(peer) };
-  if ((peer === "local" || peer === "kimi" || peer === "pi") && mode !== "tui") return { peer, mode: "headless" };
-  throw new (preEffect ? PreEffectToolRefusal : Error)("only local, kimi and headless pi may be started by the conductor");
+export type ConductorStart = { peer: StartablePeer; mode: "headless" } | { peer: "claude" | "codex" | "pi"; mode: "tui"; command: string };
+/**
+ * What a conductor's start of `peer` is (#269): the peer's own start mode, which a person sets. A `mode` argument may
+ * only repeat it. Preview commands come from the same launch planner the CLI uses, never caller-supplied shell text.
+ */
+export function conductorStart(peer: unknown, mode: unknown, preview: (peer: "claude" | "codex" | "pi") => string, preEffect: boolean, startMode: (peer: StartablePeer) => StartMode): ConductorStart {
+  const refuse = (text: string) => new (preEffect ? PreEffectToolRefusal : Error)(text);
+  if (mode !== undefined && mode !== "headless" && mode !== "tui") throw refuse("mode must be headless or tui");
+  if (!isStartablePeer(peer)) throw refuse("only claude, codex, kimi, pi and local may be started by the conductor");
+  const own = startMode(peer);
+  if (mode !== undefined && mode !== own) throw refuse(`${peer} starts ${own} here; a person sets a start mode (ahub settings), the conductor cannot choose one`);
+  return own === "tui" ? { peer: peer as "claude" | "codex" | "pi", mode: "tui", command: preview(peer as "claude" | "codex" | "pi") } : { peer, mode: "headless" };
 }
 
 const numberOrNull = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
@@ -151,7 +157,10 @@ export interface ConductorHooks {
   assign(actor: string, id: number, peer: string): Promise<unknown>;
   escalate(actor: string, id: number): Promise<unknown>;
   preview(peer: "claude" | "codex" | "pi"): string;
-  start(peer: "local" | "kimi" | "pi"): Promise<unknown>;
+  /** The mode a start of this peer takes: a person's setting. */
+  startMode(peer: StartablePeer): StartMode;
+  /** Starts the peer in that mode: headless at once, or its fixed command in a terminal; throws with the command to run by hand when no terminal can be opened. */
+  start(peer: StartablePeer): Promise<unknown>;
   known(peer: string): boolean;
   pause(peer: string): void;
   validateRelease?(peer: string): Promise<void>;
@@ -211,9 +220,10 @@ export class Conductor {
       return updated ? publicConductorTask(updated, this.hooks.publicView) : { id: task.id };
     }
     if (tool === "hub_peer_start") {
-      const start = conductorStart(args.peer, args.mode, this.hooks.preview, true);
-      if (start.mode === "headless") await this.hooks.start(start.peer);
-      emit({ peer: start.peer }); return start;
+      const start = conductorStart(args.peer, args.mode, this.hooks.preview, true, this.hooks.startMode);
+      const result = await this.hooks.start(start.peer);
+      const opened = result && typeof result === "object" && typeof (result as { opened?: unknown }).opened === "string" ? { opened: (result as { opened: string }).opened } : {};
+      emit({ peer: start.peer }); return { ...start, ...opened };
     }
     const peer = peerId(args.peer, true);
     if (!this.hooks.known(peer)) throw new PreEffectToolRefusal(`unknown peer: ${peer}`);

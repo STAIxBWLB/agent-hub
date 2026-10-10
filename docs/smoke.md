@@ -2,6 +2,47 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## Settings from the dashboard and the terminal (#269, part 1)
+
+Not run live yet (unverified). `test/settings.test.ts` drives a real daemon, its
+dashboard listener over HTTP and the real CLI; no browser was opened and no
+native agent was started. `ahub ui --settings` and `ahub settings` are a
+person's commands, so the live leg is run by hand, on a scratch project:
+
+1. `ahub up`, then `ahub ui`. The Settings section lists Permissions, Start,
+   Routing and Switches; each row shows its source file and when it applies.
+   Record the look in a light and a dark theme and at phone width.
+2. In that ordinary session, set `research.enabled` (saved), then try to raise
+   `permission.kimi` to ask-when-needed (refused, naming `ahub ui --settings`).
+3. `ahub ui --settings`. With Kimi attached, set `permission.kimi` to
+   ask-when-needed, then never-ask with the peer id typed; `ahub permission`
+   and `ahub status` show each mode, and `ahub tail` shows each change with
+   `(dashboard)`.
+4. Preview a new order for `routing.classes.implement.peers` with a task open,
+   save it, run `ahub route explain --class implement x` (it names
+   `routing.local.toml`), then "Undo last write".
+5. `git status` shows no change to `.agenthub/config.json` or
+   `.agenthub/routing.toml`; `ahub settings` in the terminal shows the same
+   rows as the page.
+
+Record the date, the hub version, the browser and each step's result.
+
+Part 2, start modes (not run live either; `test/start-modes.test.ts` uses a
+recording terminal provider and a scripted hub, and no terminal was opened):
+
+6. In an Orca terminal of the project, `ahub up` with Pi enabled. `ahub pi`
+   opens Pi's TUI in that terminal; in another, `ahub pi --headless` moves it
+   to the background.
+7. Stop Pi. In the dashboard's Peers panel the Start control for pi says
+   "Start mode tui: opens ahub pi --mode tui in a terminal through orca".
+   Press it: a new Orca terminal runs the TUI and Pi attaches.
+8. In a settings session set `peers.pi.start_mode` to headless, stop Pi, press
+   Start again: Pi comes up headless and no terminal opens.
+9. Outside Orca with no `terminal.open`: the Start control shows no button and
+   the command to run; typing `pi` in `ahub console` prints the same refusal.
+10. With `terminal.open` set to a tmux or wezterm template in
+    `config.local.json`, Start opens Pi's TUI there.
+
 ## Codex resumed approval policy (#270)
 
 2026-10-10: installed version read back as `codex-cli 0.162.1`. The live
