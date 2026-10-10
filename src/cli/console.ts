@@ -76,8 +76,8 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   let pendingStream: ConsoleEvent[] = []; let droppedStream = 0;
   const notice = (text: string) => notify(state, text, Date.now());
   const safeWrite = (text: string) => terminal.write(paint([{ text }], color));
-  const streamLines = (event: ConsoleEvent) => terminalText(event.text).split("\n").flatMap((text, index) => {
-    // Commands receive our usable width and already wrap cells at their own column offsets.
+  const streamLines = (event: ConsoleEvent) => terminalText(event.text).replace(/\t/g, " ").split("\n").flatMap((text, index) => {
+    // Tabs are flattened before measuring, as wrap() does; commands already wrap cells at their own offsets.
     if (event.kind === "command" && Bun.stringWidth(text) <= columns) return [[{ text }]];
     return index === 0 ? wrapStreamTokens(text, columns, event.tone, event.kind) : wrap(text, columns).map(line => [{ text: line }]);
   });
@@ -87,6 +87,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   };
   /** `record: false` is for the console's own prints (the key table, a request viewed again): not events, so not in Events. */
   const stream = (event: ConsoleEvent, record = true) => {
+    if (event.kind === "command") event = { ...event, text: terminalText(event.text).replace(/\t/g, " ") };
     if (record) state.events = [...state.events, { ...event, text: terminalText(event.text) }].slice(-1000);
     if (plain) {
       const [header, ...body] = terminalText(event.text).split("\n");
@@ -193,7 +194,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     stream({ text: `> ${action.args.join(" ")}`, kind: "command" });
     try {
       // Output lines sit at column 4, as message bodies do: what a command prints can carry peer text, and columns 0 and 2 are the hub's.
-      const output = (text: string) => { if (active) { stream({ text: text.replace(/\n$/, "").replace(/^/gm, "    "), kind: "command" }); draw(); } };
+      const output = (text: string) => { if (active) { stream({ text: terminalText(text).replace(/\t/g, " ").replace(/\n$/, "").replace(/^/gm, "    "), kind: "command" }); draw(); } };
       cancelChild = run(action.args, output, () => { childRunning = false; cancelChild = undefined; if (active) void refresh(); }, Math.max(1, columns - 4));
     } catch (error) { childRunning = false; notice(String((error as Error).message)); draw(); }
   };

@@ -9,7 +9,7 @@ Before:
 ```text
 hub pid 25893, control 127.0.0.1:12345, /project/agent-hub
   claude   idle     queued 0  context 80% (fresh, claude_statusline, measured 2027-01-15T07:59:46.000Z)
-  codex    busy     queued 2  awaiting settlement 8d03b496-1111-2222-3333-444444444444, 3325f7a0-1111-2222-3333-444444444444 (adapter completion; Claude: reply or hub_delivery_done; task state is independent)  held by needs_review abcdef12-1111-2222-3333-444444444444; ahub queue resolve abcdef12-1111-2222-3333-444444444444 --action completed|retry|discard --reason <text>  (manual)  context 34% (fresh, codex_token_usage, measured 2027-01-15T07:59:00.000Z)
+  codex    busy     queued 2  awaiting settlement 8d03b496-1111-2222-3333-444444444444, 3325f7a0-1111-2222-3333-444444444444 (adapter completion; Claude: reply or hub_delivery_done; task state is independent)  held by needs_review abcdef12-1111-2222-3333-444444444444; ahub queue resolve abcdef12-1111-2222-3333-444444444444 --action completed|retry|discard --reason <text>  (manual)  last call: dgx/qwen-coder-large  context 34% (fresh, codex_token_usage, measured 2027-01-15T07:59:00.000Z)
   kimi     idle     queued 0  permission: ask-when-needed  context 25% (fresh, acp_usage_update, measured 2027-01-15T07:58:00.000Z)
   pi       idle     queued 0  tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude  context unknown (unknown)
   tasks: 6 approved, 1 in_progress (ahub board)
@@ -21,22 +21,26 @@ After:
 agent-hub 0.12.22  pid 25893  control 127.0.0.1:12345
 /project/agent-hub
 
-PEER    STATE  MODE             LINK        Q  PAUSE  QUOTA          CONTEXT
-claude  idle   -                attached    -  -      5h 23% in 10m  80% 14s ago
-                                                                     claude_stat
-                                                                     usline
-codex   busy   -                attached    2  user   -              34% 1m ago
-                                                                     codex_token
-                                                                     _usage
+PEER  STATE  MODE             LINK        Q  PAUSE  QUOTA   MODEL   CONTEXT
+clau  idle   -                attached    -  -      5h 23%  -       80% 14s ago
+de                                                  in              claude_statu
+                                                    10m,            sline
+                                                    week
+                                                    49% in
+                                                    5d09h
+code  busy   -                attached    2  user   -       dgx/qw  34% 1m ago
+x                                                           en-cod  codex_token_
+                                                            er-lar  usage
+                                                            ge
   settling  8d03b496, 3325f7a0
   held  by needs_review abcdef12; ahub queue resolve
       abcdef12-1111-2222-3333-444444444444 --action completed|retry|discard
       --reason <text>
   paused  manual
-kimi    idle   ask-when-needed  attached    -  -      -              25% 2m ago
-                                                                     acp_usage_u
-                                                                     pdate
-pi      idle   -                tools-only  -  -      -              unknown
+kimi  idle   ask-when-needed  attached    -  -      -       -       25% 2m ago
+                                                                    acp_usage_up
+                                                                    date
+pi    idle   -                tools-only  -  -      -       -       unknown
   tools-only  messages wait for hub_inbox; for pushes restart Claude with ahub
       claude
 
@@ -59,49 +63,65 @@ Before:
 After:
 
 ```text
-ID  STATE        OWNER  REVIEWER  CLASS      AGE  TITLE                   STAGE
-#1  approved     codex  claude    implement  1m   제주한라대학교 AI       [####]
-                                                  도구를 활용한 구현과
-                                                  검증 제주한라대학교 AI
-                                                  도구를 활용한 구현과
-                                                  검증 제주한라대학교 AI
-                                                  도구를 활용한 구현과
-                                                  검증 제주한라대학교 AI
-                                                  도구를 활용한 구현과
-                                                  검증 제주한라대학교 AI
-                                                  도구를 활용한 구현과
-                                                  검증 제주한라대학교 AI
-                                                  도구를 활용한 구현과
-                                                  검증 제주한라대학교 AI
-                                                  도구를 활용한 구현과
-                                                  검증 제주한라대학교 AI
-                                                  도구를 활용한 구현과
-                                                  검증 제주한라대학교 AI
-                                                  도구를 활용한 구현과
-                                                  검증 제주한라대학교 AI
-                                                  도구를 활용한 구현과
-                                                  검증 제주한라대학교 AI
-                                                  도구를 활용한 구현과
-                                                  검증 제주한라대학교 AI
-                                                  도구를 활용한 구현과
-                                                  검증
-#2  in_progress  kimi   claude    implement  2m   AAAAAAAAAAAAAAAAAAAAAA  [##--]
-                                                  AAAAAAAAAAAAAAAAAAAAAA
-                                                  AAAAAAAAAAAAAAAAAAAAAA
-                                                  AAAAAAAAAAAAAAAAAAAAAA
-                                                  AAAAAAAAAAAAAAAAAAAAAA
-                                                  AAAAAAAAAAAAAAAAAAAAAA
-                                                  AAAAAAAAAAAAAAAAAAAAAA
-                                                  AAAAAAAAAAAAAAAAAAAAAA
-                                                  AAAAAAAAAAAAAAAAAAAAAA
-                                                  AAAAAAAAAAAAAAAAAAAAAA
-                                                  AAAAAAAAAAAAAAAAAAAAAA
-                                                  AAAAAAAAAAAAAAAAAAAAAA
-                                                  AAAAAAAAAAAAAAAAAAAAAA
-                                                  AAAAAAAAAAAAAA  after
-                                                  #1
-#3  proposed     local  claude    implement  30s  [pii]  after #2  (ahub  [#---]
-    waiting                                       task show 3)
+ID  STATE             OWNER  REVIEWER  CLASS      AGE  TITLE              STAGE
+#1  approved          codex  claude    implement  1m   제주한라대학교 AI  [####]
+                                                       도구를 활용한
+                                                       구현과 검증
+                                                       제주한라대학교 AI
+                                                       도구를 활용한
+                                                       구현과 검증
+                                                       제주한라대학교 AI
+                                                       도구를 활용한
+                                                       구현과 검증
+                                                       제주한라대학교 AI
+                                                       도구를 활용한
+                                                       구현과 검증
+                                                       제주한라대학교 AI
+                                                       도구를 활용한
+                                                       구현과 검증
+                                                       제주한라대학교 AI
+                                                       도구를 활용한
+                                                       구현과 검증
+                                                       제주한라대학교 AI
+                                                       도구를 활용한
+                                                       구현과 검증
+                                                       제주한라대학교 AI
+                                                       도구를 활용한
+                                                       구현과 검증
+                                                       제주한라대학교 AI
+                                                       도구를 활용한
+                                                       구현과 검증
+                                                       제주한라대학교 AI
+                                                       도구를 활용한
+                                                       구현과 검증
+                                                       제주한라대학교 AI
+                                                       도구를 활용한
+                                                       구현과 검증
+                                                       제주한라대학교 AI
+                                                       도구를 활용한
+                                                       구현과 검증
+#2  in_progress       kimi   claude    implement  2m   AAAAAAAAAAAAAAAAA  [##--]
+                                                       AAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAA
+                                                       after #1
+#3  proposed waiting  local  claude    implement  30s  [pii]  after #2    [#---]
+                                                       (ahub task show
+                                                       3)
 
 3 tasks: 1 approved, 1 in_progress, 1 proposed
 ```
@@ -164,7 +184,7 @@ Before:
 ```text
 hub pid 25893, control 127.0.0.1:12345, /project/agent-hub
   claude   idle     queued 0  context 80% (fresh, claude_statusline, measured 2027-01-15T07:59:46.000Z)
-  codex    busy     queued 2  awaiting settlement 8d03b496-1111-2222-3333-444444444444, 3325f7a0-1111-2222-3333-444444444444 (adapter completion; Claude: reply or hub_delivery_done; task state is independent)  held by needs_review abcdef12-1111-2222-3333-444444444444; ahub queue resolve abcdef12-1111-2222-3333-444444444444 --action completed|retry|discard --reason <text>  (manual)  context 34% (fresh, codex_token_usage, measured 2027-01-15T07:59:00.000Z)
+  codex    busy     queued 2  awaiting settlement 8d03b496-1111-2222-3333-444444444444, 3325f7a0-1111-2222-3333-444444444444 (adapter completion; Claude: reply or hub_delivery_done; task state is independent)  held by needs_review abcdef12-1111-2222-3333-444444444444; ahub queue resolve abcdef12-1111-2222-3333-444444444444 --action completed|retry|discard --reason <text>  (manual)  last call: dgx/qwen-coder-large  context 34% (fresh, codex_token_usage, measured 2027-01-15T07:59:00.000Z)
   kimi     idle     queued 0  permission: ask-when-needed  context 25% (fresh, acp_usage_update, measured 2027-01-15T07:58:00.000Z)
   pi       idle     queued 0  tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude  context unknown (unknown)
   tasks: 6 approved, 1 in_progress (ahub board)
@@ -176,15 +196,21 @@ After:
 agent-hub 0.12.22  pid 25893  control 127.0.0.1:12345
 /project/agent-hub
 
-PEER    STATE  MODE             LINK        Q  PAUSE  QUOTA          CONTEXT
-claude  idle   -                attached    -  -      5h 23% in 10m  80% 14s ago claude_statusline
-codex   busy   -                attached    2  user   -              34% 1m ago codex_token_usage
+PEER    STATE  MODE             LINK        Q  PAUSE  QUOTA                           MODEL                 CONTEXT
+claude  idle   -                attached    -  -      5h 23% in 10m, week 49% in      -                     80% 14s ago
+                                                      5d09h                                                 claude_statu
+                                                                                                            sline
+codex   busy   -                attached    2  user   -                               dgx/qwen-coder-large  34% 1m ago
+                                                                                                            codex_token_
+                                                                                                            usage
   settling  8d03b496, 3325f7a0
   held  by needs_review abcdef12; ahub queue resolve abcdef12-1111-2222-3333-444444444444 --action
       completed|retry|discard --reason <text>
   paused  manual
-kimi    idle   ask-when-needed  attached    -  -      -              25% 2m ago acp_usage_update
-pi      idle   -                tools-only  -  -      -              unknown
+kimi    idle   ask-when-needed  attached    -  -      -                               -                     25% 2m ago
+                                                                                                            acp_usage_up
+                                                                                                            date
+pi      idle   -                tools-only  -  -      -                               -                     unknown
   tools-only  messages wait for hub_inbox; for pushes restart Claude with ahub claude
 
 settling: the adapter has not confirmed these deliveries yet (Claude: reply or hub_delivery_done). Task state is
@@ -206,23 +232,26 @@ Before:
 After:
 
 ```text
-ID  STATE        OWNER  REVIEWER  CLASS      AGE  TITLE                                                           STAGE
-#1  approved     codex  claude    implement  1m   제주한라대학교 AI 도구를 활용한 구현과 검증 제주한라대학교 AI   [####]
-                                                  도구를 활용한 구현과 검증 제주한라대학교 AI 도구를 활용한
-                                                  구현과 검증 제주한라대학교 AI 도구를 활용한 구현과 검증
-                                                  제주한라대학교 AI 도구를 활용한 구현과 검증 제주한라대학교 AI
-                                                  도구를 활용한 구현과 검증 제주한라대학교 AI 도구를 활용한
-                                                  구현과 검증 제주한라대학교 AI 도구를 활용한 구현과 검증
-                                                  제주한라대학교 AI 도구를 활용한 구현과 검증 제주한라대학교 AI
-                                                  도구를 활용한 구현과 검증 제주한라대학교 AI 도구를 활용한
-                                                  구현과 검증 제주한라대학교 AI 도구를 활용한 구현과 검증
-#2  in_progress  kimi   claude    implement  2m   AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA  [##--]
-                                                  AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-                                                  AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-                                                  AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-                                                  AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA  after #1
-#3  proposed     local  claude    implement  30s  [pii]  after #2  (ahub task show 3)                             [#---]
-    waiting
+ID  STATE             OWNER  REVIEWER  CLASS      AGE  TITLE                                                      STAGE
+#1  approved          codex  claude    implement  1m   제주한라대학교 AI 도구를 활용한 구현과 검증                [####]
+                                                       제주한라대학교 AI 도구를 활용한 구현과 검증
+                                                       제주한라대학교 AI 도구를 활용한 구현과 검증
+                                                       제주한라대학교 AI 도구를 활용한 구현과 검증
+                                                       제주한라대학교 AI 도구를 활용한 구현과 검증
+                                                       제주한라대학교 AI 도구를 활용한 구현과 검증
+                                                       제주한라대학교 AI 도구를 활용한 구현과 검증
+                                                       제주한라대학교 AI 도구를 활용한 구현과 검증
+                                                       제주한라대학교 AI 도구를 활용한 구현과 검증
+                                                       제주한라대학교 AI 도구를 활용한 구현과 검증
+                                                       제주한라대학교 AI 도구를 활용한 구현과 검증
+                                                       제주한라대학교 AI 도구를 활용한 구현과 검증
+#2  in_progress       kimi   claude    implement  2m   AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA  [##--]
+                                                       AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+                                                       AAAAAAAAAAAAAAA  after #1
+#3  proposed waiting  local  claude    implement  30s  [pii]  after #2  (ahub task show 3)                        [#---]
 
 3 tasks: 1 approved, 1 in_progress, 1 proposed
 ```

@@ -8,13 +8,13 @@ import { classifyPeerCommand } from "../src/cli/identity.ts";
 const CLI = join(import.meta.dir, "../src/cli/main.ts");
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
-function fixture() {
+function fixture(options: { failFullBoard?: boolean } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-output-")));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const stateDir = join(root, ".agenthub/state"); mkdirSync(stateDir, { recursive: true });
   const now = Date.now();
   const status = { pid: process.pid, cwd: root, controlPort: 12345, instanceId: "output-fixture", peers: { claude: { state: "idle", queued: 0, attached: true, context: { used: 0.5, freshness: "fresh", source: "claude_statusline", measuredAt: Date.now() } } }, tasks: { proposed: 1 } };
-  const tasks = [{ id: 1, state: "proposed", class: "implement", owner: "claude", reviewer: "codex", title: "검증할 긴 제목 ".repeat(40), signals: [], created: Date.now() }];
+  const tasks: any[] = [{ id: 1, state: "proposed", class: "implement", owner: "claude", reviewer: "codex", title: "검증할 긴 제목 ".repeat(40), signals: [], created: Date.now() }];
   const budget = { claude: { windows: [{ id: "week", used: 0.25, source: "fixture", at: Date.now(), resetsAt: Date.now() + 60_000 }] } };
   const requests: any[] = [];
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req, server) { if (server.upgrade(req)) return; return new Response("no", { status: 400 }); }, websocket: {
@@ -23,7 +23,8 @@ function fixture() {
       const reply = req.t === "hello" ? { t: "welcome", cwd: root, instanceId: status.instanceId }
         : req.t === "status" ? { status }
         : req.t === "budget" ? { budget, gate: 0.95 }
-        : req.t === "task" ? { text: JSON.stringify(req.args?.ready ? tasks.filter(t => t.state === "proposed") : req.args?.state ? tasks.filter(t => t.state === req.args.state) : tasks) }
+        : req.t === "task" && options.failFullBoard && !Object.keys(req.args ?? {}).length ? { ok: false, error: "full board temporarily unavailable" }
+        : req.t === "task" ? { text: JSON.stringify(req.args?.ready ? tasks.filter(t => t.state === "proposed" && (t.deps ?? []).every((id: number) => tasks.some(dep => dep.id === id && dep.state === "approved"))) : req.args?.state ? tasks.filter(t => t.state === req.args.state) : tasks) }
         : req.t === "recovery" ? { recovery: { peers: { claude: { id: "claude", state: "idle" } } } }
         : {};
       ws.send(JSON.stringify({ ok: true, ...reply, rid: req.rid }));
@@ -97,10 +98,10 @@ test("doctor structured checks and sections use declared levels/findings, with i
 
 for (const filter of ["--ready", "proposed"]) test(`filtered board ${filter} resolves dependencies against the whole board`, async () => {
   const f = fixture();
-  Object.assign(f.tasks[0]!, { id: 5, deps: [1], ready: true, title: "Ready task" });
+  Object.assign(f.tasks[0]!, { id: 5, deps: [1], title: "Ready task" });
   f.tasks.push({ ...f.tasks[0]!, id: 1, state: "approved", deps: [], title: "Approved prerequisite" } as any);
   const result = await f.run(["board", filter]);
-  expect(result.code).toBe(0); expect(result.stdout).toContain("ready"); expect(result.stdout).not.toContain("waiting");
+  expect(result.code).toBe(0); expect(result.stdout).toContain("proposed"); expect(result.stdout).not.toContain("waiting");
   expect(result.stdout).not.toContain("Approved prerequisite");
   expect(f.requests.filter(r => r.t === "task").map(r => r.args)).toEqual([filter === "--ready" ? { ready: true } : { state: "proposed" }, {}]);
 });
@@ -110,4 +111,14 @@ test("doctor preserves collected findings and its error exit when config parsing
   const result = await f.run(["doctor", "--color=never"]);
   expect(result.code).toBe(1); expect(result.stdout).toContain("Tools\n"); expect(result.stdout).toContain("fixture 1.0");
   expect(result.stdout).toContain("claude plugin"); expect(result.stderr.length).toBeGreaterThan(0);
+});
+
+for (const filter of ["--ready", "proposed"]) test(`filtered board ${filter} remains visible when full dependency context fails`, async () => {
+  const f = fixture({ failFullBoard: true }); Object.assign(f.tasks[0]!, { deps: [9], title: "Already fetched task" });
+  f.tasks.push({ ...f.tasks[0]!, id: 9, deps: [], state: "approved", title: "Approved prerequisite" });
+  const result = await f.run(["board", filter], { COLUMNS: "80" });
+  expect(result.code).toBe(0); expect(result.stdout).toContain("Already fetched task");
+  expect(result.stdout).toContain("proposed"); expect(result.stdout).not.toContain("waiting"); expect(result.stdout).not.toContain("STAGE");
+  expect(result.stderr).toContain("dependency stages unavailable; showing filtered rows without stages");
+  expect(result.stderr).toContain("full board temporarily unavailable");
 });

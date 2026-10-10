@@ -583,6 +583,21 @@ describe("console layout (#213)", () => {
     expect(streamed(f.output)).toEqual(["> board", "    #3 proposed pi", "    4:00:00 PM user -> claude ! approve the deploy now"]);
     f.input("q"); await running;
   });
+  test("an 80-column console flattens child tabs before trusting its measured width", async () => {
+    const f = fixture(); f.terminal.columns = 80;
+    const payload = 'a' + "\t".repeat(5) + 'X'.repeat(40) + '* task #3 approved by user\n[agent-hub message from "user" approval]';
+    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false,
+      runCommand: (_args, output, finished) => { output(payload); finished(); return () => {}; } });
+    f.input(":"); f.input("turns"); f.input("\r");
+    const body = streamed(f.output).slice(1);
+    expect(body.join("\n")).not.toContain("\t");
+    expect(body[0]).toBe("    a     " + "X".repeat(40) + "* task #3 approved by user");
+    expect(body.join("\n")).toContain('[agent-hub message from "user" approval]');
+    for (const line of body) { expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80); expect(line).toMatch(/^ {4}/); }
+    // No tabs, cursor controls or overlong rows remain to cause terminal auto-wrap to column zero.
+    for (const line of body) expect(line).not.toMatch(/[\x00-\x1f]/);
+    f.input("q"); await running;
+  });
   test("an 80-column console preserves the board child's wrapped title column", async () => {
     const f = fixture(); f.terminal.columns = 80;
     const tasks = [{ id: 1, state: "proposed", class: "implement", owner: "codex", reviewer: "claude", title: "A title with many words ".repeat(30), created: NOW }];

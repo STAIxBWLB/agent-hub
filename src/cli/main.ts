@@ -307,12 +307,13 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-async function taskOp(op: string, a: Record<string, unknown>): Promise<string> {
+async function taskOp(op: string, a: Record<string, unknown>, throwOnError = false): Promise<string> {
   const hub = await connect();
-  const res = await hub.request({ t: "task", op, args: a });
-  hub.close();
-  if (!res.ok) { audit("refused"); fail(res.error); }
-  return res.text;
+  try {
+    const res = await hub.request({ t: "task", op, args: a });
+    if (!res.ok) { audit("refused"); if (throwOnError) throw new Error(res.error); fail(res.error); }
+    return res.text;
+  } finally { hub.close(); }
 }
 
 /** Reads hub.db's turn records; `none` when the hub never kept one (snapshots off, no git work tree, an older hub). */
@@ -900,7 +901,14 @@ const commands: Record<string, () => Promise<void> | void> = {
     const state = args.find((a) => !a.startsWith("--"));
     const tasks = JSON.parse(await taskOp("hub_task_list", ready ? { ready: true } : state ? { state } : {})) as any[];
     if (options.json) return console.log(JSON.stringify(tasks, null, 2));
-    const allTasks = ready || state ? JSON.parse(await taskOp("hub_task_list", {})) as any[] : tasks;
+    let allTasks: any[] | null = tasks;
+    if (ready || state) {
+      try { allTasks = JSON.parse(await taskOp("hub_task_list", {}, true)) as any[]; }
+      catch (error) {
+        allTasks = null;
+        console.error(paint([{ text: `ahub: board dependency stages unavailable; showing filtered rows without stages: ${String((error as Error).message).replace(/[\n\t]/g, " ")}` }], false));
+      }
+    }
     printOutput(renderBoard(tasks, options.columns, Date.now(), options.full, allTasks), options.color);
   },
 
