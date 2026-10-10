@@ -1336,19 +1336,35 @@ unchanged. The screens add no way to change an operation: every choice runs one
 of the commands in this section for you, so that command's refusals decide.
 
 The plan screen lists each project with its hub version and, per attached peer,
-its state and what happens to it: resumed in a new terminal (the old one is
+its state, how it runs (`TUI` in a terminal the plan bound to its session,
+`headless` as the hub's own process, `own` for a session the hub did not
+launch) and what happens to it: resumed in a new terminal (the old one is
 named), reconnecting by itself, restarted as a new session, restarted headless,
 or left offline. `in progress:` repeats what the running hub says keeps it from
 being quiet (busy peers, pending approvals, a peer starting, a budget
 transition); apply waits up to 10 minutes for it. Blockers follow, each with its
 next action. The choices are `[a] apply` (absent while a blocker stands), `[r]
-refresh`, `[j]` the plan as JSON, `[x] reset a project's hub` and `[q] quit`.
+refresh`, `[k] end agents`, `[j]` the plan as JSON, `[x] reset a project's hub`
+and `[q] quit`.
+
+`[k] end agents` ends attached agents before the upgrade, so they are neither
+waited for nor restored: `t` for the TUI agents, `h` for the headless ones
+(Kimi, Pi in headless mode, the local worker), or their names. After a
+confirmation a TUI agent's terminal is closed, which cuts a turn in progress,
+and a headless agent is stopped by its hub through the `peer_stop` request
+(#278). A hub that does not know that request (0.12.21 and older) cannot end a
+headless agent: the screen says so, the agent stops with the old hub at the
+upgrade, and the new hub starts it again. A session marked `own` is ended where
+it runs. The next plan shows the ended agents as offline.
 
 After apply the command stays attached and prints each step as the receipt
 records it, and while a source is being prepared, what it still waits for.
 Enter opens the operation's screen while the runner works on. Ctrl+C leaves the
-command, at any prompt and while following, and never stops the runner: `ahub
-recovery` comes back to the screen. A prompt for a reason that is answered with
+command, at any prompt and while following, and never stops the runner: the
+`left:` line names the command that comes back to the screen, with the
+operation's own coordinator, because the installed `ahub` is the older release
+until the upgrade ends. A Ctrl+C between `a` and the start of the operation
+starts nothing. A prompt for a reason that is answered with
 Ctrl+C or the end of input ends nothing.
 
 The operation's screen also opens first whenever an operation holds the lock,

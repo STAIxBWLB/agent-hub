@@ -8,7 +8,7 @@ import type { Project } from "../hub/registry.ts";
 import { hubHome } from "../hub/project.ts";
 import { packageDigest, registryRelease, runCommand, stageRelease, verifyPackage, type RunCommand } from "./recovery-package.ts";
 import { inspectTerminals, closeTerminal, createTerminal, launcherOf, recordPath, waitForIdle, shellQuote, type SessionRef, type TerminalBinding, type TerminalRecoveryOptions } from "./terminal-recovery.ts";
-import { FinalRefusal, planFingerprint, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "./upgrade.ts";
+import { FinalRefusal, planFingerprint, registeredProjects, targetReadsWaivers, type Inspection, type PlannedProject, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type RecoveryPeer, type UpgradePlan } from "./upgrade.ts";
 import { readEvents } from "../hub/events.ts";
 import { refreshManager } from "../hub/manager.ts";
 import { abandonRestartSnapshot, readRestartSnapshot, waiveRecoveryPeers } from "../hub/restart.ts";
@@ -89,6 +89,28 @@ async function rpc(project: Project, message: Record<string, unknown>, protocol 
     if (reply.ok === false) throw new Error(reply.error ?? "recovery control request failed");
     return reply;
   } finally { client.close(); }
+}
+
+/**
+ * #272: end one attached agent before an upgrade, for the person who chose it on the plan screen. A TUI agent is ended
+ * by closing the terminal the plan bound to its session (the close proves that identity first); a headless agent is
+ * the hub's own process, so the hub is asked to stop it, which a hub older than that request cannot do.
+ */
+export async function endPlannedPeer(planned: PlannedProject, peer: RecoveryPeer, run: RunCommand = runCommand): Promise<string> {
+  const binding = (planned.terminals as TerminalBinding[]).find((t) => t.peer === peer.id);
+  if (binding) {
+    const result = await closeTerminal(binding, 0, terminalOptions(run));
+    return result.closed ? `${peer.id}: terminal ${binding.handle} closed` : `${peer.id}: its terminal was not closed (${result.blockers[0]?.message ?? "unknown reason"}); end it in that terminal`;
+  }
+  try {
+    await rpc(planned.project, { t: "peer_stop", peer: peer.id }, planned.source.protocol ?? PROTOCOL);
+    return `${peer.id}: stopped`;
+  } catch (error) {
+    const message = (error as Error).message;
+    return /does not know "peer_stop"/.test(message)
+      ? `${peer.id}: hub ${planned.source.version ?? "of this version"} cannot end a headless agent by itself; it stops with the old hub at the upgrade and the new hub starts it again (ahub stop ${peer.id} ends it then)`
+      : `${peer.id}: not stopped (${message})`;
+  }
 }
 
 export async function inspectRecovery(project: Project): Promise<Inspection> {

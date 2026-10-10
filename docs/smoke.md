@@ -23,6 +23,10 @@ The live leg, at a real terminal with Orca-launched peers:
    hand-over, press `a`, then Ctrl+C during the wait. Expect the `left:` line, a
    clean shell prompt, and `ahub recovery` showing the runner still working.
 
+5. On the plan screen press `k`, then `t`, and confirm. Expect each TUI agent's
+   terminal closed and the next plan showing them offline; with a hub of 0.12.22
+   or newer, `h` stops the headless agents the same way.
+
 Record the versions, the screens' text and what differed.
 
 ## ahub reset on a scratch project (#214)

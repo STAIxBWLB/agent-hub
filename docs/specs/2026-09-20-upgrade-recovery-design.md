@@ -540,6 +540,16 @@ front end to the commands above, never a second coordinator.
   `recovery abort` then reads what is live once more. A runner killed after it
   recorded an effect leaves an operation that abort refuses and resume
   continues, as after any runner crash.
+- The plan screen can end attached agents before the operation exists (user
+  request, 2026-10-10: choose to end headless or TUI agents during an upgrade).
+  A TUI agent is ended by closing the terminal the plan bound to its session
+  (`closeTerminal`, which proves that binding first); a headless agent by the
+  console-role request `peer_stop` to its hub (#278), which an older hub answers
+  as unknown. An ended agent is offline in the next plan, so it is neither
+  waited for nor restored. Nothing is ended once an operation holds the lock:
+  the coordinator's roster check reads a planned peer that left as a changed
+  source.
+- A Ctrl+C while `apply` checks the plan again creates no operation.
 - Ctrl+C leaves the screens and stops nothing; the terminal is not read again
   after it, because a parent process that died on the same signal (`bun x`, a
   hand-over) may have returned the terminal to the shell. While a progress view
@@ -547,7 +557,14 @@ front end to the commands above, never a second coordinator.
   interrupt or the end of input with no value, never with text.
 - A follow that starts right after a command scheduled a runner (resume, a
   fresh session) waits for that runner's first write, up to 5 seconds: until
-  then the receipt still shows the blocked state it was scheduled from.
+  then the receipt still shows the blocked state it was scheduled from. It
+  starts from the receipt as the command left it (a fresh-session choice writes
+  the receipt itself before it schedules the runner).
+- The daemon's `recovery inspect` lists every condition `recoveryReady()` waits
+  for in `blockers` (task commands, completion checks, Pi calls and a release
+  in flight, an unsettled Pi, besides busy peers, approvals, startup and a
+  budget transition). A hub that is not ready and names no cause is shown as
+  such.
 - The progress view prints the receipt's steps and, during `prepare`, the
   source's own readiness blockers. `inspectRecovery` copies them into
   `Inspection.recovery.waiting` for display only; `planFingerprint` leaves

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { latestRelease, newerVersion } from "../src/cli/recovery-package.ts";
-import { follow, operationLines, operationScreen, planLines, planScreen, resetFlow, stepLabel, type ScreenIO, type UpgradeHost } from "../src/cli/upgrade-interactive.ts";
+import { endAgents, follow, operationLines, operationScreen, peerKind, planLines, planScreen, resetFlow, stepLabel, type ScreenIO, type UpgradeHost } from "../src/cli/upgrade-interactive.ts";
 import { PACKAGE_ROOT } from "../src/cli/upgrade-runtime.ts";
 import { cancellableWait, nextChoices, type Inspection, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
@@ -36,7 +36,7 @@ function screen(answers: string[], onRun: (argv: string[]) => number | void = ()
 }
 function host(over: Partial<UpgradeHost> = {}): UpgradeHost {
   return { plan: async () => plan(), apply: async () => operation(), lock: () => undefined, read: () => operation(), runner: () => undefined,
-    live: async () => ({ alpha: source() }), runnerStoppable: () => true, stopRunner: async () => true, entry: MAIN, version: "0.6.0", ...over };
+    live: async () => ({ alpha: source() }), endPeer: async (_planned, peer) => `${peer.id}: ended`, runnerStoppable: () => true, stopRunner: async () => true, entry: MAIN, version: "0.6.0", ...over };
 }
 
 test("without --to the target is the registry's latest release, and only a newer target changes coordinator", async () => {
@@ -54,17 +54,17 @@ test("the plan screen names each peer's fate, what is in progress and every bloc
   expect(planLines(plan(), "0.6.0")).toEqual([
     "upgrade to 0.6.0 (coordinator 0.6.0)", "",
     "alpha  /alpha  hub 0.5.0 (running)",
-    "  claude  idle     reconnects by itself (unmanaged session; its terminal is left alone)",
-    "  codex   busy     resumes its session in a new terminal (replaces term_codex)",
-    "  kimi    idle     restarts headless as a new session",
-    "  pi      offline  offline, left as it is",
+    "  claude  idle     own       reconnects by itself (unmanaged session; its terminal is left alone)",
+    "  codex   busy     TUI       resumes its session in a new terminal (replaces term_codex)",
+    "  kimi    idle     headless  restarts headless as a new session",
+    "  pi      offline  -         offline, left as it is",
     "  in progress: codex is busy (apply waits up to 10 minutes for it, then leaves this hub running)",
   ]);
   // The running hub's own readiness blockers, when it reports them, and the plan's blockers at both levels.
   const blocked = planLines(plan({ source: source({ recovery: { waiting: ["codex is busy", "pending approvals"] } }), blockers: ["codex: original conversation ID is unknown"], freshStart: ["kimi"] }, ["shared Claude plugin installer is unavailable"]), "0.6.0");
   expect(blocked).toContain("  in progress: codex is busy, pending approvals (apply waits up to 10 minutes for it, then leaves this hub running)");
   expect(blocked).toContain("  blocker: codex: original conversation ID is unknown");
-  expect(blocked).toContain("  kimi    idle     restarts as a new session (no turn to lose)");
+  expect(blocked).toContain("  kimi    idle     headless  restarts as a new session (no turn to lose)");
   expect(blocked.at(-1)).toBe("blocker: shared Claude plugin installer is unavailable");
   expect([stepLabel("commit:alpha"), stepLabel("install-global"), stepLabel("disposed: stop-and-archive (abandoned, not completed)")]).toEqual(["alpha: closing terminals and stopping the old hub", "installing the global CLI", "disposed: stop-and-archive (abandoned, not completed)"]);
 });
@@ -74,13 +74,13 @@ test("apply is offered only without blockers, and an applied plan is followed to
   let applied = 0;
   await planScreen(host({ plan: async () => plan({ blockers: ["claude: unmanaged session cannot reconnect"] }), apply: async () => { applied++; return operation(); } }), blocked.io);
   expect(applied).toBe(0);
-  expect(blocked.asked[0]).toStartWith("Blocked: take the next action each blocker names, then refresh.\n[r] refresh");
+  expect(blocked.asked[0]).toStartWith("Blocked: take the next action each blocker names, then refresh.\n[r] refresh  [k] end agents");
   expect(blocked.out.at(-1)).toBe("nothing was changed");
 
   const steps: Partial<RecoveryOperation>[] = [{ phase: "running", step: "stage" }, { phase: "running", step: "prepare:alpha" }, { phase: "running", step: "prepare:alpha" }, { phase: "running", step: "commit:alpha" }, { phase: "completed", step: "completed" }];
   const ok = screen(["a"]);
   await planScreen(host({ read: () => operation(steps.length > 1 ? steps.shift() : steps[0]), runner: () => 4242, live: async () => ({ alpha: source({ recovery: { waiting: ["codex is busy"] } }) }) }), ok.io);
-  expect(ok.asked[0]).toBe("[a] apply  [r] refresh  [j] plan as JSON  [x] reset a project's hub  [q] quit: ");
+  expect(ok.asked[0]).toBe("[a] apply  [r] refresh  [k] end agents  [j] plan as JSON  [x] reset a project's hub  [q] quit: ");
   const started = `operation ${ID} started; Enter opens its menu, Ctrl+C leaves, and neither stops the upgrade`;
   expect(ok.out.slice(ok.out.indexOf(started))).toEqual([
     started,
@@ -91,7 +91,8 @@ test("apply is offered only without blockers, and an applied plan is followed to
 });
 
 test("Ctrl+C leaves, Enter opens the menu, a lost runner ends the follow, and none of them touches the operation", async () => {
-  const left = "left: the runner keeps working; `ahub recovery` shows the operation and what can be done";
+  // The way back names the operation's own coordinator: the installed ahub may still be the older release.
+  const left = `left: the runner keeps working; \`bun ${MAIN} recovery\` shows the operation and what can be done`;
   const interrupted = screen([]);
   let reads = 0;
   interrupted.io.interrupted = () => reads++ > 0;
@@ -111,10 +112,25 @@ test("Ctrl+C leaves, Enter opens the menu, a lost runner ends the follow, and no
   entered.io.typed = () => lines++ === 2;
   let locked = false;
   await planScreen(host({ apply: async () => { locked = true; return operation(); }, read: () => operation({ phase: "running", step: "prepare:alpha" }), runner: () => 4242, lock: () => locked ? ID : undefined }), entered.io);
-  expect(entered.asked).toEqual(["[a] apply  [r] refresh  [j] plan as JSON  [x] reset a project's hub  [q] quit: ", "> "]);
+  expect(entered.asked).toEqual(["[a] apply  [r] refresh  [k] end agents  [j] plan as JSON  [x] reset a project's hub  [q] quit: ", "> "]);
   expect(entered.out).toContain("  [w] follow its progress");
   const lost = screen([]);
   expect(await follow(host({ read: () => operation({ phase: "running", step: "restore:alpha" }) }), lost.io, ID)).toBe("open");
+  // A Ctrl+C while the plan is checked again starts nothing, and an interrupted screen is not drawn once more.
+  const regret = screen(["a"]);
+  let stop = false, created = 0;
+  regret.io.interrupted = () => stop;
+  await planScreen(host({ apply: async (_plan, interrupted) => { stop = true; if (interrupted()) throw new Error("interrupted; nothing was started"); created++; return operation(); } }), regret.io);
+  expect(created).toBe(0);
+  expect(regret.out.at(-1)).toBe("ahub: interrupted; nothing was started");
+  const gone = screen(["e", "y"]);
+  let asks = 0;
+  gone.io.interrupted = () => asks >= 2;
+  const ask = gone.io.ask;
+  gone.io.ask = async (question) => { asks++; return asks >= 2 ? null : ask(question); };
+  const drawn = () => gone.out.filter((line) => line.startsWith("upgrade to 0.6.0: operation")).length;
+  expect(await operationScreen(host(), gone.io, ID)).toBe("quit");
+  expect(drawn()).toBe(1);
   for (const s of [interrupted, applied, lost]) expect(s.ran).toEqual([]);
 });
 
@@ -129,6 +145,19 @@ test("a resumed operation is followed from the receipt it was scheduled on, not 
   expect(s.ran).toEqual([[MAIN, "recovery", "resume", ID]]);
   expect(s.out.slice(-3)).toEqual(["  alpha: closing terminals and stopping the old hub", "  completed", "upgrade to 0.6.0 completed"]);
   expect(s.asked).toEqual(["> "]); // the menu was not drawn a second time over the old error
+  // A fresh-session choice records itself before it schedules the runner: the follow starts from that write, not from
+  // the menu's receipt, so the still-blocked receipt is not taken for the outcome either.
+  const failed = operation({ updatedAt: 20, targetRoot: PACKAGE_ROOT, error: "alpha: codex restoration failed; next actions: resume", plan: plan({ terminals: [{ peer: "codex", handle: "term_codex", sessionId: "t1" }] }),
+    projects: [{ id: "alpha", phase: "started", commitSent: true, instanceId: "new", terminals: { "closed:codex": true, "restored:codex": "failed" } }] });
+  const target = (): Inspection => ({ state: "running", instanceId: "new", version: "0.6.0", protocol: PROTOCOL, peers: [], blockers: [], recovery: { operationId: ID, phase: "restored", ready: true } });
+  const chosen = { ...failed, updatedAt: 21, projects: [{ ...failed.projects[0]!, fresh: { codex: { lost: "t1", reason: "gone", at: 21 } } }] };
+  const steps: RecoveryOperation[] = [chosen, chosen, { ...chosen, phase: "running", step: "restore:alpha", updatedAt: 22 }, operation({ phase: "completed", step: "completed", updatedAt: 23 })];
+  let disposed = false;
+  const fresh = screen(["f", "its rollout is gone"], () => { disposed = true; });
+  expect(await operationScreen(host({ read: () => !disposed ? failed : steps.length > 1 ? steps.shift()! : steps[0]!, runner: () => disposed && steps.length <= 2 ? 4242 : undefined, live: async () => ({ alpha: target() }) }), fresh.io, ID)).toBe("completed");
+  expect(fresh.ran).toEqual([[MAIN, "recovery", "dispose", ID, "--fresh-session", "codex", "--reason", "its rollout is gone"]]);
+  expect(fresh.asked).toEqual(["> ", "Reason for losing codex's conversation [Enter: go back]: "]);
+  expect(fresh.out).toContain("  [f] start codex as a new session (its conversation is recorded as lost)");
   // A runner that never writes (it refused the receipt) is waited for 5 s of ticks, then the screen shows what is there.
   const never = screen(["r", "q"]);
   await operationScreen(host({ read: () => blocked }), never.io, ID);
@@ -192,7 +221,7 @@ test("a runner that only waits can be cancelled; one past its first effect canno
   await operationScreen(host({ read: () => waiting, runner: () => 4242, runnerStoppable: () => false, stopRunner: async (id) => { movedStops.push(id); return true; } }), unsigned.io, ID);
   expect(movedStops).toEqual([]);
   expect(unsigned.out.some((line) => line.startsWith("  [c]"))).toBe(false);
-  expect(unsigned.out).toContain("  cancel is not offered: this runner's claim cannot be verified (an older coordinator's, or unreadable); it gives up its wait after 10 minutes");
+  expect(unsigned.out).toContain("  cancel is not offered: this runner's claim cannot be verified (an older coordinator's, or unreadable); a live runner gives up its wait after 10 minutes");
   // A runner that does not stop keeps its operation: nothing is aborted under it.
   const stuck = screen(["c", "q"]);
   await operationScreen(host({ read: () => waiting, runner: () => 4242, stopRunner: async () => false }), stuck.io, ID);
@@ -293,3 +322,38 @@ test("only a runner whose claim carries a matching process signature is stopped"
     rmSync(home, { recursive: true, force: true });
   }
 }, 20_000);
+
+test("agents are ended by kind or by name, only after a confirmation, and only the ones that can be", async () => {
+  const planned = plan({ source: source({ peers: [{ id: "claude", state: "busy", sessionId: "s1" }, { id: "codex", state: "idle", threadId: "t1" }, { id: "kimi", state: "busy" }, { id: "pi", state: "idle", args: { mode: "headless" } }, { id: "local", state: "offline" }] }),
+    terminals: [{ peer: "claude", handle: "term_claude" }, { peer: "codex", handle: "term_codex" }], reconnectOnly: [] }).projects[0]!;
+  expect(planned.source.peers.map((peer) => peerKind(planned, peer))).toEqual(["tui", "tui", "headless", "headless", "offline"]);
+  // A Claude or Codex the plan could not bind to a terminal, and Pi in a terminal of its own, are not the hub's to end.
+  const loose = { ...planned, terminals: [] };
+  expect([{ id: "claude", state: "idle" }, { id: "codex", state: "idle" }, { id: "pi", state: "idle", args: { mode: "tui" } }, { id: "kimi", state: "idle" }].map((peer) => peerKind(loose, peer))).toEqual(["unmanaged", "unmanaged", "unmanaged", "headless"]);
+  const endable = planned.source.peers.filter((peer) => peer.state !== "offline").map((peer) => ({ planned, peer }));
+  const ended: string[] = [];
+  const h = host({ endPeer: async (_p, peer) => { ended.push(peer.id); return `${peer.id}: ended`; } });
+  const question = "End which agents? [t] the TUI agents (claude, codex)  [h] the headless agents (kimi, pi)  or names separated by spaces  [Enter] none: ";
+  const tui = screen(["t", "y"]);
+  expect(await endAgents(h, tui.io, endable)).toBe(true);
+  expect(tui.asked).toEqual([question, "End claude, codex now? A TUI agent's terminal is closed, a turn in progress is cut, and none of them is restored by the upgrade. [y/N] "]);
+  expect(tui.out).toEqual(["  claude: ended", "  codex: ended"]);
+  expect(await endAgents(h, screen(["h", "y"]).io, endable)).toBe(true);
+  expect(await endAgents(h, screen(["kimi codex", "y"]).io, endable)).toBe(true);
+  expect(ended).toEqual(["claude", "codex", "kimi", "pi", "codex", "kimi"]);
+  // Declined, nothing chosen, an interrupt, and a name that is not an endable agent: nobody is ended.
+  ended.length = 0;
+  for (const answers of [["t", "n"], [""], [], ["t"], ["local nobody"]]) expect(await endAgents(h, screen([...answers]).io, endable)).toBe(false);
+  expect(ended).toEqual([]);
+  const mixed = screen(["local kimi", "y"]);
+  await endAgents(h, mixed.io, endable);
+  expect(mixed.out).toEqual(["not an agent that can be ended here: local", "  kimi: ended"]);
+  // From the plan screen: the ended agents are offline in the plan that follows.
+  let gone = false;
+  const flow = screen(["k", "t", "y", "q"]);
+  await planScreen(host({ endPeer: async (_p, peer) => { gone = true; return `${peer.id}: terminal term_codex closed`; },
+    plan: async () => gone ? plan({ source: source({ peers: [{ id: "codex", state: "offline" }, { id: "kimi", state: "idle" }] }), terminals: [], reconnectOnly: [] }) : plan({ reconnectOnly: [] }) }), flow.io);
+  expect(flow.out).toContain("  codex: terminal term_codex closed");
+  expect(flow.out).toContain("  codex  offline  -         offline, left as it is");
+  expect(flow.out.at(-1)).not.toBe("nothing was changed");
+});

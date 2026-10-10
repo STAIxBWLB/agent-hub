@@ -28,7 +28,7 @@ import { createInterface as lineReader } from "node:readline";
 import { activeOperation, assertLifecycleAvailable, operationIdPattern, readOperation, recoveryLock, recoveryRunner, signedRunner, stopSignedRunner } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
 import { abortRecovery, createOperation, disposeRecovery, liveProjects, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
-import { makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
+import { endPlannedPeer, makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { exactVersion, latestRelease, newerVersion } from "./recovery-package.ts";
 import { operationScreen, planScreen, type ScreenIO, type UpgradeHost } from "./upgrade-interactive.ts";
 import { recordTerminalLaunch } from "./terminal-recovery.ts";
@@ -393,10 +393,12 @@ function upgradeHost(kind: "restart" | "upgrade", version: string): UpgradeHost 
   const scope = kind === "restart" ? cwd : undefined;
   return {
     plan: () => makeUpgradePlan(kind, version, scope),
-    apply: async (plan) => {
+    apply: async (plan, interrupted) => {
       assertLifecycleAvailable();
       const current = await makeUpgradePlan(kind, plan.version, scope);
       if (current.fingerprint !== plan.fingerprint) throw new Error("the plan changed during review; review it again");
+      // The check above takes seconds: a Ctrl+C in that time is still a no.
+      if (interrupted()) throw new Error("interrupted; nothing was started");
       const operation = createOperation(plan, preserveSource(plan));
       spawnRecovery(operation, true);
       return operation;
@@ -405,6 +407,7 @@ function upgradeHost(kind: "restart" | "upgrade", version: string): UpgradeHost 
     read: (id) => readOperation<RecoveryOperation>(id),
     runner: recoveryRunner,
     live: (op) => liveProjects(op, makeRecoveryDriver().inspect),
+    endPeer: (planned, peer) => endPlannedPeer(planned, peer),
     runnerStoppable: (id) => signedRunner(id) !== undefined,
     stopRunner: (id) => stopSignedRunner(id),
     entry: join(import.meta.dir, "main.js"),

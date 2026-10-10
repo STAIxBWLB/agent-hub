@@ -2556,6 +2556,12 @@ export async function startDaemon(opts: DaemonOptions) {
       ...(!budget.recoverySettled ? ["budget transition in progress"] : []),
       ...([...bus.peers].filter(([, peer]) => peer.state === "busy").map(([id]) => `${id} is busy`)),
       ...(permissions.size ? ["pending approvals"] : []),
+      // #272: the rest of what recoveryReady() waits for, so the upgrade screen can name the wait. Display only.
+      ...(taskOpsInFlight !== 0 ? ["a task command in flight"] : []),
+      ...(tasks.checksPending() !== 0 ? ["completion checks queued or running"] : []),
+      ...((piReceipts?.inFlight ?? 0) !== 0 ? ["Pi tool calls in flight"] : []),
+      ...(releasing ? ["ready tasks being released"] : []),
+      ...([...bus.peers].filter(([, peer]) => peer instanceof PiPeer && peer.state !== "busy" && !peer.recoveryReady).map(([id]) => `${id} is not settled`)),
     ],
     integrity: { current: integrityAs(restored?.integrity), ...(restored?.integrity ? { expected: restored.integrity } : {}) },
     peers: Object.fromEntries([...(recoveryPeerSnapshot ?? []), ...Object.values(recoveryPeers()).filter((peer) => !(recoveryPeerSnapshot ?? []).some((saved) => saved.id === peer.id))].map((peer) => {

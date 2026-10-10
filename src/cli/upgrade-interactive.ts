@@ -25,8 +25,10 @@ export interface ScreenIO {
 /** What the screens read and start. */
 export interface UpgradeHost {
   plan(): Promise<UpgradePlan>;
-  /** Check the reviewed plan again and start it as a detached operation. */
-  apply(plan: UpgradePlan): Promise<RecoveryOperation>;
+  /** Check the reviewed plan again and start it as a detached operation; `interrupted` is asked last, before anything is created. */
+  apply(plan: UpgradePlan, interrupted: () => boolean): Promise<RecoveryOperation>;
+  /** End one attached agent now: close a TUI agent's terminal, or ask the hub to stop a headless one. One line of outcome. */
+  endPeer(planned: PlannedProject, peer: RecoveryPeer): Promise<string>;
   /** The operation that holds the machine's recovery lock. */
   lock(): string | undefined;
   read(id: string): RecoveryOperation;
@@ -43,7 +45,19 @@ export interface UpgradeHost {
 }
 
 const yes = async (io: ScreenIO, question: string): Promise<boolean> => /^y(es)?$/i.test((await io.ask(question)) ?? "");
-const LEFT = "left: the runner keeps working; `ahub recovery` shows the operation and what can be done";
+/** The way back after Ctrl+C: the operation's own coordinator, since the installed `ahub` may still be the older release (#215). */
+const left = (op: { id: string; sourceRoot?: string }): string => `left: the runner keeps working; \`bun ${recoveryArgv(op, "status")[0]} recovery\` shows the operation and what can be done`;
+
+/**
+ * How an attached peer runs, which decides how it can be ended: a TUI agent in a terminal the plan could bind, a
+ * headless agent the hub owns, or a session the hub did not launch (a person ends that one where it runs).
+ */
+export function peerKind(planned: PlannedProject, peer: RecoveryPeer): "tui" | "headless" | "unmanaged" | "offline" {
+  if (peer.state === "offline") return "offline";
+  if ((planned.terminals as { peer: string }[]).some((t) => t.peer === peer.id)) return "tui";
+  if (peer.id === "claude" || peer.id === "codex" || (peer.id === "pi" && peer.args?.mode === "tui")) return "unmanaged";
+  return "headless";
+}
 
 const STEPS: Record<string, string> = {
   stage: "staging the release", prepare: "holding deliveries and waiting until the hub is quiet", reprepare: "preparing the source again after an expired hold",
@@ -67,6 +81,8 @@ function peerAction(planned: PlannedProject, peer: RecoveryPeer): string {
   return peer.id === "pi" ? "restarts headless on its recorded session" : "restarts headless as a new session";
 }
 
+const KINDS = { tui: "TUI", headless: "headless", unmanaged: "own", offline: "-" } as const;
+
 /** What the source says keeps it from being quiet; an older hub names only its busy peers. */
 const inProgress = (source: Inspection): string[] => source.recovery?.waiting ?? source.peers.filter((p) => p.state === "busy").map((p) => `${p.id} is busy`);
 
@@ -75,7 +91,7 @@ export function planLines(plan: UpgradePlan, current: string): string[] {
   for (const p of plan.projects) {
     lines.push("", `${p.project.id}  ${p.project.root}  hub ${p.source.version ?? "unknown"} (${p.source.state})`);
     const width = Math.max(0, ...p.source.peers.map((peer) => peer.id.length));
-    for (const peer of p.source.peers) lines.push(`  ${peer.id.padEnd(width)}  ${peer.state.padEnd(7)}  ${peerAction(p, peer)}`);
+    for (const peer of p.source.peers) lines.push(`  ${peer.id.padEnd(width)}  ${peer.state.padEnd(7)}  ${KINDS[peerKind(p, peer)].padEnd(8)}  ${peerAction(p, peer)}`);
     const waiting = inProgress(p.source);
     if (waiting.length) lines.push(`  in progress: ${waiting.join(", ")} (apply waits up to 10 minutes for it, then leaves this hub running)`);
     for (const blocker of p.blockers) lines.push(`  blocker: ${blocker}`);
@@ -108,9 +124,9 @@ export function operationLines(op: RecoveryOperation, runner: number | "unknown"
 export async function follow(host: UpgradeHost, io: ScreenIO, id: string, scheduled?: number): Promise<"completed" | "open" | "left"> {
   let step = "", waiting = "", unowned = 0, tick = 0;
   for (;; tick++) {
-    if (io.interrupted()) { io.out(LEFT); return "left"; }
-    if (io.typed()) return "open";
     const op = host.read(id);
+    if (io.interrupted()) { io.out(left(op)); return "left"; }
+    if (io.typed()) return "open";
     const unwritten = scheduled !== undefined && op.updatedAt === scheduled;
     if (!unwritten) {
       scheduled = undefined;
@@ -123,12 +139,34 @@ export async function follow(host: UpgradeHost, io: ScreenIO, id: string, schedu
     if (unowned > 20) return "open";
     if (!unwritten && /^(re)?prepare:/.test(step) && tick % 8 === 0) {
       const live = await host.live(op).catch(() => ({} as Record<string, Inspection | undefined>));
-      const now = [...new Set(Object.values(live).flatMap((i) => i?.recovery?.waiting ?? []))].join(", ");
+      // A hub that is not ready and names no cause (one older than #272 lists only busy peers and approvals) still waits.
+      const held = Object.values(live).some((i) => i?.recovery?.operationId === id && i.recovery.ready === false);
+      const now = [...new Set(Object.values(live).flatMap((i) => i?.recovery?.waiting ?? []))].join(", ") || (held ? "the hub is not quiet yet (it names no cause: a completion check, a task command or a Pi call may be in flight)" : "");
       if (now && now !== waiting) io.out(`    waiting for: ${now}`);
       waiting = now;
     }
     await io.sleep(250);
   }
+}
+
+/**
+ * End attached agents before the upgrade, by kind or by name: an ended agent is offline in the next plan, so it is
+ * neither waited for nor restored. True when at least one was asked to end.
+ */
+export async function endAgents(host: UpgradeHost, io: ScreenIO, endable: { planned: PlannedProject; peer: RecoveryPeer }[]): Promise<boolean> {
+  const of = (kind: string) => [...new Set(endable.filter((e) => peerKind(e.planned, e.peer) === kind).map((e) => e.peer.id))];
+  const tui = of("tui"), headless = of("headless");
+  const choices = [...(tui.length ? [`[t] the TUI agents (${tui.join(", ")})`] : []), ...(headless.length ? [`[h] the headless agents (${headless.join(", ")})`] : []), "or names separated by spaces", "[Enter] none"];
+  const answer = ((await io.ask(`End which agents? ${choices.join("  ")}: `)) ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  const names = new Set(answer.flatMap((word) => word === "t" ? tui : word === "h" ? headless : [word]));
+  const chosen = endable.filter((e) => names.has(e.peer.id));
+  const unknown = [...names].filter((name) => !chosen.some((e) => e.peer.id === name));
+  if (unknown.length) io.out(`not an agent that can be ended here: ${unknown.join(", ")}`);
+  if (!chosen.length) { io.out("no agent was ended"); return false; }
+  const list = [...new Set(chosen.map((e) => e.peer.id))].join(", ");
+  if (!(await yes(io, `End ${list} now? A TUI agent's terminal is closed, a turn in progress is cut, and none of them is restored by the upgrade. [y/N] `))) { io.out("no agent was ended"); return false; }
+  for (const { planned, peer } of chosen) io.out(`  ${await host.endPeer(planned, peer)}`);
+  return true;
 }
 
 /** `ahub reset` for one project: the scope, its dry run, a confirmation, then the reset itself. */
@@ -151,6 +189,7 @@ export async function resetFlow(host: UpgradeHost, io: ScreenIO, projects: { id:
 /** One open operation: what it did, and the choices `status` would name, run on the spot. */
 export async function operationScreen(host: UpgradeHost, io: ScreenIO, id: string): Promise<"completed" | "ended" | "quit"> {
   for (let acted = false, reset = false; ;) {
+    if (io.interrupted()) return "quit";
     const op = host.read(id), runner = host.runner(id);
     if (op.phase === "completed") { io.out(`${op.plan.kind} to ${op.plan.version} completed`); return "completed"; }
     if (op.phase === "cancelled") {
@@ -163,8 +202,9 @@ export async function operationScreen(host: UpgradeHost, io: ScreenIO, id: strin
     io.out("");
     for (const line of operationLines(op, runner, Date.now())) io.out(line);
     const run = async (action: "resume" | "abort" | "dispose", flags: string[] = []) => { acted = true; return (await io.run(recoveryArgv(op, action, flags))) === 0; };
-    // A runner scheduled by a command has not written yet: follow from the receipt it was scheduled on.
-    const followed = async (): Promise<boolean> => (await follow(host, io, id, op.updatedAt)) === "left";
+    // A runner scheduled by a command has not written yet: follow from the receipt as that command left it (resume
+    // writes nothing, a fresh-session choice records itself first).
+    const followed = async (): Promise<boolean> => (await follow(host, io, id, host.read(id).updatedAt)) === "left";
     const end = async (): Promise<boolean> => {
       if (!(await yes(io, "End this operation? Its own targets are stopped and the upgrade is abandoned, not completed. [y/N] "))) return false;
       const reason = await io.ask("Reason for the audit [Enter: ended from the upgrade screen]: ");
@@ -181,7 +221,7 @@ export async function operationScreen(host: UpgradeHost, io: ScreenIO, id: strin
         if (await host.stopRunner(id)) await run("abort");
         else io.out("the runner could not be stopped; nothing was cancelled");
       } });
-      else if (cancellableWait(op)) io.out("  cancel is not offered: this runner's claim cannot be verified (an older coordinator's, or unreadable); it gives up its wait after 10 minutes");
+      else if (cancellableWait(op)) io.out("  cancel is not offered: this runner's claim cannot be verified (an older coordinator's, or unreadable); a live runner gives up its wait after 10 minutes");
     }
     for (const choice of nextChoices(op, runner, live)) {
       if (choice.kind === "wait") { if (typeof runner !== "number") io.out(`  ${choice.text}`); }
@@ -209,6 +249,7 @@ export async function operationScreen(host: UpgradeHost, io: ScreenIO, id: strin
 /** The plan, reviewed with the person: apply and follow, or an open operation's screen first. */
 export async function planScreen(host: UpgradeHost, io: ScreenIO): Promise<void> {
   for (let touched = false; ;) {
+    if (io.interrupted()) return;
     const owner = host.lock();
     if (owner) {
       if ((await operationScreen(host, io, owner)) !== "ended") return;
@@ -216,19 +257,22 @@ export async function planScreen(host: UpgradeHost, io: ScreenIO): Promise<void>
       continue;
     }
     const plan = await host.plan();
+    if (io.interrupted()) return;
     io.out("");
     for (const line of planLines(plan, host.version)) io.out(line);
     const blocked = plan.blockers.length > 0 || plan.projects.some((p) => p.blockers.length > 0);
     if (!plan.projects.length) io.out(plan.kind === "upgrade" ? `no hub is running, so nothing is carried over: install with \`bun add -g @staix/agent-hub@${plan.version}\`, then \`ahub setup\`` : "this project's hub is not running: `ahub up` starts it");
-    const keys = [...(blocked ? [] : ["[a] apply"]), "[r] refresh", "[j] plan as JSON", ...(plan.projects.length ? ["[x] reset a project's hub"] : []), "[q] quit"];
+    const endable = plan.projects.flatMap((p) => p.source.peers.filter((peer) => ["tui", "headless"].includes(peerKind(p, peer))).map((peer) => ({ planned: p, peer })));
+    const keys = [...(blocked ? [] : ["[a] apply"]), "[r] refresh", ...(endable.length ? ["[k] end agents"] : []), "[j] plan as JSON", ...(plan.projects.length ? ["[x] reset a project's hub"] : []), "[q] quit"];
     const answer = (await io.ask(`${blocked ? "Blocked: take the next action each blocker names, then refresh.\n" : ""}${keys.join("  ")}: `))?.toLowerCase() ?? "q";
     if (answer === "q") return touched ? undefined : io.out("nothing was changed");
     if (answer === "j") io.out(JSON.stringify(plan, null, 2));
     else if (answer === "x" && plan.projects.length) { touched = true; await resetFlow(host, io, plan.projects.map((p) => p.project)); }
+    else if (answer === "k" && endable.length) touched = (await endAgents(host, io, endable)) || touched;
     else if (answer === "a" && !blocked) {
       touched = true;
       let op: RecoveryOperation;
-      try { op = await host.apply(plan); } catch (error) { io.out(`ahub: ${(error as Error).message}`); continue; }
+      try { op = await host.apply(plan, () => io.interrupted()); } catch (error) { io.out(`ahub: ${(error as Error).message}`); continue; }
       io.out(`operation ${op.id} started; Enter opens its menu, Ctrl+C leaves, and neither stops the ${plan.kind}`);
       const end = await follow(host, io, op.id);
       if (end === "completed") return io.out(`${plan.kind} to ${plan.version} completed`);
