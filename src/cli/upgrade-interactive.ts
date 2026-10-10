@@ -4,19 +4,22 @@ import { cancellableWait, nextChoices, publicOperation, type Inspection, type Pl
 /**
  * #272: the interactive screens of `ahub upgrade`, `ahub restart` and bare `ahub recovery`. They add no way to change
  * an operation: every action is an existing command (`recovery resume|abort|dispose`, `reset`) run for the person
- * through `io.run`, so each command's own refusals decide.
+ * through `io.run`, so each command's own refusals decide. The one thing a screen does itself is stop a runner that
+ * only waits, and only one whose claim is verified (`runnerStoppable`).
  */
 
 /** The terminal a screen talks to; tests script it. */
 export interface ScreenIO {
-  /** One trimmed line from the person; "q" when the input ended or they pressed Ctrl+C. */
-  ask(question: string): Promise<string>;
+  /** One trimmed line from the person; null when the input ended or they pressed Ctrl+C, which no prompt takes for text. */
+  ask(question: string): Promise<string | null>;
   out(line: string): void;
   /** Run an ahub entry with the terminal attached (argv after `bun`); resolves with its exit code. */
   run(argv: string[]): Promise<number>;
   sleep(ms: number): Promise<void>;
-  /** True once after the person pressed Ctrl+C. */
+  /** True from the person's Ctrl+C on: the screens leave, and nothing is stopped. */
   interrupted(): boolean;
+  /** True once when a line was entered while nothing was asked (during a follow); that line is dropped. */
+  typed(): boolean;
 }
 
 /** What the screens read and start. */
@@ -29,13 +32,18 @@ export interface UpgradeHost {
   read(id: string): RecoveryOperation;
   runner(id: string): number | "unknown" | undefined;
   live(op: RecoveryOperation): Promise<Record<string, Inspection | undefined>>;
-  /** Stop the runner recorded for `id` and wait until it is gone; false when it could not be read or did not stop. */
+  /** Whether the runner's claim carries a process signature that still matches: the only kind a screen may stop. */
+  runnerStoppable(id: string): boolean;
+  /** Stop that verified runner and wait until it is gone; false when one still holds the operation. */
   stopRunner(id: string): Promise<boolean>;
   /** This release's CLI entry, for `reset`. */
   entry: string;
   /** This CLI's version. */
   version: string;
 }
+
+const yes = async (io: ScreenIO, question: string): Promise<boolean> => /^y(es)?$/i.test((await io.ask(question)) ?? "");
+const LEFT = "left: the runner keeps working; `ahub recovery` shows the operation and what can be done";
 
 const STEPS: Record<string, string> = {
   stage: "staging the release", prepare: "holding deliveries and waiting until the hub is quiet", reprepare: "preparing the source again after an expired hold",
@@ -91,25 +99,34 @@ export function operationLines(op: RecoveryOperation, runner: number | "unknown"
   return lines;
 }
 
-/** Print steps and readiness waits until the operation completes, blocks, loses its runner or the person interrupts. */
-export async function follow(host: UpgradeHost, io: ScreenIO, id: string): Promise<"completed" | "open"> {
+/**
+ * Print steps and readiness waits until the operation completes, blocks or loses its runner ("open"), the person
+ * enters a line (also "open": the menu), or presses Ctrl+C ("left"). `scheduled` is the receipt's `updatedAt` from
+ * before a runner was scheduled (resume, a fresh session): until that runner writes, the receipt still shows the state
+ * it was scheduled from, which is not the outcome.
+ */
+export async function follow(host: UpgradeHost, io: ScreenIO, id: string, scheduled?: number): Promise<"completed" | "open" | "left"> {
   let step = "", waiting = "", unowned = 0, tick = 0;
-  io.interrupted(); // a Ctrl+C from before this follow does not end it
   for (;; tick++) {
+    if (io.interrupted()) { io.out(LEFT); return "left"; }
+    if (io.typed()) return "open";
     const op = host.read(id);
-    if (op.step !== step) { step = op.step; waiting = ""; tick = 0; io.out(`  ${stepLabel(step)}`); }
-    if (op.phase === "completed") return "completed";
-    if (op.phase === "cancelled" || op.phase === "blocked") return "open";
-    // A runner claims its operation a moment after it is spawned: only a 5 s absence reads as gone.
-    unowned = host.runner(id) === undefined ? unowned + 1 : 0;
+    const unwritten = scheduled !== undefined && op.updatedAt === scheduled;
+    if (!unwritten) {
+      scheduled = undefined;
+      if (op.step !== step) { step = op.step; waiting = ""; tick = 0; io.out(`  ${stepLabel(step)}`); }
+      if (op.phase === "completed") return "completed";
+      if (op.phase === "cancelled" || op.phase === "blocked") return "open";
+    }
+    // A runner claims and writes a moment after it is spawned: only 5 s without either reads as gone.
+    unowned = host.runner(id) === undefined || unwritten ? unowned + 1 : 0;
     if (unowned > 20) return "open";
-    if (/^(re)?prepare:/.test(step) && tick % 8 === 0) {
+    if (!unwritten && /^(re)?prepare:/.test(step) && tick % 8 === 0) {
       const live = await host.live(op).catch(() => ({} as Record<string, Inspection | undefined>));
       const now = [...new Set(Object.values(live).flatMap((i) => i?.recovery?.waiting ?? []))].join(", ");
       if (now && now !== waiting) io.out(`    waiting for: ${now}`);
       waiting = now;
     }
-    if (io.interrupted()) { io.out("stopped following; the runner keeps working"); return "open"; }
     await io.sleep(250);
   }
 }
@@ -123,57 +140,69 @@ export async function resetFlow(host: UpgradeHost, io: ScreenIO, projects: { id:
     project = projects[Number(await io.ask("Reset which project? [number, Enter: none] ")) - 1];
   }
   if (!project) return io.out("nothing was reset");
-  const scope = (await io.ask("[r] runtime reset (deliveries, holds, pauses, session pointers)  [a] full reset (archive the state directory)  [Enter] none: ")).toLowerCase();
+  const scope = ((await io.ask("[r] runtime reset (deliveries, holds, pauses, session pointers)  [a] full reset (archive the state directory)  [Enter] none: ")) ?? "").toLowerCase();
   if (scope !== "r" && scope !== "a") return io.out("nothing was reset");
   const reset = [host.entry, "--project", project.root, "reset", ...(scope === "a" ? ["--all"] : [])];
   if ((await io.run(reset)) !== 0) return; // the dry run: it lists and changes nothing
-  if (!/^y(es)?$/i.test(await io.ask(`Apply this reset of ${project.id}? [y/N] `))) return io.out("nothing was reset");
+  if (!(await yes(io, `Apply this reset of ${project.id}? [y/N] `))) return io.out("nothing was reset");
   await io.run([...reset, "--yes"]);
 }
 
 /** One open operation: what it did, and the choices `status` would name, run on the spot. */
 export async function operationScreen(host: UpgradeHost, io: ScreenIO, id: string): Promise<"completed" | "ended" | "quit"> {
-  for (;;) {
+  for (let acted = false, reset = false; ;) {
     const op = host.read(id), runner = host.runner(id);
     if (op.phase === "completed") { io.out(`${op.plan.kind} to ${op.plan.version} completed`); return "completed"; }
-    if (op.phase === "cancelled") { io.out(`operation ${id} is ${op.disposition ? "ended (abandoned, not completed)" : "cancelled"}; the recovery lock is free`); return "ended"; }
+    if (op.phase === "cancelled") {
+      io.out(`operation ${id} is ${op.disposition ? "ended (abandoned, not completed)" : "cancelled"}; the recovery lock is free`);
+      // Ended from this screen: the reset the person may have come for is one key away.
+      if (acted && !reset && await yes(io, "Reset a project's hub now? [y/N] ")) await resetFlow(host, io, op.plan.projects.map((p) => p.project));
+      return "ended";
+    }
     const live = runner ? {} : await host.live(op);
     io.out("");
     for (const line of operationLines(op, runner, Date.now())) io.out(line);
-    const run = async (action: "resume" | "abort" | "dispose", flags: string[] = []) => (await io.run(recoveryArgv(op, action, flags))) === 0;
+    const run = async (action: "resume" | "abort" | "dispose", flags: string[] = []) => { acted = true; return (await io.run(recoveryArgv(op, action, flags))) === 0; };
+    // A runner scheduled by a command has not written yet: follow from the receipt it was scheduled on.
+    const followed = async (): Promise<boolean> => (await follow(host, io, id, op.updatedAt)) === "left";
     const end = async (): Promise<boolean> => {
-      if (!/^y(es)?$/i.test(await io.ask("End this operation? Its own targets are stopped and the upgrade is abandoned, not completed. [y/N] "))) return false;
-      const reason = (await io.ask("Reason for the audit [Enter: ended from the upgrade screen]: ")).slice(0, 500) || "ended from the upgrade screen";
-      return run("dispose", ["--stop-and-archive", "--reason", reason]);
+      if (!(await yes(io, "End this operation? Its own targets are stopped and the upgrade is abandoned, not completed. [y/N] "))) return false;
+      const reason = await io.ask("Reason for the audit [Enter: ended from the upgrade screen]: ");
+      if (reason === null) return false; // Ctrl+C or the end of input is never a reason
+      return run("dispose", ["--stop-and-archive", "--reason", reason.slice(0, 500) || "ended from the upgrade screen"]);
     };
-    const menu = new Map<string, { label: string; act: () => Promise<unknown> }>();
+    // An act returns true when the person left (Ctrl+C in a follow).
+    const menu = new Map<string, { label: string; act: () => Promise<boolean | void> }>();
     if (typeof runner === "number") {
-      menu.set("w", { label: "follow its progress", act: () => follow(host, io, id) });
-      if (cancellableWait(op)) menu.set("c", { label: "cancel: stop the waiting runner and cancel (nothing was closed or stopped)", act: async () => {
+      menu.set("w", { label: "follow its progress", act: async () => (await follow(host, io, id)) === "left" });
+      if (cancellableWait(op) && host.runnerStoppable(id)) menu.set("c", { label: "cancel: stop the waiting runner and cancel (nothing was closed or stopped)", act: async () => {
+        // Decided again on the receipt as it is now: the runner may have moved on while the menu was read.
+        if (!cancellableWait(host.read(id)) || !host.runnerStoppable(id)) return io.out("the runner moved on; nothing was stopped or cancelled");
         if (await host.stopRunner(id)) await run("abort");
         else io.out("the runner could not be stopped; nothing was cancelled");
       } });
+      else if (cancellableWait(op)) io.out("  cancel is not offered: this runner's claim cannot be verified (an older coordinator's, or unreadable); it gives up its wait after 10 minutes");
     }
     for (const choice of nextChoices(op, runner, live)) {
       if (choice.kind === "wait") { if (typeof runner !== "number") io.out(`  ${choice.text}`); }
-      else if (choice.kind === "resume") menu.set("r", { label: `resume${op.error ? " (after the step the error names)" : ""}`, act: async () => { if (await run("resume")) await follow(host, io, id); } });
-      else if (choice.kind === "abort") menu.set("c", { label: "cancel (no runtime was stopped; nothing to roll back)", act: () => run("abort") });
+      else if (choice.kind === "resume") menu.set("r", { label: `resume${op.error ? " (after the step the error names)" : ""}`, act: async () => (await run("resume")) && followed() });
+      else if (choice.kind === "abort") menu.set("c", { label: "cancel (no runtime was stopped; nothing to roll back)", act: async () => { await run("abort"); } });
       else if (choice.kind === "fresh") menu.set(menu.has("f") ? `f-${choice.peer}` : "f", { label: `start ${choice.peer} as a new session (its conversation is recorded as lost)`, act: async () => {
-        const reason = (await io.ask(`Reason for losing ${choice.peer}'s conversation [Enter: go back]: `)).slice(0, 500);
-        if (reason && reason !== "q" && await run("dispose", ["--fresh-session", choice.peer!, "--reason", reason])) await follow(host, io, id);
+        const reason = await io.ask(`Reason for losing ${choice.peer}'s conversation [Enter: go back]: `);
+        return !!reason && (await run("dispose", ["--fresh-session", choice.peer!, "--reason", reason.slice(0, 500)])) && followed();
       } });
       else {
-        menu.set("e", { label: "end: stop and archive (the upgrade is abandoned, not completed)", act: end });
-        menu.set("x", { label: "end, then reset a project's hub", act: async () => { if (await end()) await resetFlow(host, io, op.plan.projects.map((p) => p.project)); } });
+        menu.set("e", { label: "end: stop and archive (the upgrade is abandoned, not completed)", act: async () => { await end(); } });
+        menu.set("x", { label: "end, then reset a project's hub", act: async () => { if (await end()) { reset = true; await resetFlow(host, io, op.plan.projects.map((p) => p.project)); } } });
       }
     }
     menu.set("s", { label: "refresh", act: async () => {} });
     menu.set("j", { label: "receipt as JSON", act: async () => io.out(JSON.stringify(publicOperation(op, runner, live), null, 2)) });
     for (const [key, item] of menu) io.out(`  [${key}] ${item.label}`);
     io.out("  [q] quit (the operation stays as it is)");
-    const answer = (await io.ask("> ")).toLowerCase();
-    if (answer === "q") return "quit";
-    await menu.get(answer)?.act();
+    const answer = await io.ask("> ");
+    if (answer === null || answer.toLowerCase() === "q") return "quit";
+    if ((await menu.get(answer.toLowerCase())?.act()) === true) return "quit";
   }
 }
 
@@ -183,7 +212,7 @@ export async function planScreen(host: UpgradeHost, io: ScreenIO): Promise<void>
     const owner = host.lock();
     if (owner) {
       if ((await operationScreen(host, io, owner)) !== "ended") return;
-      if (!/^y(es)?$/i.test(await io.ask("Plan again? [y/N] "))) return;
+      if (!(await yes(io, "Plan again? [y/N] "))) return;
       continue;
     }
     const plan = await host.plan();
@@ -192,7 +221,7 @@ export async function planScreen(host: UpgradeHost, io: ScreenIO): Promise<void>
     const blocked = plan.blockers.length > 0 || plan.projects.some((p) => p.blockers.length > 0);
     if (!plan.projects.length) io.out(plan.kind === "upgrade" ? `no hub is running, so nothing is carried over: install with \`bun add -g @staix/agent-hub@${plan.version}\`, then \`ahub setup\`` : "this project's hub is not running: `ahub up` starts it");
     const keys = [...(blocked ? [] : ["[a] apply"]), "[r] refresh", "[j] plan as JSON", ...(plan.projects.length ? ["[x] reset a project's hub"] : []), "[q] quit"];
-    const answer = (await io.ask(`${blocked ? "Blocked: take the next action each blocker names, then refresh.\n" : ""}${keys.join("  ")}: `)).toLowerCase();
+    const answer = (await io.ask(`${blocked ? "Blocked: take the next action each blocker names, then refresh.\n" : ""}${keys.join("  ")}: `))?.toLowerCase() ?? "q";
     if (answer === "q") return touched ? undefined : io.out("nothing was changed");
     if (answer === "j") io.out(JSON.stringify(plan, null, 2));
     else if (answer === "x" && plan.projects.length) { touched = true; await resetFlow(host, io, plan.projects.map((p) => p.project)); }
@@ -200,8 +229,10 @@ export async function planScreen(host: UpgradeHost, io: ScreenIO): Promise<void>
       touched = true;
       let op: RecoveryOperation;
       try { op = await host.apply(plan); } catch (error) { io.out(`ahub: ${(error as Error).message}`); continue; }
-      io.out(`operation ${op.id} started; Ctrl+C stops following, never the ${plan.kind}`);
-      if ((await follow(host, io, op.id)) === "completed") return io.out(`${plan.kind} to ${plan.version} completed`);
+      io.out(`operation ${op.id} started; Enter opens its menu, Ctrl+C leaves, and neither stops the ${plan.kind}`);
+      const end = await follow(host, io, op.id);
+      if (end === "completed") return io.out(`${plan.kind} to ${plan.version} completed`);
+      if (end === "left") return;
       // Blocked, cancelled or left to its runner: the lock check above opens its screen, or plans again once it is free.
     }
   }

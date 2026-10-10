@@ -1,10 +1,14 @@
+import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { latestRelease, newerVersion } from "../src/cli/recovery-package.ts";
 import { follow, operationLines, operationScreen, planLines, planScreen, resetFlow, stepLabel, type ScreenIO, type UpgradeHost } from "../src/cli/upgrade-interactive.ts";
 import { PACKAGE_ROOT } from "../src/cli/upgrade-runtime.ts";
 import { cancellableWait, nextChoices, type Inspection, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
+import { operationPath, recoveryRunner, signedRunner, stopSignedRunner, writeOperation } from "../src/hub/recovery-store.ts";
 
 // #272. The screens only read, ask and run existing commands, so a scripted terminal and a fake host cover them; what
 // the commands themselves accept is test/upgrade.test.ts's invariant.
@@ -21,17 +25,18 @@ const operation = (over: Partial<RecoveryOperation> = {}): RecoveryOperation => 
 function screen(answers: string[], onRun: (argv: string[]) => number | void = () => {}) {
   const out: string[] = [], ran: string[][] = [], asked: string[] = [];
   const io: ScreenIO = {
-    ask: async (question) => { asked.push(question); return answers.shift() ?? "q"; },
+    ask: async (question) => { asked.push(question); return answers.shift() ?? null; }, // out of answers: the input ended
     out: (line) => { out.push(line); },
     run: async (argv) => { ran.push(argv); return onRun(argv) ?? 0; },
     sleep: async () => {},
     interrupted: () => false,
+    typed: () => false,
   };
   return { io, out, ran, asked };
 }
 function host(over: Partial<UpgradeHost> = {}): UpgradeHost {
   return { plan: async () => plan(), apply: async () => operation(), lock: () => undefined, read: () => operation(), runner: () => undefined,
-    live: async () => ({ alpha: source() }), stopRunner: async () => true, entry: MAIN, version: "0.6.0", ...over };
+    live: async () => ({ alpha: source() }), runnerStoppable: () => true, stopRunner: async () => true, entry: MAIN, version: "0.6.0", ...over };
 }
 
 test("without --to the target is the registry's latest release, and only a newer target changes coordinator", async () => {
@@ -76,23 +81,58 @@ test("apply is offered only without blockers, and an applied plan is followed to
   const ok = screen(["a"]);
   await planScreen(host({ read: () => operation(steps.length > 1 ? steps.shift() : steps[0]), runner: () => 4242, live: async () => ({ alpha: source({ recovery: { waiting: ["codex is busy"] } }) }) }), ok.io);
   expect(ok.asked[0]).toBe("[a] apply  [r] refresh  [j] plan as JSON  [x] reset a project's hub  [q] quit: ");
-  expect(ok.out.slice(ok.out.indexOf(`operation ${ID} started; Ctrl+C stops following, never the upgrade`))).toEqual([
-    `operation ${ID} started; Ctrl+C stops following, never the upgrade`,
+  const started = `operation ${ID} started; Enter opens its menu, Ctrl+C leaves, and neither stops the upgrade`;
+  expect(ok.out.slice(ok.out.indexOf(started))).toEqual([
+    started,
     "  staging the release", "  alpha: holding deliveries and waiting until the hub is quiet", "    waiting for: codex is busy",
     "  alpha: closing terminals and stopping the old hub", "  completed", "upgrade to 0.6.0 completed",
   ]);
   expect(ok.ran).toEqual([]);
 });
 
-test("follow stops on an interrupt or a lost runner and leaves the operation alone", async () => {
+test("Ctrl+C leaves, Enter opens the menu, a lost runner ends the follow, and none of them touches the operation", async () => {
+  const left = "left: the runner keeps working; `ahub recovery` shows the operation and what can be done";
   const interrupted = screen([]);
-  let pressed = 0;
-  interrupted.io.interrupted = () => pressed++ === 1; // the first read clears an earlier Ctrl+C; the second is this one
-  expect(await follow(host({ read: () => operation({ phase: "running", step: "start:alpha" }), runner: () => 4242 }), interrupted.io, ID)).toBe("open");
-  expect(interrupted.out).toEqual(["  alpha: starting the new hub", "stopped following; the runner keeps working"]);
+  let reads = 0;
+  interrupted.io.interrupted = () => reads++ > 0;
+  expect(await follow(host({ read: () => operation({ phase: "running", step: "start:alpha" }), runner: () => 4242 }), interrupted.io, ID)).toBe("left");
+  expect(interrupted.out).toEqual(["  alpha: starting the new hub", left]);
+  // From the plan screen the same Ctrl+C ends the session: no screen is drawn on a terminal that may be gone.
+  const applied = screen(["a"]);
+  let pressed = false;
+  applied.io.interrupted = () => pressed;
+  let held = false;
+  await planScreen(host({ apply: async () => { held = true; return operation(); }, read: () => { pressed = true; return operation({ phase: "running", step: "stage" }); }, runner: () => 4242, lock: () => held ? ID : undefined }), applied.io);
+  expect(applied.out.at(-1)).toBe(left);
+  expect(applied.asked).toHaveLength(1);
+  // A line entered while following opens the operation's menu; the runner works on.
+  const entered = screen(["a", "q"]);
+  let lines = 0;
+  entered.io.typed = () => lines++ === 2;
+  let locked = false;
+  await planScreen(host({ apply: async () => { locked = true; return operation(); }, read: () => operation({ phase: "running", step: "prepare:alpha" }), runner: () => 4242, lock: () => locked ? ID : undefined }), entered.io);
+  expect(entered.asked).toEqual(["[a] apply  [r] refresh  [j] plan as JSON  [x] reset a project's hub  [q] quit: ", "> "]);
+  expect(entered.out).toContain("  [w] follow its progress");
   const lost = screen([]);
   expect(await follow(host({ read: () => operation({ phase: "running", step: "restore:alpha" }) }), lost.io, ID)).toBe("open");
-  expect(lost.ran).toEqual([]);
+  for (const s of [interrupted, applied, lost]) expect(s.ran).toEqual([]);
+});
+
+test("a resumed operation is followed from the receipt it was scheduled on, not taken for still blocked", async () => {
+  // The real command only schedules a detached runner: the receipt stays blocked until that runner claims and writes.
+  const blocked = operation({ updatedAt: 10, error: "alpha: source runtime left running; next actions: resume" });
+  const after: RecoveryOperation[] = [blocked, blocked, blocked, operation({ phase: "running", step: "commit:alpha", updatedAt: 11 }), operation({ phase: "completed", step: "completed", updatedAt: 12 })];
+  let scheduled = false, runner: number | undefined;
+  const s = screen(["r"], () => { scheduled = true; });
+  const read = () => { if (!scheduled) return blocked; if (after.length <= 3) runner = 4242; return after.length > 1 ? after.shift()! : after[0]!; };
+  expect(await operationScreen(host({ read, runner: () => runner }), s.io, ID)).toBe("completed");
+  expect(s.ran).toEqual([[MAIN, "recovery", "resume", ID]]);
+  expect(s.out.slice(-3)).toEqual(["  alpha: closing terminals and stopping the old hub", "  completed", "upgrade to 0.6.0 completed"]);
+  expect(s.asked).toEqual(["> "]); // the menu was not drawn a second time over the old error
+  // A runner that never writes (it refused the receipt) is waited for 5 s of ticks, then the screen shows what is there.
+  const never = screen(["r", "q"]);
+  await operationScreen(host({ read: () => blocked }), never.io, ID);
+  expect(never.asked).toEqual(["> ", "> "]);
 });
 
 test("an open operation's screen offers what next offers and runs the chosen command", async () => {
@@ -120,7 +160,7 @@ test("an open operation's screen offers what next offers and runs the chosen com
 
   // Resume schedules the runner through the operation's own coordinator, then follows it.
   let resumed = blocked;
-  const resume = screen(["r"], () => { resumed = operation({ phase: "completed", step: "completed" }); });
+  const resume = screen(["r"], () => { resumed = operation({ phase: "completed", step: "completed", updatedAt: 1 }); });
   expect(await operationScreen(host({ read: () => resumed }), resume.io, ID)).toBe("completed");
   expect(resume.ran).toEqual([[MAIN, "recovery", "resume", ID]]);
 });
@@ -138,6 +178,21 @@ test("a runner that only waits can be cancelled; one past its first effect canno
   expect(stops).toEqual([ID]);
   expect(s.ran).toEqual([[MAIN, "recovery", "abort", ID]]);
   expect(s.out).toContain("  [w] follow its progress");
+  // The receipt is read again at the key press: a runner that moved on while the menu was read is not stopped.
+  const moved = screen(["c"]);
+  let drawn = false;
+  const movedStops: string[] = [];
+  await operationScreen(host({ runner: () => 4242, stopRunner: async (id) => { movedStops.push(id); return true; },
+    read: () => { if (!drawn) { drawn = true; return waiting; } return operation({ phase: "running", step: "commit:alpha", projects: [{ id: "alpha", phase: "prepared", terminals: { "closed:codex": true }, commitSent: true }] }); } }), moved.io, ID);
+  expect(movedStops).toEqual([]);
+  expect(moved.ran).toEqual([]);
+  expect(moved.out).toContain("the runner moved on; nothing was stopped or cancelled");
+  // A claim without a matching process signature is never signalled: cancel is not on the menu.
+  const unsigned = screen(["c", "q"]);
+  await operationScreen(host({ read: () => waiting, runner: () => 4242, runnerStoppable: () => false, stopRunner: async (id) => { movedStops.push(id); return true; } }), unsigned.io, ID);
+  expect(movedStops).toEqual([]);
+  expect(unsigned.out.some((line) => line.startsWith("  [c]"))).toBe(false);
+  expect(unsigned.out).toContain("  cancel is not offered: this runner's claim cannot be verified (an older coordinator's, or unreadable); it gives up its wait after 10 minutes");
   // A runner that does not stop keeps its operation: nothing is aborted under it.
   const stuck = screen(["c", "q"]);
   await operationScreen(host({ read: () => waiting, runner: () => 4242, stopRunner: async () => false }), stuck.io, ID);
@@ -164,6 +219,17 @@ test("end asks first and records a reason, and a reset shows its dry run before 
   const declined = screen(["e", "n", "q"]);
   await operationScreen(host(), declined.io, ID);
   expect(declined.ran).toEqual([]);
+  // Ctrl+C or the end of input at the reason prompt is not a reason: nothing is ended, for end and for a fresh session.
+  const noReason = screen(["e", "y"]);
+  await operationScreen(host(), noReason.io, ID);
+  expect(noReason.asked.at(-2)).toBe("Reason for the audit [Enter: ended from the upgrade screen]: ");
+  expect(noReason.ran).toEqual([]);
+  // A cancel from the screen offers the reset next; declining it changes nothing more.
+  let cancelled = operation(), free = false;
+  const then = screen(["c", "y", "r", "y"], (argv) => { if (argv.includes("abort")) { cancelled = operation({ phase: "cancelled", step: "cancelled" }); free = true; } });
+  expect(await operationScreen(host({ read: () => cancelled, lock: () => free ? undefined : ID }), then.io, ID)).toBe("ended");
+  expect(then.asked).toContain("Reset a project's hub now? [y/N] ");
+  expect(then.ran).toEqual([[MAIN, "recovery", "abort", ID], [MAIN, "--project", "/alpha", "reset"], [MAIN, "--project", "/alpha", "reset", "--yes"]]);
   const refused = screen(["a"], () => 1);
   await resetFlow(host(), refused.io, [project]);
   expect(refused.ran).toEqual([[MAIN, "--project", "/alpha", "reset", "--all"]]);
@@ -182,5 +248,48 @@ test("a held lock opens the operation's screen before any plan is made", async (
   const s = screen(["c", "n"], () => { state = operation({ phase: "cancelled", step: "cancelled" }); locked = false; });
   await planScreen(host({ plan: async () => { plans++; return plan(); }, read: () => state, lock: () => locked ? ID : undefined }), s.io);
   expect(plans).toBe(0);
-  expect(s.asked).toEqual(["> ", "Plan again? [y/N] "]);
+  expect(s.asked).toEqual(["> ", "Reset a project's hub now? [y/N] ", "Plan again? [y/N] "]);
 });
+
+test("only a runner whose claim carries a matching process signature is stopped", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ahub-signed-runner-"));
+  const children: ReturnType<typeof Bun.spawn>[] = [];
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  try {
+    // A real claim by another process, as a runner makes it: signed with that process's own signature.
+    const signed = "00000000-0000-4000-8000-0000000002a1";
+    writeOperation(signed, {}, home);
+    const claimer = join(home, "claim.ts");
+    writeFileSync(claimer, `import { claimRunner } from ${JSON.stringify(join(PACKAGE_ROOT, "src/hub/recovery-store.ts"))};\nclaimRunner(${JSON.stringify(signed)}, ${JSON.stringify(home)});\nconsole.log("claimed");\nsetInterval(() => {}, 1000);\n`);
+    const runner = Bun.spawn([process.execPath, claimer], { stdout: "pipe", stderr: "ignore" });
+    children.push(runner);
+    const reader = runner.stdout.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("claimed");
+    expect(recoveryRunner(signed, home)).toBe(runner.pid);
+    expect(signedRunner(signed, home)).toBe(runner.pid);
+    expect(await stopSignedRunner(signed, home)).toBe(true);
+    await runner.exited;
+    expect(recoveryRunner(signed, home)).toBeUndefined();
+
+    // A claim from before signatures (0.12.20 or older): its pid may be anyone's by now. It is waited for, never signalled.
+    const unsigned = "00000000-0000-4000-8000-0000000002a2";
+    writeOperation(unsigned, {}, home);
+    const bystander = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" });
+    children.push(bystander);
+    const db = new Database(`${operationPath(unsigned, home)}.runner.db`, { create: true });
+    db.run("CREATE TABLE runner (slot INTEGER PRIMARY KEY, pid INTEGER NOT NULL, nonce TEXT NOT NULL)");
+    db.query("INSERT INTO runner (slot, pid, nonce) VALUES (1, ?, 'old')").run(bystander.pid);
+    db.close();
+    expect(recoveryRunner(unsigned, home)).toBe(bystander.pid);
+    expect(signedRunner(unsigned, home)).toBeUndefined();
+    expect(await stopSignedRunner(unsigned, home, 300)).toBe(false);
+    expect(alive(bystander.pid)).toBe(true);
+    // No claim at all: nothing holds the operation, so there is nothing to stop.
+    const free = "00000000-0000-4000-8000-0000000002a3";
+    writeOperation(free, {}, home);
+    expect([signedRunner(free, home), await stopSignedRunner(free, home)]).toEqual([undefined, true]);
+  } finally {
+    for (const child of children) { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 20_000);

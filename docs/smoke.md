@@ -16,8 +16,12 @@ The live leg, at a real terminal with Orca-launched peers:
 2. Press `a`. Expect the steps in order, `waiting for:` while a peer is busy, and
    `upgrade to <version> completed`; `ahub --version` and `ahub status` report it.
 3. On a scratch project, start `ahub restart` while a peer is busy, press `a`,
-   then Ctrl+C during the wait and `c` on the operation screen. Expect `operation
-   <id> is cancelled; the recovery lock is free` and the hub still running.
+   then Enter during the wait and `c` on the operation screen. Expect `operation
+   <id> is cancelled; the recovery lock is free`, the reset question, and the hub
+   still running.
+4. With an installed CLI one release behind, run `ahub upgrade`, confirm the
+   hand-over, press `a`, then Ctrl+C during the wait. Expect the `left:` line, a
+   clean shell prompt, and `ahub recovery` showing the runner still working.
 
 Record the versions, the screens' text and what differed.
 

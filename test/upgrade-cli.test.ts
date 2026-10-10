@@ -77,7 +77,7 @@ await import(${JSON.stringify(main)});
     expect(typedCode).toBe(0);
     expect(screen).toContain(`restart on ${after.version}\n\n${after.projectId}  ${root}  hub ${after.version} (running)`);
     expect(screen).toContain("[a] apply  [r] refresh  [j] plan as JSON  [x] reset a project's hub  [q] quit: ");
-    expect(screen).toMatch(/operation [a-f0-9-]{36} started; Ctrl\+C stops following, never the restart\n  staging the release\n/);
+    expect(screen).toMatch(/operation [a-f0-9-]{36} started; Enter opens its menu, Ctrl\+C leaves, and neither stops the restart\n  staging the release\n/);
     expect(screen.trimEnd()).toEndWith(`  completed\nrestart to ${after.version} completed`);
     operation = /operation ([a-f0-9-]{36}) started/.exec(screen)?.[1] ?? operation;
     const typed = await status();
@@ -166,6 +166,62 @@ test("resume declines while a runner holds the operation", async () => {
   } finally { release(); rmSync(temp, { recursive: true, force: true }); }
 });
 
+// #272 AC1: without --to the latest release is the target, and a target newer than this CLI goes to its own coordinator.
+test("upgrade resolves the latest release and hands a newer target to that release's coordinator", async () => {
+  const temp = mkdtempSync(join(tmpdir(), "ahub-handover-cli-"));
+  mkdirSync(join(temp, "project")); mkdirSync(join(temp, "bin"));
+  const root = realpathSync(join(temp, "project")), record = join(temp, "bunx-argv");
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) if (key.startsWith("AGENTHUB_") || key.startsWith("ORCA_") || ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].includes(key)) delete env[key];
+  env.AGENTHUB_HOME = join(temp, "home");
+  env.PATH = `${join(temp, "bin")}:${env.PATH}`;
+  // A registry that knows a far newer latest release and one old exact release.
+  writeFileSync(join(temp, "bin/npm"), `#!/bin/sh
+case "$*" in
+  "view @staix/agent-hub version --json") echo '"99.0.0"' ;;
+  "view @staix/agent-hub@0.0.1 version dist.integrity --json") echo '{"version":"0.0.1","dist.integrity":"sha512-test"}' ;;
+  *) exit 1 ;;
+esac
+`);
+  // Stands in for bun: it records what it was asked to run and exits with a code of its own.
+  const bun = join(temp, "bin/recorded-bun");
+  writeFileSync(bun, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(record)}\nexit 7\n`);
+  for (const file of [join(temp, "bin/npm"), bun]) chmodSync(file, 0o755);
+  const main = join(import.meta.dir, "../src/cli/main.js"), wrapper = join(temp, "cli.ts");
+  writeFileSync(wrapper, `const args = JSON.parse(process.env.CLI_ARGV!);
+process.execPath = ${JSON.stringify(bun)};
+process.argv = [${JSON.stringify(bun)}, ${JSON.stringify(main)}, ...args];
+await import(${JSON.stringify(main)});
+`);
+  const cli = async (args: string[]) => {
+    rmSync(record, { force: true });
+    const p = Bun.spawn([process.execPath, wrapper], { cwd: root, env: { ...env, CLI_ARGV: JSON.stringify(args) }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    let ran: string[] | undefined;
+    try { ran = readFileSync(record, "utf8").trim().split("\n"); } catch { /* bun x was not run */ }
+    return { code, out, err: err.trim().split("\n"), ran };
+  };
+  try {
+    const { VERSION } = await import("../src/version.ts");
+    const handed = (flags: string[]) => ["x", "--package", "@staix/agent-hub@99.0.0", "ahub", "upgrade", "--to", "99.0.0", ...flags];
+    // A dry run without --to: the latest release, named, then handed over with the same flag; its exit code is ours.
+    expect(await cli(["upgrade", "--dry-run"])).toEqual({ code: 7, out: "", ran: handed(["--dry-run"]), err: [
+      "ahub: the latest release is 99.0.0",
+      `ahub: 99.0.0 is newer than this CLI (${VERSION}), so its own coordinator runs the upgrade: bun ${handed(["--dry-run"]).join(" ")}`,
+    ] });
+    // An explicit newer target with --yes is handed over without a prompt.
+    expect((await cli(["upgrade", "--to", "99.0.0", "--yes"])).ran).toEqual(handed(["--yes"]));
+    // --yes still names its release, and through a pipe so does a plain run: nothing is resolved or run.
+    for (const args of [["upgrade", "--yes"], ["upgrade"]]) expect(await cli(args)).toEqual({ code: 1, out: "", err: ["ahub: upgrade requires --to <exact-version>"], ran: undefined });
+    // A range never reaches a package spec.
+    expect(await cli(["upgrade", "--to", "99", "--dry-run"])).toEqual({ code: 1, out: "", err: ["ahub: --to requires an exact package version"], ran: undefined });
+    // A target that is not newer is planned by this coordinator.
+    const here = await cli(["upgrade", "--to", "0.0.1", "--dry-run"]);
+    expect({ code: here.code, ran: here.ran, version: JSON.parse(here.out).version }).toEqual({ code: 0, ran: undefined, version: "0.0.1" });
+    expect(here.err).toContain("ahub: blocker: no running registered projects in scope");
+  } finally { rmSync(temp, { recursive: true, force: true }); }
+});
+
 // #272 AC6: without an id the recovery commands take the operation that holds the machine's lock.
 test("recovery commands without an id use the operation that holds the lock", async () => {
   const temp = mkdtempSync(join(tmpdir(), "ahub-lock-cli-"));
@@ -186,6 +242,13 @@ test("recovery commands without an id use the operation that holds the lock", as
     acquireRecoveryLock(id, home);
     expect(JSON.parse((await cli(["recovery", "status"])).out)).toMatchObject({ id, phase: "completed", next: [] });
     expect((await cli(["recovery", "resume"])).out).toBe("recovery is already completed\n");
+    // abort and dispose reach the same operation as with its id (this bare receipt has no plan to abort), and
+    // dispose's flags are still its flags.
+    expect(await cli(["recovery", "abort"])).toEqual(await cli(["recovery", "abort", id]));
+    const dispose = ["--stop-and-archive", "--reason", "done with it"];
+    expect(await cli(["recovery", "dispose", ...dispose])).toEqual(await cli(["recovery", "dispose", id, ...dispose]));
+    expect((await cli(["recovery", "dispose", ...dispose])).err).not.toContain("usage");
+    expect((await cli(["recovery", "dispose", "--stop-and-archive"])).err).toStartWith("ahub: usage: ahub recovery");
     // Not a terminal: the bare command has no screen to open, and a word that is no id is not taken for one.
     expect((await cli(["recovery"])).err).toStartWith("ahub: usage: ahub recovery [status|resume|abort] [<operation-id>]");
     expect((await cli(["recovery", "status", "latest"])).err).toStartWith("ahub: usage: ahub recovery");

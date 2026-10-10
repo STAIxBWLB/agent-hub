@@ -532,17 +532,32 @@ front end to the commands above, never a second coordinator.
   `next` to what the commands accept also holds the two together.
 - One choice is not in `next`: cancelling while a runner only waits for its
   source (`cancellableWait`: phase `running`, step `prepare:<project>`, no
-  effect receipt, no commit request). The screen stops the runner that the claim
-  names (`recoveryRunner`, which answers a pid only while the recorded process
-  signature matches) and then runs `recovery abort`, which reads what is live
-  again. A runner killed after it recorded an effect leaves an operation that
-  abort refuses and resume continues, as after any runner crash.
+  effect receipt, no commit request). The screen stops only a runner that
+  `signedRunner` names: a claim whose recorded process signature still matches.
+  `recoveryRunner` answers an unsigned claim (a coordinator of 0.12.20 or older)
+  from its bare pid, which is enough to wait for and never enough to signal, so
+  cancel is not offered for it. The receipt is read again at the key press, and
+  `recovery abort` then reads what is live once more. A runner killed after it
+  recorded an effect leaves an operation that abort refuses and resume
+  continues, as after any runner crash.
+- Ctrl+C leaves the screens and stops nothing; the terminal is not read again
+  after it, because a parent process that died on the same signal (`bun x`, a
+  hand-over) may have returned the terminal to the shell. While a progress view
+  runs, a line (Enter) opens the operation screen instead. A prompt answers an
+  interrupt or the end of input with no value, never with text.
+- A follow that starts right after a command scheduled a runner (resume, a
+  fresh session) waits for that runner's first write, up to 5 seconds: until
+  then the receipt still shows the blocked state it was scheduled from.
 - The progress view prints the receipt's steps and, during `prepare`, the
   source's own readiness blockers. `inspectRecovery` copies them into
   `Inspection.recovery.waiting` for display only; `planFingerprint` leaves
   `recovery` out, so they never change a plan's identity.
 - Without `--to` the target is `npm view @staix/agent-hub version`. `--yes`
-  keeps requiring `--to`, so an unattended apply names its release.
+  keeps requiring `--to`, so an unattended apply names its release. `--to` is
+  checked as an exact version before it reaches the registry or a package spec.
+- The dry-run plan gains `projects[].source.recovery.waiting` when the hub
+  reports something in progress; nothing else in the non-interactive output
+  changes.
 - Out of scope: a hub-side interrupt of a running turn (the running source may
   be older and would not know the request), and answering approvals from the
   screens.

@@ -1346,7 +1346,10 @@ refresh`, `[j]` the plan as JSON, `[x] reset a project's hub` and `[q] quit`.
 
 After apply the command stays attached and prints each step as the receipt
 records it, and while a source is being prepared, what it still waits for.
-Ctrl+C stops following and never the runner; the operation's screen opens.
+Enter opens the operation's screen while the runner works on. Ctrl+C leaves the
+command, at any prompt and while following, and never stops the runner: `ahub
+recovery` comes back to the screen. A prompt for a reason that is answered with
+Ctrl+C or the end of input ends nothing.
 
 The operation's screen also opens first whenever an operation holds the lock,
 and for bare `ahub recovery`. It shows the phase and step, each project's phase
@@ -1363,13 +1366,18 @@ and effect receipts and the error, then the choices that `status` lists under
 | `w` | follows the runner | a runner holds the operation |
 
 While a runner is only waiting for its source to get quiet (step `prepare`, no
-effect recorded), `c` stops that runner, by the pid and process signature its
-claim records, and then aborts. If the runner recorded an effect in that moment,
-the abort is refused and resume is offered instead. Past that step a running
-operation offers only `w`.
+effect recorded), `c` stops that runner and then aborts. It is offered only for
+a runner whose claim carries a process signature that still matches; a claim
+from a coordinator of 0.12.20 or older has none, so its pid is never signalled,
+and such a runner gives up its wait after 10 minutes. The receipt is read again
+when the key is pressed, and a runner that has moved on is left alone. If it
+records an effect in the instant between that read and the signal, the abort is
+refused and resume is offered instead. Past that step a running operation
+offers only `w`.
 
-A reset is offered from the plan screen, and after an operation was cancelled or
-ended: it asks for the project (when there are several) and the scope, prints
+A reset is offered from the plan screen for a project whose hub is running, and
+with one question right after an operation was cancelled or ended from its
+screen: it asks for the project (when there are several) and the scope, prints
 the dry run of `ahub reset` or `ahub reset --all`, and applies it with `--yes`
 only after a second confirmation. While an operation holds the lock it refuses,
 as `ahub reset` does.

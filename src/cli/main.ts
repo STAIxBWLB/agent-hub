@@ -25,11 +25,11 @@ import { VERSION } from "../version.ts";
 import { freeText } from "./free-text.ts";
 import { createInterface } from "node:readline/promises";
 import { createInterface as lineReader } from "node:readline";
-import { activeOperation, assertLifecycleAvailable, operationIdPattern, readOperation, recoveryLock, recoveryRunner } from "../hub/recovery-store.ts";
+import { activeOperation, assertLifecycleAvailable, operationIdPattern, readOperation, recoveryLock, recoveryRunner, signedRunner, stopSignedRunner } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
 import { abortRecovery, createOperation, disposeRecovery, liveProjects, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation } from "./upgrade.ts";
 import { makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
-import { latestRelease, newerVersion } from "./recovery-package.ts";
+import { exactVersion, latestRelease, newerVersion } from "./recovery-package.ts";
 import { operationScreen, planScreen, type ScreenIO, type UpgradeHost } from "./upgrade-interactive.ts";
 import { recordTerminalLaunch } from "./terminal-recovery.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
@@ -353,21 +353,24 @@ function spawnRecovery(operation: RecoveryOperation, quiet = false): void {
 }
 
 /** #272: a terminal session for the interactive screens. One line reader for the whole session, in the terminal's own
- *  line mode, so Ctrl+C stays a signal: it answers an open question with "q" and ends a follow, never a runner. */
+ *  line mode, so Ctrl+C stays a signal: from then on every question answers null and the screens leave. The terminal
+ *  is not read again after it (a parent that died on the same Ctrl+C may have handed it back to the shell), and no
+ *  runner is ever stopped by it. */
 async function onTerminal(screens: (io: ScreenIO) => Promise<void>): Promise<void> {
   const rl = lineReader({ input: process.stdin, terminal: false });
-  const lines: string[] = [], waiters: ((line: string) => void)[] = [];
+  const lines: string[] = [], waiters: ((line: string | null) => void)[] = [];
   let ended = false, interrupted = false;
   rl.on("line", (line) => { const next = waiters.shift(); if (next) next(line.trim()); else lines.push(line.trim()); });
-  rl.on("close", () => { ended = true; for (const waiter of waiters.splice(0)) waiter("q"); });
-  const onInterrupt = () => { interrupted = true; for (const waiter of waiters.splice(0)) waiter("q"); };
+  rl.on("close", () => { ended = true; for (const waiter of waiters.splice(0)) waiter(null); });
+  const onInterrupt = () => { interrupted = true; for (const waiter of waiters.splice(0)) waiter(null); };
   process.on("SIGINT", onInterrupt);
   try {
     await screens({
       ask: (question) => {
+        if (interrupted) return Promise.resolve(null);
         process.stdout.write(question);
         const typed = lines.shift();
-        return typed !== undefined ? Promise.resolve(typed) : ended ? Promise.resolve("q") : new Promise((resolve) => waiters.push(resolve));
+        return typed !== undefined ? Promise.resolve(typed) : ended ? Promise.resolve(null) : new Promise((resolve) => waiters.push(resolve));
       },
       out: (line) => console.log(line),
       run: (argv) => new Promise((resolve) => {
@@ -379,7 +382,9 @@ async function onTerminal(screens: (io: ScreenIO) => Promise<void>): Promise<voi
         child.on("close", (code) => done(code ?? 1));
       }),
       sleep: (ms) => Bun.sleep(ms),
-      interrupted: () => { const was = interrupted; interrupted = false; return was; },
+      interrupted: () => interrupted,
+      // Scripted input (a pipe) is answers typed ahead for the next question; only a terminal's line is a key press.
+      typed: () => !ended && lines.splice(0).length > 0,
     });
   } finally { process.off("SIGINT", onInterrupt); rl.close(); }
 }
@@ -400,15 +405,8 @@ function upgradeHost(kind: "restart" | "upgrade", version: string): UpgradeHost 
     read: (id) => readOperation<RecoveryOperation>(id),
     runner: recoveryRunner,
     live: (op) => liveProjects(op, makeRecoveryDriver().inspect),
-    // recoveryRunner names a pid only while its recorded process signature still matches: this operation's runner.
-    stopRunner: async (id) => {
-      const pid = recoveryRunner(id);
-      if (pid === undefined) return true;
-      if (pid === "unknown") return false;
-      try { process.kill(pid, "SIGTERM"); } catch { /* gone meanwhile */ }
-      for (let n = 0; n < 50; n++) { if (recoveryRunner(id) === undefined) return true; await Bun.sleep(100); }
-      return false;
-    },
+    runnerStoppable: (id) => signedRunner(id) !== undefined,
+    stopRunner: (id) => stopSignedRunner(id),
     entry: join(import.meta.dir, "main.js"),
     version: VERSION,
   };
@@ -427,6 +425,8 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
     to = await latestRelease();
     console.error(`ahub: the latest release is ${to}`);
   }
+  // Before the value reaches a package spec or the registry: a range such as 0.13 would resolve to whatever matches.
+  if (to !== undefined) { try { exactVersion(to); } catch (error) { fail((error as Error).message); } }
   // An older CLI must not coordinate a newer target (docs/operations.md): the target's own coordinator takes over.
   if (kind === "upgrade" && newerVersion(to!, VERSION) && process.env.AGENTHUB_UPGRADE_HANDOVER !== "1") {
     const argv = ["x", "--package", `@staix/agent-hub@${to}`, "ahub", "upgrade", "--to", to!, ...rest];
@@ -435,9 +435,15 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
       const rl = createInterface({ input: process.stdin, output: process.stdout });
       try { if (!/^(|y|yes)$/i.test((await rl.question("Continue? [Y/n] ")).trim())) return; } finally { rl.close(); }
     }
-    const res = spawnSync(process.execPath, argv, { cwd, stdio: "inherit", env: { ...process.env, AGENTHUB_UPGRADE_HANDOVER: "1" } });
-    if (res.error) fail(`cannot run bun x: ${res.error.message}`);
-    process.exit(res.status ?? 1);
+    // The coordinator owns the terminal from here. This process only waits, and a Ctrl+C meant for that session must not
+    // end it first and hand the terminal back to the shell under it.
+    process.on("SIGINT", () => {});
+    const code = await new Promise<number>((resolve) => {
+      const child = spawn(process.execPath, argv, { cwd, stdio: "inherit", env: { ...process.env, AGENTHUB_UPGRADE_HANDOVER: "1" } });
+      child.on("error", (error) => { console.error(`ahub: cannot run bun x: ${error.message}`); resolve(1); });
+      child.on("close", (status) => resolve(status ?? 1));
+    });
+    process.exit(code);
   }
   if (interactive) return onTerminal((io) => planScreen(upgradeHost(kind, to ?? VERSION), io));
   const plan = await makeUpgradePlan(kind, to ?? VERSION, kind === "restart" ? cwd : undefined);
