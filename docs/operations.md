@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.20 and control protocol 16. Live verification
+This guide describes ahub 0.12.21 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Command help
@@ -49,13 +49,14 @@ counts `needs_review` deliveries, in the attention and failure tones.
 
 Peers, Approvals, Tasks and Queue are tables with a header row. A column is as
 wide as its widest cell, up to a third of the terminal; the last column takes
-the rest and is cut with `...`.
+the rest and is cut with `...`. In Tasks, TITLE takes the rest and the STAGE
+meter keeps a fixed column at the right edge.
 
 | Panel | Columns |
 |---|---|
 | Peers | PEER STATE MODE LINK Q ! REVIEW PAUSE QUOTA MODEL |
 | Approvals | ID PEER LEFT TITLE |
-| Tasks | ID STATE OWNER REVIEWER CLASS AGE TITLE |
+| Tasks | ID STATE OWNER REVIEWER CLASS AGE TITLE STAGE |
 | Queue | ID PEER STATE REV AGE |
 
 The MODE column appears only when at least one peer has a non-`ask` mode.
@@ -84,10 +85,10 @@ showed it. The footer's last line lists only the keys that act in the current
 mode, panel and state. A notice shows on the footer's second line until the next
 key or for about ten seconds: errors and refusals (a refused command, a request
 error, the size refusal) in the failure tone, notices that only inform (a closed
-or missing selection) in the attention tone. With a detail open, `p`, `r` and `a`
+or missing selection) in the attention tone. With a detail open, `p`, `r`, `m` and `a`
 act on the item the detail shows. `:` enters a command; its output lines
-start at column 4, as message bodies do. Assignment, delivery resolution and
-allow decisions require confirmation; delivery resolution requires a reason. Tasks use the same public redaction as the board. Panels need at least
+start at column 4, as message bodies do. Assignment, delivery resolution, allow
+decisions and a never-ask permission mode require confirmation; delivery resolution requires a reason. Tasks use the same public redaction as the board. Panels need at least
 80 columns by 24 rows; smaller terminals stay in stream mode. Full task and queue reads run only in panels; stream progress uses the existing
 status state counts and never fetches the board. Leaving restores
 the terminal and returning from panels replays the bounded stream buffer.
@@ -178,8 +179,8 @@ recorded separately in the smoke ledger; fake-terminal tests establish policy,
 geometry, sanitization and restoration only.
 
 The command input accepts existing status, board, task, review, say, pause,
-resume, budget, queue, permit, ask, remember, route, turns, undo, check-path and
-report operations. It executes an argument vector with closed stdin. Lifecycle,
+resume, budget, queue, permit, permission, ask, remember, route, turns, undo,
+check-path and report operations. It executes an argument vector with closed stdin. Lifecycle,
 launch, nested console, setup, UI, logs and tail commands are refused.
 
 ## Conducting a team from Claude Code or Codex
@@ -226,9 +227,11 @@ off withdraws pending feed notices.
 
 For a Claude conductor, `ahub claude` also observes native session and turn
 boundaries when facts injection and task-idle sweeps are off. Keep the managed
-hooks enabled to measure completion and supervision usage. Passing your own
-`--settings` takes precedence and produces a warning when it replaces that
-observation. The launcher records its private session identity in ordinary
+hooks enabled to measure completion and supervision usage. Your own
+`--settings` (given once, a JSON object or file) keeps that observation: the
+launcher adds the hub's hooks to its hooks and warns only that the status line
+tee is off; one that sets `disableAllHooks` is refused. The launcher records its
+private session identity in ordinary
 terminals too; this does not grant terminal-recovery authority.
 Ordinary Claude sessions with turn-free facts or task-idle sweeps enabled get the
 same session/start observation. Other ordinary launches remain non-opt-in.
@@ -265,7 +268,8 @@ may request an approval.
 
 `.agenthub/config.json` can be committed and shared. The fields that choose
 what the hub runs, which files it sends as credentials, where task text goes,
-or how far the local worker's sandbox reaches (`kimi_cmd`, `codex_bin`,
+how far the local worker's sandbox reaches, or how often a peer asks before it
+acts (`kimi_cmd`, `permission_modes`, `codex_bin`,
 `pi.cmd`, `checks`, `mlx.bin`, `mlx.runtimeDir`, `mlx.modelPath`, `omniroute.urls`,
 `omniroute.access_hosts`, the `omniroute` key files, `memory.worker_url`,
 `local.read_allow`, `local.bash_network`, `local.network_allow`) are machine-local:
@@ -690,8 +694,9 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   held.
 - Verified context path. A hub-launched Claude session (`ahub claude`) gets the
   hub's hook before and after every tool call and at the end of each turn, in
-  its `--settings` next to the status line tee (a `--settings` of your own turns
-  them off). Codex gets context by steer into its running turn. Until a fact or a
+  its `--settings` next to the status line tee (a `--settings` of your own keeps
+  them, added to its own hooks, and loses only the tee). Codex gets context by
+  steer into its running turn. Until a fact or a
   one-line probe has been read back, the peer counts as unverified: for Claude
   the row Claude Code writes in its transcript for the hook's additional
   context, matched by tool use id and the offer's id; for Codex the steered
@@ -931,8 +936,8 @@ ahub permit <request-id> allow
 
 Use the exact option shown by `ahub tail`; do not approve an unresolved or
 unexpected request. On macOS a waiting request also raises a desktop
-notification that names the peer and, for Kimi, the tool, never what it would
-run. An unanswered request is cancelled after `approvals.timeout_s` (default
+notification that names the peer and, for Kimi and the local worker, the tool,
+never what it would run. An unanswered request is cancelled after `approvals.timeout_s` (default
 120, 30 to 3600) in `.agenthub/config.json`, and the console and log say so.
 Set `approvals.notify` to `false` to turn notifications off; a hub started
 without a project config file raises none. While Kimi waits for an answer its
@@ -1166,21 +1171,21 @@ Rows without a live process are stale registrations; forget them with
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 and 0.12.21), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.20 ahub upgrade --to 0.12.20 --dry-run
-bunx --package @staix/agent-hub@0.12.20 ahub upgrade --to 0.12.20 --yes
+bunx --package @staix/agent-hub@0.12.21 ahub upgrade --to 0.12.21 --dry-run
+bunx --package @staix/agent-hub@0.12.21 ahub upgrade --to 0.12.21 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 and 0.12.21 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -1212,14 +1217,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.20 --dry-run
+ahub upgrade --to 0.12.21 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.20 --yes
+ahub upgrade --to 0.12.21 --yes
 ahub recovery status <operation-id>
 ahub recovery resume <operation-id>
 ahub recovery abort <operation-id>
@@ -1344,8 +1349,9 @@ next actions").
   get past what is live: not past a replaced or missing source, a source that
   crashed before any commit request, a refusal at staging (the target release
   or the preserved source can never change back), a hub of another control
-  protocol, a target that stopped after it started, or a stopped hub without
-  the operation's restart snapshot.
+  protocol, a target that stopped after it started when the operation's
+  coordinator is older than 0.12.21, or a stopped hub without the operation's
+  restart snapshot.
   A second `resume` while its own hold still stands checks the peers again
   before it closes anything.
 - When a target hub dies after it started (a crash or a reboot), `resume`
@@ -1702,8 +1708,8 @@ The hooks return no facts in advisory mode. A native Stop establishes an idle
 boundary; a subsequent PreToolUse marks activity. A delivery acknowledgement or
 task approval does not establish native idle. Restart the daemon and relaunch
 Claude after enabling the sweep so its session receives the hooks. A caller's
-`--settings` still wins: the launcher warns that native idle observation is off,
-and the sweep cannot verify that Claude session between turns.
+`--settings` keeps them: the launcher adds the hub's hooks to the caller's and
+warns only that the status line tee is off.
 
 `auto_reassign: true` explicitly allows an available alternative owner selected
 under the existing routing, role and PII constraints to receive the task at step

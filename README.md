@@ -4,7 +4,7 @@ Native multi-agent hub for one developer's machine: Claude Code, Codex, Kimi Cod
 hub-owned local-LLM worker collaborate as peers in independent project directories, with
 task-aware model routing (Switchyard) in front of a self-hosted gateway (OmniRoute).
 
-Status: 0.12.20, control protocol 16. Durable delivery records distinguish queued
+Status: 0.12.21, control protocol 16. Durable delivery records distinguish queued
 work from uncertain execution. The [smoke checklist](docs/smoke.md) records
 verified paths and remaining prerequisites.
 
@@ -28,7 +28,7 @@ cd <your project> && ahub init && ahub up
 Or install the same version from GitHub:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.20 && ahub setup
+bun add -g github:STAIxBWLB/agent-hub#v0.12.21 && ahub setup
 ```
 
 The installed commands remain `ahub` and `agent-hub`.
@@ -138,13 +138,14 @@ Bun + TypeScript. Single daemon per project directory, loopback only.
 ## Local dashboard
 
 With a running daemon, `ahub ui` opens a local dashboard for messages, peer states
-and queues, the task board, budget windows and pending approvals. Use
-`ahub ui --no-open` to print a single-use link when the browser cannot be opened.
+and queues, the task board, budget windows, pending approvals and this machine's
+benchmark runs. Use `ahub ui --no-open` to print a single-use link when the
+browser cannot be opened.
 Open the link within 60 seconds; the browser session lasts one hour.
 
 The dashboard can send console messages, propose and assign tasks, pause or resume
 peers, and answer approvals. Budget pauses still require the terminal override.
-Private envelopes and PII tasks stay redacted. Local-worker tool details and
+Private envelopes and PII tasks stay redacted. Local-worker and Pi tool details and
 allow decisions stay in `ahub tail` / `ahub permit`; the page can deny them.
 No dashboard port is opened until requested. See [the session security model](docs/security.md#local-dashboard-sessions-issue-6).
 
