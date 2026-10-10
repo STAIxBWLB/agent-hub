@@ -454,7 +454,7 @@ const NOTICE_MS = 10_000;
 const TABLES: Record<number, string[]> = {
   1: ["PEER", "STATE", "LINK", "Q", "!", "REVIEW", "PAUSE", "QUOTA", "MODEL"],
   2: ["ID", "PEER", "LEFT", "TITLE"],
-  3: ["ID", "STAGE", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "TITLE"],
+  3: ["ID", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "TITLE", "STAGE"],
   4: ["ID", "PEER", "STATE", "REV", "AGE"],
 };
 const count = (n: unknown) => typeof n === "number" && n ? String(n) : "-";
@@ -480,8 +480,8 @@ function cells(s: ConsoleState, row: any, selected: boolean, now: number, stages
     const failed = last?.event === "check failed" || last?.event === "failed";
     const stage = stages?.get(row.id);
     const meter = stage ? "[" + "#".repeat(stage.stage - (stage.changes ? 1 : 0)) + (stage.changes ? "!" : "") + "-".repeat(4 - stage.stage) + "]" : "[----]";
-    return [id(`#${row.id}`, "info"), span(meter, stage?.changes ? "failure" : stateTone(row.state)), span(`${row.state}${failed && row.state !== last.event ? ` ${last.event}` : ""}${row.ready ? " ready" : ""}${stage?.waiting ? " waiting" : ""}`, failed ? "failure" : row.ready || stage?.waiting ? "attention" : stateTone(row.state)),
-      span(row.owner ?? "-"), span(row.reviewer ?? "-"), span(row.class ?? "-"), span(typeof at === "number" ? duration(now - at) : "-", "muted"), span(row.title)];
+    return [id(`#${row.id}`, "info"), span(`${row.state}${failed && row.state !== last.event ? ` ${last.event}` : ""}${row.ready ? " ready" : ""}${stage?.waiting ? " waiting" : ""}`, failed ? "failure" : row.ready || stage?.waiting ? "attention" : stateTone(row.state)),
+      span(row.owner ?? "-"), span(row.reviewer ?? "-"), span(row.class ?? "-"), span(typeof at === "number" ? duration(now - at) : "-", "muted"), span(row.title), span(meter, stage?.changes ? "failure" : stateTone(row.state))];
   }
   if (s.panel === 4) return [id(row.id, "info"), span(row.peer), span(row.state, stateTone(row.state)), span(row.revision ?? "-"), span(typeof row.createdAt === "number" ? duration(now - row.createdAt) : "-", "muted")];
   const [header, ...body] = String(row.text).split("\n");
@@ -496,16 +496,20 @@ function table(head: string[], rows: Span[][], columns: number): Span[][] {
   const cap = Math.max(24, Math.floor(columns / 3));
   const width = (cell: Span | undefined) => Bun.stringWidth(flat(cell?.text));
   const widths = head.map((h, i) => Math.min(cap, rows.reduce((max, row) => Math.max(max, width(row[i])), Bun.stringWidth(h))));
+  const flexible = head.includes("STAGE") ? head.indexOf("TITLE") : head.length - 1;
   if (head.includes("STAGE")) {
-    // Keep room for a title and its cut marker when the new fixed stage column is present.
-    const metadata = head.indexOf("CLASS");
-    const occupied = () => widths.slice(0, -1).reduce((sum, value) => sum + value + 2, 2);
-    while (occupied() > columns - 7 && widths[metadata]! > head[metadata]!.length) widths[metadata] = widths[metadata]! - 1;
+    // Keep the original columns adjacent; stage meters occupy a fixed right-edge column.
+    const room = () => columns - 2 - widths.reduce((sum, value, index) => sum + (index === flexible ? 0 : value), 0) - 2 * (head.length - 1);
+    for (const key of ["CLASS", "OWNER", "REVIEWER", "AGE", "STATE"]) {
+      const metadata = head.indexOf(key);
+      while (room() < 7 && widths[metadata]! > head[metadata]!.length) widths[metadata] = widths[metadata]! - 1;
+    }
+    widths[flexible] = Math.max(0, room());
   }
   return [head.map(h => span(h, "info")), ...rows].map(row => row.map((cell, i) => {
-    if (i === head.length - 1) return cell;
+    if (i === head.length - 1 && flexible === i) return cell;
     const text = fit(cell.text, widths[i]!);
-    return { ...cell, text: text + " ".repeat(widths[i]! - Bun.stringWidth(text) + 2) };
+    return { ...cell, text: text + " ".repeat(Math.max(0, widths[i]! - Bun.stringWidth(text)) + (i === head.length - 1 ? 0 : 2)) };
   }));
 }
 /** The footer's key hint: only keys that act in this mode, panel and state. */
