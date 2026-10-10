@@ -88,9 +88,38 @@ or missing selection) in the attention tone. With a detail open, `p`, `r` and `a
 act on the item the detail shows. `:` enters a command; its output lines
 start at column 4, as message bodies do. Assignment, delivery resolution and
 allow decisions require confirmation; delivery resolution requires a reason. Tasks use the same public redaction as the board. Panels need at least
-80 columns by 24 rows; smaller terminals stay in stream mode. Task and queue
-polling runs only while the corresponding panel is visible. Leaving restores
+80 columns by 24 rows; smaller terminals stay in stream mode. Full task and queue reads run only in panels; stream progress uses the existing
+status state counts and never fetches the board. Leaving restores
 the terminal and returning from panels replays the bounded stream buffer.
+
+The Tasks panel summarizes the whole public board with an approved/all fraction,
+a 20-cell ASCII bar and state counts. Proposed tasks with unapproved or missing
+`after` dependencies count as waiting; PII stubs count normally. Each task has a
+four-cell stage meter (proposed, in progress, review, approved). Changes requested
+returns to in progress and uses `!` plus the failure tone. Narrow panels retain
+the fraction/bar before optional counts, which appear in fixed importance order:
+changes requested, review, waiting, in progress, proposed, then unknown when nonzero. Narrow widths drop
+only the suffix. Bar cells and percentages round down so open tasks never imply
+completion. Stream `tasks N/M approved` lives on the approvals footer line, leaving the
+peer/queue footer line intact. Operator notices or an already-full approvals line
+take precedence over this optional count. A brief notice hides it only until the
+notice's ten-second TTL expires, then the retained known count returns on redraw; the scroll
+region starts at row 1 to preserve terminal scrollback. All existing status state
+counts contribute to its total, including an unfamiliar state. Until a successful
+status read it says loading; later failures preserve the prior count with a notice.
+Panels retain their existing full-board refresh and loading/error handling.
+
+The dashboard Task board shows the same shared public-board progress model,
+including state counts, waiting, stacked segments and a labeled four-stage track
+per row. Filtering rows does not filter overall progress. The existing signature guard
+updates the live region only when progress changes. The stacked SVG fills the
+section width; its text legend carries every state count. Theme offers System,
+Light and Dark; it is applied before first paint and stored in a host-scoped loopback cookie
+(`Path=/`, `SameSite=Strict`, one-year lifetime), shared across dashboard ports.
+Blocked cookie access defaults to System on reload and never prevents operation. System follows
+OS color preference through CSS. Both inline scripts and the style retain CSP
+hashes; there are no external chart/theme assets. Live theme/readability inspection
+is tracked in `docs/smoke.md` and remains unverified until performed.
 
 Console color policy is `--color=auto|always|never`, with `auto` as the default.
 Auto enables color only when both input and output are TTYs, `TERM` is not

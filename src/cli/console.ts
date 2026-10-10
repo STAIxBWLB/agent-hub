@@ -130,12 +130,14 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       ]);
       if (!active) return;
       const [status, budget, tasks, queue, ready] = replies;
+      if (status.status?.tasks && status.ok !== false) state.taskCounts = status.status.tasks;
       if (status.status?.peers) state.peers = status.status.peers;
       if (syncPermissionDefaults(state, status.status?.permissionDefaults) && state.confirm?.type === "permission_default") stream({ text: permissionDefaultText(state.confirm), kind: "permission_default", peer: state.confirm.peer, tone: "attention" });
       if (budget.budget) state.budget = budget.budget;
-      if (tasks?.ok && state.mode === "panels") { const parsed = JSON.parse(tasks.text); if (Array.isArray(parsed)) {
+      if (tasks?.ok) { const parsed = JSON.parse(tasks.text); if (Array.isArray(parsed)) {
           const readyIds = new Set(ready?.ok ? JSON.parse(ready.text).map((task: any) => task.id) : []);
           state.tasks = parsed.map(task => ({ ...task, ready: readyIds.has(task.id) }));
+          state.tasksKnown = true;
         } }
       if (queue?.ok && state.mode === "panels" && Array.isArray(queue.deliveries)) state.queue = queue.deliveries;
       const error = replies.find(reply => reply.ok === false)?.error; if (error) notice(String(error));

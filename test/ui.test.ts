@@ -1,5 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { connect } from "node:net";
+import { createHash } from "node:crypto";
+import { runInNewContext } from "node:vm";
+import { taskProgress } from "../src/ui/task-progress.ts";
+import { initialConsoleState, renderConsole } from "../src/cli/console-state.ts";
 import { startDashboard } from "../src/hub/ui.ts";
 
 const cleanup: (() => void)[] = [];
@@ -207,4 +211,95 @@ test("snapshot rejects a backend identity that disagrees with the requested proj
   const session = await fetch(`${ui.origin}/session`, { method: "POST", headers: { origin: ui.origin, "content-type": "application/json" }, body: JSON.stringify({ ticket }) });
   const cookie = session.headers.get("set-cookie")!.split(";")[0]!;
   expect((await post({ after: 0, projectId: "requested", instanceId: "i1" }, cookie)).status).toBe(409);
+});
+
+
+test("shared public progress executes in the hashed dashboard and matches console counts/stages", async () => {
+  const { ui } = setup(); const response = await fetch(ui.origin); const html = await response.text();
+  const model = html.match(/const taskProgress = ([\s\S]*?);\nconst themeControl/)?.[1];
+  expect(model).toBeDefined();
+  const browserModel = runInNewContext("(" + model + ")");
+  const board = [{ id: 1, state: "approved" as const, title: "[pii]" }, { id: 2, state: "proposed" as const, deps: [1], title: "ready" }, { id: 3, state: "proposed" as const, deps: [4], title: "waiting" }, { id: 4, state: "in_progress" as const, title: "working" }, { id: 5, state: "in_review" as const, title: "review" }, { id: 6, state: "changes_requested" as const, title: "changes" }, { id: 7, state: "approved" as const, title: "done" }];
+  const progress = JSON.parse(JSON.stringify(browserModel(board)));
+  expect(progress).toEqual(taskProgress(board));
+  const s = initialConsoleState(true); s.panel = 3; s.tasks = board;
+  const summary = renderConsole(s, 200, 60)[2]!;
+  expect(summary).toContain("2/7 approved");
+  for (const [state, count] of Object.entries(progress.counts)) if (state !== "approved") expect(summary).toContain(`${state.replaceAll("_", " ").replace("in review", "review").replace("changes requested", "changes")} ${count}`);
+  class Node {
+    children: Node[] = []; textContent = ""; className = ""; attrs: Record<string, string> = {};
+    append(...nodes: Node[]) { this.children.push(...nodes); }
+    mutations = 0;
+    replaceChildren() { this.children = []; this.mutations++; }
+    setAttribute(key: string, value: string) { this.attrs[key] = value; }
+  }
+  const target = new Node();
+  const document = { createElement: () => new Node(), createElementNS: () => new Node() };
+  const consumers = html.slice(html.indexOf("function renderTaskProgress("), html.indexOf("function render(snapshot)"));
+  const updateStart = html.indexOf("function update("); const updateSource = html.slice(updateStart, html.indexOf("\n", updateStart));
+  const renderers = runInNewContext(`const $ = () => target; const el = (tag,text,cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = String(text); node.className = cls || ''; return node; }; const signatures=new Map(); ${updateSource} ${consumers}; ({renderTaskProgress,renderTaskStage})`, { document, target });
+  renderers.renderTaskProgress(progress);
+  expect(target.children[0]?.textContent).toBe("2/7 approved (28%)");
+  expect(target.children[2]?.textContent).toContain("waiting 1");
+  expect(renderers.renderTaskStage(progress.stages[5]).attrs["aria-label"]).toBeUndefined();
+  expect(renderers.renderTaskStage(progress.stages[5]).children.at(-1).textContent).toContain("Stage 2/4: changes requested (back in progress)");
+  expect(target.children[1]?.attrs.preserveAspectRatio).toBe("none"); expect(target.children[1]?.attrs["aria-hidden"]).toBe("true");
+  const rectangles = target.children[1]!.children;
+  expect(rectangles).toHaveLength(6);
+  let expectedX = 0;
+  for (const [index, count] of Object.values(progress.counts).entries()) {
+    const width = Number(count) / progress.total * 100;
+    expect(Number(rectangles[index]?.attrs.x)).toBeCloseTo(expectedX); expect(Number(rectangles[index]?.attrs.width)).toBeCloseTo(width); expectedX += width;
+  }
+  expect(expectedX).toBeCloseTo(100);
+  const mutations = target.mutations; renderers.renderTaskProgress(JSON.parse(JSON.stringify(progress))); expect(target.mutations).toBe(mutations);
+  const nodes = new Map<string, Node>(); const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
+  get('task-progress').append(new Node());
+  const reset = html.slice(html.indexOf('function resetView('), html.indexOf('function projectName('));
+  runInNewContext(`let selectedProjectId='',selectedInstanceId='',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false; const managerMode=true; const signatures=new Map(); const $=get; const saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{}; const empty=(node,text)=>{node.textContent=text}; ${reset}; resetView('next','instance');`, { get });
+  expect(get('task-progress').children).toHaveLength(0); expect(get('task-progress').textContent).toBe('No project selected.');
+  renderers.renderTaskProgress(browserModel([]));
+  expect(target.children[0]?.textContent).toBe("0/0 approved (0%)");
+  renderers.renderTaskProgress(browserModel(Array.from({ length: 100 }, (_, id) => ({ id, state: id < 29 ? 'approved' : 'proposed' }))));
+  expect(target.children[0]?.textContent).toBe('29/100 approved (29%)');
+  renderers.renderTaskProgress(browserModel([{ id: 1, state: 'approved' }]));
+  expect(target.children[0]?.textContent).toBe('1/1 approved (100%)');
+  expect(target.children[1]?.children).toHaveLength(1);
+  expect(target.children[1]?.children[0]?.attrs.width).toBe('100');
+  expect(Math.floor((29 / 100) * 100)).toBe(28); // confirms why rounded binary ratios must not drive the percentage
+  expect(html).toContain("renderTaskProgress(progress)");
+  const blocks = [...html.matchAll(/<(script|style)>([\s\S]*?)<\/\1>/g)]; expect(blocks).toHaveLength(3);
+  for (const match of blocks) expect(response.headers.get("content-security-policy")).toContain(createHash("sha256").update(match[2]!).digest("base64"));
+  expect(response.headers.get("content-security-policy")).not.toContain("unsafe-inline");
+});
+test("theme preference initializes before style/paint, persists choices and tolerates blocked cookie access", async () => {
+  const { ui } = setup(); const html = await (await fetch(ui.origin)).text();
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)![1];
+  expect(html.indexOf(script!)).toBeLessThan(html.indexOf("<style>"));
+  for (const saved of ["system", "light", "dark", "invalid"]) {
+    let cookie = 'other=1; agent-hub-theme=' + saved; const values: string[] = []; const root = { dataset: {} as Record<string, string> };
+    const document = { documentElement: root, get cookie() { return cookie; }, set cookie(value: string) { values.push(value); cookie = value; } };
+    const theme = runInNewContext(script + ";dashboardTheme", { document });
+    expect(root.dataset.theme).toBe(saved === "invalid" ? "system" : saved);
+    theme.set("dark"); expect(root.dataset.theme).toBe("dark"); expect(values[0]).toBe("agent-hub-theme=dark; Path=/; Max-Age=31536000; SameSite=Strict");
+    const otherPort = { dataset: {} as Record<string, string> };
+    runInNewContext(script + ";dashboardTheme", { document: { documentElement: otherPort, cookie } }); expect(otherPort.dataset.theme).toBe("dark");
+  }
+  const root = { dataset: {} as Record<string, string> };
+  const theme = runInNewContext(script + ";dashboardTheme", { document: { documentElement: root, get cookie() { throw new Error("blocked"); }, set cookie(_value: string) { throw new Error("blocked"); } } });
+  expect(root.dataset.theme).toBe("system"); expect(() => theme.set("light")).not.toThrow();
+  expect(html).not.toContain("localStorage");
+  expect(html).toContain('.progress-waiting{fill:var(--waiting)}');
+  expect(html).toContain(':root[data-theme="dark"]');
+  expect(html).toContain(':root:not([data-theme="light"]):not([data-theme="dark"])');
+  expect(html).toContain('@media(prefers-color-scheme:dark)');
+});
+
+test("shared model injection treats dollar replacement patterns as literal source text", async () => {
+  const original = taskProgress.toString;
+  taskProgress.toString = () => original.call(taskProgress) + '\n/* $& */';
+  try {
+    const { ui } = setup(); const html = await (await fetch(ui.origin)).text();
+    expect(html).toContain('/* $& */');
+  } finally { taskProgress.toString = original; }
 });

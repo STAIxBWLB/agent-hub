@@ -2,7 +2,7 @@
 
 Scope: the control WS and its protocol, state files, the Claude channel's reconnect, `ahub setup`, git snapshots, upgrade and recovery. Read before editing `src/hub/daemon.ts`, `src/hub/control-client.ts`, `src/adapters/claude-channel.ts`, `src/hub/restart.ts`, `src/hub/recovery-store.ts`, `src/hub/snapshots.ts`, `src/hub/manager.ts`, `src/hub/lifecycle.ts`, `src/hub/crash.ts`, `src/cli/setup.ts`, `src/cli/upgrade*.ts`, `src/cli/terminal-recovery.ts`, `src/cli/recovery-package.ts` or `src/cli/facts-hook.ts`, or before adding a native peer.
 
-- The plugin bundle is installed apart from the daemon. Breaking a control WS message contract bumps `PROTOCOL` in `control-client.ts`; a new request answered as unknown or an optional field preserves it.
+- The plugin bundle is installed apart from the daemon. Breaking a control WS message contract bumps `PROTOCOL` in `control-client.ts`; a new request answered as unknown or an optional field preserves it, as does additive optional public task metadata in `ui_snapshot` that older clients ignore (such as `deps` in #246).
 - `ahub setup` reads Claude Code's state from `--json` listings and takes one step at a time, re-reading after each; never match paths or names by substring.
 - A copy of the git index keeps the original's mtime (`snapshot()`): git's racy-entry check compares entries with the index file's time in whole seconds, and a fresh copy makes a same-size edit look clean.
 - State files that clients read (`status.json`, `control-token`) are written after the port is bound, and `status.json` via temp file + rename.

@@ -1430,6 +1430,33 @@ approval. Deny is direct. Pending requests include expiry and are withdrawn by
 Panels expose Peers, Approvals, Tasks, Queue and Events with bounded polling and
 Unicode cell widths, fall back below 80x24, and restore terminal state on exit.
 
+Whole-board progress (#246) uses one pure `taskProgress` function shared by the
+console and hashed dashboard script. It reads only public id/state/deps fields;
+PII stubs count like other tasks. Waiting partitions proposed tasks whose public
+dependencies are not approved, including unknown dependencies. Approved/all gives
+the done fraction (zero on an empty board). Four stages are proposed, in progress,
+in review and approved; changes requested returns to stage two and is marked.
+The console Tasks panel has a 20-cell ASCII summary bar and fixed four-cell row
+meters, preserving width and color-off geometry. Cells and percentage round down;
+count labels use importance order changes requested, review, waiting, in progress,
+proposed, then unknown when nonzero, and drop only from the end. The stream count is in the fixed footer,
+from existing all-state status counts; it makes no board fetch and retains a
+row-one scroll region for terminal scrollback. Loading/failed reads never imply
+confirmed empty progress. Dashboard filters affect rows only, not totals. Its
+full-width stacked SVG and stages have text equivalents; the existing signature
+guard prevents unchanged snapshots from mutating the progress live region.
+System/Light/Dark choice is applied as `data-theme` before first paint, persists
+in a one-year host-scoped `SameSite=Strict` cookie through guarded access and
+follows OS CSS preference on System. Cookie port independence shares the choice
+between hub starts and projects. The shared model is injected before the page's
+own inline script/style CSP hashes, with no new control message or CLI JSON change.
+UI public rows expose optional public-view deps for waiting. This is additive
+metadata enrichment of the existing ui_snapshot payload, not a changed control
+message envelope/operation, so it does not bump PROTOCOL. Unknown task states
+count in an explicit unknown bucket with stage zero; no NaN or prototype-key
+updates are permitted. Approval fraction is derived from counts/total at display
+time, avoiding a redundant floating-ratio field.
+
 Console semantic colors (issue #201) use spans with a fixed terminal-native
 palette: cyan information, bold cyan active/selected labels, green availability
 and success, yellow attention/waiting, red failure/intervention, and restrained
