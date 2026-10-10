@@ -21,6 +21,17 @@ async function prompt(id: number, text: string) {
   if (busy) return send({ jsonrpc: "2.0", id, error: { code: -32000, message: "turn.agent_busy" } });
   busy = true;
   let verdict = "";
+  // Trailing updates, sent a moment after the prompt's result so the adapter has settled the turn and is idle by
+  // then (#285): occupancy (2.1.1's source text emits it after the prompt resolves; read from the source, not
+  // observed live), or the stay-out probes LATETOTAL and LATECHUNK.
+  const late = (update: object, withSession = true) => setTimeout(() => send({ jsonrpc: "2.0", method: "session/update", params: { ...(withSession ? { sessionId: "s1" } : {}), update } }), 75);
+  const lateUpdates = () => {
+    if (text.includes("OCCUPANCY_INVALID")) late({ sessionUpdate: "usage_update", used: -1, size: 0 });
+    else if (text.includes("OCCUPANCY_UNNAMED")) late({ sessionUpdate: "usage_update", used: 90_000, size: 200_000 }, false);
+    else if (text.includes("OCCUPANCY")) late({ sessionUpdate: "usage_update", used: text.includes("OCCUPANCY_HIGH") ? 180_000 : 90_000, size: 200_000 });
+    if (text.includes("LATETOTAL")) late({ sessionUpdate: "usage_update", totalTokens: 999 });
+    if (text.includes("LATECHUNK")) late({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "LATE-CHUNK-LEAK" } });
+  };
   if (text.includes("PERMISSION")) {
     // Kimi 2.0.1's shape: the arguments travel on the tool_call update, the permission request has none.
     const announced = text.includes("ANNOUNCED");
@@ -96,6 +107,7 @@ async function prompt(id: number, text: string) {
       await sleep(delay); // the cancelled prompt reports late, after the next one may have started
       send({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
       cancelledResultSent?.();
+      lateUpdates(); // a cancelled turn's trailing update must not be taken for a new turn's either
       return;
     }
   }
@@ -116,15 +128,9 @@ async function prompt(id: number, text: string) {
   }
   busy = false;
   send({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } });
-  // Kimi 2.x's occupancy update (#285): flat `{used, size}` (docs/smoke.md), sent after the prompt resolves, when
-  // the adapter is already idle. OCCUPANCY is 45%, OCCUPANCY_HIGH 90% (over a 0.8 gate), OCCUPANCY_INVALID the
-  // numbers normalizeACPUsage rejects.
-  if (text.includes("OCCUPANCY_INVALID")) {
-    send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", used: -1, size: 0 } } });
-  } else if (text.includes("OCCUPANCY")) {
-    const used = text.includes("OCCUPANCY_HIGH") ? 180_000 : 90_000;
-    send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s1", update: { sessionUpdate: "usage_update", used, size: 200_000 } } });
-  }
+  // Kimi 2.x's occupancy update (#285): flat `{used, size}` (docs/smoke.md). OCCUPANCY is 45%, OCCUPANCY_HIGH 90%
+  // (over a 0.8 gate), OCCUPANCY_INVALID the numbers normalizeACPUsage rejects, OCCUPANCY_UNNAMED names no session.
+  lateUpdates();
 }
 let usageTotal = 0;
 const arg = (name: string) => { const i = process.argv.indexOf(name); return i < 0 ? undefined : process.argv[i + 1]; };

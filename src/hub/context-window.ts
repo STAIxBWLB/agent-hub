@@ -41,8 +41,7 @@ export function codexContext(value: unknown, sessionId: string, measuredAt: numb
 export function acpContext(usage: { used: number; size: number }, sessionId: string, measuredAt: number): ContextReading {
   const window = positive(usage.size) ? usage.size : null;
   const tokens = nonnegative(usage.used) ? usage.used : null;
-  // used > size is a real state (an over-full session before compaction): `used` clamps so a bar renders, `tokens`
-  // stays truthful above the window.
+  // If a report ever shows used > size, the fraction clamps so a bar renders; tokens keeps the reported number.
   return { source: "acp_usage_update", sessionId, measuredAt, tokens, window, used: tokens !== null && window !== null ? Math.min(1, tokens / window) : null };
 }
 export const unknownContext = (): ContextView => ({ source: null, measuredAt: null, tokens: null, window: null, used: null, freshness: "unknown" });

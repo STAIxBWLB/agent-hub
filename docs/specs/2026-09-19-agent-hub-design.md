@@ -391,8 +391,8 @@ inside a peer.
   native context reading (source `acp_usage_update`), shown in `ahub status`, the
   console and the dashboard like Claude's and Codex's; the adapter accepts the
   update whenever it names the current session, since 2.1.1's source text emits it
-  after the prompt resolves — an order not yet observed live through the hub
-  (docs/smoke.md). A gate crossing records the
+  after the prompt resolves (an order read from the source, not yet observed live
+  through the hub; docs/smoke.md). A gate crossing records the
   event and notice for an ACP peer but sends it no checkpoint request yet. Only validated cumulative totals or input/output
   pairs feed native token readings; unsupported shapes remain unknown. `ahub budget set`
   feeds a reading by hand. `local` has no quota and is never paused.
@@ -1408,10 +1408,11 @@ Codex reports `tokenUsage.last.totalTokens / tokenUsage.modelContextWindow` in
 and [native TUI](https://github.com/openai/codex/blob/main/codex-rs/tui/src/token_usage.rs)
 distinguish the last active context from the accumulated `total`; the displayed
 raw occupancy does not apply the TUI's baseline-adjusted remaining percentage.
-Kimi and other ACP agents report `used / size` in `usage_update` (source
-`acp_usage_update`, #285 phase 1): the session's context occupancy, accepted
-whenever it names the adapter's current session — Kimi 2.1.1 emits it after the
-prompt resolves, per its source text, when the peer is already idle.
+The Kimi peer reports `used / size` in `usage_update` (source
+`acp_usage_update`, #285 phase 1; only Kimi is wired): the session's context
+occupancy, accepted whenever it names the adapter's current session, including
+outside a turn; 2.1.1's source text emits it after the prompt resolves (read
+from the source, not observed live), when the peer may already be idle.
 Pi's RPC state exposes no measured native counter. Its extension context API
 returns an estimate, so Pi and unsupported peers remain unknown here.
 

@@ -182,7 +182,8 @@ test("Kimi's ACP usage_update occupancy becomes its context reading in status, t
   const { stateDir, daemon, console_, pushes } = await kimiFixture();
   expect((await console_.request({ t: "start", peer: "kimi" })).ok).toBe(true);
   await until(() => daemon.bus.stateOf("kimi") === "idle");
-  // The fake sends the flat {used, size} update after the prompt result, as Kimi 2.x does: the peer is already idle.
+  // The fake sends the flat {used, size} update 75 ms after the prompt result (2.1.1's source text emits it after
+  // the prompt resolves; read from the source, not observed live): the peer is idle by then, deterministically.
   daemon.bus.publish(newEnvelope(USER, "OCCUPANCY: report your context", { to: ["kimi"] }));
   await until(() => kimiContext(pushes, 0.45));
   const shown = await console_.request({ t: "status" });

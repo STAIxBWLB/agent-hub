@@ -331,14 +331,16 @@ export class AcpPeer extends BasePeer {
     if (msg.method === "session/update") {
       if (msg.params?.sessionId && msg.params.sessionId !== this.sessionId) return;
       const u = msg.params?.update;
-      // Occupancy is the session's, not the turn's: Kimi 2.x emits usage_update after the prompt resolves, when the
-      // peer is already idle (#285), so a context-used update is accepted whenever it names the current session and
-      // the peer is live. Every other update stays behind the busy gate; a watchdog-cancelled turn's late chunks
-      // still lose their turn (the prompt result path is turn-fenced) — an occupancy reading carries no turn state.
+      // Occupancy is the session's, not the turn's: 2.1.1's source text emits usage_update after the prompt
+      // resolves, when the peer may already be idle (read from the source, not observed live; #285). So a
+      // context-used update is accepted while idle too, but then it must name the current session; in a turn the
+      // lenient session check above stands, as before. Every other update stays behind the busy gate, and a
+      // watchdog-cancelled turn's late chunks still lose their turn (the prompt result path is turn-fenced); an
+      // occupancy reading carries no turn state.
       if (u?.sessionUpdate === "usage_update" && this.state !== "offline") {
         const observation = normalizeACPUsage(u, "usage_update");
         if (observation.shape === "context-used") {
-          this.opts.onUsageDiagnostic?.(observation, this.sessionId);
+          if (this.state === "busy" || msg.params?.sessionId === this.sessionId) this.opts.onUsageDiagnostic?.(observation, this.sessionId);
           return;
         }
       }

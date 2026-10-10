@@ -2172,7 +2172,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // Kimi's usage_update is context occupancy ({used, size}), not consumption (#167): it becomes the peer's
         // context reading (#285 phase 1), never a tokens event or a budget window. The reading is bound to the
         // adapter's own session id; report() drops it when that is not the daemon's current session. An invalid
-        // shape reports a null reading: unknown, not the previous value (#185).
+        // shape reports a null reading: unknown, not the previous value (#285).
         onUsageDiagnostic: (observation, sessionId) => {
           if (observation.source !== "usage_update" || observation.shape !== "context-used") return;
           const current = contextSession("kimi");

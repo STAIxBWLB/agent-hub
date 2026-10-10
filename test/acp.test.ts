@@ -597,3 +597,34 @@ for (const startup of [false, true]) {
     } finally { await peer?.stop(); rmSync(dir, { recursive: true, force: true }); }
   }, 20_000);
 }
+
+test("outside a turn only an occupancy diagnostic gets through: a token total, a chunk, an unnamed update and an offline peer all stay out (#285)", async () => {
+  const diagnostics: string[] = [];
+  const tokens: number[] = [];
+  const { bus, said } = await setup({ watchdogMs: 150, onUsageDiagnostic: (o) => diagnostics.push(`${o.shape}:${o.availability}`), onTokens: (t) => tokens.push(t) });
+  // Turn 1: the in-turn total counts; the late total and the late chunk (75 ms after the result, peer idle) do not.
+  bus.publish(newEnvelope("user", "LATETOTAL LATECHUNK first", { to: ["kimi"] }));
+  await until(() => said.length === 1);
+  await new Promise((r) => setTimeout(r, 300));
+  expect(tokens).toEqual([50]);
+  expect(said[0]!.body).not.toContain("LATE-CHUNK-LEAK");
+  // Turn 2: the next answer does not carry the late chunk either.
+  bus.publish(newEnvelope("user", "second", { to: ["kimi"] }));
+  await until(() => said.length === 2);
+  expect(said[1]!.body).not.toContain("LATE-CHUNK-LEAK");
+  expect(tokens).toEqual([50, 100]);
+  // Turn 3: an occupancy update naming no session, outside a turn, is dropped.
+  bus.publish(newEnvelope("user", "OCCUPANCY_UNNAMED third", { to: ["kimi"] }));
+  await until(() => said.length === 3);
+  await new Promise((r) => setTimeout(r, 300));
+  expect(diagnostics.filter((d) => d.startsWith("context-used"))).toEqual([]);
+  // Turn 4 (the contrast): a named occupancy update while idle does arrive.
+  bus.publish(newEnvelope("user", "OCCUPANCY fourth", { to: ["kimi"] }));
+  await until(() => diagnostics.some((d) => d === "context-used:unsupported"));
+  // Offline: a durable turn (a delivery id, as the journaled bus passes) cancelled by the watchdog takes the peer
+  // offline; the cancelled turn's trailing occupancy is dropped.
+  await peer!.deliver([newEnvelope("user", "SLOW OCCUPANCY fifth", { to: ["kimi"] })], "d1");
+  await until(() => peer!.state === "offline");
+  await new Promise((r) => setTimeout(r, 300));
+  expect(diagnostics.filter((d) => d.startsWith("context-used"))).toEqual(["context-used:unsupported"]);
+}, 20_000);
