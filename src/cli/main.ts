@@ -34,6 +34,7 @@ import { setupOllamaModel } from "./models-setup.ts";
 import { unknownContext } from "../hub/context-window.ts";
 import { backendLine, contextLine, peerLine, type BackendRow, type PeerRow } from "./status-lines.ts";
 import { parseSince, readEvents } from "../hub/events.ts";
+import { appendRecords, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
 import { formatReport, summarize, formatTaskReport, summarizeByTask } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 import { pathWarnings } from "../hub/conflicts.ts";
@@ -107,6 +108,13 @@ function registeredProject(): Project {
   const registry = new Registry();
   try { return registry.register(cwd, stateDir); }
   finally { registry.close(); }
+}
+
+/** #247: this project's registration for its research records; writing needs `research.enabled` in its config. */
+function researchProject(writes = true): Project {
+  const project = matchingProject() ?? fail("this project has no hub registration; run ahub up here once first");
+  if (writes && !loadConfig(cwd).research.enabled) fail('research records are off for this project; set "research": { "enabled": true } in .agenthub/config.json first');
+  return project;
 }
 
 /** The registration of exactly this root and state directory, the only one kill and reset act on; never registers. */
@@ -769,6 +777,17 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (sub === "show") return console.log(await taskOp("task_show", { id: rest[0] }));
     if (sub === "escalate") return console.log(await taskOp("task_escalate", { id: rest[0] }));
     if (sub === "assign") return console.log(await taskOp("task_assign", { id: rest[0], peer: rest[1] }));
+    if (sub === "label") {
+      // #247: a person's later verdict on an approved task (the identity gate keeps it human-only), for research records.
+      const { one, rest: positional } = takeFlags(rest, ["--created"], []);
+      const id = Number(positional[0]), label = positional[1] as Label;
+      if (positional.length !== 2 || !/^[1-9]\d*$/.test(positional[0]!) || !Number.isSafeInteger(id) || !(LABELS as readonly string[]).includes(label)) fail(`usage: ahub task label <id> ${LABELS.join("|")} [--created <time from ahub research export>]`);
+      const project = researchProject();
+      let record: TaskRecord;
+      try { record = labelTarget(readStores(project.id), readEvents(join(stateDir, "events.jsonl")), id, one["--created"]); } catch (error) { fail((error as Error).message); }
+      appendRecords(project.id, [{ schema: RESEARCH_SCHEMA, kind: "label", project: projectKey(project.id), task: id, createdAt: record!.createdAt!, label, at: new Date().toISOString() }]);
+      return console.log(`task #${id} (approved ${record!.approvedAt}) labelled ${label} in the research records`);
+    }
     if (sub !== "propose" || rest.length < 1) fail("usage: ahub task propose [<class>] <title...> | show <id> | assign <id> <peer> | escalate <id>");
     // `--class` is the explicit form. A first word that is a class name is still taken as the class (the documented
     // short form), but said out loud: "review the auth module" would otherwise be filed as class review, silently.
@@ -848,6 +867,33 @@ const commands: Record<string, () => Promise<void> | void> = {
   logs: () => exec("tail", [args.includes("-f") ? "-f" : "-n100", join(stateDir, "hub.log")]),
   export: () => {
     for (const e of readEvents(join(stateDir, "events.jsonl"), since())) console.log(JSON.stringify(e));
+  },
+  research: () => {
+    // #247: measures from the opt-in research records; `export` writes them out, `backfill` builds them from events.jsonl.
+    const [sub] = args;
+    // Another project is `ahub --project <dir> research`; anything unknown is refused rather than ignored.
+    const flags = new Set(["--all", "--json", "--since", "--format"]), valued = new Set(["--since", "--format"]);
+    for (let i = sub === "export" || sub === "backfill" ? 1 : 0; i < args.length; i++) {
+      if (!flags.has(args[i]!)) fail(`ahub research: unknown argument ${args[i]} (another project: ahub --project <dir> research)`);
+      if (valued.has(args[i]!)) i++;
+    }
+    if (sub === "backfill") {
+      const project = researchProject();
+      const written = appendRecords(project.id, taskRecords(readEvents(join(stateDir, "events.jsonl")), project.id, { version: VERSION, source: "backfill" }));
+      return console.log(`${written} research record${written === 1 ? "" : "s"} written from this project's events`);
+    }
+    const all = args.includes("--all");
+    const records = readStores(all ? undefined : researchProject(false).id);
+    const from = since();
+    if (sub === "export") {
+      const format = args[args.indexOf("--format") + 1] ?? "jsonl";
+      if (args.includes("--format") && !["jsonl", "csv"].includes(format)) fail("--format takes jsonl or csv");
+      const kept = records.filter((r) => r.kind === "label" || Date.parse(r.approvedAt) >= from);
+      return void process.stdout.write(args.includes("--format") && format === "csv" ? toCsv(kept) : kept.map((r) => JSON.stringify(r)).join("\n") + (kept.length ? "\n" : ""));
+    }
+    if (sub !== undefined && !sub.startsWith("--")) fail("usage: ahub research [--since 30d] [--all] [--json] | export [--format jsonl|csv] [--since] [--all] | backfill");
+    const r = researchReport(records, from);
+    console.log(args.includes("--json") ? JSON.stringify(r, null, 2) : formatResearch(r).join("\n"));
   },
   report: () => {
     const by = args.indexOf("--by");

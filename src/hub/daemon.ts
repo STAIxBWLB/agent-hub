@@ -55,6 +55,7 @@ import { newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, t
 import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
 import { MemoryClient, workerUrl } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
+import { appendRecords, taskRecords } from "./research.ts";
 import { projectChain, recallFor } from "../memory/recall.ts";
 import { conflictsOf } from "./conflicts.ts";
 import { Facts, FACTS_PREFIX, type FactScope } from "./facts.ts";
@@ -94,6 +95,8 @@ export interface HubConfig {
   checks: { timeout_s: number; [cls: string]: string | number };
   /** A git tree at each turn boundary for `ahub turns` and `ahub undo`, the last `keep` per peer (issue #33). */
   snapshots: { enabled: boolean; keep: number };
+  /** #247: opt-in research records of each approved task in ~/.agenthub/research (ids, counts and tokens only). */
+  research: { enabled: boolean };
   /** Per-sender rate limits and repeat suppression for what agents send (issue #38). */
   limits: LimitsConfig;
   /** Reviewer choice from recorded review outcomes, once a reviewer has `min_reviews` of an implementer (issue #35). */
@@ -138,6 +141,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   checks: { timeout_s: 600 },
   // Off here like approvals.notify, so tests (whose cwd is this repository) write no objects; a project's config turns it on.
   snapshots: { enabled: false, keep: 20 },
+  research: { enabled: false },
   limits: DEFAULT_LIMITS,
   review: { adaptive: false, min_reviews: 5 },
   recovery: { auto_resume_after_crash: false },
@@ -153,7 +157,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = ["config.json", "config.local.json"] as const;
-const CONFIG_BLOCKS = ["memory", "roles", "conductor", "budget", "context", "inference", "omniroute", "local", "pi", "approvals", "tasks", "task_sweep", "checks", "snapshots", "limits", "review", "recovery", "capabilities", "mlx"];
+const CONFIG_BLOCKS = ["memory", "roles", "conductor", "budget", "context", "inference", "omniroute", "local", "pi", "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "limits", "review", "recovery", "capabilities", "mlx"];
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
 export function loadConductorPolicy(cwd: string): { roles: Record<string, string[]>; conductor: HubConfig["conductor"] } {
@@ -239,6 +243,7 @@ export function loadConfig(cwd: string): HubConfig {
     task_sweep: taskSweepConfig(file.task_sweep),
     checks: { ...DEFAULT_CONFIG.checks, ...file.checks },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
+    research: { enabled: file.research?.enabled === true }, // opt-in: anything but true is off
     limits: { ...PROJECT_LIMITS, ...file.limits }, // on with any project config (issue #38)
     review: { ...DEFAULT_CONFIG.review, ...file.review },
     recovery: { ...DEFAULT_CONFIG.recovery, ...file.recovery },
@@ -286,6 +291,8 @@ export interface DaemonOptions {
   orphanWatchMs?: number;
   /** Deterministic task-sweep time; the production default is Date.now. */
   taskSweepNow?: () => number;
+  /** How long a research record waits after an approval for the task's open turns to end (#247). Tests shrink this. */
+  researchGraceMs?: number;
 }
 
 interface Client {
@@ -395,6 +402,39 @@ export async function startDaemon(opts: DaemonOptions) {
   // The state dir can vanish under a running hub (issue #56): a log line must never take a handler down with it.
   const log = (line: string) => { try { appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* the state dir is gone; the watchdog is stopping the hub */ } };
   const event = eventLog(join(opts.stateDir, "events.jsonl"));
+  /**
+   * #247: the approved task's research record, built from events.jsonl with the function `ahub research backfill` uses.
+   * Never blocks or fails the task flow: a write error is one hub.log line per hub run.
+   * ponytail: reads the whole events file at each approval; an incremental per-task index if that file grows large.
+   */
+  let researchLogged = false;
+  // The approving turn ends after the approval and its usage arrives later still, so a record waits until no open turn
+  // is attributed to the task, checking every grace period. ponytail: polling with a 30 min cap, a turn_end hook if the
+  // wait ever matters. The first record written for a task is final (the store keeps one per task), so a hub that stops
+  // first writes once its peers have stopped and their turns ended.
+  const researchGraceMs = opts.researchGraceMs ?? 10_000;
+  const researchPending = new Map<number, { since: number; timer: ReturnType<typeof setTimeout> }>();
+  const writeResearch = (taskId: number) => {
+    const pending = researchPending.get(taskId);
+    if (pending) clearTimeout(pending.timer);
+    researchPending.delete(taskId);
+    try {
+      appendRecords(projectId, taskRecords(readEvents(join(opts.stateDir, "events.jsonl")), projectId, { version: VERSION, source: "live" }).filter((r) => r.task === taskId));
+    } catch (error) {
+      if (!researchLogged) log(`research record not written: ${(error as Error).message}`);
+      researchLogged = true;
+    }
+  };
+  const settleResearch = (taskId: number) => {
+    const pending = researchPending.get(taskId);
+    if (!pending) return;
+    const open = [...turns.values()].some((t) => t.attribution.task === taskId);
+    if (open && Date.now() - pending.since < 30 * 60_000) pending.timer = setTimeout(() => settleResearch(taskId), researchGraceMs);
+    else writeResearch(taskId);
+  };
+  const recordResearch = (taskId: number) => {
+    if (!researchPending.has(taskId)) researchPending.set(taskId, { since: Date.now(), timer: setTimeout(() => settleResearch(taskId), researchGraceMs) });
+  };
 
   // Any local web page can open a WebSocket to a loopback port, so the control link needs a secret.
   // The file is written only after the port is bound: a second daemon that loses the bind must not clobber it.
@@ -877,7 +917,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if ((h.event === "integration requested" || h.event === "integration unresolved") && /has not stopped/.test(h.note ?? "")) {
       for (const m of tasks.cohorts.of(t.id)?.members.values() ?? []) if (m.task !== t.id) log(`turn-free: task #${t.id} waits on ${stopEvidence(m.owner)}`);
     }
-    event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, pii: tasks.isPii(t) });
+    event({ type: "task", id: t.id, event: h.event, by: h.by, state: t.state, owner: t.owner, reviewer: t.reviewer, class: t.class, pii: tasks.isPii(t), ...(h.reason ? { reason: h.reason } : {}) });
+    if (config.research.enabled && t.state === "approved" && (h.event === "approved" || h.event === "done")) recordResearch(t.id);
     supervision.taskChanged(t, h);
     // Models can self-claim after their turn begins; preserve that ownership even if they finish before settlement.
     const turn = t.owner ? turns.get(t.owner) : undefined;
@@ -2916,6 +2957,7 @@ export async function startDaemon(opts: DaemonOptions) {
       await egress?.close();
       await piReceipts?.close();
       collectClaudeUsage();
+      for (const id of [...researchPending.keys()]) writeResearch(id); // the peers have stopped, so their turns have ended
       budget.close();
       conductorHolds.close();
       executionBudget.close();

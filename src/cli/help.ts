@@ -54,6 +54,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub task propose [--class <c> | <class>] <title...> [--owner <peer>] [--path <p>]... [--after <id>]... [--urgent] [--detail <text>]", "put a task on the board; a first word that names a class is taken as the class; while a task named by --after is not approved yet, --owner reserves the task for that peer, offered to it first once it is ready; otherwise --owner assigns it now"],
     ["ahub task show|escalate <id>", "full task with history (PII text included) / hand it to the next peer in escalate_to"],
     ["ahub task assign <id> <peer>", "give a task to a peer yourself; a task that still waits is reserved for that peer instead"],
+    ["ahub task label <id> ok|regressed|reverted|incomplete|wrong|abandoned", "your later verdict on an approved task, kept in the research records (research must be on)"],
     ["ahub review <id> approved|changes_requested [note...] [--unmet <item>]...", "give a review verdict on a task"],
     ["ahub route explain <id>", "why a task went where it went, its reserved owner included"],
     ["ahub route explain --class <c> <title...>", "what would happen to such a task now"],
@@ -71,6 +72,9 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub undo <turn> [--yes] [--context]", "put back the files a turn changed; refuses files changed since. Without --yes it only lists them; --context also drops a Codex turn from its conversation"],
     ["ahub report [--since 7d|<iso>] [--by task] [--json]", "turns, tokens, messages, overlaps and task events per period"],
     ["ahub export [--since 7d|<iso>]", "structured events (events.jsonl) as JSON lines; never message bodies"],
+    ["ahub research [--since 30d] [--all] [--json]", "success, first-pass, rework and check-failure rates, tokens and wall time per approved task, from the opt-in research records"],
+    ["ahub research export [--format jsonl|csv] [--since 30d] [--all]", "the research records for outside analysis: ids, counts and tokens, never text"],
+    ["ahub research backfill", "build this project's research records once from events.jsonl"],
     ["ahub check-path <file> [--peer <id>]", "other owners' open tasks that claim or changed a file"],
   ]],
   ["Hooks", [

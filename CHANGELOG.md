@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Opt-in research records (`"research": { "enabled": true }`): one record per approved task in `~/.agenthub/research/`, across projects, with outcome, review rounds, rework, failed checks, tokens and time per peer and model, built only from `events.jsonl` (never task or message text). `ahub research` reports success, first-pass, rework and check-failure rates and tokens and wall time per task; `ahub research export` writes JSONL or CSV; `ahub research backfill` builds records from existing events; `ahub task label` adds a person's later verdict (#247).
 - Preserve empty committed queue entries for offline peers during journal-backed recovery, so preservation verification does not require them to reconnect. Durable queues and delivery receipts remain authoritative; stale non-empty snapshot queues are never replayed (#234).
 - Preserve every pause and queue array when a delivery resolution is refused or its journal write fails; roll back only the recipient queue and preface (#229).
 - Retry a dependent task released while no peer can take it or its ready/assignment write fails; consume its per-run offer only after assignment (#231).
