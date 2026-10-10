@@ -387,7 +387,13 @@ inside a peer.
   2.0.1: one update per turn, payload `{"sessionUpdate":"usage_update","used":<tokens>,
   "size":<context window>}`; `used` is the session's context occupancy against `size`
   (1M), not billed quota. ACP records this shape as context occupancy diagnostics,
-  never as cumulative consumed tokens. Only validated cumulative totals or input/output
+  never as cumulative consumed tokens. Since #285 phase 1 it is also the peer's
+  native context reading (source `acp_usage_update`), shown in `ahub status`, the
+  console and the dashboard like Claude's and Codex's; the adapter accepts the
+  update whenever it names the current session, since 2.1.1's source text emits it
+  after the prompt resolves (an order read from the source, not yet observed live
+  through the hub; docs/smoke.md). A gate crossing records the
+  event and notice for an ACP peer but sends it no checkpoint request yet. Only validated cumulative totals or input/output
   pairs feed native token readings; unsupported shapes remain unknown. `ahub budget set`
   feeds a reading by hand. `local` has no quota and is never paused.
 - Gate at `budget.gate` (default 0.9) on any fresh window; readings older than
@@ -1402,12 +1408,19 @@ Codex reports `tokenUsage.last.totalTokens / tokenUsage.modelContextWindow` in
 and [native TUI](https://github.com/openai/codex/blob/main/codex-rs/tui/src/token_usage.rs)
 distinguish the last active context from the accumulated `total`; the displayed
 raw occupancy does not apply the TUI's baseline-adjusted remaining percentage.
+The Kimi peer reports `used / size` in `usage_update` (source
+`acp_usage_update`, #285 phase 1; only Kimi is wired): the session's context
+occupancy, accepted whenever it names the adapter's current session, including
+outside a turn; 2.1.1's source text emits it after the prompt resolves (read
+from the source, not observed live), when the peer may already be idle.
 Pi's RPC state exposes no measured native counter. Its extension context API
 returns an estimate, so Pi and unsupported peers remain unknown here.
 
 Each reading records source and measurement time. Claude's status-line file is
 bound to the daemon instance, managed launcher and native session; Codex's
-notification is fenced by its owning link and native thread. Stale, invalid,
+notification is fenced by its owning link and native thread; an ACP reading is
+bound to the adapter's own session id and dropped when that is not the daemon's
+current session. Stale, invalid,
 disconnected or replaced-session readings expose unknown occupancy, never zero.
 `context.gate` defaults to 0 (off); `context.stale_min` defaults to 30.
 A valid above-gate reading emits one metadata-only `context_pressure` event

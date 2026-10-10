@@ -3,7 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, statSync, existsSync,
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
+import { AcpPeer } from "../src/adapters/acp.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
+import { newEnvelope, USER } from "../src/hub/envelope.ts";
 import { readEvents } from "../src/hub/events.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 
@@ -161,4 +163,89 @@ test.each(["owner", "reviewer"] as const)("context request and clean completion 
   f.reading(10); await Bun.sleep(1100); f.reading(90); await until(() => pressure(f.cwd).length === 2);
   expect(f.pushes.filter(p => p.t === "event" && p.e?.env?.body?.startsWith("Checkpoint request: your native context"))).toHaveLength(requestsBefore);
   expect(f.mem.calls.filter(c => c.path === "/api/memory/save")).toHaveLength(savesBefore);
+}, 20_000);
+
+/** A daemon with the fake Kimi ACP agent: the occupancy legs of #285 phase 1. */
+async function kimiFixture(gate = 0) {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-acp-context-")); cleanup.push(() => rmSync(stateDir, { recursive: true, force: true }));
+  const daemon = await startDaemon({
+    cwd: stateDir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, instanceId: "acp-context",
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false }, kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts")], context: { gate, stale_min: 30 }, budget: { ...DEFAULT_CONFIG.budget, kimi_tokens_5h: 800_000 } },
+  });
+  cleanup.push(() => daemon.stop());
+  const console_ = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => console_.close());
+  const pushes: any[] = []; console_.onPush = (m) => pushes.push(m); console_.send({ t: "tail" });
+  // The fake holds a turn's trailing occupancy update until this barrier: the acked set_mode goes out after the
+  // flush, so a resolved setPermissionMode proves the adapter processed the update, idle.
+  const flushLate = () => (daemon.bus.peers.get("kimi") as AcpPeer).setPermissionMode("ask");
+  return { stateDir, daemon, console_, pushes, flushLate };
+}
+const kimiContext = (pushes: any[], used: number | null) => pushes.some((p) => p.t === "context" && p.peer === "kimi" && p.reading?.used === used && p.reading?.source === "acp_usage_update");
+
+test("Kimi's ACP usage_update occupancy becomes its context reading in status, the console tail and the UI snapshot, with no tokens event (#285)", async () => {
+  const { stateDir, daemon, console_, pushes, flushLate } = await kimiFixture();
+  expect((await console_.request({ t: "start", peer: "kimi" })).ok).toBe(true);
+  await until(() => daemon.bus.stateOf("kimi") === "idle");
+  // The fake holds the flat {used, size} update until the set_mode barrier releases it, so it is processed while
+  // the peer is idle, deterministically (2.1.1's source text emits it after the prompt resolves; read from the
+  // source, not observed live).
+  daemon.bus.publish(newEnvelope(USER, "OCCUPANCY: report your context", { to: ["kimi"] }));
+  await until(() => readEvents(join(stateDir, "events.jsonl")).some((e) => e.type === "turn_end" && e.peer === "kimi"));
+  await flushLate();
+  await until(() => kimiContext(pushes, 0.45));
+  const shown = await console_.request({ t: "status" });
+  expect(shown.status.peers.kimi.context).toMatchObject({ used: 0.45, tokens: 90_000, window: 200_000, source: "acp_usage_update", freshness: "fresh" });
+  const ui = await console_.request({ t: "ui_snapshot", after: 0 });
+  expect(ui.budget.kimi.context).toMatchObject({ used: 0.45, source: "acp_usage_update", freshness: "fresh" });
+  // Occupancy is not consumption (#167): the turn wrote no tokens event and no budget window, ceiling configured or not.
+  expect(readEvents(join(stateDir, "events.jsonl")).some((e) => e.type === "tokens" && e.peer === "kimi")).toBe(false);
+  expect(ui.budget.kimi.windows ?? []).toEqual([]);
+}, 20_000);
+
+test("an invalid Kimi occupancy update reports unknown instead of keeping the previous reading (#285)", async () => {
+  const { stateDir, daemon, console_, pushes, flushLate } = await kimiFixture();
+  expect((await console_.request({ t: "start", peer: "kimi" })).ok).toBe(true);
+  await until(() => daemon.bus.stateOf("kimi") === "idle");
+  daemon.bus.publish(newEnvelope(USER, "OCCUPANCY: first", { to: ["kimi"] }));
+  await until(() => readEvents(join(stateDir, "events.jsonl")).some((e) => e.type === "turn_end" && e.peer === "kimi"));
+  await flushLate();
+  await until(() => kimiContext(pushes, 0.45));
+  daemon.bus.publish(newEnvelope(USER, "OCCUPANCY_INVALID: then garbage", { to: ["kimi"] }));
+  await until(() => readEvents(join(stateDir, "events.jsonl")).filter((e) => e.type === "turn_end" && e.peer === "kimi").length === 2);
+  await flushLate();
+  await until(() => pushes.some((p) => p.t === "context" && p.peer === "kimi" && p.reading?.freshness === "unknown" && p.reading?.source === "acp_usage_update"));
+  const shown = await console_.request({ t: "status" });
+  expect(shown.status.peers.kimi.context).toMatchObject({ used: null, tokens: null, source: "acp_usage_update", freshness: "unknown" });
+}, 20_000);
+
+test("a Kimi occupancy reading over context.gate records the crossing and the notice but sends no checkpoint request (#285)", async () => {
+  const { stateDir, daemon, console_, pushes, flushLate } = await kimiFixture(0.8);
+  expect((await console_.request({ t: "start", peer: "kimi" })).ok).toBe(true);
+  await until(() => daemon.bus.stateOf("kimi") === "idle");
+  // Open work for kimi, so a missing Claude/Codex limit would really send the checkpoint envelope (the no-open-work
+  // early return would otherwise make the leg vacuous).
+  expect((await console_.request({ t: "task", op: "hub_task_propose", args: { title: "kimi's open work", class: "implement", owner: "kimi" } })).ok).toBe(true);
+  await until(() => daemon.bus.stateOf("kimi") === "idle");
+  daemon.bus.publish(newEnvelope(USER, "OCCUPANCY_HIGH: nearly full", { to: ["kimi"] }));
+  await until(() => readEvents(join(stateDir, "events.jsonl")).filter((e) => e.type === "turn_end" && e.peer === "kimi").length >= 2);
+  await flushLate();
+  await until(() => readEvents(join(stateDir, "events.jsonl")).some((e) => e.type === "context_pressure" && e.peer === "kimi" && e.source === "acp_usage_update"));
+  await until(() => kimiContext(pushes, 0.9));
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).toContain("context: kimi crossed 80%");
+  // The checkpoint request stays Claude/Codex-only in this phase: no budget envelope reaches Kimi.
+  expect(pushes.some((p) => p.t === "event" && p.e?.env?.to?.includes("kimi") && p.e?.env?.body?.startsWith("Checkpoint request:"))).toBe(false);
+  expect(readFileSync(join(stateDir, "events.jsonl"), "utf8")).not.toContain("Checkpoint request");
+}, 20_000);
+
+test("a usage_update naming a session the adapter did not load is dropped before any reading (#285)", async () => {
+  const { stateDir, daemon, console_, flushLate } = await kimiFixture();
+  // The fake answers session/load but keeps sending updates for "s1": a resumed session "old" never matches.
+  expect((await console_.request({ t: "start", peer: "kimi", args: { sessionId: "old" } })).ok).toBe(true);
+  await until(() => daemon.bus.stateOf("kimi") === "idle");
+  daemon.bus.publish(newEnvelope(USER, "OCCUPANCY: stale session", { to: ["kimi"] }));
+  await until(() => readEvents(join(stateDir, "events.jsonl")).some((e) => e.type === "turn_end" && e.peer === "kimi"));
+  await flushLate(); // the held "s1" update is processed and dropped: no reading, no fixed wait
+  const shown = await console_.request({ t: "status" });
+  expect(shown.status.peers.kimi.context?.freshness ?? "unknown").toBe("unknown");
+  expect(shown.status.peers.kimi.context?.used ?? null).toBeNull();
 }, 20_000);

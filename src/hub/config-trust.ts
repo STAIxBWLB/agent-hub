@@ -1,7 +1,7 @@
-import { spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { join } from "node:path";
 import { childEnv } from "./child-process.ts";
+import { hubGitSync } from "./git.ts";
 
 /**
  * Fields of the project config that choose what the hub runs, which files it sends as credentials, where task text
@@ -42,7 +42,7 @@ export function configRefusal(cwd: string, name: string): string | undefined {
 
 /** Whether git tracks `.agenthub/<name>` (or `.agenthub` itself); undefined when git cannot say. */
 export function configTracked(cwd: string, name: string): boolean | undefined {
-  const r = spawnSync("git", ["-C", cwd, "ls-files", "-s", "-z", "--", ":(icase).agenthub"], { encoding: "utf8", env: childEnv(process.env) });
+  const r = hubGitSync(["-C", cwd, "ls-files", "-s", "-z", "--", ":(icase).agenthub"], { encoding: "utf8", env: childEnv(process.env) });
   if (r.status !== 0) return undefined;
   let opened: { dev: number; ino: number } | undefined;
   try {
