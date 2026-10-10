@@ -19,7 +19,8 @@ and that passes these checks before anything changes:
 - the project is the root of its repository (a reset acts on the whole repository);
 - nothing under `.agenthub/` is tracked, in the tree or in any ref the suite names (a checkout would replace the hub's own
   files): `git rm -r --cached .agenthub`, ignore it, commit;
-- every ref the suite names is a commit;
+- every ref the suite names is a commit (it is pinned to that commit for the whole run, so a branch an agent moves
+  later changes nothing);
 - the tree is clean (`.agenthub/` aside).
 
 The reset also deletes ignored files (`git clean -x`): keep the suite file, hidden verify scripts and anything else the
@@ -55,8 +56,9 @@ the field named.
 | `verify` | a shell command run in the tree the agents left; exit 0 is a pass (bounded, 10 min) |
 | `timeout_s` | 10 to 86400 seconds from the start of the attempt to approval |
 
-`setup` and `verify` run in their own process group: at the bound, on Ctrl-C and when the command exits, everything it
-started is stopped, so nothing keeps writing into the next attempt's tree.
+`setup` and `verify` run in their own process group: at the bound, on Ctrl-C and when the command exits, everything in
+that group is stopped, so nothing keeps writing into the next attempt's tree (a process that leaves the group, as a
+daemon does, is not followed).
 
 `name`, `id` and the arm label are stored; keep them free of anything private.
 
@@ -66,8 +68,8 @@ Start the peers of the configuration under test (`ahub claude`, `ahub codex`, `a
 modes and `routing.toml`), then:
 
 ```bash
-ahub bench run suite.json --arm baseline --repeat 5
-ahub bench run suite.json --arm ripwire-on --repeat 5 --tasks b,a,c   # --tasks also sets the order
+ahub bench run ../suites/suite.json --arm baseline --repeat 5
+ahub bench run ../suites/suite.json --arm ripwire-on --repeat 5 --tasks b,a,c   # --tasks also sets the order
 ```
 
 Only a person can run a suite (agent shells are refused). Each attempt resets the tree to `ref`, runs `setup`, proposes
@@ -81,7 +83,7 @@ the task as the console does, waits until it is approved or `timeout_s` passes, 
   one of a closed list).
 
 Ctrl-C stops the run at its next check, also inside `setup` or `verify`: the attempt in progress is recorded as `error`
-(`interrupted`), its task stays open on the board, and the run reads `stopped`. A run whose runner died without its end record reads `interrupted`.
+(`interrupted`), a task still open on the board is named, and the run reads `stopped`. A run whose runner died without its end record reads `interrupted`.
 
 ## Store
 
@@ -93,8 +95,9 @@ machine. Schema `agent-hub.bench/v1`:
   hub version), task order, repeats, the runner's process.
 - `attempt`: task id, repeat, outcome, error reason, verify exit code, hub task id, start, end, duration, and, for an
   approved task, its #247 measures (tokens, wall and active time, review rounds, changes requested, failed checks, first
-  pass, turns, files changed, models). They are read once the turns open at the approval have ended (at most 10
-  minutes), so the turn that approved the task is counted. A timeout or an error has none.
+  pass, turns, files changed, models). They are read once the turns started since the task's proposal have ended (the
+  runner waits only while their peers are still busy, at most 10 minutes), so the turn that approved the task is
+  counted; that wait is not part of the attempt's duration. A timeout or an error has none.
 - `end`: end time, and `stopped` (`timeout`, `interrupted`, `error`) when the run did not finish.
 
 ## Reading results
@@ -112,7 +115,8 @@ and mean rework (over approved attempts). `compare` takes run ids or arm labels 
 over, a run a timeout stopped included, since each attempt carries its own outcome), sets the first as the baseline and
 gives each other arm's difference with a 95% bootstrap interval (1000 resamples, fixed seed, so the same records give
 the same interval). Below 5 attempts counted for a measure in either arm, its difference is marked inconclusive. Runs of
-different suites, or of different versions of one suite file, are not compared unless you pass `--mixed`. Agents may
+different suites, or of different versions of one suite file, are not compared unless you pass `--mixed`; name runs by
+id to compare within one version. Agents may
 read all of this. CSV columns: run, suite, arm, task, repeat, outcome, error, verifyExit, hubTask, startedAt, endedAt,
 ms, tokens, wallMs, activeMs, reviewRounds, changesRequested, checkFailed, firstPass, turns, filesChanged, models.
 
@@ -126,7 +130,7 @@ attempts left while one runs) and, per suite with two or more arms, a bar per ar
   each peer, so note the rest (models, permission modes, add-ons) in the arm label.
 - Repeat: agents are not deterministic. Five attempts per task and arm is the floor for a comparison; more narrows the
   interval.
-- Randomize the order per run with `--tasks` (for example `--tasks "$(jq -r '.tasks[].id' suite.json | shuf | paste -sd, -)"`)
+- Randomize the order per run with `--tasks` (for example `--tasks "$(jq -r '.tasks[].id' ../suites/suite.json | shuf | paste -sd, -)"`)
   and interleave the arms' runs, so quota, time of day and provider load do not line up with one arm.
 - Keep `verify` independent of the agents' own tests where you can: a hidden test the agents never see measures the
   outcome, not their opinion of it.

@@ -77,25 +77,42 @@ test("a reset never reaches outside the project or into .agenthub", async () => 
   const old = git(tracked, "rev-parse", "HEAD~1");
   await expect(benchPreflight(tracked, true)).resolves.toBe("main");
   await expect(benchPreflight(tracked, true, [old])).rejects.toThrow(`suite ref ${old} tracks files under .agenthub/`);
+  // A case variant is the same directory on a case-insensitive disk.
+  const variant = benchRepo().root;
+  git(variant, "commit", "-q", "--allow-empty", "-m", "base");
+  const blob = git(variant, "hash-object", "-w", "README.md");
+  git(variant, "update-index", "--add", "--cacheinfo", `100644,${blob},.AGENTHUB/config.json`);
+  await expect(benchPreflight(variant, true)).rejects.toThrow("tracks files under .agenthub/");
+  git(variant, "commit", "-qm", "variant"); const withVariant = git(variant, "rev-parse", "HEAD");
+  git(variant, "rm", "-rq", "--cached", ".AGENTHUB"); git(variant, "commit", "-qm", "drop variant");
+  await expect(benchPreflight(variant, true, [withVariant])).rejects.toThrow("tracks files under .agenthub/");
+  // A ref is pinned to its commit at preflight, so a branch an agent moves later is not what a reset checks out.
+  const pinned = new Map<string, string>();
+  await benchPreflight(variant, true, ["main"], pinned);
+  expect(pinned.get("main")).toBe(git(variant, "rev-parse", "main"));
 });
 
 test("a bounded command takes what it started with it, and an interrupt stops it at once", async () => {
   const { root } = benchRepo();
   const io = defaultIo(root, root);
   // A verify that leaves a background writer behind, past its bound: nothing may land in the next attempt's tree.
-  const hung = await io.sh("(sleep 1; echo late > orphan.txt) & sleep 30", root, 300);
+  const hung = await io.sh("(sleep 2; echo late > orphan.txt) & sleep 30", root, 300);
   expect(hung).toMatchObject({ code: null, timedOut: true, interrupted: false });
   // One that finishes but leaves a child running: the child goes too.
-  const left = await io.sh("(sleep 1; echo late > left.txt) & exit 0", root, 10_000);
+  const left = await io.sh("(sleep 2; echo late > left.txt) & exit 0", root, 10_000);
   expect(left).toMatchObject({ code: 0, timedOut: false });
   let stop = false;
   setTimeout(() => { stop = true; }, 200);
   const cut = await io.sh("sleep 30", root, 60_000, () => stop);
   expect(cut).toMatchObject({ code: null, interrupted: true });
-  await Bun.sleep(1500);
+  await Bun.sleep(2500);
   expect(existsSync(join(root, "orphan.txt"))).toBe(false);
   expect(existsSync(join(root, "left.txt"))).toBe(false);
-});
+  // A command that cannot start (its directory is gone) is a failure at once, not a crash or a full bound's wait.
+  const t0 = Date.now();
+  expect(await io.sh("true", join(root, "no-such-dir"), 10_000)).toMatchObject({ code: -1, timedOut: false });
+  expect(Date.now() - t0).toBeLessThan(5000);
+}, 30_000);
 
 test("a run records pass, fail and timeout with measures, resets the tree between attempts, and bounds a hanging verify", async () => {
   const { root, head } = benchRepo();
@@ -177,7 +194,8 @@ test("an attempt's measures wait for the turn that approved the task, and belong
   line({ type: "tokens", peer: "worker", n: 10, task: 1, attribution: "single_open" });
   taskEvent("done", "approved");
   let sleeps = 0, clock = 0;
-  const io = { now: () => clock, sleep: async (ms: number) => {
+  const said: string[] = [];
+  const io = { now: () => clock, log: (line: string) => void said.push(line), sleep: async (ms: number) => {
     clock += ms;
     if (++sleeps === 2) { // the approving turn ends only after two polls
       line({ type: "tokens", peer: "worker", n: 5, task: 1, attribution: "single_open" });
@@ -187,8 +205,24 @@ test("an attempt's measures wait for the turn that approved the task, and belong
   const m = await metricsOf({ stateDir, pollMs: 100, settleMs: 10_000 }, io, "p", 1);
   expect(sleeps).toBeGreaterThanOrEqual(3);
   expect(m).toMatchObject({ tokens: 15, turns: 1, activeMs: 4000 });
+  expect(said.join("\n")).toContain("waiting for worker to end the turn that approved task #1");
   // An attempt that was never approved has no measures.
   expect(await metricsOf({ stateDir, pollMs: 1, settleMs: 10 }, io, "p", 7)).toBeNull();
+  // A turn from before this task's proposal, an unmatched one whose peer is no longer busy, and an interrupt do not hold the wait.
+  const stale = temp("settle-stale");
+  const staleFile = join(stale, "events.jsonl");
+  const put = (e: Record<string, unknown>) => appendFileSync(staleFile, JSON.stringify({ v: 1, at: new Date(t += 1000).toISOString(), ...e }) + "\n");
+  const board = (event: string, state: string) => put({ type: "task", id: 1, event, by: "hub", state, owner: "worker", reviewer: null, class: "plan", pii: false });
+  put({ type: "turn_start", peer: "codex", turn: "codex#0.9" }); // left open by an earlier hub run
+  board("proposed", "proposed"); board("accepted", "in_progress");
+  put({ type: "turn_start", peer: "claude", turn: "claude#1.1" }); // closed by the hub without an end event
+  board("done", "approved");
+  const count = (busy?: () => Promise<Set<string>>, stopped?: () => boolean) => { let n = 0; return metricsOf({ stateDir: stale, pollMs: 100, settleMs: 60_000, ...(stopped ? { stopped } : {}) },
+    { now: () => n * 100, sleep: async () => { n++; }, log: () => {} }, "p", 1, busy).then(() => n); };
+  expect(await count(async () => new Set<string>())).toBe(1); // claude is idle now: only the last poll
+  expect(await count(async () => new Set(["codex"]))).toBe(1); // codex's old turn is not this task's
+  expect(await count(async () => new Set(["claude"]))).toBeGreaterThan(100); // really busy: waits to the cap
+  expect(await count(async () => new Set(["claude"]), () => true)).toBe(0); // interrupted: no wait at all
 });
 
 const attempt = (run: string, task: string, outcome: Outcome, tokens: number, ms: number): Attempt => ({ schema: BENCH_SCHEMA, kind: "attempt", run, task, repeat: 1, outcome,
@@ -266,7 +300,7 @@ test("a run whose runner died without an end record reads interrupted; the dashb
     cleanup.push(() => console_.close());
     const snap = await console_.request({ t: "ui_snapshot", after: 0 });
     expect(snap.bench.runs.map((r: { run: string }) => r.run).sort()).toEqual(["r-dead", "r-ok", "r-ok2"]);
-    expect(Object.keys(snap.bench.runs[0]).sort()).toEqual(["arm", "attempts", "done", "error", "fail", "firstPassRate", "pass", "passRate", "reworkMean", "run", "startedAt", "state", "suite", "timeout", "tokensMedian", "total", "wallMsMedian"].sort());
+    expect(Object.keys(snap.bench.runs[0]).sort()).toEqual(["arm", "attempts", "done", "error", "fail", "firstPassRate", "measured", "pass", "passRate", "reworkMean", "run", "scored", "startedAt", "state", "suite", "timeout", "tokensMedian", "total", "wallMsMedian"].sort());
     expect(snap.bench.arms.map((a: { arm: string }) => a.arm).sort()).toEqual(["a", "b"]);
   } finally {
     if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous;
@@ -276,6 +310,10 @@ test("a run whose runner died without an end record reads interrupted; the dashb
 test("running a suite is a person's; reading benchmark results is not", () => {
   expect(classifyPeerCommand("bench", ["run", "suite.json", "--arm", "x"])).toBe("console");
   for (const sub of [[], ["list"], ["status"], ["report", "r"], ["compare", "a", "b"], ["export"]]) expect(classifyPeerCommand("bench", sub)).toBe("allowed");
+  // --json is accepted anywhere, so it cannot hide the subcommand from the gate.
+  expect(classifyPeerCommand("bench", ["--json", "run", "suite.json", "--arm", "x"])).toBe("console");
+  expect(classifyPeerCommand("bench", ["--json", "--json", "run"])).toBe("console");
+  expect(classifyPeerCommand("bench", ["--json", "list"])).toBe("allowed");
 });
 
 test("the dashboard has a Benchmarks section whose bars carry their numbers as text", () => {

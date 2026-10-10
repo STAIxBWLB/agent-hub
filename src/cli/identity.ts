@@ -36,7 +36,8 @@ export function classifyPeerCommand(command: string, args: readonly string[]): P
   // #247: reading the research measures and records is harmless (ids and counts only); writing them is a person's.
   if (command === "research") return args[0] === "backfill" ? "console" : "allowed";
   // #251: a run resets the bench project's tree and proposes work; reading results is harmless.
-  if (command === "bench") return args[0] === "run" ? "console" : "allowed";
+  // The subcommand is the first argument that is not --json, which the command accepts anywhere.
+  if (command === "bench") return args.find((arg) => arg !== "--json") === "run" ? "console" : "allowed";
   if (command === "budget") return !args.length || args.every((arg) => arg === "--json") ? "allowed" : "console";
   if (["claude", "codex", "kimi", "pi", "local", "pause", "resume"].includes(command)) return "conductor";
   if (["help", "version", "--version", "say", "status", "board", "report", "turns", "review", "remember", "facts", "check-path"].includes(command)) return "allowed";
@@ -47,7 +48,7 @@ export function classifyPeerCommand(command: string, args: readonly string[]): P
 export function cliCommandLabel(command: string, args: readonly string[]): string {
   if (!["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "claude", "codex", "kimi", "pi", "local", "models", "say", "queue", "tail", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "status", "logs", "export", "report", "research", "bench", "facts", "check-path", "turns", "undo", "kill", "reset", "doctor"].includes(command)) return "unknown";
   if (["task", "queue", "budget", "route", "recovery", "models", "projects", "research", "bench"].includes(command)) {
-    const sub = args[0];
+    const sub = command === "bench" ? args.find((arg) => arg !== "--json") : args[0];
     if (sub && ["propose", "show", "assign", "escalate", "label", "list", "resolve", "resume", "set", "execution", "explain", "status", "abort", "dispose", "setup", "start", "stop", "remove", "export", "backfill", "run", "report", "compare"].includes(sub)) return `${command} ${sub}`;
   }
   return (/^[a-z][a-z0-9-]*$/.test(command) && !/\s/.test(command)) || ["--help", "--version"].includes(command) ? command : "unknown";

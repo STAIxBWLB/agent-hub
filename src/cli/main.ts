@@ -884,7 +884,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       }
       await benchPreflight(cwd, loadConfig(cwd).bench.enabled); // the suite's refs are checked once it is read
       let interrupted = false;
-      const stop = () => { interrupted = true; console.log("stopping at the next check: the attempt in progress is recorded as interrupted and its task stays open"); };
+      const stop = () => { interrupted = true; console.log("stopping at the next check: the attempt in progress is recorded as interrupted (a task still open is named)"); };
       process.on("SIGINT", stop);
       try {
         const run = await runBench({ cwd, stateDir, suitePath: resolve(invokedFrom, suite!), arm: one["--arm"]!.trim(), repeat, only: one["--tasks"]?.split(",").map((t) => t.trim()).filter(Boolean), stopped: () => interrupted }, defaultIo(stateDir, cwd));
@@ -914,7 +914,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       });
       if (groups.length < 2) fail("usage: ahub bench compare <run|arm> <run|arm>... [--suite <name>] [--mixed] [--json]");
       const differs = sameSuite(groups);
-      if (differs && !mixed) fail(`${differs}; name one with --suite, or pass --mixed to compare them anyway`);
+      if (differs && !mixed) fail(`${differs}; compare runs of one suite file (name runs by id, or --suite when the names differ), or pass --mixed to compare them anyway`);
       const c = benchCompare(groups);
       return console.log(json ? JSON.stringify(c, null, 2) : formatCompare(c).join("\n"));
     }

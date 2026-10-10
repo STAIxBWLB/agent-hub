@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { childEnv, stopOwnedProcess } from "../hub/child-process.ts";
+import { childEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { ControlClient } from "../hub/control-client.ts";
 import { readEvents } from "../hub/events.ts";
 import { taskRecords } from "../hub/research.ts";
@@ -15,7 +15,8 @@ import { VERSION } from "../version.ts";
 export interface BenchIo {
   /**
    * A shell command in the project, in its own process group, bounded: when the bound passes or `stopped()` turns true
-   * the whole group is stopped, and whatever the command left running is stopped when it exits. Output is never kept.
+   * the group is stopped, and whatever the command left running in its group is stopped when it exits. Output is never
+   * kept. A command that cannot be started reads as a failure (code -1).
    */
   sh(command: string, cwd: string, timeoutMs: number, stopped?: () => boolean): Promise<{ code: number | null; timedOut: boolean; interrupted: boolean }>;
   connect(): Promise<ControlClient>;
@@ -37,8 +38,12 @@ async function git(cwd: string, args: string[]): Promise<{ code: number; out: st
 export const defaultIo = (stateDir: string, cwd: string): BenchIo => ({
   sh: async (command, dir, timeoutMs, stopped) => {
     const p = spawn("sh", ["-c", command], { cwd: dir, detached: true, stdio: "ignore", env: childEnv() });
+    trackGroup(p);
     let code: number | null | undefined;
-    const exited = new Promise<void>((resolve) => p.once("exit", (c) => { code = c; resolve(); }));
+    const exited = new Promise<void>((resolve) => {
+      p.once("exit", (c) => { code = c; resolve(); });
+      p.once("error", () => { code = -1; resolve(); }); // it never started (a missing directory, no shell)
+    });
     const end = Date.now() + timeoutMs;
     let timedOut = false, interrupted = false;
     while (code === undefined) {
@@ -46,10 +51,12 @@ export const defaultIo = (stateDir: string, cwd: string): BenchIo => ({
       if (stopped?.()) { interrupted = true; break; }
       await Promise.race([exited, Bun.sleep(Math.min(200, Math.max(1, end - Date.now())))]);
     }
-    // The whole group, also what a finished command left behind: nothing may run on into the next attempt's tree.
-    await stopOwnedProcess(p, { group: true, killMs: 500 }).catch(() => {
-      // Members still hold the group id, so it cannot belong to anyone else yet.
-      try { process.kill(-p.pid!, "SIGKILL"); } catch { /* gone */ }
+    // The whole group, also what a finished command left behind in it: nothing may run on into the next attempt's tree.
+    await stopOwnedProcess(p, { group: true, killMs: 500 }).catch((error: Error) => {
+      // ponytail: only when the stop says the exited leader's group still has members (they hold the group id, so it
+      // is still ours) is the group killed outright; any other refusal (not provably ours, an unreadable process table)
+      // leaves it alone. A leader start-time record at spawn would let stopOwnedProcess sweep it itself.
+      if (/still has members/.test(error.message)) try { process.kill(-p.pid!, "SIGKILL"); } catch { /* gone */ }
     });
     return { code: timedOut || interrupted ? null : code ?? null, timedOut, interrupted };
   },
@@ -59,54 +66,80 @@ export const defaultIo = (stateDir: string, cwd: string): BenchIo => ({
   log: (line) => console.log(line),
 });
 
-/** The preconditions a run checks before it changes anything; each refusal says why. */
-export async function benchPreflight(cwd: string, enabled: boolean, refs: string[] = []): Promise<string> {
+const TREE = ["status", "--porcelain", "--untracked-files=all", "--", ".", ":(exclude,icase).agenthub"];
+
+/**
+ * The preconditions a run checks before it changes anything; each refusal says why. Returns the branch (or commit) to
+ * return to. `pinned` receives each suite ref's commit: a reset checks out that commit, never the name, which an
+ * agent's own commit could move.
+ */
+export async function benchPreflight(cwd: string, enabled: boolean, refs: string[] = [], pinned: Map<string, string> = new Map()): Promise<string> {
   if (!enabled) throw new Error('benchmarks are off for this project: set "bench": { "enabled": true } in .agenthub/config.json of a project kept for benchmarks (each attempt resets its work tree)');
   const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0) throw new Error("a benchmark project must be a git repository");
   // A checkout and a clean act on the whole repository: a project in a subdirectory would reset what lies outside it.
   if (realPath(top.out) !== realPath(cwd)) throw new Error(`a benchmark project must be the root of its git repository (${top.out} is), since a reset acts on the whole repository`);
   // The hub's own files must not change under it: a checkout would replace tracked ones, or write them from a ref.
-  if ((await git(cwd, ["ls-files", "--", ".agenthub"])).out) throw new Error("this repository tracks files under .agenthub/, which a reset would replace; in a bench project untrack them (git rm -r --cached .agenthub, then ignore it) and commit");
+  // Matched without case, since a case-insensitive disk opens `.AGENTHUB/config.json` as `.agenthub/config.json`.
+  const tracked = await git(cwd, ["ls-files", "--", ":(icase).agenthub"]);
+  if (tracked.code !== 0 || tracked.out) throw new Error("this repository tracks files under .agenthub/, which a reset would replace; in a bench project untrack them (git rm -r --cached .agenthub, then ignore it) and commit");
   for (const ref of refs) {
     const commit = await git(cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`]);
-    if (commit.code !== 0) throw new Error(`suite ref ${ref} is not a commit in this repository`);
-    if ((await git(cwd, ["ls-tree", "-r", "--name-only", commit.out, "--", ".agenthub"])).out) throw new Error(`suite ref ${ref} tracks files under .agenthub/, which a reset to it would write over the hub's own; use a ref without them`);
+    if (commit.code !== 0 || !/^[0-9a-f]{40,64}$/.test(commit.out)) throw new Error(`suite ref ${ref} is not a commit in this repository`);
+    const names = await git(cwd, ["ls-tree", "--name-only", commit.out]);
+    if (names.code !== 0 || names.out.split("\n").some((name) => name.toLowerCase() === ".agenthub")) {
+      throw new Error(`suite ref ${ref} tracks files under .agenthub/, which a reset to it would write over the hub's own; use a commit made after .agenthub was untracked, or rebuild the ref without that directory`);
+    }
+    pinned.set(ref, commit.out);
   }
-  const dirty = await git(cwd, ["status", "--porcelain", "--untracked-files=all", "--", ".", ":(exclude).agenthub"]);
+  const dirty = await git(cwd, TREE);
   if (dirty.code !== 0 || dirty.out) throw new Error("the work tree has changes; commit or remove them first (a run resets the tree between attempts)");
   const branch = await git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
   return branch.code === 0 && branch.out ? branch.out : (await git(cwd, ["rev-parse", "HEAD"])).out;
 }
 
-/** Reset the tree to `ref` and prove it clean: a nested repository or a modified submodule survives a plain clean. */
-async function reset(cwd: string, ref: string, detach = true): Promise<boolean> {
-  if ((await git(cwd, ["checkout", "--quiet", "--force", ...(detach ? ["--detach"] : []), "--end-of-options", ref])).code !== 0) return false;
-  if ((await git(cwd, ["clean", "-fdxq", "-e", ".agenthub"])).code !== 0) return false;
-  const left = await git(cwd, ["status", "--porcelain", "--untracked-files=all", "--", ".", ":(exclude).agenthub"]);
-  return left.code === 0 && !left.out;
+/**
+ * Reset the tree to `target` (a pinned commit, or the branch to return to) and check that nothing is left. `-ff` also
+ * removes a nested repository an agent created; one under an ignored path can still survive the check.
+ */
+async function reset(cwd: string, target: string, detach: boolean, log: (line: string) => void): Promise<boolean> {
+  if ((await git(cwd, ["checkout", "--quiet", "--force", ...(detach ? ["--detach"] : []), target])).code !== 0) return false;
+  if ((await git(cwd, ["clean", "-ffdxq", "-e", ".agenthub"])).code !== 0) return false;
+  const left = await git(cwd, TREE);
+  if (left.code === 0 && !left.out) return true;
+  const paths = left.out.split("\n").filter(Boolean);
+  log(`  the reset left ${paths.length || "unreadable"} path${paths.length === 1 ? "" : "s"} behind${paths.length ? `: ${paths.slice(0, 5).join(", ")}${paths.length > 5 ? ", ..." : ""}` : ""}`);
+  return false;
 }
 
 /**
  * The #247 measures of the attempt's task, the one with this id proposed last (an events file may keep an earlier task
  * with the same id). The turn that approved it ends after the approval and its usage arrives later still, so this waits
- * until every turn started by then has ended, at most `settleMs`, then one poll more. Unapproved tasks have no record.
+ * while a turn started since the task's proposal has not ended and its peer is still busy (`busy`, the hub's live
+ * view: a turn the hub closed without an end event does not hold the wait), at most `settleMs`, then one poll more.
+ * Unapproved tasks have no record.
  */
-export async function metricsOf(opts: Pick<BenchOptions, "stateDir" | "settleMs" | "pollMs">, io: Pick<BenchIo, "now" | "sleep">, projectId: string, task: number): Promise<AttemptMetrics | null> {
+export async function metricsOf(opts: Pick<BenchOptions, "stateDir" | "settleMs" | "pollMs" | "stopped">, io: Pick<BenchIo, "now" | "sleep" | "log">, projectId: string, task: number,
+    busy: () => Promise<Set<string> | undefined> = async () => undefined): Promise<AttemptMetrics | null> {
   const events = () => readEvents(join(opts.stateDir, "events.jsonl"));
-  const approvedAt = (all: ReturnType<typeof events>) => all.filter((e) => e.type === "task" && e.id === task && e.state === "approved").at(-1)?.at;
+  const last = (all: ReturnType<typeof events>, event: boolean, value: string) =>
+    all.flatMap((e) => e.type === "task" && e.id === task && (event ? e.event : e.state) === value ? [e.at] : []).at(-1);
   const until = io.now() + (opts.settleMs ?? 600_000);
+  let said = false;
   for (;;) {
-    const all = events(), at = approvedAt(all);
-    if (!at) break;
+    const all = events(), proposed = last(all, true, "proposed"), at = last(all, false, "approved");
+    if (!at || !proposed || opts.stopped?.()) break;
     const ended = new Set(all.flatMap((e) => e.type === "turn_end" ? [`${e.peer}\0${e.turn}`] : []));
-    const open = all.some((e) => e.type === "turn_start" && e.at <= at && !ended.has(`${e.peer}\0${e.turn}`));
-    if (!open || io.now() >= until) break;
+    const open = new Set(all.flatMap((e) => e.type === "turn_start" && e.at >= proposed && e.at <= at && !ended.has(`${e.peer}\0${e.turn}`) ? [e.peer] : []));
+    const working = await busy().catch(() => undefined);
+    const waiting = [...open].filter((peer) => !working || working.has(peer));
+    if (!waiting.length || io.now() >= until) break;
+    if (!said) { said = true; io.log(`  waiting for ${waiting.join(", ")} to end the turn that approved task #${task}, so its cost is counted`); }
     await io.sleep(opts.pollMs ?? 2000);
   }
-  await io.sleep(opts.pollMs ?? 2000); // the last usage of a turn lands a moment after its end
+  if (!opts.stopped?.()) await io.sleep(opts.pollMs ?? 2000); // the last usage of a turn lands a moment after its end
   const all = events();
-  const proposed = all.filter((e) => e.type === "task" && e.id === task && e.event === "proposed").at(-1)?.at;
+  const proposed = last(all, true, "proposed");
   const r = taskRecords(all, projectId, { version: VERSION, source: "live" }).find((x) => x.task === task && x.createdAt === proposed);
   return r ? { tokens: r.tokens.total, wallMs: r.wallMs, activeMs: r.activeMs, reviewRounds: r.reviewRounds, changesRequested: r.changesRequested,
     checkFailed: r.checkFailed, firstPass: r.firstPass, turns: r.turns, filesChanged: r.filesChanged, models: r.models } : null;
@@ -114,8 +147,8 @@ export async function metricsOf(opts: Pick<BenchOptions, "stateDir" | "settleMs"
 
 /**
  * #251: run a suite against the peers attached to this project's hub, one attempt at a time. Each attempt resets the
- * tree to the task's ref, runs its setup, proposes the task as the console does, waits until it is approved or its
- * time is up, then runs its verify command in the tree the agents left. Returns the run id.
+ * tree to the task's pinned commit, runs its setup, proposes the task as the console does, waits until it is approved
+ * or its time is up, then runs its verify command in the tree the agents left. Returns the run id.
  * ponytail: a task that times out stops the run, since an agent may still be working in the tree the next attempt
  * would reset; withdrawing an open task (a board state for it) would let the run continue.
  */
@@ -124,7 +157,8 @@ export async function runBench(opts: BenchOptions, io: BenchIo): Promise<string>
   const suite = parseSuite(suiteText);
   // --tasks also sets the order, so a person can randomize it per run (docs/bench.md).
   const tasks = opts.only?.length ? opts.only.map((id) => suite.tasks.find((t) => t.id === id) ?? fail(`--tasks names ${id}, which the suite does not have`)) : suite.tasks;
-  const original = await benchPreflight(opts.cwd, true, [...new Set(tasks.map((t) => t.ref))]);
+  const pinned = new Map<string, string>();
+  const original = await benchPreflight(opts.cwd, true, [...new Set(tasks.map((t) => t.ref))], pinned);
   const hub = await io.connect();
   const run = `${new Date(io.now()).toISOString().slice(0, 10).replace(/-/g, "")}-${randomUUID().slice(0, 8)}`;
   const home = opts.home ?? hubHome();
@@ -145,27 +179,34 @@ export async function runBench(opts: BenchOptions, io: BenchIo): Promise<string>
     outer: for (let repeat = 1; repeat <= opts.repeat; repeat++) {
       for (const task of tasks) {
         if (opts.stopped?.()) { stopped = "interrupted"; break outer; }
-        const attempt = await runAttempt(task, repeat, run, opts, io, hub, status.projectId);
+        const { attempt, open } = await runAttempt(task, pinned.get(task.ref)!, repeat, run, opts, io, hub, status.projectId);
         appendBench(attempt, home);
         io.log(`  ${task.id} #${repeat}: ${attempt.outcome}${attempt.error ? ` (${attempt.error})` : ""}`);
-        const open = () => { if (attempt.hubTask !== null) io.log(`  task #${attempt.hubTask} is still open on the board; settle it before the next run`); };
-        if (attempt.outcome === "timeout") { stopped = "timeout"; open(); break outer; }
-        if (attempt.error === "interrupted") { stopped = "interrupted"; open(); break outer; }
-        if (attempt.error === "hub stopped" || attempt.error === "reset failed") { stopped = "error"; open(); break outer; }
+        if (attempt.outcome === "timeout") stopped = "timeout";
+        else if (attempt.error === "interrupted") stopped = "interrupted";
+        else if (attempt.error === "hub stopped" || attempt.error === "reset failed") stopped = "error";
+        if (!stopped) continue;
+        if (open) io.log(`  task #${attempt.hubTask} is still open on the board; settle it before the next run`);
+        break outer;
       }
     }
-    if (!stopped) await reset(opts.cwd, original, false); // back on the branch it started on
+    if (!stopped) await reset(opts.cwd, original, false, io.log); // back on the branch it started on
     appendBench({ schema: BENCH_SCHEMA, kind: "end", run, endedAt: new Date(io.now()).toISOString(), ...(stopped ? { stopped } : {}) }, home);
     return run;
   } finally { hub.close(); }
 }
 
-async function runAttempt(task: SuiteTask, repeat: number, run: string, opts: BenchOptions, io: BenchIo, hub: ControlClient, projectId: string): Promise<Attempt> {
+/** One attempt, and whether its hub task is still open on the board when it ends. */
+async function runAttempt(task: SuiteTask, commit: string, repeat: number, run: string, opts: BenchOptions, io: BenchIo, hub: ControlClient, projectId: string): Promise<{ attempt: Attempt; open: boolean }> {
   const started = io.now();
-  const done = (outcome: Outcome, extra: { error?: AttemptError; verifyExit?: number | null; hubTask?: number | null; metrics?: AttemptMetrics | null } = {}): Attempt => ({
-    schema: BENCH_SCHEMA, kind: "attempt", run, task: task.id, repeat, outcome, ...(extra.error ? { error: extra.error } : {}), verifyExit: extra.verifyExit ?? null,
-    hubTask: extra.hubTask ?? null, startedAt: new Date(started).toISOString(), endedAt: new Date(io.now()).toISOString(), ms: io.now() - started, metrics: extra.metrics ?? null });
-  if (!(await reset(opts.cwd, task.ref))) return done("error", { error: "reset failed" });
+  // The attempt ends when its outcome is known: the wait for its measures is not part of its time.
+  const done = (outcome: Outcome, extra: { error?: AttemptError; verifyExit?: number | null; hubTask?: number | null; metrics?: AttemptMetrics | null; ended?: number; open?: boolean } = {}) => {
+    const ended = extra.ended ?? io.now();
+    const attempt: Attempt = { schema: BENCH_SCHEMA, kind: "attempt", run, task: task.id, repeat, outcome, ...(extra.error ? { error: extra.error } : {}), verifyExit: extra.verifyExit ?? null,
+      hubTask: extra.hubTask ?? null, startedAt: new Date(started).toISOString(), endedAt: new Date(ended).toISOString(), ms: ended - started, metrics: extra.metrics ?? null };
+    return { attempt, open: extra.open ?? false };
+  };
+  if (!(await reset(opts.cwd, commit, true, io.log))) return done("error", { error: "reset failed" });
   if (task.setup) {
     const setup = await io.sh(task.setup, opts.cwd, opts.setupTimeoutMs ?? 300_000, opts.stopped);
     if (setup.interrupted) return done("error", { error: "interrupted" });
@@ -184,17 +225,22 @@ async function runAttempt(task: SuiteTask, repeat: number, run: string, opts: Be
     let state: string | undefined;
     try {
       const list = await hub.request({ t: "task", op: "hub_task_list", args: {} }, 15_000);
-      if (!list.ok) return done("error", { error: "hub stopped", hubTask: id });
+      if (!list.ok) return done("error", { error: "hub stopped", hubTask: id, open: true });
       state = (JSON.parse(String(list.text)) as { id: number; state: string }[]).find((t) => t.id === id)?.state;
-    } catch { return done("error", { error: "hub stopped", hubTask: id }); }
+    } catch { return done("error", { error: "hub stopped", hubTask: id, open: true }); }
     if (state === "approved") break;
-    if (opts.stopped?.()) return done("error", { error: "interrupted", hubTask: id });
-    if (io.now() >= deadline) return done("timeout", { hubTask: id });
+    if (opts.stopped?.()) return done("error", { error: "interrupted", hubTask: id, open: true });
+    if (io.now() >= deadline) return done("timeout", { hubTask: id, open: true });
     await io.sleep(opts.pollMs ?? 2000);
   }
   const verify = await io.sh(task.verify, opts.cwd, opts.verifyTimeoutMs ?? 600_000, opts.stopped);
-  if (verify.interrupted) return done("error", { error: "interrupted", hubTask: id });
-  const metrics = await metricsOf(opts, io, projectId, id);
-  if (verify.timedOut) return done("fail", { error: "verify timeout", hubTask: id, metrics });
-  return done(verify.code === 0 ? "pass" : "fail", { verifyExit: verify.code, hubTask: id, metrics });
+  const ended = io.now();
+  if (verify.interrupted) return done("error", { error: "interrupted", hubTask: id, ended });
+  const busy = async () => {
+    const peers = ((await hub.request({ t: "status" }, 5000)).status as { peers?: Record<string, { state: string }> }).peers ?? {};
+    return new Set(Object.entries(peers).flatMap(([peer, p]) => p.state === "busy" ? [peer] : []));
+  };
+  const metrics = await metricsOf(opts, io, projectId, id, busy);
+  if (verify.timedOut) return done("fail", { error: "verify timeout", hubTask: id, metrics, ended });
+  return done(verify.code === 0 ? "pass" : "fail", { verifyExit: verify.code, hubTask: id, metrics, ended });
 }

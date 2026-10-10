@@ -105,13 +105,15 @@ const median = (values: number[]): number | null => {
 };
 export interface Measures {
   attempts: number; pass: number; fail: number; timeout: number; error: number;
+  /** What the measures are computed over: attempts that did not end in an error; attempts that have #247 measures. */
+  scored: number; measured: number;
   passRate: number | null; firstPassRate: number | null; tokensMedian: number | null; wallMsMedian: number | null; reworkMean: number | null;
 }
 export function measures(attempts: Attempt[]): Measures {
   const count = (o: Outcome) => attempts.filter((a) => a.outcome === o).length;
   const scored = attempts.filter((a) => a.outcome !== "error");
   const withMetrics = attempts.flatMap((a) => a.metrics ? [a.metrics] : []);
-  return { attempts: attempts.length, pass: count("pass"), fail: count("fail"), timeout: count("timeout"), error: count("error"),
+  return { attempts: attempts.length, pass: count("pass"), fail: count("fail"), timeout: count("timeout"), error: count("error"), scored: scored.length, measured: withMetrics.length,
     passRate: scored.length ? count("pass") / scored.length : null,
     firstPassRate: withMetrics.length ? withMetrics.filter((m) => m.firstPass).length / withMetrics.length : null,
     tokensMedian: median(withMetrics.map((m) => m.tokens)), wallMsMedian: median(scored.map((a) => a.ms)),
@@ -175,7 +177,7 @@ export function benchCompare(groups: { arm: string; runs: BenchRun[] }[], resamp
 export const armRuns = (runs: BenchRun[], arm: string): BenchRun[] => runs.filter((r) => r.header.arm === arm && r.state !== "running" && r.state !== "unknown");
 /** Groups to compare must run the same suite (name and file hash), or their numbers measure different work. */
 export function sameSuite(groups: { arm: string; runs: BenchRun[] }[]): string | null {
-  const keys = new Set(groups.flatMap((g) => g.runs.map((r) => `${r.header.suite} (${r.header.suiteHash.slice(0, 12)})`)));
+  const keys = new Set(groups.flatMap((g) => g.runs.map((r) => `${r.header.suite} (${String(r.header.suiteHash ?? "").slice(0, 12)})`)));
   return keys.size > 1 ? `these runs come from different suites or suite versions: ${[...keys].join(", ")}` : null;
 }
 
@@ -194,7 +196,7 @@ export function formatReport(r: ReturnType<typeof benchReport>): string[] {
 export function formatCompare(c: Comparison): string[] {
   const lines = [HEAD, ...c.arms.map((a) => row(`${a.arm} (${a.runs} run${a.runs === 1 ? "" : "s"})`, a.measures))];
   const fmt = (n: MeasureName, v: number | null) => v === null ? "-" : n.endsWith("Rate") ? `${v >= 0 ? "+" : ""}${Math.round(v * 100)}pt` : n === "wallMsMedian" ? `${v >= 0 ? "+" : "-"}${dur(Math.abs(v))}` : `${v >= 0 ? "+" : ""}${Math.round(v)}`;
-  for (const d of c.differences) lines.push(`${d.arm} vs ${c.arms[0]!.arm}: ${d.measure} ${fmt(d.measure, d.diff)} (95% ${fmt(d.measure, d.low)} to ${fmt(d.measure, d.high)})${d.inconclusive ? `, inconclusive: fewer than ${MIN_ATTEMPTS} attempts in an arm` : ""}`);
+  for (const d of c.differences) lines.push(`${d.arm} vs ${c.arms[0]!.arm}: ${d.measure} ${fmt(d.measure, d.diff)} (95% ${fmt(d.measure, d.low)} to ${fmt(d.measure, d.high)})${d.inconclusive ? `, inconclusive: fewer than ${MIN_ATTEMPTS} attempts counted for it in an arm` : ""}`);
   return lines;
 }
 export const CSV_COLUMNS = ["run", "suite", "arm", "task", "repeat", "outcome", "error", "verifyExit", "hubTask", "startedAt", "endedAt", "ms", "tokens", "wallMs", "activeMs",

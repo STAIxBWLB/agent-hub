@@ -539,10 +539,11 @@ ahub task label 12 reverted        # a later verdict (ok, regressed, reverted, i
 In a git repository kept for benchmarks (`"bench": { "enabled": true }` in its `.agenthub/config.json`, a clean tree),
 `ahub bench` runs a suite of tasks against the peers attached to its hub and compares configurations: pass rate, first
 pass, tokens and wall time per attempt, with bootstrap intervals between arms. Each attempt resets the tree to the
-task's commit, so never enable it in a project you work in ([suite format and store](bench.md)).
+task's commit, so never enable it in a project you work in. The project must be the root of its repository with
+nothing tracked under `.agenthub/`, and the suite file lives outside its tree ([suite format and store](bench.md)).
 
 ```bash
-ahub bench run suite.json --arm baseline --repeat 5   # a person's: resets the tree, proposes the tasks
+ahub bench run ../suites/suite.json --arm baseline --repeat 5   # a person's: resets the tree, proposes the tasks
 ahub bench status                                     # the run in progress
 ahub bench compare baseline ripwire-on                # arms side by side, inconclusive below 5 attempts each
 ahub bench export --format csv

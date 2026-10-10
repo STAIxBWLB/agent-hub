@@ -295,8 +295,8 @@ function renderBench(bench) {
         block.append(el('p', label, 'meta'));
         for (const arm of arms) {
           const value = arm.measures[key];
-          const scored = arm.measures.attempts - arm.measures.error;
-          const line = el('p', arm.arm + ': ' + fmt(value) + ' (' + arm.measures.attempts + ' attempts, ' + arm.runs + ' runs)' + (scored < bench.minAttempts ? ', too few to compare' : ''), 'meta');
+          const counted = key === 'passRate' || key === 'wallMsMedian' ? arm.measures.scored : arm.measures.measured;
+          const line = el('p', arm.arm + ': ' + fmt(value) + ' (' + counted + ' counted of ' + arm.measures.attempts + ' attempts, ' + arm.runs + ' runs)' + (counted < bench.minAttempts ? ', too few to compare' : ''), 'meta');
           const bar = el('progress'); bar.max = max; bar.value = value === null || value === undefined ? 0 : value; bar.setAttribute('aria-label', label + ', ' + arm.arm + ': ' + fmt(value));
           block.append(line, bar);
         }
