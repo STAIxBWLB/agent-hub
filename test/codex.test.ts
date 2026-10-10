@@ -479,6 +479,7 @@ test("Codex initial mode overlays the first TUI turn and unknown baseline refuse
   await until(() => peer.state === "idle");
   expect(fake.requests.find((m) => m.id === 2).params.approvalPolicy).toBe("never");
   await expect(peer.setPermissionMode("ask")).rejects.toThrow("restart the Codex session");
+  await expect(peer.setPermissionMode("ask")).rejects.toThrow("close the TUI, then run ahub permission codex ask");
   expect(peer.getPermissionMode()).toBe("never-ask");
 });
 
@@ -514,5 +515,45 @@ for (const [mode, policy] of [["ask-when-needed", "on-request"], ["never-ask", "
     const turns = fake.requests.filter((m) => m.method === "turn/start");
     expect(turns.map((m) => m.params.approvalPolicy)).toEqual([policy, "untrusted", undefined]);
     expect(turns.some((m) => "sandboxPolicy" in m.params)).toBe(false);
+  });
+}
+
+for (const mode of ["never-ask", "ask-when-needed"] as const) {
+  test(`detached Codex ${mode} debt survives another thread and restores the resumed thread once`, async () => {
+    const { peer, tui, fake } = await setup();
+    tui.send(JSON.stringify({ id: 2, method: "thread/start", params: { approvalPolicy: "untrusted" } }));
+    await until(() => peer.state === "idle");
+    await peer.setPermissionMode(mode);
+    await peer.deliver([newEnvelope("user", "overlay")]);
+    await until(() => peer.state === "idle");
+    tui.close();
+    await until(() => peer.state === "offline");
+    expect(peer.clearPermissionMode()).toBe(true);
+    const resumed = new WebSocket(peer.proxyUrl);
+    const seen: any[] = [];
+    resumed.onmessage = event => seen.push(JSON.parse(String(event.data)));
+    await new Promise(resolve => { resumed.onopen = resolve; });
+    cleanup.push(() => resumed.close());
+    const resume = async (id: number, threadId: string, approvalPolicy: string) => {
+      resumed.send(JSON.stringify({ id, method: "thread/resume", params: { threadId, approvalPolicy } }));
+      await until(() => seen.some(msg => msg.id === id));
+      expect(peer.state).toBe("idle");
+    };
+    await resume(10, "other-thread", "on-request");
+    await peer.deliver([newEnvelope("user", "unrelated native thread")]);
+    await until(() => peer.state === "idle");
+    expect(fake.requests.filter(msg => msg.method === "turn/start").at(-1).params.approvalPolicy).toBeUndefined();
+    // Simulate either native sticky override returned by a resumed app-server.
+    await resume(11, "th1", mode === "never-ask" ? "never" : "on-request");
+    await expect(peer.deliver([newEnvelope("user", "REFUSE_TURN")])).rejects.toThrow("turn rejected");
+    await resume(12, "th1", "never");
+    resumed.send(JSON.stringify({ id: 13, method: "turn/start", params: { threadId: "th1", input: [{ type: "text", text: "restore native" }] } }));
+    await until(() => seen.some(msg => msg.id === 13));
+    await until(() => peer.state === "idle");
+    expect(fake.requests.find(msg => msg.id === 13).params.approvalPolicy).toBe("untrusted");
+    await peer.deliver([newEnvelope("user", "restored native default")]);
+    await until(() => peer.state === "idle");
+    const turns = fake.requests.filter(msg => msg.method === "turn/start");
+    expect(turns.map(msg => msg.params.approvalPolicy)).toEqual([mode === "never-ask" ? "never" : "on-request", undefined, "untrusted", "untrusted", undefined]);
   });
 }

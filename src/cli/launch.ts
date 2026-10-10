@@ -1,10 +1,11 @@
 // Launchers inject only the flags the hub owns and refuse user-supplied duplicates.
-import { mkdirSync, writeFileSync, renameSync, unlinkSync, lstatSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, renameSync, unlinkSync, lstatSync, readFileSync, openSync, closeSync, readSync, accessSync, constants } from "node:fs";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { resolve, join, basename, dirname, isAbsolute } from "node:path";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { realPath } from "../hub/project.ts";
-import { peerChildEnv } from "../hub/child-process.ts";
+import { peerChildEnv, processTable } from "../hub/child-process.ts";
 export const CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub";
 
 /** Launch identity belongs to the native child, never to the agent that invoked the wrapper. */
@@ -68,11 +69,107 @@ export function cleanupStaleClaudeSettings(stateDir: string, previous: unknown, 
   const record = previous as Record<string, unknown>;
   if (typeof record.launcherSignature !== "string" || !record.launcherSignature) return;
   if (processLiveness(record.launcherPid, record.launcherSignature, identity) !== "gone") return;
-  // ponytail: spawnSync launch records have no independent native identity, so crash-left settings are retained.
-  // Upgrade path: record the native child's PID and processSignature before admitting crash fallback cleanup.
   if (typeof record.nativePid !== "number" || !Number.isSafeInteger(record.nativePid) || record.nativePid <= 0 || record.nativePid === record.launcherPid || typeof record.nativeSignature !== "string" || !record.nativeSignature) return;
-  if (processLiveness(record.nativePid, record.nativeSignature, identity) !== "gone") return;
+  if (record.nativeIdentity === "direct-child") {
+    // A direct child may exec in place. A changed signature while its PID still runs cannot certify native exit.
+    // The shared table excludes exited zombies; an unavailable table certifies nothing.
+    const table = processTable();
+    if (!table || table.some(row => row.pid === record.nativePid)) return;
+  } else if (processLiveness(record.nativePid, record.nativeSignature, identity) !== "gone") return;
   cleanupClaudeSettings(stateDir, record.settingsFile);
+}
+
+export interface ClaudeLaunchRecord extends Record<string, unknown> {
+  instanceId: string; launchId: string; settingsFile?: string; launcherPid: number; launcherSignature?: string;
+}
+
+/** Serialize both writers; an unreadable/live lock is never removed. No native arguments enter these files. */
+function withClaudeLaunchRecord(stateDir: string, action: () => void): void {
+  const lock = join(stateDir, "claude-launch.lock");
+  let fd: number;
+  try { fd = openSync(lock, "wx", 0o600); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const before = lstatSync(lock);
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || (before.mode & 0o777) !== 0o600 || !process.getuid || before.uid !== process.getuid()) throw new Error("Claude launch record lock is unverified; inspect the launcher");
+    let owner: { pid?: unknown; signature?: unknown };
+    try { owner = JSON.parse(readFileSync(lock, "utf8")); } catch { throw new Error("Claude launch record lock is unreadable; inspect the launcher"); }
+    if (typeof owner.signature !== "string" || !owner.signature || processLiveness(owner.pid, owner.signature) !== "gone") throw new Error("Claude launch record is busy or its owner is unverified; retry after inspecting the launcher");
+    const current = lstatSync(lock);
+    if (current.dev !== before.dev || current.ino !== before.ino) throw new Error("Claude launch record lock changed; retry");
+    unlinkSync(lock);
+    fd = openSync(lock, "wx", 0o600);
+  }
+  try {
+    writeFileSync(fd, JSON.stringify({ pid: process.pid, signature: processSignature(process.pid) }));
+    action();
+  } finally { closeSync(fd); unlinkSync(lock); }
+}
+
+function writeClaudeLaunchRecord(stateDir: string, record: Record<string, unknown>): void {
+  const file = join(stateDir, "claude-launch.json"), temp = `${file}.${randomUUID()}.tmp`;
+  try { writeFileSync(temp, JSON.stringify(record), { mode: 0o600 }); renameSync(temp, file); }
+  finally { try { unlinkSync(temp); } catch { /* the rename normally consumed it */ } }
+}
+
+export function recordClaudeLaunch(stateDir: string, record: ClaudeLaunchRecord): void {
+  withClaudeLaunchRecord(stateDir, () => writeClaudeLaunchRecord(stateDir, record));
+}
+
+/** Never attach an old child's identity to a replacement launch, even when its spawn callback arrives later. */
+export function recordClaudeNative(stateDir: string, launch: ClaudeLaunchRecord, pid: number, signature: string): boolean {
+  let recorded = false;
+  withClaudeLaunchRecord(stateDir, () => {
+    let current: ClaudeLaunchRecord;
+    try {
+      const file = join(stateDir, "claude-launch.json"), stat = lstatSync(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600 || !process.getuid || stat.uid !== process.getuid()) return;
+      current = JSON.parse(readFileSync(file, "utf8"));
+    } catch { return; }
+    if (current.instanceId !== launch.instanceId || current.launchId !== launch.launchId || current.settingsFile !== launch.settingsFile
+      || current.launcherPid !== launch.launcherPid || current.launcherSignature !== launch.launcherSignature) return;
+    if (!Number.isSafeInteger(pid) || pid <= 0 || pid === launch.launcherPid || !signature) return;
+    writeClaudeLaunchRecord(stateDir, { ...current, nativePid: pid, nativeSignature: signature, nativeIdentity: "direct-child" });
+    recorded = true;
+  });
+  return recorded;
+}
+
+/** Scripts and interpreters can leave a different native owner behind: their crash cleanup remains disabled. */
+function directNativeExecutable(command: string, cwd: string, env: NodeJS.ProcessEnv): boolean {
+  const interpreter = /^(?:node|bun|deno|env|busybox|python(?:[0-9.]+)?|ruby|perl|bash|sh|zsh|fish|dash|ksh|csh|tcsh|ash)(?:\.exe)?$/;
+  if (interpreter.test(basename(command))) return false;
+  const paths = command.includes("/") ? [resolve(cwd, command)] : (env.PATH ?? "").split(":").filter(Boolean).map(path => resolve(cwd, path, command));
+  for (const path of paths) {
+    let fd: number | undefined;
+    try {
+      const target = realPath(path);
+      accessSync(target, constants.X_OK);
+      if (interpreter.test(basename(target))) return false;
+      fd = openSync(target, "r");
+      const bytes = Buffer.alloc(4); if (readSync(fd, bytes, 0, 4, 0) !== 4) return false;
+      return ["7f454c46", "feedface", "cefaedfe", "feedfacf", "cffaedfe", "cafebabe", "bebafeca", "cafebabf", "bfbafeca"].includes(bytes.toString("hex"));
+    } catch { /* resolve the next PATH entry */ }
+    finally { if (fd !== undefined) closeSync(fd); }
+  }
+  return false;
+}
+
+/** Same native stdio/environment and exit result as spawnSync, with a live child identity before it exits. */
+export async function runClaudeLaunch(launch: Launch, options: { cwd: string; env: NodeJS.ProcessEnv; stateDir: string; record?: ClaudeLaunchRecord }): Promise<{ status: number | null; signal: NodeJS.Signals | null; error?: Error }> {
+  const direct = directNativeExecutable(launch.cmd, options.cwd, options.env);
+  return new Promise(resolveResult => {
+    const child = spawn(launch.cmd, launch.args, { cwd: options.cwd, env: options.env, stdio: "inherit" });
+    child.once("spawn", () => {
+      if (!direct || !options.record || !child.pid) return;
+      const signature = processSignature(child.pid);
+      if (!signature) return;
+      try { recordClaudeNative(options.stateDir, options.record, child.pid, signature); }
+      catch { /* an unavailable/replaced record disables crash cleanup, never the native launch */ }
+    });
+    child.once("error", error => resolveResult({ status: null, signal: null, error }));
+    child.once("exit", (status, signal) => resolveResult({ status, signal }));
+  });
 }
 
 export interface StatusLineTee {

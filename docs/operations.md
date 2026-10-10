@@ -881,12 +881,21 @@ Other tools retain native decisions, which may already allow a harmless shell.
 Permission-only PreToolUse never marks Claude busy; former observation hooks
 retain their native-turn role. Settings are passed as a 0600 state file retained
 until that native launch exits. Live/unknown previous launchers keep their files;
-verified dead wrapper and native identities permit crash cleanup. Without
+verified dead wrapper and native identities permit crash cleanup. Managed direct
+binary launches record their native PID while running; crash cleanup also requires
+that PID to be absent from the process table. Scripts/interpreters and unavailable
+process evidence retain the settings file. Without
 separate native identity proof, old settings remain for manual inspection. Settings carry
 no inline caller values in argv. Status reports an unverified Claude hook as
 unverified. Unattended native sessions cannot take a runtime mode; restart
 without that native flag. Codex must be behind the hub proxy, and returning to
-ask requires a known native approval baseline. An offline or absent peer accepts
+ask while attached requires a known native approval baseline. If unavailable,
+close the TUI, then run `ahub permission codex ask` before starting `ahub codex`.
+For a known baseline, a detached proxy keeps restoration owed per thread and sends
+that policy once on the resumed thread's next accepted turn. Visiting another thread
+does not clear the debt. Rejected turns retain it. A baseline that was never reported
+is explained in the CLI reply, and that old thread keeps its last policy.
+An offline or absent peer accepts
 `ahub permission <peer> ask` to clear its hub choice. Codex --unattended launch
 is refused under a non-ask choice; clear it with `ahub permission codex ask`
 first. A pending never-ask default cannot be confirmed for an unattended launch.

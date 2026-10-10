@@ -2,6 +2,27 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## Codex resumed approval policy (#270)
+
+2026-10-10: installed version read back as `codex-cli 0.162.1`. The live
+stickiness leg is unverified: a hand-run `codex --remote` resume and a human-only
+`ahub permission codex ask` require a person's interactive terminal. The approved
+fallback is implemented: keep restoration owed per thread and send the captured
+native policy once on that thread's next accepted turn, whether or not the native
+override is sticky across resume. Fake app-server coverage verifies both overlays,
+other-thread visits, rejected restoration and restoration only once.
+
+Manual leg in a disposable project:
+
+1. Start `ahub codex`, record its thread ID and native approval policy, then run
+   `ahub permission codex never-ask --yes` from a human shell and complete a benign turn.
+2. Close the TUI without stopping its hub proxy. Run `ahub permission codex ask`.
+3. Hand-run `codex --remote <the existing proxy URL>` and resume that same thread.
+   Observe its policy before and after the next benign turn; record whether the
+   override persisted across resume and whether the original policy was restored.
+4. Repeat with `ask-when-needed`. Record the Codex version, thread ID, policies and
+   outcomes. This checklist is not evidence that either live leg has passed.
+
 ## Interactive upgrade (#272)
 
 Not run live yet. Covered by tests with a scripted terminal and, for `restart`,

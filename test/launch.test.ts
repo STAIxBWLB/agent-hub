@@ -2,12 +2,46 @@ import { afterEach, test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, readdirSync, existsSync, chmodSync, symlinkSync, linkSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildLaunch, cleanupStaleClaudeSettings, cleanupClaudeSettings, claudeObservationHooks, CLAUDE_CHANNEL } from "../src/cli/launch.ts";
+import { buildLaunch, cleanupStaleClaudeSettings, cleanupClaudeSettings, claudeObservationHooks, CLAUDE_CHANNEL, recordClaudeLaunch, recordClaudeNative, runClaudeLaunch, type ClaudeLaunchRecord } from "../src/cli/launch.ts";
 
 const states: string[] = [];
 afterEach(() => { for (const dir of states.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const fixtureState = () => { const dir = mkdtempSync(join(tmpdir(), "ahub-launch-state-")); states.push(dir); return dir; };
 const settingsOf = (launch: { args: string[] }) => { const value = launch.args[launch.args.indexOf("--settings") + 1]!; expect(value.startsWith("{")).toBe(false); expect(statSync(value).mode & 0o777).toBe(0o600); return JSON.parse(readFileSync(value, "utf8")); };
+
+test("native identity updates only the exact private Claude launch record and never a concurrent replacement", () => {
+  const state = fixtureState(), file = join(state, "claude-launch.json");
+  const record: ClaudeLaunchRecord = { instanceId: "fixture", launchId: crypto.randomUUID(), settingsFile: join(state, "settings.json"), launcherPid: process.pid, launcherSignature: "launcher" };
+  recordClaudeLaunch(state, record);
+  for (const replacement of [
+    { ...record, launchId: crypto.randomUUID() }, { ...record, instanceId: "replacement" },
+    { ...record, settingsFile: join(state, "replacement.json") }, { ...record, launcherPid: process.pid + 1 },
+    { ...record, launcherSignature: "replacement-signature" },
+  ]) {
+    recordClaudeLaunch(state, replacement);
+    const before = readFileSync(file, "utf8");
+    expect(recordClaudeNative(state, record, process.pid + 2, "native-signature")).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe(before);
+  }
+  recordClaudeLaunch(state, record);
+  expect(recordClaudeNative(state, record, process.pid + 2, "native-signature")).toBe(true);
+  expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ nativePid: process.pid + 2, nativeSignature: "native-signature", nativeIdentity: "direct-child" });
+  expect(statSync(file).mode & 0o777).toBe(0o600);
+  expect(existsSync(join(state, "claude-launch.lock"))).toBe(false);
+});
+
+test("async Claude launch keeps the native environment and exit status but never attests an interpreter as native", async () => {
+  const state = fixtureState(), marker = join(state, "child-env");
+  const record: ClaudeLaunchRecord = { instanceId: "fixture", launchId: crypto.randomUUID(), launcherPid: process.pid, launcherSignature: "launcher" };
+  recordClaudeLaunch(state, record);
+  const result = await runClaudeLaunch({ cmd: "/bin/sh", args: ["-c", 'printf "%s" "$LAUNCH_FIXTURE_VALUE" > "$1"; exit 7', "fixture", marker] }, {
+    cwd: state, stateDir: state, record, env: { PATH: process.env.PATH, LAUNCH_FIXTURE_VALUE: "child-environment-preserved" },
+  });
+  expect(result).toEqual({ status: 7, signal: null });
+  expect(readFileSync(marker, "utf8")).toBe("child-environment-preserved");
+  expect(JSON.parse(readFileSync(join(state, "claude-launch.json"), "utf8"))).not.toHaveProperty("nativePid");
+  expect(readFileSync(join(state, "claude-launch.json"), "utf8")).not.toContain("child-environment-preserved");
+}, 30_000);
 
 test("an exact candidate MCP bundle selects its server channel without overriding owned flags", () => {
   const dir = mkdtempSync(join(tmpdir(), "ahub-inline-plugin-"));
