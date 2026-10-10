@@ -1022,8 +1022,6 @@ ahub ui --settings                 # dashboard with a 15-minute settings session
   hub answers the request as unknown and the CLI advises upgrading. The unified
   dashboard (`ahub ui --all`) acts as an ordinary session.
 
-The unified dashboard waits for a peer Start for the terminal provider's 30-second cap plus a 5-second response margin; other forwarded actions keep their 10-second wait. If a Start still has no answer, its result is unconfirmed: check the Peers panel while the hub continues. The page keeps that peer's Start disabled across redraws and project switches until an attached snapshot confirms it, so an unconfirmed result cannot immediately open another terminal. This closes the slow-start limit recorded with #269 part 2 (PR #292); the manager still opens no settings session.
-
 ## Start modes: TUI by default, headless as opt-in
 
 A peer that has a TUI the hub attaches to starts in it by default (issue #269).
@@ -1059,6 +1057,7 @@ A peer that has a TUI the hub attaches to starts in it by default (issue #269).
   never downgraded to headless. `ahub settings` lists each start mode, and the
   dashboard's Start control says which mode a start will use and where its
   terminal comes from.
+- **Dashboard Start:** the control is locked while its request is in flight. A confirmed answer unlocks it immediately, so a retry reaches the hub's own 30-second terminal reopen guard and shows any known refusal. The unified dashboard waits 35 seconds, covering a terminal provider's 30-second cap plus a 5-second response margin; a slower headless start can still end unconfirmed while the hub continues. Check the Peers panel before retrying. An unconfirmed unified-dashboard start holds that peer's control for the shared 30-second reopen bound, or until its `starts` snapshot confirms attachment, across redraws and project switches within the same hub instance; the row states the retry bound. The project-local dashboard keeps its usual confirmed-answer behavior. Other forwarded actions keep their 10-second wait; the manager opens no settings session.
 - The conductor cannot choose the mode: `hub_peer_start` takes the peer's own.
 - Recovery restores each peer in the mode its recorded session had. After an
   unplanned stop, a Pi that ran in a terminal is reported with its command and

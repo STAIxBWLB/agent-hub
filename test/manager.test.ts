@@ -80,15 +80,20 @@ test("the manager stops when its state directory vanishes", async () => {
 });
 
 
-async function scriptedAction(replyDelayMs?: number) {
+async function scriptedAction(refusal?: Record<string, unknown>) {
   const fixture = setup();
   const project = fixture.registry.get("p1") as ProjectRecord;
   const requests: any[] = [], limits: [string, number][] = [];
+  const replies = new Map<string, (result: Record<string, unknown>) => void>();
+  const observed = new Map<string, () => void>();
   const hub = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req, server) { if (server.upgrade(req)) return; return new Response("no", { status: 400 }); }, websocket: {
     message(ws, data) {
       const message = JSON.parse(String(data)); requests.push(message);
       if (message.t === "hello") { ws.send(JSON.stringify({ rid: message.rid, t: "welcome", cwd: project.root, projectId: project.id, instanceId: "i1" })); return; }
-      if (replyDelayMs !== undefined) setTimeout(() => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ rid: message.rid, ok: true, text: "peer start confirmed" })); }, replyDelayMs);
+      const kind = message.action.action;
+      replies.set(kind, result => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ rid: message.rid, ...result })); });
+      observed.get(kind)?.();
+      if (refusal && kind === "start_peer") replies.get(kind)!(refusal);
     },
   } });
   mkdirSync(project.stateDir, { recursive: true });
@@ -99,16 +104,26 @@ async function scriptedAction(replyDelayMs?: number) {
   const session = await fetch(`${origin}/session`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify({ ticket: new URL(url).hash.slice(1) }) });
   const cookie = session.headers.get("set-cookie")!;
   const action = async (kind: string) => (await fetch(`${origin}/action`, { method: "POST", headers: { origin, cookie, "content-type": "application/json" }, body: JSON.stringify({ action: kind, projectId: project.id, instanceId: "i1", peer: "pi" }) })).json() as Promise<any>;
-  return { ...fixture, hub, action, requests, limits };
+  const arrived = (kind: string) => replies.has(kind) ? Promise.resolve() : new Promise<void>(resolve => observed.set(kind, resolve));
+  const reply = (kind: string, result: Record<string, unknown>) => replies.get(kind)!(result);
+  return { ...fixture, hub, action, requests, limits, arrived, reply };
 }
 
 test("unified peer start outwaits 10 seconds using the provider cap, with ordinary authority", async () => {
-  // 100x clock: 150 ms models 15 s, beyond ordinary 10 s but inside the provider 30 s + 5 s margin.
-  const f = await scriptedAction(150);
+  // Hold the start reply until the ordinary action's old deadline is observed; no sleep between deadline fractions.
+  const f = await scriptedAction();
   try {
-    expect(await f.action("start_peer")).toMatchObject({ ok: true, text: "peer start confirmed" });
-    expect(f.limits).toEqual([["start_peer", MAX_COMMAND_MS + 5_000]]);
-    expect(f.requests.filter(r => r.t !== "hello")).toEqual([expect.objectContaining({ t: "ui_action", action: expect.objectContaining({ action: "start_peer" }) })]);
+    const starting = f.action("start_peer");
+    await f.arrived("start_peer");
+    const oldDeadline = await f.action("pause");
+    expect(oldDeadline.ok).toBe(false); expect(oldDeadline.error).toContain("no answer from the hub");
+    f.reply("start_peer", { ok: true, text: "peer start confirmed" });
+    expect(await starting).toMatchObject({ ok: true, text: "peer start confirmed" });
+    expect(f.limits).toEqual([["start_peer", MAX_COMMAND_MS + 5_000], ["pause", 10_000]]);
+    expect(f.requests.filter(r => r.t !== "hello")).toEqual([
+      expect.objectContaining({ t: "ui_action", action: expect.objectContaining({ action: "start_peer" }) }),
+      expect.objectContaining({ t: "ui_action", action: expect.objectContaining({ action: "pause" }) }),
+    ]);
     expect(f.requests.some(r => r.t === "ui" || r.settings === true)).toBe(false);
   } finally { await stopManager({ home: f.home }); f.hub.stop(true); }
 });
@@ -129,5 +144,16 @@ test("another unified action keeps 10 seconds and its timeout remains a failure"
     const result = await f.action("pause");
     expect(result.ok).toBe(false); expect(result.unconfirmed).toBeUndefined(); expect(result.error).toContain("no answer from the hub");
     expect(f.limits).toEqual([["pause", 10_000]]);
+  } finally { await stopManager({ home: f.home }); f.hub.stop(true); }
+});
+
+
+test("a hub refusal of start_peer remains a known failure with its command", async () => {
+  const refusal = { ok: false, error: "a terminal for pi was opened 4s ago; wait for it to attach, or run ahub pi", command: "ahub pi" };
+  const f = await scriptedAction(refusal);
+  try {
+    const result = await f.action("start_peer");
+    expect(result).toMatchObject(refusal); expect(result.unconfirmed).toBeUndefined();
+    expect(f.limits).toEqual([["start_peer", MAX_COMMAND_MS + 5_000]]);
   } finally { await stopManager({ home: f.home }); f.hub.stop(true); }
 });

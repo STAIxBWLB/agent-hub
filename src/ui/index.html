@@ -40,6 +40,7 @@ const dashboardTheme = (() => {
 <script>
 'use strict';
 /* TASK_PROGRESS_MODEL */
+/* PEER_START_RETRY_MS */
 const themeControl = document.getElementById('theme'); themeControl.value = dashboardTheme.get(); themeControl.addEventListener('change', () => dashboardTheme.set(themeControl.value));
 let ticket = location.hash.slice(1);
 history.replaceState(null, '', location.pathname);
@@ -81,6 +82,8 @@ async function post(path, body) {
 function canMutate() { return !managerMode || snapshotValid; }
 function context() { return { projectId: selectedProjectId, instanceId: selectedInstanceId, generation: viewGeneration }; }
 function startKey(peer, projectId = selectedProjectId, instanceId = selectedInstanceId) { return JSON.stringify([projectId, instanceId, peer]); }
+function clearPendingStart(key) { const pending = pendingStarts.get(key); if (pending) { clearTimeout(pending.timer); pendingStarts.delete(key); } }
+function redrawStartControls() { if (stopped) return; syncMutationControls(); if (snapshotValid && lastSnapshot) render(lastSnapshot); }
 async function action(payload, button, managerAction = false) {
   if (stopped) return false;
   if (!managerAction && !canMutate()) { notice('Wait for a current project snapshot before changing it.', true); return false; }
@@ -91,19 +94,26 @@ async function action(payload, button, managerAction = false) {
   if (key) pendingStarts.set(key, pending);
   if (managerMode && !managerAction) payload = {...payload, projectId: captured.projectId, instanceId: captured.instanceId};
   if (button) { pendingButtons.add(button); button.disabled = true; }
+  if (key) redrawStartControls();
   try {
     const result = await post('/action', payload);
     if (result.unconfirmed === true) {
-      if (key && pendingStarts.get(key) === pending) { pending.phase = 'unconfirmed'; pending.text = result.text || 'Start result is unconfirmed. Check the Peers panel before retrying; the hub may still be starting the peer.'; }
+      if (key && pendingStarts.get(key) === pending) {
+        if (managerMode) {
+          pending.phase = 'unconfirmed'; pending.retryAt = Date.now() + PEER_START_RETRY_MS;
+          pending.text = (result.text || 'Start result is unconfirmed. Check the Peers panel before retrying; the hub may still be starting the peer.') + ' Retry becomes available ' + Math.ceil(PEER_START_RETRY_MS / 1000) + ' seconds after this unconfirmed result unless the peer attaches sooner.';
+          pending.timer = setTimeout(() => { if (pendingStarts.get(key) === pending) { clearPendingStart(key); redrawStartControls(); } }, PEER_START_RETRY_MS);
+        } else clearPendingStart(key);
+      }
       if (!managerMode || captured.generation === viewGeneration) notice(result.text || 'Start result is unconfirmed. Check the Peers panel before retrying; the hub may still be starting the peer.');
       return false;
     }
-    if (key && pendingStarts.get(key) === pending) { pending.phase = 'awaiting'; pending.text = result.text || 'Start requested. Waiting for the peer to attach.'; }
+    if (key && pendingStarts.get(key) === pending) clearPendingStart(key);
     if (!managerMode || captured.generation === viewGeneration) notice(result.text || 'Action accepted.');
     return true;
   }
-  catch (error) { if (key && pendingStarts.get(key) === pending) pendingStarts.delete(key); if (!stopped && (!managerMode || captured.generation === viewGeneration)) notice(error.message, true); return false; }
-  finally { if (button) { pendingButtons.delete(button); if (!stopped) button.disabled = Boolean(key && pendingStarts.has(key)) || (!managerAction && managerMode && !snapshotValid); } }
+  catch (error) { if (key && pendingStarts.get(key) === pending) clearPendingStart(key); if (!stopped && (!managerMode || captured.generation === viewGeneration)) notice(error.message, true); return false; }
+  finally { if (button) { pendingButtons.delete(button); if (!stopped) button.disabled = Boolean(key && pendingStarts.has(key)) || (!managerAction && managerMode && !snapshotValid); } if (key) redrawStartControls(); }
 }
 function button(text, payload, cls, managerAction = false) { const node = el('button', text, cls); node.type = 'button'; node.dataset.mutation = managerAction ? 'manager' : 'project'; if (payload.action === 'start_peer') node.dataset.startKey = startKey(payload.peer); node.disabled = Boolean(node.dataset.startKey && pendingStarts.has(node.dataset.startKey)) || (!managerAction && managerMode && !snapshotValid); node.addEventListener('click', () => void action(payload, node, managerAction)); return node; }
 function update(id, data, render) { const signature = JSON.stringify(data); if (signatures.get(id) === signature) return; signatures.set(id, signature); const target = $(id); target.replaceChildren(); render(target); }
@@ -310,13 +320,12 @@ function renderSettings(settings) {
   }
 }
 function syncStarts(snapshot) {
-  for (const start of Array.isArray(snapshot.starts) ? snapshot.starts : []) if (start.attached) pendingStarts.delete(startKey(start.peer));
-  for (const [peer, state] of Object.entries(snapshot.status?.peers || {})) if (state?.attached === true) pendingStarts.delete(startKey(peer));
+  for (const start of Array.isArray(snapshot.starts) ? snapshot.starts : []) if (start.attached) clearPendingStart(startKey(start.peer));
 }
 function renderStarts(target, starts) {
   // A Start control per peer that is not attached: the mode it will use and where that comes from.
   for (const start of starts) {
-    if (start.attached) { pendingStarts.delete(startKey(start.peer)); continue; }
+    if (start.attached) { clearPendingStart(startKey(start.peer)); continue; }
     const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head');
     head.append(el('span', 'Start ' + start.peer, 'label'), badge(start.mode));
     const tui = start.mode === 'tui';
@@ -331,7 +340,7 @@ function render(snapshot) {
   const peers = snapshot.status.peers || {}, ids = Object.keys(peers), starts = Array.isArray(snapshot.starts) ? snapshot.starts : [];
   $('peer-count').textContent = ids.length + ' peers';
   syncStarts(snapshot);
-  update('peers', [peers, starts, starts.map(start => pendingStarts.get(startKey(start.peer))?.phase || '')], (target) => {
+  update('peers', [peers, starts, starts.map(start => { const pending = pendingStarts.get(startKey(start.peer)); return pending ? [pending.phase, pending.retryAt || null] : null; })], (target) => {
     if (!ids.length) { empty(target, 'No peers connected. Start one below, or from your terminal.'); return renderStarts(target, starts); }
     for (const [id, peer] of Object.entries(peers)) {
       const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head'), name = el('div', undefined, 'peername');
