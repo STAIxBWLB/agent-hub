@@ -1353,8 +1353,8 @@ waited for nor restored: `t` for the TUI agents, `h` for the headless ones
 `<project id>/<name>` when the plan covers more than one project. After a
 confirmation a TUI agent's terminal is closed, which cuts a turn in progress,
 and a headless agent is stopped by its hub through the `peer_stop` request
-(#278). An agent that was busy leaves its delivery held as `needs_review` and
-its queue held until `ahub queue resolve` settles it. Each agent is ended only
+(#278). A delivery that a busy agent had not settled is then held as
+`needs_review`, and its queue stays held until `ahub queue resolve` settles it. Each agent is ended only
 if the lock is free and its hub, its session and its terminal are still the
 ones the plan read; otherwise the screen says why it was left. A hub that does
 not know `peer_stop` (0.12.21 and older) cannot end a headless agent: the

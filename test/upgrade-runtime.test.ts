@@ -1090,7 +1090,7 @@ test("a restarted target whose planned session comes back clears the fresh choic
 
 // #272 review: [k] on the plan screen acts on a plan a person read a while ago. The lock, the hub and the terminal are
 // injected here, so no hub, registry or lock of this machine is read.
-const CUT = "; its turn was cut: the delivery is held as needs_review and its queue stays held until ahub queue resolve";
+const CUT = "; its turn was cut: a delivery it had not settled is held as needs_review, and its queue stays held until ahub queue resolve";
 function endFixture(peer: "codex" | "claude" | "pi", root = "/end-272", stateDir = "/end-272/.agenthub/state") {
   const attached = (session: string, state = "idle") => ({ id: peer, state, ...(peer === "codex" ? { threadId: session } : { sessionId: session }), ...(peer === "pi" ? { args: { mode: "tui" } } : {}) });
   const launch = { packageEntrypoint: "/pkg/main.js", command: "unused", argv: [], env: {} };
@@ -1118,6 +1118,11 @@ test("a TUI agent's terminal is closed while the lock, the hub, its session and 
     expect(orca.calls.filter((call) => call === "close")).toHaveLength(1);
     expect(orca.calls.indexOf("list")).toBeLessThan(orca.calls.indexOf("close")); // bound again before the close
   }
+  // An operation that takes the lock while the hub and the terminal are read again still stops the close.
+  const late = endFixture("claude");
+  let reads = 0;
+  expect(await late.end({ lock: () => reads++ === 0 ? undefined : "op-late" })).toBe("p-272/claude: not ended (recovery operation op-late holds the lock)");
+  expect([reads, late.orca.calls.includes("close")]).toEqual([2, false]);
   // A turn in progress is cut by the close: the line says what the hub holds because of it.
   const busy = endFixture("codex");
   expect(await busy.end({ inspect: async () => busy.hub({ peers: [busy.attached("session-S", "busy")] }) })).toBe(`p-272/codex: terminal term-planned closed${CUT}`);

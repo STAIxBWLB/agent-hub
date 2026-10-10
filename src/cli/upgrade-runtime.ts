@@ -114,7 +114,7 @@ export async function endPlannedPeer(planned: PlannedProject, peer: RecoveryPeer
     const now = hub.peers.find((p) => p.id === peer.id && p.state !== "offline");
     if (!now) return refused("it is no longer attached to its hub");
     // The hub holds what a peer that goes offline mid-turn was working on (`uncertain` in bus.ts).
-    if (now.state === "busy") cut = "; its turn was cut: the delivery is held as needs_review and its queue stays held until ahub queue resolve";
+    if (now.state === "busy") cut = "; its turn was cut: a delivery it had not settled is held as needs_review, and its queue stays held until ahub queue resolve";
     if (binding) {
       if ((binding.peer === "codex" ? now.threadId : now.sessionId) !== binding.sessionId) return refused(`the session attached now is not the one the plan bound to terminal ${binding.handle}`);
       // The same question the plan asked (`makeUpgradePlan`), for this one peer.
@@ -124,6 +124,9 @@ export async function endPlannedPeer(planned: PlannedProject, peer: RecoveryPeer
       if (found.manualRequired || !current) return refused(`its terminal cannot be bound again: ${found.blockers[0]?.message ?? "no terminal was found"}`);
       if (current.handle !== binding.handle || current.incarnationId !== binding.incarnationId) return refused(`its session is now bound to terminal ${current.handle} (${current.incarnationId}), not the plan's ${binding.handle} (${binding.incarnationId})`);
     }
+    // The reads above take a second or more: an operation that took the lock meanwhile still stops this.
+    const taken = lock();
+    if (taken) return refused(`recovery operation ${taken} holds the lock`);
   } catch (error) { return refused((error as Error).message); } // a lock or a registry that cannot be read throws
   if (current) {
     const result = await closeTerminal(current, 0, terminalOptions(run));
