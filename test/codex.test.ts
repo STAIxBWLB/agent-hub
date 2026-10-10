@@ -609,9 +609,10 @@ test("a known steer rejection after native completion remains failed_safe", asyn
       }
     },
   } });
-  const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: `ws://127.0.0.1:${fake.port}`, cwd: process.cwd(), onTurn: id => nativeTurns.push(id) });
+  const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: `ws://127.0.0.1:${fake.port}`, cwd: process.cwd(), steerTimeoutMs: 53, onTurn: id => nativeTurns.push(id) });
   peer.onDelivery = receipt => receipts.push(receipt);
   let tui: WebSocket | undefined;
+  let clock: ReturnType<typeof trackSteerTimers> | undefined;
   try {
     await peer.start(); tui = new WebSocket(peer.proxyUrl); await new Promise(resolve => tui!.onopen = resolve);
     tui.send(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "late-rejection-fixture" } } }));
@@ -619,19 +620,21 @@ test("a known steer rejection after native completion remains failed_safe", asyn
     await until(() => peer.state === "idle");
     await peer.deliver([newEnvelope("user", "normal")], "normal-delivery");
     await until(() => nativeTurns.includes("turn1"));
+    clock = trackSteerTimers();
     let error = "";
     await peer.steer([newEnvelope("user", "urgent", { priority: "important" })], "late-steer").catch(reason => { error = reason.message; });
-    console.log("296 LATE REJECTION", JSON.stringify({ wire, receipts, error }));
     expect(wire).toEqual(["turn/completed", "known steer rejection"]);
     expect(receipts.find(receipt => receipt.id === "late-steer")).toMatchObject({ state: "failed_safe", reason: "no active turn to steer" });
     expect(error).toBe("no active turn to steer");
-  } finally { tui?.close(); await peer.stop(); fake.stop(true); }
+    expect(clock.timers).toHaveLength(1); expect(clock.timers[0]!.cleared).toBe(true);
+  } finally { try { tui?.close(); await peer.stop(); } finally { fake.stop(true); clock?.restore(); } }
 });
 
-async function lateDurableSteerFixture(answer: "accepted" | "silent", options: Partial<CodexOptions> = {}) {
+async function lateDurableSteerFixture(answer: "accepted" | "silent" | "held", options: Partial<CodexOptions> = {}) {
   const nativeTurns: string[] = [], wire: string[] = [], said: { body: string; opts: any }[] = [];
   const receipts: { id: string; state: string; reason?: string }[] = [];
   let turns = 0;
+  let acceptSteer = () => {}, completeOriginal = () => {}, startOther = () => {};
   const fake = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req, server) { if (server.upgrade(req)) return; return new Response("no", { status: 400 }); }, websocket: {
     message(ws, data) {
       const msg = JSON.parse(String(data));
@@ -649,8 +652,11 @@ async function lateDurableSteerFixture(answer: "accepted" | "silent", options: P
         if (turns > 1) finish(id, "next result");
       }
       if (msg.method === "turn/steer") {
-        finish("turn1", "original result");
-        if (answer === "accepted") { wire.push("late acceptance"); reply({ turnId: "turn1" }); }
+        acceptSteer = () => { wire.push("late acceptance"); reply({ turnId: "turn1" }); };
+        completeOriginal = () => finish("turn1", "original result");
+        startOther = () => note("turn/started", { threadId: "th1", turn: { id: "other-turn" } });
+        if (answer === "held") wire.push("steer received");
+        else { completeOriginal(); if (answer === "accepted") acceptSteer(); }
       }
     },
   } });
@@ -668,18 +674,20 @@ async function lateDurableSteerFixture(answer: "accepted" | "silent", options: P
     await until(() => peer.state === "idle");
     await peer.deliver([newEnvelope("user", "normal")], "normal-delivery");
     await until(() => nativeTurns.includes("turn1"));
-    return { peer, tui, wire, receipts, said, nativeTurns, stop };
+    return { peer, tui, wire, receipts, said, nativeTurns, stop, acceptSteer: () => acceptSteer(), completeOriginal: () => completeOriginal(), startOther: () => startOther() };
   } catch (error) { await stop(); throw error; }
 }
 
 test("durable steer acceptance after native completion is uncertain and never addresses the next turn", async () => {
-  const fixture = await lateDurableSteerFixture("accepted");
+  const fixture = await lateDurableSteerFixture("accepted", { steerTimeoutMs: 53 });
+  const steer = createControlledSteer(fixture.peer);
   try {
-    let error = "";
-    await fixture.peer.steer([newEnvelope("claude", "urgent", { priority: "important" })], "late-steer").catch(reason => { error = reason.message; });
+    await steer.result;
+    const error = steer.error();
     expect(fixture.wire).toEqual(["completed turn1", "late acceptance"]);
     expect(fixture.receipts.filter(receipt => receipt.id === "late-steer")).toEqual([{ id: "late-steer", state: "needs_review", reason: "steer accepted after its original native turn ended or changed" }]);
     expect(error).toBe("steer accepted after its original native turn ended or changed");
+    expect(steer.timers).toHaveLength(1); expect(steer.timers[0]!.cleared).toBe(true);
     expect(fixture.said).toHaveLength(1);
     expect(fixture.said[0]!.opts.to).toEqual(["user"]);
     await fixture.peer.deliver([newEnvelope("kimi", "new work")], "next-delivery");
@@ -687,53 +695,109 @@ test("durable steer acceptance after native completion is uncertain and never ad
     expect(fixture.said[1]!.body).toBe("next result");
     expect(fixture.said[1]!.opts.to).toEqual(["kimi"]);
     expect(fixture.receipts.filter(receipt => receipt.id === "late-steer")).toHaveLength(1);
-  } finally { await fixture.stop(); }
+  } finally { try { await fixture.stop(); } finally { steer.restore(); } }
 });
 
-/** Control only this request's timeout; ordinary protocol I/O and the inactivity watchdog keep their normal bounds. */
+/** Track this request's real timer handle across asynchronous native completion and RPC settlement. */
+function trackSteerTimers() {
+  const originalSet = globalThis.setTimeout, originalClear = globalThis.clearTimeout;
+  let clock = 0;
+  const timers: { handle: ReturnType<typeof setTimeout>; at: number; callback: () => void; cleared: boolean; fired: boolean }[] = [];
+  globalThis.setTimeout = ((callback: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+    if (delay !== 53) return originalSet(callback, delay, ...args);
+    const handle = originalSet(() => {}, 300_000);
+    timers.push({ handle, at: clock + delay, callback: () => callback(...args), cleared: false, fired: false });
+    return handle;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((handle: ReturnType<typeof setTimeout>) => {
+    const timer = timers.find(timer => timer.handle === handle);
+    if (timer) timer.cleared = true;
+    originalClear(handle);
+  }) as typeof clearTimeout;
+  const advance = (ms: number) => {
+    clock += ms;
+    for (const timer of timers) if (!timer.cleared && !timer.fired && timer.at <= clock) { timer.fired = true; timer.callback(); }
+  };
+  const restore = () => { for (const timer of timers) originalClear(timer.handle); globalThis.setTimeout = originalSet; globalThis.clearTimeout = originalClear; };
+  return { advance, timers, restore };
+}
 function createControlledSteer(peer: CodexPeer) {
-  const original = globalThis.setTimeout;
-  let expire!: () => void;
-  try {
-    globalThis.setTimeout = ((callback: (...args: any[]) => void, delay?: number, ...args: any[]) => {
-      if (delay === 53) { expire = () => callback(...args); return original(() => {}, 300_000); }
-      return original(callback, delay, ...args);
-    }) as typeof setTimeout;
-    let error = "", settled = false;
-    const result = peer.steer([newEnvelope("claude", "urgent", { priority: "important" })], "late-steer")
-      .then(() => { settled = true; }, reason => { error = reason.message; settled = true; });
-    return { expire: () => expire(), result, error: () => error, settled: () => settled };
-  } finally { globalThis.setTimeout = original; }
+  const clock = trackSteerTimers();
+  let error = "", settled = false;
+  const result = peer.steer([newEnvelope("claude", "urgent", { priority: "important" })], "late-steer")
+    .then(() => { settled = true; }, reason => { error = reason.message; settled = true; });
+  return { ...clock, expire: () => clock.advance(53), result, error: () => error, settled: () => settled };
 }
 
 test("an unanswered durable steer stays pending past native completion and holds only at its RPC bound", async () => {
   const fixture = await lateDurableSteerFixture("silent", { steerTimeoutMs: 53 });
+  const steer = createControlledSteer(fixture.peer);
   try {
-    const steer = createControlledSteer(fixture.peer);
     await until(() => fixture.peer.state === "idle" && fixture.wire.includes("completed turn1"));
     expect(steer.settled()).toBe(false);
+    expect(steer.timers).toHaveLength(1);
+    expect(steer.timers[0]!.cleared).toBe(false);
     expect(fixture.receipts.some(receipt => receipt.id === "late-steer")).toBe(false);
     steer.expire(); await steer.result;
     expect(steer.error()).toBe("steer unanswered: RPC timeout");
+    expect(steer.timers[0]!.cleared).toBe(true);
     expect(fixture.receipts.filter(receipt => receipt.id === "late-steer")).toEqual([{ id: "late-steer", state: "needs_review", reason: "steer unanswered: RPC timeout" }]);
-  } finally { await fixture.stop(); }
+  } finally { try { await fixture.stop(); } finally { steer.restore(); } }
 });
 
 for (const interruption of ["detach", "thread change", "stop"] as const) test(`a pending durable steer is held and its timer is cleared on ${interruption}`, async () => {
   const fixture = await lateDurableSteerFixture("silent", { steerTimeoutMs: 53 });
+  const steer = createControlledSteer(fixture.peer);
   try {
-    const steer = createControlledSteer(fixture.peer);
     await until(() => fixture.peer.state === "idle" && fixture.wire.includes("completed turn1"));
     if (interruption === "detach") fixture.tui.close();
     else if (interruption === "thread change") fixture.tui.send(JSON.stringify({ id: 3, method: "thread/start", params: {} }));
     else await fixture.peer.stop();
     await steer.result;
     expect(steer.settled()).toBe(true); expect(steer.error()).not.toBe("steer unanswered: RPC timeout");
+    expect(steer.timers).toHaveLength(1); expect(steer.timers[0]!.cleared).toBe(true);
+    if (interruption !== "thread change") expect(steer.error()).toBe("Codex TUI detached");
     expect(fixture.receipts.filter(receipt => receipt.id === "late-steer")).toHaveLength(1);
     expect(fixture.receipts.find(receipt => receipt.id === "late-steer")!.state).toBe("needs_review");
     expect(fixture.receipts.some(receipt => receipt.id === "late-steer")).toBe(true);
     const before = fixture.receipts.length;
     steer.expire(); await Promise.resolve();
     expect(fixture.receipts).toHaveLength(before);
-  } finally { await fixture.stop(); }
+  } finally { try { await fixture.stop(); } finally { steer.restore(); } }
+});
+
+
+test("durable steer acceptance later than its bound is accepted while the original turn is still active", async () => {
+  const fixture = await lateDurableSteerFixture("held", { steerTimeoutMs: 53 });
+  const steer = createControlledSteer(fixture.peer);
+  try {
+    await until(() => fixture.wire.includes("steer received"));
+    expect(fixture.peer.state).toBe("busy"); expect(steer.timers).toHaveLength(0);
+    steer.advance(530); // ten configured bounds pass, but the original native turn has not ended
+    expect(steer.settled()).toBe(false); expect(fixture.receipts.some(receipt => receipt.id === "late-steer")).toBe(false);
+    fixture.acceptSteer(); await steer.result;
+    expect(steer.error()).toBe("");
+    expect(fixture.receipts.find(receipt => receipt.id === "late-steer")!.state).toBe("accepted");
+    fixture.completeOriginal();
+    await until(() => fixture.peer.state === "idle" && fixture.said.length === 1);
+    expect(fixture.receipts.filter(receipt => receipt.id === "late-steer").map(receipt => receipt.state)).toEqual(["accepted", "completed"]);
+    expect(fixture.said[0]!.opts.to).toEqual(["user", "claude"]);
+    expect(steer.timers).toHaveLength(0);
+  } finally { try { await fixture.stop(); } finally { steer.restore(); } }
+});
+
+test("another active native turn cannot postpone an ended turn's durable steer bound", async () => {
+  const fixture = await lateDurableSteerFixture("held", { steerTimeoutMs: 53 });
+  const steer = createControlledSteer(fixture.peer);
+  try {
+    await until(() => fixture.wire.includes("steer received"));
+    fixture.startOther(); await until(() => fixture.nativeTurns.includes("other-turn"));
+    fixture.completeOriginal(); await until(() => steer.timers.length === 1);
+    expect(fixture.peer.state).toBe("busy"); expect(steer.settled()).toBe(false);
+    steer.advance(52); expect(steer.settled()).toBe(false);
+    steer.advance(1); await steer.result;
+    expect(steer.error()).toBe("steer unanswered: RPC timeout");
+    expect(fixture.receipts.find(receipt => receipt.id === "late-steer")!.state).toBe("needs_review");
+    expect(steer.timers[0]!.cleared).toBe(true);
+  } finally { try { await fixture.stop(); } finally { steer.restore(); } }
 });
