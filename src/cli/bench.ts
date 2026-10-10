@@ -106,8 +106,10 @@ export async function benchPreflight(cwd: string, enabled: boolean, refs: string
  * and only the root `.agenthub` is kept.
  */
 export async function reset(cwd: string, target: string, detach: boolean, log: (line: string) => void): Promise<boolean> {
-  if ((await git(cwd, ["checkout", "--quiet", "--force", ...(detach ? ["--detach", `${target}^{commit}`] : [target])])).code !== 0) { log(`  the reset could not check out ${target} (a stale .git/index.lock?)`); return false; }
+  // A branch is named before `--`, so a path of the same name cannot be meant; a commit is peeled, so no branch can.
+  if ((await git(cwd, ["checkout", "--quiet", "--force", ...(detach ? ["--detach", `${target}^{commit}`] : [target, "--"])])).code !== 0) { log(`  the reset could not check out ${target}`); return false; }
   if (detach && (await git(cwd, ["rev-parse", "HEAD"])).out !== target) { log(`  the reset did not land on ${target}: something else in the repository carries that name`); return false; }
+  if (!detach && (await git(cwd, ["symbolic-ref", "--quiet", "HEAD"])).out !== `refs/heads/${target}`) { log(`  the reset did not return to branch ${target}`); return false; }
   if ((await git(cwd, ["clean", "-ffdxq", "-e", "/.agenthub"])).code !== 0) { log("  the reset could not clean the tree"); return false; }
   const left = await git(cwd, TREE);
   if (left.code === 0 && !left.out) return true;
@@ -135,8 +137,10 @@ export async function metricsOf(opts: Pick<BenchOptions, "stateDir" | "settleMs"
     if (!at || !proposed || opts.stopped?.()) break;
     const ended = new Set(all.flatMap((e) => e.type === "turn_end" ? [`${e.peer}\0${e.turn}`] : []));
     const open = new Set(all.flatMap((e) => e.type === "turn_start" && e.at >= proposed && e.at <= at && !ended.has(`${e.peer}\0${e.turn}`) ? [e.peer] : []));
-    // No live view means no wait when one was offered: a hub that stopped writes no more events.
-    const working = await busy().catch(() => new Set<string>());
+    // `undefined`: no live view was offered, so every open turn is waited for. A view that cannot be read while a
+    // turn is open leaves the measures unknown: partial ones would read as complete.
+    const working = await busy().then((w) => w, () => null);
+    if (working === null && open.size) { io.log(`  the hub's status could not be read while task #${task}'s approving turn was open; its measures are not recorded`); return null; }
     const waiting = [...open].filter((peer) => !working || working.has(peer));
     if (!waiting.length || io.now() >= until) break;
     if (!said) { said = true; io.log(`  waiting for ${waiting.join(", ")} to end the turn that approved task #${task}, so its cost is counted`); }
@@ -165,6 +169,7 @@ export async function runBench(opts: BenchOptions, io: BenchIo): Promise<string>
   const tasks = opts.only?.length ? opts.only.map((id) => suite.tasks.find((t) => t.id === id) ?? fail(`--tasks names ${id}, which the suite does not have`)) : suite.tasks;
   const pinned = new Map<string, string>();
   const original = await benchPreflight(opts.cwd, true, [...new Set(tasks.map((t) => t.ref))], pinned);
+  const onBranch = (await git(opts.cwd, ["symbolic-ref", "--quiet", "HEAD"])).code === 0;
   const hub = await io.connect();
   const run = `${new Date(io.now()).toISOString().slice(0, 10).replace(/-/g, "")}-${randomUUID().slice(0, 8)}`;
   const home = opts.home ?? hubHome();
@@ -196,9 +201,11 @@ export async function runBench(opts: BenchOptions, io: BenchIo): Promise<string>
         break outer;
       }
     }
-    // Back on the branch it started on. A suite ref that moved during the run names different work next time.
-    if (!stopped && !(await reset(opts.cwd, original, false, io.log))) io.log(`  the tree was not returned to ${original}; check it before the next run`);
+    // Back where it started: on its branch, or at its commit. A branch or tag the suite names that moved during the
+    // run names different work next time (HEAD-relative and hash refs are not checked: the runner itself moves HEAD).
+    if (!stopped && !(await reset(opts.cwd, original, !onBranch, io.log))) io.log(`  the tree was not returned to ${original}; check it before the next run`);
     for (const [ref, commit] of pinned) {
+      if (!(await git(opts.cwd, ["rev-parse", "--symbolic-full-name", "--verify", "--quiet", "--end-of-options", ref])).out.startsWith("refs/")) continue;
       const now = (await git(opts.cwd, ["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`])).out;
       if (now !== commit) io.log(`  suite ref ${ref} moved during the run (${commit.slice(0, 12)} to ${now.slice(0, 12) || "nothing"}); this run used ${commit.slice(0, 12)}`);
     }
@@ -228,7 +235,10 @@ async function runAttempt(task: SuiteTask, commit: string, repeat: number, run: 
   try {
     const reply = await hub.request({ t: "task", op: "hub_task_propose", args: { title: task.title, ...(task.detail ? { detail: task.detail } : {}), class: task.class ?? "implement", ...(task.owner ? { owner: task.owner } : {}) } }, 30_000);
     // A request never rejects: a hub that is gone, or silent, answers `ok: false` with one of these.
-    if (!reply.ok && /hub connection is not open|no answer from the hub/.test(String(reply.error))) { io.log(`  ${task.id}: ${reply.error}`); return done("error", { error: "hub stopped" }); }
+    if (!reply.ok && /hub connection (is not open|closed)|hub is stopping|no answer from the hub/.test(String(reply.error))) {
+      io.log(`  ${task.id}: ${reply.error}; if the hub is still up, check its board for a task it may have created`);
+      return done("error", { error: "hub stopped" });
+    }
     const match = reply.ok ? /^task #(\d+)/.exec(String(reply.text ?? "")) : null;
     if (!match) { io.log(`  ${task.id}: the hub refused the task: ${reply.error ?? "no task id in its reply"}`); return done("error", { error: "propose refused" }); }
     id = Number(match[1]);

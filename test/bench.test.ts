@@ -106,6 +106,12 @@ test("a reset never reaches outside the project or into .agenthub", async () => 
   // A step that fails says why instead of a bare "reset failed".
   expect(await reset(variant, "0".repeat(40), true, (line) => void said.push(line))).toBe(false);
   expect(said.join("\n")).toContain("could not check out");
+  // Returning to a branch whose name is also a path means the branch, and lands on it.
+  git(variant, "checkout", "-q", "main"); git(variant, "branch", "sub");
+  mkdirSync(join(variant, "sub")); writeFileSync(join(variant, "sub", "f.txt"), "x"); git(variant, "add", "sub"); git(variant, "commit", "-qm", "a path named like a branch");
+  git(variant, "checkout", "-q", "--detach", "HEAD");
+  expect(await reset(variant, "sub", false, (line) => void said.push(line))).toBe(true);
+  expect(git(variant, "symbolic-ref", "--short", "HEAD")).toBe("sub");
 });
 
 test("a bounded command takes what it started with it, and an interrupt stops it at once", async () => {
@@ -241,6 +247,11 @@ test("an attempt's measures wait for the turn that approved the task, and belong
   expect(await count(async () => new Set(["codex"]))).toBe(1); // codex's old turn is not this task's
   expect(await count(async () => new Set(["claude"]))).toBeGreaterThan(100); // really busy: waits to the cap
   expect(await count(async () => new Set(["claude"]), () => true)).toBe(0); // interrupted: no wait at all
+  // Interrupted, or the hub's status unreadable while the approving turn is open: no measures rather than partial ones.
+  const quiet = { now: () => 0, sleep: async () => {}, log: () => {} };
+  expect(await metricsOf({ stateDir: stale, pollMs: 1, settleMs: 10, stopped: () => true }, quiet, "p", 1)).toBeNull();
+  expect(await metricsOf({ stateDir: stale, pollMs: 1, settleMs: 10 }, quiet, "p", 1, async () => { throw new Error("no status"); })).toBeNull();
+  expect(await metricsOf({ stateDir: stale, pollMs: 1, settleMs: 10 }, quiet, "p", 1, async () => new Set<string>())).not.toBeNull();
 });
 
 const attempt = (run: string, task: string, outcome: Outcome, tokens: number, ms: number): Attempt => ({ schema: BENCH_SCHEMA, kind: "attempt", run, task, repeat: 1, outcome,

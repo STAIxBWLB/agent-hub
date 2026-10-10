@@ -28,8 +28,8 @@ run needs outside the tree, and let `setup` recreate what an attempt needs (depe
 
 Between attempts the runner checks out the task's pinned commit (`git checkout --force --detach <commit>`), runs
 `git clean -ffdx -e /.agenthub` and confirms the tree is clean; a step that fails says why. A run that finishes returns
-to the branch it started on, and says so if a suite ref moved meanwhile; a run that stops leaves the tree as its last
-attempt left it.
+to the branch (or commit) it started on; a run that stops leaves the tree as its last attempt left it. Either way the
+runner says so if a branch or tag the suite names moved during the run.
 
 ## Suite file
 
@@ -102,7 +102,8 @@ machine. Schema `agent-hub.bench/v1`:
   approved task, its #247 measures (tokens, wall and active time, review rounds, changes requested, failed checks, first
   pass, turns, files changed, models). They are read once the turns started since the task's proposal have ended (the
   runner waits only while their peers are still busy or paused, at most 10 minutes), so the turn that approved the task is
-  counted; that wait is not part of the attempt's duration. A timeout or an error has none.
+  counted; that wait is not part of the attempt's duration. A timeout or an error has none, nor has an attempt whose
+  wait was interrupted or could not read the hub's status.
 - `end`: end time, and `stopped` (`timeout`, `interrupted`, `error`) when the run did not finish.
 
 ## Reading results
