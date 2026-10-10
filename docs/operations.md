@@ -199,10 +199,12 @@ Launch that peer with `ahub claude` for channel pushes, or select `codex` in
 `roles` and launch `ahub codex`. The conductor splits work into owned tasks,
 observes `hub_status`, moves stalled work and obtains review before reporting
 results and open decisions. It does not implement the tasks it handed out.
-`hub_peer_start` starts local, Kimi or headless Pi; requests for native TUIs
-return the `ahub` command for the person to run, after validating it through
-the shared launcher planner. The wrapper plans again at launch when native
-endpoints are available. `hub_peer_hold` and `hub_peer_release`
+`hub_peer_start` starts a peer in the start mode a person set for it (see
+"Start modes"): local, Kimi and a headless Pi or Codex start at once; for a
+TUI peer the hub opens a terminal running the fixed `ahub <peer>` command,
+after validating it through the shared launcher planner, and when it cannot
+open one the call fails with that command for the person to run. The
+conductor cannot choose the mode. `hub_peer_hold` and `hub_peer_release`
 manage only holds placed by that conductor. Assignment also requires `assign`
 when the conductor has an explicit capabilities list.
 
