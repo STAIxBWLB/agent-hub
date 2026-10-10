@@ -2055,7 +2055,8 @@ sequential seeded-guard job. Main and release jobs reuse only a successful full
 PR or push check with the identical Git tree and all three successful jobs. An absent or
 unreadable result runs the main gate again and refuses release. A manual
 `prepare_bundle` dispatch builds reviewable plugin assets without publishing;
-it is never accepted as full-gate evidence.
+it is never accepted as full-gate evidence. A `timing_runs=20` dispatch runs only the daemon, PII screen and ACP
+test files twenty times on macOS, in its own concurrency group; it does not replace the full gate.
 
 ## Preview initialization and native launch
 
