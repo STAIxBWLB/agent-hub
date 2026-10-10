@@ -80,7 +80,7 @@ benchmark runs every second. No build step, web server command or browser
 extension is needed.
 
 Use the page to pause/resume a peer, send a console message, propose/assign tasks,
-and allow/deny agent permission requests. Local-worker requests show no tool
+and allow/deny agent permission requests. Local-worker and Pi requests show no tool
 contents: inspect them with `ahub tail`, then use `ahub permit <id> <option>` to
 allow. They can be denied on the page. PII task details remain available only via
 `ahub task show <id>` in the terminal.

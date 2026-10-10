@@ -54,7 +54,8 @@
         "scripts/benchmarks/teardown.ts",
         "src/hub/daemon.ts",
         "src/hub/permission-mode.ts",
-        "src/hub/tool-refusal.ts"
+        "src/hub/tool-refusal.ts",
+        "src/cli/identity.ts"
       ]
     },
     "docs/agent-notes/benchmarks.md": {
@@ -167,7 +168,11 @@
         "scripts/ci-gates.mjs",
         "scripts/ci-reuse.mjs",
         ".github/workflows/check.yml",
-        ".github/workflows/release.yml"
+        ".github/workflows/release.yml",
+        "src/hub/child-process.ts",
+        "src/switchyard/sidecar.ts",
+        "src/local/sandbox.ts",
+        "src/models/mlx.ts"
       ]
     }
   }
