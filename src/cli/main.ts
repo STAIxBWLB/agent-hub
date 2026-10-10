@@ -666,9 +666,8 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (control?.instanceId) {
         // Publish only the final launch's installed hook and effective permission flags.
         launchRecord = { instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID!, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, settingsFile: launch.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid), unattended: launch.unattended === true };
-        const publication = recordClaudeLaunch(stateDir, launchRecord);
-        if (publication.recorded) cleanupStaleClaudeSettings(stateDir, previousLaunch);
-        else { if (publication.warning) console.error(publication.warning); launchRecord = undefined; }
+        recordClaudeLaunch(stateDir, launchRecord);
+        cleanupStaleClaudeSettings(stateDir, previousLaunch);
       }
       if (launch.warning) console.error(launch.warning);
       const env = nativeLaunchEnv("claude", childEnv());

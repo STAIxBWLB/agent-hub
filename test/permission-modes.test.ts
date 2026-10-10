@@ -2,7 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { linkSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { buildLaunch, claudeObservationHooks } from "../src/cli/launch.ts";
+import { buildLaunch, claudeObservationHooks, recordClaudeLaunch, recordClaudeNative, readClaudeNative, type ClaudeLaunchRecord } from "../src/cli/launch.ts";
+import { processSignature } from "../src/pi/process-signature.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, loadConfig, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
 import { readEvents, EVENTS_SCHEMA } from "../src/hub/events.ts";
@@ -29,6 +30,38 @@ async function fixture(config: Partial<HubConfig> = {}, state?: { cwd: string; s
   const mode = (peer: string, selected?: string, confirmed = false) => client.request({ t: "permission", peer, mode: selected, confirmed });
   return { cwd, stateDir, daemon, client, mode };
 }
+
+for (const kind of ["empty", "unsigned", "live"]) test(`${kind} native-attestation lock cannot leave managed Claude hooks or recovery on the previous launch (#270)`, async () => {
+  const rig = await fixture();
+  const claude = await ControlClient.connect(rig.stateDir, { role: "peer", peer: "claude" }); cleanup.push(() => claude.close());
+  await until(() => rig.daemon.bus.peers.get("claude")?.state === "idle");
+  const status = (await rig.client.request({ t: "status" })).status;
+  const hook = await ControlClient.connect(rig.stateDir, { role: "tools", peer: "claude" }); cleanup.push(() => hook.close());
+  const old: ClaudeLaunchRecord = { instanceId: status.instanceId, launchId: "launch-A", launcherPid: process.pid, launcherSignature: processSignature(process.pid), permissionHook: true, hookPurpose: "permission", unattended: false };
+  recordClaudeLaunch(rig.stateDir, old);
+  const input = { t: "facts", tool: "Read", input: {}, nativeInstanceId: status.instanceId, hookPurpose: "permission" };
+  expect((await hook.request({ ...input, phase: "session", sessionId: "session-A", nativeLaunchId: old.launchId })).ok).toBe(true);
+  expect((await rig.mode("claude", "ask-when-needed")).permissionMode).toBe("ask-when-needed");
+  const lock = join(rig.stateDir, "claude-launch.lock");
+  const contents = kind === "empty" ? "" : JSON.stringify({ pid: process.pid, ...(kind === "live" ? { signature: processSignature(process.pid) } : {}) });
+  writeFileSync(lock, contents, { mode: 0o600 });
+  const current = { ...old, launchId: "launch-B" };
+  expect(recordClaudeLaunch(rig.stateDir, current).recorded).toBe(true);
+  const warnings: string[] = [];
+  expect(await recordClaudeNative(rig.stateDir, current, process.pid + 1, "unpublished-native", warning => warnings.push(warning))).toBe(false);
+  expect(readClaudeNative(rig.stateDir, current)).toBeUndefined();
+  expect(warnings).toHaveLength(1); expect(warnings[0]).toContain(lock);
+  expect(warnings[0]).toContain("managed hook record stays current");
+  expect(readFileSync(lock, "utf8")).toBe(contents);
+  expect(JSON.parse(readFileSync(join(rig.stateDir, "claude-launch.json"), "utf8"))).toEqual(current);
+  expect((await hook.request({ ...input, phase: "session", sessionId: "session-B", nativeLaunchId: current.launchId })).ok).toBe(true);
+  expect(await hook.request({ ...input, phase: "pre", sessionId: "session-B", nativeLaunchId: current.launchId })).toMatchObject({ ok: true, permission: "ask-when-needed" });
+  expect((await hook.request({ ...input, phase: "pre", sessionId: "session-A", nativeLaunchId: old.launchId })).ok).toBe(false);
+  expect(JSON.parse(readFileSync(join(rig.stateDir, "claude-session.json"), "utf8"))).toMatchObject({ sessionId: "session-B", launchId: current.launchId });
+  const recovery = await rig.client.request({ t: "recovery", op: "inspect", expectedInstanceId: status.instanceId });
+  expect(recovery.ok).toBe(true); expect(recovery.recovery.peers.claude.sessionId).toBe("session-B");
+  expect((await rig.client.request({ t: "status" })).status.peers.claude.permissionMode).toBe("ask-when-needed");
+}, 30_000);
 
 test("slow native default confirmation refuses competing decline, duplicate approval and runtime changes", async () => {
   const rig = await fixture({ permission_modes: { kimi: "never-ask" }, permission_default_sources: { kimi: { mode: "never-ask", source: ".agenthub/config.local.json" } },

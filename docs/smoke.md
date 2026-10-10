@@ -10,7 +10,9 @@ stickiness leg is unverified: a hand-run `codex --remote` resume and a human-onl
 fallback is implemented: keep restoration owed per thread and send the captured
 native policy once on that thread's next accepted turn, whether or not the native
 override is sticky across resume. Fake app-server coverage verifies both overlays,
-other-thread visits, rejected restoration and restoration only once.
+other-thread visits, either resume/ask order, rejected restoration and restoration
+only once. The proxy protects the one restoring turn; a repeated policy on the
+next TUI turn is indistinguishable from a person's explicit native choice.
 
 Manual leg in a disposable project:
 
@@ -22,8 +24,12 @@ Manual leg in a disposable project:
    including any echo of the resume response. Observe the policy before and after
    that benign turn; record whether the override persisted across resume and
    whether the original policy was restored.
-4. Repeat with `ask-when-needed`. Record the Codex version, thread ID, policies and
-   outcomes. This checklist is not evidence that either live leg has passed.
+4. Send the TUI's second turn after that resume; record its outgoing policy and
+   the effective native policy. A repeat of the reported override is passed through
+   after the one restoring turn, just like an explicit choice.
+5. Repeat with `ask-when-needed` and with resume before switching to ask. Record
+   the Codex version, thread ID, policies and outcomes. This checklist is not
+   evidence that any live leg has passed.
 
 ## Interactive upgrade (#272)
 
@@ -1457,7 +1463,8 @@ Unverified natively (Codex 0.162.0): whether a thread that got a `never` or `on-
 same thread is resumed through the hub's proxy by a hand-run `codex --remote` after `ahub permission codex ask` was
 given while no TUI was attached. The status says ask; the current proxy keeps restoration owed per thread and
 sends the captured native policy once on the resumed thread's next accepted turn, including when the TUI echoes
-the resume response's sticky override. That TUI traffic remains natively unverified. `ahub codex` always starts
+the resume response's sticky override. This protects only the restoring turn; a repeat on the second TUI turn
+cannot be distinguished from an explicit choice and passes through. Both turns' TUI traffic remain natively unverified. `ahub codex` always starts
 a new proxy, which is not affected. See the current #270 manual checklist above.
 
 ## Whole-board task progress and dashboard themes (#246)

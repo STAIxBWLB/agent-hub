@@ -558,3 +558,34 @@ for (const mode of ["never-ask", "ask-when-needed"] as const) for (const echoPol
     expect(turns.map(msg => msg.params.approvalPolicy)).toEqual([mode === "never-ask" ? "never" : "on-request", undefined, "untrusted", "untrusted", undefined]);
   });
 }
+
+
+for (const mode of ["never-ask", "ask-when-needed"] as const) {
+  test(`Codex resume before ask keeps its baseline across echoed ${mode} turns`, async () => {
+    const { peer, tui, fake } = await setup();
+    tui.send(JSON.stringify({ id: 2, method: "thread/start", params: { approvalPolicy: "untrusted" } }));
+    await until(() => peer.state === "idle");
+    await peer.setPermissionMode(mode);
+    await peer.deliver([newEnvelope("user", "original overlay")]);
+    await until(() => peer.state === "idle");
+    tui.close(); await until(() => peer.state === "offline");
+    const resumed = new WebSocket(peer.proxyUrl), seen: any[] = [];
+    resumed.onmessage = event => seen.push(JSON.parse(String(event.data)));
+    await new Promise(resolve => { resumed.onopen = resolve; });
+    cleanup.push(() => resumed.close());
+    const policy = mode === "never-ask" ? "never" : "on-request";
+    resumed.send(JSON.stringify({ id: 10, method: "thread/resume", params: { threadId: "th1", approvalPolicy: policy } }));
+    await until(() => seen.some(msg => msg.id === 10));
+    const turn = async (id: number) => {
+      resumed.send(JSON.stringify({ id, method: "turn/start", params: { threadId: "th1", approvalPolicy: policy, input: [{ type: "text", text: "echo" }] } }));
+      await until(() => seen.some(msg => msg.id === id));
+      await until(() => peer.state === "idle");
+    };
+    await turn(11); // the resumed TUI echoes while the overlay is still selected
+    await peer.setPermissionMode("ask");
+    await turn(12); // restoration keeps the original despite the repeated echoed value
+    await peer.deliver([newEnvelope("user", "native default after restoration")]);
+    await until(() => peer.state === "idle");
+    expect(fake.requests.filter(msg => msg.method === "turn/start").map(msg => msg.params.approvalPolicy)).toEqual([policy, policy, "untrusted", undefined]);
+  });
+}

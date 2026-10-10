@@ -3,14 +3,14 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, readdirS
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { processSignature } from "../src/pi/process-signature.ts";
-import { buildLaunch, cleanupStaleClaudeSettings, cleanupClaudeSettings, claudeObservationHooks, CLAUDE_CHANNEL, recordClaudeLaunch, recordClaudeNative, runClaudeLaunch, type ClaudeLaunchRecord } from "../src/cli/launch.ts";
+import { buildLaunch, cleanupStaleClaudeSettings, cleanupClaudeSettings, claudeObservationHooks, CLAUDE_CHANNEL, recordClaudeLaunch, recordClaudeNative, readClaudeNative, runClaudeLaunch, type ClaudeLaunchRecord } from "../src/cli/launch.ts";
 
 const states: string[] = [];
 afterEach(() => { for (const dir of states.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const fixtureState = () => { const dir = mkdtempSync(join(tmpdir(), "ahub-launch-state-")); states.push(dir); return dir; };
 const settingsOf = (launch: { args: string[] }) => { const value = launch.args[launch.args.indexOf("--settings") + 1]!; expect(value.startsWith("{")).toBe(false); expect(statSync(value).mode & 0o777).toBe(0o600); return JSON.parse(readFileSync(value, "utf8")); };
 
-test("native identity updates only the exact private Claude launch record and never a concurrent replacement", () => {
+test("native identity attests only the exact private Claude launch and never overwrites a concurrent replacement", async () => {
   const state = fixtureState(), file = join(state, "claude-launch.json");
   const record: ClaudeLaunchRecord = { instanceId: "fixture", launchId: crypto.randomUUID(), settingsFile: join(state, "settings.json"), launcherPid: process.pid, launcherSignature: "launcher" };
   recordClaudeLaunch(state, record);
@@ -21,15 +21,18 @@ test("native identity updates only the exact private Claude launch record and ne
   ]) {
     recordClaudeLaunch(state, replacement);
     const before = readFileSync(file, "utf8");
-    expect(recordClaudeNative(state, record, process.pid + 2, "native-signature")).toBe(false);
+    expect(await recordClaudeNative(state, record, process.pid + 2, "native-signature")).toBe(false);
     expect(readFileSync(file, "utf8")).toBe(before);
   }
   recordClaudeLaunch(state, record);
-  expect(recordClaudeNative(state, record, process.pid + 2, "native-signature")).toBe(true);
-  expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ nativePid: process.pid + 2, nativeSignature: "native-signature", nativeIdentity: "direct-child" });
+  expect(await recordClaudeNative(state, record, process.pid + 2, "native-signature")).toBe(true);
+  expect(readClaudeNative(state, record)).toMatchObject({ nativePid: process.pid + 2, nativeSignature: "native-signature", nativeIdentity: "direct-child" });
+  expect(await recordClaudeNative(state, record, process.pid + 3, "replacement-native")).toBe(false);
+  expect(readClaudeNative(state, record)?.nativeSignature).toBe("native-signature");
+  expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(record);
   expect(statSync(file).mode & 0o777).toBe(0o600);
   expect(existsSync(join(state, "claude-launch.lock"))).toBe(false);
-});
+}, 30_000);
 
 test("async Claude launch keeps the native environment and exit status but never attests an interpreter as native", async () => {
   const state = fixtureState(), marker = join(state, "child-env");
@@ -44,32 +47,33 @@ test("async Claude launch keeps the native environment and exit status but never
   expect(readFileSync(join(state, "claude-launch.json"), "utf8")).not.toContain("child-environment-preserved");
 }, 30_000);
 
-test("empty, unsigned and live launch locks retain metadata and files while the next native launch succeeds", async () => {
+test("empty, unsigned and live attestation locks preserve files while managed metadata always names the new launch", async () => {
   for (const kind of ["empty", "unsigned", "live"]) {
     const state = fixtureState(), file = join(state, "claude-launch.json"), lock = join(state, "claude-launch.lock");
     const facts = claudeObservationHooks({}, { script: "/candidate/facts-hook.ts", stateDir: state });
     const previous = buildLaunch("claude", [], { unattended: false, facts });
     const record: ClaudeLaunchRecord = { instanceId: "fixture", launchId: crypto.randomUUID(), settingsFile: previous.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid) };
     expect(recordClaudeLaunch(state, record).recorded).toBe(true);
-    const bytes = readFileSync(file, "utf8");
     const contents = kind === "empty" ? "" : JSON.stringify({ pid: process.pid, ...(kind === "live" ? { signature: processSignature(process.pid) } : {}) });
     writeFileSync(lock, contents, { mode: 0o600 });
     const next = buildLaunch("claude", [], { unattended: false, facts });
     const nextRecord = { ...record, launchId: crypto.randomUUID(), settingsFile: next.settingsFile };
     const publication = recordClaudeLaunch(state, nextRecord);
-    expect(publication.recorded).toBe(false);
-    expect(publication.warning).toContain(lock);
-    expect(publication.warning).toContain("Native launch continues");
-    expect(publication.warning).toContain("verify its owner has ended before removing it");
+    expect(publication.recorded).toBe(true);
+    const warnings: string[] = [];
+    expect(await recordClaudeNative(state, nextRecord, process.pid + 1, "native-signature", warning => warnings.push(warning))).toBe(false);
+    expect(warnings).toHaveLength(1); expect(warnings[0]).toContain(lock);
+    expect(warnings[0]).toContain("Native identity and crash cleanup disabled");
+    expect(warnings[0]).toContain("managed hook record stays current");
+    expect(warnings[0]).toContain("verify its owner has ended before removing it");
     const result = await runClaudeLaunch({ ...next, cmd: "/bin/sleep", args: ["0.01"] }, {
-      cwd: state, stateDir: state, env: { PATH: process.env.PATH }, ...(publication.recorded ? { record: nextRecord } : {}),
+      cwd: state, stateDir: state, env: { PATH: process.env.PATH },
     });
     expect(result).toEqual({ status: 0, signal: null });
     expect(readFileSync(lock, "utf8")).toBe(contents);
-    expect(readFileSync(file, "utf8")).toBe(bytes);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(nextRecord);
     expect(existsSync(previous.settingsFile!)).toBe(true);
-    expect(recordClaudeNative(state, nextRecord, process.pid + 1, "native-signature")).toBe(false);
-    expect(readFileSync(file, "utf8")).toBe(bytes);
+    expect(readClaudeNative(state, nextRecord)).toBeUndefined();
   }
 }, 30_000);
 
@@ -82,16 +86,19 @@ test("a signed dead launch-lock owner is recovered without leaving an unsigned l
     writeFileSync(lock, JSON.stringify({ pid: owner.pid, signature }), { mode: 0o600 });
     const record: ClaudeLaunchRecord = { instanceId: "fixture", launchId: crypto.randomUUID(), launcherPid: process.pid, launcherSignature: processSignature(process.pid) };
     expect(recordClaudeLaunch(state, record)).toEqual({ recorded: true });
+    expect(await recordClaudeNative(state, record, process.pid + 1, "native-signature")).toBe(true);
     expect(JSON.parse(readFileSync(join(state, "claude-launch.json"), "utf8"))).toEqual(record);
     expect(existsSync(lock)).toBe(false);
     expect(readdirSync(state).filter(name => name.startsWith("claude-launch.lock."))).toEqual([]);
   } finally { if (owner.exitCode === null) { owner.kill("SIGKILL"); await owner.exited; } }
 }, 30_000);
 
-test("a published Claude launch lock already contains its signed owner before metadata is written", () => {
+test("a published Claude lock already contains its signed owner before native attestation is written", async () => {
   const state = fixtureState(), lock = join(state, "claude-launch.lock");
   let observed = false;
-  const record: ClaudeLaunchRecord = { instanceId: "fixture", launchId: crypto.randomUUID(), launcherPid: process.pid,
+  const base: ClaudeLaunchRecord = { instanceId: "fixture", launchId: crypto.randomUUID(), launcherPid: process.pid };
+  recordClaudeLaunch(state, base);
+  const record: ClaudeLaunchRecord = { ...base,
     get permissionHook() {
       const owner = JSON.parse(readFileSync(lock, "utf8"));
       expect(owner.pid).toBe(process.pid); expect(owner.signature).toMatch(/^[0-9a-f]{64}$/);
@@ -99,9 +106,46 @@ test("a published Claude launch lock already contains its signed owner before me
       observed = true; return true;
     },
   };
-  expect(recordClaudeLaunch(state, record).recorded).toBe(true);
+  expect(await recordClaudeNative(state, record, process.pid + 1, "native-signature")).toBe(true);
   expect(observed).toBe(true); expect(existsSync(lock)).toBe(false);
-});
+}, 30_000);
+
+test("native attestation briefly waits for a live lock and cannot overwrite a new managed launch", async () => {
+  const state = fixtureState(), lock = join(state, "claude-launch.lock");
+  const record: ClaudeLaunchRecord = { instanceId: "fixture", launchId: crypto.randomUUID(), launcherPid: process.pid, launcherSignature: processSignature(process.pid) };
+  const contents = JSON.stringify({ pid: process.pid, signature: processSignature(process.pid) });
+  recordClaudeLaunch(state, record); writeFileSync(lock, contents, { mode: 0o600 });
+  let released = false;
+  const release = setTimeout(() => { released = true; rmSync(lock); }, 40);
+  try { expect(await recordClaudeNative(state, record, process.pid + 1, "native-signature")).toBe(true); }
+  finally { clearTimeout(release); }
+  expect(released).toBe(true); expect(readClaudeNative(state, record)).toBeDefined();
+  writeFileSync(lock, contents, { mode: 0o600 });
+  const replacement = { ...record, launchId: crypto.randomUUID() };
+  const replace = setTimeout(() => { recordClaudeLaunch(state, replacement); rmSync(lock); }, 40);
+  try { expect(await recordClaudeNative(state, record, process.pid + 2, "old-native-signature")).toBe(false); }
+  finally { clearTimeout(replace); }
+  expect(JSON.parse(readFileSync(join(state, "claude-launch.json"), "utf8"))).toEqual(replacement);
+  expect(readClaudeNative(state, replacement)).toBeUndefined();
+  expect(readClaudeNative(state, record)?.nativeSignature).toBe("native-signature"); // the old callback did not rewrite its prior proof either
+}, 30_000);
+
+test("native exit awaits the bounded attestation callback and removes only its own proof before returning", async () => {
+  const state = fixtureState(), lock = join(state, "claude-launch.lock");
+  const record: ClaudeLaunchRecord = { instanceId: "fixture", launchId: crypto.randomUUID(), launcherPid: process.pid, launcherSignature: processSignature(process.pid) };
+  recordClaudeLaunch(state, record);
+  writeFileSync(lock, JSON.stringify({ pid: process.pid, signature: processSignature(process.pid) }), { mode: 0o600 });
+  let released = false;
+  const release = setTimeout(() => { released = true; rmSync(lock, { force: true }); }, 120);
+  try {
+    expect(await runClaudeLaunch({ cmd: "/bin/sleep", args: ["0.1"] }, { cwd: state, stateDir: state, record, env: { PATH: process.env.PATH } })).toEqual({ status: 0, signal: null });
+    expect(released).toBe(true);
+    expect(readClaudeNative(state, record)).toBeUndefined();
+    expect(JSON.parse(readFileSync(join(state, "claude-launch.json"), "utf8"))).toEqual(record);
+    await new Promise(resolve => setTimeout(resolve, 80));
+    expect(readClaudeNative(state, record)).toBeUndefined(); // no callback writes after caller cleanup can begin
+  } finally { clearTimeout(release); }
+}, 30_000);
 
 test("an exact candidate MCP bundle selects its server channel without overriding owned flags", () => {
   const dir = mkdtempSync(join(tmpdir(), "ahub-inline-plugin-"));

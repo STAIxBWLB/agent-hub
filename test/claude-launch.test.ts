@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cleanupStaleClaudeSettings } from "../src/cli/launch.ts";
+import { cleanupStaleClaudeSettings, readClaudeNative } from "../src/cli/launch.ts";
 import { processLiveness } from "../src/pi/process-signature.ts";
 import { processTable } from "../src/hub/child-process.ts";
 
@@ -23,7 +23,7 @@ await runClaudeLaunch({ ...launch, cmd: "/bin/sleep", args: ["60"] }, { cwd: sta
   let record: any;
   try {
     for (let i = 0; i < 400; i++) {
-      try { record = JSON.parse(readFileSync(join(stateDir, "claude-launch.json"), "utf8")); } catch { /* wait for publication */ }
+      try { const managed = JSON.parse(readFileSync(join(stateDir, "claude-launch.json"), "utf8")); record = readClaudeNative(stateDir, managed) ?? managed; } catch { /* wait for publication */ }
       if (record?.nativePid && !existsSync(join(stateDir, "claude-launch.lock"))) break;
       await Bun.sleep(10);
     }
@@ -52,6 +52,7 @@ await runClaudeLaunch({ ...launch, cmd: "/bin/sleep", args: ["60"] }, { cwd: sta
     expect(gone).toBe(true);
     cleanupStaleClaudeSettings(stateDir, record);
     expect(existsSync(record.settingsFile)).toBe(false);
+    expect(readClaudeNative(stateDir, record)).toBeUndefined();
   } finally {
     if (launcher.exitCode === null) { launcher.kill("SIGKILL"); await launcher.exited; }
     if (record?.nativePid && processLiveness(record.nativePid, record.nativeSignature) === "live") { try { process.kill(record.nativePid, "SIGKILL"); } catch { /* the fixture may already have exited */ } }
