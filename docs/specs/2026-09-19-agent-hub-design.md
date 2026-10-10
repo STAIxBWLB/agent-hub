@@ -1386,8 +1386,8 @@ semantic tones; title words and markers cannot choose them. Numeric tokens have
 whole-token boundaries, so UUIDs and ISO identifiers stay plain. Legacy notices
 lack typed reference ranges: the task/review prefix heuristic is bounded by a
 `ponytail:` comment; other `#N` tokens use the issue tone until structured notice
-spans classify assign/which references. Header text crosses `terminalText` and tab-to-space normalization before
-tokenization. Wrapped spans retain the source classification. After a projection
+spans classify assign/which references. Header text crosses `terminalText` before tokenization. Wrapped headers normalize
+tabs to spaces first; plain headers retain their original tabs in both color modes. Wrapped spans retain the source classification. After a projection
 miss on the first physical header, only structural tones remain. A missed
 continuation and all later continuations are fully plain. Projection advances
 a span index through the source once, keeping long permission titles bounded. Bodies and every

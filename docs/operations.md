@@ -123,7 +123,8 @@ blue/cyan for Claude/Codex. Tokens use plain magenta, underlining and bold defau
 foreground; no token SGR equals a state or peer SGR. The `task` keyword is never
 bold. Only hub-written peer slots are colored, not title words or decline reasons.
 State words and structural markers retain their event tone. Numeric-looking
-identifiers stay plain. Tabs become spaces before tokenization and wrapping.
+identifiers stay plain. Wrapped headers normalize tabs before tokenization; plain headers preserve
+their original tabs with color enabled or disabled.
 A projection miss on the first physical header keeps only structural tones.
 A missed continuation and every following continuation are fully plain; their
 text cannot supply structural tones. Projection carries its span index forward

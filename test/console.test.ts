@@ -217,16 +217,25 @@ describe("console colors", () => {
     expect(lines.length).toBeGreaterThan(3000);
     expect(elapsed).toBeLessThan(1000); // previously 1.6 s for 300 KB because each line rescanned every span
   });
-  test("plain redirected output preserves original header tabs with color disabled", async () => {
-    const f = fixture(); f.terminal.isTTY = false;
-    const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color: false });
-    f.client.onPush({ t: "notice", line: "task #1\tTitle\taccepted by codex" });
-    f.signal(); await running;
-    expect(f.output.join("")).toContain("task #1\tTitle\taccepted by codex");
+  test("real permission title tabs survive plain output identically with color on and off", async () => {
+    const outputs: string[] = [];
+    for (const color of [false, true]) {
+      const f = fixture(); f.terminal.isTTY = false;
+      const running = runConsole({ client: f.client, cwd: "/tmp", stateDir: "/tmp", terminal: f.terminal, color });
+      f.client.onPush({ t: "permission", ...state().approvals[0]!, peer: "claude", title: "tab\t21%\tpermission title", expiresAt: Date.now() + 10_000 });
+      f.signal(); await running;
+      outputs.push(f.output.join("").replace(/\x1b\[[0-9;]*m/g, ""));
+    }
+    expect(outputs[1]).toBe(outputs[0]);
+    expect(outputs[0]).toContain("tab\t21%\tpermission title");
+  });
+  test("task keyword boundaries and closed permission peer slots follow trusted producers", () => {
+    for (const text of ["task-bot #3", "task_bot #3", "[task #3]"]) expect(streamTokens(text).some(s => s.tone === "taskKeyword")).toBe(false);
+    expect(streamTokens("  ! claude permission 12345678 expired", "failure", "permission").find(s => s.text === "claude")?.tone).toBe("peerClaude");
   });
   test("tab-normalized spans match wrapping and projection stays stopped after a miss", () => {
     const tabbed = "codex:\tcontext\t7% (measured\t6:51:38 AM) #233:";
-    expect(paint(streamTokens(tabbed), false)).toBe(tabbed.replace(/\t/g, " "));
+    expect(paint(streamTokens(tabbed), false)).toBe(tabbed);
     expect(wrapStreamTokens(tabbed, 80).map(line => paint(line, false))).toEqual(wrap(tabbed, 80));
     const text = "* task #1 " + "word ".repeat(14) + "[agent-hub message from user] " + "word ".repeat(20) + "accepted by codex";
     const lines = wrapStreamTokens(text, 80, "attention", "notice");

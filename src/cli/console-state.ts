@@ -52,12 +52,12 @@ export function paint(line: Span[], color: boolean): string {
 }
 /** Console stream headers only. Tokenize sanitized text; bodies and command output stay plain. */
 export function streamTokens(value: string, eventTone?: Tone, kind?: string): Span[] {
-  const text = terminalText(value).replace(/\t/g, " ");
+  const text = terminalText(value);
   if (kind === "command" || kind === "console") return [{ text }];
   const peers: Readonly<Record<string, Tone>> = { claude: "peerClaude", codex: "peerCodex" };
   // Hub-written peer slots only; words such as local/pi/hub in a title do not identify a speaker.
   const peerSlots = new Set<number>();
-  const leading = text.match(/^\s*(?:[.?*!]\s+)?([A-Za-z_][A-Za-z_0-9-]*)(?=:| is | asks permission:)/);
+  const leading = text.match(/^\s*(?:[.?*!]\s+)?([A-Za-z_][A-Za-z_0-9-]*)(?=:| is | asks permission:| permission )/);
   if (leading) peerSlots.add(leading[0].lastIndexOf(leading[1]!));
   const route = text.match(/^\s*(?:[0-9:]+ (?:AM|PM) )?([A-Za-z_][A-Za-z_0-9-]*) -> ([A-Za-z_][A-Za-z_0-9,-]*|\*)/);
   if (route) {
@@ -75,7 +75,7 @@ export function streamTokens(value: string, eventTone?: Tone, kind?: string): Sp
   const stateAt = state ? state.index! + 4 : -1;
   const permissionIds = new Set<number>();
   for (const match of text.matchAll(/\b(?:permission|request|permit) ([0-9]{8})(?=\b)/g)) permissionIds.add(match.index + match[0].length - 8);
-  const taskKeyword = text.match(/^\s*\*?\s*\[?\s*(task)\b/i);
+  const taskKeyword = text.match(/^\s*\*?\s*(task)(?![\w-])/i);
   const taskKeywordAt = taskKeyword ? taskKeyword[0].length - taskKeyword[1]!.length : -1;
   const out: Span[] = []; let end = 0; let previousToken = ""; let previousStart = -1;
   for (const match of text.matchAll(/(?<![\p{L}\p{N}_#-])#[0-9]+(?![\p{L}\p{N}_-])|(?<![\p{L}\p{N}_#.:-])(?:[0-9]+(?::[0-9]+)+(?: AM| PM)?|[0-9]+(?:\.[0-9]+)?(?:%|ms|s|m|h)?)(?![\p{L}\p{N}_%-]|[.:][\p{L}\p{N}])|[A-Za-z_][A-Za-z_0-9-]*|->|[.?*!]/gu)) {
@@ -102,7 +102,7 @@ export function streamTokens(value: string, eventTone?: Tone, kind?: string): Sp
 }
 /** Wrap plain text first, then project original token spans onto it, preserving trusted slots across continuations. */
 export function wrapStreamTokens(value: string, columns: number, tone?: Tone, kind?: string): Span[][] {
-  const spans = streamTokens(value, tone, kind);
+  const spans = streamTokens(terminalText(value).replace(/\t/g, " "), tone, kind);
   const text = spans.map(s => s.text).join("");
   let cursor = 0; let projecting = true; let spanIndex = 0; let spanAt = 0;
   return wrap(text, columns).map((line, index) => {
