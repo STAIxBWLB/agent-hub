@@ -128,9 +128,10 @@ export function runSummary(r: BenchRun): RunSummary {
 /** Per task and overall for one run (or several runs of one arm). */
 export function benchReport(runs: BenchRun[]): { overall: Measures; tasks: Record<string, Measures> } {
   const attempts = runs.flatMap((r) => r.attempts);
-  const tasks: Record<string, Attempt[]> = {};
-  for (const a of attempts) (tasks[a.task] ??= []).push(a);
-  return { overall: measures(attempts), tasks: Object.fromEntries(Object.entries(tasks).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, measures(v)])) };
+  // A Map: a task id may be `constructor` or `__proto__`, which a plain object answers with an inherited value.
+  const tasks = new Map<string, Attempt[]>();
+  for (const a of attempts) tasks.set(a.task, [...(tasks.get(a.task) ?? []), a]);
+  return { overall: measures(attempts), tasks: Object.fromEntries([...tasks].sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, measures(v)])) };
 }
 
 /** A seeded generator, so a comparison prints the same interval every time for the same records. */

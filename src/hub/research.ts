@@ -219,9 +219,10 @@ export function researchReport(records: ResearchRecord[], since = 0): ResearchRe
   }
   const all = [...latest.values()];
   const group = (keys: (r: TaskRecord) => string[]) => {
-    const out: Record<string, TaskRecord[]> = {};
-    for (const r of all) for (const k of keys(r)) (out[k] ??= []).push(r);
-    return Object.fromEntries(Object.entries(out).sort(([a], [b]) => a.localeCompare(b)).map(([k, rs]) => [k, measures(rs, labels)]));
+    // A Map: a peer or model may be named `constructor`, which a plain object answers with an inherited value.
+    const out = new Map<string, TaskRecord[]>();
+    for (const r of all) for (const k of keys(r)) out.set(k, [...(out.get(k) ?? []), r]);
+    return Object.fromEntries([...out].sort(([a], [b]) => a.localeCompare(b)).map(([k, rs]) => [k, measures(rs, labels)]));
   };
   return { overall: measures(all, labels), byClass: group((r) => [r.class ?? "unknown"]), byOwner: group((r) => r.owners.length ? [...new Set(r.owners)] : ["none"]),
     byProject: group((r) => [r.project]), byModel: group((r) => r.models.length ? r.models : ["unknown"]) };

@@ -117,6 +117,8 @@ test("an owner who gets a task back counts it once; a move without a reason is n
   const [r] = taskRecords(bounce, "p", writer);
   expect(r).toMatchObject({ owners: ["codex", "kimi", "codex"], reassignments: 2, reassignedBy: { offline: 1, none: 1 } });
   expect(researchReport([r!]).byOwner.codex!.tasks).toBe(1);
+  // An owner or model named like an Object.prototype member groups like any other.
+  expect(researchReport([{ ...r!, owners: ["constructor"], models: ["__proto__"] }]).byOwner.constructor).toMatchObject({ tasks: 1 });
   // Two tasks #1 in one file (an events file that kept both): both get a record.
   const again = [...bounce, task(1, "proposed", "proposed"), task(1, "accepted", "in_progress", { owner: "claude" }), task(1, "done", "approved", { owner: "claude" })];
   const both = taskRecords(again, "p", writer);

@@ -29,7 +29,8 @@ run needs outside the tree, and let `setup` recreate what an attempt needs (depe
 Between attempts the runner checks out the task's pinned commit (`git checkout --force --detach <commit>`), runs
 `git clean -ffdx -e /.agenthub` and confirms the tree is clean; a step that fails says why. A run that finishes returns
 to the branch (or commit) it started on; a run that stops leaves the tree as its last attempt left it. Either way the
-runner says so if a branch or tag the suite names moved during the run.
+runner says so if a branch or tag the suite names moved or was deleted during the run (a ref given as a hash, or
+relative to another such as `main~1`, is not tracked).
 
 ## Suite file
 
@@ -95,7 +96,7 @@ record reads `interrupted`.
 `~/.agenthub/bench/<run id>.jsonl` (directory 0700, files 0600), one file per run, shared by every bench project on the
 machine. Schema `agent-hub.bench/v1`:
 
-- `run` header: suite name and SHA-256 of the suite file, arm, fingerprint (attached peers, with the requested model and
+- `run` header: suite name and SHA-256 of the suite file, arm, fingerprint (the peers attached at the start, with the requested model and
   permission mode where the hub's status reports them: today the model for Pi only; the SHA-256 of `routing.toml`; the
   hub version), task order, repeats, the runner's process.
 - `attempt`: task id, repeat, outcome, error reason, verify exit code, hub task id, start, end, duration, and, for an
@@ -103,7 +104,7 @@ machine. Schema `agent-hub.bench/v1`:
   pass, turns, files changed, models). They are read once the turns started since the task's proposal have ended (the
   runner waits only while their peers are still busy or paused, at most 10 minutes), so the turn that approved the task is
   counted; that wait is not part of the attempt's duration. A timeout or an error has none, nor has an attempt whose
-  wait was interrupted or could not read the hub's status.
+  wait was interrupted, ran out with the turn still open, or could not read the hub's status while it was open.
 - `end`: end time, and `stopped` (`timeout`, `interrupted`, `error`) when the run did not finish.
 
 ## Reading results

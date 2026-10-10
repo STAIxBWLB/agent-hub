@@ -252,6 +252,65 @@ test("an attempt's measures wait for the turn that approved the task, and belong
   expect(await metricsOf({ stateDir: stale, pollMs: 1, settleMs: 10, stopped: () => true }, quiet, "p", 1)).toBeNull();
   expect(await metricsOf({ stateDir: stale, pollMs: 1, settleMs: 10 }, quiet, "p", 1, async () => { throw new Error("no status"); })).toBeNull();
   expect(await metricsOf({ stateDir: stale, pollMs: 1, settleMs: 10 }, quiet, "p", 1, async () => new Set<string>())).not.toBeNull();
+  // The wait running out with the turn still open, and an interrupt in the last poll, give none either.
+  let ticks = 0;
+  const ticking = { now: () => ticks * 100, sleep: async () => { ticks++; }, log: () => {} };
+  expect(await metricsOf({ stateDir: stale, pollMs: 100, settleMs: 1000 }, ticking, "p", 1, async () => new Set(["claude"]))).toBeNull();
+  let slept = 0;
+  expect(await metricsOf({ stateDir: stale, pollMs: 1, settleMs: 10, stopped: () => slept > 0 }, { now: () => 0, sleep: async () => { slept++; }, log: () => {} }, "p", 1, async () => new Set<string>())).toBeNull();
+  // A status that cannot be read when no turn is open changes nothing: the measures are complete.
+  expect(await metricsOf({ stateDir, pollMs: 1, settleMs: 10 }, quiet, "p", 1, async () => { throw new Error("no status"); })).toMatchObject({ tokens: 15, turns: 1 });
+});
+
+test("a run against a hub: only attached peers in the fingerprint, a hub that is going reads as hub stopped, and the return and ref notices", async () => {
+  const { root } = benchRepo();
+  git(root, "tag", "t1"); git(root, "branch", "work");
+  git(root, "checkout", "-q", "--detach", "HEAD"); // a detached start returns to its commit
+  const start = git(root, "rev-parse", "HEAD");
+  const home = temp("stub-home"), suiteDir = temp("stub-suite");
+  const suite = (tasks: unknown[]) => { const path = join(suiteDir, `s${tasks.length}-${Math.random().toString(16).slice(2)}.json`); writeFileSync(path, JSON.stringify({ name: "stub", tasks })); return path; };
+  let propose: Record<string, unknown> = { ok: true, text: "task #1: in_progress, owner worker, reviewer none" };
+  const hub = { close() {}, request: async (msg: { t: string; op?: string }) =>
+    msg.t === "status" ? { status: { projectId: "p", version: "t", peers: { worker: { state: "idle" }, gone: { state: "offline", attached: false }, held: { state: "paused" } } } }
+      : msg.op === "hub_task_propose" ? propose : { ok: true, text: JSON.stringify([{ id: 1, state: "approved" }]) } };
+  const lines: string[] = [];
+  const io: BenchIo = { ...defaultIo(root, root), connect: async () => hub as never, sleep: async () => {}, log: (line) => void lines.push(line) };
+  // The first task's setup moves the branch the suite names, the second deletes the tag it names.
+  const moved = await runBench({ cwd: root, stateDir: join(root, ".agenthub"), suitePath: suite([
+    { id: "a", title: "t", ref: "work", setup: "git commit -q --allow-empty -m agent && git branch -f work HEAD", verify: "true", timeout_s: 60 },
+    { id: "b", title: "t", ref: "t1", setup: "git tag -d t1 >/dev/null", verify: "true", timeout_s: 60 },
+    { id: "constructor", title: "t", ref: "HEAD~0", verify: "true", timeout_s: 60 },
+  ]), arm: "x", repeat: 1, home, pollMs: 1 }, io);
+  const run = readRuns(home).find((r) => r.header.run === moved)!;
+  expect(run.header.fingerprint.peers.map((p) => p.id)).toEqual(["held", "worker"]);
+  expect(run.state).toBe("finished");
+  expect(git(root, "rev-parse", "HEAD")).toBe(start);
+  expect(Bun.spawnSync(["git", "symbolic-ref", "--quiet", "HEAD"], { cwd: root }).exitCode).not.toBe(0); // still detached
+  expect(lines.join("\n")).toContain("suite ref work moved during the run");
+  expect(lines.join("\n")).toContain("suite ref t1 was deleted during the run");
+  expect(lines.join("\n")).not.toContain("suite ref HEAD~0");
+  // A task id that is also an Object.prototype name reports like any other.
+  expect(benchReport([run]).tasks.constructor).toMatchObject({ attempts: 1, pass: 1 });
+  for (const error of ["hub connection closed", "hub is stopping", "hub connection is not open", "no answer from the hub within 30 s"]) {
+    propose = { ok: false, error };
+    const stopped = await runBench({ cwd: root, stateDir: join(root, ".agenthub"), suitePath: suite([{ id: "a", title: "t", ref: "HEAD", verify: "true", timeout_s: 60 }]), arm: "x", repeat: 2, home, pollMs: 1 }, io);
+    const record = readRuns(home).find((r) => r.header.run === stopped)!;
+    expect(record.attempts.map((a) => a.error)).toEqual(["hub stopped"]);
+    expect(record.end).toMatchObject({ stopped: "error" });
+  }
+  // Any other refusal is the hub's answer about that task: recorded, and the run goes on.
+  propose = { ok: false, error: "class is required" };
+  const refused = await runBench({ cwd: root, stateDir: join(root, ".agenthub"), suitePath: suite([{ id: "a", title: "t", ref: "HEAD", verify: "true", timeout_s: 60 }]), arm: "x", repeat: 2, home, pollMs: 1 }, io);
+  expect(readRuns(home).find((r) => r.header.run === refused)).toMatchObject({ state: "finished", attempts: [{ error: "propose refused" }, { error: "propose refused" }] });
+}, 30_000);
+
+test("a branch that shares its name with a tag is returned to as the branch", async () => {
+  const { root } = benchRepo();
+  git(root, "checkout", "-q", "-b", "v1"); git(root, "tag", "v1");
+  expect(await benchPreflight(root, true)).toBe("v1");
+  git(root, "checkout", "-q", "--detach", "HEAD");
+  expect(await reset(root, "v1", false, () => {})).toBe(true);
+  expect(git(root, "symbolic-ref", "HEAD")).toBe("refs/heads/v1");
 });
 
 const attempt = (run: string, task: string, outcome: Outcome, tokens: number, ms: number): Attempt => ({ schema: BENCH_SCHEMA, kind: "attempt", run, task, repeat: 1, outcome,

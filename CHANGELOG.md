@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- `ahub bench` follow-ups: a task id such as `constructor` no longer breaks reports, an attempt whose measure wait ran out or was interrupted in its last poll records no measures, the fingerprint lists only attached peers, a run returns to a branch that shares its name with a tag, and a suite ref deleted during the run is reported (#265).
 - `ahub bench`: run a suite of tasks against the attached peers in a project kept for benchmarks, record pass, fail, timeout and the #247 measures per attempt in `~/.agenthub/bench/`, and compare arms with bootstrap intervals (`bench run|list|status|report|compare|export`); the dashboard gains a Benchmarks section (#251).
 - Return proven pre-effect Pi task/conductor refusals as their exact errors and completed receipts; preserve uncertain effects, storage failures and unproven legacy pending receipts (#254).
 - Log each Pi exit cause and last tool name without arguments, show the next action, and resume an unexpectedly idle headless Pi on its verified session at most once in 60 seconds under `pi.auto_start`, with no fresh fallback (#255).
