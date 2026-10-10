@@ -1338,7 +1338,7 @@ of the commands in this section for you, so that command's refusals decide.
 The plan screen lists each project with its hub version and, per attached peer,
 its state, how it runs (`TUI` in a terminal the plan bound to its session,
 `headless` as the hub's own process, `own` for a session the hub did not
-launch) and what happens to it: resumed in a new terminal (the old one is
+launch or whose terminal the plan could not bind) and what happens to it: resumed in a new terminal (the old one is
 named), reconnecting by itself, restarted as a new session, restarted headless,
 or left offline. `in progress:` repeats what the running hub says keeps it from
 being quiet (busy peers, pending approvals, a peer starting, a budget
