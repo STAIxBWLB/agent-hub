@@ -377,7 +377,7 @@ export function settingRows(input: {
     if (def.store === "routing") {
       const value = scalar(def.path[0] === "stay_switch" ? input.routing.stay_switch : (input.routing.classes[def.path[1] as TaskClass] as Record<string, unknown> | undefined)?.[def.path[2]!]);
       return { ...base, ...(def.type === "enum" ? { values: def.values ?? routes } : {}), file: OVERLAY_FILE, value, source: input.routing.sources?.[def.key.slice("routing.".length)] ?? (value === null ? "default" : projectRouting ? "routing.toml" : "default"),
-        ...(input.routingProblem ? { note: `${OVERLAY_FILE} does not load, so the last policy that did stays in force: ${input.routingProblem}` } : {}) };
+        ...(input.routingProblem ? { note: `the routing files do not load, so the last policy that did stays in force: ${input.routingProblem}` } : {}) };
     }
     const value = scalar(input.running(def.path));
     const stored = input.next ? scalar(input.next(def.path)) : value;

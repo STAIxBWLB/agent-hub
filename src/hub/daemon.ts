@@ -2601,7 +2601,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const routingValue = (routing: ReturnType<typeof currentRouting>, def: SettingDef): SettingValue =>
     settingScalar(def.path[0] === "stay_switch" ? routing.stay_switch : (routing.classes[def.path[1] as TaskClass] as Record<string, unknown> | undefined)?.[def.path[2]!]);
   /** For the dashboard: the rows, and until when this session may raise. A project whose files do not read still gets its dashboard. */
-  // ponytail: reads the two config files and the undo record on each dashboard poll; cache by mtime if a page ever feels it.
+  // ponytail: reads the two config files and the undo record and parses the routing files on each dashboard poll; cache by mtime if a page ever feels it.
   function settingsSnapshot(session?: DashboardSession): { settings?: Record<string, unknown> } {
     try { return { settings: { ...settingsView(), ...(session?.settings ? { sessionUntil: session.settingsUntil } : {}) } }; }
     catch { return {}; }
