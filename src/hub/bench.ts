@@ -69,6 +69,7 @@ export const benchDir = (home = hubHome()): string => join(home, "bench");
 export const runFile = (run: string, home = hubHome()): string => join(benchDir(home), `${run}.jsonl`);
 export function appendBench(record: BenchRecord, home = hubHome()): void {
   mkdirSync(benchDir(home), { recursive: true, mode: 0o700 });
+  chmodSync(benchDir(home), 0o700); // mkdir's mode applies only when it creates the directory
   const file = runFile(record.run, home);
   appendFileSync(file, JSON.stringify(record) + "\n", { mode: 0o600 });
   chmodSync(file, 0o600);

@@ -152,6 +152,7 @@ export function appendRecords(projectId: string, records: ResearchRecord[], home
   if (!records.length) return 0;
   const file = researchFile(projectId, home);
   mkdirSync(researchDir(home), { recursive: true, mode: 0o700 });
+  chmodSync(researchDir(home), 0o700); // mkdir's mode applies only when it creates the directory
   const held = new Set(readStore(file).flatMap((r) => r.kind === "task" ? [recordKey(r)] : []));
   const added = records.filter((r) => r.kind === "label" || !held.has(recordKey(r)));
   if (!added.length) return 0;

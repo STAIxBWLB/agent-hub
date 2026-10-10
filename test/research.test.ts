@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
@@ -80,7 +80,10 @@ test("measures count each task once, a label binds to its task and not to a late
     task(2, "done", "in_review", { owner: "kimi", reviewer: "claude" }), task(2, "approved", "approved", { owner: "kimi", reviewer: "claude" }),
   ], "alpha", writer);
   const before = epoch([100, 300]);
+  mkdirSync(join(home, "research"), { mode: 0o755 }); // an existing, wider directory is narrowed
   appendRecords("alpha", before, home);
+  expect(statSync(join(home, "research")).mode & 0o777).toBe(0o700);
+  expect(statSync(researchFile("alpha", home)).mode & 0o777).toBe(0o600);
   expect(appendRecords("alpha", before, home)).toBe(0); // the same tasks are not written twice
   appendRecords("alpha", [{ schema: RESEARCH_SCHEMA, kind: "label", project: projectKey("alpha"), task: 2, createdAt: before[1]!.createdAt!, label: "reverted", at: at() }], home);
   const r = researchReport(readStore(researchFile("alpha", home)));
