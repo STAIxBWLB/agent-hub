@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Fix macOS timing-sensitive test fixtures by waiting for channel welcomes and releasing PII responses at the fallback decision; add opt-in repeated macOS verification (#287).
+
 ## 0.12.22
 
 - Restore the captured Codex approval policy once on a resumed thread after detached ask, show unknown-policy guidance in the CLI, and record direct native Claude child identity so verified crash cleanup can retire its settings file (#270).

@@ -84,16 +84,22 @@ async function fakeClaude(stateDir: string, channelEvidence: string | null = "1"
   client.fallbackNotificationHandler = async (n) => void channel.push(n);
   const env: Record<string, string> = { ...(process.env as Record<string, string>), AGENTHUB_STATE_DIR: stateDir };
   if (channelEvidence === null) delete env.AGENTHUB_CHANNEL; else env.AGENTHUB_CHANNEL = channelEvidence;
-  await client.connect(
-    new StdioClientTransport({
-      command: "bun",
-      args: [join(ROOT, "plugins/agent-hub/server.js")], // the shipped bundle, not the source
-      env,
-      stderr: "ignore",
-    }),
-  );
+  const transport = new StdioClientTransport({
+    command: "bun",
+    args: [join(ROOT, "plugins/agent-hub/server.js")], // the shipped bundle, not the source
+    env,
+    stderr: "pipe",
+  });
+  let diagnostics = "";
+  transport.stderr!.on("data", (chunk) => { diagnostics += chunk.toString(); });
+  await client.connect(transport);
   cleanup.push(() => client.close());
-  return { client, channel };
+  // MCP initialization and daemon idle both precede the channel receiving welcome (#287).
+  const waitConnected = (count = 1) => until(
+    () => diagnostics.split('[agent-hub] connected to hub as "claude"').length - 1 >= count,
+    `channel welcome ${count}`,
+  );
+  return { client, channel, waitConnected };
 }
 
 test("control link: token file is 0600, wrong token and browser origins are refused", async () => {
@@ -497,7 +503,9 @@ test("a second session attached as the same peer wins, and the replaced one stan
   const { stateDir, daemon, events } = await hub();
   const first = await fakeClaude(stateDir);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "first attach");
+  await first.waitConnected();
   const second = await fakeClaude(stateDir);
+  await second.waitConnected();
   await until(() => events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline").length === 1, "replacement");
   await Bun.sleep(2500); // past the replaced side's first retries: it must not fight for a peer someone holds
   expect(events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline")).toHaveLength(1);
@@ -508,6 +516,7 @@ test("a second session attached as the same peer wins, and the replaced one stan
   await second.client.close(); // the taking session leaves: the slot is free again
   await until(() => events.filter((e) => e.t === "state" && e.peer === "claude" && e.state === "offline").length === 2, "taker left");
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "reclaimed without a restart");
+  await first.waitConnected(2); // this session processed its new welcome, not only the daemon attach
   const back: any = await first.client.callTool({ name: "hub_send", arguments: { text: "back" } });
   expect(back.content[0].text).not.toContain("standing by");
 }, 30_000);
@@ -1578,8 +1587,9 @@ test("limits: a value that is not a number falls back to the project default, wi
 // issue #39: per-peer hub-tool capabilities, enforced by the daemon, and a permission only the console can answer.
 test("capabilities: a peer without one is refused that tool and told why; unlisted peers keep everything", async () => {
   const { stateDir, daemon } = await hub({ capabilities: { claude: ["propose"] } });
-  const { client } = await fakeClaude(stateDir);
+  const { client, waitConnected } = await fakeClaude(stateDir);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
+  await waitConnected();
   const call = async (name: string, args: Record<string, unknown>) => ((await client.callTool({ name, arguments: args })) as { content: { text: string }[] }).content[0]!.text;
   expect(await call("hub_task_propose", { title: "mine", class: "implement", owner: "claude" })).toContain("task #1");
   expect(await call("hub_task_propose", { title: "theirs", class: "implement", owner: "kimi" })).toContain('claude may not hand tasks to other peers (no "assign" in capabilities.claude');
@@ -1604,8 +1614,9 @@ test("capabilities: a listed peer whose value is not a list gets none, and hub.l
 // issue #70: model-written owners and ids are settled before anything reaches the board.
 test("hub_task_propose: an owner that is not a peer id is refused and creates no task; null and empty mean none", async () => {
   const { stateDir, daemon } = await hub({ capabilities: { claude: ["propose"] } });
-  const { client } = await fakeClaude(stateDir);
+  const { client, waitConnected } = await fakeClaude(stateDir);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
+  await waitConnected();
   const call = async (name: string, args: Record<string, unknown>) => ((await client.callTool({ name, arguments: args })) as { content: { text: string }[] }).content[0]!.text;
   expect(await call("hub_task_propose", { title: "x", class: "implement", owner: ["codex"] })).toContain('owner must be a peer id, not ["codex"]');
   expect(JSON.parse(await call("hub_task_list", {}))).toHaveLength(0); // nothing reached the board

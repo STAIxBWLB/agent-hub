@@ -8,6 +8,11 @@ on:
         description: Build committed plugin assets for review, without publishing
         type: boolean
         default: false
+      timing_runs:
+        description: Sequential macOS runs of daemon and PII screen tests only (0 disables)
+        type: choice
+        options: ['0', '20']
+        default: '0'
   push:
     branches: [main]
 
@@ -21,7 +26,7 @@ concurrency:
 
 jobs:
   decision:
-    if: github.event_name != 'workflow_dispatch' || !inputs.prepare_bundle
+    if: github.event_name != 'workflow_dispatch' || (!inputs.prepare_bundle && inputs.timing_runs != '20')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -45,7 +50,7 @@ jobs:
           fi
 
   prepare-bundle:
-    if: github.event_name == 'workflow_dispatch' && inputs.prepare_bundle
+    if: github.event_name == 'workflow_dispatch' && inputs.prepare_bundle && inputs.timing_runs != '20'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -107,3 +112,31 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Six sequential green and seeded guard pairs
         run: bun scripts/seeded-check.ts
+
+  macos-timing:
+    # Explicit #287 evidence only; never adds work to the ordinary PR/push path.
+    if: github.event_name == 'workflow_dispatch' && inputs.timing_runs == '20'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - name: Twenty consecutive affected-file runs (stop at first failure)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for iteration in $(seq 1 20); do
+            echo "timing run $iteration/20 at $GITHUB_SHA"
+            bun test --timeout 20000 test/daemon.test.ts test/pii-screen.test.ts &
+            test_pid=$!
+            scripts/hang-watch.sh "$test_pid" 120 &
+            watch_pid=$!
+            result=0
+            wait "$test_pid" || result=$?
+            wait "$watch_pid"
+            if [ "$result" -ne 0 ]; then exit "$result"; fi
+          done
+          echo "timing: 20/20 OK at $GITHUB_SHA"

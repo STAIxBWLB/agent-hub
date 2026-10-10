@@ -425,26 +425,36 @@ test("a device that fails or is still loading hands over to the campus gateway w
   const on = gateway(() => ({ content: "pii phone" }));
   const off = gateway(() => ({ content: "clear" }), true);
   let mode: "fail" | "slow" = "fail";
+  let releaseAnswer: (() => void) | undefined;
   const device = startFakeModelServer({ script: async () => {
     if (mode === "fail") throw new Error("model not loaded");
-    await Bun.sleep(300);
+    await new Promise<void>((resolve) => { releaseAnswer = resolve; });
     return { content: "clear" };
   } });
+  cleanup.push(() => releaseAnswer?.());
   cleanup.push(device.stop);
   const released: number[] = [];
   const handle = { url: device.url, model: "agenthub-fast", acquire: async () => () => void released.push(1) };
-  const campus = { omni: on.omni, onCampus: () => on.omni.onCampus(), fixedModel: () => "m", device: async () => handle, timeoutMs: 400 };
-  const offCampus = { ...campus, omni: off.omni, onCampus: () => off.omni.onCampus() };
+  // Use the production deadline: CI recorded 519 ms for a nominal 300 ms response under a 400 ms limit (#287).
+  // Hold the answer until the fallback decision instead of guessing a delay between the two deadlines.
+  const campus = { omni: on.omni, onCampus: () => on.omni.onCampus(), fixedModel: () => "m", device: async () => handle };
+  const offCampus = { ...campus, omni: off.omni, onCampus: async () => {
+    const available = await off.omni.onCampus();
+    releaseAnswer?.(); // reached only after the device's share; off campus must still await its answer
+    return available;
+  } };
   expect(await screenPii("call Jane", campus)).toMatchObject({ label: "pii", category: "phone" }); // HTTP 500 from the device
-  mode = "slow"; // 300 ms on the device is past its share (240 ms) of a 400 ms deadline
+  mode = "slow"; // held past its share, so the campus gateway must answer
   expect(await screenPii("call Jane", campus)).toMatchObject({ label: "pii", category: "phone" });
   expect(on.model.requests).toHaveLength(2);
+  releaseAnswer?.(); // finish the aborted campus handler before the next request installs its barrier
+  releaseAnswer = undefined;
   expect(await screenPii("call Jane", offCampus)).toMatchObject({ label: "clear" }); // no gateway to hand over to: it waits
   mode = "fail";
   expect(await screenPii("call Jane", offCampus)).toMatchObject({ label: "unknown", miss: "failed" });
   expect(off.model.requests).toHaveLength(0);
   await until(() => released.length === 4); // every slot taken was given back
-});
+}, 20_000);
 
 test("with the screen off a summary that is not a string is stored as before; a PII task off campus says why no class was named", async () => {
   const r = await rig("off", byName);
