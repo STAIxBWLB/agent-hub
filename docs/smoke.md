@@ -2,6 +2,35 @@
 
 `scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
 
+## Codex resumed approval policy (#270)
+
+2026-10-10: installed version read back as `codex-cli 0.162.1`. The live
+stickiness leg is unverified: a hand-run `codex --remote` resume and a human-only
+`ahub permission codex ask` require a person's interactive terminal. The approved
+fallback is implemented: keep restoration owed per thread and send the captured
+native policy once on that thread's next accepted turn, whether or not the native
+override is sticky across resume. Fake app-server coverage verifies both overlays,
+other-thread visits, either resume/ask order, rejected restoration and restoration
+only once. The proxy protects the one restoring turn; a repeated policy on the
+next TUI turn is indistinguishable from a person's explicit native choice.
+
+Manual leg in a disposable project:
+
+1. Start `ahub codex`, record its thread ID and native approval policy, then run
+   `ahub permission codex never-ask --yes` from a human shell and complete a benign turn.
+2. Close the TUI without stopping its hub proxy. Run `ahub permission codex ask`.
+3. Hand-run `codex --remote <the existing proxy URL>` and resume that same thread.
+   Record what the TUI sends as `approvalPolicy` on its first turn after a resume,
+   including any echo of the resume response. Observe the policy before and after
+   that benign turn; record whether the override persisted across resume and
+   whether the original policy was restored.
+4. Send the TUI's second turn after that resume; record its outgoing policy and
+   the effective native policy. A repeat of the reported override is passed through
+   after the one restoring turn, just like an explicit choice.
+5. Repeat with `ask-when-needed` and with resume before switching to ask. Record
+   the Codex version, thread ID, policies and outcomes. This checklist is not
+   evidence that any live leg has passed.
+
 ## Interactive upgrade (#272)
 
 Not run live yet. Covered by tests with a scripted terminal and, for `restart`,
@@ -1432,8 +1461,11 @@ The historical Claude benign checks above used the earlier hook policy. The curr
 
 Unverified natively (Codex 0.162.0): whether a thread that got a `never` or `on-request` override keeps it when the
 same thread is resumed through the hub's proxy by a hand-run `codex --remote` after `ahub permission codex ask` was
-given while no TUI was attached. The hub stops overriding at that point and the status says ask; `ahub codex` always
-starts a new proxy, which is not affected.
+given while no TUI was attached. The status says ask; the current proxy keeps restoration owed per thread and
+sends the captured native policy once on the resumed thread's next accepted turn, including when the TUI echoes
+the resume response's sticky override. This protects only the restoring turn; a repeat on the second TUI turn
+cannot be distinguished from an explicit choice and passes through. Both turns' TUI traffic remain natively unverified. `ahub codex` always starts
+a new proxy, which is not affected. See the current #270 manual checklist above.
 
 ## Whole-board task progress and dashboard themes (#246)
 

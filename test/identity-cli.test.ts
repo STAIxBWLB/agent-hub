@@ -177,7 +177,7 @@ test("permission CLI validates confirmation, lists and shows modes, and guides a
       const msg = JSON.parse(String(raw));
       if (msg.t === "hello") { ws.send(JSON.stringify({ t: "welcome", rid: msg.rid, ok: true, cwd: root, protocol: PROTOCOL })); return; }
       requests.push(msg);
-      const reply = msg.t === "status" ? { ok: true, status: { pid: 1, controlPort: server.port, cwd: root, peers: { claude: { state: "idle", permissionMode: "unverified" }, kimi: { state: "idle", permissionMode: "unmanaged" }, local: { state: "idle", permissionMode: "unknown" } } } } : oldHub ? { ok: false, error: 'this hub does not know "permission" (restart it: ahub kill && ahub up)' } : msg.peer === "missing" ? { ok: false, error: "unknown permission peer" } : msg.peer === "unsupported" ? { ok: false, error: "peer unsupported cannot change permission mode: relaunch behind the proxy" } : msg.peer ? { ok: true, peer: msg.peer, permissionMode: msg.mode ?? (msg.peer === "claude" ? "unverified" : msg.peer === "kimi" ? "unmanaged" : msg.peer === "local" ? "unknown" : "ask") } : { ok: true, peers: { pi: "ask-when-needed", codex: "ask", claude: "unverified", kimi: "unmanaged", local: "unknown" } };
+      const reply = msg.t === "status" ? { ok: true, status: { pid: 1, controlPort: server.port, cwd: root, peers: { claude: { state: "idle", permissionMode: "unverified" }, kimi: { state: "idle", permissionMode: "unmanaged" }, local: { state: "idle", permissionMode: "unknown" } } } } : oldHub ? { ok: false, error: 'this hub does not know "permission" (restart it: ahub kill && ahub up)' } : msg.peer === "missing" ? { ok: false, error: "unknown permission peer" } : msg.peer === "unsupported" ? { ok: false, error: "peer unsupported cannot change permission mode: relaunch behind the proxy" } : msg.peer ? { ok: true, peer: msg.peer, ...(msg.peer === "codex" && msg.mode === "ask" ? { note: "Native approval policy was never reported; a new ahub codex session starts in ask" } : {}), permissionMode: msg.mode ?? (msg.peer === "claude" ? "unverified" : msg.peer === "kimi" ? "unmanaged" : msg.peer === "local" ? "unknown" : "ask") } : { ok: true, peers: { pi: "ask-when-needed", codex: "ask", claude: "unverified", kimi: "unmanaged", local: "unknown" } };
       ws.send(JSON.stringify({ t: "reply", rid: msg.rid, ...reply }));
     } } });
   writeFileSync(join(stateDir, "status.json"), JSON.stringify({ cwd: root, controlPort: server.port, protocol: PROTOCOL }));
@@ -210,6 +210,9 @@ test("permission CLI validates confirmation, lists and shows modes, and guides a
       expect(requests.at(-1)).toMatchObject({ t: "permission", peer, mode: "never-ask", confirmed: true });
       expect(requests.some(row => row.t === "permission_default")).toBe(false);
     }
+    const cleared = await cli(root, ["permission", "codex", "ask"]);
+    expect(cleared.code, cleared.stderr).toBe(0);
+    expect(cleared.stdout).toContain("Native approval policy was never reported; a new ahub codex session starts in ask");
     const refused = await cli(root, ["permission", "unsupported", "ask"]);
     expect(refused.code).toBe(1); expect(refused.stderr).toContain("relaunch behind the proxy");
     const missing = await cli(root, ["permission", "missing"]);

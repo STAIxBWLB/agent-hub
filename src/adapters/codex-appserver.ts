@@ -63,9 +63,9 @@ const TRACKED = new Set(["thread/start", "thread/resume"]);
  */
 export class CodexPeer extends BasePeer {
   private permissionMode: PermissionMode;
-  private nativeApprovalPolicy: unknown;
-  private approvalOverridden = false;
-  private readonly restoringApprovals = new Set<string | number>();
+  private readonly nativeApprovalPolicies = new Map<string, unknown>();
+  private readonly overriddenApprovals = new Set<string>();
+  private readonly restoringApprovals = new Map<string | number, string>();
   private proc: ChildProcess | undefined;
   private server: Server<Link> | undefined;
   private link: Link | undefined; // the connection that owns the current thread
@@ -191,7 +191,6 @@ export class CodexPeer extends BasePeer {
       this.pending.set(id, {
         deliveryId, kind: "deliver",
         resolve: (result) => {
-          if (this.restoringApprovals.delete(id) && this.permissionMode === "ask") this.approvalOverridden = false;
           this.primed = true;
           this.injected = replyParent(envs);
           this.answering = [...envs];
@@ -388,44 +387,50 @@ export class CodexPeer extends BasePeer {
 
   /** Reconcile the daemon's current choice after startup, before the returned proxy URL has a TUI. */
   setStartupPermissionMode(mode: PermissionMode): void {
-    if (this.link || this.state !== "offline" || this.approvalOverridden) throw new Error("codex startup mode reconciliation requires a fresh unattached proxy");
+    if (this.link || this.state !== "offline" || this.overriddenApprovals.size) throw new Error("codex startup mode reconciliation requires a fresh unattached proxy");
     this.permissionMode = mode;
   }
 
-  /**
-   * The hub's choice was cleared while no TUI is attached: this proxy sends no override from now on. Returns false
-   * when an override it already sent cannot be undone on that thread (its native policy was never reported): a thread
-   * started or resumed through the proxy afterwards reports its own policy, and that one is left alone.
-   */
+  /** Clear the overlay while detached, retaining each thread's restoration debt across a resume. */
   clearPermissionMode(): boolean {
-    const restorable = !this.approvalOverridden || this.nativeApprovalPolicy !== undefined;
+    const restorable = [...this.overriddenApprovals].every(thread => this.nativeApprovalPolicies.has(thread));
     this.permissionMode = "ask";
     return restorable;
   }
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {
     if (!this.link || this.link.up.readyState !== WebSocket.OPEN) throw new Error("codex permission mode unavailable: attach the TUI through ahub codex first");
-    if (mode === "ask" && this.approvalOverridden && this.nativeApprovalPolicy === undefined) throw new Error("codex cannot restore ask: native approval policy unavailable; restart the Codex session");
+    if (mode === "ask" && [...this.overriddenApprovals].some(thread => !this.nativeApprovalPolicies.has(thread))) throw new Error("codex cannot restore ask: native approval policy unavailable; close the TUI, then run ahub permission codex ask before you restart the Codex session with ahub codex");
     this.permissionMode = mode;
   }
 
   private applyPermissionPolicy(params: Record<string, unknown>, id: string | number): Record<string, unknown> {
+    const thread = typeof params.threadId === "string" ? params.threadId : this.threadId;
     if (this.permissionMode !== "ask") {
-      this.approvalOverridden = true;
+      this.overriddenApprovals.add(thread);
       return { ...params, approvalPolicy: this.permissionMode === "never-ask" ? "never" : "on-request" };
     }
-    if (this.permissionMode === "ask" && this.approvalOverridden) {
-      this.restoringApprovals.add(id);
-      return { ...params, approvalPolicy: this.nativeApprovalPolicy };
+    if (this.overriddenApprovals.has(thread) && this.nativeApprovalPolicies.has(thread)) {
+      this.restoringApprovals.set(id, thread);
+      return { ...params, approvalPolicy: this.nativeApprovalPolicies.get(thread) };
     }
     return params;
+  }
+
+  private settlePermissionRestore(id: string | number, failed: boolean): void {
+    const thread = this.restoringApprovals.get(id);
+    this.restoringApprovals.delete(id);
+    if (thread !== undefined && !failed && this.permissionMode === "ask") this.overriddenApprovals.delete(thread);
   }
 
   private fromTui(link: Link, raw: string): void {
     const msg = parse(raw);
     if (msg?.method === "turn/start" && msg.params && link === this.link) {
-      if (msg.params.approvalPolicy != null) this.nativeApprovalPolicy = msg.params.approvalPolicy;
-      if (this.permissionMode !== "ask" || this.approvalOverridden) {
+      const thread = typeof msg.params.threadId === "string" ? msg.params.threadId : this.threadId;
+      // A resumed TUI can echo the sticky hub overlay. The restoring turn must use the kept baseline.
+      const restoring = this.overriddenApprovals.has(thread) && this.nativeApprovalPolicies.has(thread);
+      if (msg.params.approvalPolicy != null && !restoring) this.nativeApprovalPolicies.set(thread, msg.params.approvalPolicy);
+      if (this.permissionMode !== "ask" || this.overriddenApprovals.has(thread)) {
         // Native turn overrides persist: ask restores the captured native policy once on successful admission.
         msg.params = this.applyPermissionPolicy(msg.params, msg.id);
         raw = JSON.stringify(msg);
@@ -441,6 +446,7 @@ export class CodexPeer extends BasePeer {
     if (this.state === "busy") this.touch();
     if (!msg) return void link.tui.send(raw);
 
+    if (msg.id !== undefined && !msg.method) this.settlePermissionRestore(msg.id, !!msg.error);
     if (typeof msg.id === "number" && msg.id < 0 && !msg.method) {
       const p = this.pending.get(msg.id);
       this.pending.delete(msg.id);
@@ -448,14 +454,13 @@ export class CodexPeer extends BasePeer {
       else p?.resolve(msg.result);
       return; // ours: the TUI never asked for it
     }
-    if (msg.id !== undefined && !msg.method && this.restoringApprovals.delete(msg.id) && !msg.error && this.permissionMode === "ask") this.approvalOverridden = false;
     if (typeof msg.result?.userAgent === "string") this.version = /^[^/\s]+\/(\d+\.\d+\.\d+(?:-[\w.]+)?)/.exec(msg.result.userAgent)?.[1] ?? this.version;
     const tracked = msg.id !== undefined && !msg.method ? link.tracked.get(msg.id) : undefined;
     if (tracked && link.tracked.delete(msg.id)) {
       if (typeof msg.result?.thread?.id === "string") {
-        this.nativeApprovalPolicy = msg.result?.approvalPolicy;
-        this.approvalOverridden = false;
-        this.restoringApprovals.clear();
+        // A resumed response may report the sticky hub override, not the original native choice.
+        const thread = msg.result.thread.id;
+        if (!this.overriddenApprovals.has(thread) && msg.result.approvalPolicy != null) this.nativeApprovalPolicies.set(thread, msg.result.approvalPolicy);
         this.adopt(link, msg.result.thread.id, tracked === "thread/start");
       }
     }
