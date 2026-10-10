@@ -1222,7 +1222,10 @@ test("snapshots: a turn records what it changed, and ahub undo restores it unles
   };
   const listed = await cli("turns", "editor");
   expect(listed.out).toContain("2 files: a.txt, made.txt");
-  const turn = listed.out.split(/\s/)[0]!;
+  const structured = await cli("turns", "editor", "--json");
+  expect(structured.code, structured.err).toBe(0);
+  const turn = JSON.parse(structured.out)[0].id as string;
+  expect(typeof turn).toBe("string");
   expect((await cli("undo", turn)).out).toContain("add --yes"); // a dry run by default
   expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("edited\n");
   writeFileSync(join(dir, "a.txt"), "somebody else's work\n");
