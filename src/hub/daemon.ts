@@ -1353,6 +1353,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // Runtime choices stay in this daemon only; recovery reads project defaults anew.
   const defaultSources = config.permission_default_sources ?? Object.fromEntries(Object.entries(config.permission_modes).map(([peer, mode]) => [peer, { mode, source: "embedded configuration" }]));
   const pendingPermissionDefaults = new Map(Object.entries(defaultSources).filter(([, value]) => value.mode === "never-ask").map(([peer, value]) => [peer, value.source]));
+  const permissionChanges = new Set<string>();
   const permissionModes = new Map<string, PermissionMode>(Object.entries(config.permission_modes).map(([peer, mode]) => [peer, mode === "never-ask" ? "ask" : mode]));
   for (const peer of pendingPermissionDefaults.keys()) permissionModes.set(peer, "ask");
   const permissionMode = (peer: string): PermissionMode => permissionModes.get(peer) ?? "ask";
@@ -2706,6 +2707,13 @@ export async function startDaemon(opts: DaemonOptions) {
     writeStatus(); return { ok: true, peer, permissionMode: "never-ask" };
   }
 
+  async function permissionChange(peer: unknown, action: () => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> {
+    if (typeof peer !== "string") return action();
+    if (permissionChanges.has(peer)) return { ok: false, error: `${peer} permission change is still pending; inspect status and wait for its reply` };
+    permissionChanges.add(peer);
+    try { return await action(); } finally { permissionChanges.delete(peer); }
+  }
+
   function onMessage(sock: Sock, msg: any): void {
     const c = sock.data;
     const reply = (body: Record<string, unknown>) => { if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ rid: msg.rid, ...body })); };
@@ -2751,13 +2759,13 @@ export async function startDaemon(opts: DaemonOptions) {
     switch (msg.t) {
       case "permission_default": {
         if (c.role !== "console") return void reply({ ok: false, error: "permission default confirmation is a human console action" });
-        void confirmPermissionDefault(msg.peer, msg.confirmed).then(reply).catch(() => reply({ ok: false, error: "permission default confirmation failed; inspect status" }));
+        void permissionChange(msg.peer, () => confirmPermissionDefault(msg.peer, msg.confirmed)).then(reply).catch(() => reply({ ok: false, error: "permission default confirmation failed; inspect status" }));
         return;
       }
       case "permission": {
         if (c.role !== "console") return void reply({ ok: false, error: "permission modes are human console commands" });
         if (msg.peer === undefined) return void reply({ ok: true, peers: Object.fromEntries([...bus.peers].filter(([, p]) => p.state !== "offline").map(([id]) => [id, permissionMode(id)])) });
-        void changePermission(msg.peer, msg.mode, msg.confirmed).then(reply).catch(() => reply({ ok: false, error: "permission mode change failed; inspect status" }));
+        void permissionChange(msg.peer, () => changePermission(msg.peer, msg.mode, msg.confirmed)).then(reply).catch(() => reply({ ok: false, error: "permission mode change failed; inspect status" }));
         return;
       }
       case "queue": {

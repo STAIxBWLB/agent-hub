@@ -850,7 +850,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (mode === "never-ask" && peer) console.error(`never-ask: ${permissionBoundary(peer)}; approval prompts are disabled`);
     const hub = await connect();
     try {
-      const reply = await hub.request({ t: "permission", ...(peer ? { peer } : {}), ...(mode ? { mode, confirmed: args.includes("--yes") } : {}) });
+      const reply = await hub.request({ t: "permission", ...(peer ? { peer } : {}), ...(mode ? { mode, confirmed: args.includes("--yes") } : {}) }, 35_000);
       if (reply.ok === false) {
         const error = String(reply.error ?? "permission request refused");
         fail(/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know "permission"/i.test(error) ? `${error}; upgrade the running hub to use ahub permission` : error);

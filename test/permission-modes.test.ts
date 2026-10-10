@@ -30,6 +30,21 @@ async function fixture(config: Partial<HubConfig> = {}, state?: { cwd: string; s
   return { cwd, stateDir, daemon, client, mode };
 }
 
+test("slow native default confirmation refuses competing decline, duplicate approval and runtime changes", async () => {
+  const rig = await fixture({ permission_modes: { kimi: "never-ask" }, permission_default_sources: { kimi: { mode: "never-ask", source: ".agenthub/config.local.json" } },
+    kimi_cmd: [process.execPath, join(import.meta.dir, "fakes/acp-server.ts"), "--mode-delay-ms", "350"] });
+  expect((await rig.client.request({ t: "start", peer: "kimi" })).ok).toBe(true);
+  const confirming = rig.client.request({ t: "permission_default", peer: "kimi", confirmed: true });
+  await Bun.sleep(30);
+  for (const confirmed of [false, true]) expect((await rig.client.request({ t: "permission_default", peer: "kimi", confirmed })).error).toContain("still pending");
+  expect((await rig.mode("kimi", "ask")).error).toContain("still pending");
+  expect((await confirming).permissionMode).toBe("never-ask");
+  expect((await rig.mode("kimi")).permissionMode).toBe("never-ask");
+  expect((await rig.client.request({ t: "status" })).status.permissionDefaults).toBeUndefined();
+  expect(readFileSync(join(rig.stateDir, "hub.log"), "utf8")).not.toContain("declined; effective ask");
+  expect((await rig.mode("kimi", "ask")).permissionMode).toBe("ask");
+});
+
 test("permission defaults reject malformed modes and tracked opt-ins cannot disable prompts", () => {
   expect(permissionDefaults(undefined)).toEqual({});
   for (const value of [null, [], "never-ask", { kimi: "auto" }, { unknown: "ask" }]) expect(() => permissionDefaults(value)).toThrow();
