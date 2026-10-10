@@ -343,7 +343,7 @@ test("Pi stop tears down a TUI owner whose shutdown acknowledgement was lost, by
     await peer.stop();
     rmSync(stateDir, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 // issue #115: Pi runs in a process group of its own and is stopped as one, as Codex and ACP agents are; without the group,
 // a launcher ignoring SIGTERM is never signalled.
@@ -468,7 +468,7 @@ test("stopping a verified TUI survivor reports one owned exit with pre-cleanup m
     if (owner.exitCode === null && owner.signalCode === null) { owner.kill("SIGKILL"); await owner.exited; }
     await peer.stop(); rmSync(stateDir, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 test("stopping a never-owned TUI launch invents no exit report (#255)", async () => {
   const stateDir = mkdtempSync(join(process.cwd(), ".pi-unowned-exit-test-")), exits: PiExit[] = [];

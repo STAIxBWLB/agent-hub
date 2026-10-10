@@ -76,6 +76,10 @@ test("enabled Pi starts headless, duplicate start is idempotent, and handover pr
   if (!tui.ok) throw new Error(String(tui.error));
   expect(tui.ok).toBe(true);
   expect(tui.launch?.args).toContain("--session");
+  const exits = readFileSync(join(stateDir, "hub.log"), "utf8").split("\n").filter((line) => line.includes("Pi exited"));
+  expect(exits).toHaveLength(2);
+  expect(exits.every((line) => line.includes("requested replacement; the new Pi owner is starting"))).toBe(true);
+  expect(exits.some((line) => line.includes("owner teardown; inspect"))).toBe(false);
 });
 
 // issue #42, other half: the handover hides the replaced adapter's `offline` from the console. If the
@@ -687,3 +691,40 @@ test("Pi review's internal post-write escalation keeps the generic default and a
   expect((await piToolCall(peer, "hub_review", args, "post-review")).text).toContain("previous tool outcome is uncertain");
   expect(board.get(task.id)!.history.filter((entry) => entry.event === "changes_requested")).toHaveLength(1);
 });
+
+
+test("global hub stop gives a requested-stop notice rather than replacement or failure guidance (#255)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-global-stop-"));
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { stateDir, daemon, console_ } = await hub(config);
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } })).ok).toBe(true);
+  await daemon.stop();
+  const exits = readFileSync(join(stateDir, "hub.log"), "utf8").split("\n").filter((line) => line.includes("Pi exited"));
+  expect(exits).toHaveLength(1);
+  expect(exits[0]).toContain("hub is stopping; requested stop, no automatic restart");
+  expect(exits[0]).not.toContain("requested replacement");
+  expect(exits[0]).not.toContain("owner teardown; inspect");
+});
+
+for (const phase of ["startup", "active"] as const) {
+  test(`Pi ${phase} failure keeps inspection guidance with auto_start off (#255)`, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-auto-off-order-")), trigger = join(dir, "exit-now");
+    const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: false,
+      cmd: phase === "startup" ? [process.execPath, "-e", "process.exit(0)"] :
+        [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), "--exit-trigger", trigger, "--exit-code", "0"] } };
+    const { stateDir, daemon, console_ } = await hub(config);
+    const result = await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } });
+    expect(result.ok).toBe(phase === "active");
+    if (phase === "active") {
+      const launch = (daemon.bus.peers.get("pi") as PiPeer).tuiLaunch!;
+      await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/event`, { method: "POST", headers: {
+        authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json",
+      }, body: JSON.stringify({ type: "agent_start", generation: 1 }) });
+      writeFileSync(trigger, "exit");
+    }
+    for (let i = 0; i < 200 && daemon.bus.stateOf("pi") !== "offline"; i++) await Bun.sleep(5);
+    const exit = readFileSync(join(stateDir, "hub.log"), "utf8").split("\n").find((line) => line.includes("Pi exited"));
+    expect(exit).toContain(phase === "startup" ? "startup failed; inspect its session, then ahub pi" : "turn/tool effects may be partial; inspect its session, then ahub pi");
+    expect(exit).not.toContain("pi.auto_start is off");
+  });
+}

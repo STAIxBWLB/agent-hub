@@ -1868,6 +1868,11 @@ export async function startDaemon(opts: DaemonOptions) {
   const starting = new Map<string, Promise<Record<string, unknown>>>();
   let piAutoRestartAt = -Infinity;
   let piAutoRestartPending = false;
+  const replacingPi = new Set<PiPeer>();
+  async function stopPiForReplacement(pi: PiPeer): Promise<void> {
+    replacingPi.add(pi);
+    try { await pi.stop(); } finally { replacingPi.delete(pi); }
+  }
   function startPeer(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; fresh?: boolean }): Promise<Record<string, unknown>> {
     if (stopping) return Promise.resolve({ ok: false, error: "hub is stopping" });
     if (peer === "pi" && starting.has(peer)) return Promise.resolve({ ok: false, error: "Pi start is in progress; inspect status before retrying" });
@@ -1925,14 +1930,14 @@ export async function startDaemon(opts: DaemonOptions) {
         // process from the abandoned CLI cannot claim the replacement owner.
         // The replacement's start event is the only state change the console should see (issue #42).
         mute(existing);
-        await existing.stop();
+        await stopPiForReplacement(existing);
       } else if (changesOwner) {
         saved = await existing.captureResume();
         if (!saved.sessionId) return { ok: false, error: "Pi session identity is not ready for handover" };
         args = { ...args, backend: args.backend ?? launch.backend as "auto" | "dgx" | "mlx", model: args.model ?? (args.backend === undefined && typeof launch.model === "string" ? launch.model : undefined), sessionId: String(saved.sessionId), sessionFile: typeof saved.sessionFile === "string" ? saved.sessionFile : undefined };
         // Same as the unclaimed handover: no offline flash between the adapters (issue #42).
         mute(existing);
-        await existing.stop();
+        await stopPiForReplacement(existing);
       } else if (existing.state !== "offline") {
         return mode === "tui" ? { ok: false, error: "Pi already owns a native terminal; use that terminal or switch to headless first" } : { ok: true, already: true };
       } else if (saved.sessionId) {
@@ -1945,7 +1950,10 @@ export async function startDaemon(opts: DaemonOptions) {
     } else if (existing && existing.state !== "offline") {
       return { ok: true, already: true, ...(existing instanceof CodexPeer ? { proxyUrl: existing.proxyUrl } : {}) };
     }
-    if (peer !== "local") await existing?.stop();
+    if (peer !== "local") {
+      if (existing instanceof PiPeer) await stopPiForReplacement(existing);
+      else await existing?.stop();
+    }
     if (peer === "kimi") {
       const launch = buildKimiLaunch(config.kimi_cmd, args.model);
       const cmd = [launch.cmd, ...launch.args];
@@ -2135,12 +2143,13 @@ export async function startDaemon(opts: DaemonOptions) {
           const cause = exit.signal ? `signal ${exit.signal}` : exit.code !== null ? `code ${exit.code}` : exit.cause;
           let action = "start it with ahub pi";
           if (stopping) action = "hub is stopping; requested stop, no automatic restart";
+          else if (replacingPi.has(pi)) action = "requested replacement; the new Pi owner is starting";
           else if (exit.expected) action = "owner teardown; inspect its session, then ahub pi";
           else if (bus.peers.get("pi") !== pi) action = "superseded owner; no automatic restart";
           else if (recoveryActive()) action = "recovery holds automatic restart; inspect ahub status";
-          else if (!piAutoStart) action = "pi.auto_start is off; start it with ahub pi";
           else if (!exit.started || starting.has("pi")) action = "startup failed; inspect its session, then ahub pi";
           else if (exit.turnActive || exit.toolActive) action = "turn/tool effects may be partial; inspect its session, then ahub pi";
+          else if (!piAutoStart) action = "pi.auto_start is off; start it with ahub pi";
           else if (mode !== "headless") action = "native terminal ended; start it with ahub pi";
           else if (piAutoRestartPending || Date.now() - piAutoRestartAt < 60_000) action = "pi.auto_start restart limit (one in 60 s); start it with ahub pi";
           else {

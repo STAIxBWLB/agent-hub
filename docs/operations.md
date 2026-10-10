@@ -1705,11 +1705,27 @@ nor hands work over. Continue normally or deliberately restart into a fresh
 session with your chosen checkpoint as preface. No automatic restart or native
 compaction override is performed.
 
-
 ## Pi tool refusals, exit causes and idle automatic restart
 
-Pi hub-task/conductor refusals proven before any effect return their original `error:` text and are recorded as completed tool receipts. An uncertain post-effect or storage failure remains pending: inspect it before repeating any action. Old pending receipts carry no proof of a past refusal and are kept pending across startup.
+Pi hub-task/conductor refusals proven before any task or board effect return
+their original `error:` text and are recorded as completed tool receipts.
+PII screening and its telemetry record may precede the refusal. An uncertain
+post-effect or storage failure remains pending: inspect it before repeating an
+action. Old pending receipts carry no proof of a past refusal and stay pending
+across startup. Conductor assignment and escalation entry checks explicitly opt
+into refusal typing; internal escalation after a saved review remains generic.
 
-Pi exit records show code or signal, turn/tool activity, whether teardown was expected, and startup status, and the last tool's name without arguments. An unobserved native-terminal exit records unknown OS status. The console notice gives the next action, usually `ahub pi`, or says why automatic start is held.
+Pi exit records show code or signal, turn/tool activity, whether teardown was
+expected, startup status, and the last tool's name without arguments. An
+unobserved native-terminal exit records unknown OS status. The console notice
+gives the next action, usually `ahub pi`, or says why automatic start is held.
+A requested replacement says the new owner is starting; internal failure
+teardown directs session inspection rather than claiming a person requested it.
 
-With `pi.auto_start`, an unexpectedly idle headless Pi is resumed on its verified persisted session once, with the 60-second retry window rearmed when the attempt settles. A second exit inside that window stays offline. Missing/invalid session history has no fresh fallback; inspect it before running `ahub pi`. Active turns/tools, failed startup, a superseded owner, native terminal exits, requested shutdown and recovery operations suppress this restart. Crash recovery's #66 recorded-session/fresh-start choices are unchanged.
+With `pi.auto_start`, an unexpectedly idle headless Pi is resumed on its
+verified persisted session once. The 60-second retry window rearms when the
+attempt settles; a second exit inside that window stays offline. Missing or
+invalid session history has no fresh fallback; inspect it before running
+`ahub pi`. Active turns/tools, failed startup, a superseded owner, native
+terminal exits, requested shutdown and recovery operations suppress this
+restart. Crash recovery's #66 recorded-session/fresh-start choices are unchanged.
