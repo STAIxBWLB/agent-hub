@@ -44,9 +44,9 @@ vendor boundaries. The never-ask confirmation names this difference. No mode
 turns off the sandbox or grants a session-wide allow-always option.
 
 Config defaults apply automatically only up to ask-when-needed. A never-ask
-request from any config file is held as ask until the person confirms its
-source file in the console at hub start. Git-tracked automatic relaxations
-remain filtered by config trust. This confirmation reduces accidental startup
+request from an applied untracked config is held as ask until the person
+confirms its source file in the console at hub start. Git-tracked mode defaults
+are filtered by config trust and never offered for confirmation. This confirmation reduces accidental startup
 relaxation; an agent with unrestricted shell/token access can still impersonate
 the console. Merged and generated Claude settings live in 0600 state files and
 are passed by path, keeping caller settings out of process argv.
