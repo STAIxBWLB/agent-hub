@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- `review()` and `done()` no longer throw after the approval or done board write when a following publish or notify fails: every such call goes through the one `releaseNotice` guard, which turns the failure into a console notice and returns the board write's result (#243).
+
 ## 0.12.21
 
 - Console and dashboard show shared whole-board task progress, waiting dependencies and four-stage tracks; the dashboard adds a host-scoped System/Light/Dark choice with pre-paint initialization and hashed inline CSP (#246).
