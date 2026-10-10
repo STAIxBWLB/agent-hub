@@ -288,11 +288,12 @@ removed when it ends; one left by a hub crash, named `ahub-cmd-*`, goes with
 the OS temp cleanup), and nothing else; the shared temp dirs are closed.
 
 Some names stay closed to those commands, and to Pi's, wherever they may
-otherwise write: anything named `.git` at any depth, the `config`, `hooks` and
-`commondir` of a git directory, and `.agenthub` anywhere in the project. A
-command can therefore not create, rename or remove a `.git`: `git init`,
-`git clone` and `git worktree add` do not run inside the sandbox, and neither
-do `git worktree remove`, `git worktree prune` of a stale record,
+otherwise write: anything named `.git` at any depth, the `config` and `hooks`
+directly under a `.git`, `commondir` below it, and `.agenthub` anywhere in the
+project. A submodule's git directory under `.git/modules/` is not covered yet
+(#281). A command can therefore not create, rename or remove a `.git`:
+`git init`, `git clone` and `git worktree add` do not run inside the sandbox,
+and neither do `git worktree remove`, `git worktree prune` of a stale record,
 `git clean -ffd` over a nested repository or `rm -rf` of a directory that
 holds a `.git`. `git add`, `commit`, `stash`, `checkout` and `gc` work, and
 `.gitignore` and `.github/` stay writable; a commit that your git configuration
@@ -1393,8 +1394,9 @@ transition; a hub of 0.12.22 or newer also names a task command, completion
 checks or Pi tool calls in flight, ready tasks being released and a Pi that has
 not settled); apply waits up to 10 minutes for it. Blockers follow, each with its
 next action. The choices are `[a] apply` (absent while a blocker stands), `[r]
-refresh`, `[k] end agents`, `[j]` the plan as JSON, `[x] reset a project's hub`
-and `[q] quit`.
+refresh`, `[k] end agents` (shown when an attached agent can be ended), `[j]`
+the plan as JSON, `[x] reset a project's hub` (shown when the plan has a running
+project) and `[q] quit`.
 
 `[k] end agents` ends attached agents before the upgrade, so they are neither
 waited for nor restored: `t` for the TUI agents, `h` for the headless ones

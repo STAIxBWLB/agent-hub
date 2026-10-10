@@ -121,7 +121,9 @@
         "src/cli/identity-audit.ts",
         "src/hub/registry.ts",
         "src/cli/main.ts",
-        "src/cli/launch.ts"
+        "src/cli/launch.ts",
+        "src/hub/child-process.ts",
+        "src/hub/bus.ts"
       ]
     },
     "docs/agent-notes/local-worker.md": {

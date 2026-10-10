@@ -27,7 +27,7 @@ marked `private: true`, and PII tasks `pii: true`.
 | `capability` | `peer`, `state` (`verified` or `lost`), `via`: a peer's context path for facts |
 | `native_turn_end` | `peer`, `id` (an opaque hash that names the completed turn): the end of a Claude turn, recorded once the hub finds the turn its Stop hook reported completed in the native transcript (Codex's is its `turn_end`); quiescence evidence for an integration |
 | `supervision_turn` | `peer`, `turn` (the hub turn a supervision notice was delivered into, or `supervision-<uuid>` when none was open), `tokens` (when the adapter reported any for it), `ms` (from that turn's start, or from the delivery when none was open, to its native end): a completed native turn that received supervision, which `ahub report` counts; a failed delivery or turn, a peer that went offline or a changed native session records none |
-| `conduct` | `peer` (the conductor, or `user` when the console releases a conductor hold), `action` (the conductor tool without its `hub_` prefix: `status`, `task_show`, `task_assign`, `task_escalate`, `peer_start`, `peer_hold`, `peer_release`), `task` (the task actions), `target` (the peer an assignment, start, hold or release names): one conductor action that ran, the structured twin of the console's `conductor` notice. The role-free reads and redirects (a task's owner or reviewer with `hub_task_show`, its proposer with `hub_task_assign`) are not conductor actions and record none |
+| `conduct` | `peer` (the conductor, or `user` when the console releases a conductor hold), `action`, `task` (when the action names or creates one), `target` (the peer an assignment, start, hold or release names): one action of the conductor that ran, the structured twin of the console's `conductor` notice. `action` is a tool name without its `hub_` prefix: a conductor tool (`status`, `task_show`, `task_assign`, `task_escalate`, `peer_start`, `peer_hold`, `peer_release`), or one of the conductor peer's own task tools, which are not conductor tools (`task_propose`, `task_accept`, `task_decline`, `task_done`, `review`, `checkpoint`, `remember`). The role-free reads and redirects (a task's owner or reviewer with `hub_task_show`, its proposer with `hub_task_assign`) record none, and neither does `hub_task_list` |
 | `agent_cli` | `peer` (`unknown` when the agent markers were invalid), `command` (the command and, where it has one, its subcommand, from a closed list; `unknown` otherwise; never an argument), `refused` (the CLI refused it before connecting: a human-only command, or an invalid identity; a later refusal by the hub is not recorded here): an `ahub` command run from an agent session. The hub reads these from the `cli-audit/` outbox, so `at` is when it read the record |
 | `hook_stats` | `peer`, `n` (facts hook calls in the turn, its Stop included), `startupMs` and `maxStartupMs` (the hook processes' start-up and connect time, summed and the largest), `hubMs` (the hub's own time for them): at Claude's Stop (issue #108) |
 | `cohort` | `id`, `event` (`formed`, `joined`, `lifted`), `silent`, `tasks`, `owners`: owners of overlapping tasks formed a cohort, it changed membership, or it stopped being silent (issue #107). Recorded in every regime; only a turn-free project's cohorts can be silent |
@@ -49,11 +49,15 @@ marked `private: true`, and PII tasks `pii: true`.
 
 Token usage by adapter:
 
-- Kimi (ACP `usage_update`): recorded.
+- Kimi (ACP `usage_update`, and the usage a `session/prompt` result carries): recorded when it holds a checked
+  total or an input/output pair. The `{used, size}` shape Kimi sends is context occupancy and is not recorded
+  (issue #285 tracks showing Kimi's usage).
 - Codex (app-server `thread/tokenUsage/updated`): recorded as the growth of the thread's running total, so
   compaction estimates, usage-limit refreshes and the replay to a reattaching connection add nothing. A thread
   started under the hub counts from zero; a resumed thread's first update is its history and only sets the
   baseline. The model call of a compaction itself is real usage and counts.
+- Pi: the assistant usage its extension forwards at each `message_end`, tool-loop messages included, is recorded as
+  increments, each usage id once; a message without a usable count adds nothing.
 - Claude native transcript usage is optional and keyed by an opaque hash of session and message identity; streamed records with the same message id count once. The status line tee still carries quota percentages only.
 - The local worker records optional counters returned by OmniRoute. Requested route/model and gateway-reported served model/provider are separate fields; an alias is never treated as a served model.
 - `ahub report` deduplicates usage records by peer, source and id. Coverage counts distinguish calls with provider usage from calls where usage was absent. Token counters are provider-reported values; the report never derives a price or treats missing spend as zero. Estimated price and measured provider spend remain unknown unless a future source reports them.
