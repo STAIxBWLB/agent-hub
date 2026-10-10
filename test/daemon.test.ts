@@ -1226,19 +1226,24 @@ test("snapshots: a turn records what it changed, and ahub undo restores it unles
   expect((await console_.request({ t: "send", body: "edit please", to: ["editor"] })).ok).toBe(true);
   const file = join(stateDir, "events.jsonl");
   await until(() => readEvents(file).some((e) => e.type === "turn_end" && e.peer === "editor"), "the editor's turn");
-  const ended = readEvents(file).find((e) => e.type === "turn_end" && e.peer === "editor") as { files?: number; snapshotMs?: number };
+  const ended = readEvents(file).find((e) => e.type === "turn_end" && e.peer === "editor") as { files?: number; snapshotMs?: number; turn: string };
   expect(ended.files).toBe(2);
   expect(ended.snapshotMs).toBeGreaterThanOrEqual(0);
 
   // Async: the hub runs in this process, and a blocking spawn would keep it from answering the CLI.
   const cli = async (...a: string[]) => {
-    const p = Bun.spawn([process.execPath, join(ROOT, "src/cli/main.js"), ...a], { cwd: dir, env: { ...process.env, AGENTHUB_STATE_DIR: stateDir }, stdout: "pipe", stderr: "pipe" });
+    const p = Bun.spawn([process.execPath, join(ROOT, "src/cli/main.js"), ...a], { cwd: dir, env: { ...process.env, AGENTHUB_STATE_DIR: stateDir, COLUMNS: "80" }, stdout: "pipe", stderr: "pipe" });
     const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
     return { code, out, err };
   };
   const listed = await cli("turns", "editor");
+  expect(listed.code, listed.err).toBe(0);
   expect(listed.out).toContain("2 files: a.txt, made.txt");
-  const turn = listed.out.split(/\s/)[0]!;
+  const row = listed.out.split("\n").find(line => line.trimStart().startsWith("editor#"));
+  expect(row).toBeDefined();
+  const turn = row!.trim().split(/\s+/)[0]!; // the human table at 80 columns supplies the exact undo argument
+  expect(typeof turn).toBe("string");
+  expect(turn).toBe(ended.turn);
   expect((await cli("undo", turn)).out).toContain("add --yes"); // a dry run by default
   expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("edited\n");
   writeFileSync(join(dir, "a.txt"), "somebody else's work\n");
