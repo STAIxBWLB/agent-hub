@@ -50,7 +50,11 @@ const hfsFoldedName = (name: string) => `${HFS_IGNORABLE}*${[...name].map((c) =>
  * rename, symlink or gitfile, and `config` and `hooks` directly under it are folded too; the cost is that
  * `git init`, `git clone` and `git worktree add` no longer run inside the sandbox. `commondir` is refused at any
  * depth below a `.git` and below each external git dir: that is where git keeps it for linked worktrees and
- * submodules. An external git dir's `config`/`hooks` rules cover only its own children (plus the hooks
+ * submodules. A submodule's git dir under `.git/modules/` gets the same `config`/`hooks` refusal at whatever depth
+ * submodules nest (a nested one lives under `.git/modules/<a>/modules/<b>`, #281); the `/refs/` and `/logs/`
+ * exclusion keeps a branch or tag named `config` or `hooks` writable there (the round-3 regression of #277), at the
+ * price of leaving a submodule whose own path holds a `refs` or `logs` segment unprotected. An external git dir's
+ * `config`/`hooks` rules cover only its own children (plus the hooks
  * directory's contents): at any depth they would deny refs named `config` or `hooks` in a worktree or submodule
  * project (`git branch fix/config` fails on `.git/logs/refs/heads/fix/config`). Every pattern keeps its `^`
  * anchor (an unanchored starred alternation does not match in this engine) and no folded literal contains the
@@ -70,6 +74,7 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = []): string[] 
     re(`^.*/${git}/${hfsFoldedName("config")}$`),
     re(`^.*/${git}/${hfsFoldedName("hooks")}(/|$)`),
     `(require-all ${re(`^.*/${git}/.*$`)} ${re(`^.*/${hfsFoldedName("commondir")}$`)})`,
+    `(require-all ${re(`^.*/${git}/${hfsFoldedName("modules")}(/|$)`)} ${re(`^.*/(${hfsFoldedName("config")}|${hfsFoldedName("hooks")})(/|$)`)} (require-not ${re("^.*/(refs|logs)/")}))`,
     ...external,
   ];
 }

@@ -32,6 +32,25 @@ function hfsProbe(): { ok: boolean; why: string } {
 }
 const HFS = hfsProbe();
 
+/** Same probe for a case-sensitive APFS image (#281): the deny legs are skipped with the reason when it cannot mount. */
+function apfsxProbe(): { ok: boolean; why: string } {
+  if (!sandboxAvailable()) return { ok: false, why: "no sandbox-exec on this host" };
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-apfsx-probe-"));
+  const dmg = join(dir, "probe.dmg"), mnt = join(dir, "mnt");
+  try {
+    mkdirSync(mnt);
+    let r = Bun.spawnSync(["hdiutil", "create", "-size", "16m", "-fs", "Case-sensitive APFS", "-volname", "ahubprobe", "-ov", dmg]);
+    if (r.exitCode !== 0) return { ok: false, why: `hdiutil create: ${r.stderr.toString().trim().split("\n")[0]}` };
+    r = Bun.spawnSync(["hdiutil", "attach", "-nobrowse", "-mountpoint", mnt, dmg]);
+    if (r.exitCode !== 0) return { ok: false, why: `hdiutil attach: ${r.stderr.toString().trim().split("\n")[0]}` };
+    if (Bun.spawnSync(["hdiutil", "detach", mnt, "-quiet"]).exitCode !== 0) Bun.spawnSync(["hdiutil", "detach", mnt, "-force", "-quiet"]);
+    return { ok: true, why: "" };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+const APFSX = apfsxProbe();
+
 const detach = (mnt: string) => {
   if (Bun.spawnSync(["hdiutil", "detach", mnt, "-quiet"]).exitCode !== 0) Bun.spawnSync(["hdiutil", "detach", mnt, "-force", "-quiet"]);
 };
@@ -210,6 +229,11 @@ test.skipIf(!HFS.ok)(`an HFS+ image: every ignorable code point at every positio
     segLeg("config", "config", (v) => `echo x > '.git/${v}'`);
     segLeg("hooks", "hooks", (v) => `mkdir '.git/${v}' && echo x > '.git/${v}/pre-commit'`);
     segLeg("commondir", "commondir", (v) => `echo x > '.git/${v}'`);
+    // A submodule git dir's names fold the same way (#281): `.git/modules/sub` stands in for one.
+    mkdirSync(join(cwd, ".git", "modules", "sub"), { recursive: true });
+    segLeg("modseg", "modules", (v) => `echo x > '.git/${v}/sub/config'`);
+    segLeg("modconfig", "config", (v) => `echo x > '.git/modules/sub/${v}'`);
+    segLeg("modhooks", "hooks", (v) => `mkdir '.git/modules/sub/${v}' && echo x > '.git/modules/sub/${v}/pre-commit'`);
     const attempts = legs.filter((l) => l.includes("echo WROTE")).length;
     const out = await sandboxedExec(["/bin/sh", "-c", legs.join("; ")], { cwd, profile: profile(cwd, false) });
     expect(out.output).not.toContain("WROTE");
@@ -220,6 +244,8 @@ test.skipIf(!HFS.ok)(`an HFS+ image: every ignorable code point at every positio
     expect(existsSync(join(cwd, ".git", "config"))).toBe(false);
     expect(existsSync(join(cwd, ".git", "hooks"))).toBe(false);
     expect(existsSync(join(cwd, ".git", "commondir"))).toBe(false);
+    expect(existsSync(join(cwd, ".git", "modules", "sub", "config"))).toBe(false);
+    expect(existsSync(join(cwd, ".git", "modules", "sub", "hooks"))).toBe(false);
     // An external git dir on the same volume, joiner spellings included: the common dir's config, hooks and the
     // worktree record's commondir stay refused. Each target is removed first, so a folded write would create it.
     const main2 = join(cwd, "main2");
@@ -246,6 +272,90 @@ test.skipIf(!HFS.ok)(`an HFS+ image: every ignorable code point at every positio
     expect(existsSync(join(main2, ".git", "config"))).toBe(false);
     expect(existsSync(join(main2, ".git", "hooks"))).toBe(false);
     expect(existsSync(join(main2, ".git", "worktrees", "wt2", "commondir"))).toBe(false);
+  } finally {
+    detach(mnt);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.skipIf(!sandboxAvailable())("a submodule's git dir under .git/modules: config and hooks refused at the depth submodules nest, refs named config or hooks still work (#281)", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-submod-")));
+  const git = (args: string[]) => Bun.spawnSync(["git", ...args]);
+  const initRepo = (dir: string) => {
+    expect(git(["init", "-q", dir]).exitCode).toBe(0);
+    writeFileSync(join(dir, "f.txt"), "x\n");
+    git(["-C", dir, "add", "f.txt"]);
+    expect(git(["-C", dir, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", "one"]).exitCode).toBe(0);
+  };
+  const deepSrc = join(base, "deep-src"), subSrc = join(base, "sub-src");
+  initRepo(deepSrc);
+  initRepo(subSrc);
+  // sub-src carries deep as its own submodule, so main's .git/modules/sub/modules/deep is the nesting depth to cover.
+  expect(git(["-C", subSrc, "-c", "protocol.file.allow=always", "submodule", "add", "-q", deepSrc, "deep"]).exitCode).toBe(0);
+  git(["-C", subSrc, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", "with deep"]);
+  const cwd = join(base, "main");
+  initRepo(cwd);
+  expect(git(["-C", cwd, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subSrc, "sub"]).exitCode).toBe(0);
+  expect(git(["-C", cwd, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive", "-q"]).exitCode).toBe(0);
+  const subGit = join(cwd, ".git", "modules", "sub"), deepGit = join(subGit, "modules", "deep");
+  expect(existsSync(join(subGit, "config"))).toBe(true);
+  expect(existsSync(join(deepGit, "config"))).toBe(true);
+  const subConfig = readFileSync(join(subGit, "config"), "utf8"), deepConfig = readFileSync(join(deepGit, "config"), "utf8");
+  const out = await sandboxedExec(["/bin/sh", "-c", [
+    "(echo x > .git/modules/sub/config) 2>/dev/null && echo WROTE-SUB-CONFIG || echo blocked-sub-config",
+    "(echo x > .git/modules/sub/hooks/pre-commit) 2>/dev/null && echo WROTE-SUB-HOOK || echo blocked-sub-hook",
+    "(echo x > .git/modules/sub/modules/deep/config) 2>/dev/null && echo WROTE-DEEP-CONFIG || echo blocked-deep-config",
+    "(echo x > .git/modules/sub/modules/deep/hooks/pre-commit) 2>/dev/null && echo WROTE-DEEP-HOOK || echo blocked-deep-hook",
+    "git -C sub branch fix/config && echo branched-config-in-sub",
+    "git -C sub tag config && echo tagged-config-in-sub",
+    "git -C sub checkout -qb feature/hooks && echo branched-hooks-in-sub",
+    "git -C sub/deep tag hooks && echo tagged-hooks-in-deep",
+    "git -C sub -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm sub-work --allow-empty && echo committed-in-sub",
+  ].join("; ")], { cwd, profile: profile(cwd, false) });
+  for (const expected of ["blocked-sub-config", "blocked-sub-hook", "blocked-deep-config", "blocked-deep-hook", "branched-config-in-sub", "tagged-config-in-sub", "branched-hooks-in-sub", "tagged-hooks-in-deep", "committed-in-sub"]) expect(out.output).toContain(expected);
+  expect(readFileSync(join(subGit, "config"), "utf8")).toBe(subConfig);
+  expect(readFileSync(join(deepGit, "config"), "utf8")).toBe(deepConfig);
+  expect(existsSync(join(subGit, "hooks", "pre-commit"))).toBe(false);
+  expect(existsSync(join(deepGit, "hooks", "pre-commit"))).toBe(false);
+});
+
+test.skipIf(!sandboxAvailable())("a nested bare-layout repository is not covered by the rules: the exclusion, tested (#281)", async () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-bare-")));
+  Bun.spawnSync(["git", "init", "-q", cwd]);
+  expect(Bun.spawnSync(["git", "init", "-q", "--bare", join(cwd, "nested.git")]).exitCode).toBe(0);
+  // A bare layout has no `.git` name to anchor a rule on: the directory is the git dir, indistinguishable from an
+  // ordinary one by name. The hub never runs git there (its calls are all -C <project root>), so these writes are
+  // allowed; docs/security.md records the exclusion and its reason.
+  const out = await sandboxedExec(["/bin/sh", "-c", [
+    "(echo x > nested.git/config) 2>/dev/null && echo WROTE-BARE-CONFIG || echo blocked-bare-config",
+    "(echo x > nested.git/hooks/pre-commit) 2>/dev/null && echo WROTE-BARE-HOOK || echo blocked-bare-hook",
+  ].join("; ")], { cwd, profile: profile(cwd, false) });
+  expect(out.output).toContain("WROTE-BARE-CONFIG");
+  expect(out.output).toContain("WROTE-BARE-HOOK");
+});
+
+test.skipIf(!APFSX.ok)(`a case-sensitive APFS image: the deny rules hold there, and the code points HFS+ ignores are ordinary characters (#281)${APFSX.ok ? "" : ` [skipped: ${APFSX.why}]`}`, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-apfsx-test-"));
+  const dmg = join(dir, "t.dmg"), mnt = join(dir, "mnt");
+  mkdirSync(mnt);
+  try {
+    expect(Bun.spawnSync(["hdiutil", "create", "-size", "16m", "-fs", "Case-sensitive APFS", "-volname", "ahubtest", "-ov", dmg]).exitCode).toBe(0);
+    expect(Bun.spawnSync(["hdiutil", "attach", "-nobrowse", "-mountpoint", mnt, dmg]).exitCode).toBe(0);
+    const cwd = realpathSync(mnt);
+    // The volume folds nothing: a ZWJ name is a different file, so a missed fold could never open the real config here.
+    writeFileSync(join(cwd, "ab"), "x");
+    expect(existsSync(join(cwd, `a${ZWJ}b`))).toBe(false);
+    Bun.spawnSync(["git", "init", "-q"], { cwd });
+    mkdirSync(join(cwd, ".git", "modules", "sub"), { recursive: true });
+    rmSync(join(cwd, ".git", "config")); // a blocked create is the assertion, like the HFS+ leg
+    const out = await sandboxedExec(["/bin/sh", "-c", [
+      "(echo x > .git/config) 2>/dev/null && echo WROTE-CONFIG || echo blocked-config",
+      `(echo x > '.git/co${ZWJ}nfig') 2>/dev/null && echo WROTE-FOLDED-CONFIG || echo blocked-folded-config`,
+      "(echo x > .git/modules/sub/config) 2>/dev/null && echo WROTE-MOD-CONFIG || echo blocked-mod-config",
+    ].join("; ")], { cwd, profile: profile(cwd, false) });
+    for (const expected of ["blocked-config", "blocked-folded-config", "blocked-mod-config"]) expect(out.output).toContain(expected);
+    expect(existsSync(join(cwd, ".git", "config"))).toBe(false);
+    expect(existsSync(join(cwd, ".git", `co${ZWJ}nfig`))).toBe(false);
   } finally {
     detach(mnt);
     rmSync(dir, { recursive: true, force: true });

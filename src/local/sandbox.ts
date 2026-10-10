@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { realPath } from "../hub/project.ts";
+import { hubGitSync } from "../hub/git.ts";
 import { denyRegexes, hubWriteRegexes, sbplString } from "./deny.ts";
 
 const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
@@ -40,7 +41,8 @@ function developerDir(): string | undefined {
 
 /** A submodule or worktree keeps its git dir outside the project; git needs it, minus the parts that execute or reconfigure. */
 function externalGitDirs(root: string): string[] {
-  const out = spawnSync("git", ["-C", root, "rev-parse", "--absolute-git-dir", "--git-common-dir"], { encoding: "utf8" });
+  // Runs in the hub process, outside the sandbox: the hardened helper keeps the repo's config from naming a program (#281).
+  const out = hubGitSync(["-C", root, "rev-parse", "--absolute-git-dir", "--git-common-dir"], { encoding: "utf8" });
   if (out.status !== 0) return [];
   const dirs = out.stdout.trim().split("\n").map((d) => resolve(root, d));
   return [...new Set(dirs)].filter((d) => !d.startsWith(`${root}/`));
@@ -104,8 +106,9 @@ export function profile(cwd: string, network: SandboxNetwork, readAllow: string[
     `(allow file-write* (subpath ${q(root)}) (regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`,
     // Inside cwd: nothing that runs later outside the sandbox, nothing that reconfigures the hub. The .git and
     // .agenthub patterns tolerate the code points HFS+ ignores in every segment, the .git name itself is refused
-    // at any depth (creation, rename, symlink, gitfile), and the external git dirs get folded hooks/config rules
-    // (#270). The cost: git init, clone and worktree add no longer run inside the sandbox.
+    // at any depth (creation, rename, symlink, gitfile), a submodule git dir's config and hooks under
+    // .git/modules/ are refused at the depth submodules nest (#281), and the external git dirs get folded
+    // hooks/config rules (#270). The cost: git init, clone and worktree add no longer run inside the sandbox.
     `(deny file-write* ${hubWriteRegexes(root, gitDirs).join(" ")})`,
     `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join(home, c))})`).join(" ")})`,
     `(deny file-read* file-write* ${denyRegexes(root, deny).join(" ")})`,

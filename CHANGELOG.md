@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- The seatbelt profile now also refuses the `config` and `hooks` of submodule git directories under `.git/modules/` at the depth submodules nest (refs named `config` or `hooks` stay writable through the `/refs/` and `/logs/` exclusion); a nested bare-layout repository is recorded as a tested exclusion in `docs/security.md` (the hub never runs git there); and every git call the hub makes outside the sandbox goes through the one helper in `src/hub/git.ts`, which disables the programs a repository's configuration can name (file-system monitor, hooks, external diff, pager, credential and askpass helpers), with a grep guard that fails on a new direct `spawn("git"` under `src/` (#281).
+
 ## 0.12.22
 
 - Restore the captured Codex approval policy once on a resumed thread after detached ask, show unknown-policy guidance in the CLI, and record direct native Claude child identity so verified crash cleanup can retire its settings file (#270).
