@@ -233,9 +233,11 @@ describe("one-shot output", () => {
     ];
     for (const columns of [76, 80]) {
       const rendered = renderBoard(tasks, columns, now);
-      const header = rendered[0]!;
-      const physical = rendered.slice(1).filter(line => line.length === header.length);
       for (const [field, values] of [["ID", ["#1", "#12", "#14"]], ["OWNER", ["codex", "claude"]], ["REVIEWER", ["codex", "claude"]], ["AGE", ["1m", "3h00m", "2d03h"]], ["STAGE", ["[####]", "[###-]", "[#!--]"]]] as const) {
+        const headerAt = rendered.findIndex(line => line.some(cell => cell.text.trim() === field));
+        const header = rendered[headerAt]!;
+        const end = rendered.findIndex((line, i) => i > headerAt && line.length === 0);
+        const physical = rendered.slice(headerAt + 1, end < 0 ? undefined : end).filter(line => line.length === header.length);
         const at = header.findIndex(cell => cell.text.trim() === field);
         expect(at).toBeGreaterThanOrEqual(0);
         const populated = physical.map(line => line[at]!.text.trim()).filter(Boolean);
@@ -244,6 +246,24 @@ describe("one-shot output", () => {
       }
       for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
       expect(text(rendered)).not.toContain("...");
+    }
+  });
+  test("state phrases yield before long titles fall below12, including a multi-task60 band", () => {
+    const base = [
+      { id: 1, state: "approved", owner: "codex", reviewer: "claude", class: "implement", title: "Finish the implementation", created: now - 60_000 },
+      { id: 12, state: "in_review", owner: "claude", reviewer: "codex", class: "implement", title: "Rename the settings", history: [{ event: "check failed", at: now - 3 * 3_600_000 }] },
+      { id: 14, state: "proposed", owner: "codex", reviewer: "claude", class: "implement", title: "Review the operations guide", created: now - 2 * 86_400_000 },
+    ];
+    for (const columns of [60, 76, 80]) for (const state of ["proposed", "changes_requested"]) {
+      const tasks = base.map(task => task.id === 14 ? { ...task, state } : task);
+      const rendered = renderBoard(tasks, columns, now);
+      const headerAt = rendered.findIndex(line => line.some(cell => cell.text.trim() === "TITLE"));
+      const titleAt = rendered[headerAt]!.findIndex(cell => cell.text.trim() === "TITLE");
+      expect(Bun.stringWidth(rendered[headerAt]![titleAt]!.text) - 2).toBeGreaterThanOrEqual(12);
+      const end = rendered.findIndex((line, i) => i > headerAt && line.length === 0);
+      const cells = rendered.slice(headerAt + 1, end < 0 ? undefined : end).map(line => line[titleAt]?.text.trim() ?? "");
+      for (const word of ["Finish", "Rename", "settings", "Review", "operations", "guide"]) expect(cells.some(cell => cell.split(/\s+/).includes(word))).toBe(true);
+      for (const line of text(rendered).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
     }
   });
   test("crowded status keeps two-digit queue, priority and review counters atomic", () => {
